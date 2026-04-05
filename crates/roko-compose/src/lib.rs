@@ -24,3 +24,7 @@ pub use prompt::{
     PromptComposer, PromptSection, SectionPriority,
 };
 pub use scorer::SectionScorer;
+pub use templates::{
+    PromptAssembler, PromptBudget, budget_for,
+    QuickFixInput, QuickFixTemplate, QuickReviewerInput, QuickReviewerTemplate,
+};

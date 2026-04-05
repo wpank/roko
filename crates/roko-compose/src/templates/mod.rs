@@ -6,15 +6,21 @@
 //! Anti-pattern #8: **no `std::fs` in this module tree**. All file content
 //! arrives via the `*Input` structs.
 
+pub mod assembly;
+pub mod common;
 pub mod implementer;
 pub mod integration;
+pub mod quick;
 pub mod reviewer;
 pub mod scribe;
 pub mod strategist;
 pub mod task_impl;
 
+pub use assembly::PromptAssembler;
+pub use common::{budget_for, PromptBudget};
 pub use implementer::{ImplementerInput, ImplementerTemplate};
 pub use integration::{IntegrationInput, IntegrationTemplate};
+pub use quick::{QuickFixInput, QuickFixTemplate, QuickReviewerInput, QuickReviewerTemplate};
 pub use reviewer::{Reviewer, ReviewerInput, ReviewerTemplate};
 pub use scribe::{FileSnippet, ScribeInput, ScribeTemplate};
 pub use strategist::{StrategistInput, StrategistTemplate};

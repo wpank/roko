@@ -7,12 +7,18 @@
 //! arrives via the `*Input` structs.
 
 pub mod implementer;
+pub mod integration;
 pub mod reviewer;
 pub mod scribe;
+pub mod strategist;
+pub mod task_impl;
 
 pub use implementer::{ImplementerInput, ImplementerTemplate};
+pub use integration::{IntegrationInput, IntegrationTemplate};
 pub use reviewer::{Reviewer, ReviewerInput, ReviewerTemplate};
 pub use scribe::{FileSnippet, ScribeInput, ScribeTemplate};
+pub use strategist::{StrategistInput, StrategistTemplate};
+pub use task_impl::{SiblingTask, TaskImplInput, TaskImplTemplate};
 
 use crate::PromptSection;
 

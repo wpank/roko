@@ -1,0 +1,48 @@
+schema_version = 1
+name = "defi-routing"
+
+[deploy]
+sender_wallet = "deployer"
+
+  [[deploy.contracts]]
+  name = "MockERC20"
+  args = [
+    { type = "string", value = "DAEJI" },
+    { type = "string", value = "DAEJI" },
+    { type = "uint8",  value = 18 },
+  ]
+
+  [[deploy.contracts]]
+  name = "WorkerRegistry"
+  args = [
+    { type = "address", value = "$contract(MockERC20)" },
+  ]
+
+  [[deploy.contracts]]
+  name = "BountyMarket"
+  args = [
+    { type = "address", value = "$contract(MockERC20)" },
+    { type = "address", value = "$contract(WorkerRegistry)" },
+  ]
+
+[[fixtures]]
+name = "authorize-market"
+kind = "contract-call"
+contract = "WorkerRegistry"
+method = "setAuthorized(address,bool)"
+from = "deployer"
+args = ["$contract(BountyMarket)", true]
+
+[[agents]]
+role = "router-worker"
+wallet = "worker{i}"
+prompt_template = "prompts/worker-bidder.md"
+count = 5
+scripted_actions = ["route_and_submit_loop"]
+llm_slots = ["route_proposal"]
+
+[success]
+max_duration_secs = 180
+expected_events = [
+  { contract = "BountyMarket", event = "JobResolved", min_count = 1 },
+]

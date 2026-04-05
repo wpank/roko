@@ -1,0 +1,19 @@
+[package]
+name = "roko-compose"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Composer implementations for Roko: prompt assembly with token budgets, context packs, plan decomposition."
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+roko-std = { path = "../roko-std" }

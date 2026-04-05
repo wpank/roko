@@ -1,0 +1,32 @@
+[scenario]
+name = "uniswap_v3_lp_entry"
+description = "Position-manager mint followed by liquidity increase on a watched pool"
+
+[[transactions]]
+from = "0x3000000000000000000000000000000000000001"
+to = "0x30000000000000000000000000000000000000c0"
+value = "0x0"
+gas = 500000
+data = "0x88316456bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[[transactions]]
+from = "0x3000000000000000000000000000000000000001"
+to = "0x30000000000000000000000000000000000000c0"
+value = "0x0"
+gas = 420000
+data = "0x219f5d17cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[assertions]
+watch_list_contains = ["0x30000000000000000000000000000000000000c0"]
+
+[assertions.token_balance_gte]
+token = "0x30000000000000000000000000000000000000c0"
+address = "0x3000000000000000000000000000000000000001"
+amount = "0x1"
+
+[track]
+addresses = [
+  "0x30000000000000000000000000000000000000c0",
+  "0x30000000000000000000000000000000000000d0",
+  "0x30000000000000000000000000000000000000d1",
+]

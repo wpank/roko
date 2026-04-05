@@ -1,0 +1,63 @@
+schema_version = 1
+name = "job-board"
+
+# ---------- Deploy step -----------------------------------------------------
+[deploy]
+sender_wallet = "deployer"
+
+  [[deploy.contracts]]
+  name = "MockERC20"
+  args = [
+    { type = "string", value = "DAEJI" },
+    { type = "string", value = "DAEJI" },
+    { type = "uint8",  value = 18 },
+  ]
+
+  [[deploy.contracts]]
+  name = "AgentRegistry"
+
+  [[deploy.contracts]]
+  name = "WorkerRegistry"
+  args = [
+    { type = "address", value = "$contract(MockERC20)" },
+  ]
+
+  [[deploy.contracts]]
+  name = "BountyMarket"
+  args = [
+    { type = "address", value = "$contract(MockERC20)" },
+    { type = "address", value = "$contract(WorkerRegistry)" },
+  ]
+
+# ---------- Fixtures --------------------------------------------------------
+[[fixtures]]
+name = "authorize-market-to-update-reputation"
+kind = "contract-call"
+contract = "WorkerRegistry"
+method = "setAuthorized(address,bool)"
+from = "deployer"
+args = ["$contract(BountyMarket)", true]
+
+# ---------- Agents ----------------------------------------------------------
+[[agents]]
+role = "job-poster"
+wallet = "poster0"
+prompt_template = "prompts/job-poster.md"
+count = 1
+scripted_actions = ["post_job_loop"]
+llm_slots = ["bounty_amount", "job_spec"]
+
+[[agents]]
+role = "worker-bidder"
+wallet = "worker{i}"
+prompt_template = "prompts/worker-bidder.md"
+count = 5
+scripted_actions = ["watch_and_bid_loop"]
+llm_slots = ["bid_amount", "submission_content"]
+
+# ---------- Success criteria ------------------------------------------------
+[success]
+max_duration_secs = 300
+expected_events = [
+  { contract = "BountyMarket", event = "JobResolved", min_count = 1 },
+]

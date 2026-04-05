@@ -1,0 +1,29 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.26"
+# Target Shanghai EVM — matches mirage-rs's MIRAGE_EVM_SPEC so PUSH0 is emitted
+# but Cancun-only opcodes (MCOPY/TSTORE/TLOAD) are not.
+evm_version = "shanghai"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+auto_detect_solc = false
+# Emit broadcast logs as JSON for roko-demo to parse.
+broadcast = "broadcast"
+# Skip bytecode hash suffix so CREATE2 addresses are deterministic across builds.
+bytecode_hash = "none"
+cbor_metadata = false
+
+[profile.default.fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = true
+
+[rpc_endpoints]
+mirage = "${ROKO_MIRAGE_URL}"
+local = "http://127.0.0.1:8545"
+
+[fuzz]
+runs = 256

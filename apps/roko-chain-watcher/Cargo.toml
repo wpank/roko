@@ -1,0 +1,29 @@
+[package]
+name = "roko-chain-watcher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Long-running roko agent: subscribes to a mirage chain and posts insights."
+
+[[bin]]
+name = "roko-chain-watcher"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../../crates/roko-core" }
+roko-chain = { path = "../../crates/roko-chain" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }

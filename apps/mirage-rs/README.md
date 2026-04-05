@@ -1,0 +1,871 @@
+# mirage-rs
+
+**Standalone EVM fork simulator** | MIT/Apache-2.0 | minimal internal deps
+
+## Feature surface
+
+| Feature        | Status  | Purpose                                                                                                  |
+|----------------|---------|----------------------------------------------------------------------------------------------------------|
+| `binary`       | default | Enable the `mirage-rs` binary entrypoint (`src/main.rs`).                                                |
+| `library`      | opt-in  | Library-only usage (no binary).                                                                          |
+| `sim-gas`      | opt-in  | Use revm's gas accounting path.                                                                          |
+| `chain`        | opt-in  | HDC index, `InsightEntry` knowledge layer, stigmergy pheromones. Adds `chain_*` JSON-RPC methods.        |
+| `roko`         | opt-in  | Bridge to `roko-core` traits: `SimulationGate`, `HdcSubstrate`, `ChainSubstrate`. Implies `chain`.       |
+
+Default build = pure EVM fork simulator. The `chain` / `roko` extensions are opt-in so consumers who only want an Anvil-style simulator pay nothing for them.
+
+## Add as a dependency
+
+Paths below are relative to the `roko/` workspace root. From outside the workspace, use a git dependency or an absolute path.
+
+```toml
+[dependencies]
+# Pure EVM fork simulator, no chain extensions.
+mirage-rs = { path = "apps/mirage-rs", default-features = false, features = ["library"] }
+
+# With the agent-chain knowledge layer (HDC + insight entries + pheromones).
+mirage-rs = { path = "apps/mirage-rs", default-features = false, features = ["library", "chain"] }
+
+# Full roko integration (Gate + Substrate impls usable in a roko golem).
+mirage-rs = { path = "apps/mirage-rs", default-features = false, features = ["library", "roko"] }
+```
+
+## Quickstart
+
+```bash
+# 1. Pure EVM simulator (like Anvil, but forking a live chain)
+cargo run -p mirage-rs -- --rpc-url https://ethereum-rpc.publicnode.com
+
+# 2. EVM + chain extensions (HDC semantic memory + stigmergy pheromones)
+cargo run -p mirage-rs --features chain -- \
+  --rpc-url https://ethereum-rpc.publicnode.com \
+  --enable-hdc --enable-knowledge --enable-stigmergy
+
+# 3. Isolated mode (no upstream, all accounts start with 1 ETH — fast CI tests)
+cargo run -p mirage-rs
+```
+
+See [Chain extensions](#chain-extensions-feature--chain) and [Roko bridge](#roko-bridge-feature--roko) below for deep dives on the opt-in subsystems.
+
+---
+
+A local Ethereum node for development and testing, like [Anvil](https://getfoundry.sh/reference/anvil/) — but connected to live chains. mirage-rs forks mainnet state lazily over RPC, keeps watched contracts in sync block-by-block, and gives you the full `eth_*` / `evm_*` / `anvil_*` manipulation API you already know. No full node sync. Instant startup.
+
+Where Anvil forks at a pinned block and stays there, mirage-rs optionally follows the chain forward, selectively replaying transactions that touch your contracts so the local view stays current as the market moves.
+
+```bash
+# Drop-in replacement for Anvil — fork mainnet on port 8545
+mirage-rs --rpc-url https://ethereum-rpc.publicnode.com
+
+# With live following over WebSocket
+mirage-rs \
+  --rpc-url https://ethereum-rpc.publicnode.com \
+  --ws-url wss://ethereum-rpc.publicnode.com
+
+# Isolated mode (no upstream, all accounts start with 1 ETH)
+mirage-rs
+```
+
+Point any Ethers/Viem/Alloy client at `http://127.0.0.1:8545` and it works the same as Anvil. Your Hardhat tests, Foundry scripts, and custom tooling need zero changes.
+
+## Why not just use Anvil?
+
+Anvil forks at a block and freezes. That's fine for unit tests, but it can't answer questions like: *what happens to my Uniswap position after my transaction, as the next 10 blocks of real market activity play out?*
+
+mirage-rs can, because it:
+
+- **Follows the chain.** A targeted follower subscribes to `newHeads` via WebSocket, filters each block for transactions that touch watched contracts, and replays only those locally. For a typical portfolio of 3-10 DeFi positions, that's ~5-15 transactions per block instead of ~150.
+- **Classifies contracts automatically.** When a transaction writes 3+ storage slots on a new address, the diff classifier promotes it to the watch list. Simple token transfers (1-2 slots) get slot-level overrides without full tracking. This propagation is recursive — composability chains across protocols are captured automatically.
+- **Branches with copy-on-write.** Scenarios fork from a shared baseline using CoW overlays (~12.8 KB per branch vs ~3.2 MB for a full clone), so you can run parallel what-if simulations cheaply.
+
+For pure unit testing against static state, Anvil is great. For anything that touches live DeFi positions, mirage-rs fills the gap.
+
+## How it works
+
+mirage-rs sits between your application and a real Ethereum RPC endpoint. It maintains a three-layer state model:
+
+```
+ Reads flow top-down; first hit wins.
+
+ ┌─────────────────────────────────┐
+ │  1. DirtyStore (local writes)   │  ← eth_sendTransaction, setBalance, scenarios
+ ├─────────────────────────────────┤
+ │  2. ReadCache (LRU + TTL)       │  ← <1µs hot reads, 12s default TTL
+ ├─────────────────────────────────┤
+ │  3. UpstreamRpc (lazy fetch)    │  ← token-bucket rate limiter, retries w/ backoff
+ └────────────────┬────────────────┘
+                  │
+          Live Ethereum node
+```
+
+On first access, account balances, nonces, storage slots, and bytecode are fetched from upstream and cached. Writes go into the dirty overlay and never touch upstream. You get a mutable view of mainnet state without syncing anything.
+
+When a WebSocket URL is configured, the **targeted follower** subscribes to new blocks and replays only the transactions that matter to your watched contracts. Everything else is ignored.
+
+## Installation
+
+From source (requires Rust 1.85+):
+
+```bash
+# Install the pure EVM fork simulator binary
+cargo install --path roko/apps/mirage-rs
+
+# Install with chain extensions enabled
+cargo install --path roko/apps/mirage-rs --features chain
+
+# Install with the full roko bridge (Gate/Substrate trait impls)
+cargo install --path roko/apps/mirage-rs --features roko
+```
+
+Or run directly from the workspace:
+
+```bash
+# Pure EVM fork simulator
+cargo run -p mirage-rs -- --rpc-url https://ethereum-rpc.publicnode.com
+
+# With chain extensions
+cargo run -p mirage-rs --features chain -- \
+  --rpc-url https://ethereum-rpc.publicnode.com \
+  --enable-hdc --enable-knowledge --enable-stigmergy
+```
+
+## Usage
+
+### Forking mainnet
+
+```bash
+# Fork at latest block
+mirage-rs --rpc-url https://ethereum-rpc.publicnode.com
+
+# Specify chain ID and port
+mirage-rs --rpc-url https://ethereum-rpc.publicnode.com --chain-id 1 --port 8545
+
+# With live block following
+mirage-rs \
+  --rpc-url https://ethereum-rpc.publicnode.com \
+  --ws-url wss://ethereum-rpc.publicnode.com
+```
+
+### Forking other chains
+
+```bash
+# Arbitrum
+mirage-rs --rpc-url https://arbitrum-one-rpc.publicnode.com --chain-id 42161
+
+# Base
+mirage-rs --rpc-url https://base-rpc.publicnode.com --chain-id 8453
+
+# Polygon
+mirage-rs --rpc-url https://polygon-bor-rpc.publicnode.com --chain-id 137
+```
+
+### Using with Foundry
+
+mirage-rs is a drop-in backend for `forge script` and `forge test`:
+
+```bash
+# Run a Forge script against the live fork
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
+
+# Run tests
+forge test --fork-url http://127.0.0.1:8545
+```
+
+### Using with Hardhat
+
+```js
+// hardhat.config.js
+module.exports = {
+  networks: {
+    mirage: {
+      url: "http://127.0.0.1:8545",
+    },
+  },
+};
+```
+
+```bash
+npx hardhat test --network mirage
+```
+
+### Using with Viem
+
+```ts
+import { createPublicClient, createWalletClient, http } from "viem";
+import { mainnet } from "viem/chains";
+
+const transport = http("http://127.0.0.1:8545");
+
+const publicClient = createPublicClient({ chain: mainnet, transport });
+const walletClient = createWalletClient({ chain: mainnet, transport });
+
+// Works exactly like Anvil
+const blockNumber = await publicClient.getBlockNumber();
+```
+
+### Using with Ethers.js
+
+```js
+const { ethers } = require("ethers");
+const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+const blockNumber = await provider.getBlockNumber();
+```
+
+## CLI Reference
+
+```
+mirage-rs [OPTIONS]
+```
+
+### Server options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8545` | Bind port |
+| `--chain-id` | `1` | Effective chain ID |
+| `--watchdog-timeout` | (none) | Shut down after N seconds of inactivity |
+
+### Fork options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--rpc-url` | (none) | Upstream HTTP JSON-RPC URL. Omit for isolated mode |
+| `--ws-url` | (none) | Upstream WebSocket URL. Enables targeted block following |
+| `--upstream-rps` | `100` | Upstream requests per second budget |
+| `--upstream-burst` | `200` | Upstream burst capacity |
+| `--cache-size` | `10000` | Read cache entry capacity |
+| `--cache-ttl-secs` | `12` | Read cache TTL in seconds (~1 block) |
+
+### Validation options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--strict-nonce` | `false` | Reject transactions with incorrect nonces |
+| `--strict-balance` | `false` | Reject transactions that overdraw sender balance |
+| `--verify-signatures` | `false` | Require valid ECDSA signatures on raw transactions |
+
+By default, validation is relaxed (same as Anvil's default behavior) so you can send transactions from any address without signing.
+
+### Chain extension flags (require `--features chain`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-hdc` | `false` | Enable the HDC index (`chain_postInsight`, `chain_searchInsights`) |
+| `--enable-knowledge` | `false` | Enable the knowledge state machine (confirmations, challenges, decay) |
+| `--enable-stigmergy` | `false` | Enable pheromone deposits/queries (`chain_depositPheromone`, `chain_queryPheromones`) |
+| `--chain-hnsw-threshold` | `100000` | Entry count above which the HDC index auto-switches from brute-force to HNSW |
+
+Subsystems default to off even when compiled in — you must set the flags explicitly when you want them active.
+
+### Resource profiles
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `standard` | Resource profile: `micro`, `standard`, `power` |
+
+Profiles control memory ceilings and capacity limits:
+
+| Profile | Memory ceiling | Watched contracts | Cache entries | Bytecode cache |
+|---------|---------------|-------------------|---------------|----------------|
+| `micro` | 256 MB | 32 | 5,000 | 1,000 |
+| `standard` | 512 MB | 64 | 10,000 | 2,000 |
+| `power` | 2 GB | 256 | 50,000 | 10,000 |
+
+The process checks available system memory at startup and exits with code 2 if the selected profile doesn't fit (128 MB headroom margin required). At runtime, memory pressure is monitored and the fork responds in tiers:
+
+| Pressure level | Threshold | Response |
+|----------------|-----------|----------|
+| Warning | 50% of ceiling | Evict LRU cache entries |
+| Throttle | 70% | Demote auto-classified contracts to slot-only reads |
+| Emergency | 90% | Demote to proxy mode (disable replay) |
+
+## Supported RPC Methods
+
+### Standard Ethereum methods
+
+The same `eth_*` namespace you use with Anvil and any other node:
+
+| Method | Description |
+|--------|-------------|
+| `eth_chainId` | Returns the chain ID |
+| `eth_blockNumber` | Returns the current block number |
+| `eth_gasPrice` | Returns the current gas price |
+| `eth_maxPriorityFeePerGas` | Returns the current priority fee |
+| `eth_feeHistory` | Returns fee history for a range of blocks |
+| `eth_getBalance` | Returns the balance of an address |
+| `eth_getTransactionCount` | Returns the nonce of an address |
+| `eth_getStorageAt` | Returns the value of a storage slot |
+| `eth_getCode` | Returns the bytecode at an address |
+| `eth_call` | Executes a call without creating a transaction |
+| `eth_estimateGas` | Estimates gas for a transaction |
+| `eth_sendTransaction` | Sends a transaction (auto-signed, like Anvil) |
+| `eth_sendRawTransaction` | Sends a signed raw transaction |
+| `eth_getTransactionReceipt` | Returns the receipt of a transaction |
+| `eth_getTransactionByHash` | Returns transaction details by hash |
+| `eth_getBlockByNumber` | Returns a block by number |
+| `eth_getBlockByHash` | Returns a block by hash |
+| `eth_getLogs` | Returns logs matching a filter |
+| `web3_clientVersion` | Returns the client version string |
+| `net_version` | Returns the network ID |
+
+### EVM manipulation methods
+
+Anvil/Hardhat-compatible state manipulation. If your test suite uses these with Anvil, it works the same here:
+
+| Method | Description |
+|--------|-------------|
+| `evm_snapshot` | Capture current state, returns a snapshot ID |
+| `evm_revert` | Roll back to a snapshot |
+| `evm_increaseTime` | Advance the block timestamp by N seconds |
+| `evm_setNextBlockTimestamp` | Set a specific next-block timestamp |
+
+### State override methods
+
+Available under the `anvil_*`, `hardhat_*`, and `mirage_*` namespaces (all three work):
+
+| Method | Description |
+|--------|-------------|
+| `setBalance(address, value)` | Override an account's ETH balance |
+| `setStorageAt(address, slot, value)` | Write a single storage slot |
+| `setCode(address, bytecode)` | Deploy bytecode at an address |
+| `setNonce(address, nonce)` | Override an account's nonce |
+
+```bash
+# Set balance using cast (works with any namespace prefix)
+cast rpc anvil_setBalance 0xf39F...2266 0xDE0B6B3A7640000 --rpc-url http://127.0.0.1:8545
+```
+
+### Mirage-specific methods
+
+These extend the Anvil API with live-chain capabilities:
+
+| Method | Description |
+|--------|-------------|
+| `mirage_mintERC20(token, to, amount)` | Mint ERC-20 tokens by detecting and writing the balance storage slot |
+| `mirage_watchContract(address)` | Add a contract to the targeted follower's watch list |
+| `mirage_unwatchContract(address)` | Remove a contract from the watch list |
+| `mirage_getWatchList()` | Return all watched contracts with metadata |
+| `mirage_prefetchAccount(address)` | Warm the cache for an account |
+| `mirage_prefetchSlots(address, slots[])` | Warm specific storage slots |
+| `mirage_getDirtySlots(address)` | Return locally modified storage slots for an address |
+| `mirage_status()` | Readiness status, chain ID, block number, watch list size |
+| `mirage_getResourceUsage()` | Memory, cache stats, pressure score, upstream counters |
+| `mirage_setResourceLimits(...)` | Dynamically adjust resource caps at runtime |
+| `mirage_getPosition(request)` | Read a DeFi position snapshot |
+| `mirage_subscribeEvents(filter)` | Open a WebSocket event stream with address/topic filters |
+| `mirage_shutdown()` | Graceful process shutdown |
+
+### Scenario methods
+
+Run branching what-if simulations against live state:
+
+| Method | Description |
+|--------|-------------|
+| `mirage_beginScenarioSet(baseline)` | Create a scenario set from a baseline state |
+| `mirage_defineScenario(setId, scenario)` | Add a scenario with transactions and assertions |
+| `mirage_runScenarioSet(setId, mode)` | Execute in `sequential` or `parallel` mode |
+| `mirage_getScenarioResults(jobId)` | Poll for results |
+| `mirage_compareScenarios(setId)` | Diff outcomes across scenarios in a set |
+
+## Targeted Following
+
+This is the core feature that separates mirage-rs from static forks.
+
+When you provide a `--ws-url`, mirage-rs subscribes to `newHeads` and for each new block:
+
+1. Fetches the full block from upstream
+2. Filters for transactions touching any watched address
+3. Replays only those transactions through the local fork's EVM
+4. Runs the diff classifier on the resulting state changes
+5. Auto-promotes new contracts that cross the slot threshold (3+ storage writes)
+
+For a typical DeFi portfolio (3-10 positions), this means replaying ~5-15 transactions per block instead of the full ~150. Blocks process in <100ms at steady state.
+
+### Watch list management
+
+Contracts enter the watch list three ways:
+
+1. **Manual** — call `mirage_watchContract(address)` or define `track.addresses` in a scenario fixture
+2. **Auto-classification** — the diff classifier sees 3+ storage slots written on a new address and promotes it
+3. **Contagion** — a replayed transaction writes to a new contract that exceeds the slot threshold, recursively extending the watch list
+
+```bash
+# Manually watch the Uniswap V3 Router
+cast rpc mirage_watchContract 0xE592427A0AEce92De3Edee1F18E0157C05861564 \
+  --rpc-url http://127.0.0.1:8545
+
+# Check the watch list
+cast rpc mirage_getWatchList --rpc-url http://127.0.0.1:8545
+```
+
+## Scenarios
+
+Scenarios let you define branching what-if simulations. Each scenario is a named sequence of transactions that execute against a shared baseline snapshot. In parallel mode, each branch gets an isolated copy-on-write overlay, so branches can't observe each other's mutations.
+
+### TOML fixtures
+
+```toml
+# tests/scenarios/eth_crash.toml
+[scenario]
+name = "eth_crash"
+description = "Directional WETH->USDC selloff with repeated router pressure"
+
+[[transactions]]
+from = "0x1000000000000000000000000000000000000001"
+to = "0x10000000000000000000000000000000000000a0"
+value = "0x0"
+gas = 320000
+data = "0x414bf389..."
+
+[assertions]
+watch_list_contains = ["0x10000000000000000000000000000000000000a0"]
+
+[assertions.token_balance_gte]
+token = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+address = "0x1000000000000000000000000000000000000001"
+amount = "0x1"
+
+[track]
+addresses = ["0xE592427A0AEce92De3Edee1F18E0157C05861564"]
+```
+
+### Included scenarios
+
+| File | Description |
+|------|-------------|
+| `uniswap_v3_entry.toml` | Position-manager mint + liquidity increase on a watched pool |
+| `eth_crash.toml` | Directional WETH→USDC selloff with 20+ router transactions |
+| `aave_liquidation.toml` | Oracle shock, account deterioration, and liquidation flow |
+| `new_pool.toml` | Deploy token, initialize pool, seed liquidity, route first swap |
+| `volume_spike.toml` | High-frequency volume burst across multiple pairs |
+
+### Programmatic usage
+
+```rust
+use mirage_rs::{MirageClient, Scenario, RunMode, ScenarioAssertions};
+
+let set_id = client.mirage_begin_scenario_set("latest").await?;
+
+client.mirage_define_scenario(&set_id, &Scenario {
+    id: "bull-case".into(),
+    name: "large buy".into(),
+    transactions: vec![buy_tx],
+    track_addresses: vec![pool, router],
+    max_gas: Some(500_000),
+    timeout: Duration::from_secs(5),
+    assertions: ScenarioAssertions::default(),
+}).await?;
+
+client.mirage_define_scenario(&set_id, &Scenario {
+    id: "bear-case".into(),
+    name: "large sell".into(),
+    transactions: vec![sell_tx],
+    track_addresses: vec![pool, router],
+    max_gas: Some(500_000),
+    timeout: Duration::from_secs(5),
+    assertions: ScenarioAssertions::default(),
+}).await?;
+
+// Run both branches in parallel with isolated CoW overlays
+let job_id = client.mirage_run_scenario_set(&set_id, RunMode::Parallel).await?;
+let results = client.mirage_get_scenario_results(&job_id).await?;
+```
+
+## Library Usage
+
+mirage-rs ships as both a binary and a library crate.
+
+```toml
+[dependencies]
+mirage-rs = { path = "apps/mirage-rs", default-features = false, features = ["library"] }
+```
+
+### Spawning a test instance
+
+```rust
+use mirage_rs::{MirageClient, spawn_mirage_test_instance, TransactionRequest};
+use std::time::Duration;
+use alloy_primitives::U256;
+
+let mut instance = spawn_mirage_test_instance(None, Some(18_545)).await?;
+let client = MirageClient::new(instance.config()).await?;
+client.wait_ready(Duration::from_secs(10)).await?;
+
+// Use it like Anvil
+let tx_hash = client.eth_send_transaction(TransactionRequest {
+    from: Some(sender),
+    to: Some(receiver),
+    gas: Some(21_000),
+    value: Some(U256::from(1_000_000)),
+    ..Default::default()
+}).await?;
+
+let snap = client.evm_snapshot().await?;
+// ... speculative work ...
+client.evm_revert(snap).await?;
+
+instance.shutdown().await?;
+```
+
+## Chain extensions (feature = `chain`)
+
+The `chain` feature turns mirage into an agent-coordination substrate on top of the EVM fork: HDC-indexed knowledge entries, six typed knowledge kinds with decay lifecycles, and time-decaying stigmergy pheromones.
+
+### Enabling subsystems at runtime
+
+Compile with `--features chain` and toggle subsystems via CLI flags:
+
+```bash
+cargo run -p mirage-rs --features chain -- \
+  --host 127.0.0.1 --port 8545 \
+  --enable-hdc \
+  --enable-knowledge \
+  --enable-stigmergy \
+  --chain-hnsw-threshold 100000
+```
+
+Each toggle is independent — you can enable only the HDC index without the knowledge state machine, or only stigmergy without HDC, etc. Methods targeting a disabled subsystem return JSON-RPC error `-32600` ("subsystem disabled").
+
+### Chain JSON-RPC methods
+
+| Method | Purpose |
+|--------|---------|
+| `chain_postInsight` | Commit a new `InsightEntry` (content-addressed, HDC-indexed). Returns `{outcome, id}` where outcome is `accepted` / `duplicate` / `exact_match`. |
+| `chain_searchInsights` | HDC semantic top-K search. Project free text via `{query, k}` or provide a raw 1280-byte `{queryVector, k}`. |
+| `chain_getInsight` | Fetch one entry by id. |
+| `chain_confirmInsight` | Record a confirmation (boosts weight, extends effective half-life). |
+| `chain_challengeInsight` | Open a challenge against an entry (moves it to `Challenged` state). |
+| `chain_applyDecay` | Run the decay sweep: refresh weights, prune entries that drop below 1% of initial. |
+| `chain_depositPheromone` | Deposit a `threat` / `opportunity` / `wisdom` signal with exponential decay. |
+| `chain_queryPheromones` | HDC semantic top-K over the pheromone field, decay applied at query time. |
+| `chain_stats` | Return `{insights, pheromones, toggles}`. |
+
+### Example: post-then-search flow
+
+```bash
+# Post an insight
+cast rpc chain_postInsight '{
+  "author": "agent:alice",
+  "kind": "warning",
+  "content": "never call selfdestruct in a proxy implementation contract",
+  "enabledBy": [],
+  "stakeWei": 2000000000000000
+}' --rpc-url http://127.0.0.1:8545
+
+# → {"outcome": "accepted", "id": "a1b2c3d4..."}
+
+# Confirm from another agent
+cast rpc chain_confirmInsight '{
+  "id": "insight:a1b2c3d4...",
+  "confirmer": "agent:bob"
+}' --rpc-url http://127.0.0.1:8545
+
+# Semantic search — finds the above even though the query uses different words
+cast rpc chain_searchInsights '{
+  "query": "proxy contract destruction safety",
+  "k": 5
+}' --rpc-url http://127.0.0.1:8545
+
+# Apply decay (normally run on a schedule)
+cast rpc chain_applyDecay '{}' --rpc-url http://127.0.0.1:8545
+```
+
+### Six knowledge kinds
+
+| Kind | Default τ (half-life) | Use case |
+|------|----------------------|----------|
+| `insight` | 7 days | Factual observation ("what IS") |
+| `heuristic` | 15 days | Learned strategy ("what to DO") |
+| `warning` | 3 minutes | Urgent "don't do X" (short τ so conditions can change) |
+| `causal_link` | 15 days | Observed cause↔effect |
+| `strategy_fragment` | 15 days | Reusable partial plan |
+| `anti_knowledge` | 15 days | Explicit corrections to prior incorrect beliefs |
+
+Weights decay as `w(t) = w₀ × 2^(-age/τ)`. Each confirmation extends the effective τ via `τ_eff = τ × (1 + √confirms × 0.5)`, so well-validated entries persist while unreinforced noise fades.
+
+### Three pheromone kinds
+
+| Kind | τ | Use case |
+|------|---|----------|
+| `threat` | 2h | Short-lived danger signals (rug pulls, active exploits) |
+| `opportunity` | 4h | Time-sensitive openings (arb windows, liquidations) |
+| `wisdom` | 24h | Durable tactical knowledge |
+
+## Roko bridge (feature = `roko`)
+
+The `roko` feature adds trait implementations that let `mirage-rs` slot directly into a roko agent's universal loop (query substrate → score → route/compose → gate → write back → policy).
+
+Three adapters are exposed in `mirage_rs::roko_bridge`:
+
+| Type | Trait impl | Role |
+|------|-----------|------|
+| `SimulationGate` | `roko_core::Gate` | Runs a planned transaction through the mirage fork; `Verdict.passed` = would succeed on mainnet |
+| `HdcSubstrate` | `roko_core::Substrate` | Raw HDC semantic index (no lifecycle) — good for throwaway context pools |
+| `ChainSubstrate` | `roko_core::Substrate` | Full `InsightEntry` lifecycle, content-hashed, with confirm/challenge/decay |
+
+### Using `SimulationGate` in a roko loop
+
+```rust
+use mirage_rs::{
+    fork::{ForkState, HybridDB, MirageFork},
+    provider::UpstreamRpc,
+    resources::{MirageMode, Profile, ResourceModel},
+    roko_bridge::SimulationGate,
+};
+use roko_core::{Body, Context, Kind, Provenance, Signal, traits::Gate};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+
+// Build a mirage fork
+let upstream = Arc::new(UpstreamRpc::new_for_url(
+    "https://ethereum-rpc.publicnode.com",
+)?);
+let db = HybridDB::new(upstream, 1024, Duration::from_secs(12), NonZeroUsize::MIN, 1);
+let fork = ForkState::new(db, 0, 1);
+let mirage = MirageFork::new(
+    fork,
+    ResourceModel::for_profile(Profile::Standard, Duration::from_secs(12)),
+    MirageMode::Live,
+);
+
+// Wire a SimulationGate
+let gate = SimulationGate::new(mirage);
+
+// Golem presents a planned tx as a Signal
+let planned = Signal::builder(Kind::Transaction)
+    .body(Body::Json(serde_json::json!({
+        "from": "0x1111111111111111111111111111111111111111",
+        "to":   "0x2222222222222222222222222222222222222222",
+        "gas":  "0x5208",
+        "value": "0x0",
+        "data": "0x"
+    })))
+    .provenance(Provenance::agent("golem:alice"))
+    .build();
+
+// Verify before committing to mainnet
+let verdict = gate.verify(&planned, &Context::now()).await;
+if verdict.passed {
+    // Safe to submit to real chain.
+} else {
+    // Signal came back with reason + detail (gas_used, output, revert reason).
+    eprintln!("tx would revert: {}", verdict.reason);
+}
+```
+
+### Using `ChainSubstrate` as semantic memory
+
+```rust
+use mirage_rs::roko_bridge::ChainSubstrate;
+use roko_core::{Body, Context, Kind, Provenance, Query, Score, Signal, traits::Substrate};
+
+let memory = ChainSubstrate::new("golem-shared-memory");
+
+// Store an insight (automatically HDC-projected and lifecycle-tracked)
+let insight = Signal::builder(Kind::Insight)
+    .body(Body::text(
+        "uniswap v3 STF revert means insufficient allowance",
+    ))
+    .provenance(Provenance::agent("golem:alice"))
+    .score(Score::new(0.9, 0.5, 1.0, 1.0))
+    .build();
+let hash = memory.put(insight).await?;
+
+// Other agents confirm it
+memory.confirm(hash, b"golem:bob".to_vec());
+memory.confirm(hash, b"golem:carol".to_vec());
+
+// Retrieve via semantic similarity — uses `text_query` tag for HDC projection
+let q = Query::all()
+    .with_tag("text_query", "uniswap swap failed with STF error")
+    .limit(5);
+let hits = memory.query(&q, &Context::now()).await?;
+for signal in hits {
+    println!("- {}", signal.body.as_text()?);
+}
+
+// Periodically apply decay (typically driven by a policy loop)
+memory.apply_decay(std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)?
+    .as_secs());
+```
+
+### End-to-end example
+
+See [`tests/roko_e2e.rs`](tests/roko_e2e.rs) for a full golem loop:
+
+1. Golem A plans a transaction
+2. `SimulationGate` verifies it would succeed
+3. Golem A posts an `InsightEntry` documenting the learned behaviour
+4. Another agent confirms
+5. Golem B retrieves it via HDC semantic search before acting
+6. Decay runs, lifecycle states advance
+
+```bash
+cargo test -p mirage-rs --features roko --test roko_e2e
+```
+
+## Architecture
+
+```
+                        +-----------------+
+                        |  Your app /     |
+                        |  Foundry / test |
+                        +--------+--------+
+                                 |
+                            JSON-RPC
+                                 |
+                        +--------v--------+
+                        |   RPC Server    |
+                        |  (axum + json-  |
+                        |   rpsee)        |
+                        +--------+--------+
+                                 |
+                        +--------v--------+
+                        |   MirageFork    |
+                        |  (Arc<RwLock>)  |
+                        +--------+--------+
+                                 |
+              +------------------+------------------+
+              |                  |                  |
+     +--------v------+  +-------v-------+  +-------v--------+
+     |  DirtyStore   |  |  ReadCache    |  |  UpstreamRpc   |
+     | (local writes)|  | (LRU + TTL)   |  | (rate-limited) |
+     +---------------+  +---------------+  +-------+--------+
+                                                   |
+                                           +-------v--------+
+                                           | Ethereum node  |
+                                           | (HTTP + WS)    |
+                                           +-------+--------+
+                                                   |
+                                          +--------v--------+
+                                          | Targeted        |
+                                          | Follower        |
+                                          | (newHeads sub,  |
+                                          |  selective      |
+                                          |  replay)        |
+                                          +-----------------+
+```
+
+### Core types
+
+**State layer:**
+
+- `MirageFork` — thread-safe handle (`Arc<RwLock<MirageState>>`) shared across the RPC server, follower, and scenario runner.
+- `ForkState` — mutable fork state: `HybridDB`, block number, chain ID, timestamp, watch list, snapshot stack, dirty tracking.
+- `HybridDB` — three-layer database: `DirtyStore` (local writes) → `ReadCache` (LRU with TTL) → `UpstreamRpc` (lazy fetches).
+- `DirtyAccount` / `DirtyStore` — tracks accounts and storage slots modified since the last snapshot or baseline.
+
+**Copy-on-write:**
+
+- `CowState` — shared baseline + per-branch overlay. Branches read from the overlay first, then fall through to the shared baseline. Writes go only to the overlay.
+- `MultiVersionStore` — per-slot multi-version storage for the Block-STM test harness.
+- `BytecodeCache` — LRU keyed by code hash. Bytecode is immutable, so no CoW needed.
+
+**Upstream:**
+
+- `UpstreamRpc` — wraps `reqwest::blocking::Client` with a token-bucket rate limiter, retries with exponential backoff, and a mock mode for offline testing.
+- `ReadCache` — LRU cache with per-entry TTL. Tracks hit/miss counts and supports targeted eviction under memory pressure.
+
+**Replay and speculative execution:**
+
+- `TargetedFollower` — subscribes to `newHeads` via WebSocket, replays only transactions touching watched contracts.
+- `SpeculativeExecutor` — runs transactions against a CoW branch without mutating base state. Returns execution result + full `StateDiff` + read set for invalidation tracking.
+- `TxReplay` — fetches a historical transaction by hash from upstream and re-executes it locally.
+- `DiffClassifier` — inspects state diffs and classifies contracts as `Protocol` (complex, should be watched), `SlotOnly` (simple override), or `ReadOnly`.
+
+**Scenarios:**
+
+- `ScenarioRunner` — orchestrates scenario sets with `Sequential` (revert between runs) or `Parallel` (independent CoW branches) execution modes.
+- `Scenario` — named transaction sequence with tracked addresses, gas budget, timeout, and assertions.
+
+**Integration:**
+
+- `MirageClient` / `MirageConfig` — async HTTP client wrapping all RPC methods with retry and timeout.
+- `MirageTestInstance` — spawned child process with config access and clean shutdown.
+- `EventFilter` / `MirageEvent` — WebSocket event subscription with address/topic filters, carrying provenance (`LocalTx` or `FollowerReplay`).
+
+## Error Handling
+
+All library errors are `MirageError`. Each variant maps to a JSON-RPC error code:
+
+| Variant | Code | When |
+|---------|------|------|
+| `InvalidParams` | -32602 | Malformed RPC parameters |
+| `Unsupported` | -32603 | Operation not supported in current mode |
+| `InvalidFrom` | -32010 | Invalid sender address |
+| `SnapshotNotFound` | -32001 | Snapshot ID doesn't exist or was consumed |
+| `SlotDetectionFailed` | -32020 | ERC-20 balance slot detection failed |
+| `WatchListFull` | -32030 | Watch list at capacity for the current profile |
+| `UnknownProtocolType` | -32040 | Position helper doesn't recognize the protocol |
+| `SetNotFound` | -32050 | Scenario set doesn't exist |
+| `JobNotFound` | -32054 | Scenario job doesn't exist |
+| `JobNotComplete` | -32055 | Scenario job still running |
+| `Upstream` | -32099 | Upstream RPC failure |
+| `Timeout` | -32603 | Operation exceeded its time budget |
+| `BindFailed` | -32603 | Could not bind the server port |
+
+## Testing
+
+```bash
+# Default build — pure EVM fork simulator (126 unit tests)
+cargo test -p mirage-rs --lib
+
+# With chain extensions (182 unit tests: default + 56 chain)
+cargo test -p mirage-rs --features chain --lib
+
+# With the roko bridge (200 unit tests: chain + 18 bridge)
+cargo test -p mirage-rs --features roko --lib
+
+# End-to-end roko golem loop (4 tests: gate → post → retrieve → decay)
+cargo test -p mirage-rs --features roko --test roko_e2e
+
+# Process-spawning integration tests (spawns real mirage binaries on ports)
+cargo test -p mirage-rs --test integration
+```
+
+## Cargo Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `binary` | yes | Includes the CLI entrypoint (required to build `src/main.rs`) |
+| `library` | no | Library-only builds (no binary dependencies) |
+| `sim-gas` | no | Gas simulation instrumentation |
+| `chain` | no | HDC index + `InsightEntry` knowledge layer + stigmergy pheromones + `chain_*` JSON-RPC methods |
+| `roko` | no | Implements `roko_core::{Gate, Substrate}` over mirage (implies `chain`) |
+
+Feature flags compose additively:
+
+```bash
+cargo build -p mirage-rs                                    # binary (default)
+cargo build -p mirage-rs --no-default-features -F library   # library-only
+cargo build -p mirage-rs -F chain                           # EVM + knowledge layer
+cargo build -p mirage-rs -F roko                            # EVM + knowledge + roko traits
+```
+
+## Startup artifacts
+
+On startup, mirage writes two files:
+
+- `/tmp/mirage-{port}.pid` — process ID
+- `/tmp/mirage-{port}-status.json` — `{"status":"ready","port":N}`
+
+Both are cleaned up on shutdown. Use the status file for CI health checks or orchestrator readiness probes.
+
+## Anvil compatibility at a glance
+
+| Capability | Anvil | mirage-rs |
+|------------|-------|-----------|
+| Fork from RPC | Yes (pinned block) | Yes (latest, follows forward) |
+| `eth_*` methods | Full | Common DeFi subset |
+| `evm_snapshot` / `evm_revert` | Yes | Yes |
+| `anvil_setBalance` / `setStorageAt` / etc. | Yes | Yes (also `hardhat_*` and `mirage_*` prefixes) |
+| `evm_increaseTime` / `evm_setNextBlockTimestamp` | Yes | Yes |
+| Auto-mine | Yes | Yes |
+| Impersonate accounts | Yes | Yes (relaxed signing by default) |
+| Live block following | No | Yes (targeted follower via WebSocket) |
+| Contract auto-classification | No | Yes (diff classifier + contagion) |
+| Copy-on-write scenario branching | No | Yes |
+| ERC-20 balance slot detection + mint | No | Yes (`mirage_mintERC20`) |
+| Memory pressure management | No | Yes (tiered eviction/demotion) |
+| Resource profiles | No | Yes (`micro` / `standard` / `power`) |

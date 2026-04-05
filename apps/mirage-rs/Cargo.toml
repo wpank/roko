@@ -1,0 +1,103 @@
+[package]
+name = "mirage-rs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "In-process Ethereum fork simulator with lazy upstream reads, copy-on-write scenario branching, and JSON-RPC server. Optional chain/roko extensions for HDC-indexed knowledge, stigmergy, and roko-core trait bridges."
+
+[lib]
+name = "mirage_rs"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "mirage-rs"
+path = "src/main.rs"
+required-features = ["binary"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core EVM + RPC stack (always on)
+anyhow = { workspace = true }
+axum = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+clap = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+jsonrpsee = { workspace = true }
+lru = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+revm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bytes = { workspace = true }
+k256 = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# roko-native event bus (replaces golem-core::EventFabric)
+bardo-runtime = { path = "../../crates/bardo-runtime" }
+
+# Opt-in: HDC vectors for the `chain` feature
+bardo-primitives = { path = "../../crates/bardo-primitives", optional = true }
+
+# Opt-in: roko-core trait impls (Gate, Substrate) for `roko` feature
+roko-core = { path = "../../crates/roko-core", optional = true }
+async-trait = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[[example]]
+name = "seed_chain_fixtures"
+required-features = ["chain"]
+
+[[example]]
+name = "roko_chain_watcher"
+required-features = ["roko"]
+
+[[example]]
+name = "persona_chain_native"
+required-features = ["roko"]
+
+[features]
+# Default = pure EVM fork simulator with binary surface.
+default = ["binary"]
+
+# Binary entry point (src/main.rs).
+binary = []
+
+# Library-only usage (no binary).
+library = []
+
+# Use revm's gas accounting path.
+sim-gas = []
+
+# Chain extensions: HDC index, InsightEntry knowledge layer, stigmergy pheromones.
+# Adds chain_* JSON-RPC methods and --enable-hdc / --enable-knowledge /
+# --enable-stigmergy CLI flags. Pulls in bardo-primitives for HDC vectors.
+chain = ["dep:bardo-primitives"]
+
+# Roko bridge: implements roko-core traits (Gate, Substrate) over mirage internals.
+# Turns mirage-rs into a drop-in simulation + knowledge substrate for roko golems.
+roko = ["chain", "dep:roko-core", "dep:async-trait"]

@@ -1,0 +1,41 @@
+schema_version = 1
+name = "flywheel"
+
+[deploy]
+sender_wallet = "deployer"
+
+  [[deploy.contracts]]
+  name = "MockERC20"
+  args = [
+    { type = "string", value = "DAEJI" },
+    { type = "string", value = "DAEJI" },
+    { type = "uint8",  value = 18 },
+  ]
+
+  [[deploy.contracts]]
+  name = "InsightBoard"
+  args = [
+    { type = "address", value = "$contract(MockERC20)" },
+  ]
+
+[[agents]]
+role = "knowledge-poster"
+wallet = "worker{i}"
+prompt_template = "prompts/knowledge-poster.md"
+count = 3
+scripted_actions = ["post_insight_loop"]
+llm_slots = ["insight_content"]
+
+[[agents]]
+role = "confirmer"
+wallet = "validator{i}"
+prompt_template = "prompts/validator.md"
+count = 3
+scripted_actions = ["confirm_loop"]
+llm_slots = ["confirm_decision"]
+
+[success]
+max_duration_secs = 180
+expected_events = [
+  { contract = "InsightBoard", event = "InsightConfirmed", min_count = 1 },
+]

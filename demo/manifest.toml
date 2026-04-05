@@ -1,0 +1,27 @@
+schema_version = 1
+
+[defaults]
+rpc_url = "http://127.0.0.1:8545"
+chain_id = 31337
+wallet_file = "wallets.toml"
+contracts_dir = "../contracts"
+
+[[scenarios]]
+name = "job-board"
+path = "scenarios/job-board.toml"
+description = "Job-board clade: N bidders race on a posted bounty (ERC-8183 escrow)"
+
+[[scenarios]]
+name = "consortium"
+path = "scenarios/consortium.toml"
+description = "3-agent 2-of-3 validation committee"
+
+[[scenarios]]
+name = "defi-routing"
+path = "scenarios/defi-routing.toml"
+description = "Multi-pool routing benchmark with knowledge-base insights"
+
+[[scenarios]]
+name = "flywheel"
+path = "scenarios/flywheel.toml"
+description = "Knowledge flywheel: posters earn as confirmers accumulate pheromone weight"

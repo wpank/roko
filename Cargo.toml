@@ -1,0 +1,138 @@
+[workspace]
+resolver = "2"
+members = [
+    # Support primitives (copied from bardo/) — reusable, not Mori code
+    "crates/bardo-primitives",
+    "crates/bardo-runtime",
+
+    # Roko kernel
+    "crates/roko-core",
+    # Standard trait impls (MemorySubstrate, NoOp, simple routers/scorers)
+    "crates/roko-std",
+    # Concrete Gate impls (ShellGate, CompileGate, ...)
+    "crates/roko-gate",
+    # Filesystem-backed Substrate (.roko/signals.jsonl)
+    "crates/roko-fs",
+    # Composer impls (PromptComposer, SectionScorer)
+    "crates/roko-compose",
+    # Agent backends (MockAgent, ExecAgent, future: ClaudeAgent, ...)
+    "crates/roko-agent",
+    # Orchestration layer (plan discovery, task DAG, worktree manager, executor)
+    "crates/roko-orchestrator",
+    # Chain client + wallet trait abstractions (reads + signed writes)
+    "crates/roko-chain",
+    # End-to-end integration tests
+    "tests",
+
+    # Apps (binaries + larger standalone components)
+    # mirage-rs: in-process EVM fork simulator. Default build = pure EVM surface.
+    # Opt-in `chain` feature adds HDC / InsightEntry / pheromone subsystems.
+    # Opt-in `roko` feature bridges to roko-core traits (Gate, Substrate).
+    "apps/mirage-rs",
+    # roko-chain-watcher: long-running agent that observes a mirage chain and
+    # posts insights back via HTTP JSON-RPC.
+    "apps/roko-chain-watcher",
+
+    # Roko CLI: minimal user-facing binary that wires the universal loop
+    # (prompt → compose → agent → gate → persist → policy) against a working
+    # directory. Reads its agent/gate config from ./roko.toml.
+    "crates/roko-cli",
+
+    # Learning subsystems — episodes, playbooks, skills, caches, pattern discovery.
+    "crates/roko-learn",
+
+    # Demo environment orchestrator — deploys contracts from roko/contracts/,
+    # seeds fixtures, spawns a clade of agents per declarative scenario manifest.
+    "crates/roko-demo",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Roko <engineering@bardo.run>"]
+repository = "https://github.com/wpank/bardo"
+homepage = "https://github.com/wpank/bardo"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.50", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# YAML (frontmatter parsing)
+serde_yaml_ng = "0.10"
+
+# Async trait dispatch
+async-trait = "0.1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Testing
+proptest = "1.10"
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+
+# EVM / chain stack (used by apps/mirage-rs)
+alloy-primitives = "1"
+revm = { version = "36.0", features = ["std"] }
+jsonrpsee = { version = "0.26", features = ["server", "http-client"] }
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+tower = { version = "0.5", features = ["limit", "load-shed"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+parking_lot = "0.12"
+dashmap = "6"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+futures-util = "0.3"
+bytes = "1"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sysinfo = "0.33"
+lru = "0.12"
+globset = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
+regex = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+unwrap_used = "deny"
+expect_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+debug = true
+opt-level = 1
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+opt-level = 2

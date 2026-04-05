@@ -1,0 +1,35 @@
+[package]
+name = "roko-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The `roko` binary: minimal CLI that drives the universal loop (prompt → compose → agent → gate → persist) against a working directory."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "roko"
+path = "src/main.rs"
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+roko-std = { path = "../roko-std" }
+roko-fs = { path = "../roko-fs" }
+roko-compose = { path = "../roko-compose" }
+roko-agent = { path = "../roko-agent" }
+roko-gate = { path = "../roko-gate" }
+
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }

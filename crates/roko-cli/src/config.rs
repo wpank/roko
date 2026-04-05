@@ -1,0 +1,833 @@
+//! `roko.toml` schema — declarative config for the CLI's universal loop.
+//!
+//! The config picks an agent backend (any CLI that reads prompts on stdin),
+//! sets a token budget for prompt composition, and lists the gates to run
+//! on the agent's output.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// The top-level `roko.toml` document.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
+    /// Agent backend (the CLI that will be invoked via `ExecAgent`).
+    pub agent: AgentConfig,
+    /// Prompt assembly settings.
+    #[serde(default)]
+    pub prompt: PromptConfig,
+    /// Gates to run on the agent output, in declaration order.
+    #[serde(default, rename = "gate")]
+    pub gates: Vec<GateConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            prompt: PromptConfig::default(),
+            gates: vec![GateConfig::default_shell_true()],
+        }
+    }
+}
+
+impl Config {
+    /// Read a TOML config from `path`.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read config {}", path.display()))?;
+        Self::parse_toml(&text)
+            .with_context(|| format!("parse config {}", path.display()))
+    }
+
+    /// Parse a TOML config from a string.
+    pub fn parse_toml(text: &str) -> Result<Self> {
+        toml::from_str(text).context("invalid roko.toml")
+    }
+
+    /// Render this config back to a TOML string.
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self).context("serialize roko.toml")
+    }
+}
+
+/// Agent backend — the external CLI invoked via `ExecAgent`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentConfig {
+    /// Program name, e.g. `"cat"`, `"ollama"`, `"claude"`.
+    pub command: String,
+    /// Extra args passed to the program.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Timeout in milliseconds (default: `120_000`).
+    #[serde(default = "AgentConfig::default_timeout")]
+    pub timeout_ms: u64,
+    /// Env vars passed to the subprocess. Useful for `OLLAMA_NOPROGRESS=1`,
+    /// API keys, `OLLAMA_HOST`, etc.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// Whether to post-process the agent output — strip ANSI escapes and
+    /// reasoning-model "thinking" traces. Default: `true` (so reasoning
+    /// models like glm-4 / gemma-reasoning work out of the box).
+    #[serde(default = "AgentConfig::default_clean")]
+    pub clean_output: bool,
+}
+
+impl AgentConfig {
+    const fn default_timeout() -> u64 {
+        120_000
+    }
+
+    const fn default_clean() -> bool {
+        true
+    }
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        // `cat` is the "echo" backend — useful for smoke tests without an LLM.
+        Self {
+            command: "cat".into(),
+            args: Vec::new(),
+            timeout_ms: Self::default_timeout(),
+            env: Vec::new(),
+            clean_output: Self::default_clean(),
+        }
+    }
+}
+
+/// Prompt assembly settings.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PromptConfig {
+    /// Token budget for the composer (approximate — 4 bytes per token).
+    #[serde(default = "PromptConfig::default_budget")]
+    pub token_budget: usize,
+    /// System/role section injected as a Critical prompt section.
+    #[serde(default = "PromptConfig::default_role")]
+    pub role: String,
+    /// Files whose contents should be injected into the prompt as sections.
+    /// Useful for feeding an issue description or buggy source files to the
+    /// agent.
+    #[serde(default, rename = "files")]
+    pub files: Vec<PromptFile>,
+}
+
+impl PromptConfig {
+    const fn default_budget() -> usize {
+        10_000
+    }
+
+    fn default_role() -> String {
+        "You are a Roko agent.".to_string()
+    }
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            token_budget: Self::default_budget(),
+            role: Self::default_role(),
+            files: Vec::new(),
+        }
+    }
+}
+
+/// A file whose contents get injected into the prompt as a `PromptSection`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PromptFile {
+    /// Path to the file (relative to the workdir).
+    pub path: std::path::PathBuf,
+    /// Display name for the section header. Defaults to the file name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Priority: `"low"`, `"normal"`, `"high"`, or `"critical"`. Default: `"normal"`.
+    #[serde(default)]
+    pub priority: Option<String>,
+    /// Per-file hard cap in tokens — truncates oversized files before inclusion.
+    #[serde(default)]
+    pub hard_cap: Option<usize>,
+}
+
+/// One gate entry in `roko.toml`. Multiple gates run in declaration order.
+///
+/// The `kind` field selects the gate type. Each variant has its own fields
+/// (currently only `Shell` is fully configurable; other kinds accept a
+/// `build_system` tag).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GateConfig {
+    /// Arbitrary shell command; passes on exit code 0.
+    Shell {
+        /// Program to invoke.
+        program: String,
+        /// Args to pass.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Timeout in milliseconds.
+        #[serde(default = "default_gate_timeout")]
+        timeout_ms: u64,
+    },
+    /// `cargo check` (or equivalent) run in the working dir.
+    Compile {
+        /// Build system (cargo, npm, go, python, forge, make).
+        #[serde(default = "default_build_system")]
+        build_system: String,
+        /// Timeout in milliseconds.
+        #[serde(default = "default_gate_timeout_long")]
+        timeout_ms: u64,
+    },
+    /// `cargo clippy` (or equivalent lint command).
+    Clippy {
+        /// Build system.
+        #[serde(default = "default_build_system")]
+        build_system: String,
+        /// Timeout in milliseconds.
+        #[serde(default = "default_gate_timeout_long")]
+        timeout_ms: u64,
+    },
+    /// `cargo test` (or equivalent test command).
+    Test {
+        /// Build system.
+        #[serde(default = "default_build_system")]
+        build_system: String,
+        /// Timeout in milliseconds.
+        #[serde(default = "default_gate_timeout_long")]
+        timeout_ms: u64,
+    },
+}
+
+impl GateConfig {
+    /// A default `shell` gate that runs `true` (always passes). Useful as a
+    /// placeholder in `roko init` output.
+    #[must_use]
+    pub fn default_shell_true() -> Self {
+        Self::Shell {
+            program: "true".into(),
+            args: Vec::new(),
+            timeout_ms: default_gate_timeout(),
+        }
+    }
+}
+
+const fn default_gate_timeout() -> u64 {
+    60_000
+}
+
+const fn default_gate_timeout_long() -> u64 {
+    600_000
+}
+
+fn default_build_system() -> String {
+    "cargo".into()
+}
+
+// -----------------------------------------------------------------------
+// Layered config: global (~/.config/roko/config.toml) + project (./roko.toml)
+// -----------------------------------------------------------------------
+
+/// Where each field in a [`ResolvedConfig`] came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Value came from the global config file.
+    Global,
+    /// Value came from the project-local `roko.toml`.
+    Project,
+    /// Value is the built-in default.
+    Default,
+    /// Value came from the file pointed at by `ROKO_CONFIG`.
+    Env,
+}
+
+impl Source {
+    /// Short tag printed by `roko config show`.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Global => "[global]",
+            Self::Project => "[project]",
+            Self::Default => "[default]",
+            Self::Env => "[env]",
+        }
+    }
+}
+
+/// Partial config — every field optional. Used for the global/project layers
+/// that get merged into a final [`Config`].
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ConfigLayer {
+    /// Agent backend overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentLayer>,
+    /// Prompt settings overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptLayer>,
+    /// Gate list (replaces rather than merges if present).
+    #[serde(default, rename = "gate", skip_serializing_if = "Option::is_none")]
+    pub gates: Option<Vec<GateConfig>>,
+}
+
+impl ConfigLayer {
+    /// Parse a layer from a TOML string.
+    pub fn parse_toml(text: &str) -> Result<Self> {
+        toml::from_str(text).context("invalid config toml")
+    }
+
+    /// Read a layer from a file on disk.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read config {}", path.display()))?;
+        Self::parse_toml(&text).with_context(|| format!("parse config {}", path.display()))
+    }
+
+    /// Merge two layers — `overlay` wins field-by-field.
+    #[must_use]
+    pub fn merge(mut self, overlay: Self) -> Self {
+        if let Some(a) = overlay.agent {
+            self.agent = Some(match self.agent {
+                Some(base) => base.merge(a),
+                None => a,
+            });
+        }
+        if let Some(p) = overlay.prompt {
+            self.prompt = Some(match self.prompt {
+                Some(base) => base.merge(p),
+                None => p,
+            });
+        }
+        if let Some(g) = overlay.gates {
+            self.gates = Some(g);
+        }
+        self
+    }
+
+    /// True if this layer has no fields set.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.agent.is_none() && self.prompt.is_none() && self.gates.is_none()
+    }
+
+    /// Resolve into a concrete [`Config`], filling missing fields with defaults.
+    #[must_use]
+    pub fn resolve(self) -> Config {
+        let agent = match self.agent {
+            Some(a) => {
+                let defaults = AgentConfig::default();
+                AgentConfig {
+                    command: a.command.unwrap_or(defaults.command),
+                    args: a.args.unwrap_or(defaults.args),
+                    timeout_ms: a.timeout_ms.unwrap_or(defaults.timeout_ms),
+                    env: a.env.unwrap_or(defaults.env),
+                    clean_output: a.clean_output.unwrap_or(defaults.clean_output),
+                }
+            }
+            None => AgentConfig::default(),
+        };
+        let prompt = match self.prompt {
+            Some(p) => {
+                let defaults = PromptConfig::default();
+                PromptConfig {
+                    token_budget: p.token_budget.unwrap_or(defaults.token_budget),
+                    role: p.role.unwrap_or(defaults.role),
+                    files: p.files.unwrap_or(defaults.files),
+                }
+            }
+            None => PromptConfig::default(),
+        };
+        let gates = self.gates.unwrap_or_default();
+        Config { agent, prompt, gates }
+    }
+}
+
+/// Partial `AgentConfig` — every field optional.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AgentLayer {
+    /// Program to invoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Extra args.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Subprocess timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Env vars for the agent subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<(String, String)>>,
+    /// Whether to strip ANSI + thinking traces from agent output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean_output: Option<bool>,
+}
+
+impl AgentLayer {
+    /// Merge another layer on top — `overlay` wins.
+    #[must_use]
+    pub fn merge(self, overlay: Self) -> Self {
+        Self {
+            command: overlay.command.or(self.command),
+            args: overlay.args.or(self.args),
+            timeout_ms: overlay.timeout_ms.or(self.timeout_ms),
+            env: overlay.env.or(self.env),
+            clean_output: overlay.clean_output.or(self.clean_output),
+        }
+    }
+}
+
+/// Partial `PromptConfig` — every field optional.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PromptLayer {
+    /// Token budget for prompt composition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+    /// System role / persona text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Files to inject as prompt sections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<PromptFile>>,
+}
+
+impl PromptLayer {
+    /// Merge another layer on top — `overlay` wins.
+    #[must_use]
+    pub fn merge(self, overlay: Self) -> Self {
+        Self {
+            token_budget: overlay.token_budget.or(self.token_budget),
+            role: overlay.role.or(self.role),
+            files: overlay.files.or(self.files),
+        }
+    }
+}
+
+/// Absolute paths to the global and project config files (whether they
+/// exist or not).
+#[derive(Clone, Debug)]
+pub struct ConfigPaths {
+    /// Global config path (always set — even if file missing).
+    pub global: PathBuf,
+    /// Project config path, if discovered. None means no `roko.toml` in
+    /// `workdir` or any ancestor.
+    pub project: Option<PathBuf>,
+    /// Value of `ROKO_CONFIG` env var if set — overrides the merge.
+    pub env_override: Option<PathBuf>,
+}
+
+/// Resolve the path to the global config file.
+///
+/// Honors `$XDG_CONFIG_HOME` then falls back to `$HOME/.config`.
+#[must_use]
+pub fn global_config_path() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("roko").join("config.toml");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".config").join("roko").join("config.toml")
+}
+
+/// Walk up from `start` looking for `roko.toml`. Returns the first hit.
+#[must_use]
+pub fn discover_project_config(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.canonicalize().ok().unwrap_or_else(|| start.to_path_buf());
+    loop {
+        let candidate = cur.join("roko.toml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+/// Compute the paths used to resolve config for `workdir`.
+#[must_use]
+pub fn resolve_paths(workdir: &Path) -> ConfigPaths {
+    ConfigPaths {
+        global: global_config_path(),
+        project: discover_project_config(workdir),
+        env_override: std::env::var_os("ROKO_CONFIG").map(PathBuf::from),
+    }
+}
+
+/// Fully-loaded config with field-level provenance.
+#[derive(Clone, Debug)]
+pub struct ResolvedConfig {
+    /// Merged, default-filled config.
+    pub config: Config,
+    /// Which source supplied each field.
+    pub sources: ConfigSources,
+    /// Paths consulted during resolution.
+    pub paths: ConfigPaths,
+}
+
+/// Per-field provenance for [`ResolvedConfig`].
+#[derive(Clone, Debug)]
+pub struct ConfigSources {
+    /// Where `agent.command` came from.
+    pub agent_command: Source,
+    /// Where `agent.args` came from.
+    pub agent_args: Source,
+    /// Where `agent.timeout_ms` came from.
+    pub agent_timeout_ms: Source,
+    /// Where `prompt.token_budget` came from.
+    pub prompt_token_budget: Source,
+    /// Where `prompt.role` came from.
+    pub prompt_role: Source,
+    /// Where `gates` came from.
+    pub gates: Source,
+}
+
+/// Load global + project configs, merge them, and return a `ResolvedConfig`.
+///
+/// Precedence (highest first): `ROKO_CONFIG` env var → project → global → defaults.
+pub fn load_layered(workdir: &Path) -> Result<ResolvedConfig> {
+    let paths = resolve_paths(workdir);
+
+    // If ROKO_CONFIG is set, it alone resolves the config.
+    if let Some(env_path) = &paths.env_override {
+        let layer = ConfigLayer::from_file(env_path)?;
+        let sources = sources_from_layer(&layer, Source::Env, Source::Default);
+        let config = layer.resolve();
+        return Ok(ResolvedConfig { config, sources, paths });
+    }
+
+    let global_layer = if paths.global.is_file() {
+        ConfigLayer::from_file(&paths.global)?
+    } else {
+        ConfigLayer::default()
+    };
+    let project_layer = match &paths.project {
+        Some(p) => ConfigLayer::from_file(p)?,
+        None => ConfigLayer::default(),
+    };
+
+    let sources = compute_sources(&global_layer, &project_layer);
+    let merged = global_layer.merge(project_layer);
+    let config = merged.resolve();
+
+    Ok(ResolvedConfig { config, sources, paths })
+}
+
+/// Compute per-field provenance from global + project layers.
+fn compute_sources(global: &ConfigLayer, project: &ConfigLayer) -> ConfigSources {
+    let g_agent = global.agent.as_ref();
+    let p_agent = project.agent.as_ref();
+    let g_prompt = global.prompt.as_ref();
+    let p_prompt = project.prompt.as_ref();
+
+    let pick = |in_project: bool, in_global: bool| -> Source {
+        if in_project {
+            Source::Project
+        } else if in_global {
+            Source::Global
+        } else {
+            Source::Default
+        }
+    };
+
+    ConfigSources {
+        agent_command: pick(
+            p_agent.and_then(|a| a.command.as_ref()).is_some(),
+            g_agent.and_then(|a| a.command.as_ref()).is_some(),
+        ),
+        agent_args: pick(
+            p_agent.and_then(|a| a.args.as_ref()).is_some(),
+            g_agent.and_then(|a| a.args.as_ref()).is_some(),
+        ),
+        agent_timeout_ms: pick(
+            p_agent.and_then(|a| a.timeout_ms).is_some(),
+            g_agent.and_then(|a| a.timeout_ms).is_some(),
+        ),
+        prompt_token_budget: pick(
+            p_prompt.and_then(|p| p.token_budget).is_some(),
+            g_prompt.and_then(|p| p.token_budget).is_some(),
+        ),
+        prompt_role: pick(
+            p_prompt.and_then(|p| p.role.as_ref()).is_some(),
+            g_prompt.and_then(|p| p.role.as_ref()).is_some(),
+        ),
+        gates: pick(project.gates.is_some(), global.gates.is_some()),
+    }
+}
+
+/// Tag every field in a single-layer config as `present` or `fallback`.
+fn sources_from_layer(layer: &ConfigLayer, present: Source, fallback: Source) -> ConfigSources {
+    let agent = layer.agent.as_ref();
+    let prompt = layer.prompt.as_ref();
+    let pick = |is_set: bool| -> Source { if is_set { present } else { fallback } };
+    ConfigSources {
+        agent_command: pick(agent.and_then(|a| a.command.as_ref()).is_some()),
+        agent_args: pick(agent.and_then(|a| a.args.as_ref()).is_some()),
+        agent_timeout_ms: pick(agent.and_then(|a| a.timeout_ms).is_some()),
+        prompt_token_budget: pick(prompt.and_then(|p| p.token_budget).is_some()),
+        prompt_role: pick(prompt.and_then(|p| p.role.as_ref()).is_some()),
+        gates: pick(layer.gates.is_some()),
+    }
+}
+
+// -----------------------------------------------------------------------
+// LLM CLI detection (for the `roko config init` wizard)
+// -----------------------------------------------------------------------
+
+/// A locally-installed LLM CLI that the wizard can offer as an agent backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedCli {
+    /// The command name (`ollama`, `mods`, `llm`, `claude`, `aichat`).
+    pub command: String,
+    /// Default args the wizard will suggest (e.g. `["run", "<model>"]` for
+    /// ollama — filled in from the model picker).
+    pub default_args: Vec<String>,
+    /// Human-readable description for the wizard prompt.
+    pub description: String,
+}
+
+/// Candidates the wizard asks about, in order of preference.
+#[must_use]
+pub fn candidate_clis() -> Vec<DetectedCli> {
+    vec![
+        DetectedCli {
+            command: "claude".into(),
+            default_args: vec!["-p".into()],
+            description: "Claude CLI (anthropic)".into(),
+        },
+        DetectedCli {
+            command: "ollama".into(),
+            default_args: vec!["run".into()],
+            description: "Ollama (local models)".into(),
+        },
+        DetectedCli {
+            command: "mods".into(),
+            default_args: vec![],
+            description: "charmbracelet/mods".into(),
+        },
+        DetectedCli {
+            command: "llm".into(),
+            default_args: vec![],
+            description: "simonw/llm".into(),
+        },
+        DetectedCli {
+            command: "aichat".into(),
+            default_args: vec![],
+            description: "aichat CLI".into(),
+        },
+        DetectedCli {
+            command: "cat".into(),
+            default_args: vec![],
+            description: "cat (echo; smoke tests only)".into(),
+        },
+    ]
+}
+
+/// Return the subset of [`candidate_clis`] actually on the user's `PATH`.
+#[must_use]
+pub fn detect_clis() -> Vec<DetectedCli> {
+    candidate_clis()
+        .into_iter()
+        .filter(|c| command_on_path(&c.command))
+        .collect()
+}
+
+/// Cheap `which` — scan `$PATH` for an executable named `cmd`.
+#[must_use]
+pub fn command_on_path(cmd: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(cmd);
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return true;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_config() {
+        let toml = r#"
+[agent]
+command = "cat"
+"#;
+        let cfg = Config::parse_toml(toml).unwrap();
+        assert_eq!(cfg.agent.command, "cat");
+        assert_eq!(cfg.agent.timeout_ms, 120_000);
+        assert_eq!(cfg.prompt.token_budget, 10_000);
+    }
+
+    #[test]
+    fn parses_full_config() {
+        let toml = r#"
+[agent]
+command = "ollama"
+args = ["run", "llama3"]
+timeout_ms = 30000
+
+[prompt]
+token_budget = 20000
+role = "You are a senior Rust engineer."
+
+[[gate]]
+kind = "shell"
+program = "echo"
+args = ["ok"]
+
+[[gate]]
+kind = "compile"
+build_system = "cargo"
+"#;
+        let cfg = Config::parse_toml(toml).unwrap();
+        assert_eq!(cfg.agent.command, "ollama");
+        assert_eq!(cfg.agent.args, vec!["run".to_string(), "llama3".to_string()]);
+        assert_eq!(cfg.agent.timeout_ms, 30_000);
+        assert_eq!(cfg.prompt.token_budget, 20_000);
+        assert_eq!(cfg.gates.len(), 2);
+    }
+
+    #[test]
+    fn default_config_roundtrips_through_toml() {
+        let cfg = Config::default();
+        let text = cfg.to_toml().unwrap();
+        let parsed = Config::parse_toml(&text).unwrap();
+        assert_eq!(parsed.agent.command, cfg.agent.command);
+        assert_eq!(parsed.gates.len(), cfg.gates.len());
+    }
+
+    #[test]
+    fn layer_merge_project_overrides_global() {
+        let global = ConfigLayer::parse_toml(
+            r#"
+[agent]
+command = "ollama"
+args = ["run", "llama3"]
+timeout_ms = 60000
+
+[prompt]
+token_budget = 4000
+role = "global role"
+"#,
+        )
+        .unwrap();
+        let project = ConfigLayer::parse_toml(
+            r#"
+[agent]
+command = "mods"
+
+[prompt]
+token_budget = 8000
+"#,
+        )
+        .unwrap();
+
+        let merged = global.merge(project).resolve();
+        assert_eq!(merged.agent.command, "mods");
+        assert_eq!(merged.agent.args, vec!["run".to_string(), "llama3".to_string()]);
+        assert_eq!(merged.agent.timeout_ms, 60_000);
+        assert_eq!(merged.prompt.token_budget, 8000);
+        assert_eq!(merged.prompt.role, "global role");
+    }
+
+    #[test]
+    fn layer_resolve_empty_uses_defaults() {
+        let layer = ConfigLayer::default();
+        let cfg = layer.resolve();
+        assert_eq!(cfg.agent.command, "cat");
+        assert_eq!(cfg.prompt.token_budget, 10_000);
+        assert!(cfg.gates.is_empty());
+    }
+
+    #[test]
+    fn sources_track_provenance() {
+        let global = ConfigLayer::parse_toml(
+            r#"
+[agent]
+command = "ollama"
+timeout_ms = 60000
+"#,
+        )
+        .unwrap();
+        let project = ConfigLayer::parse_toml(
+            r#"
+[agent]
+command = "mods"
+
+[prompt]
+token_budget = 8000
+"#,
+        )
+        .unwrap();
+
+        let sources = compute_sources(&global, &project);
+        assert_eq!(sources.agent_command, Source::Project);
+        assert_eq!(sources.agent_timeout_ms, Source::Global);
+        assert_eq!(sources.prompt_token_budget, Source::Project);
+        assert_eq!(sources.prompt_role, Source::Default);
+        assert_eq!(sources.agent_args, Source::Default);
+    }
+
+    #[test]
+    fn gates_replace_rather_than_merge() {
+        let global = ConfigLayer::parse_toml(
+            r#"
+[[gate]]
+kind = "compile"
+build_system = "cargo"
+"#,
+        )
+        .unwrap();
+        let project = ConfigLayer::parse_toml(
+            r#"
+[[gate]]
+kind = "shell"
+program = "echo"
+"#,
+        )
+        .unwrap();
+        let merged = global.merge(project).resolve();
+        assert_eq!(merged.gates.len(), 1);
+        assert!(matches!(&merged.gates[0], GateConfig::Shell { program, .. } if program == "echo"));
+    }
+
+    #[test]
+    fn global_path_ends_in_roko_config_toml() {
+        let path = global_config_path();
+        assert!(path.ends_with("roko/config.toml"));
+    }
+
+    #[test]
+    fn discover_project_config_walks_upward() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(tmp.path().join("roko.toml"), "").unwrap();
+        let found = discover_project_config(&nested).unwrap();
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            tmp.path().join("roko.toml").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn detect_clis_does_not_panic() {
+        let _ = detect_clis();
+    }
+}

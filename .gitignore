@@ -1,0 +1,76 @@
+# Rust build artifacts --------------------------------------------------------
+# Cargo target dir (also redirected to bardo/.mori/cache/cargo-target/ via
+# bardo/.cargo/config.toml — keep this rule in case someone builds with a
+# different config).
+target/
+**/target/
+**/*.rs.bk
+**/Cargo.lock.orig
+**/rust-toolchain.toml.orig
+
+# Foundry / contracts artifacts ----------------------------------------------
+# Built bytecode + ABI — regenerate with `forge build`.
+contracts/out/
+contracts/cache/
+# Broadcast logs for non-local runs (keep per-chain deploy history out of git
+# unless you want reproducible mainnet/testnet records committed).
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+# Vendored libs (git submodules / clones). Re-fetched with:
+#   git clone --depth 1 https://github.com/foundry-rs/forge-std contracts/lib/forge-std
+#   git clone --depth 1 --branch v5.1.0 https://github.com/OpenZeppelin/openzeppelin-contracts contracts/lib/openzeppelin-contracts
+contracts/lib/
+!contracts/lib/.gitkeep
+
+# roko-demo runtime outputs --------------------------------------------------
+# Written by `roko-demo deploy`; contains deployments.json + per-scenario state.
+# Ephemeral per-mirage instance, so not committed.
+demo/.runtime/
+
+# roko-cli workspace state ---------------------------------------------------
+# Every `roko init` creates one of these; they belong per-workspace, not in git.
+.roko/
+**/.roko/
+
+# LLM / sccache / misc caches ------------------------------------------------
+.fastembed_cache/
+**/.fastembed_cache/
+.cache/
+**/.cache/
+
+# IDE + editor junk ----------------------------------------------------------
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Env + secrets --------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs + temp files ----------------------------------------------------------
+*.log
+*.tmp
+/tmp/
+# mirage/roko test output piped into /tmp/mirage.log during dev — safe to ignore.
+
+# Docker volumes (local dev overlays) ----------------------------------------
+docker/.env
+docker/*.override.yml
+
+# Pytest / Python sidecar leftovers (if any future scripts land here) --------
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node (if any JS tooling ever joins the workspace) --------------------------
+node_modules/
+*.tsbuildinfo
+.next/
+dist/

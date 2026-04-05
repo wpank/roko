@@ -1,0 +1,25 @@
+[package]
+name = "roko-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Roko kernel: Signal type and the six universal traits (Substrate, Scorer, Gate, Router, Composer, Policy)."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+blake3 = "1"
+async-trait = "0.1"
+parking_lot = "0.12"
+toml = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }

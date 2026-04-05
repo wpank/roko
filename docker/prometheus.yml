@@ -1,0 +1,35 @@
+# Prometheus scrape config for the roko docker-compose stack.
+# Targets use docker-compose service names resolved on the `roko-net` network.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "roko-local"
+    environment: "dev"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "mirage"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["mirage:9091"]
+        labels:
+          service: "mirage-rs"
+
+  - job_name: "roko"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["roko:9092"]
+        labels:
+          service: "roko-cli"
+
+  - job_name: "gateway"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gateway:8080"]
+        labels:
+          service: "roko-gateway"

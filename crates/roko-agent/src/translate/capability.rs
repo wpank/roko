@@ -1,0 +1,261 @@
+//! Model capability detector (§36.37).
+//!
+//! Wraps [`roko_core::tool::format::profile_for_model`] to produce a
+//! [`ModelCapabilities`] snapshot, and maps a model slug to the
+//! appropriate concrete [`Translator`].
+//!
+//! The mapping rule is:
+//!
+//! | `tool_format` (from profile)      | Translator            |
+//! |-----------------------------------|-----------------------|
+//! | `AnthropicBlocks`                 | [`ClaudeTranslator`]  |
+//! | `OpenAiJson`                      | [`OllamaTranslator`]  |
+//! | `ReActText`                       | [`ReActTranslator`]   |
+//! | anything else, OR `supports_tools: false` | [`ReActTranslator`] (safe fallback) |
+//!
+//! `OpenAiJson` routes through [`OllamaTranslator`] deliberately — both
+//! Ollama and generic `OpenAI`-compatible servers share the same
+//! `tools: [...]` / `tool_calls[]` wire shape, so one translator covers
+//! both until a dedicated `OpenAI` translator ships.
+
+use std::sync::Arc;
+
+use roko_core::tool::{format::profile_for_model, ToolFormat};
+
+use super::{ClaudeTranslator, OllamaTranslator, ReActTranslator, Translator};
+
+/// Snapshot of a model's tool-calling capabilities.
+///
+/// Derived from [`roko_core::tool::format::profile_for_model`]. Used by
+/// [`translator_for`] to pick the right translator for a model slug and
+/// by the multi-turn loop to cap tool counts before degrading.
+#[derive(Debug, Clone)]
+pub struct ModelCapabilities {
+    /// Whether the model supports any native tool-calling format.
+    pub supports_tools: bool,
+    /// Whether it's safe to emit multiple tool calls in one turn.
+    pub supports_parallel_tool_calls: bool,
+    /// The model's preferred wire format.
+    pub tool_format: ToolFormat,
+    /// Tool-count ceiling before the model starts misbehaving.
+    pub max_tools_before_degrade: u8,
+}
+
+/// Return the capability snapshot for a model slug.
+///
+/// Thin wrapper around [`profile_for_model`] that projects the per-model
+/// profile into a smaller, translator-facing shape.
+#[must_use]
+pub fn capabilities_for(slug: &str) -> ModelCapabilities {
+    let profile = profile_for_model(slug);
+    ModelCapabilities {
+        supports_tools: profile.supports_tools,
+        supports_parallel_tool_calls: profile.parallel_safe,
+        tool_format: profile.preferred.clone(),
+        max_tools_before_degrade: profile.max_tools_before_degrade,
+    }
+}
+
+/// Pick the translator best suited to a model slug.
+///
+/// Falls back to [`ReActTranslator`] whenever either (a) the model
+/// doesn't support native tool-calling, or (b) Roko doesn't yet have a
+/// dedicated translator for the model's preferred format.
+#[must_use]
+pub fn translator_for(slug: &str) -> Arc<dyn Translator> {
+    let caps = capabilities_for(slug);
+    if !caps.supports_tools {
+        return Arc::new(ReActTranslator);
+    }
+    match caps.tool_format {
+        ToolFormat::AnthropicBlocks => Arc::new(ClaudeTranslator),
+        ToolFormat::OpenAiJson => Arc::new(OllamaTranslator),
+        // `ReActText` plus every format without a dedicated translator yet
+        // (HermesJson, Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
+        // JsonMode, Custom) all fall through to the ReAct fallback.
+        _ => Arc::new(ReActTranslator),
+    }
+}
+
+/// Short, stable name of the translator Roko picks for a model slug.
+///
+/// Returns one of `"claude"`, `"ollama"`, or `"react"`. Useful for logs,
+/// TUI telemetry, and tests where the concrete type is hidden behind a
+/// `dyn Translator` object.
+///
+/// This matches [`translator_for`] exactly.
+#[must_use]
+pub fn translator_name_for(slug: &str) -> &'static str {
+    let caps = capabilities_for(slug);
+    if !caps.supports_tools {
+        return "react";
+    }
+    match caps.tool_format {
+        ToolFormat::AnthropicBlocks => "claude",
+        ToolFormat::OpenAiJson => "ollama",
+        // ReActText + every format without a dedicated translator
+        // (HermesJson, Gemma4Tokens, MistralTokens, Pythonic, QwenXml,
+        // JsonMode, Custom) falls through to the ReAct fallback.
+        _ => "react",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_for_claude_returns_anthropic_blocks() {
+        let caps = capabilities_for("claude-opus-4-6");
+        assert_eq!(caps.tool_format, ToolFormat::AnthropicBlocks);
+        assert!(caps.supports_tools);
+        assert!(caps.supports_parallel_tool_calls);
+
+        let caps = capabilities_for("claude-sonnet-4-5");
+        assert_eq!(caps.tool_format, ToolFormat::AnthropicBlocks);
+        assert!(caps.supports_tools);
+    }
+
+    #[test]
+    fn capabilities_for_openai_returns_openai_json() {
+        let caps = capabilities_for("gpt-5");
+        assert_eq!(caps.tool_format, ToolFormat::OpenAiJson);
+        assert!(caps.supports_tools);
+        assert!(caps.supports_parallel_tool_calls);
+
+        let caps = capabilities_for("gpt-4.1");
+        assert_eq!(caps.tool_format, ToolFormat::OpenAiJson);
+        assert!(caps.supports_tools);
+    }
+
+    #[test]
+    fn capabilities_for_unknown_falls_back_to_react() {
+        // profile_for_model returns unknown_default() for unmatched slugs:
+        // preferred = ReActText, supports_tools = false.
+        let caps = capabilities_for("random-model-123");
+        assert_eq!(caps.tool_format, ToolFormat::ReActText);
+        assert!(!caps.supports_tools);
+        assert!(!caps.supports_parallel_tool_calls);
+        assert_eq!(caps.max_tools_before_degrade, 3);
+    }
+
+    #[test]
+    fn capabilities_fields_match_profile() {
+        for slug in [
+            "claude-opus-4-6",
+            "claude-sonnet-4-5",
+            "gpt-5",
+            "gpt-4.1",
+            "random-model-123",
+            "qwen3-32b",
+            "mistral-7b-instruct",
+        ] {
+            let profile = profile_for_model(slug);
+            let caps = capabilities_for(slug);
+            assert_eq!(
+                caps.supports_tools, profile.supports_tools,
+                "supports_tools mismatch for {slug}"
+            );
+            assert_eq!(
+                caps.supports_parallel_tool_calls, profile.parallel_safe,
+                "parallel_safe mismatch for {slug}"
+            );
+            assert_eq!(
+                caps.tool_format, profile.preferred,
+                "tool_format mismatch for {slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_max_tools_propagates() {
+        // Claude profile: 32. GPT profile: 64. Qwen3: 5. Unknown: 3.
+        assert_eq!(
+            capabilities_for("claude-opus-4-6").max_tools_before_degrade,
+            profile_for_model("claude-opus-4-6").max_tools_before_degrade
+        );
+        assert_eq!(
+            capabilities_for("gpt-5").max_tools_before_degrade,
+            profile_for_model("gpt-5").max_tools_before_degrade
+        );
+        assert_eq!(
+            capabilities_for("qwen3-32b").max_tools_before_degrade,
+            profile_for_model("qwen3-32b").max_tools_before_degrade
+        );
+        assert_eq!(
+            capabilities_for("random-model-123").max_tools_before_degrade,
+            profile_for_model("random-model-123").max_tools_before_degrade
+        );
+    }
+
+    #[test]
+    fn translator_for_claude_slug_uses_claude_translator() {
+        // Trait objects can't be downcast, so we discriminate via
+        // `.format()` — each translator advertises its own wire format.
+        let t = translator_for("claude-opus-4-6");
+        assert_eq!(t.format(), ToolFormat::AnthropicBlocks);
+
+        let t = translator_for("claude-sonnet-4-5");
+        assert_eq!(t.format(), ToolFormat::AnthropicBlocks);
+    }
+
+    #[test]
+    fn translator_for_openai_slug_uses_ollama_translator() {
+        let t = translator_for("gpt-5");
+        assert_eq!(t.format(), ToolFormat::OpenAiJson);
+
+        let t = translator_for("gpt-4.1");
+        assert_eq!(t.format(), ToolFormat::OpenAiJson);
+    }
+
+    #[test]
+    fn translator_for_unsupported_format_uses_react() {
+        // A model whose profile says supports_tools: false → ReAct.
+        // profile_for_model("llama3.2-3b") is one such case.
+        let caps = capabilities_for("llama3.2-3b");
+        assert!(
+            !caps.supports_tools,
+            "llama3.2-3b should not claim tool support"
+        );
+        let t = translator_for("llama3.2-3b");
+        assert_eq!(t.format(), ToolFormat::ReActText);
+
+        // Unknown model also falls through to ReAct.
+        let t = translator_for("random-model-123");
+        assert_eq!(t.format(), ToolFormat::ReActText);
+    }
+
+    #[test]
+    fn translator_for_native_format_without_dedicated_translator_uses_react() {
+        // Qwen3's preferred format is HermesJson — Roko doesn't have a
+        // dedicated translator for it yet, so we fall through to ReAct.
+        let caps = capabilities_for("qwen3-32b");
+        assert_eq!(caps.tool_format, ToolFormat::HermesJson);
+        assert!(caps.supports_tools);
+        let t = translator_for("qwen3-32b");
+        assert_eq!(t.format(), ToolFormat::ReActText);
+    }
+
+    #[test]
+    fn translator_name_for_known_slugs() {
+        assert_eq!(translator_name_for("claude-opus-4-6"), "claude");
+        assert_eq!(translator_name_for("claude-sonnet-4-5"), "claude");
+        assert_eq!(translator_name_for("gpt-5"), "ollama");
+        assert_eq!(translator_name_for("gpt-4.1"), "ollama");
+        assert_eq!(translator_name_for("random-model-123"), "react");
+        assert_eq!(translator_name_for("llama3.2-3b"), "react");
+        // HermesJson has no dedicated translator → react
+        assert_eq!(translator_name_for("qwen3-32b"), "react");
+    }
+
+    #[test]
+    fn translator_is_send_and_sync() {
+        // Compile-time: `Arc<dyn Translator>` must already be Send+Sync
+        // because the trait bounds include `Send + Sync`. This test
+        // pins the invariant so refactors that loosen the bounds fail
+        // at compile time.
+        let _: Arc<dyn Translator + Send + Sync> = translator_for("claude-opus-4-6");
+        let _: Arc<dyn Translator + Send + Sync> = translator_for("gpt-5");
+        let _: Arc<dyn Translator + Send + Sync> = translator_for("random-model-123");
+    }
+}

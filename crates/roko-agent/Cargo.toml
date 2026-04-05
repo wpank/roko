@@ -1,0 +1,29 @@
+[package]
+name = "roko-agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Agent trait and backends for Roko: spawn LLMs (Claude, exec'd CLIs, mock) that produce signals."
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "rt", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+url = "2"
+regex = "1"
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }

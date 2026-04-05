@@ -1,0 +1,28 @@
+[package]
+name = "roko-learn"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Learning subsystems for Roko: episode logs, playbooks, skill library, context cache, pattern discovery."
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt", "macros"] }
+chrono = { workspace = true }
+globset = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }

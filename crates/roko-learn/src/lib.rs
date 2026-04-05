@@ -1,0 +1,25 @@
+//! Learning subsystems for Roko — episodic memory, playbooks, skills, caches,
+//! and pattern discovery.
+//!
+//! These modules consume the signal stream produced by the orchestrator and
+//! agents, persist durable records of what worked, and surface reusable
+//! knowledge back to the composer/router feedback loop.
+//!
+//! # Modules
+//!
+//! - [`episode_logger`] — append-only JSONL record of agent turns
+//! - [`playbook`] — reusable patterns extracted from episodes
+//! - [`skill_library`] — structured skills agents can invoke
+//! - [`context_pack_cache`] — cached composed prompts keyed by task fingerprint
+//! - [`pattern_discovery`] — mining episodes for recurring shapes
+
+#![deny(missing_docs)]
+#![allow(clippy::module_name_repetitions)]
+
+pub mod bandits;
+pub mod context_pack_cache;
+pub mod episode_logger;
+pub mod pattern_discovery;
+pub mod playbook;
+pub mod playbook_rules;
+pub mod skill_library;

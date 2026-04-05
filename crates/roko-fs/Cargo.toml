@@ -1,0 +1,24 @@
+[package]
+name = "roko-fs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Filesystem-backed Substrate for Roko: JSONL-append-only persistence with in-memory index."
+
+[lints]
+workspace = true
+
+[dependencies]
+roko-core = { path = "../roko-core" }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["fs", "sync", "io-util", "rt", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+parking_lot = "0.12"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }

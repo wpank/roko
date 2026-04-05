@@ -1,0 +1,97 @@
+//! Roko kernel — the universal Signal type and six traits that compose to express
+//! every capability in the Roko orchestration system.
+//!
+//! # Architecture
+//!
+//! The entire Roko system is built from **one noun** ([`Signal`]) and **six verbs**:
+//!
+//! | Trait | Purpose |
+//! |---|---|
+//! | [`Substrate`] | Store and query signals |
+//! | [`Scorer`] | Rate signals along multi-dimensional axes |
+//! | [`Gate`] | Verify signals against ground truth |
+//! | [`Router`] | Select one signal from many candidates |
+//! | [`Composer`] | Combine signals into a new signal under a budget |
+//! | [`Policy`] | Watch signal streams and emit new signals (interventions) |
+//!
+//! Every capability — coding-agent spawning, verification gates, context assembly,
+//! model routing, memory retrieval, chain participation, bounty markets, HDC search
+//! — is one of these six verbs operating on Signals.
+//!
+//! # The Universal Loop
+//!
+//! Every operation in Roko follows the same shape:
+//!
+//! ```text
+//! query substrate → score → route/compose → gate verdict → write back → policy fires
+//! ```
+//!
+//! See [`loop_tick`] for the concrete implementation.
+//!
+//! # Extensibility
+//!
+//! All enums marked `#[non_exhaustive]` can grow without breaking downstream impls.
+//! New capabilities are added by implementing one of the six traits; no core
+//! changes are needed.
+
+#![allow(clippy::module_name_repetitions)]
+
+pub mod agent;
+pub mod body;
+pub mod config;
+pub mod conductor;
+pub mod context;
+pub mod decay;
+pub mod error;
+pub mod hash;
+pub mod kind;
+pub mod loop_tick;
+pub mod metric;
+pub mod obs;
+pub mod phase;
+pub mod provenance;
+pub mod query;
+pub mod score;
+pub mod secrets;
+pub mod shutdown;
+pub mod signal;
+pub mod task;
+pub mod tool;
+pub mod traits;
+pub mod verdict;
+
+pub use agent::{
+    AgentBackend, AgentRole, ModelSpec, ModelTier, ReasoningEffort, ToolPermissions, TurnBudget,
+};
+pub use body::Body;
+pub use conductor::ConductorDecision;
+pub use context::Context;
+pub use decay::Decay;
+pub use error::{RokoError, Result};
+pub use hash::ContentHash;
+pub use kind::Kind;
+pub use loop_tick::{loop_tick, TickOutcome};
+pub use metric::{compute_headlines, ConfigHash, Headlines, TaskMetric};
+pub use phase::{valid_transitions, FailureKind, PhaseKind, PlanPhase};
+pub use provenance::Provenance;
+pub use query::{Budget, Query};
+pub use score::Score;
+pub use signal::Signal;
+pub use task::{
+    GlobalTaskId, PlanStatus, Task, TaskCategory, TaskComplexityBand, TaskContextWeight, TaskMeta,
+    TaskQualityProfile, TaskReasoningLevel, TaskSpeedPriority, TaskStatus,
+};
+// Note: tool::FailureKind (for tool-call failures) is NOT re-exported here to avoid
+// collision with phase::FailureKind (for PlanPhase failures); reach it via
+// `roko_core::tool::FailureKind`.
+pub use tool::{
+    compute_reward, galileo_tsq, profile_for_model, ArmEntry, Artifact, AuditSink, BanditKey,
+    CancelSource, CancelToken, EpsilonGreedyBandit, FailureTrace, FormatBandit,
+    KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink, ProfileBandit, RewardConfig,
+    ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolError, ToolFormat,
+    ToolFormatProfile, ToolHandler, ToolMetrics, ToolOutcome, ToolPermission, ToolRegistry,
+    ToolRelevanceScorer, ToolResult, ToolSchema, ToolTrace, ToolTraceEvent, TraceBuilder, TraceId,
+    TraceSink, TraceStep, VecToolRegistry,
+};
+pub use traits::{Composer, Gate, Policy, Router, Scorer, Substrate};
+pub use verdict::{Outcome, Selection, TestCount, Verdict};

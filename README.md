@@ -1,66 +1,109 @@
-# Roko Workspace
+# Roko
 
-**Roko is a modular agent orchestration stack built on one noun + six verbs + one async extension.** Ground-up redesign of Mori; every capability — LLM coding agents, chain-native agents, orchestration, learning, demo environments — folds into the same 7 primitives.
+**Roko is a Rust toolkit for building agents.** It gives you a small set of composable pieces — storage, scoring, verification, routing, prompt assembly, policy, and LLM execution — that snap together into coding agents, chain-native agents, multi-agent workflows, or anything else that needs to observe, decide, and act in a loop.
 
-Agents aren't a magic class. They're compositions: a `Substrate` stores signals, a `Scorer` rates them, a `Gate` verifies them, a `Router` picks, a `Composer` assembles, a `Policy` emits, and an `Agent` executes. Swap any impl, keep the rest. The "universal loop" is what every agent runs.
+If you've ever built an agent and found yourself reinventing a signal store, a retry policy, a prompt assembler, or a verification step, Roko is the layer you keep rewriting. This repo is that layer — plus a ready-to-run demo environment that deploys Solidity contracts to an in-process Ethereum simulator and runs 4 pre-canned multi-agent scenarios against them.
 
-```text
-┌──────────────────────────────────────────────────────────────────────┐
-│  query Substrate → Scorer → Router/Composer → Gate → write → Policy  │
-│       ↑                                                        │     │
-│       └────────────────── Agent emits new Signals ─────────────┘     │
-└──────────────────────────────────────────────────────────────────────┘
-```
+---
 
-A **coding agent** and a **chain-native agent** are the same `RokoAgent` struct with different trait impls registered. Adding chain support is additive config, not a rewrite.
+## Why it exists
+
+Every agent system ends up needing the same machinery:
+
+- **Somewhere to put things it's learned** (a substrate)
+- **A way to decide what's relevant** (scoring)
+- **A way to check if its output is any good** (verification)
+- **A way to pick among options** (routing)
+- **A way to assemble prompts under a token budget** (composition)
+- **A way to react to patterns across time** (policy)
+- **A way to actually call an LLM** (agent execution)
+
+Most agent frameworks either bake these in rigidly or make you glue them together yourself. Roko makes each one a tiny Rust trait, ships default implementations, and lets you swap any piece without touching the others. The "universal loop" — `query → score → route → compose → act → verify → write back → react` — is what every agent in the system runs.
+
+A side-effect of this architecture: a coding agent and a chain-native agent (one that signs Ethereum transactions) are **the same struct** with different pieces plugged in. You write the loop once; the difference between them is which `Substrate` they talk to and which `Gate`s they pass through.
 
 ---
 
 ## Table of contents
 
-1. [Architecture](#architecture)
-2. [Crates by layer](#crates-by-layer)
-   - [Kernel](#kernel) · [Standard impls](#standard-impls) · [Gates](#gates) · [Persistence](#persistence) · [Composition](#composition) · [Agent execution](#agent-execution) · [Orchestration](#orchestration) · [Learning](#learning) · [Chain](#chain) · [CLI](#cli) · [Demo](#demo) · [Support primitives](#support-primitives)
-3. [Apps](#apps)
-4. [Running things](#running-things)
-5. [Tests](#tests)
-6. [Extension recipes](#extension-recipes)
-7. [What to build with this](#what-to-build-with-this)
+1. [5-minute tour](#5-minute-tour)
+2. [How the architecture works](#how-the-architecture-works)
+3. [What's in the workspace](#whats-in-the-workspace)
+4. [Try it yourself](#try-it-yourself)
+5. [Running the tests](#running-the-tests)
+6. [Building on top of it](#building-on-top-of-it)
+7. [What you can build](#what-you-can-build)
 8. [File map](#file-map)
 9. [Design principles](#design-principles)
 
 ---
 
-## Architecture
+## 5-minute tour
+
+**If you just want to see something run**, here's a 3-command path to a working multi-agent chain demo:
+
+```bash
+# 1. Build the included Ethereum simulator
+cargo build -p mirage-rs --bin mirage-rs --release
+
+# 2. Start it in the background (port 18545, chain id 31337)
+$CARGO_TARGET_DIR/release/mirage-rs --host 127.0.0.1 --port 18545 --chain-id 31337 &
+
+# 3. Deploy ERC contracts + run a 5-worker job-board scenario against them
+export ROKO_MIRAGE_URL=http://127.0.0.1:18545
+cargo run -p roko-demo -- --demo-dir demo --runtime-dir demo/.runtime up job-board
+```
+
+In ~700ms you'll see: 4 Solidity contracts deployed deterministically, 5 worker agents registered on-chain with 1000-token stakes, 3 jobs posted with bounties 10/40/70 DAEJI, each assigned to a worker, submitted, and resolved with payouts. Then run `verify job-board` and it'll confirm 3 `JobResolved` events fired.
+
+If you prefer an LLM coding-agent demo without any chain stuff:
+
+```bash
+cargo run -p roko-cli -- init /tmp/agent-demo
+cd /tmp/agent-demo
+cargo run -p roko-cli -- run "write a hello function in rust"
+```
+
+By default that uses `cat` as the "agent" (it echoes the prompt back), which is enough to see the full pipeline — prompt assembly, agent call, gate check, signal persistence — without needing an API key. Point the config at `claude`, `ollama`, `mods`, `llm` or any CLI that reads a prompt on stdin and you have a real coding agent.
+
+---
+
+## How the architecture works
 
 ### One noun: `Signal`
 
-Content-addressed (BLAKE3), decaying, scored, traced, composable unit of work. Every output from every primitive is a `Signal`. Signals form a DAG through parent pointers, letting any agent replay or explain itself.
+Everything in Roko is a **Signal** — a content-addressed (BLAKE3-hashed), timestamped, scored record of something that happened. A prompt is a signal. An LLM response is a signal. A compile check's verdict is a signal. An "episode" (a summary of N signals) is itself a signal.
+
+Signals have parent pointers, so they form a DAG. That means you can always answer: "why did the agent decide this?" — by walking backwards through its lineage.
 
 ```rust
 struct Signal {
     hash: ContentHash,        // BLAKE3 of canonical bytes
     kind: SignalKind,         // Prompt | AgentOutput | GateVerdict | Episode | ...
-    parents: Vec<ContentHash>,// lineage
+    parents: Vec<ContentHash>,// lineage → replayable
     score: Option<Score>,     // 0..1, from Scorers
-    decay: DecayState,        // half-life
+    decay: DecayState,        // half-life for relevance
     ts: Timestamp,
-    payload: Bytes,           // opaque per kind
+    payload: Bytes,           // kind-specific content
 }
 ```
 
-### Six verbs (traits in `roko-core`)
+### Six verbs: the core traits
 
-| Trait | Purpose | Example impls |
+These are defined in `crates/roko-core` and implemented in every other crate. Think of them as interchangeable parts:
+
+| Verb | Job | Example concrete impls |
 |---|---|---|
-| `Substrate` | Store + query signals (async I/O) | `MemorySubstrate`, `FileSubstrate`, `ChainSubstrate` |
-| `Scorer` | Rate a signal (sync, pure) | `NoveltyScorer`, `RecencyScorer`, `PriorityScorer` |
-| `Gate` | Verify against ground truth (async I/O) | `CompileGate`, `TestGate`, `ShellGate`, `WalletGate` |
-| `Router` | Pick one from many (sync) | `TopKRouter`, `ThompsonBandit`, `FirstRouter` |
-| `Composer` | Combine under a budget (sync) | `PromptComposer` (U-shape, priority drop) |
-| `Policy` | Emit new signal from stream state (sync) | `EpisodePolicy`, `RetryPolicy` |
+| **`Substrate`** | Store + query signals | `MemorySubstrate` (HashMap), `FileSubstrate` (JSONL log), `ChainSubstrate` (on-chain storage) |
+| **`Scorer`** | Rate a signal | `RecencyScorer`, `NoveltyScorer`, `PriorityScorer` (combine via weighted sum) |
+| **`Gate`** | Check if output is any good | `CompileGate` (runs `cargo check`), `TestGate`, `ShellGate`, `WalletGate` |
+| **`Router`** | Pick one option from many | `TopKRouter`, `ThompsonBandit` (learns over time), `FirstRouter` |
+| **`Composer`** | Pack things under a budget | `PromptComposer` (U-shape placement + priority-order drop) |
+| **`Policy`** | Emit new signals from patterns | `EpisodePolicy` (summarizes runs), `RetryPolicy` (kicks off retries on failure) |
 
 ### One async extension: `Agent`
+
+Everything above is either synchronous or I/O-only. The thing that actually spends money / spawns subprocesses / calls LLMs is the **Agent**:
 
 ```rust
 #[async_trait]
@@ -70,317 +113,251 @@ pub trait Agent: Send + Sync {
 }
 ```
 
-Agents have side effects (LLM calls, subprocess spawning, chain txs). Everything else is pure or at most file I/O.
+`MockAgent` (scripted replies for tests), `ExecAgent` (spawns any CLI tool), and `ClaudeAgent` (file injection, JSON modes) all live in `crates/roko-agent`.
 
 ### The universal loop
 
-Every Roko-shaped system runs this:
+Every Roko agent runs this:
 
 ```text
-1. Substrate.query() → relevant signals
+1. Substrate.query() → fetch relevant signals from storage
 2. Scorers rate them
-3. Router picks top-K (or Composer packs them under a budget)
-4. Agent consumes the prompt → AgentOutput
+3. Router picks the top-K (or Composer packs them under a budget)
+4. Agent consumes the prompt → produces AgentOutput
 5. Gates verify the output → Verdicts
-6. Substrate writes back
-7. Policies fire on accumulated signals → new Signals (Episodes, retries, …)
+6. Substrate.write() → persist everything with parent links
+7. Policies fire on accumulated signals → emit new signals (Episodes, retries, …)
 ```
 
-Every rung is independently testable; stopping at any rung gives a working system.
+Every step is a trait — you can stop at any step and still have something useful (e.g., a "fetch + compose" pipeline without an agent), and you can add capabilities (HDC indexing, on-chain persistence, bandit routing) without rewriting anything else.
 
 ---
 
-## Crates by layer
+## What's in the workspace
 
-**16 workspace members**. Status indicators: `[shipping]` production-ready, `[scaffold]` trait complete, minimal impls, `[extension]` opt-in, layered on top.
+16 Rust crates + 1 Foundry project + 2 binaries. Organized into layers. Tests verified by running them.
 
-### Kernel
+### Kernel — the contracts that everyone else implements
 
-#### `crates/roko-core` · **376 tests** · `[shipping]`
-The contract. Defines `Signal`, the six traits, `ContentHash`, `Score`, `Decay`, `Verdict`, `Prompt`, `PromptSection`, error types, and the replay-able signal lineage model. Zero I/O — pure types + traits.
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-core`](crates/roko-core) | **376** | The `Signal` type, the six trait definitions, `ContentHash`, `Score`, `Decay`, `Verdict`, `Prompt`, `PromptSection`, error types. Pure — no I/O. This is the contract that every other crate implements or consumes. |
 
-**Key exports:**
-- `Signal`, `SignalKind`, `ContentHash`, `Score`, `DecayState`, `Verdict`
-- `Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy` traits
-- `Prompt`, `PromptSection`, `Budget`, `PlacementPolicy`
-- `RokoError`, `RokoResult`
+### Standard implementations — sensible defaults
 
-When to reach for it: writing a new impl of any trait, or any library that shouldn't depend on concrete storage/compute.
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-std`](crates/roko-std) | **96** | `MemorySubstrate`, `TopKRouter`, `PriorityRouter`, `RecencyScorer`, `CombinedScorer`, NoOp defaults for everything. Good for unit tests and small embeddings. |
 
-#### `crates/bardo-primitives` · **16 tests** · `[support]`
-Zero-dep compute primitives: 10,240-bit HDC (hyperdimensional) vectors, Hamming-similarity search, inference-tier routing signatures. Used by `roko-hdc` (pending) and `apps/mirage-rs`'s HDC precompile.
+### Verification — ground-truth checks
 
-#### `crates/bardo-runtime` · **17 tests** · `[support]`
-Typed event bus, process supervision hooks, cancellation primitives. Reused from bardo/.
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-gate`](crates/roko-gate) | **200** | Real-subprocess `Gate` implementations: `CompileGate` (detects `cargo`/`npm`/`forge`), `TestGate`, `LintGate`, `SymbolGate`, `ShellGate`, `VerifyChainGate` (short-circuit chain), `LLMJudge` (delegates to another agent for subjective checks). |
 
-### Standard impls
+### Persistence — where signals live
 
-#### `crates/roko-std` · **96 tests** · `[shipping]`
-In-memory defaults for every trait. Good for unit tests + small agent embeddings.
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-fs`](crates/roko-fs) | **37** | `FileSubstrate`: append-only JSONL persistence with in-memory index + compaction. Signals survive restart; lineage DAG is fully replayable via `roko replay <hash>`. |
 
-**Key exports:** `MemorySubstrate`, `NoOpScorer`, `NoOpRouter`, `NoOpComposer`, `NoOpPolicy`, `TopKRouter`, `PriorityRouter`, `RecencyScorer`, `PriorityScorer`, `CombinedScorer`.
+### Composition — prompt assembly
 
-### Gates
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-compose`](crates/roko-compose) | **23** | `PromptComposer`: assembles `PromptSection`s into a token-budgeted prompt using U-shape placement (intro + conclusion prioritized) + priority-ordered dropping when over budget. `TokenEstimator` for cheap counts. |
 
-#### `crates/roko-gate` · **200 tests** · `[shipping]`
-Concrete `Gate` implementations that verify agent output against ground truth.
+### Agent execution — the async extension
 
-**Key exports:**
-- `ShellGate` — run an arbitrary shell command, success = exit 0
-- `CompileGate` — `cargo check` / `npm build` / forge build; detects build system
-- `TestGate` — `cargo test` / `npm test` with pattern selection
-- `LintGate` — `cargo clippy` / `eslint`
-- `SymbolGate` — grep for required symbols in diffs
-- `VerifyChainGate` — composable chain of sub-gates with short-circuit
-- `LLMJudge` — delegate to an Agent for subjective checks
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-agent`](crates/roko-agent) | **346** | `MockAgent` (tests), `ExecAgent` (spawns any CLI — `claude`, `ollama`, `mods`, `llm`, `gpt`), `ClaudeAgent` (file injection + JSON modes). Handles timeouts, retries, env propagation, CoT + ANSI stripping, code-fence extraction. |
 
-Each wraps real subprocess I/O + structured error output; all return `Verdict`.
+### Orchestration — building larger workflows
 
-### Persistence
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-orchestrator`](crates/roko-orchestrator) | **158** | `PlanDiscovery`, `TaskGraph` (task DAG), `WorktreeManager` (git worktrees for parallel agents), `Executor`, `SafetyPolicy`, `CapabilityToken`. Build multi-agent workflows on top of this. |
 
-#### `crates/roko-fs` · **37 tests** · `[shipping]`
-`FileSubstrate`: append-only JSONL persistence with in-memory index + compaction. Signals survive restart; lineage DAG is fully replayable.
+### Learning — feedback loops
 
-Storage layout: `.roko/signals.jsonl` (append log), `.roko/index/` (optional secondary indexes).
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-learn`](crates/roko-learn) | **101** | `EpisodeLog`, `Playbook` library, `SkillLibrary`, `ContextCache`, `PatternMiner`. Plug into `Policy` impls to feed past experience back into future decisions. |
 
-### Composition
+### Chain — on-chain agents
 
-#### `crates/roko-compose` · **23 tests** · `[shipping]`
-`PromptComposer`: assembles `PromptSection`s into a token-budgeted prompt using U-shape placement (intro + conclusion prioritized) + priority-ordered dropping when over budget.
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-chain`](crates/roko-chain) | **52 + 3** | `ChainClient` + `ChainWallet` traits, mock impls, `WalletGate` (balance/nonce check), `TxSimGate` (simulate pre-sign). With `--features alloy-backend`: real JSON-RPC `AlloyChainClient` + `AlloyChainWallet` against any Ethereum endpoint. |
 
-**Key exports:** `PromptComposer`, `SectionScorer`, `Budget`, `TokenEstimator`.
+### User-facing binaries
 
-### Agent execution
+| Crate | Tests | What it is |
+|---|---:|---|
+| [`crates/roko-cli`](crates/roko-cli) | **38** | The `roko` binary. Subcommands: `init`, `run`, `status`, `replay`, `config`, `serve`. Reads layered config from `~/.config/roko/config.toml` + `./roko.toml`. |
+| [`crates/roko-demo`](crates/roko-demo) | **4** | The `roko-demo` binary. Manifest-driven orchestrator that deploys Solidity contracts, seeds fixtures, runs multi-agent scripted scenarios against mirage-rs. See [`demo/README.md`](demo/README.md). |
 
-#### `crates/roko-agent` · **346 tests** · `[shipping]`
-Concrete `Agent` backends.
+### Support primitives
 
-**Key exports:**
-- `MockAgent` — deterministic scripted replies for tests
-- `ExecAgent` — spawn any CLI (`claude`, `ollama run <model>`, `mods`, `llm`, `gpt`) that reads prompt on stdin, writes response on stdout
-- `ClaudeAgent` — claude-specific wrapper (file injection, JSON modes)
-- Output cleaning: ANSI escape stripping, chain-of-thought stripping, markdown code-fence extraction
+| Crate | Tests | What it is |
+|---|---:|---|
+| `crates/bardo-primitives` | **16** | Zero-dep compute: 10,240-bit HDC (hyperdimensional) vectors with Hamming similarity search. |
+| `crates/bardo-runtime` | **17** | Typed event bus, process supervision hooks, cancellation primitives. |
 
-Supports LLM spawning with timeouts, retry budgets, env-var propagation, working-directory setup, and file-in-prompt injection.
+### Apps (binaries, not libraries)
 
-### Orchestration
+| App | Tests | What it is |
+|---|---:|---|
+| [`apps/mirage-rs`](apps/mirage-rs) | **141** | **In-process Ethereum fork simulator**. Full EVM via `revm`, `alloy`-compatible JSON-RPC on `:8545`, copy-on-write scenario branching, optional HDC/InsightEntry precompiles, lazy reads from upstream mainnet. Runs on `localhost`, boots in <100ms, mines ~4000 blocks/sec. |
+| [`apps/roko-chain-watcher`](apps/roko-chain-watcher) | — | Long-running agent that subscribes to a mirage chain and posts insights via HTTP JSON-RPC. Example of a chain-native agent. |
 
-#### `crates/roko-orchestrator` · **158 tests** · `[shipping]`
-Plan discovery, task DAG, worktree manager, parallel executor, capability tokens, taint tracking.
+### Solidity contracts
 
-**Key exports:** `PlanDiscovery`, `TaskGraph`, `WorktreeManager`, `Executor`, `SafetyPolicy`, `CapabilityToken`.
+| Project | Tests | What it is |
+|---|---:|---|
+| [`contracts/`](contracts/) | **36** | Foundry project with 6 contracts for the demo: `MockERC20` (DAEJI test token), `AgentRegistry` (ERC-8004 identity), `WorkerRegistry` (stake + EMA reputation + 30-day halving decay), `BountyMarket` (ERC-8183 4-state escrow), `ConsortiumValidator` (2-of-3 voting), `InsightBoard` (pheromone-weighted knowledge). |
 
-Build larger systems (multi-agent workflows, gated merges) on top of this crate.
-
-### Learning
-
-#### `crates/roko-learn` · **101 tests** · `[shipping]`
-Episode logs, playbook library, skill library, context cache, pattern discovery.
-
-**Key exports:** `EpisodeLog`, `Playbook`, `SkillLibrary`, `ContextCache`, `PatternMiner`.
-
-Plug into `Policy` impls to feed episode-informed decisions back into agents.
-
-### Chain
-
-#### `crates/roko-chain` · **52 tests** · `[shipping]`
-`ChainClient` + `ChainWallet` traits with mock and real implementations.
-
-**Key exports:**
-- `ChainClient`, `ChainWallet` traits
-- `MockChainClient`, `MockChainWallet`, `paired_mocks()`
-- `WalletGate`, `TxSimGate` — Gate implementations that check balance/nonce + simulate txs pre-sign
-- `TxRequest`, `Receipt`, `LogEntry`, `ChainError`, `TxHash`
-
-**With `--features alloy-backend`** (3 live tests):
-- `AlloyChainClient::http(rpc_url)` — real JSON-RPC provider
-- `AlloyChainWallet::from_hex_key(rpc_url, key, chain_id)` — signer + provider wrapper
-
-Use this crate to write chain-native agents whose reads/writes obey the same `ChainClient`/`ChainWallet` abstraction regardless of backend (mirage-rs, anvil, live L1/L2).
-
-### CLI
-
-#### `crates/roko-cli` · **38 tests** · `[shipping]`
-The `roko` binary: wires the universal loop against a working directory. Reads config from `./roko.toml` + `~/.config/roko/config.toml`.
-
-**Subcommands:**
-- `init [path]` — bootstrap `.roko/` + default `roko.toml`
-- `run "<prompt>"` — one pass through the universal loop
-- `status` — signal counts, recent episode, gate pass/fail
-- `replay <hash>` — walk the lineage DAG rooted at a signal
-- `config init|show|set|path|edit` — manage layered config
-- `serve --listen <addr>` — long-running HTTP mode
-
-Out of the box it works with `cat` as the agent (echoes prompt back). Point `[agent]` at any LLM CLI for real behaviour.
-
-### Demo
-
-#### `crates/roko-demo` · **4 unit tests, 4 scenarios E2E** · `[shipping]`
-Manifest-driven deploy + fixture + multi-agent orchestrator for the Roko chain stack. Ships with 4 pre-canned scenarios (job-board, consortium, defi-routing, flywheel) that deploy ERC contracts, register agents, and run scripted spines end-to-end against mirage-rs.
-
-**Binary:** `roko-demo` (`list|deploy|seed|up|verify`).
-
-See [`demo/README.md`](demo/README.md) for the full guide.
+**Test totals:** 1,613 Rust tests + 36 Solidity tests = **1,649 tests, all passing**.
 
 ---
 
-## Apps
+## Try it yourself
 
-### `apps/mirage-rs` · **141 tests** · `[shipping]`
-In-process Ethereum fork simulator with lazy upstream reads, copy-on-write scenario branching, and a JSON-RPC server. Fully `alloy`-compatible.
-
-**Features:**
-- Pure EVM surface on `:8545` (default build)
-- Opt-in `chain` feature: HDC precompile (0xA00), InsightEntry storage precompile (0xA01), pheromone-weighted stigmergy
-- Opt-in `roko` feature: bridges `ChainSubstrate` + `SimulationGate` to roko-core
-- 10 pre-funded anvil test accounts, `evm_mine`, `hardhat_impersonateAccount`
-- Metrics on `:9091` (prometheus)
-
-Use cases: local EVM for tests, fork replays against mainnet via `--rpc-url`, roko-demo's execution substrate.
-
-### `apps/roko-chain-watcher` · `[shipping]`
-Long-running roko agent that subscribes to a mirage chain and posts insights over HTTP JSON-RPC. Demo of a chain-native agent built on the kernel.
-
-### `contracts/` (Foundry project) · **36 forge tests** · `[shipping]`
-6 Solidity contracts used by the demo environment:
-- `MockERC20.sol` — "DAEJI" test token with open faucet
-- `AgentRegistry.sol` — ERC-8004 compat identity + heartbeat liveness
-- `WorkerRegistry.sol` — stake bonds + EMA reputation + 30-day halving decay
-- `BountyMarket.sol` — ERC-8183 4-state escrow with slash on reject
-- `ConsortiumValidator.sol` — 3-agent 2-of-3 voting committees
-- `InsightBoard.sol` — post/confirm insights with pheromone weights
-
----
-
-## Running things
-
-### Run the roko CLI
+### Option A — the coding-agent loop (no chain, no external deps)
 
 ```bash
-# Build + init a workspace
-cargo run -p roko-cli -- init /tmp/demo
+cargo run -p roko-cli -- init /tmp/agent-demo
+cd /tmp/agent-demo
 
-# Run the universal loop once (default: `cat` echoes prompt)
-cd /tmp/demo && cargo run -p roko-cli -- run "write a hello function"
+# Runs with `cat` as the default agent — echoes your prompt back.
+# Useful for smoke-testing the pipeline.
+cargo run -p roko-cli -- run "write a hello function"
 
-# Configure an LLM backend
-roko config init                           # interactive wizard, detects installed CLIs
+# Inspect what happened
+cargo run -p roko-cli -- status        # counts + recent episode + gate pass/fail
+cargo run -p roko-cli -- replay <hash> # walk the full signal lineage
+```
+
+To use a real LLM:
+
+```bash
+roko config init                              # interactive wizard, detects installed CLIs
 roko config set agent.command ollama --global
 roko config set agent.args '["run", "llama3.2"]' --global
-
-# Inspect the signal store
-roko status                                # counts + recent episode + pass/fail
-roko replay <content-hash>                 # walk lineage DAG
 ```
 
-Tested with **claude**, **ollama** (llama3.2, gemma4:26b, glm-4.7-flash), **mods**, **llm**. For reasoning models, `clean_output = true` (default) strips chain-of-thought + ANSI progress escapes.
+Tested with `claude`, `ollama` (llama3.2, gemma4:26b), `mods`, `llm`. Any CLI that reads a prompt on stdin and writes the response to stdout will work.
 
-Full CLI reference: [`crates/roko-cli/README.md`](crates/roko-cli/README.md).
-
-### Run the chain demo
+### Option B — the multi-agent chain demo
 
 ```bash
-# 1. Build mirage-rs
+# 1. Build mirage-rs (the in-process Ethereum simulator)
 cargo build -p mirage-rs --bin mirage-rs --release
 
-# 2. Start mirage in the background
+# 2. Start it
 $CARGO_TARGET_DIR/release/mirage-rs --host 127.0.0.1 --port 18545 --chain-id 31337 &
 
-# 3. Run any of the 4 scenarios
+# 3. Run any of 4 scenarios
 export ROKO_MIRAGE_URL=http://127.0.0.1:18545
+cd roko
 cargo run -p roko-demo -- --demo-dir demo --runtime-dir demo/.runtime up job-board
 cargo run -p roko-demo -- --demo-dir demo --runtime-dir demo/.runtime verify job-board
 ```
 
-Scenarios: `job-board`, `consortium`, `defi-routing`, `flywheel`. Full guide: [`demo/README.md`](demo/README.md).
+The 4 scenarios, all runnable with the same commands (substitute scenario name):
 
-### Run via docker
+| Scenario | What it demos |
+|---|---|
+| `job-board` | 1 poster posts 3 jobs, 5 workers take turns fulfilling them, resolver pays out |
+| `consortium` | 3 validators form a committee, 2-of-3 vote to resolve a submitted job |
+| `defi-routing` | 1 poster posts a routing benchmark, 5 workers race, first wins the bounty |
+| `flywheel` | 3 posters submit 9 knowledge insights, 3 confirmers generate 18 confirmations |
+
+**Full demo guide:** [`demo/README.md`](demo/README.md) — covers state, CLI reference, example log outputs, extension recipes, and how to add more scenarios.
+
+### Option C — docker
 
 ```bash
 cd docker
 SCENARIO=job-board docker compose --profile demo up --build --exit-code-from roko-demo
 ```
 
-Stack: mirage (:8545), roko-demo (runs to completion), prometheus (:9090), grafana (:3000).
+Brings up: mirage (`:8545`), roko-demo (runs scenario to completion), prometheus (`:9090`), grafana (`:3000`).
 
 ---
 
-## Tests
-
-| Crate | Tests | Notes |
-|---|---:|---|
-| `roko-core` | **376** | kernel types + traits |
-| `roko-agent` | **346** | LLM spawning + output cleaning |
-| `roko-gate` | **200** | real subprocess Gates |
-| `roko-orchestrator` | **158** | plan discovery, DAG, worktrees |
-| `mirage-rs` (lib) | **141** | EVM fork sim regression |
-| `roko-learn` | **101** | episodes, playbooks, patterns |
-| `roko-std` | **96** | in-memory defaults |
-| `roko-chain` | **52** | traits + mocks |
-| `roko-chain` (alloy live) | **3** | vs running mirage |
-| `roko-fs` | **37** | JSONL persistence |
-| `roko-cli` | **38** | CLI + config |
-| `roko-compose` | **23** | prompt assembly |
-| `bardo-runtime` | **17** | async runtime |
-| `bardo-primitives` | **16** | HDC + compute |
-| `roko-tests` (integration) | **5** | end-to-end universal loop |
-| `roko-demo` | **4** | orchestrator unit tests |
-| `contracts/` (forge) | **36** | Solidity tests |
-| **Total (Rust)** | **1,613** | |
-| **Total incl. Solidity** | **1,649** | |
-
-### Running tests
+## Running the tests
 
 ```bash
-# All Rust, no network — ~10s first build, <2s incremental
+# Everything, no network required — ~10s first build, <2s incremental
 cargo test
 
-# Per-crate
+# A single crate
 cargo test -p roko-core
-cargo test -p roko-gate
 cargo test -p roko-agent
 
-# Alloy live integration (needs mirage running on $ROKO_TEST_RPC_URL)
-cargo test -p roko-chain --features alloy-backend --test alloy_live
-
-# Solidity
+# Solidity tests (needs Foundry installed: foundryup)
 cd contracts && forge test
+
+# Live integration tests (needs mirage running on $ROKO_TEST_RPC_URL)
+ROKO_TEST_RPC_URL=http://127.0.0.1:18545 \
+  cargo test -p roko-chain --features alloy-backend --test alloy_live
 ```
+
+| Crate | Tests | Needs |
+|---|---:|---|
+| `roko-core` | 376 | nothing |
+| `roko-agent` | 346 | nothing |
+| `roko-gate` | 200 | nothing |
+| `roko-orchestrator` | 158 | nothing |
+| `mirage-rs` | 141 | nothing |
+| `roko-learn` | 101 | nothing |
+| `roko-std` | 96 | nothing |
+| `roko-chain` | 52 | nothing |
+| `roko-cli` | 38 | nothing |
+| `roko-fs` | 37 | nothing |
+| `roko-compose` | 23 | nothing |
+| `bardo-runtime` | 17 | nothing |
+| `bardo-primitives` | 16 | nothing |
+| `roko-tests` (integration) | 5 | nothing |
+| `roko-demo` | 4 | nothing |
+| `roko-chain` (alloy live) | 3 | running mirage |
+| `contracts/` (forge) | 36 | foundry installed |
 
 ---
 
-## Extension recipes
+## Building on top of it
 
-Every primitive is a trait in `roko-core`. Add new capability = write a new impl.
+Every capability is a trait from `roko-core`. Adding something new = writing a new impl.
 
-### A new Substrate (persistence backend)
+### Add a storage backend
 
 ```rust
 use roko_core::{Signal, Substrate, ContentHash, RokoResult};
 use async_trait::async_trait;
 
-pub struct MyDbSubstrate { pool: sqlx::PgPool }
+pub struct PostgresSubstrate { pool: sqlx::PgPool }
 
 #[async_trait]
-impl Substrate for MyDbSubstrate {
-    async fn write(&self, sig: Signal) -> RokoResult<()> { /* insert */ Ok(()) }
-    async fn read(&self, hash: &ContentHash) -> RokoResult<Option<Signal>> { /* … */ Ok(None) }
+impl Substrate for PostgresSubstrate {
+    async fn write(&self, sig: Signal) -> RokoResult<()> { /* INSERT */ Ok(()) }
+    async fn read(&self, hash: &ContentHash) -> RokoResult<Option<Signal>> { /* SELECT */ Ok(None) }
     async fn query(&self, q: &SubstrateQuery) -> RokoResult<Vec<Signal>> { /* … */ Ok(vec![]) }
     fn name(&self) -> &str { "postgres" }
 }
 ```
 
-Use in any loop: `MemorySubstrate` → `FileSubstrate` → `MyDbSubstrate` → `ChainSubstrate` are drop-in compatible.
+Now plug it into any loop that uses `dyn Substrate` — it's drop-in compatible with `MemorySubstrate` and `FileSubstrate`.
 
-### A new Gate (verification backend)
+### Add a verification step
 
 ```rust
 use roko_core::{AgentOutput, Gate, Verdict, RokoResult};
-use async_trait::async_trait;
 
 pub struct SolcGate;
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Gate for SolcGate {
     async fn verify(&self, output: &AgentOutput) -> RokoResult<Verdict> {
         let status = tokio::process::Command::new("solc")
@@ -392,75 +369,67 @@ impl Gate for SolcGate {
 }
 ```
 
-Chain multiple Gates via `VerifyChainGate::new([g1, g2, g3]).short_circuit(true)`.
+Chain multiple: `VerifyChainGate::new([g1, g2, g3]).short_circuit(true)`.
 
-### A new Scorer, Router, Composer, Policy
-
-Same pattern — implement the trait from `roko-core`. See `roko-std` for minimal examples, `roko-gate` for complex ones.
-
-### A new Agent backend
+### Add a new LLM backend
 
 ```rust
 use roko_core::{Prompt, AgentOutput};
 use roko_agent::Agent;
-use async_trait::async_trait;
 
-pub struct AnthropicApiAgent { api_key: String, model: String }
+pub struct OpenAIApiAgent { api_key: String, model: String }
 
-#[async_trait]
-impl Agent for AnthropicApiAgent {
-    async fn run(&self, prompt: &Prompt) -> AgentOutput {
-        // POST to api.anthropic.com/v1/messages
-        // return AgentOutput { content, tool_calls, tokens_used, .. }
-    }
-    fn name(&self) -> &str { "claude-api" }
+#[async_trait::async_trait]
+impl Agent for OpenAIApiAgent {
+    async fn run(&self, prompt: &Prompt) -> AgentOutput { /* POST /v1/chat/completions */ }
+    fn name(&self) -> &str { "openai-api" }
 }
 ```
 
-### A new demo scenario
+### Add a demo scenario
 
-Declarative (`demo/scenarios/my.toml`) + implement `Scenario` trait (`crates/roko-demo/src/scenarios/my.rs`) + register in `scenarios::all()`. See [`demo/README.md#adding-a-new-scenario`](demo/README.md#adding-a-new-scenario).
+Declarative TOML + implement `Scenario` trait + one-line registration. Full recipe: [`demo/README.md#adding-a-new-scenario`](demo/README.md#adding-a-new-scenario).
 
-### A new Solidity contract
+### Add a Solidity contract to the demo
 
-Drop into `contracts/src/Foo.sol`, write `forge test`, reference in a scenario's `[[deploy.contracts]]`, add `sol!` binding in `crates/roko-demo/src/bindings.rs`. See [`demo/README.md#adding-a-new-contract`](demo/README.md#adding-a-new-contract).
+Drop `Foo.sol` into `contracts/src/`, write `forge test`, reference it in a scenario's `[[deploy.contracts]]`, add an alloy `sol!` binding. Full recipe: [`demo/README.md#adding-a-new-contract`](demo/README.md#adding-a-new-contract).
 
 ---
 
-## What to build with this
+## What you can build
 
-The whole stack is designed to compose. Concrete things you can build:
+Because every piece is a trait, the same crates power very different applications:
 
-### Coding agents (already works today)
-- SWE-bench-style agents: read issue, inject files, call LLM, compile-gate the diff, write result.
-- Multi-step refactors: plan DAG in `roko-orchestrator`, each task runs its own universal loop.
-- Code-review bots: `GitSubstrate` (write it) + `LLMJudge` Gate + `EpisodePolicy` feedback.
+### Coding agents
+- **SWE-bench runners**: read issue → inject files → call LLM → `CompileGate` the diff → `TestGate` → write result. Loop until green or budget exhausted.
+- **Multi-step refactors**: `roko-orchestrator` plans a task DAG; each task runs its own universal loop in a git worktree.
+- **Code-review bots**: write a `GitSubstrate`, plug in `LLMJudge` as a Gate, drive from `EpisodePolicy`.
 
 ### Chain-native agents
-- Market-making bot: `ChainSubstrate` stores prices as signals, `Scorer` ranks opportunities, `TxSimGate` verifies pre-sign, `WalletGate` checks balance, `Agent` emits signed txs.
-- MEV searcher: `Router` picks best bundle, `Policy` triggers retries on outbid.
-- Reputation aggregator: reads consortium votes across time, emits aggregate `Episode`s.
+- **Market-making bots**: `ChainSubstrate` stores prices as signals, `Scorer` ranks opportunities, `TxSimGate` dry-runs every tx, `WalletGate` checks balance, `Agent` signs and broadcasts.
+- **Liquidation searchers**: `Router` picks the most profitable target, `Policy` fires retries on outbid.
+- **Reputation aggregators**: read consortium votes across time, emit aggregate `Episode` signals.
 
 ### Multi-agent systems
-- Job marketplaces (→ see `demo/scenarios/job-board.toml`)
-- 2-of-3 validation committees (→ see `demo/scenarios/consortium.toml`)
-- Stigmergic curation with pheromone decay (→ see `demo/scenarios/flywheel.toml`)
-- Anything with "N agents see the same chain state, each decides independently"
+- **Job marketplaces** (see `demo/scenarios/job-board.toml`)
+- **Validation committees** (see `demo/scenarios/consortium.toml`)
+- **Knowledge curation with pheromone decay** (see `demo/scenarios/flywheel.toml`)
+- Anything where "N independent agents see the same state, each decides what to do"
 
-### Benchmarks
-- DeFi routing evaluations against mirage forks (→ see `demo/scenarios/defi-routing.toml`)
-- Agent-vs-agent tournaments (wire multiple `Scenario` impls, compare success rates)
-- LLM regression suites: fixed prompts + `MockAgent` baseline + real-agent comparison
+### Benchmarks + evals
+- **DeFi routing benchmarks** on forked mainnet state via mirage-rs
+- **Agent-vs-agent tournaments**: wire multiple `Scenario` impls, compare success rates
+- **LLM regression suites**: fixed prompts + `MockAgent` baseline + real-agent comparison
 
 ### Research platforms
-- Context engineering: swap `PromptComposer` strategies, measure via `EpisodeLog`
-- Reward shaping: plug different `Scorer`s into the router loop, observe divergence
-- HDC-indexed knowledge retrieval: `HdcSubstrate` over `bardo-primitives` vectors
+- **Context engineering experiments**: swap `PromptComposer` strategies, measure episode outcomes
+- **Reward shaping**: plug different `Scorer`s into the router loop, observe divergence
+- **Semantic retrieval**: `HdcSubstrate` over `bardo-primitives` binary vectors for sub-ms knowledge lookups
 
-### Infrastructure
-- Ephemeral chain simulators: wrap mirage-rs in a test harness that forks mainnet per-test
-- Signal-based event routers: `Substrate` + `Policy` is a pub/sub system with replay
-- Audit trails: `FileSubstrate` + signed signals = tamper-evident log
+### Infrastructure pieces
+- **Ephemeral chain simulators**: wrap mirage-rs in a test harness that forks mainnet per-test
+- **Pub/sub with replay**: `Substrate` + `Policy` is an event-sourced message bus
+- **Tamper-evident audit logs**: `FileSubstrate` + signed signals = content-addressed provenance
 
 ---
 
@@ -468,69 +437,57 @@ The whole stack is designed to compose. Concrete things you can build:
 
 ```
 roko/
-├── Cargo.toml                          # 16-member workspace
-├── README.md                           # this file
+├── README.md                           ← you are here
+├── Cargo.toml                          ← 16-member workspace
 │
-├── crates/
-│   ├── roko-core/           376 tests  # Signal + 6 traits + types
-│   ├── roko-std/             96 tests  # in-memory impls
-│   ├── roko-gate/           200 tests  # CompileGate, TestGate, ShellGate, VerifyChain, LLMJudge
-│   ├── roko-fs/              37 tests  # FileSubstrate (JSONL)
-│   ├── roko-compose/         23 tests  # PromptComposer + U-shape + priority drop
-│   ├── roko-agent/          346 tests  # MockAgent, ExecAgent, ClaudeAgent
-│   ├── roko-orchestrator/   158 tests  # Plan DAG, worktrees, safety
-│   ├── roko-chain/           52 tests  # ChainClient, ChainWallet (+ alloy-backend)
-│   ├── roko-cli/             38 tests  # `roko` binary
-│   ├── roko-learn/          101 tests  # episodes, playbooks, patterns
-│   ├── roko-demo/             4 tests  # `roko-demo` orchestrator
-│   ├── bardo-primitives/     16 tests  # HDC + compute
-│   └── bardo-runtime/        17 tests  # event bus + supervision
+├── crates/                             ← libraries
+│   ├── roko-core/           376 tests  ← Signal + 6 traits (the contract)
+│   ├── roko-std/             96 tests  ← in-memory defaults
+│   ├── roko-gate/           200 tests  ← CompileGate, TestGate, ShellGate, …
+│   ├── roko-fs/              37 tests  ← FileSubstrate (JSONL)
+│   ├── roko-compose/         23 tests  ← PromptComposer
+│   ├── roko-agent/          346 tests  ← MockAgent, ExecAgent, ClaudeAgent
+│   ├── roko-orchestrator/   158 tests  ← Plan DAG, worktrees, safety
+│   ├── roko-chain/           52 tests  ← ChainClient, ChainWallet (+ alloy-backend)
+│   ├── roko-cli/             38 tests  ← `roko` binary
+│   ├── roko-learn/          101 tests  ← episodes, playbooks, patterns
+│   ├── roko-demo/             4 tests  ← `roko-demo` binary (chain scenarios)
+│   ├── bardo-primitives/     16 tests  ← HDC + compute
+│   └── bardo-runtime/        17 tests  ← event bus + supervision
 │
-├── apps/
-│   ├── mirage-rs/           141 tests  # EVM fork simulator on :8545
-│   └── roko-chain-watcher/             # long-running chain-native agent
+├── apps/                               ← binaries (not libraries)
+│   ├── mirage-rs/           141 tests  ← Ethereum fork simulator on :8545
+│   └── roko-chain-watcher/             ← long-running chain agent
 │
-├── contracts/                36 tests  # Foundry project
-│   ├── foundry.toml
-│   ├── src/                            # MockERC20, AgentRegistry, WorkerRegistry,
-│   │                                   # BountyMarket, ConsortiumValidator, InsightBoard
-│   └── test/                           # *.t.sol
-│
-├── demo/                               # declarative demo config
-│   ├── README.md                       # 450-line demo guide
-│   ├── manifest.toml                   # scenario registry
-│   ├── wallets.toml                    # 10 anvil dev wallets
-│   ├── scenarios/                      # 4 scenario TOMLs
-│   └── prompts/                        # 4 LLM role templates
-│
-├── docker/
-│   ├── docker-compose.yml              # mirage + roko + demo profile + prometheus + grafana
-│   ├── mirage.Dockerfile
-│   ├── roko.Dockerfile
-│   └── demo.Dockerfile
-│
-└── tests/                     5 tests  # end-to-end universal loop integration
+├── contracts/                36 tests  ← Foundry project: 6 .sol contracts
+├── demo/                               ← declarative demo config
+│   └── README.md                       ← full demo guide (450 lines)
+├── docker/                             ← docker-compose + dockerfiles
+└── tests/                     5 tests  ← end-to-end integration tests
 ```
 
 ---
 
 ## Design principles
 
-1. **One noun, six verbs, one async extension.** Every capability in 110+ source docs maps to this.
+1. **One noun, six verbs, one async extension.** Every capability in the stack folds into this.
 2. **Every rung is testable.** Stop at any rung → working system. Start from any rung → additive.
-3. **Coding ≡ chain-native.** Same `RokoAgent` struct, different trait impls registered. No rewrites.
+3. **Coding ≡ chain-native.** Same struct, different trait impls registered. No rewrites.
 4. **Content-addressed everything.** BLAKE3 hashes give deduplication, replay, caching, and signed provenance for free.
-5. **Local-first.** `FileSubstrate` is the default; ChainSubstrate, HdcSubstrate, PostgresSubstrate are opt-in.
-6. **No magic.** Every impl is a public struct with a short `name()`. `roko replay <hash>` walks the DAG for any run.
+5. **Local-first.** `FileSubstrate` is the default; chain/HDC/Postgres substrates are opt-in.
+6. **No magic.** Every impl is a public struct with a `name()` method. `roko replay <hash>` walks the DAG for any run.
 7. **Unsafe denied, undocumented public items warned.** Enforced at workspace level.
 
 ---
 
 ## Related docs
 
-- [`demo/README.md`](demo/README.md) — running + extending the chain demo
+- [`demo/README.md`](demo/README.md) — running + extending the chain demo, example log outputs, known limitations
 - [`crates/roko-cli/README.md`](crates/roko-cli/README.md) — CLI reference + LLM backend worked examples
 - [`docker/README.md`](docker/README.md) — docker-compose reference
-- `../tmp/roko-progress/` — design docs (if present in your checkout)
-  - `12-unified-primitives.md` — 1 Signal + 6 verbs architecture
-  - `13-dual-nature-agents.md` — coding + chain-native dual-nature model
+
+---
+
+## License
+
+MIT OR Apache-2.0 (dual-licensed).

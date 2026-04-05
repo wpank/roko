@@ -31,6 +31,7 @@ pub mod mock;
 pub mod ollama_agent;
 pub mod openai_agent;
 pub mod safety;
+pub mod tool_loop;
 pub mod translate;
 pub mod usage;
 

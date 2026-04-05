@@ -17,6 +17,7 @@
 
 pub mod prompt;
 pub mod scorer;
+pub mod templates;
 
 pub use prompt::{
     estimate_tokens, CacheLayer, ContextStrategy, Placement, PromptBuild,

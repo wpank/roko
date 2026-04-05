@@ -19,6 +19,7 @@
 pub mod bandits;
 pub mod context_pack_cache;
 pub mod episode_logger;
+pub mod hdc_clustering;
 pub mod pattern_discovery;
 pub mod playbook;
 pub mod playbook_rules;

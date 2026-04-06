@@ -10,6 +10,7 @@ pub mod assembly;
 pub mod common;
 pub mod implementer;
 pub mod integration;
+pub mod prompts;
 pub mod quick;
 pub mod reviewer;
 pub mod scribe;

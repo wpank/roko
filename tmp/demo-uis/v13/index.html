@@ -1,0 +1,1584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Agent Coordination Plane</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+  --dream: #585878;
+  --dream-bright: #7878a0;
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { overflow: hidden; width: 100%; height: 100%; background: var(--void); color: var(--t1); }
+
+/* Pages */
+.page {
+  position: absolute; width: 100%; height: 100%;
+  top: 0; left: 0;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column;
+  z-index: 1;
+}
+.page.active { opacity: 1; pointer-events: auto; z-index: 2; }
+.page.exit-up { opacity: 0; transform: translateY(-24px); }
+
+/* Canvas backgrounds */
+.page canvas.bg {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 0;
+}
+.page .content {
+  position: relative; z-index: 1;
+  max-width: 1100px; width: 90%;
+  pointer-events: none;
+}
+.page .content * { pointer-events: auto; }
+
+/* Typography */
+h1 {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  color: #d8c8d0; font-size: clamp(2.5rem, 6vw, 5rem);
+  line-height: 1.1; margin-bottom: 0.3em;
+}
+h2 {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  color: #d8c8d0; font-size: clamp(1.6rem, 3.5vw, 2.8rem);
+  line-height: 1.2; margin-bottom: 0.5em;
+}
+h3 {
+  font-family: var(--mono); font-weight: 400;
+  font-size: clamp(0.7rem, 1.2vw, 0.9rem);
+  text-transform: uppercase; letter-spacing: 0.28em;
+  color: var(--rose-dim); margin-bottom: 1em;
+}
+.rose-glow {
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.body-text {
+  font-family: var(--mono); font-weight: 400;
+  font-size: clamp(0.72rem, 1vw, 0.88rem);
+  color: var(--t1); line-height: 1.7;
+  max-width: 680px;
+}
+.body-text.center { text-align: center; margin: 0 auto; }
+.tag {
+  font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.28em;
+  color: var(--rose-dim);
+}
+
+/* Chassis panels */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+.chassis .body { padding: 20px; }
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Navigation */
+.page-nav {
+  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 18px;
+  z-index: 9999;
+}
+.nav-dots { display: flex; gap: 10px; }
+.nav-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ghost); cursor: pointer;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+.nav-dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 8px rgba(170,112,136,0.5);
+  border-color: var(--rose-dim);
+}
+.nav-dot:hover { background: var(--rose-dim); }
+.nav-arrow {
+  font-family: var(--mono); font-size: 16px;
+  color: var(--t-dim); cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--rose); }
+
+/* Block HUD */
+.block-hud {
+  position: fixed; top: 16px; right: 20px;
+  font-family: var(--mono); font-size: 10px;
+  color: var(--jade); letter-spacing: 0.15em;
+  z-index: 9999; opacity: 0;
+  transition: opacity 0.3s;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .pulse {
+  display: inline-block; width: 5px; height: 5px;
+  border-radius: 50%; background: var(--jade);
+  margin-right: 6px; vertical-align: middle;
+  animation: ledPulse 1s ease-in-out infinite;
+}
+
+/* Atmospheric overlays */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9998; pointer-events: none;
+  opacity: 0.03; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9997; pointer-events: none; opacity: 0.05;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9996; pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Page-specific */
+.hero-subtitle {
+  font-family: var(--mono); font-size: clamp(0.6rem, 1vw, 0.8rem);
+  text-transform: uppercase; letter-spacing: 0.35em;
+  color: var(--rose-dim); margin-bottom: 2em;
+}
+.hero-bottom {
+  position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%);
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 0.3em; color: var(--t-dim);
+}
+.hero-center { text-align: center; }
+
+/* Layers page */
+.layers-container {
+  display: flex; flex-direction: column; gap: 2px;
+  width: 100%; max-width: 800px; margin: 0 auto 2em;
+}
+.layer-band {
+  padding: 18px 28px;
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.12em; line-height: 1.8;
+  border: 1px solid #1a1622;
+  position: relative;
+}
+.layer-band.top {
+  background: rgba(200,184,144,0.04);
+  border-color: rgba(200,184,144,0.12);
+  color: var(--bone-dim);
+}
+.layer-band.middle {
+  background: rgba(170,112,136,0.08);
+  border-color: var(--border-live);
+  color: var(--rose-hot);
+  box-shadow: 0 0 30px rgba(170,112,136,0.1), inset 0 0 30px rgba(170,112,136,0.05);
+}
+.layer-band.bottom {
+  background: rgba(88,88,120,0.05);
+  border-color: rgba(88,88,120,0.15);
+  color: var(--dream);
+}
+.layer-label {
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.3em; margin-bottom: 6px;
+  opacity: 0.6;
+}
+.layer-items {
+  font-size: 11px; opacity: 0.7;
+}
+
+/* Split panel */
+.split-panel {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 20px; width: 100%; margin-bottom: 1.5em;
+}
+@media (max-width: 768px) {
+  .split-panel { grid-template-columns: 1fr; }
+}
+.split-panel .chassis .body {
+  font-family: var(--mono); font-size: 11px;
+  line-height: 1.8; color: var(--t1);
+}
+.split-panel .chassis .body .item {
+  margin-bottom: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--ghost);
+}
+.split-panel .chassis .body .item strong {
+  color: var(--rose-neon); font-weight: 400;
+}
+
+/* Chain layers */
+.chain-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 14px; width: 100%; max-width: 900px;
+  margin: 0 auto 1.5em;
+}
+@media (max-width: 768px) {
+  .chain-grid { grid-template-columns: 1fr; }
+}
+.chain-grid .chassis .body {
+  font-family: var(--mono); font-size: 11px;
+  line-height: 1.7; color: var(--t1);
+}
+.block-compare {
+  display: flex; gap: 16px; align-items: flex-end;
+  justify-content: center; margin: 1em 0;
+}
+.block-bar {
+  display: flex; flex-direction: column; align-items: center;
+  font-family: var(--mono); font-size: 9px; color: var(--t-dim);
+  gap: 4px;
+}
+.block-bar .bar {
+  width: 40px; border-radius: 2px 2px 0 0;
+  background: var(--ghost);
+  transition: height 1s ease;
+}
+.block-bar.highlight .bar {
+  background: linear-gradient(180deg, var(--rose-neon), var(--rose-deep));
+  box-shadow: 0 0 12px rgba(220,165,189,0.3);
+}
+.block-bar .label { letter-spacing: 0.1em; }
+.block-bar .time { color: var(--rose-dim); font-size: 10px; }
+.block-bar.highlight .time { color: var(--rose-neon); font-weight: 500; }
+
+/* HDC steps */
+.hdc-container {
+  width: 100%; max-width: 800px; margin: 0 auto;
+}
+.hdc-step {
+  display: none; padding: 20px;
+}
+.hdc-step.active { display: block; }
+.hdc-step-nav {
+  display: flex; gap: 8px; justify-content: center;
+  margin-top: 1.5em;
+}
+.hdc-step-dot {
+  width: 28px; height: 4px; border-radius: 2px;
+  background: var(--ghost); cursor: pointer;
+  transition: all 0.3s;
+}
+.hdc-step-dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 6px rgba(170,112,136,0.4);
+}
+.hdc-code {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(6,6,8,0.7); border: 1px solid #1a1622;
+  padding: 14px 18px; border-radius: 2px;
+  color: var(--bone); margin: 12px 0;
+  line-height: 1.6;
+}
+.hdc-op { color: var(--rose-neon); }
+.hdc-val { color: var(--jade-hot); }
+
+/* ISFR */
+.isfr-sources {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 10px; margin: 1.5em 0;
+}
+@media (max-width: 768px) {
+  .isfr-sources { grid-template-columns: repeat(2, 1fr); }
+}
+.isfr-source {
+  text-align: center; padding: 14px 8px;
+  border: 1px solid #1a1622; border-radius: 2px;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+}
+.isfr-source .weight {
+  font-size: 20px; font-weight: 300;
+  color: var(--rose-neon); margin-bottom: 4px;
+}
+.isfr-source .name {
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.2em; color: var(--t-dim);
+  margin-bottom: 6px;
+}
+.isfr-source .protocols {
+  font-size: 9px; color: var(--dream); line-height: 1.5;
+}
+
+/* Collective */
+.collective-slider-wrap {
+  display: flex; align-items: center; gap: 16px;
+  margin: 1.5em auto; max-width: 500px;
+  font-family: var(--mono); font-size: 12px;
+  color: var(--t-dim);
+}
+.collective-slider-wrap input[type=range] {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; background: var(--ghost); border-radius: 2px;
+  outline: none;
+}
+.collective-slider-wrap input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--rose); cursor: pointer;
+  box-shadow: 0 0 8px rgba(170,112,136,0.5);
+}
+.agent-count-label {
+  font-family: var(--mono); font-size: 14px;
+  color: var(--rose-neon); min-width: 60px;
+  text-align: right;
+}
+</style>
+</head>
+<body>
+
+<!-- Page 0: Hero -->
+<div class="page active" id="page0">
+  <canvas class="bg" id="canvas0"></canvas>
+  <div class="content hero-center">
+    <h1>Nunchi</h1>
+    <div class="hero-subtitle">Agent Coordination Plane</div>
+    <p class="body-text center">The infrastructure layer between AI models and the applications they power.</p>
+  </div>
+  <div class="hero-bottom">Series A &middot; 2026</div>
+</div>
+
+<!-- Page 1: The Plane Between -->
+<div class="page" id="page1">
+  <canvas class="bg" id="canvas1"></canvas>
+  <div class="content">
+    <h3>Architecture</h3>
+    <h2><span class="rose-glow">The plane between</span> the planes.</h2>
+    <div class="layers-container">
+      <div class="layer-band top">
+        <div class="layer-label">Application Layer</div>
+        <div class="layer-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+      </div>
+      <div class="layer-band middle">
+        <div class="layer-label">Agent Coordination Plane</div>
+        <div class="layer-items">Nunchi &mdash; identity, routing, knowledge, policy, settlement</div>
+      </div>
+      <div class="layer-band bottom">
+        <div class="layer-label">Execution Layer</div>
+        <div class="layer-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+      </div>
+    </div>
+    <p class="body-text center">Every adjacent layer is funded. The plane between them is empty. Nunchi fills it.</p>
+  </div>
+</div>
+
+<!-- Page 2: Two Components -->
+<div class="page" id="page2">
+  <canvas class="bg" id="canvas2"></canvas>
+  <div class="content">
+    <h3>Components</h3>
+    <h2>Two components. <span class="rose-glow">One architecture.</span></h2>
+    <div class="split-panel">
+      <div class="chassis">
+        <div class="head"><span>Roko &middot; Runtime</span><div class="led"></div></div>
+        <div class="body">
+          <div class="item"><strong>Open-source</strong> &mdash; Apache 2.0</div>
+          <div class="item">18 crates, 177K lines of Rust</div>
+          <div class="item"><strong>CascadeRouter</strong> &mdash; cost-aware model routing</div>
+          <div class="item">11 gates, 7 rungs between every call</div>
+          <div class="item"><strong>NeuroStore</strong> &mdash; HDC-indexed knowledge</div>
+          <div class="item">Deterministic replay</div>
+        </div>
+      </div>
+      <div class="chassis">
+        <div class="head"><span>Nunchi Chain &middot; Verifiable Substrate</span><div class="led"></div></div>
+        <div class="body">
+          <div class="item">Agent-native sovereign EVM L1</div>
+          <div class="item"><strong>Commonware</strong> &mdash; Rust blockchain anti-framework</div>
+          <div class="item"><strong>Simplex BFT</strong> &mdash; ~50ms blocks, single-slot finality</div>
+          <div class="item">HDC precompile at <strong>0x09</strong></div>
+          <div class="item"><strong>ISFR Oracle</strong> &mdash; DeFi benchmark by validators</div>
+          <div class="item">Knowledge demurrage &mdash; exponential decay</div>
+        </div>
+      </div>
+    </div>
+    <p class="body-text center">Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.</p>
+  </div>
+</div>
+
+<!-- Page 3: Chain Architecture -->
+<div class="page" id="page3">
+  <canvas class="bg" id="canvas3"></canvas>
+  <div class="content">
+    <h3>Chain</h3>
+    <h2>Built on <span class="rose-glow">Commonware.</span></h2>
+    <div class="chain-grid">
+      <div class="chassis">
+        <div class="head"><span>Consensus &middot; Simplex BFT</span><div class="led"></div></div>
+        <div class="body">~50ms blocks. 2 hops notarize, 3 hops finalize. Single-slot finality.</div>
+      </div>
+      <div class="chassis">
+        <div class="head"><span>Execution &middot; revm</span><div class="led"></div></div>
+        <div class="body">Full EVM compatibility. Block-STM parallel execution.</div>
+      </div>
+      <div class="chassis">
+        <div class="head"><span>Native Precompiles</span><div class="led"></div></div>
+        <div class="body">Agent Registry (0x08) &middot; HDC Precompile (0x09) &middot; ISFR Oracle (0xA01)</div>
+      </div>
+      <div class="chassis">
+        <div class="head"><span>P2P &middot; Authenticated</span><div class="led"></div></div>
+        <div class="body">Encrypted validator comms. <span style="color:var(--bone-dim)">p2p::authenticated &middot; cryptography::bls12381 &middot; consensus::simplex</span></div>
+      </div>
+    </div>
+    <div class="block-compare" id="blockCompare">
+      <div class="block-bar"><div class="bar" style="height:0px" data-h="96"></div><div class="time">12s</div><div class="label">ETH</div></div>
+      <div class="block-bar"><div class="bar" style="height:0px" data-h="32"></div><div class="time">400ms</div><div class="label">SOL</div></div>
+      <div class="block-bar"><div class="bar" style="height:0px" data-h="31"></div><div class="time">~390ms</div><div class="label">SUI</div></div>
+      <div class="block-bar highlight"><div class="bar" style="height:0px" data-h="4"></div><div class="time">~50ms</div><div class="label">NUNCHI</div></div>
+    </div>
+    <p class="body-text center" style="margin-top:0.5em;">Not a framework. An anti-framework. Pick-and-choose Rust primitives.</p>
+  </div>
+</div>
+
+<!-- Page 4: HDC -->
+<div class="page" id="page4">
+  <canvas class="bg" id="canvas4"></canvas>
+  <div class="content">
+    <h3>Knowledge</h3>
+    <h2><span class="rose-glow">Hyperdimensional</span> Computing</h2>
+    <div class="hdc-container">
+      <div class="hdc-step active" data-step="0">
+        <div class="chassis">
+          <div class="head"><span>Step 1 &middot; Discovery</span></div>
+          <div class="body">
+            <p style="color:var(--t1);font-family:var(--mono);font-size:12px;margin-bottom:10px;">An agent finds a Uniswap transaction</p>
+            <div class="hdc-code">swap(<span class="hdc-val">USDC</span> &rarr; <span class="hdc-val">WETH</span>, <span class="hdc-val">50,000 USDC</span>, pool <span class="hdc-val">0x88e6...</span>)<br>gas: <span class="hdc-val">142,891</span> &middot; block: <span class="hdc-val">19,847,221</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="hdc-step" data-step="1">
+        <div class="chassis">
+          <div class="head"><span>Step 2 &middot; Encode</span></div>
+          <div class="body">
+            <p style="color:var(--t1);font-family:var(--mono);font-size:12px;margin-bottom:10px;">Each concept gets a random 10,000-bit base vector</p>
+            <div class="hdc-code"><span class="hdc-op">Bind:</span> swap <span class="hdc-op">&oplus;</span> USDC <span class="hdc-op">&oplus;</span> WETH = transaction identity<br><span class="hdc-op">Permute:</span> shift for sequence position<br><span class="hdc-op">Bundle:</span> majority vote &rarr; single episode vector</div>
+          </div>
+        </div>
+      </div>
+      <div class="hdc-step" data-step="2">
+        <div class="chassis">
+          <div class="head"><span>Step 3 &middot; Post to Chain</span></div>
+          <div class="body">
+            <div class="hdc-code">InsightEntry { content, <span class="hdc-val">hypervector (1,250 bytes)</span>, decay_params }<br>&rarr; Transaction &rarr; Validator &rarr; <span class="hdc-op">sm_root</span> updated</div>
+          </div>
+        </div>
+      </div>
+      <div class="hdc-step" data-step="3">
+        <div class="chassis">
+          <div class="head"><span>Step 4 &middot; Search</span></div>
+          <div class="body">
+            <p style="color:var(--t1);font-family:var(--mono);font-size:12px;margin-bottom:10px;">Future agent queries the knowledge base</p>
+            <div class="hdc-code">Query: "<span class="hdc-val">Uniswap USDC pool large swap</span>"<br>&rarr; Encode to hypervector<br>&rarr; Hamming distance search<br>&rarr; Top-K in <span class="hdc-op">0.17ms</span> (vs 12ms for float embeddings)</div>
+          </div>
+        </div>
+      </div>
+      <div class="hdc-step" data-step="4">
+        <div class="chassis">
+          <div class="head"><span>Step 5 &middot; Compound</span></div>
+          <div class="body">
+            <div class="hdc-code">10 confirmations = <span class="hdc-op">6x half-life</span><br>Knowledge many agents verify becomes <span class="hdc-val">long-lived</span>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="hdc-step-nav" id="hdcNav"></div>
+  </div>
+</div>
+
+<!-- Page 5: ISFR -->
+<div class="page" id="page5">
+  <canvas class="bg" id="canvas5"></canvas>
+  <div class="content">
+    <h3>Finance</h3>
+    <h2>The <span class="rose-glow">first</span> of many.</h2>
+    <p class="body-text center" style="margin-bottom:1.2em;">ISFR &mdash; Internet Secured Funding Rate. A composite DeFi benchmark rate, like SOFR for the internet economy. Computed by validators every 10 seconds.</p>
+    <div class="isfr-sources">
+      <div class="isfr-source">
+        <div class="weight">60%</div>
+        <div class="name">Lending</div>
+        <div class="protocols">Aave &middot; Compound<br>Spark &middot; Morpho</div>
+      </div>
+      <div class="isfr-source">
+        <div class="weight">25%</div>
+        <div class="name">Structured</div>
+        <div class="protocols">Pendle &middot; Spectra<br>Term Finance</div>
+      </div>
+      <div class="isfr-source">
+        <div class="weight">10%</div>
+        <div class="name">Funding</div>
+        <div class="protocols">dYdX &middot; Hyperliquid<br>GMX</div>
+      </div>
+      <div class="isfr-source">
+        <div class="weight">5%</div>
+        <div class="name">Staking</div>
+        <div class="protocols">Lido &middot; Rocket Pool<br>Coinbase</div>
+      </div>
+    </div>
+    <p class="body-text center">The $668 trillion gap: traditional finance has SOFR. DeFi has nothing comparable. ISFR proves the pattern &mdash; each new index is a new revenue line, same infrastructure.</p>
+  </div>
+</div>
+
+<!-- Page 6: Collective Intelligence -->
+<div class="page" id="page6">
+  <canvas class="bg" id="canvas6"></canvas>
+  <div class="content">
+    <h3>Network Effects</h3>
+    <h2>Every agent makes <span class="rose-glow">every agent</span> smarter.</h2>
+    <div class="collective-slider-wrap">
+      <span style="font-size:10px;color:var(--t-dim);">5</span>
+      <input type="range" id="agentSlider" min="5" max="1000" value="5">
+      <span style="font-size:10px;color:var(--t-dim);">1000</span>
+      <span class="agent-count-label" id="agentCountLabel">5</span>
+    </div>
+    <p class="body-text center" style="margin-top:1em;">Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents. Demurrage is evaporation. Confirmation is reinforcement.</p>
+    <p class="body-text center" style="margin-top:1em;color:var(--rose-neon);">"The thousandth agent pulls 30,000 tokens of context the first agent never had."</p>
+    <p class="body-text center" style="margin-top:0.8em;font-size:11px;color:var(--dream);">&beta; &asymp; 1.15 &mdash; when agents double, output grows 115%</p>
+  </div>
+</div>
+
+<!-- Overlays -->
+<div class="grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud"><span class="pulse"></span>BLOCK <span id="blockNum">---</span></div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<script>
+// ========== NAVIGATION ==========
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+// Build nav dots
+const navDots = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  navDots.appendChild(dot);
+}
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goToPage(currentPage + 1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); goToPage(currentPage - 1); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); goToPage(currentPage + 1); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); goToPage(currentPage - 1); }
+});
+
+// ========== MIRAGE BLOCK POLLING ==========
+let blockNumber = 0;
+let blockModulation = 0;
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  const hud = document.getElementById('blockHud');
+  hud.classList.add('visible');
+  document.getElementById('blockNum').textContent = n;
+}
+
+// ========== HDC STEP NAVIGATION ==========
+let hdcStep = 0;
+const hdcSteps = document.querySelectorAll('.hdc-step');
+const hdcNavEl = document.getElementById('hdcNav');
+for (let i = 0; i < hdcSteps.length; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'hdc-step-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToHdcStep(i));
+  hdcNavEl.appendChild(dot);
+}
+function goToHdcStep(idx) {
+  hdcSteps.forEach(s => s.classList.remove('active'));
+  hdcSteps[idx].classList.add('active');
+  hdcNavEl.querySelectorAll('.hdc-step-dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+  hdcStep = idx;
+}
+
+// ========== AGENT SLIDER ==========
+const agentSlider = document.getElementById('agentSlider');
+const agentCountLabel = document.getElementById('agentCountLabel');
+let agentCount = 5;
+agentSlider.addEventListener('input', () => {
+  agentCount = parseInt(agentSlider.value);
+  agentCountLabel.textContent = agentCount;
+});
+
+// ========== BLOCK COMPARE ANIMATION ==========
+function animateBlockBars() {
+  document.querySelectorAll('#blockCompare .bar').forEach(bar => {
+    bar.style.height = bar.dataset.h + 'px';
+  });
+}
+
+// ========== PAGE ENTER CALLBACKS ==========
+function onPageEnter(idx) {
+  if (idx === 3) animateBlockBars();
+}
+onPageEnter(0);
+
+// ========== SHARED FLUID INFRASTRUCTURE ==========
+
+function hexToRgb(hex) {
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+function lerpColor(a, b, t) {
+  return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+}
+
+const C = {
+  rose: hexToRgb('#aa7088'),
+  roseNeon: hexToRgb('#dca5bd'),
+  roseDeep: hexToRgb('#3a2030'),
+  roseHot: hexToRgb('#cc90a8'),
+  dream: hexToRgb('#585878'),
+  dreamBright: hexToRgb('#7878a0'),
+  bone: hexToRgb('#c8b890'),
+  jade: hexToRgb('#70887a'),
+  void: hexToRgb('#050507'),
+};
+
+// Simplex-like noise (fast approximation for fluid distortion)
+function noise2D(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return (n - Math.floor(n)) * 2 - 1;
+}
+function smoothNoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = noise2D(ix, iy), b = noise2D(ix+1, iy);
+  const c = noise2D(ix, iy+1), d = noise2D(ix+1, iy+1);
+  return a + (b-a)*sx + (c-a)*sy + (a-b-c+d)*sx*sy;
+}
+function fbm(x, y, octaves) {
+  let val = 0, amp = 0.5, freq = 1;
+  for (let i = 0; i < octaves; i++) {
+    val += amp * smoothNoise(x * freq, y * freq);
+    amp *= 0.5; freq *= 2.1;
+  }
+  return val;
+}
+
+// Create a rendering context for a page canvas
+function FluidRenderer(canvasId, scale) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  const S = scale || 4;
+  let W, H, off, offCtx, img;
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    W = Math.ceil(canvas.width / S);
+    H = Math.ceil(canvas.height / S);
+    off = document.createElement('canvas');
+    off.width = W; off.height = H;
+    offCtx = off.getContext('2d');
+    img = offCtx.createImageData(W, H);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  return {
+    canvas, ctx, off, offCtx,
+    get W() { return W; },
+    get H() { return H; },
+    get img() { return img; },
+    freshImage() { img = offCtx.createImageData(W, H); return img; },
+    flush() {
+      offCtx.putImageData(img, 0, 0);
+    },
+    present() {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+    },
+    // Draw a radial gradient blob overlay on the offscreen canvas
+    drawBlob(x, y, radius, color, alpha) {
+      const grad = offCtx.createRadialGradient(x*W, y*H, 0, x*W, y*H, radius);
+      grad.addColorStop(0, `rgba(${color[0]},${color[1]},${color[2]},${alpha})`);
+      grad.addColorStop(1, `rgba(${color[0]},${color[1]},${color[2]},0)`);
+      offCtx.fillStyle = grad;
+      offCtx.beginPath();
+      offCtx.arc(x*W, y*H, radius, 0, Math.PI*2);
+      offCtx.fill();
+    },
+    drawParticle(x, y, sz, color, alpha) {
+      offCtx.beginPath();
+      offCtx.arc(x*W, y*H, sz, 0, Math.PI*2);
+      offCtx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+      offCtx.fill();
+    },
+    drawLine(x1, y1, x2, y2, color, alpha, width) {
+      offCtx.beginPath();
+      offCtx.moveTo(x1*W, y1*H);
+      offCtx.lineTo(x2*W, y2*H);
+      offCtx.strokeStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+      offCtx.lineWidth = width || 1;
+      offCtx.stroke();
+    }
+  };
+}
+
+// ========== PAGE 0: HERO — MAJESTIC PLASMA / AURORA ==========
+(function() {
+  const R = FluidRenderer('canvas0', 3);
+  if (!R) return;
+
+  // Large slow-moving plasma blobs
+  const blobs = [];
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2;
+    blobs.push({
+      x: 0.5 + Math.cos(angle) * 0.3,
+      y: 0.5 + Math.sin(angle) * 0.25,
+      vx: (Math.random() - 0.5) * 0.00015,
+      vy: (Math.random() - 0.5) * 0.00012,
+      r: 0.12 + Math.random() * 0.18,
+      phase: Math.random() * Math.PI * 2,
+      color: [C.roseNeon, C.roseHot, C.roseDeep, C.rose, C.dream][i % 5]
+    });
+  }
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    // Update blob positions (slow, majestic drift)
+    for (const b of blobs) {
+      b.x += b.vx + Math.sin(ts * 0.15 + b.phase) * 0.00008;
+      b.y += b.vy + Math.cos(ts * 0.12 + b.phase) * 0.00006;
+      // Soft boundary bounce
+      if (b.x < 0.05 || b.x > 0.95) b.vx *= -1;
+      if (b.y < 0.05 || b.y > 0.95) b.vy *= -1;
+      b.x = Math.max(0.02, Math.min(0.98, b.x));
+      b.y = Math.max(0.02, Math.min(0.98, b.y));
+    }
+
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W;
+        const ny = py / H;
+        const idx = (py * W + px) * 4;
+
+        // Metaball field computation
+        let totalField = 0;
+        let cr = 0, cg = 0, cb = 0;
+
+        for (const b of blobs) {
+          const dx = nx - b.x;
+          const dy = (ny - b.y) * 1.2; // slight vertical squash for aurora look
+          const dist2 = dx * dx + dy * dy;
+          const field = (b.r * b.r) / (dist2 + 0.0008);
+          totalField += field;
+          cr += b.color[0] * field;
+          cg += b.color[1] * field;
+          cb += b.color[2] * field;
+        }
+
+        // Fluid distortion via fbm noise
+        const distort = fbm(nx * 3 + ts * 0.08, ny * 3 + ts * 0.05, 3) * 0.15;
+        totalField += distort;
+
+        // Smooth threshold with wide gradient band
+        const threshold = 0.8;
+        const softEdge = 0.6; // wide soft edge for plasma look
+
+        if (totalField > threshold - softEdge) {
+          const rawIntensity = (totalField - (threshold - softEdge)) / (softEdge * 2);
+          const intensity = Math.min(1, Math.max(0, rawIntensity));
+          // Smooth cubic falloff
+          const smooth = intensity * intensity * (3 - 2 * intensity);
+
+          if (totalField > 0.001) {
+            cr /= totalField;
+            cg /= totalField;
+            cb /= totalField;
+          }
+
+          // Aurora shimmer — horizontal wave bands
+          const shimmer = (
+            Math.sin(ny * 12 + ts * 0.4 + nx * 2) * 0.12 +
+            Math.sin(nx * 8 - ts * 0.3) * 0.08
+          );
+          const blockPulse = 1 + blockModulation * 0.3;
+
+          data[idx]   = Math.min(255, (C.void[0] + cr * smooth * (1.1 + shimmer) * blockPulse));
+          data[idx+1] = Math.min(255, (C.void[1] + cg * smooth * (0.85 + shimmer * 0.5) * blockPulse));
+          data[idx+2] = Math.min(255, (C.void[2] + cb * smooth * (1.15 + shimmer * 0.7) * blockPulse));
+          data[idx+3] = 255;
+        } else {
+          // Deep void with faint rose atmosphere
+          const atmosphere = totalField * 0.05;
+          data[idx]   = Math.min(30, C.void[0] + C.roseDeep[0] * atmosphere);
+          data[idx+1] = Math.min(20, C.void[1] + C.roseDeep[1] * atmosphere);
+          data[idx+2] = Math.min(30, C.void[2] + C.roseDeep[2] * atmosphere * 1.3);
+          data[idx+3] = 255;
+        }
+      }
+    }
+
+    R.flush();
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 1: THREE FLUID LAYERS (PERMEABLE MEMBRANE) ==========
+(function() {
+  const R = FluidRenderer('canvas1', 4);
+  if (!R) return;
+
+  // Fluid particles in three bands
+  const particles = [];
+  for (let i = 0; i < 150; i++) {
+    const layer = i < 50 ? 0 : i < 100 ? 1 : 2;
+    const baseY = [0.18, 0.47, 0.76][layer];
+    particles.push({
+      x: Math.random(),
+      y: baseY + (Math.random() - 0.5) * 0.1,
+      layer,
+      speed: (0.0004 + Math.random() * 0.0008) * (layer === 1 ? 1.8 : 1),
+      size: 1.5 + Math.random() * 3,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  // Percolation drops that fall through the middle membrane
+  const drops = [];
+  for (let i = 0; i < 30; i++) {
+    drops.push({
+      x: Math.random(),
+      y: 0.15 + Math.random() * 0.1,
+      vy: 0.0008 + Math.random() * 0.0012,
+      size: 1 + Math.random() * 2,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W, ny = py / H;
+        const idx = (py * W + px) * 4;
+
+        // Three fluid bands with flowing distortion
+        const flow = fbm(nx * 4 + ts * 0.15, ny * 2, 2) * 0.03;
+        let r = 5, g = 5, b = 7;
+
+        // Top band: warm bone fluid
+        const topDist = Math.abs(ny - 0.18 + flow);
+        const topGlow = Math.max(0, 1 - topDist / 0.1) * 0.08;
+        r += C.bone[0] * topGlow;
+        g += C.bone[1] * topGlow;
+        b += C.bone[2] * topGlow * 0.7;
+
+        // Middle band: glowing rose membrane (brightest, pulsing)
+        const midFlow = fbm(nx * 6 + ts * 0.2, ny * 4 + ts * 0.1, 3) * 0.025;
+        const midDist = Math.abs(ny - 0.47 + midFlow);
+        const midGlow = Math.max(0, 1 - midDist / 0.08) * (0.14 + blockModulation * 0.06);
+        const midShimmer = Math.sin(nx * 15 + ts * 0.6) * 0.03 * midGlow;
+        r += C.roseNeon[0] * (midGlow + midShimmer);
+        g += C.roseNeon[1] * (midGlow + midShimmer) * 0.8;
+        b += C.roseNeon[2] * (midGlow + midShimmer) * 1.1;
+
+        // Bottom band: cool dream fluid
+        const botDist = Math.abs(ny - 0.76 + flow * 0.7);
+        const botGlow = Math.max(0, 1 - botDist / 0.1) * 0.07;
+        r += C.dream[0] * botGlow;
+        g += C.dream[1] * botGlow;
+        b += C.dreamBright[2] * botGlow * 1.2;
+
+        data[idx]   = Math.min(255, r);
+        data[idx+1] = Math.min(255, g);
+        data[idx+2] = Math.min(255, b);
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+
+    // Flow particles
+    const layerColors = [C.bone, C.roseNeon, C.dream];
+    const layerAlpha = [0.18, 0.35, 0.18];
+    for (const p of particles) {
+      p.x += p.speed;
+      const yWave = Math.sin(ts * 0.8 + p.phase + p.x * 8) * 0.008;
+      if (p.x > 1.1) p.x = -0.1;
+      R.drawParticle(p.x, p.y + yWave, p.size / 4, layerColors[p.layer], layerAlpha[p.layer]);
+    }
+
+    // Percolation drops
+    for (const d of drops) {
+      d.y += d.vy;
+      d.x += Math.sin(ts * 1.5 + d.phase) * 0.0006;
+      if (d.y > 0.82) { d.y = 0.15; d.x = Math.random(); }
+      // Slow down passing through the membrane (0.42-0.52)
+      const inMembrane = d.y > 0.40 && d.y < 0.54;
+      if (inMembrane) d.y -= d.vy * 0.4;
+      const alpha = inMembrane ? 0.5 : 0.25;
+      const color = inMembrane ? C.roseHot : C.roseNeon;
+      R.drawParticle(d.x, d.y, d.size / 4, color, alpha);
+    }
+
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 2: TWO FLUID RESERVOIRS (STREAM + POOL) ==========
+(function() {
+  const R = FluidRenderer('canvas2', 4);
+  if (!R) return;
+
+  // Roko stream: fast-moving particles
+  const stream = [];
+  for (let i = 0; i < 80; i++) {
+    stream.push({
+      x: Math.random() * 0.42,
+      y: 0.3 + Math.random() * 0.4,
+      vx: 0.002 + Math.random() * 0.004,
+      size: 1.5 + Math.random() * 3,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  // Chain pool: slow metaball blobs
+  const pool = [];
+  for (let i = 0; i < 7; i++) {
+    pool.push({
+      x: 0.62 + Math.random() * 0.3,
+      y: 0.3 + Math.random() * 0.4,
+      r: 0.05 + Math.random() * 0.08,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  // Channel particles mixing between the two
+  const channel = [];
+  for (let i = 0; i < 20; i++) {
+    channel.push({
+      t: Math.random(),
+      speed: 0.001 + Math.random() * 0.002,
+      offset: (Math.random() - 0.5) * 0.04,
+      color: Math.random() > 0.5 ? C.roseNeon : C.dream
+    });
+  }
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W, ny = py / H;
+        const idx = (py * W + px) * 4;
+        let r = 5, g = 5, b = 7;
+
+        // Left: energetic stream glow (laminar flow bands)
+        if (nx < 0.48) {
+          const streamY = 0.5 + fbm(nx * 8 + ts * 0.5, 0, 2) * 0.05;
+          const dist = Math.abs(ny - streamY);
+          const layers = 3;
+          let streamIntensity = 0;
+          for (let l = 0; l < layers; l++) {
+            const layerY = streamY + (l - 1) * 0.06;
+            const layerDist = Math.abs(ny - layerY);
+            const wave = Math.sin(nx * 25 + ts * (1.5 + l * 0.3) + l * 2) * 0.01;
+            streamIntensity += Math.max(0, 0.04 - layerDist) * (1 + wave * 5) * (1 - nx * 1.8);
+          }
+          r += C.roseHot[0] * streamIntensity * 1.5;
+          g += C.roseHot[1] * streamIntensity;
+          b += C.roseHot[2] * streamIntensity * 1.2;
+        }
+
+        // Right: deep still pool (metaball field)
+        if (nx > 0.52) {
+          let poolField = 0;
+          for (const bl of pool) {
+            const bx = bl.x + Math.sin(ts * 0.12 + bl.phase) * 0.025;
+            const by = bl.y + Math.cos(ts * 0.1 + bl.phase) * 0.02;
+            const dx = nx - bx, dy = ny - by;
+            poolField += (bl.r * bl.r) / (dx * dx + dy * dy + 0.003);
+          }
+          const poolI = Math.min(0.1, poolField * 0.025);
+          r += C.dream[0] * poolI;
+          g += C.dream[1] * poolI;
+          b += C.dreamBright[2] * poolI * 1.4;
+        }
+
+        // Center: mixing channel
+        if (nx > 0.42 && nx < 0.58) {
+          const chanDist = Math.abs(ny - 0.5);
+          if (chanDist < 0.1) {
+            const mixT = (nx - 0.42) / 0.16; // 0 at left, 1 at right
+            const turb = fbm(nx * 12 + ts * 0.4, ny * 8, 2) * 0.04;
+            const intensity = (0.1 - chanDist) * (0.5 + turb * 3);
+            const mc = lerpColor(C.roseHot, C.dream, mixT);
+            r += mc[0] * intensity;
+            g += mc[1] * intensity;
+            b += mc[2] * intensity;
+          }
+        }
+
+        data[idx]   = Math.min(255, r);
+        data[idx+1] = Math.min(255, g);
+        data[idx+2] = Math.min(255, b);
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+
+    // Stream particles
+    for (const p of stream) {
+      p.x += p.vx;
+      const yw = Math.sin(ts * 2 + p.phase + p.x * 6) * 0.006;
+      if (p.x > 0.44) { p.x = -0.05; p.y = 0.35 + Math.random() * 0.3; }
+      R.drawParticle(p.x, p.y + yw, p.size / 4, C.roseNeon, 0.25);
+    }
+
+    // Channel flow
+    for (const ch of channel) {
+      ch.t += ch.speed;
+      if (ch.t > 1) ch.t = 0;
+      const cx = 0.42 + ch.t * 0.16;
+      const cy = 0.5 + Math.sin(ts + ch.t * 12) * ch.offset;
+      R.drawParticle(cx, cy, 0.7, ch.color, 0.4);
+    }
+
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 3: CHAIN FLUID DYNAMICS (PIPES + PRESSURE) ==========
+(function() {
+  const R = FluidRenderer('canvas3', 5);
+  if (!R) return;
+
+  // Pipe network
+  const pipes = [];
+  for (let i = 0; i < 5; i++) {
+    const x = 0.15 + i * 0.175;
+    pipes.push({ x1: x, y1: 0.15, x2: x, y2: 0.85, flow: 0.5 + Math.random() * 0.5 });
+  }
+  for (let i = 0; i < 5; i++) {
+    const y = 0.2 + i * 0.15;
+    pipes.push({ x1: 0.12, y1: y, x2: 0.88, y2: y, flow: 0.3 + Math.random() * 0.4 });
+  }
+
+  const junctions = [
+    { x: 0.15, y: 0.15, type: 'chamber', label: 'consensus' },
+    { x: 0.5, y: 0.15, type: 'pump', label: 'validators' },
+    { x: 0.85, y: 0.15, type: 'chamber', label: 'P2P' },
+    { x: 0.325, y: 0.5, type: 'valve', label: 'precompiles' },
+    { x: 0.675, y: 0.5, type: 'valve', label: 'revm' },
+    { x: 0.15, y: 0.85, type: 'reservoir', label: 'knowledge' },
+    { x: 0.5, y: 0.85, type: 'reservoir', label: 'state' },
+    { x: 0.85, y: 0.85, type: 'pump', label: 'finality' },
+  ];
+
+  // Flow particles
+  const flowParts = [];
+  for (let i = 0; i < 100; i++) {
+    flowParts.push({
+      pipeIdx: Math.floor(Math.random() * pipes.length),
+      t: Math.random(),
+      speed: 0.0008 + Math.random() * 0.002,
+      size: 1 + Math.random() * 1.5
+    });
+  }
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    // Background with subtle pressure gradient
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const idx = (py * W + px) * 4;
+        const ny = py / H, nx = px / W;
+        const pressure = fbm(nx * 2 + ts * 0.05, ny * 2, 2) * 0.02;
+        data[idx]   = Math.min(15, 5 + C.roseDeep[0] * Math.abs(pressure));
+        data[idx+1] = Math.min(12, 5 + C.roseDeep[1] * Math.abs(pressure));
+        data[idx+2] = Math.min(18, 7 + C.roseDeep[2] * Math.abs(pressure));
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+
+    // Draw pipes with flowing glow
+    for (const pipe of pipes) {
+      const basePulse = 0.2 + Math.sin(ts * pipe.flow * 0.8) * 0.1 + blockModulation * 0.15;
+      // Draw pipe as thin line
+      R.drawLine(pipe.x1, pipe.y1, pipe.x2, pipe.y2, C.rose, basePulse, 0.8);
+      // Wider glow line
+      R.drawLine(pipe.x1, pipe.y1, pipe.x2, pipe.y2, C.roseDeep, basePulse * 0.6, 2.5);
+    }
+
+    // Junction nodes with typed glow
+    for (const j of junctions) {
+      const pulse = 0.5 + Math.sin(ts * 0.6 + j.x * 12 + j.y * 8) * 0.3;
+      const jc = j.type === 'chamber' ? C.roseNeon :
+                 j.type === 'valve' ? C.jade :
+                 j.type === 'pump' ? C.roseHot : C.dream;
+      const sz = j.type === 'reservoir' ? 6 : j.type === 'chamber' ? 5 : 3.5;
+
+      // Outer glow
+      R.drawBlob(j.x, j.y, (sz + 8) / 5, jc, pulse * 0.08);
+      // Core
+      R.drawParticle(j.x, j.y, sz / 5, jc, pulse * 0.8);
+    }
+
+    // Flow particles along pipes
+    for (const fp of flowParts) {
+      fp.t += fp.speed;
+      if (fp.t > 1) { fp.t = 0; fp.pipeIdx = Math.floor(Math.random() * pipes.length); }
+      const pipe = pipes[fp.pipeIdx];
+      const fx = pipe.x1 + (pipe.x2 - pipe.x1) * fp.t;
+      const fy = pipe.y1 + (pipe.y2 - pipe.y1) * fp.t;
+      R.drawParticle(fx, fy, fp.size / 5, C.roseNeon, 0.5);
+    }
+
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 4: HDC INK-IN-WATER DISPERSION ==========
+(function() {
+  const R = FluidRenderer('canvas4', 3);
+  if (!R) return;
+
+  // Ink drops — each concept is a color of ink
+  const inks = [
+    { cx: 0.25, cy: 0.35, color: C.roseNeon, phase: 0, label: 'swap' },
+    { cx: 0.50, cy: 0.30, color: C.jade,     phase: 1.2, label: 'USDC' },
+    { cx: 0.75, cy: 0.38, color: C.bone,     phase: 2.4, label: 'WETH' },
+    { cx: 0.35, cy: 0.65, color: C.dream,    phase: 3.6, label: 'pool' },
+    { cx: 0.65, cy: 0.62, color: C.roseHot,  phase: 4.8, label: 'gas' },
+  ];
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W, ny = py / H;
+        const idx = (py * W + px) * 4;
+
+        let r = 5, g = 5, b = 8;
+
+        // Water background: very faint turbulent blue-void
+        const waterTurb = fbm(nx * 5 + ts * 0.03, ny * 5 + ts * 0.02, 2) * 0.01;
+        b += 5 * Math.abs(waterTurb);
+
+        for (const ink of inks) {
+          // Moving ink center
+          const ix = ink.cx + Math.sin(ts * 0.15 + ink.phase) * 0.03;
+          const iy = ink.cy + Math.cos(ts * 0.12 + ink.phase * 0.7) * 0.025;
+
+          // Distorted distance (ink dispersing in water with turbulence)
+          const turbX = fbm(nx * 8 + ts * 0.2 + ink.phase, ny * 6, 3) * 0.04;
+          const turbY = fbm(nx * 6, ny * 8 + ts * 0.15 + ink.phase, 3) * 0.04;
+          const dx = nx - ix + turbX;
+          const dy = ny - iy + turbY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          // Ink spread radius oscillates
+          const spread = 0.06 + Math.sin(ts * 0.2 + ink.phase) * 0.02;
+          const maxDist = spread * 3;
+
+          if (dist < maxDist) {
+            // Ink concentration with diffusion pattern
+            const concentration = Math.max(0, 1 - dist / maxDist);
+            // Filamentary structure (ink tendrils)
+            const filament = Math.sin(dist * 60 + Math.atan2(dy, dx) * 3 + ts * 0.5 + ink.phase) * 0.3 + 0.7;
+            const intensity = concentration * concentration * filament * 0.15;
+
+            r += ink.color[0] * intensity;
+            g += ink.color[1] * intensity;
+            b += ink.color[2] * intensity;
+          }
+        }
+
+        data[idx]   = Math.min(255, r);
+        data[idx+1] = Math.min(255, g);
+        data[idx+2] = Math.min(255, b);
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 5: ISFR TRIBUTARY FLOWS ==========
+(function() {
+  const R = FluidRenderer('canvas5', 4);
+  if (!R) return;
+
+  const tributaries = [
+    { sx: 0.08, sy: 0.08, weight: 0.6, color: C.roseNeon, label: 'lending' },
+    { sx: 0.35, sy: 0.04, weight: 0.25, color: C.roseHot, label: 'structured' },
+    { sx: 0.65, sy: 0.04, weight: 0.10, color: C.jade, label: 'funding' },
+    { sx: 0.92, sy: 0.08, weight: 0.05, color: C.bone, label: 'staking' },
+  ];
+
+  // Bezier path for each tributary
+  function tribPath(idx, t) {
+    const tr = tributaries[idx];
+    const ex = 0.5, ey = 0.88;
+    const cx = tr.sx + (ex - tr.sx) * 0.5 + Math.sin(idx * 1.8) * 0.12;
+    const cy = tr.sy + (ey - tr.sy) * 0.35;
+    const x = (1-t)*(1-t)*tr.sx + 2*(1-t)*t*cx + t*t*ex;
+    const y = (1-t)*(1-t)*tr.sy + 2*(1-t)*t*cy + t*t*ey;
+    return { x, y };
+  }
+
+  // Flow particles
+  const flows = [];
+  for (let i = 0; i < 120; i++) {
+    const ti = Math.floor(Math.random() * tributaries.length);
+    flows.push({
+      trib: ti,
+      t: Math.random(),
+      speed: 0.0008 + Math.random() * 0.002,
+      offset: (Math.random() - 0.5) * 0.025,
+      size: 1 + Math.random() * 2.5
+    });
+  }
+
+  function render(t) {
+    const ts = t * 0.001;
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    // Background + tributary glow
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W, ny = py / H;
+        const idx = (py * W + px) * 4;
+        let r = 5, g = 5, b = 7;
+
+        // Tributary glow paths
+        for (let ti = 0; ti < tributaries.length; ti++) {
+          let minDist = 1;
+          for (let s = 0; s <= 1; s += 0.04) {
+            const p = tribPath(ti, s);
+            const d = Math.sqrt((nx - p.x) ** 2 + (ny - p.y) ** 2);
+            if (d < minDist) minDist = d;
+          }
+          const width = 0.015 + tributaries[ti].weight * 0.035;
+          if (minDist < width * 4) {
+            const falloff = Math.max(0, 1 - minDist / (width * 4));
+            const i = falloff * falloff * tributaries[ti].weight * 0.3;
+            const tc = tributaries[ti].color;
+            r += tc[0] * i;
+            g += tc[1] * i;
+            b += tc[2] * i;
+          }
+        }
+
+        // River mouth convergence glow
+        const mouthD = Math.sqrt((nx - 0.5) ** 2 + (ny - 0.88) ** 2);
+        if (mouthD < 0.1) {
+          const glow = (0.1 - mouthD) * (0.6 + Math.sin(ts * 0.6) * 0.15);
+          r += C.roseNeon[0] * glow;
+          g += C.roseNeon[1] * glow * 0.8;
+          b += C.roseNeon[2] * glow;
+        }
+
+        data[idx]   = Math.min(255, r);
+        data[idx+1] = Math.min(255, g);
+        data[idx+2] = Math.min(255, b);
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+
+    // Flow particles along tributary paths
+    for (const fp of flows) {
+      fp.t += fp.speed * (0.5 + tributaries[fp.trib].weight * 2.5);
+      if (fp.t > 1) { fp.t = 0; fp.trib = Math.floor(Math.random() * tributaries.length); }
+      const pos = tribPath(fp.trib, fp.t);
+      const wobble = Math.sin(ts + fp.t * 15) * fp.offset;
+      R.drawParticle(
+        pos.x + wobble,
+        pos.y + Math.cos(ts + fp.t * 12) * fp.offset * 0.7,
+        fp.size / 4, tributaries[fp.trib].color, 0.4
+      );
+    }
+
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+// ========== PAGE 6: COLLECTIVE WATER SIMULATION ==========
+(function() {
+  const R = FluidRenderer('canvas6', 4);
+  if (!R) return;
+
+  const agents = [];
+  function rebuildAgents(count) {
+    agents.length = 0;
+    const n = Math.min(count, 200);
+    for (let i = 0; i < n; i++) {
+      const angle = (i / n) * Math.PI * 2 + Math.random() * 0.5;
+      const radius = 0.1 + Math.random() * 0.3;
+      agents.push({
+        x: 0.5 + Math.cos(angle) * radius,
+        y: 0.5 + Math.sin(angle) * radius,
+        phase: Math.random() * Math.PI * 2,
+        strength: 0.3 + Math.random() * 0.7
+      });
+    }
+  }
+  rebuildAgents(5);
+  let prevCount = 5;
+
+  function render(t) {
+    const ts = t * 0.001;
+
+    if (agentCount !== prevCount) {
+      rebuildAgents(agentCount);
+      prevCount = agentCount;
+    }
+
+    const W = R.W, H = R.H;
+    const img = R.freshImage();
+    const data = img.data;
+
+    const volume = agentCount / 1000; // 0..1
+    const waterLevel = 0.8 - volume * 0.65; // rises as agents increase
+
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        const nx = px / W, ny = py / H;
+        const idx = (py * W + px) * 4;
+        let r = 5, g = 5, b = 7;
+
+        // Water surface with wave interference
+        const surfaceWave = fbm(nx * 4 + ts * 0.2, ts * 0.1, 2) * 0.03 * volume;
+        const surface = waterLevel + surfaceWave;
+
+        if (ny > surface) {
+          const depth = (ny - surface) / (1 - surface);
+
+          // Agent wave interference
+          let waveSum = 0;
+          const maxAgents = Math.min(agents.length, 50); // cap for perf
+          for (let i = 0; i < maxAgents; i++) {
+            const a = agents[i];
+            const dx = nx - a.x, dy = ny - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            waveSum += Math.sin(dist * (20 + volume * 15) - ts * 2 + a.phase) / (1 + dist * 8) * a.strength;
+          }
+          waveSum *= 0.15;
+
+          // Water color: deeper = darker, waves create highlights
+          const baseI = 0.03 + volume * 0.05 + Math.abs(waveSum) * 0.08;
+          const depthDim = 1 - depth * 0.4;
+
+          r += C.rose[0] * baseI * depthDim;
+          g += C.rose[1] * baseI * depthDim * 0.6;
+          b += C.dream[2] * baseI * depthDim * 1.6;
+
+          // Caustics (more complex with more agents)
+          const causticFreq = 12 + volume * 20;
+          const caustic = Math.sin(nx * causticFreq + ts * 0.8) * Math.cos(ny * causticFreq * 0.7 + ts * 0.5) * 0.03 * volume * (1 - depth);
+          if (caustic > 0) {
+            r += C.roseNeon[0] * caustic;
+            g += C.roseNeon[1] * caustic * 0.7;
+            b += C.roseNeon[2] * caustic;
+          }
+        }
+
+        data[idx]   = Math.min(255, Math.max(0, r));
+        data[idx+1] = Math.min(255, Math.max(0, g));
+        data[idx+2] = Math.min(255, Math.max(0, b));
+        data[idx+3] = 255;
+      }
+    }
+
+    R.flush();
+
+    // Draw agent nodes (glow + particle)
+    const nodeAlpha = Math.min(0.7, 0.15 + volume * 0.55);
+    for (let i = 0; i < agents.length; i++) {
+      const a = agents[i];
+      const pulse = 0.5 + Math.sin(ts * 1.2 + a.phase) * 0.3;
+
+      // Glow
+      R.drawBlob(a.x, a.y, (6 + volume * 8) / 4, C.roseNeon, nodeAlpha * pulse * 0.12);
+      // Core
+      R.drawParticle(a.x, a.y, (1.5 + pulse) / 4, C.roseNeon, nodeAlpha * pulse);
+
+      // Connections (knowledge flow lines)
+      if (volume > 0.05) {
+        const maxConn = Math.min(agents.length, i + 6);
+        for (let j = i + 1; j < maxConn; j++) {
+          const b = agents[j];
+          const dist = Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+          const connThreshold = 0.06 + volume * 0.14;
+          if (dist < connThreshold) {
+            const connAlpha = (1 - dist / connThreshold) * volume * 0.15;
+            R.drawLine(a.x, a.y, b.x, b.y, C.rose, connAlpha, 0.4);
+          }
+        }
+      }
+    }
+
+    R.present();
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+
+</script>
+</body>
+</html>

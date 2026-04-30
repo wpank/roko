@@ -1,0 +1,1986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NUNCHI - ORGANISM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-void: #060608;
+  --rose-glow: #dca5bd;
+  --rose: #aa7088;
+  --bone-bright: #d8c8a0;
+  --text-primary: #c8b8c0;
+  --text-strong: #d8c8d0;
+  --text-soft: #988090;
+  --text-dim: #6a5a68;
+  --dream: #7a7a98;
+  --success: #7a8a78;
+  --warning: #c89a68;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Atmosphere overlays */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(6,6,8,0.8) 100%);
+  pointer-events: none; z-index: 9998;
+}
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px, rgba(6,6,8,0.03) 2px, rgba(6,6,8,0.03) 4px
+  );
+  pointer-events: none; z-index: 9999;
+}
+
+/* Grain overlay */
+#grain {
+  position: fixed; inset: 0;
+  opacity: 0.04;
+  pointer-events: none; z-index: 9997;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Chain status HUD */
+#chain-hud {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  z-index: 1000;
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 20px;
+  background: rgba(6,6,8,0.85);
+  border: 1px solid rgba(170,112,136,0.15);
+  backdrop-filter: blur(12px);
+  font-size: 11px; letter-spacing: 0.08em;
+}
+#chain-hud .led {
+  width: 6px; height: 6px;
+  background: var(--text-dim);
+  box-shadow: none;
+  transition: all 0.3s;
+}
+#chain-hud .led.active {
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(122,138,120,0.6);
+}
+#chain-hud .led.flash {
+  background: var(--rose-glow);
+  box-shadow: 0 0 12px rgba(220,165,189,0.8);
+}
+#chain-hud .block-num { color: var(--bone-bright); font-weight: 500; }
+#chain-hud .block-hash { color: var(--text-dim); font-size: 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+#chain-hud .chain-label { color: var(--text-soft); text-transform: uppercase; font-size: 9px; letter-spacing: 0.15em; }
+
+/* Page container */
+#pages {
+  position: relative;
+  width: 100%; height: 100%;
+  overflow: hidden;
+}
+.page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateX(60px);
+  transition: opacity 350ms ease, transform 350ms ease;
+  pointer-events: none;
+  padding: 60px 40px 80px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.page.active {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: all;
+}
+.page.exit-left {
+  opacity: 0;
+  transform: translateX(-60px);
+}
+
+/* Section tags */
+.section-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.page-title {
+  font-family: 'Fraunces', serif;
+  font-size: 42px;
+  font-weight: 300;
+  color: var(--text-strong);
+  margin-bottom: 6px;
+  line-height: 1.1;
+}
+.page-subtitle {
+  font-size: 13px;
+  color: var(--text-soft);
+  margin-bottom: 24px;
+  max-width: 600px;
+  line-height: 1.6;
+}
+
+/* Canvas containers */
+.canvas-container {
+  position: relative;
+  flex: 1;
+  min-height: 400px;
+}
+.canvas-container canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Glass panels */
+.glass-panel {
+  background: rgba(6,6,8,0.7);
+  border: 1px solid rgba(170,112,136,0.12);
+  backdrop-filter: blur(8px);
+  padding: 16px;
+}
+.glass-panel .panel-title {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* Interactive controls */
+.controls-row {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  margin-top: 16px;
+}
+.ctrl-btn {
+  padding: 6px 16px;
+  background: rgba(170,112,136,0.08);
+  border: 1px solid rgba(170,112,136,0.2);
+  color: var(--text-soft);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.ctrl-btn:hover {
+  background: rgba(170,112,136,0.15);
+  color: var(--rose-glow);
+  border-color: rgba(220,165,189,0.3);
+}
+.ctrl-btn.active {
+  background: rgba(170,112,136,0.2);
+  color: var(--rose-glow);
+  border-color: rgba(220,165,189,0.4);
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 160px; height: 2px;
+  background: rgba(170,112,136,0.2);
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px; height: 10px;
+  background: var(--rose);
+  border: none;
+  cursor: pointer;
+}
+
+.slider-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+}
+
+/* Navigation dots */
+#nav-dots {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 12px;
+  z-index: 1000;
+}
+#nav-dots .dot {
+  width: 8px; height: 8px;
+  background: rgba(170,112,136,0.2);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+#nav-dots .dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 8px rgba(170,112,136,0.4);
+}
+#nav-dots .dot:hover {
+  background: rgba(170,112,136,0.5);
+}
+
+/* Arrow hint */
+#arrow-hint {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  animation: pulse-hint 2s ease-in-out infinite;
+}
+@keyframes pulse-hint {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.stat-cell {
+  padding: 12px;
+  background: rgba(6,6,8,0.5);
+  border: 1px solid rgba(170,112,136,0.08);
+}
+.stat-cell .stat-value {
+  font-family: 'Fraunces', serif;
+  font-size: 28px;
+  font-weight: 300;
+  color: var(--bone-bright);
+}
+.stat-cell .stat-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* Page-specific layouts */
+.page-content-split {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+.page-content-split.reverse {
+  grid-template-columns: 320px 1fr;
+}
+
+/* Neuron info overlay */
+.neuron-info {
+  position: absolute;
+  top: 16px; right: 16px;
+  z-index: 10;
+}
+
+/* ISFR vessels */
+.vessel-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.vessel {
+  position: relative;
+  height: 120px;
+  border: 1px solid rgba(170,112,136,0.15);
+  background: rgba(6,6,8,0.5);
+  overflow: hidden;
+}
+.vessel-fill {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  transition: height 0.8s ease;
+}
+.vessel-label {
+  position: absolute;
+  top: 8px; left: 10px;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  z-index: 2;
+}
+.vessel-value {
+  position: absolute;
+  bottom: 8px; right: 10px;
+  font-family: 'Fraunces', serif;
+  font-size: 22px;
+  font-weight: 300;
+  color: var(--text-strong);
+  z-index: 2;
+}
+
+/* Evolution timeline */
+.evolution-phases {
+  display: flex;
+  gap: 2px;
+  margin-top: 12px;
+}
+.evo-phase {
+  flex: 1;
+  padding: 10px;
+  background: rgba(6,6,8,0.5);
+  border: 1px solid rgba(170,112,136,0.08);
+  text-align: center;
+  transition: all 0.3s;
+}
+.evo-phase.active {
+  border-color: rgba(220,165,189,0.3);
+  background: rgba(170,112,136,0.08);
+}
+.evo-phase .phase-name {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.evo-phase.active .phase-name {
+  color: var(--rose-glow);
+}
+.evo-phase .phase-count {
+  font-family: 'Fraunces', serif;
+  font-size: 20px;
+  font-weight: 300;
+  color: var(--text-soft);
+  margin-top: 4px;
+}
+.evo-phase.active .phase-count {
+  color: var(--bone-bright);
+}
+
+/* HDC grid */
+.hdc-grid-display {
+  display: grid;
+  grid-template-columns: repeat(100, 1fr);
+  gap: 0;
+  aspect-ratio: 1;
+  max-width: 500px;
+}
+.hdc-cell {
+  aspect-ratio: 1;
+  transition: background 0.15s;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .page-content-split, .page-content-split.reverse {
+    grid-template-columns: 1fr;
+  }
+  .page { padding: 60px 20px 80px; }
+  .page-title { font-size: 28px; }
+}
+
+/* Custom scrollbar */
+.page::-webkit-scrollbar { width: 3px; }
+.page::-webkit-scrollbar-track { background: transparent; }
+.page::-webkit-scrollbar-thumb { background: rgba(170,112,136,0.2); }
+
+/* Vital signs animation */
+@keyframes heartbeat {
+  0%, 100% { transform: scale(1); }
+  15% { transform: scale(1.05); }
+  30% { transform: scale(1); }
+  45% { transform: scale(1.03); }
+}
+.heartbeat { animation: heartbeat 1.2s ease-in-out infinite; }
+
+/* Neural flash */
+@keyframes neural-flash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.neural-flash-overlay {
+  position: fixed; inset: 0;
+  background: radial-gradient(circle at center, rgba(220,165,189,0.06) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 9996;
+  opacity: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="grain"></div>
+<div class="neural-flash-overlay" id="neural-flash"></div>
+
+<!-- Chain HUD -->
+<div id="chain-hud">
+  <div class="led" id="chain-led"></div>
+  <span class="chain-label">Nunchi Devnet</span>
+  <span class="block-num" id="hud-block">---</span>
+  <span class="block-hash" id="hud-hash">connecting...</span>
+  <span class="chain-label" style="margin-left:8px;font-size:8px;opacity:0.5;" title="USDC: 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 | ClearingHouse: 0x17aB05351fC94a1a67Bf3f56DdbB941aE6c63E25">Chain 1337</span>
+</div>
+
+<!-- Pages -->
+<div id="pages">
+
+  <!-- PAGE 1: NEURAL CHAIN -->
+  <div class="page active" id="page-1" data-page="0">
+    <div class="section-tag">&mdash;&mdash; 01 &middot; NEURAL CHAIN</div>
+    <div class="page-title">Blockchain as Nervous System</div>
+    <div class="page-subtitle">
+      21 validator neurons connected by bright axon lines. Simplex consensus visualized as neural impulses propagating through the network. Each block is a heartbeat.
+    </div>
+    <div class="page-content-split">
+      <div class="canvas-container" id="neural-canvas-container">
+        <canvas id="neural-canvas"></canvas>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="glass-panel neuron-info" style="position:relative;top:0;right:0;">
+          <div class="panel-title">Neuron Activity</div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="stat-cell">
+              <div class="stat-value" id="active-neurons">0</div>
+              <div class="stat-label">Active</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="synapse-count">0</div>
+              <div class="stat-label">Synapses</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="impulse-rate">0</div>
+              <div class="stat-label">Impulse/s</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="consensus-state">IDLE</div>
+              <div class="stat-label">Consensus</div>
+            </div>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Controls</div>
+          <div class="slider-label">
+            Neural Activity
+            <input type="range" id="activity-slider" min="0" max="2" step="0.01" value="1">
+          </div>
+          <div class="controls-row" style="margin-top:12px;">
+            <button class="ctrl-btn active" id="btn-structural" onclick="setNeuralView('structural')">Structural</button>
+            <button class="ctrl-btn" id="btn-heatmap" onclick="setNeuralView('heatmap')">Heatmap</button>
+            <button class="ctrl-btn" id="btn-stimulate" onclick="stimulateNeuron()">Stimulate</button>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Consensus Phases</div>
+          <div style="font-size:10px;color:var(--text-dim);line-height:1.8;">
+            <div><span style="color:var(--rose-glow);">1.</span> Leader fires impulse</div>
+            <div><span style="color:var(--rose-glow);">2.</span> Signal propagates to validators</div>
+            <div><span style="color:var(--rose-glow);">3.</span> 2f+1 neurons activate (notarize)</div>
+            <div><span style="color:var(--rose-glow);">4.</span> Full illumination (finalize)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 2: SYNAPTIC HDC -->
+  <div class="page" id="page-2" data-page="1">
+    <div class="section-tag">&mdash;&mdash; 02 &middot; SYNAPTIC HDC</div>
+    <div class="page-title">Knowledge as Neural Encoding</div>
+    <div class="page-subtitle">
+      Hypervectors as neural firing patterns. 10,000 neurons encode knowledge in sparse binary patterns. BIND, BUNDLE, and PERMUTE operations create new memories.
+    </div>
+    <div class="page-content-split">
+      <div style="display:flex;flex-direction:column;gap:16px;">
+        <div class="canvas-container" style="min-height:340px;" id="hdc-canvas-container">
+          <canvas id="hdc-canvas"></canvas>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Operations</div>
+          <div class="controls-row">
+            <button class="ctrl-btn" id="btn-stimulate-hdc" onclick="hdcStimulate()">Stimulate</button>
+            <button class="ctrl-btn" id="btn-bind" onclick="hdcBind()">Bind (XOR)</button>
+            <button class="ctrl-btn" id="btn-bundle" onclick="hdcBundle()">Bundle (MAJ)</button>
+            <button class="ctrl-btn" id="btn-permute" onclick="hdcPermute()">Permute</button>
+          </div>
+          <div class="slider-label" style="margin-top:12px;">
+            Memory Density
+            <input type="range" id="density-slider" min="0.1" max="0.9" step="0.01" value="0.5">
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="glass-panel">
+          <div class="panel-title">Firing Pattern</div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="stat-cell">
+              <div class="stat-value" id="hdc-active-count">0</div>
+              <div class="stat-label">Active Neurons</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="hdc-sparsity">0%</div>
+              <div class="stat-label">Sparsity</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="hdc-hamming">0</div>
+              <div class="stat-label">Hamming Dist</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="hdc-similarity">0%</div>
+              <div class="stat-label">Similarity</div>
+            </div>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Synaptic Performance</div>
+          <div style="display:flex;gap:16px;margin-top:8px;">
+            <div style="flex:1;">
+              <div style="font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.12em;">HDC Encoding</div>
+              <div style="font-family:'Fraunces',serif;font-size:28px;color:var(--success);">0.17<span style="font-size:12px;color:var(--text-dim);">ms</span></div>
+              <div style="height:3px;background:rgba(122,138,120,0.3);margin-top:6px;">
+                <div style="height:100%;width:1.4%;background:var(--success);"></div>
+              </div>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.12em;">Traditional</div>
+              <div style="font-family:'Fraunces',serif;font-size:28px;color:var(--warning);">12.0<span style="font-size:12px;color:var(--text-dim);">ms</span></div>
+              <div style="height:3px;background:rgba(200,154,104,0.3);margin-top:6px;">
+                <div style="height:100%;width:100%;background:var(--warning);"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Pattern Memory</div>
+          <div id="pattern-count" style="font-family:'Fraunces',serif;font-size:24px;color:var(--bone-bright);">0 patterns</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">stored in neural substrate</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 3: ENDOCRINE -->
+  <div class="page" id="page-3" data-page="2">
+    <div class="section-tag">&mdash;&mdash; 03 &middot; ENDOCRINE</div>
+    <div class="page-title">ISFR as Hormonal Regulation</div>
+    <div class="page-subtitle">
+      The ISFR as the organism's endocrine system. Four hormonal channels regulate the composite rate. The organism maintains homeostasis through adaptive feedback.
+    </div>
+    <div class="page-content-split">
+      <div class="canvas-container" id="endocrine-canvas-container">
+        <canvas id="endocrine-canvas"></canvas>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="glass-panel">
+          <div class="panel-title">Central Gland &mdash; Composite ISFR</div>
+          <div class="heartbeat" style="text-align:center;padding:12px 0;">
+            <div id="composite-rate" style="font-family:'Fraunces',serif;font-size:48px;font-weight:300;color:var(--rose-glow);">0.00%</div>
+            <div style="font-size:9px;color:var(--text-dim);letter-spacing:0.15em;text-transform:uppercase;margin-top:4px;">Weighted Composite</div>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Hormonal Channels</div>
+          <div class="vessel-container" id="vessel-container">
+            <!-- Vessels rendered by JS -->
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Controls</div>
+          <div class="controls-row">
+            <button class="ctrl-btn active" id="btn-v2-mode" onclick="toggleIsfrMode()">V2 Adaptive</button>
+            <button class="ctrl-btn" id="btn-stress" onclick="isfrStress()">Stress Test</button>
+          </div>
+          <div class="slider-label" style="margin-top:12px;">
+            Lending Rate Override
+            <input type="range" id="lending-slider" min="0" max="20" step="0.1" value="5.2" oninput="overrideLending(this.value)">
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Vital Signs</div>
+          <div style="display:flex;gap:12px;">
+            <div style="flex:1;">
+              <canvas id="vitals-canvas" width="280" height="60"></canvas>
+            </div>
+          </div>
+          <div style="font-size:9px;color:var(--text-dim);margin-top:4px;">Confidence &middot; <span id="confidence-label">stable</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 4: EVOLUTION -->
+  <div class="page" id="page-4" data-page="3">
+    <div class="section-tag">&mdash;&mdash; 04 &middot; EVOLUTION</div>
+    <div class="page-title">Exponential Growth as Speciation</div>
+    <div class="page-subtitle">
+      From single-cell organisms to collective intelligence. Watch the ecosystem evolve through colonial, multicellular, neural, and hive-mind phases.
+    </div>
+    <div class="page-content-split">
+      <div style="display:flex;flex-direction:column;gap:16px;flex:1;">
+        <div class="canvas-container" style="min-height:360px;" id="evolution-canvas-container">
+          <canvas id="evolution-canvas"></canvas>
+        </div>
+        <div class="evolution-phases" id="evo-phases">
+          <div class="evo-phase active" data-phase="0">
+            <div class="phase-name">Colonial</div>
+            <div class="phase-count">3</div>
+          </div>
+          <div class="evo-phase" data-phase="1">
+            <div class="phase-name">Multicellular</div>
+            <div class="phase-count">10</div>
+          </div>
+          <div class="evo-phase" data-phase="2">
+            <div class="phase-name">Neural</div>
+            <div class="phase-count">100</div>
+          </div>
+          <div class="evo-phase" data-phase="3">
+            <div class="phase-name">Collective</div>
+            <div class="phase-count">1000</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;width:320px;">
+        <div class="glass-panel">
+          <div class="panel-title">Evolution Controls</div>
+          <div class="slider-label">
+            Timeline
+            <input type="range" id="evo-slider" min="0" max="3" step="0.01" value="0" oninput="setEvolutionPhase(this.value)">
+          </div>
+          <div class="controls-row" style="margin-top:12px;">
+            <button class="ctrl-btn active" id="btn-pheromone" onclick="togglePheromones()">Pheromones</button>
+            <button class="ctrl-btn" id="btn-zoom-evo" onclick="zoomEvolution()">Zoom In</button>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Growth Curves</div>
+          <canvas id="growth-canvas" width="280" height="160"></canvas>
+          <div style="display:flex;gap:16px;margin-top:8px;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;">
+            <span style="color:var(--text-dim);">-- Linear</span>
+            <span style="color:var(--rose);">-- Superlinear</span>
+            <span style="color:var(--bone-bright);">-- Reed's Law</span>
+          </div>
+        </div>
+        <div class="glass-panel">
+          <div class="panel-title">Ecosystem Metrics</div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="stat-cell">
+              <div class="stat-value" id="evo-agents">3</div>
+              <div class="stat-label">Agents</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="evo-connections">2</div>
+              <div class="stat-label">Connections</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="evo-catalytic">0.3</div>
+              <div class="stat-label">Catalytic Score</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-value" id="evo-knowledge">1</div>
+              <div class="stat-label">Knowledge Units</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Navigation -->
+<div id="nav-dots">
+  <div class="dot active" onclick="goToPage(0)"></div>
+  <div class="dot" onclick="goToPage(1)"></div>
+  <div class="dot" onclick="goToPage(2)"></div>
+  <div class="dot" onclick="goToPage(3)"></div>
+</div>
+<div id="arrow-hint">arrow keys to navigate</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─── GLOBALS ───
+let currentPage = 0;
+const totalPages = 4;
+let lastBlockNumber = 0;
+let lastBlockHash = '';
+let chainConnected = false;
+let blockData = { number: 0, hash: '0x0', bytes: new Uint8Array(32) };
+
+// ─── CHAIN POLLING ───
+const RPC_URL = 'http://65.109.61.210:8545/';
+const CHAIN_ID = 1337;
+const CONTRACTS = {
+  USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+  ClearingHouseProxy: '0x17aB05351fC94a1a67Bf3f56DdbB941aE6c63E25'
+};
+
+async function rpcCall(method, params = []) {
+  try {
+    const res = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+    });
+    const data = await res.json();
+    return data.result;
+  } catch(e) {
+    return null;
+  }
+}
+
+function hexToBytes(hex) {
+  hex = hex.replace('0x', '');
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32 && i * 2 < hex.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+async function pollChain() {
+  const blockNumHex = await rpcCall('eth_blockNumber');
+  if (!blockNumHex) {
+    chainConnected = false;
+    document.getElementById('chain-led').className = 'led';
+    return;
+  }
+
+  chainConnected = true;
+  const led = document.getElementById('chain-led');
+  led.className = 'led active';
+
+  const blockNum = parseInt(blockNumHex, 16);
+
+  if (blockNum !== lastBlockNumber) {
+    const block = await rpcCall('eth_getBlockByNumber', [blockNumHex, false]);
+    if (block) {
+      lastBlockNumber = blockNum;
+      lastBlockHash = block.hash || '0x0';
+      blockData = {
+        number: blockNum,
+        hash: lastBlockHash,
+        bytes: hexToBytes(lastBlockHash)
+      };
+
+      document.getElementById('hud-block').textContent = `#${blockNum.toLocaleString()}`;
+      document.getElementById('hud-hash').textContent = lastBlockHash.slice(0, 18) + '...';
+
+      // Neural flash
+      led.className = 'led flash';
+      const flash = document.getElementById('neural-flash');
+      flash.style.opacity = '1';
+      flash.style.animation = 'neural-flash 0.6s ease forwards';
+      setTimeout(() => { flash.style.animation = ''; }, 600);
+      setTimeout(() => { led.className = 'led active'; }, 300);
+
+      onNewBlock(blockData);
+    }
+  }
+}
+
+setInterval(pollChain, 400);
+pollChain();
+
+// ─── NAVIGATION ───
+function goToPage(idx) {
+  if (idx < 0 || idx >= totalPages || idx === currentPage) return;
+
+  const pages = document.querySelectorAll('.page');
+  const dots = document.querySelectorAll('.dot');
+  const prev = pages[currentPage];
+  const next = pages[idx];
+
+  const dir = idx > currentPage ? 1 : -1;
+  prev.classList.remove('active');
+  prev.classList.add(dir > 0 ? 'exit-left' : '');
+  prev.style.transform = `translateX(${-dir * 60}px)`;
+
+  next.style.transform = `translateX(${dir * 60}px)`;
+  next.classList.remove('exit-left');
+
+  requestAnimationFrame(() => {
+    next.classList.add('active');
+  });
+
+  setTimeout(() => { prev.style.transform = ''; prev.classList.remove('exit-left'); }, 350);
+
+  dots[currentPage].classList.remove('active');
+  dots[idx].classList.add('active');
+  currentPage = idx;
+}
+window.goToPage = goToPage;
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); goToPage(currentPage + 1); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); goToPage(currentPage - 1); }
+});
+
+// ─── NEW BLOCK HANDLER ───
+function onNewBlock(data) {
+  updateNeuralChain(data);
+  updateHDC(data);
+  updateEndocrine(data);
+  updateEvolution(data);
+}
+
+// ══════════════════════════════════════════════════════════
+// PAGE 1: NEURAL CHAIN — Three.js
+// ══════════════════════════════════════════════════════════
+
+let neuralScene, neuralCamera, neuralRenderer;
+let neurons = [], axons = [], impulses = [];
+let neuralViewMode = 'structural';
+let neuralActivity = 1.0;
+let consensusPhase = 0;
+let leaderIndex = 0;
+let neuronActivations = new Float32Array(21);
+let impulseRate = 0;
+let impulseCount = 0;
+
+function initNeuralChain() {
+  const container = document.getElementById('neural-canvas-container');
+  const canvas = document.getElementById('neural-canvas');
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+
+  neuralScene = new THREE.Scene();
+  neuralCamera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100);
+  neuralCamera.position.set(0, 0, 14);
+
+  neuralRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  neuralRenderer.setSize(w, h);
+  neuralRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  neuralRenderer.setClearColor(0x060608, 1);
+
+  // Create 21 validator neurons in organic layout
+  const neuronGeom = new THREE.IcosahedronGeometry(0.18, 1);
+  const neuronMat = new THREE.MeshBasicMaterial({ color: 0xaa7088, transparent: true, opacity: 0.7 });
+
+  for (let i = 0; i < 21; i++) {
+    const angle = (i / 21) * Math.PI * 2;
+    const layer = i < 7 ? 1.8 : i < 14 ? 3.5 : 5.0;
+    const x = Math.cos(angle + (i < 7 ? 0 : 0.45)) * layer;
+    const y = Math.sin(angle + (i < 7 ? 0 : 0.45)) * layer;
+    const z = (Math.random() - 0.5) * 1.5;
+
+    const mesh = new THREE.Mesh(neuronGeom, neuronMat.clone());
+    mesh.position.set(x, y, z);
+    mesh.userData = {
+      basePos: new THREE.Vector3(x, y, z),
+      activation: 0,
+      index: i,
+      pulsePhase: Math.random() * Math.PI * 2
+    };
+    neuralScene.add(mesh);
+    neurons.push(mesh);
+    neuronActivations[i] = 0;
+  }
+
+  // HDC deep cluster (center)
+  const hdcGeom = new THREE.SphereGeometry(0.08, 6, 6);
+  const hdcMat = new THREE.MeshBasicMaterial({ color: 0x7a7a98, transparent: true, opacity: 0.4 });
+  for (let i = 0; i < 30; i++) {
+    const m = new THREE.Mesh(hdcGeom, hdcMat.clone());
+    m.position.set(
+      (Math.random() - 0.5) * 1.5,
+      (Math.random() - 0.5) * 1.5,
+      (Math.random() - 0.5) * 0.5
+    );
+    neuralScene.add(m);
+  }
+
+  // Axon connections
+  const axonMat = new THREE.LineBasicMaterial({
+    color: 0xaa7088, transparent: true, opacity: 0.08,
+    blending: THREE.AdditiveBlending
+  });
+
+  for (let i = 0; i < neurons.length; i++) {
+    for (let j = i + 1; j < neurons.length; j++) {
+      const dist = neurons[i].position.distanceTo(neurons[j].position);
+      if (dist < 4.5) {
+        const geom = new THREE.BufferGeometry().setFromPoints([
+          neurons[i].position, neurons[j].position
+        ]);
+        const line = new THREE.Line(geom, axonMat.clone());
+        line.userData = { from: i, to: j, baseOpacity: 0.08 };
+        neuralScene.add(line);
+        axons.push(line);
+      }
+    }
+  }
+
+  // ISFR sensory nerve bundles (4 directions)
+  const sensorColors = [0xdca5bd, 0xd8c8a0, 0x7a8a78, 0xc89a68];
+  const sensorAngles = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+  for (let s = 0; s < 4; s++) {
+    const a = sensorAngles[s];
+    for (let f = 0; f < 5; f++) {
+      const pts = [];
+      const startR = 6.5;
+      const endR = 4.0;
+      const spread = (f - 2) * 0.15;
+      pts.push(new THREE.Vector3(Math.cos(a + spread) * startR, Math.sin(a + spread) * startR, 0));
+      pts.push(new THREE.Vector3(Math.cos(a) * endR, Math.sin(a) * endR, 0));
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geom, new THREE.LineBasicMaterial({
+        color: sensorColors[s], transparent: true, opacity: 0.12,
+        blending: THREE.AdditiveBlending
+      }));
+      neuralScene.add(line);
+    }
+  }
+
+  // Background neural dust
+  const dustGeom = new THREE.BufferGeometry();
+  const dustPositions = new Float32Array(600 * 3);
+  for (let i = 0; i < 600; i++) {
+    dustPositions[i * 3] = (Math.random() - 0.5) * 20;
+    dustPositions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+    dustPositions[i * 3 + 2] = (Math.random() - 0.5) * 6;
+  }
+  dustGeom.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+  const dustMat = new THREE.PointsMaterial({
+    color: 0xaa7088, size: 0.03, transparent: true, opacity: 0.15,
+    blending: THREE.AdditiveBlending
+  });
+  neuralScene.add(new THREE.Points(dustGeom, dustMat));
+
+  // Interaction: click to stimulate
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, neuralCamera);
+    const intersects = raycaster.intersectObjects(neurons);
+    if (intersects.length > 0) {
+      const idx = intersects[0].object.userData.index;
+      fireNeuron(idx);
+    }
+  });
+
+  document.getElementById('synapse-count').textContent = axons.length;
+}
+
+function fireNeuron(idx) {
+  neuronActivations[idx] = 1.0;
+  impulseCount++;
+
+  // Propagate to connected neurons with delay
+  axons.forEach(a => {
+    if (a.userData.from === idx || a.userData.to === idx) {
+      const target = a.userData.from === idx ? a.userData.to : a.userData.from;
+      setTimeout(() => {
+        neuronActivations[target] = Math.min(1, neuronActivations[target] + 0.7);
+        impulseCount++;
+      }, 100 + Math.random() * 200);
+    }
+  });
+}
+
+function stimulateNeuron() {
+  const idx = Math.floor(Math.random() * 21);
+  fireNeuron(idx);
+  // Cascade
+  setTimeout(() => fireNeuron((idx + 7) % 21), 200);
+  setTimeout(() => fireNeuron((idx + 14) % 21), 400);
+}
+window.stimulateNeuron = stimulateNeuron;
+
+function setNeuralView(mode) {
+  neuralViewMode = mode;
+  document.getElementById('btn-structural').classList.toggle('active', mode === 'structural');
+  document.getElementById('btn-heatmap').classList.toggle('active', mode === 'heatmap');
+}
+window.setNeuralView = setNeuralView;
+
+function runConsensus(blockBytes) {
+  leaderIndex = blockBytes[0] % 21;
+  consensusPhase = 0;
+
+  // Phase 1: Leader fires
+  fireNeuron(leaderIndex);
+
+  // Phase 2: Propagate to 14 (2f+1) neurons
+  setTimeout(() => {
+    consensusPhase = 1;
+    const activated = new Set([leaderIndex]);
+    for (let i = 0; i < 14; i++) {
+      const target = (leaderIndex + blockBytes[i + 1] % 20 + 1) % 21;
+      if (!activated.has(target)) {
+        activated.add(target);
+        fireNeuron(target);
+      }
+    }
+    document.getElementById('consensus-state').textContent = 'NOTARIZE';
+  }, 150);
+
+  // Phase 3: Full illumination
+  setTimeout(() => {
+    consensusPhase = 2;
+    for (let i = 0; i < 21; i++) neuronActivations[i] = 1.0;
+    document.getElementById('consensus-state').textContent = 'FINALIZED';
+  }, 400);
+
+  // Reset
+  setTimeout(() => {
+    consensusPhase = 0;
+    document.getElementById('consensus-state').textContent = 'IDLE';
+  }, 1200);
+}
+
+function updateNeuralChain(data) {
+  runConsensus(data.bytes);
+}
+
+function animateNeural(time) {
+  neuralActivity = parseFloat(document.getElementById('activity-slider').value);
+
+  let activeCount = 0;
+
+  neurons.forEach((n, i) => {
+    // Decay activations
+    neuronActivations[i] *= 0.96;
+
+    const activation = neuronActivations[i];
+    if (activation > 0.1) activeCount++;
+
+    // Pulse
+    const pulse = Math.sin(time * 0.002 + n.userData.pulsePhase) * 0.03 * neuralActivity;
+    n.scale.setScalar(1 + pulse + activation * 0.3);
+
+    // Breathing motion
+    n.position.x = n.userData.basePos.x + Math.sin(time * 0.0008 + i) * 0.05 * neuralActivity;
+    n.position.y = n.userData.basePos.y + Math.cos(time * 0.0007 + i * 0.5) * 0.05 * neuralActivity;
+
+    // Color based on mode
+    if (neuralViewMode === 'heatmap') {
+      const r = 0.66 + activation * 0.2;
+      const g = 0.44 - activation * 0.3;
+      const b = 0.53 + activation * 0.2;
+      n.material.color.setRGB(r, g, b);
+      n.material.opacity = 0.4 + activation * 0.6;
+    } else {
+      n.material.color.setRGB(
+        0.66 + activation * 0.2,
+        0.44 - activation * 0.1,
+        0.53 + activation * 0.2
+      );
+      n.material.opacity = 0.5 + activation * 0.5;
+    }
+  });
+
+  // Axon glow
+  axons.forEach(a => {
+    const fromAct = neuronActivations[a.userData.from];
+    const toAct = neuronActivations[a.userData.to];
+    const strength = Math.max(fromAct, toAct);
+    a.material.opacity = a.userData.baseOpacity + strength * 0.4;
+  });
+
+  document.getElementById('active-neurons').textContent = activeCount;
+
+  // Impulse rate calculation
+  if (time % 1000 < 16) {
+    impulseRate = impulseCount;
+    impulseCount = 0;
+    document.getElementById('impulse-rate').textContent = impulseRate;
+  }
+
+  // Slow rotation
+  neuralCamera.position.x = Math.sin(time * 0.0001) * 1.5;
+  neuralCamera.position.y = Math.cos(time * 0.00015) * 0.8;
+  neuralCamera.lookAt(0, 0, 0);
+
+  neuralRenderer.render(neuralScene, neuralCamera);
+}
+
+// ══════════════════════════════════════════════════════════
+// PAGE 2: SYNAPTIC HDC — Canvas 2D (10k neurons)
+// ══════════════════════════════════════════════════════════
+
+let hdcPatternA = null;
+let hdcPatternB = null;
+let hdcResult = null;
+let hdcPatterns = [];
+let hdcAnimPhase = 0;
+let hdcFlashCells = new Set();
+
+function initHDC() {
+  hdcPatternA = generatePattern(0.5);
+  hdcPatternB = generatePattern(0.5);
+  hdcResult = hdcPatternA.slice();
+  hdcPatterns.push(hdcPatternA);
+  updateHDCStats();
+}
+
+function generatePattern(density) {
+  const p = new Uint8Array(10000);
+  for (let i = 0; i < 10000; i++) {
+    p[i] = Math.random() < density ? 1 : 0;
+  }
+  return p;
+}
+
+function hdcStimulate() {
+  const density = parseFloat(document.getElementById('density-slider').value);
+  hdcPatternA = generatePattern(density);
+  hdcResult = hdcPatternA.slice();
+  hdcPatterns.push(hdcPatternA);
+  hdcAnimPhase = 1.0;
+  hdcFlashCells = new Set();
+  for (let i = 0; i < 10000; i++) if (hdcPatternA[i]) hdcFlashCells.add(i);
+  updateHDCStats();
+}
+window.hdcStimulate = hdcStimulate;
+
+function hdcBind() {
+  if (!hdcPatternA || !hdcPatternB) return;
+  hdcResult = new Uint8Array(10000);
+  hdcFlashCells = new Set();
+  for (let i = 0; i < 10000; i++) {
+    hdcResult[i] = hdcPatternA[i] ^ hdcPatternB[i];
+    if (hdcResult[i] !== hdcPatternA[i]) hdcFlashCells.add(i);
+  }
+  hdcAnimPhase = 1.0;
+  hdcPatterns.push(hdcResult);
+  updateHDCStats();
+}
+window.hdcBind = hdcBind;
+
+function hdcBundle() {
+  if (hdcPatterns.length < 2) return;
+  hdcResult = new Uint8Array(10000);
+  hdcFlashCells = new Set();
+  for (let i = 0; i < 10000; i++) {
+    let sum = 0;
+    hdcPatterns.forEach(p => sum += p[i]);
+    hdcResult[i] = sum > hdcPatterns.length / 2 ? 1 : 0;
+    if (hdcResult[i] !== hdcPatternA[i]) hdcFlashCells.add(i);
+  }
+  hdcAnimPhase = 1.0;
+  updateHDCStats();
+}
+window.hdcBundle = hdcBundle;
+
+function hdcPermute() {
+  if (!hdcResult) return;
+  const shifted = new Uint8Array(10000);
+  const shift = 100; // shift by one row
+  hdcFlashCells = new Set();
+  for (let i = 0; i < 10000; i++) {
+    shifted[(i + shift) % 10000] = hdcResult[i];
+    if (shifted[(i + shift) % 10000] !== hdcResult[(i + shift) % 10000]) hdcFlashCells.add((i + shift) % 10000);
+  }
+  hdcResult = shifted;
+  hdcAnimPhase = 1.0;
+  hdcPatterns.push(hdcResult);
+  updateHDCStats();
+}
+window.hdcPermute = hdcPermute;
+
+function hammingDistance(a, b) {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+function updateHDCStats() {
+  if (!hdcResult) return;
+  let active = 0;
+  for (let i = 0; i < 10000; i++) if (hdcResult[i]) active++;
+  document.getElementById('hdc-active-count').textContent = active.toLocaleString();
+  document.getElementById('hdc-sparsity').textContent = ((10000 - active) / 100).toFixed(1) + '%';
+
+  if (hdcPatternA && hdcPatternB) {
+    const hd = hammingDistance(hdcPatternA, hdcPatternB);
+    document.getElementById('hdc-hamming').textContent = hd.toLocaleString();
+    document.getElementById('hdc-similarity').textContent = ((1 - hd / 10000) * 100).toFixed(1) + '%';
+  }
+
+  document.getElementById('pattern-count').textContent = hdcPatterns.length + ' patterns';
+}
+
+function drawHDC(time) {
+  const canvas = document.getElementById('hdc-canvas');
+  const container = document.getElementById('hdc-canvas-container');
+  if (!canvas || !container) return;
+
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  canvas.width = w * Math.min(window.devicePixelRatio, 2);
+  canvas.height = h * Math.min(window.devicePixelRatio, 2);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(Math.min(window.devicePixelRatio, 2), Math.min(window.devicePixelRatio, 2));
+  ctx.fillStyle = '#060608';
+  ctx.fillRect(0, 0, w, h);
+
+  if (!hdcResult) return;
+
+  // Draw 100x100 grid
+  const gridSize = Math.min(w, h) - 20;
+  const cellSize = gridSize / 100;
+  const offsetX = (w - gridSize) / 2;
+  const offsetY = (h - gridSize) / 2;
+
+  hdcAnimPhase *= 0.97;
+
+  for (let i = 0; i < 10000; i++) {
+    const x = (i % 100) * cellSize + offsetX;
+    const y = Math.floor(i / 100) * cellSize + offsetY;
+
+    if (hdcResult[i]) {
+      const isFlash = hdcFlashCells.has(i) && hdcAnimPhase > 0.1;
+      if (isFlash) {
+        ctx.fillStyle = `rgba(220,165,189,${0.5 + hdcAnimPhase * 0.5})`;
+      } else {
+        const pulse = Math.sin(time * 0.003 + i * 0.01) * 0.1;
+        ctx.fillStyle = `rgba(170,112,136,${0.35 + pulse})`;
+      }
+      ctx.fillRect(x, y, cellSize - 0.3, cellSize - 0.3);
+    }
+  }
+
+  // Draw connecting lines for similar regions
+  if (hdcPatternA && hdcPatternB) {
+    ctx.strokeStyle = 'rgba(122,122,152,0.04)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 10000; i += 50) {
+      if (hdcPatternA[i] === hdcPatternB[i] && hdcPatternA[i] === 1) {
+        const x1 = (i % 100) * cellSize + offsetX + cellSize / 2;
+        const y1 = Math.floor(i / 100) * cellSize + offsetY + cellSize / 2;
+        const j = (i + 1) % 10000;
+        if (hdcPatternA[j] === hdcPatternB[j] && hdcPatternA[j] === 1) {
+          const x2 = (j % 100) * cellSize + offsetX + cellSize / 2;
+          const y2 = Math.floor(j / 100) * cellSize + offsetY + cellSize / 2;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+}
+
+function updateHDC(data) {
+  // Block hash drives pattern generation
+  const density = parseFloat(document.getElementById('density-slider').value);
+  hdcPatternB = hdcPatternA ? hdcPatternA.slice() : generatePattern(density);
+  hdcPatternA = new Uint8Array(10000);
+  for (let i = 0; i < 10000; i++) {
+    const byte = data.bytes[i % 32];
+    const bit = (byte >> (i % 8)) & 1;
+    hdcPatternA[i] = Math.random() < (density * 0.5 + bit * 0.5) ? 1 : 0;
+  }
+  hdcResult = hdcPatternA.slice();
+  hdcAnimPhase = 1.0;
+  hdcFlashCells = new Set();
+  for (let i = 0; i < 200; i++) hdcFlashCells.add(Math.floor(Math.random() * 10000));
+  updateHDCStats();
+}
+
+// ══════════════════════════════════════════════════════════
+// PAGE 3: ENDOCRINE (ISFR) — Three.js + Canvas
+// ══════════════════════════════════════════════════════════
+
+let endoScene, endoCamera, endoRenderer;
+let isfrMode = 'v2'; // v1 fixed, v2 adaptive
+let isfrRates = {
+  lending: 5.2, structured: 4.8, funding: 3.1, staking: 2.5
+};
+let isfrWeights = { lending: 0.60, structured: 0.25, funding: 0.10, staking: 0.05 };
+let isfrTargetRates = { ...isfrRates };
+let compositeRate = 0;
+let confidenceHistory = [];
+let glandPulse = 0;
+let vesselParticles = [];
+
+const ISFR_COLORS = {
+  lending: '#dca5bd',
+  structured: '#d8c8a0',
+  funding: '#7a8a78',
+  staking: '#c89a68'
+};
+
+function initEndocrine() {
+  const container = document.getElementById('endocrine-canvas-container');
+  const canvas = document.getElementById('endocrine-canvas');
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+
+  endoScene = new THREE.Scene();
+  endoCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 100);
+  endoCamera.position.set(0, 0, 10);
+
+  endoRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  endoRenderer.setSize(w, h);
+  endoRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  endoRenderer.setClearColor(0x060608, 1);
+
+  // Central gland — pulsing sphere
+  const glandGeom = new THREE.SphereGeometry(1.2, 24, 24);
+  const glandMat = new THREE.MeshBasicMaterial({
+    color: 0xaa7088, transparent: true, opacity: 0.3,
+    wireframe: true
+  });
+  const gland = new THREE.Mesh(glandGeom, glandMat);
+  gland.userData = { type: 'gland' };
+  endoScene.add(gland);
+
+  // Inner glow
+  const innerGeom = new THREE.SphereGeometry(0.8, 16, 16);
+  const innerMat = new THREE.MeshBasicMaterial({
+    color: 0xdca5bd, transparent: true, opacity: 0.15
+  });
+  const inner = new THREE.Mesh(innerGeom, innerMat);
+  inner.userData = { type: 'inner' };
+  endoScene.add(inner);
+
+  // Four vessel lines to the gland
+  const vesselDirs = [
+    new THREE.Vector3(-4, 2, 0),   // lending
+    new THREE.Vector3(4, 2, 0),    // structured
+    new THREE.Vector3(-3, -3, 0),  // funding
+    new THREE.Vector3(3, -3, 0)    // staking
+  ];
+  const vesselColors = [0xdca5bd, 0xd8c8a0, 0x7a8a78, 0xc89a68];
+  const channelNames = ['lending', 'structured', 'funding', 'staking'];
+
+  vesselDirs.forEach((dir, i) => {
+    // Main vessel tube (as lines)
+    const pts = [];
+    for (let t = 0; t <= 1; t += 0.05) {
+      const p = new THREE.Vector3().lerpVectors(dir, new THREE.Vector3(0, 0, 0), t);
+      p.x += Math.sin(t * Math.PI * 3) * 0.15;
+      p.y += Math.cos(t * Math.PI * 2) * 0.1;
+      pts.push(p);
+    }
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({
+      color: vesselColors[i], transparent: true, opacity: 0.2,
+      blending: THREE.AdditiveBlending
+    });
+    const line = new THREE.Line(geom, mat);
+    line.userData = { channel: channelNames[i], vesselIndex: i };
+    endoScene.add(line);
+
+    // Vessel source node
+    const nodeGeom = new THREE.SphereGeometry(0.3, 12, 12);
+    const nodeMat = new THREE.MeshBasicMaterial({
+      color: vesselColors[i], transparent: true, opacity: 0.4
+    });
+    const node = new THREE.Mesh(nodeGeom, nodeMat);
+    node.position.copy(dir);
+    node.userData = { type: 'source', channel: channelNames[i] };
+    endoScene.add(node);
+
+    // Channel label (sprite)
+    // Flowing particles
+    for (let p = 0; p < 8; p++) {
+      const pGeom = new THREE.SphereGeometry(0.04, 4, 4);
+      const pMat = new THREE.MeshBasicMaterial({
+        color: vesselColors[i], transparent: true, opacity: 0.6,
+        blending: THREE.AdditiveBlending
+      });
+      const particle = new THREE.Mesh(pGeom, pMat);
+      particle.userData = {
+        source: dir.clone(),
+        t: Math.random(),
+        speed: 0.003 + Math.random() * 0.004,
+        channel: channelNames[i],
+        baseSize: 0.6 + Math.random() * 0.4
+      };
+      endoScene.add(particle);
+      vesselParticles.push(particle);
+    }
+  });
+
+  // Background particles
+  const bgGeom = new THREE.BufferGeometry();
+  const bgPos = new Float32Array(300 * 3);
+  for (let i = 0; i < 300; i++) {
+    bgPos[i * 3] = (Math.random() - 0.5) * 15;
+    bgPos[i * 3 + 1] = (Math.random() - 0.5) * 15;
+    bgPos[i * 3 + 2] = (Math.random() - 0.5) * 4;
+  }
+  bgGeom.setAttribute('position', new THREE.BufferAttribute(bgPos, 3));
+  const bgMat = new THREE.PointsMaterial({
+    color: 0x7a7a98, size: 0.02, transparent: true, opacity: 0.1,
+    blending: THREE.AdditiveBlending
+  });
+  endoScene.add(new THREE.Points(bgGeom, bgMat));
+
+  // Render ISFR vessels in sidebar
+  renderVessels();
+
+  // Confidence history init
+  for (let i = 0; i < 280; i++) confidenceHistory.push(0.5);
+
+  computeComposite();
+}
+
+function renderVessels() {
+  const container = document.getElementById('vessel-container');
+  container.innerHTML = '';
+
+  const channels = [
+    { key: 'lending', label: 'Lending', weight: '60%', color: ISFR_COLORS.lending },
+    { key: 'structured', label: 'Structured', weight: '25%', color: ISFR_COLORS.structured },
+    { key: 'funding', label: 'Funding', weight: '10%', color: ISFR_COLORS.funding },
+    { key: 'staking', label: 'Staking', weight: '5%', color: ISFR_COLORS.staking }
+  ];
+
+  channels.forEach(ch => {
+    const vessel = document.createElement('div');
+    vessel.className = 'vessel';
+    vessel.id = `vessel-${ch.key}`;
+
+    const fill = document.createElement('div');
+    fill.className = 'vessel-fill';
+    fill.id = `vessel-fill-${ch.key}`;
+    fill.style.background = `linear-gradient(to top, ${ch.color}22, ${ch.color}44)`;
+    fill.style.height = `${(isfrRates[ch.key] / 20) * 100}%`;
+
+    const label = document.createElement('div');
+    label.className = 'vessel-label';
+    label.textContent = `${ch.label} (${ch.weight})`;
+
+    const value = document.createElement('div');
+    value.className = 'vessel-value';
+    value.id = `vessel-value-${ch.key}`;
+    value.textContent = isfrRates[ch.key].toFixed(2) + '%';
+
+    vessel.appendChild(fill);
+    vessel.appendChild(label);
+    vessel.appendChild(value);
+    container.appendChild(vessel);
+  });
+}
+
+function computeComposite() {
+  compositeRate = isfrRates.lending * isfrWeights.lending
+    + isfrRates.structured * isfrWeights.structured
+    + isfrRates.funding * isfrWeights.funding
+    + isfrRates.staking * isfrWeights.staking;
+  document.getElementById('composite-rate').textContent = compositeRate.toFixed(2) + '%';
+}
+
+function toggleIsfrMode() {
+  isfrMode = isfrMode === 'v2' ? 'v1' : 'v2';
+  const btn = document.getElementById('btn-v2-mode');
+  btn.textContent = isfrMode === 'v2' ? 'V2 Adaptive' : 'V1 Fixed';
+  btn.classList.toggle('active', isfrMode === 'v2');
+}
+window.toggleIsfrMode = toggleIsfrMode;
+
+function isfrStress() {
+  // Flood lending to extreme
+  isfrTargetRates.lending = 18.0;
+  setTimeout(() => {
+    if (isfrMode === 'v2') {
+      // Adaptive: self-correct
+      isfrTargetRates.lending = 5.2 + Math.random() * 2;
+    }
+  }, 3000);
+}
+window.isfrStress = isfrStress;
+
+function overrideLending(val) {
+  isfrTargetRates.lending = parseFloat(val);
+}
+window.overrideLending = overrideLending;
+
+function updateEndocrine(data) {
+  // Block hash drives rate perturbation
+  const b = data.bytes;
+  isfrTargetRates.lending = 3.0 + (b[0] / 255) * 8;
+  isfrTargetRates.structured = 2.0 + (b[4] / 255) * 7;
+  isfrTargetRates.funding = 1.0 + (b[8] / 255) * 5;
+  isfrTargetRates.staking = 0.5 + (b[12] / 255) * 4;
+  document.getElementById('lending-slider').value = isfrTargetRates.lending;
+
+  // Confidence from hash entropy
+  const entropy = b.reduce((s, v) => s + v, 0) / (32 * 255);
+  confidenceHistory.push(entropy);
+  if (confidenceHistory.length > 280) confidenceHistory.shift();
+
+  document.getElementById('confidence-label').textContent =
+    entropy > 0.6 ? 'stable' : entropy > 0.4 ? 'nominal' : 'erratic';
+}
+
+function animateEndocrine(time) {
+  // Smooth rate transitions
+  Object.keys(isfrRates).forEach(key => {
+    isfrRates[key] += (isfrTargetRates[key] - isfrRates[key]) * 0.05;
+  });
+
+  // V2 adaptive homeostasis
+  if (isfrMode === 'v2') {
+    const mean = (isfrRates.lending + isfrRates.structured + isfrRates.funding + isfrRates.staking) / 4;
+    Object.keys(isfrTargetRates).forEach(key => {
+      const diff = isfrRates[key] - mean;
+      if (Math.abs(diff) > 3) {
+        isfrTargetRates[key] -= diff * 0.01;
+      }
+    });
+  }
+
+  computeComposite();
+
+  // Update vessel fills
+  Object.keys(isfrRates).forEach(key => {
+    const fill = document.getElementById(`vessel-fill-${key}`);
+    const value = document.getElementById(`vessel-value-${key}`);
+    if (fill) fill.style.height = `${Math.min(100, (isfrRates[key] / 20) * 100)}%`;
+    if (value) value.textContent = isfrRates[key].toFixed(2) + '%';
+  });
+
+  // Gland pulse
+  glandPulse = Math.sin(time * 0.003) * 0.1;
+  endoScene.children.forEach(child => {
+    if (child.userData.type === 'gland') {
+      child.scale.setScalar(1 + glandPulse);
+      child.rotation.y = time * 0.0003;
+      child.rotation.x = Math.sin(time * 0.0002) * 0.1;
+    }
+    if (child.userData.type === 'inner') {
+      child.scale.setScalar(1 + glandPulse * 1.5);
+      const rate = compositeRate / 10;
+      child.material.opacity = 0.1 + rate * 0.1;
+    }
+    if (child.userData.type === 'source') {
+      const rate = isfrRates[child.userData.channel] / 10;
+      child.scale.setScalar(0.8 + rate * 0.4);
+    }
+  });
+
+  // Flowing particles
+  vesselParticles.forEach(p => {
+    const rate = isfrRates[p.userData.channel] / 10;
+    p.userData.t += p.userData.speed * (0.5 + rate);
+    if (p.userData.t > 1) p.userData.t -= 1;
+
+    const t = p.userData.t;
+    const src = p.userData.source;
+    p.position.lerpVectors(src, new THREE.Vector3(0, 0, 0), t);
+    p.position.x += Math.sin(t * Math.PI * 4 + time * 0.003) * 0.1;
+    p.position.y += Math.cos(t * Math.PI * 3 + time * 0.002) * 0.08;
+
+    p.scale.setScalar(p.userData.baseSize * (0.5 + rate * 0.5));
+    p.material.opacity = 0.3 + (1 - Math.abs(t - 0.5) * 2) * 0.5;
+  });
+
+  endoCamera.position.x = Math.sin(time * 0.00008) * 0.5;
+  endoCamera.lookAt(0, 0, 0);
+  endoRenderer.render(endoScene, endoCamera);
+
+  // Vitals canvas
+  drawVitals();
+}
+
+function drawVitals() {
+  const canvas = document.getElementById('vitals-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.fillStyle = 'rgba(6,6,8,0.3)';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = 'rgba(170,112,136,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+
+  const len = Math.min(confidenceHistory.length, w);
+  for (let i = 0; i < len; i++) {
+    const x = (i / len) * w;
+    const y = h - confidenceHistory[confidenceHistory.length - len + i] * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Baseline
+  ctx.strokeStyle = 'rgba(106,90,104,0.2)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ══════════════════════════════════════════════════════════
+// PAGE 4: EVOLUTION — Three.js
+// ══════════════════════════════════════════════════════════
+
+let evoScene, evoCamera, evoRenderer;
+let evoPhase = 0;
+let evoAgents = [];
+let evoConnections = [];
+let pheromonesVisible = true;
+let evoZoomed = false;
+let evoPheromoneLines = [];
+
+function initEvolution() {
+  const container = document.getElementById('evolution-canvas-container');
+  const canvas = document.getElementById('evolution-canvas');
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+
+  evoScene = new THREE.Scene();
+  evoCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 200);
+  evoCamera.position.set(0, 0, 12);
+
+  evoRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  evoRenderer.setSize(w, h);
+  evoRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  evoRenderer.setClearColor(0x060608, 1);
+
+  buildEvolutionPhase(0);
+  drawGrowthCurves();
+}
+
+function buildEvolutionPhase(phase) {
+  // Clear existing agents and connections
+  evoAgents.forEach(a => evoScene.remove(a));
+  evoConnections.forEach(c => evoScene.remove(c));
+  evoPheromoneLines.forEach(p => evoScene.remove(p));
+  evoAgents = [];
+  evoConnections = [];
+  evoPheromoneLines = [];
+
+  const counts = [3, 10, 50, 150]; // max for perf
+  const agentCount = Math.min(counts[Math.floor(phase)], 200);
+  const spread = 2 + phase * 2.5;
+
+  // Organic agent placement using quasi-golden ratio
+  const phi = (1 + Math.sqrt(5)) / 2;
+  const agentGeom = new THREE.IcosahedronGeometry(0.12 - phase * 0.015, phase < 2 ? 1 : 0);
+
+  for (let i = 0; i < agentCount; i++) {
+    const theta = 2 * Math.PI * i / phi;
+    const r = Math.sqrt(i / agentCount) * spread;
+    const x = Math.cos(theta) * r;
+    const y = Math.sin(theta) * r;
+    const z = (Math.random() - 0.5) * (1 + phase * 0.5);
+
+    const hue = (i / agentCount) * 0.15 + 0.9; // rose spectrum
+    const color = new THREE.Color().setHSL(hue % 1, 0.4, 0.5);
+
+    const mat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending
+    });
+    const mesh = new THREE.Mesh(agentGeom, mat);
+    mesh.position.set(x, y, z);
+    mesh.userData = {
+      basePos: new THREE.Vector3(x, y, z),
+      index: i,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.001 + Math.random() * 0.002,
+      cluster: Math.floor(i / (agentCount / Math.max(1, Math.floor(phase) + 1)))
+    };
+    evoScene.add(mesh);
+    evoAgents.push(mesh);
+  }
+
+  // Connections — more at higher phases
+  const connectionDensity = 0.3 + phase * 0.3;
+  const maxConnections = Math.min(agentCount * 3, 250);
+  let connCount = 0;
+
+  const connMat = new THREE.LineBasicMaterial({
+    color: 0xaa7088, transparent: true, opacity: 0.04,
+    blending: THREE.AdditiveBlending
+  });
+
+  for (let i = 0; i < agentCount && connCount < maxConnections; i++) {
+    for (let j = i + 1; j < agentCount && connCount < maxConnections; j++) {
+      const dist = evoAgents[i].position.distanceTo(evoAgents[j].position);
+      const threshold = 2.0 + phase * 0.5;
+      if (dist < threshold && Math.random() < connectionDensity) {
+        const geom = new THREE.BufferGeometry().setFromPoints([
+          evoAgents[i].position, evoAgents[j].position
+        ]);
+        const line = new THREE.Line(geom, connMat.clone());
+        line.userData = { from: i, to: j };
+        evoScene.add(line);
+        evoConnections.push(line);
+        connCount++;
+      }
+    }
+  }
+
+  // Pheromone trails (dimmer, organic curves)
+  if (pheromonesVisible) {
+    const pheromoneMat = new THREE.LineBasicMaterial({
+      color: 0xd8c8a0, transparent: true, opacity: 0.03,
+      blending: THREE.AdditiveBlending
+    });
+
+    for (let i = 0; i < Math.min(agentCount * 0.5, 60); i++) {
+      const a = evoAgents[Math.floor(Math.random() * agentCount)];
+      const b = evoAgents[Math.floor(Math.random() * agentCount)];
+      if (a === b) continue;
+
+      const pts = [];
+      for (let t = 0; t <= 1; t += 0.1) {
+        const p = new THREE.Vector3().lerpVectors(a.position, b.position, t);
+        p.x += Math.sin(t * Math.PI * 2) * 0.3;
+        p.y += Math.cos(t * Math.PI * 3) * 0.2;
+        pts.push(p);
+      }
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geom, pheromoneMat.clone());
+      evoScene.add(line);
+      evoPheromoneLines.push(line);
+    }
+  }
+
+  // Background dust
+  const dustGeom = new THREE.BufferGeometry();
+  const dustPos = new Float32Array(200 * 3);
+  for (let i = 0; i < 200; i++) {
+    dustPos[i * 3] = (Math.random() - 0.5) * 25;
+    dustPos[i * 3 + 1] = (Math.random() - 0.5) * 25;
+    dustPos[i * 3 + 2] = (Math.random() - 0.5) * 8;
+  }
+  dustGeom.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+  const dustMat = new THREE.PointsMaterial({
+    color: 0x7a7a98, size: 0.02, transparent: true, opacity: 0.08
+  });
+  const dust = new THREE.Points(dustGeom, dustMat);
+  dust.userData = { type: 'dust' };
+  evoScene.add(dust);
+
+  updateEvoMetrics(phase);
+}
+
+function setEvolutionPhase(val) {
+  evoPhase = parseFloat(val);
+  const phaseIdx = Math.floor(evoPhase);
+
+  // Update phase indicators
+  document.querySelectorAll('.evo-phase').forEach((el, i) => {
+    el.classList.toggle('active', i === phaseIdx);
+  });
+
+  buildEvolutionPhase(evoPhase);
+}
+window.setEvolutionPhase = setEvolutionPhase;
+
+function togglePheromones() {
+  pheromonesVisible = !pheromonesVisible;
+  document.getElementById('btn-pheromone').classList.toggle('active', pheromonesVisible);
+  evoPheromoneLines.forEach(l => l.visible = pheromonesVisible);
+}
+window.togglePheromones = togglePheromones;
+
+function zoomEvolution() {
+  evoZoomed = !evoZoomed;
+  document.getElementById('btn-zoom-evo').classList.toggle('active', evoZoomed);
+}
+window.zoomEvolution = zoomEvolution;
+
+function updateEvoMetrics(phase) {
+  const counts = [3, 10, 100, 1000];
+  const phaseIdx = Math.min(3, Math.floor(phase));
+  const frac = phase - phaseIdx;
+  const agents = Math.floor(counts[phaseIdx] + (phaseIdx < 3 ? frac * (counts[phaseIdx + 1] - counts[phaseIdx]) : 0));
+
+  document.getElementById('evo-agents').textContent = agents;
+  document.getElementById('evo-connections').textContent = evoConnections.length;
+
+  const catalytic = 0.3 + phase * 0.5;
+  document.getElementById('evo-catalytic').textContent = catalytic.toFixed(1);
+
+  const knowledge = Math.floor(1 + phase * phase * 5);
+  document.getElementById('evo-knowledge').textContent = knowledge;
+}
+
+function updateEvolution(data) {
+  // Block arrival can trigger minor perturbation
+  evoAgents.forEach(a => {
+    a.userData.phase += data.bytes[a.userData.index % 32] * 0.001;
+  });
+}
+
+function drawGrowthCurves() {
+  const canvas = document.getElementById('growth-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.fillStyle = '#060608';
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(106,90,104,0.1)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, (i / 4) * h);
+    ctx.lineTo(w, (i / 4) * h);
+    ctx.stroke();
+  }
+
+  const drawCurve = (fn, color, maxX) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x++) {
+      const t = x / w;
+      const y = h - fn(t * maxX) * h;
+      if (x === 0) ctx.moveTo(x, Math.max(0, y));
+      else ctx.lineTo(x, Math.max(0, Math.min(h, y)));
+    }
+    ctx.stroke();
+  };
+
+  // Linear: f(n) = n/1000
+  drawCurve(n => n / 10, 'rgba(152,128,144,0.5)', 10);
+
+  // Superlinear: f(n) = n*log(n)/1000
+  drawCurve(n => n * Math.log(n + 1) / 25, 'rgba(170,112,136,0.7)', 10);
+
+  // Reed's Law: f(n) = 2^n normalized
+  drawCurve(n => Math.min(1, Math.pow(2, n) / 1024), 'rgba(216,200,160,0.8)', 10);
+
+  // Current phase marker
+  const markerX = (evoPhase / 3) * w;
+  ctx.strokeStyle = 'rgba(220,165,189,0.4)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(markerX, 0);
+  ctx.lineTo(markerX, h);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function animateEvolution(time) {
+  evoAgents.forEach(a => {
+    // Organic breathing motion
+    const bp = a.userData.basePos;
+    const phase = a.userData.phase;
+    a.position.x = bp.x + Math.sin(time * a.userData.speed + phase) * 0.15;
+    a.position.y = bp.y + Math.cos(time * a.userData.speed * 0.7 + phase) * 0.12;
+    a.position.z = bp.z + Math.sin(time * a.userData.speed * 0.5 + phase * 2) * 0.05;
+
+    // Pulse scale
+    const pulse = Math.sin(time * 0.003 + a.userData.index) * 0.15;
+    a.scale.setScalar(1 + pulse);
+  });
+
+  // Camera
+  const targetZ = evoZoomed ? 5 : 12 - evoPhase * 0.5;
+  evoCamera.position.z += (targetZ - evoCamera.position.z) * 0.03;
+  evoCamera.position.x = Math.sin(time * 0.0001) * (evoZoomed ? 0.5 : 1.5);
+  evoCamera.position.y = Math.cos(time * 0.00012) * (evoZoomed ? 0.3 : 0.8);
+  evoCamera.lookAt(0, 0, 0);
+
+  evoRenderer.render(evoScene, evoCamera);
+
+  // Update growth curves with phase marker
+  drawGrowthCurves();
+}
+
+// ══════════════════════════════════════════════════════════
+// INIT + MAIN LOOP
+// ══════════════════════════════════════════════════════════
+
+function handleResize() {
+  const containers = [
+    { c: 'neural-canvas-container', r: neuralRenderer, cam: neuralCamera },
+    { c: 'endocrine-canvas-container', r: endoRenderer, cam: endoCamera },
+    { c: 'evolution-canvas-container', r: evoRenderer, cam: evoCamera }
+  ];
+
+  containers.forEach(({ c, r, cam }) => {
+    if (!r) return;
+    const el = document.getElementById(c);
+    if (!el) return;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    r.setSize(w, h);
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix();
+  });
+}
+
+window.addEventListener('resize', handleResize);
+
+// Initialize all pages
+initNeuralChain();
+initHDC();
+initEndocrine();
+initEvolution();
+
+// Short delay for layout to settle, then resize
+setTimeout(handleResize, 100);
+
+// Main animation loop
+function animate(time) {
+  requestAnimationFrame(animate);
+
+  // Only animate visible page for performance
+  switch (currentPage) {
+    case 0: animateNeural(time); break;
+    case 1: drawHDC(time); break;
+    case 2: animateEndocrine(time); break;
+    case 3: animateEvolution(time); break;
+  }
+}
+
+requestAnimationFrame(animate);
+
+// Activity slider listener
+document.getElementById('activity-slider').addEventListener('input', (e) => {
+  neuralActivity = parseFloat(e.target.value);
+});
+
+</script>
+</body>
+</html>

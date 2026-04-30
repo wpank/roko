@@ -1,0 +1,1856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Series A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════
+   ROSEDUST DESIGN SYSTEM
+   ═══════════════════════════════════════════════════ */
+:root {
+  --bg-void: #060608;
+  --rose-glow: #dca5bd;
+  --rose-mid: #aa7088;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone-bright: #d8c8a0;
+  --bone-mid: #c8b890;
+  --text-primary: #c8b8c0;
+  --text-strong: #d8c8d0;
+  --text-soft: #988090;
+  --text-dim: #6a5a68;
+  --dream: #7a7a98;
+  --dream-bright: #9494b4;
+  --success: #7a8a78;
+  --warning: #c89a68;
+  --danger: #cc5555;
+  --gutter: 64px;
+  --glass-bg: rgba(8,8,12,0.45);
+  --glass-border: rgba(255,255,255,0.07);
+  --glass-highlight: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: 'Fraunces', serif;
+  font-weight: 300;
+  font-size: 18px;
+  line-height: 1.6;
+  overflow: hidden;
+  width: 100%; height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Atmospheric overlays */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9998; opacity: 0.035;
+  mix-blend-mode: overlay;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9997;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px
+  );
+  opacity: 0.06;
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9996;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.6) 100%);
+}
+
+/* ─── Typography ─── */
+.headline {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(36px, 4vw, 64px);
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin-bottom: 24px;
+}
+.body-text {
+  font-family: 'Fraunces', serif;
+  font-weight: 300;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  max-width: 680px;
+}
+.body-text em {
+  color: var(--rose-glow);
+  font-style: italic;
+  text-shadow: 0 0 12px rgba(204,144,168,0.22);
+}
+.body-text strong {
+  color: var(--text-strong);
+  font-weight: 400;
+}
+.label {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--text-dim);
+}
+.value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--bone-bright);
+}
+.big-number {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 38px;
+  color: var(--bone-bright);
+}
+.section-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--text-dim);
+  margin-bottom: 32px;
+}
+
+/* ─── Glass panels ─── */
+.glass {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-highlight);
+}
+
+/* ─── Pages ─── */
+.pages-container {
+  width: 100%; height: 100vh;
+  position: relative; overflow: hidden;
+}
+.page {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: var(--gutter);
+  opacity: 0;
+  transform: translateX(60px);
+  transition: opacity 350ms ease, transform 350ms ease;
+  pointer-events: none;
+  overflow-y: auto;
+}
+.page.active {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+.page.exit-left {
+  opacity: 0;
+  transform: translateX(-60px);
+}
+.page-inner {
+  width: 100%;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+.page-columns {
+  display: flex;
+  gap: 48px;
+  align-items: flex-start;
+}
+.page-columns .text-col {
+  flex: 0 0 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.page-columns .vis-col {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─── Chain Status Bar ─── */
+.chain-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  background: rgba(6,6,8,0.85);
+  border-top: 1px solid rgba(255,255,255,0.04);
+  z-index: 9999;
+  backdrop-filter: blur(8px);
+}
+.chain-led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 6px var(--danger);
+  transition: background 0.4s, box-shadow 0.4s;
+}
+.chain-led.connected {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+.chain-led.reconnecting {
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
+  animation: ledPulse 1s ease-in-out infinite;
+}
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Navigation ─── */
+.nav-dots {
+  position: fixed;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  z-index: 9999;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border: 1px solid var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.3s, border-color 0.3s;
+}
+.nav-dot.active {
+  background: var(--rose-glow);
+  border-color: var(--rose-glow);
+  box-shadow: 0 0 8px rgba(220,165,189,0.3);
+}
+.nav-arrow {
+  position: fixed;
+  bottom: 40px;
+  width: 36px; height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 18px;
+  z-index: 9999;
+  transition: color 0.2s, transform 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--rose-glow); }
+.nav-arrow.left { right: calc(50% + 80px); }
+.nav-arrow.right { left: calc(50% + 80px); }
+
+/* ─── Page-specific layouts ─── */
+.p1-visual {
+  display: flex;
+  gap: 32px;
+  margin-top: 16px;
+}
+.p1-side {
+  flex: 1;
+  position: relative;
+  min-height: 280px;
+}
+.p1-side canvas {
+  width: 100%; height: 280px;
+}
+.p1-arch {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 20px;
+}
+.p1-arch-box {
+  padding: 12px 20px;
+  text-align: center;
+}
+.p1-arch-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.p1-arch-arrow span { font-size: 16px; color: var(--rose-dim); }
+
+/* Page 2 steps */
+.p2-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.p2-step {
+  padding: 8px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  border: 1px solid rgba(255,255,255,0.05);
+  transition: all 0.4s ease;
+  position: relative;
+}
+.p2-step.lit {
+  color: var(--bone-bright);
+  border-color: var(--rose-dim);
+  background: rgba(220,165,189,0.06);
+  box-shadow: 0 0 12px rgba(220,165,189,0.1);
+}
+.p2-step .step-desc {
+  display: block;
+  font-size: 9px;
+  color: var(--text-soft);
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.p2-step.lit .step-desc { opacity: 1; }
+.p2-envelope {
+  margin-top: 20px;
+  padding: 16px 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-soft);
+}
+.p2-envelope .env-key { color: var(--rose-dim); }
+.p2-envelope .env-val { color: var(--bone-bright); }
+.p2-envelope .env-live { color: var(--success); }
+
+/* Page 3 HDC */
+.p3-layout { display: flex; gap: 40px; align-items: flex-start; }
+.p3-text-side { flex: 0 0 380px; }
+.p3-vis-side { flex: 1; min-width: 0; }
+.p3-ribbon-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.p3-ribbon-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity 0.4s, transform 0.4s;
+}
+.p3-ribbon-row.visible { opacity: 1; transform: translateX(0); }
+.p3-ribbon-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  width: 80px;
+  text-align: right;
+  white-space: nowrap;
+}
+.p3-ribbon-canvas { height: 20px; flex: 1; }
+.p3-query-row {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--rose-dim);
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+.p3-query-row.visible { opacity: 1; }
+.p3-race {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.p3-race-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.p3-race-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  width: 160px;
+  text-align: right;
+}
+.p3-race-bar-bg {
+  flex: 1;
+  height: 20px;
+  background: rgba(255,255,255,0.03);
+  position: relative;
+  overflow: hidden;
+}
+.p3-race-bar {
+  height: 100%;
+  width: 0%;
+  transition: width 1.2s ease-out;
+}
+.p3-race-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--bone-bright);
+  width: 80px;
+}
+.p3-race-bar.hdc { background: var(--rose-glow); }
+.p3-race-bar.sql { background: var(--dream-bright); }
+.p3-race-bar.vec { background: var(--text-dim); }
+
+/* Page 4 ISFR */
+.p4-flow {
+  display: flex;
+  gap: 20px;
+  margin-top: 16px;
+  align-items: stretch;
+}
+.p4-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.p4-col-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-align: center;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.p4-source {
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  position: relative;
+  overflow: hidden;
+}
+.p4-source-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-soft);
+}
+.p4-source-rate {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--bone-bright);
+}
+.p4-source-pulse {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(220,165,189,0.08), transparent);
+  animation: sourcePulse 3s ease-in-out infinite;
+}
+@keyframes sourcePulse {
+  0%, 100% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+}
+.p4-agent-node {
+  padding: 10px 14px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-soft);
+  position: relative;
+}
+.p4-agent-label { color: var(--rose-glow); font-size: 11px; }
+.p4-agent-desc { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+.p4-chain-block {
+  padding: 16px;
+  position: relative;
+}
+.p4-oracle-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--rose-dim);
+  letter-spacing: 0.1em;
+  margin-bottom: 12px;
+  text-align: center;
+}
+.p4-rate-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 0;
+}
+.p4-rate-label { color: var(--text-dim); }
+.p4-rate-pct { color: var(--text-soft); }
+.p4-rate-weight { color: var(--text-dim); font-size: 9px; }
+.p4-divider {
+  border: none;
+  border-top: 1px solid var(--text-dim);
+  margin: 6px 0;
+}
+.p4-composite {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  padding: 4px 0;
+}
+.p4-composite-label { color: var(--rose-glow); }
+.p4-composite-val { color: var(--bone-bright); font-size: 18px; }
+.p4-flow-lines {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.p4-bottom-text {
+  margin-top: 20px;
+  font-size: 15px;
+  color: var(--text-soft);
+  max-width: 900px;
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Page 5 swarm */
+.p5-top { display: flex; gap: 40px; align-items: flex-start; }
+.p5-text-side { flex: 0 0 380px; }
+.p5-vis-side { flex: 1; position: relative; min-height: 360px; }
+.p5-canvas-container {
+  width: 100%;
+  height: 320px;
+  position: relative;
+}
+.p5-canvas-container canvas {
+  width: 100%;
+  height: 100%;
+}
+.p5-slider-row {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+}
+.p5-slider-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.p5-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: var(--text-dim);
+  outline: none;
+  cursor: pointer;
+}
+.p5-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  background: var(--rose-glow);
+  border: none;
+  cursor: pointer;
+}
+.p5-slider-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  color: var(--bone-bright);
+  width: 70px;
+  text-align: right;
+}
+.p5-density-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 0 20px;
+}
+.p5-density-bar-bg {
+  flex: 1; height: 4px;
+  background: rgba(255,255,255,0.05);
+  position: relative;
+}
+.p5-density-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--rose-deep), var(--rose-glow));
+  width: 5%;
+  transition: width 0.5s ease;
+}
+.p5-stage-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-soft);
+  margin-top: 8px;
+  padding: 0 20px;
+  min-height: 16px;
+}
+.p5-chart {
+  margin-top: 12px;
+  width: 100%;
+  height: 120px;
+}
+.p5-bottom-text {
+  margin-top: 16px;
+  font-size: 15px;
+  color: var(--text-soft);
+  max-width: 800px;
+}
+
+/* ─── Utility ─── */
+.mb-8 { margin-bottom: 8px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-24 { margin-bottom: 24px; }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+.text-center { text-align: center; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+
+/* ─── Coordinate button ─── */
+.coord-btn {
+  display: inline-block;
+  padding: 10px 24px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  color: var(--rose-glow);
+  border: 1px solid var(--rose-dim);
+  background: transparent;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.3s;
+  margin-top: 12px;
+}
+.coord-btn:hover {
+  background: rgba(220,165,189,0.08);
+  border-color: var(--rose-glow);
+}
+.coord-btn.coordinated {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+@media (max-width: 900px) {
+  .page-columns, .p3-layout, .p5-top, .p1-visual, .p4-flow {
+    flex-direction: column;
+  }
+  .page-columns .text-col, .p3-text-side, .p5-text-side {
+    flex: none;
+    width: 100%;
+  }
+  :root { --gutter: 24px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Atmosphere -->
+<svg class="grain" width="100%" height="100%">
+  <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter>
+  <rect width="100%" height="100%" filter="url(#grain)"/>
+</svg>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Chain Status Bar -->
+<div class="chain-bar">
+  <div class="chain-led" id="chainLed"></div>
+  <span>NUNCHI DEVNET</span>
+  <span id="chainBlock">BLOCK —</span>
+  <span id="chainHash">0x——</span>
+  <span style="margin-left:auto">CHAIN 88888</span>
+</div>
+
+<!-- Navigation -->
+<div class="nav-dots" id="navDots"></div>
+<div class="nav-arrow left" id="navLeft">&#8592;</div>
+<div class="nav-arrow right" id="navRight">&#8594;</div>
+
+<!-- ═══════════════════════════════════════════════════
+     PAGES
+     ═══════════════════════════════════════════════════ -->
+<div class="pages-container">
+
+<!-- ──── PAGE 1: THE COORDINATION PROBLEM ──── -->
+<div class="page active" id="page1" data-page="0">
+  <div class="page-inner">
+    <div class="section-tag">&mdash;&mdash; 01 &middot; THE COORDINATION PROBLEM</div>
+    <div class="headline">Agents fail at coordination, not intelligence</div>
+    <div class="body-text mb-16">
+      79% of multi-agent failures come from coordination &mdash; not capability.
+      Solo agents beat multi-agent ensembles 64% of the time.
+    </div>
+    <div class="body-text mb-16">
+      Nunchi is two things: <em>Roko</em>, an open-source Rust agent runtime, and the
+      <em>Nunchi chain</em>, a sovereign EVM L1 built for agent coordination.
+    </div>
+    <div class="body-text mb-24">
+      Together they give agents identity, memory, verification, and settlement &mdash;
+      the infrastructure between intent and side effect.
+    </div>
+
+    <div class="p1-visual">
+      <div class="p1-side">
+        <div class="label text-center mb-8">WITHOUT COORDINATION</div>
+        <canvas id="p1ChaosCanvas" width="500" height="260"></canvas>
+      </div>
+      <div class="p1-side">
+        <div class="label text-center mb-8">WITH NUNCHI</div>
+        <canvas id="p1OrderCanvas" width="500" height="260"></canvas>
+      </div>
+    </div>
+
+    <div class="p1-arch glass">
+      <div class="p1-arch-box glass">
+        <div class="label mb-8">RUNTIME</div>
+        <div style="color:var(--rose-glow); font-size:20px; font-family:'Fraunces',serif; font-style:italic;">Roko</div>
+      </div>
+      <div class="p1-arch-arrow">
+        <span>&#8596;</span>
+        identity<br>memory<br>gates<br>attestation
+      </div>
+      <div class="p1-arch-box glass">
+        <div class="label mb-8">SETTLEMENT</div>
+        <div style="color:var(--rose-glow); font-size:20px; font-family:'Fraunces',serif; font-style:italic;">Nunchi Chain</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ──── PAGE 2: CHAIN WITNESS ──── -->
+<div class="page" id="page2" data-page="1">
+  <div class="page-inner">
+    <div class="section-tag">&mdash;&mdash; 02 &middot; CHAIN WITNESS</div>
+    <div class="headline">Every agent action becomes a verifiable receipt</div>
+    <div class="body-text mb-8">
+      When an agent acts, the Nunchi chain creates a tamper-evident witness.
+      The 8-step loop: <em>PROMPT &rarr; PLAN &rarr; ROUTE &rarr; GATE &rarr; CALL &rarr; OBSERVE &rarr; DEPOSIT &rarr; ATTEST.</em>
+    </div>
+    <div class="body-text mb-8">
+      Each step is signed, each signature anchored on chain. Not logging &mdash; witnessing.
+      The difference: a log can be edited, a witness cannot.
+    </div>
+    <div class="body-text mb-24">
+      This is what Article 50 of the EU AI Act requires by August 2, 2026.
+      The audit trail isn't bolted on &mdash; it's the architecture.
+    </div>
+
+    <div class="p2-steps" id="p2Steps">
+      <div class="p2-step" data-step="0">PROMPT<span class="step-desc">Intent received</span></div>
+      <div class="p2-step" data-step="1">PLAN<span class="step-desc">Decompose into subtasks</span></div>
+      <div class="p2-step" data-step="2">ROUTE<span class="step-desc">Pick cheapest capable model</span></div>
+      <div class="p2-step" data-step="3">GATE<span class="step-desc">11 gates verify (PII, cost, policy...)</span></div>
+      <div class="p2-step" data-step="4">CALL<span class="step-desc">Execute, signed, time-bounded</span></div>
+      <div class="p2-step" data-step="5">OBSERVE<span class="step-desc">Record tokens, latency, cost</span></div>
+      <div class="p2-step" data-step="6">DEPOSIT<span class="step-desc">HDC fingerprint &rarr; NeuroStore</span></div>
+      <div class="p2-step" data-step="7">ATTEST<span class="step-desc">Ed25519 signature &rarr; chain</span></div>
+    </div>
+
+    <div class="p2-envelope glass" id="p2Envelope">
+      <div><span class="env-key">agent:</span> <span class="env-val">"researcher@v2"</span></div>
+      <div><span class="env-key">action:</span> <span class="env-val">"summarize"</span></div>
+      <div><span class="env-key">cost:</span> <span class="env-val">"$0.003"</span></div>
+      <div><span class="env-key">gates_passed:</span> <span class="env-val">11</span></div>
+      <div><span class="env-key">block:</span> <span class="env-live" id="p2EnvBlock">#—</span></div>
+      <div><span class="env-key">hash:</span> <span class="env-live" id="p2EnvHash">0x——</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ──── PAGE 3: HDC ──── -->
+<div class="page" id="page3" data-page="2">
+  <div class="page-inner">
+    <div class="section-tag">&mdash;&mdash; 03 &middot; HYPERDIMENSIONAL COMPUTING</div>
+    <div class="headline">10,000-bit vectors that search in microseconds</div>
+
+    <div class="p3-layout">
+      <div class="p3-text-side">
+        <div class="body-text mb-16">
+          Imagine encoding everything an agent knows as a single point in 10,000-dimensional space.
+          Two similar experiences land near each other. Two different ones land far apart.
+        </div>
+        <div class="body-text mb-16">
+          Three operations &mdash; <em>Bind</em> (combine concepts), <em>Bundle</em> (merge many),
+          <em>Permute</em> (encode sequence) &mdash; let you compose, search, and compare knowledge in nanoseconds.
+        </div>
+        <div class="body-text mb-24">
+          This isn't a database query. It's holographic recall &mdash;
+          the whole memory participates in every search.
+        </div>
+
+        <div class="body-text mb-8" style="font-size:14px; color:var(--text-soft);">
+          An agent needs knowledge about: <strong>a Uniswap V3 ETH/USDC pool swap that used 180,000 gas on mainnet.</strong>
+        </div>
+      </div>
+
+      <div class="p3-vis-side">
+        <div class="p3-ribbon-container" id="p3Ribbons">
+          <div class="p3-ribbon-row" data-idx="0">
+            <div class="p3-ribbon-label">PROTOCOL</div>
+            <canvas class="p3-ribbon-canvas" height="20"></canvas>
+            <div class="value" style="font-size:10px;">encode("uniswap_v3")</div>
+          </div>
+          <div class="p3-ribbon-row" data-idx="1">
+            <div class="p3-ribbon-label">PAIR</div>
+            <canvas class="p3-ribbon-canvas" height="20"></canvas>
+            <div class="value" style="font-size:10px;">encode("ETH/USDC")</div>
+          </div>
+          <div class="p3-ribbon-row" data-idx="2">
+            <div class="p3-ribbon-label">ACTION</div>
+            <canvas class="p3-ribbon-canvas" height="20"></canvas>
+            <div class="value" style="font-size:10px;">encode("swap")</div>
+          </div>
+          <div class="p3-ribbon-row" data-idx="3">
+            <div class="p3-ribbon-label">GAS</div>
+            <canvas class="p3-ribbon-canvas" height="20"></canvas>
+            <div class="value" style="font-size:10px;">encode("180000")</div>
+          </div>
+          <div class="p3-ribbon-row" data-idx="4">
+            <div class="p3-ribbon-label">CHAIN</div>
+            <canvas class="p3-ribbon-canvas" height="20"></canvas>
+            <div class="value" style="font-size:10px;">encode("mainnet")</div>
+          </div>
+        </div>
+        <div class="p3-query-row glass" id="p3QueryRow">
+          <div class="p3-ribbon-row visible" style="opacity:1; transform:none;">
+            <div class="p3-ribbon-label" style="color:var(--rose-glow);">QUERY</div>
+            <canvas class="p3-ribbon-canvas" id="p3QueryCanvas" height="20"></canvas>
+            <div class="value" style="font-size:10px; color:var(--rose-glow);">Bind(all) &rarr; XOR merged</div>
+          </div>
+        </div>
+
+        <div class="p3-race" id="p3Race">
+          <div class="label mb-8">SEARCH 100,000 STORED EXPERIENCES</div>
+          <div class="p3-race-row">
+            <div class="p3-race-label">HDC HAMMING</div>
+            <div class="p3-race-bar-bg"><div class="p3-race-bar hdc" id="p3BarHdc"></div></div>
+            <div class="p3-race-time" id="p3TimeHdc"></div>
+          </div>
+          <div class="p3-race-row">
+            <div class="p3-race-label">SQL KEYWORD</div>
+            <div class="p3-race-bar-bg"><div class="p3-race-bar sql" id="p3BarSql"></div></div>
+            <div class="p3-race-time" id="p3TimeSql"></div>
+          </div>
+          <div class="p3-race-row">
+            <div class="p3-race-label">QDRANT VECTOR</div>
+            <div class="p3-race-bar-bg"><div class="p3-race-bar vec" id="p3BarVec"></div></div>
+            <div class="p3-race-time" id="p3TimeVec"></div>
+          </div>
+          <div class="body-text mt-16" style="font-size:14px; color:var(--text-soft); max-width:100%;">
+            SQL is fast but can't find semantic similarity. Vector DBs can but take 70x longer. HDC does both. <em>0.17ms exact search. 70x faster than Qdrant. 1,250 bytes per entry.</em>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ──── PAGE 4: ISFR ──── -->
+<div class="page" id="page4" data-page="3">
+  <div class="page-inner">
+    <div class="section-tag">&mdash;&mdash; 04 &middot; ISFR</div>
+    <div class="headline">An agent-native chain enables agent-native finance</div>
+    <div class="body-text mb-8">
+      Because the Nunchi chain understands agents natively, agents can build financial primitives that were impossible before.
+    </div>
+    <div class="body-text mb-8">
+      The <em>ISFR</em> (Internet Secured Funding Rate) is a composite DeFi benchmark &mdash; like SOFR for crypto.
+      Agents continuously query real-time rates from lending protocols, structured vaults, funding markets, and staking yields.
+    </div>
+    <div class="body-text mb-24">
+      Multiple independent agents fetch, verify, and post rates to the chain every 10 seconds.
+      No single point of failure. No single point of manipulation.
+    </div>
+
+    <div class="p4-flow" id="p4Flow" style="position:relative;">
+      <div class="p4-col">
+        <div class="p4-col-title">Sources</div>
+        <div class="p4-source glass" id="src0"><div class="p4-source-pulse"></div><span class="p4-source-name">Aave V3 USDC</span><span class="p4-source-rate" data-base="4.2">4.20%</span></div>
+        <div class="p4-source glass" id="src1"><div class="p4-source-pulse"></div><span class="p4-source-name">Compound V3</span><span class="p4-source-rate" data-base="3.8">3.80%</span></div>
+        <div class="p4-source glass" id="src2"><div class="p4-source-pulse"></div><span class="p4-source-name">Ethena sUSDe</span><span class="p4-source-rate" data-base="12.1">12.10%</span></div>
+        <div class="p4-source glass" id="src3"><div class="p4-source-pulse"></div><span class="p4-source-name">Hyperliquid ETH</span><span class="p4-source-rate" data-base="8.4">8.40%</span></div>
+        <div class="p4-source glass" id="src4"><div class="p4-source-pulse"></div><span class="p4-source-name">ETH Staking</span><span class="p4-source-rate" data-base="3.1">3.10%</span></div>
+      </div>
+
+      <div class="p4-col">
+        <div class="p4-col-title">Agents</div>
+        <div class="p4-agent-node glass"><span class="p4-agent-label">Agent &alpha;</span><div class="p4-agent-desc">Aave + Compound</div></div>
+        <div class="p4-agent-node glass"><span class="p4-agent-label">Agent &beta;</span><div class="p4-agent-desc">Ethena</div></div>
+        <div class="p4-agent-node glass"><span class="p4-agent-label">Agent &gamma;</span><div class="p4-agent-desc">Hyperliquid</div></div>
+        <div class="p4-agent-node glass"><span class="p4-agent-label">Agent &delta;</span><div class="p4-agent-desc">ETH Staking</div></div>
+        <div class="p4-agent-node glass"><span class="p4-agent-label">Agent &epsilon;</span><div class="p4-agent-desc">Cross-validator</div></div>
+      </div>
+
+      <div class="p4-col">
+        <div class="p4-col-title">The Chain</div>
+        <div class="p4-chain-block glass" id="p4ChainBlock">
+          <div class="p4-oracle-label">ISFR ORACLE PRECOMPILE (0xA01)</div>
+          <div class="p4-rate-row"><span class="p4-rate-label">LENDING <span class="p4-rate-weight">(60%)</span></span><span class="p4-rate-pct" id="p4RateLend">3.92%</span></div>
+          <div class="p4-rate-row"><span class="p4-rate-label">STRUCTURED <span class="p4-rate-weight">(25%)</span></span><span class="p4-rate-pct" id="p4RateStruct">12.10%</span></div>
+          <div class="p4-rate-row"><span class="p4-rate-label">FUNDING <span class="p4-rate-weight">(10%)</span></span><span class="p4-rate-pct" id="p4RateFund">8.40%</span></div>
+          <div class="p4-rate-row"><span class="p4-rate-label">STAKING <span class="p4-rate-weight">(5%)</span></span><span class="p4-rate-pct" id="p4RateStake">3.10%</span></div>
+          <hr class="p4-divider">
+          <div class="p4-composite"><span class="p4-composite-label">COMPOSITE ISFR</span><span class="p4-composite-val" id="p4Composite">5.87%</span></div>
+        </div>
+      </div>
+
+      <canvas class="p4-flow-lines" id="p4FlowCanvas"></canvas>
+    </div>
+
+    <div class="p4-bottom-text body-text" style="max-width:900px;">
+      The gap between $668 trillion in TradFi rate derivatives and &lt;$100M in DeFi rate instruments isn't a market inefficiency &mdash; it's a missing primitive. <em>ISFR is that primitive.</em>
+    </div>
+  </div>
+</div>
+
+<!-- ──── PAGE 5: EXPONENTIAL KNOWLEDGE ──── -->
+<div class="page" id="page5" data-page="4">
+  <div class="page-inner">
+    <div class="section-tag">&mdash;&mdash; 05 &middot; EXPONENTIAL KNOWLEDGE</div>
+    <div class="headline">Every agent makes every future agent smarter</div>
+
+    <div class="p5-top">
+      <div class="p5-text-side">
+        <div class="body-text mb-16">
+          When Agent 1 learns that proxy deployments need CREATE2 with a specific salt pattern,
+          that knowledge is deposited as an HDC vector on chain.
+        </div>
+        <div class="body-text mb-16">
+          When Agent 1,000 encounters a similar deployment, it retrieves that knowledge in 0.17ms &mdash;
+          context the first agent never had.
+        </div>
+        <div class="body-text mb-16">
+          This compounds. More agents &rarr; more knowledge &rarr; better agents &rarr; even more knowledge.
+        </div>
+        <div class="body-text mt-16" style="font-size:15px; color:var(--text-soft);">
+          The thousandth agent pulls 30,000 tokens of verified context the first agent never had. This is not a feature. <em>It's a flywheel.</em>
+        </div>
+      </div>
+
+      <div class="p5-vis-side">
+        <div class="p5-canvas-container">
+          <canvas id="p5SwarmCanvas"></canvas>
+        </div>
+        <div class="p5-slider-row glass">
+          <span class="p5-slider-label">Network Size</span>
+          <input type="range" min="5" max="10000" value="5" class="p5-slider" id="p5Slider">
+          <span class="p5-slider-val" id="p5SliderVal">5</span>
+        </div>
+        <div class="p5-density-row">
+          <span class="label">Knowledge Density</span>
+          <div class="p5-density-bar-bg"><div class="p5-density-bar" id="p5DensityBar"></div></div>
+        </div>
+        <div class="p5-stage-text" id="p5StageText">5 agents: isolated</div>
+        <canvas class="p5-chart" id="p5ChartCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- pages-container -->
+
+<script type="module">
+// ═══════════════════════════════════════════════════
+// CHAIN CONNECTION
+// ═══════════════════════════════════════════════════
+const RPC = 'http://127.0.0.1:8545';
+const WS_RPC = 'ws://127.0.0.1:8545';
+const led = document.getElementById('chainLed');
+const blockEl = document.getElementById('chainBlock');
+const hashEl = document.getElementById('chainHash');
+const p2EnvBlock = document.getElementById('p2EnvBlock');
+const p2EnvHash = document.getElementById('p2EnvHash');
+
+let chainState = { block: 0, hash: '0x0000', connected: false };
+let ws = null;
+let pollTimer = null;
+
+function setChainState(blockNum, blockHash) {
+  chainState.block = blockNum;
+  chainState.hash = blockHash;
+  chainState.connected = true;
+  led.className = 'chain-led connected';
+  blockEl.textContent = `BLOCK #${blockNum}`;
+  const short = blockHash.slice(0,6) + '...' + blockHash.slice(-4);
+  hashEl.textContent = short;
+  p2EnvBlock.textContent = `#${blockNum}`;
+  p2EnvHash.textContent = short;
+}
+
+function setDisconnected() {
+  chainState.connected = false;
+  led.className = 'chain-led';
+}
+
+function setReconnecting() {
+  led.className = 'chain-led reconnecting';
+}
+
+async function fetchBlock() {
+  try {
+    const numRes = await fetch(RPC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const numData = await numRes.json();
+    const blockNum = parseInt(numData.result, 16);
+
+    const blkRes = await fetch(RPC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_getBlockByNumber', params: [numData.result, false], id: 2 })
+    });
+    const blkData = await blkRes.json();
+    if (blkData.result) {
+      setChainState(blockNum, blkData.result.hash);
+    }
+  } catch(e) {
+    setDisconnected();
+  }
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  fetchBlock();
+  pollTimer = setInterval(fetchBlock, 400);
+}
+
+function tryWebSocket() {
+  setReconnecting();
+  try {
+    ws = new WebSocket(WS_RPC);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ jsonrpc:'2.0', method:'eth_subscribe', params:['newHeads'], id:1 }));
+    };
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.params && data.params.result) {
+          const h = data.params.result;
+          setChainState(parseInt(h.number, 16), h.hash);
+        } else if (data.result) {
+          // subscription confirmation
+          led.className = 'chain-led connected';
+        }
+      } catch(err) {}
+    };
+    ws.onerror = () => { ws.close(); };
+    ws.onclose = () => {
+      ws = null;
+      startPolling();
+    };
+  } catch(e) {
+    startPolling();
+  }
+}
+
+// Try WS first, fall back to polling
+tryWebSocket();
+setTimeout(() => { if (!chainState.connected) startPolling(); }, 2000);
+
+// ═══════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════
+const pages = document.querySelectorAll('.page');
+const totalPages = pages.length;
+let currentPage = 0;
+const dotsContainer = document.getElementById('navDots');
+
+// Create dots
+for (let i = 0; i < totalPages; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  dotsContainer.appendChild(dot);
+}
+
+function goToPage(idx) {
+  if (idx < 0 || idx >= totalPages || idx === currentPage) return;
+  const dir = idx > currentPage ? 1 : -1;
+  pages[currentPage].classList.remove('active');
+  pages[currentPage].classList.add(dir > 0 ? 'exit-left' : '');
+  setTimeout(() => {
+    pages[currentPage].classList.remove('exit-left');
+    currentPage = idx;
+    pages[currentPage].classList.add('active');
+    pages[currentPage].style.transform = dir > 0 ? 'translateX(60px)' : 'translateX(-60px)';
+    requestAnimationFrame(() => {
+      pages[currentPage].style.transform = '';
+    });
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === currentPage);
+    });
+    onPageEnter(currentPage);
+  }, 100);
+}
+
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') goToPage(currentPage + 1);
+  if (e.key === 'ArrowLeft') goToPage(currentPage - 1);
+});
+
+// ═══════════════════════════════════════════════════
+// PAGE 1: COORDINATION CHAOS/ORDER
+// ═══════════════════════════════════════════════════
+const ROSE = { r: 220, g: 165, b: 189 };
+const BONE = { r: 216, g: 200, b: 160 };
+const RED = { r: 204, g: 85, b: 85 };
+const GREEN = { r: 122, g: 138, b: 120 };
+const DIM = { r: 106, g: 90, b: 104 };
+
+class AgentSim {
+  constructor(canvas, chaotic) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.chaotic = chaotic;
+    this.agents = [];
+    this.coordinated = !chaotic;
+    this.centerX = 0;
+    this.centerY = 0;
+    const n = 8;
+    for (let i = 0; i < n; i++) {
+      this.agents.push({
+        x: 0, y: 0,
+        vx: (Math.random() - 0.5) * 2,
+        vy: (Math.random() - 0.5) * 2,
+        angle: (i / n) * Math.PI * 2,
+        radius: 60 + Math.random() * 40,
+        size: 5 + Math.random() * 3,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+    this.resize();
+    this.t = 0;
+  }
+
+  resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = rect.width * 2;
+    this.canvas.height = rect.height * 2;
+    this.ctx.scale(2, 2);
+    this.w = rect.width;
+    this.h = rect.height;
+    this.centerX = this.w / 2;
+    this.centerY = this.h / 2;
+    for (let a of this.agents) {
+      a.x = this.centerX + (Math.random() - 0.5) * 100;
+      a.y = this.centerY + (Math.random() - 0.5) * 100;
+    }
+  }
+
+  draw() {
+    this.t += 0.01;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+
+    if (this.chaotic && !this.coordinated) {
+      // Chaotic movement
+      for (let a of this.agents) {
+        a.vx += (Math.random() - 0.5) * 0.3;
+        a.vy += (Math.random() - 0.5) * 0.3;
+        a.x += a.vx;
+        a.y += a.vy;
+        if (a.x < 30 || a.x > this.w - 30) a.vx *= -0.8;
+        if (a.y < 30 || a.y > this.h - 30) a.vy *= -0.8;
+        a.x = Math.max(20, Math.min(this.w - 20, a.x));
+        a.y = Math.max(20, Math.min(this.h - 20, a.y));
+      }
+
+      // Tangled lines
+      ctx.strokeStyle = 'rgba(204,85,85,0.2)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < this.agents.length; i++) {
+        for (let j = i + 1; j < this.agents.length; j++) {
+          const a = this.agents[i], b = this.agents[j];
+          const d = Math.hypot(a.x - b.x, a.y - b.y);
+          if (d < 150) {
+            ctx.beginPath();
+            const mx = (a.x + b.x) / 2 + Math.sin(this.t * 3 + i) * 20;
+            const my = (a.y + b.y) / 2 + Math.cos(this.t * 2 + j) * 20;
+            ctx.moveTo(a.x, a.y);
+            ctx.quadraticCurveTo(mx, my, b.x, b.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Agents + X marks
+      for (let i = 0; i < this.agents.length; i++) {
+        const a = this.agents[i];
+        ctx.fillStyle = `rgba(204,85,85,0.7)`;
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, a.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (Math.sin(this.t * 2 + i * 1.5) > 0.3) {
+          ctx.strokeStyle = 'rgba(204,85,85,0.6)';
+          ctx.lineWidth = 2;
+          const s = 8;
+          ctx.beginPath();
+          ctx.moveTo(a.x - s, a.y - s); ctx.lineTo(a.x + s, a.y + s);
+          ctx.moveTo(a.x + s, a.y - s); ctx.lineTo(a.x - s, a.y + s);
+          ctx.stroke();
+        }
+      }
+    } else {
+      // Coordinated: orbit around center
+      // Central hub
+      const pulse = 0.3 + Math.sin(this.t * 2) * 0.1;
+      ctx.fillStyle = `rgba(220,165,189,${pulse})`;
+      ctx.beginPath();
+      ctx.arc(this.centerX, this.centerY, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(220,165,189,0.08)';
+      ctx.beginPath();
+      ctx.arc(this.centerX, this.centerY, 30, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (let i = 0; i < this.agents.length; i++) {
+        const a = this.agents[i];
+        const angle = a.angle + this.t * 0.5;
+        const tx = this.centerX + Math.cos(angle) * a.radius;
+        const ty = this.centerY + Math.sin(angle) * a.radius;
+        a.x += (tx - a.x) * 0.05;
+        a.y += (ty - a.y) * 0.05;
+
+        // Connection to center
+        ctx.strokeStyle = 'rgba(122,138,120,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(this.centerX, this.centerY);
+        ctx.stroke();
+
+        // Data particle along line
+        const pp = (this.t * 0.8 + i * 0.3) % 1;
+        const px = a.x + (this.centerX - a.x) * pp;
+        const py = a.y + (this.centerY - a.y) * pp;
+        ctx.fillStyle = 'rgba(220,165,189,0.5)';
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Agent
+        ctx.fillStyle = 'rgba(122,138,120,0.8)';
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, a.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Check mark
+        if (Math.sin(this.t * 1.5 + i * 1.2) > 0) {
+          ctx.strokeStyle = 'rgba(122,138,120,0.7)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(a.x - 5, a.y);
+          ctx.lineTo(a.x - 1, a.y + 5);
+          ctx.lineTo(a.x + 6, a.y - 4);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+}
+
+const p1Chaos = new AgentSim(document.getElementById('p1ChaosCanvas'), true);
+const p1Order = new AgentSim(document.getElementById('p1OrderCanvas'), false);
+
+// ═══════════════════════════════════════════════════
+// PAGE 2: WITNESS STEP ANIMATION
+// ═══════════════════════════════════════════════════
+let p2StepIdx = -1;
+let p2Timer = null;
+
+function startP2Animation() {
+  stopP2Animation();
+  p2StepIdx = -1;
+  document.querySelectorAll('.p2-step').forEach(s => s.classList.remove('lit'));
+  p2Timer = setInterval(() => {
+    if (p2StepIdx >= 0) {
+      // keep previous lit
+    }
+    p2StepIdx++;
+    if (p2StepIdx >= 8) {
+      // Reset after a pause
+      setTimeout(() => {
+        document.querySelectorAll('.p2-step').forEach(s => s.classList.remove('lit'));
+        p2StepIdx = -1;
+      }, 1500);
+      return;
+    }
+    const step = document.querySelector(`.p2-step[data-step="${p2StepIdx}"]`);
+    if (step) step.classList.add('lit');
+  }, 600);
+}
+
+function stopP2Animation() {
+  if (p2Timer) { clearInterval(p2Timer); p2Timer = null; }
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 3: HDC RIBBONS + RACE
+// ═══════════════════════════════════════════════════
+function seededRandom(seed) {
+  let s = seed;
+  return () => { s = (s * 16807 + 0) % 2147483647; return s / 2147483647; };
+}
+
+const ribbonSeeds = [42, 137, 256, 999, 7654];
+const ribbonColors = [
+  'rgba(220,165,189,0.7)',
+  'rgba(148,148,180,0.7)',
+  'rgba(216,200,160,0.7)',
+  'rgba(122,138,120,0.7)',
+  'rgba(200,152,104,0.7)',
+];
+
+function drawRibbon(canvas, seed, color) {
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * 2;
+  canvas.height = 40;
+  ctx.scale(2, 1);
+  const w = rect.width;
+  const rng = seededRandom(seed);
+  const bits = 120;
+  const bw = w / bits;
+  for (let i = 0; i < bits; i++) {
+    const v = rng();
+    ctx.fillStyle = v > 0.5 ? color : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(i * bw, 2, bw - 1, 16);
+  }
+}
+
+function drawQueryRibbon() {
+  const canvas = document.getElementById('p3QueryCanvas');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * 2;
+  canvas.height = 40;
+  ctx.scale(2, 1);
+  const w = rect.width;
+  const bits = 120;
+  const bw = w / bits;
+  // XOR merge of all seeds
+  for (let i = 0; i < bits; i++) {
+    let xor = 0;
+    for (const seed of ribbonSeeds) {
+      const rng = seededRandom(seed);
+      for (let j = 0; j <= i; j++) rng();
+      xor ^= (seededRandom(seed + i)() > 0.5 ? 1 : 0);
+    }
+    ctx.fillStyle = xor ? 'rgba(220,165,189,0.8)' : 'rgba(255,255,255,0.04)';
+    ctx.fillRect(i * bw, 2, bw - 1, 16);
+  }
+}
+
+let p3AnimDone = false;
+
+function startP3Animation() {
+  if (p3AnimDone) return;
+  const rows = document.querySelectorAll('#p3Ribbons .p3-ribbon-row');
+  rows.forEach((r, i) => {
+    setTimeout(() => {
+      r.classList.add('visible');
+      const canvas = r.querySelector('.p3-ribbon-canvas');
+      drawRibbon(canvas, ribbonSeeds[i], ribbonColors[i]);
+    }, i * 400);
+  });
+  // Query ribbon
+  setTimeout(() => {
+    document.getElementById('p3QueryRow').classList.add('visible');
+    drawQueryRibbon();
+  }, rows.length * 400 + 300);
+
+  // Race bars
+  setTimeout(() => {
+    // HDC
+    document.getElementById('p3BarHdc').style.width = '95%';
+    document.getElementById('p3TimeHdc').textContent = '0.17ms  DONE';
+
+    setTimeout(() => {
+      document.getElementById('p3BarSql').style.width = '40%';
+      document.getElementById('p3TimeSql').textContent = '0.10ms  (no semantic)';
+    }, 200);
+
+    setTimeout(() => {
+      document.getElementById('p3BarVec').style.width = '8%';
+      document.getElementById('p3TimeVec').textContent = '12ms  ...';
+      setTimeout(() => {
+        document.getElementById('p3BarVec').style.width = '60%';
+        document.getElementById('p3TimeVec').textContent = '12ms  done';
+      }, 800);
+    }, 400);
+  }, rows.length * 400 + 800);
+
+  p3AnimDone = true;
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 4: ISFR FLOW LINES + RATE JITTER
+// ═══════════════════════════════════════════════════
+let p4AnimFrame = null;
+let p4Particles = [];
+
+function initP4Particles() {
+  p4Particles = [];
+  for (let i = 0; i < 20; i++) {
+    p4Particles.push({
+      progress: Math.random(),
+      speed: 0.002 + Math.random() * 0.003,
+      srcIdx: Math.floor(Math.random() * 5),
+      agentIdx: Math.floor(Math.random() * 5),
+      phase: Math.random() < 0.5 ? 0 : 1, // 0 = src->agent, 1 = agent->chain
+    });
+  }
+}
+
+function drawP4Flow() {
+  const canvas = document.getElementById('p4FlowCanvas');
+  const container = document.getElementById('p4Flow');
+  const rect = container.getBoundingClientRect();
+  canvas.width = rect.width * 2;
+  canvas.height = rect.height * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+
+  const cols = container.querySelectorAll('.p4-col');
+  const sources = cols[0].querySelectorAll('.p4-source');
+  const agents = cols[1].querySelectorAll('.p4-agent-node');
+  const chainBlock = cols[2].querySelector('.p4-chain-block');
+
+  const cRect = container.getBoundingClientRect();
+
+  function elCenter(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2 - cRect.left, y: r.top + r.height / 2 - cRect.top };
+  }
+
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  // Draw subtle static lines
+  ctx.strokeStyle = 'rgba(220,165,189,0.06)';
+  ctx.lineWidth = 1;
+  // Sources to agents mapping
+  const mapping = [[0,1],[0,1],[2],[3],[4]]; // source -> agent
+  for (let si = 0; si < sources.length; si++) {
+    const sc = elCenter(sources[si]);
+    for (const ai of (si < 2 ? [0] : [Math.min(si, agents.length - 1)])) {
+      const ac = elCenter(agents[ai]);
+      ctx.beginPath(); ctx.moveTo(sc.x, sc.y); ctx.lineTo(ac.x, ac.y); ctx.stroke();
+    }
+  }
+  for (let ai = 0; ai < agents.length; ai++) {
+    const ac = elCenter(agents[ai]);
+    const cc = elCenter(chainBlock);
+    ctx.beginPath(); ctx.moveTo(ac.x, ac.y); ctx.lineTo(cc.x, cc.y); ctx.stroke();
+  }
+
+  // Animated particles
+  for (const p of p4Particles) {
+    p.progress += p.speed;
+    if (p.progress > 1) {
+      p.progress = 0;
+      p.phase = p.phase === 0 ? 1 : 0;
+      if (p.phase === 0) {
+        p.srcIdx = Math.floor(Math.random() * 5);
+        p.agentIdx = Math.min(p.srcIdx, agents.length - 1);
+        if (p.srcIdx < 2) p.agentIdx = 0;
+      }
+    }
+
+    let from, to;
+    if (p.phase === 0) {
+      from = elCenter(sources[p.srcIdx]);
+      to = elCenter(agents[p.agentIdx]);
+    } else {
+      from = elCenter(agents[p.agentIdx]);
+      to = elCenter(chainBlock);
+    }
+
+    const px = from.x + (to.x - from.x) * p.progress;
+    const py = from.y + (to.y - from.y) * p.progress;
+
+    ctx.fillStyle = p.phase === 0 ? 'rgba(148,148,180,0.5)' : 'rgba(220,165,189,0.6)';
+    ctx.beginPath();
+    ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = p.phase === 0 ? 'rgba(148,148,180,0.15)' : 'rgba(220,165,189,0.2)';
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function jitterRates() {
+  const sources = document.querySelectorAll('.p4-source-rate');
+  sources.forEach(el => {
+    const base = parseFloat(el.dataset.base);
+    const jitter = (Math.random() - 0.5) * 0.3;
+    el.textContent = (base + jitter).toFixed(2) + '%';
+  });
+  // Recalc composite
+  const rates = Array.from(sources).map(el => parseFloat(el.textContent));
+  const lending = (rates[0] * 0.6 + rates[1] * 0.4); // weighted avg of lending
+  const structured = rates[2];
+  const funding = rates[3];
+  const staking = rates[4];
+  const composite = lending * 0.6 + structured * 0.25 + funding * 0.1 + staking * 0.05;
+  document.getElementById('p4RateLend').textContent = lending.toFixed(2) + '%';
+  document.getElementById('p4RateStruct').textContent = structured.toFixed(2) + '%';
+  document.getElementById('p4RateFund').textContent = funding.toFixed(2) + '%';
+  document.getElementById('p4RateStake').textContent = staking.toFixed(2) + '%';
+  document.getElementById('p4Composite').textContent = composite.toFixed(2) + '%';
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 5: SWARM + SLIDER
+// ═══════════════════════════════════════════════════
+const p5Canvas = document.getElementById('p5SwarmCanvas');
+const p5Ctx = p5Canvas.getContext('2d');
+let p5Agents = [];
+let p5NetworkSize = 5;
+let p5Particles5 = [];
+let p5T = 0;
+
+const actionLabels = ['deploying contract', 'querying ISFR', 'optimizing gas', 'analyzing pool',
+  'verifying proof', 'routing model', 'posting rate', 'indexing code', 'running gate',
+  'syncing knowledge', 'composing prompt', 'signing witness'];
+
+function initP5Agents(n) {
+  const rect = p5Canvas.getBoundingClientRect();
+  p5Canvas.width = rect.width * 2;
+  p5Canvas.height = rect.height * 2;
+  const w = rect.width;
+  const h = rect.height;
+
+  // Cap visual agents for perf
+  const visualN = Math.min(n, 200);
+  p5Agents = [];
+  for (let i = 0; i < visualN; i++) {
+    p5Agents.push({
+      x: 30 + Math.random() * (w - 60),
+      y: 30 + Math.random() * (h - 60),
+      vx: (Math.random() - 0.5) * 0.5,
+      vy: (Math.random() - 0.5) * 0.5,
+      size: 3 + Math.random() * 2,
+      brightness: 0.3 + Math.random() * 0.4,
+      label: actionLabels[Math.floor(Math.random() * actionLabels.length)],
+      labelTimer: Math.random() * 200,
+      labelShow: 0,
+    });
+  }
+
+  // Knowledge particles scale with network
+  const pCount = Math.min(Math.floor(n * 0.3), 300);
+  p5Particles5 = [];
+  for (let i = 0; i < pCount; i++) {
+    p5Particles5.push({
+      fromIdx: Math.floor(Math.random() * visualN),
+      toIdx: Math.floor(Math.random() * visualN),
+      progress: Math.random(),
+      speed: 0.005 + Math.random() * 0.01 * Math.min(n / 100, 3),
+    });
+  }
+}
+
+function drawP5Swarm() {
+  const rect = p5Canvas.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  const ctx = p5Ctx;
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  p5T += 0.01;
+
+  // Substrate layer at bottom
+  const substrateDensity = Math.min(p5NetworkSize / 10000, 1);
+  const grad = ctx.createLinearGradient(0, h - 30, 0, h);
+  grad.addColorStop(0, `rgba(220,165,189,${0.02 + substrateDensity * 0.15})`);
+  grad.addColorStop(1, `rgba(58,32,48,${0.1 + substrateDensity * 0.3})`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, h - 30, w, 30);
+
+  // Update agents
+  for (const a of p5Agents) {
+    a.x += a.vx;
+    a.y += a.vy;
+    if (a.x < 20 || a.x > w - 20) a.vx *= -1;
+    if (a.y < 20 || a.y > h - 40) a.vy *= -1;
+    a.x = Math.max(10, Math.min(w - 10, a.x));
+    a.y = Math.max(10, Math.min(h - 40, a.y));
+
+    a.labelTimer--;
+    if (a.labelTimer <= 0) {
+      a.labelShow = 60;
+      a.labelTimer = 100 + Math.random() * 200;
+      a.label = actionLabels[Math.floor(Math.random() * actionLabels.length)];
+    }
+    if (a.labelShow > 0) a.labelShow--;
+  }
+
+  // Knowledge particles
+  for (const p of p5Particles5) {
+    p.progress += p.speed;
+    if (p.progress > 1) {
+      p.progress = 0;
+      p.fromIdx = Math.floor(Math.random() * p5Agents.length);
+      p.toIdx = Math.floor(Math.random() * p5Agents.length);
+    }
+    if (p.fromIdx >= p5Agents.length || p.toIdx >= p5Agents.length) continue;
+    const a = p5Agents[p.fromIdx];
+    const b = p5Agents[p.toIdx];
+    const px = a.x + (b.x - a.x) * p.progress;
+    const py = a.y + (b.y - a.y) * p.progress;
+
+    ctx.fillStyle = 'rgba(220,165,189,0.25)';
+    ctx.beginPath();
+    ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Draw agents
+  for (const a of p5Agents) {
+    const glow = a.brightness + Math.sin(p5T * 2 + a.x * 0.01) * 0.1;
+    ctx.fillStyle = `rgba(220,165,189,${glow})`;
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, a.size, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Knowledge deposits (diamonds falling to substrate)
+    if (Math.random() < 0.003 * Math.min(p5NetworkSize / 50, 2)) {
+      ctx.fillStyle = 'rgba(216,200,160,0.4)';
+      ctx.save();
+      ctx.translate(a.x, a.y + 10);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-2, -2, 4, 4);
+      ctx.restore();
+    }
+
+    // Action labels
+    if (a.labelShow > 0 && p5Agents.length < 80) {
+      const alpha = Math.min(a.labelShow / 20, 1) * 0.5;
+      ctx.font = '8px "JetBrains Mono", monospace';
+      ctx.fillStyle = `rgba(200,184,192,${alpha})`;
+      ctx.fillText(a.label, a.x + 8, a.y + 3);
+    }
+  }
+}
+
+function drawP5Chart() {
+  const canvas = document.getElementById('p5ChartCanvas');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * 2;
+  canvas.height = rect.height * 2;
+  ctx.scale(2, 2);
+  const w = rect.width;
+  const h = rect.height;
+  const pad = { l: 40, r: 10, t: 10, b: 20 };
+  const cw = w - pad.l - pad.r;
+  const ch = h - pad.t - pad.b;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Axes
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.l, pad.t);
+  ctx.lineTo(pad.l, pad.t + ch);
+  ctx.lineTo(pad.l + cw, pad.t + ch);
+  ctx.stroke();
+
+  ctx.font = '8px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(106,90,104,0.6)';
+  ctx.fillText('agents', pad.l + cw - 30, pad.t + ch + 14);
+  ctx.save();
+  ctx.translate(10, pad.t + ch / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('knowledge', -20, 0);
+  ctx.restore();
+
+  const maxX = 10000;
+  const maxY = 1;
+
+  function xPx(v) { return pad.l + (v / maxX) * cw; }
+  function yPx(v) { return pad.t + ch - v * ch; }
+
+  // Linear (gray)
+  ctx.strokeStyle = 'rgba(150,150,150,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  for (let x = 0; x <= maxX; x += 100) {
+    const y = x / maxX;
+    if (x === 0) ctx.moveTo(xPx(x), yPx(y)); else ctx.lineTo(xPx(x), yPx(y));
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Superlinear (rose) beta=1.15
+  ctx.strokeStyle = 'rgba(220,165,189,0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = 0; x <= maxX; x += 50) {
+    const y = Math.pow(x / maxX, 1.15);
+    const yc = Math.min(y, 1);
+    if (x === 0) ctx.moveTo(xPx(x), yPx(yc)); else ctx.lineTo(xPx(x), yPx(yc));
+  }
+  ctx.stroke();
+
+  // Reed's Law (gold)
+  ctx.strokeStyle = 'rgba(216,200,160,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath();
+  for (let x = 0; x <= maxX; x += 50) {
+    const y = Math.pow(x / maxX, 1.8);
+    const yc = Math.min(y, 1);
+    if (x === 0) ctx.moveTo(xPx(x), yPx(yc)); else ctx.lineTo(xPx(x), yPx(yc));
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Current position marker
+  const cx = p5NetworkSize;
+  const cy = Math.pow(cx / maxX, 1.15);
+  ctx.fillStyle = 'rgba(220,165,189,0.9)';
+  ctx.beginPath();
+  ctx.arc(xPx(cx), yPx(Math.min(cy, 1)), 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legend
+  const ly = pad.t + 8;
+  ctx.font = '8px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(150,150,150,0.5)';
+  ctx.fillRect(pad.l + 10, ly, 12, 2);
+  ctx.fillText('linear', pad.l + 26, ly + 4);
+  ctx.fillStyle = 'rgba(220,165,189,0.7)';
+  ctx.fillRect(pad.l + 10, ly + 12, 12, 2);
+  ctx.fillText('superlinear (beta 1.15)', pad.l + 26, ly + 16);
+  ctx.fillStyle = 'rgba(216,200,160,0.5)';
+  ctx.fillRect(pad.l + 10, ly + 24, 12, 2);
+  ctx.fillText('Reed\'s Law', pad.l + 26, ly + 28);
+}
+
+const slider = document.getElementById('p5Slider');
+const sliderVal = document.getElementById('p5SliderVal');
+const densityBar = document.getElementById('p5DensityBar');
+const stageText = document.getElementById('p5StageText');
+
+slider.addEventListener('input', () => {
+  p5NetworkSize = parseInt(slider.value);
+  sliderVal.textContent = p5NetworkSize.toLocaleString();
+  const pct = Math.min((p5NetworkSize / 10000) * 100, 100);
+  densityBar.style.width = pct + '%';
+
+  if (p5NetworkSize <= 10) stageText.textContent = `${p5NetworkSize} agents: isolated`;
+  else if (p5NetworkSize <= 100) stageText.textContent = `${p5NetworkSize} agents: collaborative`;
+  else if (p5NetworkSize <= 1000) stageText.textContent = `${p5NetworkSize.toLocaleString()} agents: collective intelligence`;
+  else stageText.textContent = `${p5NetworkSize.toLocaleString()} agents: emergent civilization`;
+
+  initP5Agents(p5NetworkSize);
+  drawP5Chart();
+});
+
+// ═══════════════════════════════════════════════════
+// MAIN ANIMATION LOOP
+// ═══════════════════════════════════════════════════
+function onPageEnter(idx) {
+  if (idx === 1) startP2Animation();
+  if (idx === 2) startP3Animation();
+  if (idx === 4) {
+    initP5Agents(p5NetworkSize);
+    drawP5Chart();
+  }
+}
+
+let p4JitterTimer = 0;
+initP4Particles();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  // Only render active page
+  if (currentPage === 0) {
+    p1Chaos.draw();
+    p1Order.draw();
+  }
+
+  if (currentPage === 3) {
+    drawP4Flow();
+    p4JitterTimer++;
+    if (p4JitterTimer > 120) { // every ~2s
+      jitterRates();
+      p4JitterTimer = 0;
+    }
+  }
+
+  if (currentPage === 4) {
+    drawP5Swarm();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════
+function initCanvasSizes() {
+  // P1
+  [p1Chaos, p1Order].forEach(sim => sim.resize());
+
+  // P5
+  const p5Rect = p5Canvas.getBoundingClientRect();
+  p5Canvas.width = p5Rect.width * 2;
+  p5Canvas.height = p5Rect.height * 2;
+  initP5Agents(5);
+}
+
+window.addEventListener('resize', () => {
+  initCanvasSizes();
+  drawP5Chart();
+});
+
+// Start once fonts are ready
+document.fonts.ready.then(() => {
+  initCanvasSizes();
+  drawP5Chart();
+  animate();
+  onPageEnter(0);
+});
+</script>
+</body>
+</html>

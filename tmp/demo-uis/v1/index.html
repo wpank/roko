@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi / Constellation View</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+/* ── RESET ── */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#060608;color:#c8b8c0;font-family:'Fraunces',serif;font-weight:300;font-size:19px}
+::selection{background:#7a5060;color:#d8c8d0}
+::-webkit-scrollbar{display:none}
+
+/* ── DESIGN TOKENS ── */
+:root{
+  --bg-void:#060608;
+  --rose-glow:#dca5bd;
+  --rose:#aa7088;
+  --rose-dim:#7a5060;
+  --rose-deep:#3a2030;
+  --bone-bright:#d8c8a0;
+  --bone:#c8b890;
+  --text-primary:#c8b8c0;
+  --text-strong:#d8c8d0;
+  --text-soft:#988090;
+  --text-dim:#6a5a68;
+  --dream:#7a7a98;
+  --dream-light:#9494b4;
+  --success:#7a8a78;
+  --warning:#c89a68;
+  --danger:#cc5555;
+  --glass-bg:rgba(8,8,12,0.45);
+  --glass-border:rgba(255,255,255,0.06);
+}
+
+/* ── TYPOGRAPHY ── */
+.display-text{font-family:'Fraunces',serif;font-style:italic;font-weight:300;font-size:clamp(46px,5.6vw,82px);line-height:1.05}
+.heading-text{font-family:'Fraunces',serif;font-style:italic;font-weight:400;font-size:30px;line-height:1.2}
+.body-text{font-family:'Fraunces',serif;font-weight:300;font-size:19px;line-height:1.55}
+.label-text{font-family:'JetBrains Mono',monospace;font-weight:400;font-size:11px;text-transform:uppercase;letter-spacing:0.28em;color:var(--text-dim)}
+.mono-value{font-family:'JetBrains Mono',monospace;font-weight:400;font-size:14px}
+
+/* ── ATMOSPHERE LAYERS ── */
+.atmosphere-grain{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9998;opacity:0.035;mix-blend-mode:overlay}
+.atmosphere-scanlines{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9997;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.15) 2px,rgba(0,0,0,0.15) 3px);opacity:0.06}
+.atmosphere-vignette{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9996;background:radial-gradient(ellipse at center,transparent 40%,rgba(6,6,8,0.72) 100%)}
+
+/* ── GLASS PANELS ── */
+.glass{backdrop-filter:blur(12px) saturate(180%);-webkit-backdrop-filter:blur(12px) saturate(180%);background:var(--glass-bg);box-shadow:inset 0 1px 0 var(--glass-border);border:1px solid rgba(255,255,255,0.04)}
+
+/* ── PAGES ── */
+.page-container{position:fixed;top:0;left:0;width:100%;height:100%;overflow:hidden}
+.page{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;opacity:0;pointer-events:none;transition:opacity 0.35s ease,transform 0.35s ease;transform:translateX(40px)}
+.page.active{opacity:1;pointer-events:all;transform:translateX(0)}
+.page.exit-left{opacity:0;transform:translateX(-40px)}
+
+/* ── SECTION TAG ── */
+.section-tag{position:absolute;top:32px;left:40px;z-index:100}
+.section-tag span{font-family:'JetBrains Mono',monospace;font-weight:400;font-size:11px;text-transform:uppercase;letter-spacing:0.28em;color:var(--text-dim)}
+
+/* ── CHAIN STATUS BAR ── */
+.chain-status{position:fixed;bottom:0;left:0;width:100%;z-index:9990;padding:10px 40px;display:flex;align-items:center;gap:24px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);background:rgba(6,6,8,0.85);border-top:1px solid rgba(255,255,255,0.04)}
+.chain-status .led{width:8px;height:8px;display:inline-block;border-radius:50%}
+.chain-status .led.green{background:var(--success);box-shadow:0 0 6px var(--success)}
+.chain-status .led.yellow{background:var(--warning);box-shadow:0 0 6px var(--warning)}
+.chain-status .led.red{background:var(--danger);box-shadow:0 0 6px var(--danger)}
+.chain-status .block-number{color:var(--rose-glow);font-size:13px}
+.chain-status .block-hash{color:var(--text-soft);font-size:11px}
+.chain-status .chain-id{color:var(--text-dim)}
+
+/* ── NAV ── */
+.nav-dots{position:fixed;bottom:48px;left:50%;transform:translateX(-50%);z-index:9991;display:flex;gap:10px;align-items:center}
+.nav-dot{width:8px;height:8px;background:var(--text-dim);cursor:pointer;transition:all 0.3s}
+.nav-dot.active{background:var(--rose-glow);width:24px}
+.nav-arrow{position:fixed;bottom:44px;right:40px;z-index:9991;cursor:pointer;color:var(--text-dim);font-size:20px;transition:color 0.2s;font-family:'JetBrains Mono',monospace;user-select:none}
+.nav-arrow:hover{color:var(--rose-glow)}
+.nav-arrow-left{right:auto;left:40px}
+
+/* ── THREE.JS CANVAS ── */
+#three-canvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0}
+
+/* ── PAGE CONTENT ── */
+.page-content{position:relative;z-index:10;width:100%;height:100%;padding:80px 40px 80px 40px;overflow-y:auto;display:flex;flex-direction:column}
+
+/* ── PAGE 1: THE CHAIN ── */
+.chain-hero{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;gap:16px}
+.chain-hero .display-text{color:var(--text-strong);max-width:700px}
+.chain-hero .subtitle{color:var(--text-soft);font-size:17px;max-width:500px;margin-top:8px}
+.chain-stats{display:flex;gap:32px;margin-top:32px;flex-wrap:wrap;justify-content:center}
+.chain-stat{text-align:center}
+.chain-stat .value{font-family:'JetBrains Mono',monospace;font-size:28px;color:var(--rose-glow);font-weight:400}
+.chain-stat .stat-label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.28em;color:var(--text-dim);margin-top:4px}
+.consensus-panel{position:absolute;bottom:100px;left:40px;right:40px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+.consensus-card{padding:16px 20px;min-width:180px;text-align:center}
+.consensus-card .card-title{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.28em;color:var(--text-dim);margin-bottom:8px}
+.consensus-card .card-value{font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--bone-bright)}
+
+/* ── Validator Slider ── */
+.validator-controls{display:flex;gap:24px;margin-top:24px;align-items:center;justify-content:center;flex-wrap:wrap}
+.control-group{display:flex;flex-direction:column;align-items:center;gap:6px}
+.control-group label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim)}
+input[type="range"]{-webkit-appearance:none;appearance:none;width:160px;height:4px;background:var(--rose-deep);outline:none;cursor:pointer}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;background:var(--rose-glow);border:none;cursor:pointer}
+.toggle-btn{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;padding:6px 16px;background:transparent;border:1px solid var(--rose-dim);color:var(--text-soft);cursor:pointer;transition:all 0.2s}
+.toggle-btn.active,.toggle-btn:hover{background:var(--rose-deep);color:var(--rose-glow);border-color:var(--rose-glow)}
+
+/* ── PAGE 2: HDC ENGINE ── */
+.hdc-layout{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr auto;gap:24px;flex:1;padding-top:24px;max-height:calc(100vh - 160px)}
+.hdc-title-area{grid-column:1/3;text-align:center}
+.hdc-vectors{grid-column:1/3;display:flex;flex-direction:column;gap:16px;overflow:hidden}
+.vector-row{display:flex;align-items:center;gap:12px}
+.vector-label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim);min-width:60px;text-align:right}
+.vector-ribbon{display:flex;gap:1px;flex-wrap:nowrap;overflow:hidden}
+.vector-bit{width:4px;height:20px;transition:background 0.3s}
+.vector-bit.one{background:var(--rose-glow)}
+.vector-bit.zero{background:rgba(6,6,8,0.8)}
+.hdc-ops{grid-column:1;display:flex;flex-direction:column;gap:10px}
+.hdc-perf{grid-column:2;display:flex;flex-direction:column;gap:10px}
+.op-btn{font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.2em;padding:10px 20px;background:transparent;border:1px solid var(--rose-dim);color:var(--text-soft);cursor:pointer;transition:all 0.25s;text-align:left}
+.op-btn:hover{background:var(--rose-deep);color:var(--rose-glow);border-color:var(--rose-glow)}
+.op-btn .op-time{float:right;color:var(--dream-light)}
+.perf-bar{display:flex;align-items:center;gap:12px}
+.perf-bar .bar-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);min-width:60px;text-align:right}
+.perf-bar .bar-track{flex:1;height:16px;background:rgba(255,255,255,0.03);position:relative;overflow:hidden}
+.perf-bar .bar-fill{height:100%;transition:width 1s ease}
+.perf-bar .bar-value{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--bone-bright);min-width:60px}
+.hdc-dim-control{grid-column:1/3;display:flex;align-items:center;justify-content:center;gap:16px;padding:8px 0}
+.hdc-dim-control label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim)}
+.hdc-dim-control .dim-value{font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--rose-glow);min-width:60px}
+
+/* ── PAGE 3: ISFR ORACLE ── */
+.isfr-layout{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:auto 1fr auto;gap:20px;flex:1;padding-top:16px}
+.isfr-title-area{grid-column:1/4;text-align:center}
+.isfr-gauge-area{grid-column:2;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.isfr-gauge{position:relative;width:220px;height:220px}
+.isfr-gauge canvas{width:100%;height:100%}
+.isfr-rate{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
+.isfr-rate .rate-value{font-family:'JetBrains Mono',monospace;font-size:36px;color:var(--rose-glow);font-weight:400}
+.isfr-rate .rate-label{font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.3em;color:var(--text-dim);margin-top:4px}
+.isfr-sources{display:flex;flex-direction:column;gap:12px}
+.isfr-source{padding:12px 16px}
+.isfr-source .source-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.isfr-source .source-name{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim)}
+.isfr-source .source-weight{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--rose)}
+.isfr-source .source-rate{font-family:'JetBrains Mono',monospace;font-size:20px;color:var(--bone-bright)}
+.isfr-source .source-providers{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim);margin-top:4px}
+.isfr-left{grid-column:1;display:flex;flex-direction:column;gap:12px;justify-content:center}
+.isfr-right{grid-column:3;display:flex;flex-direction:column;gap:12px;justify-content:center}
+.isfr-formula{grid-column:1/4;text-align:center;padding:8px}
+.isfr-formula code{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--dream-light)}
+.isfr-controls{grid-column:1/4;display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap}
+.weight-slider{display:flex;flex-direction:column;align-items:center;gap:4px}
+.weight-slider label{font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim)}
+.weight-slider .weight-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--rose-glow)}
+
+/* ── PAGE 4: EXPONENTIAL ── */
+.exp-layout{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr auto;gap:20px;flex:1;padding-top:16px}
+.exp-title-area{grid-column:1/3;text-align:center}
+.exp-chart{grid-column:1;position:relative}
+.exp-chart canvas{width:100%;height:100%}
+.exp-layers{grid-column:2;display:flex;flex-direction:column;gap:12px;justify-content:center}
+.exp-layer{padding:12px 16px;display:flex;align-items:center;gap:16px;transition:all 0.3s}
+.exp-layer .layer-num{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--rose);min-width:20px}
+.exp-layer .layer-name{font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-soft)}
+.exp-layer .layer-count{font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--bone-bright);margin-left:auto}
+.exp-flywheel{grid-column:1/3;display:flex;align-items:center;justify-content:center;gap:24px;padding:8px 0}
+.exp-flywheel canvas{width:180px;height:180px}
+.exp-controls{grid-column:1/3;display:flex;align-items:center;justify-content:center;gap:16px}
+.exp-controls label{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.2em;color:var(--text-dim)}
+.exp-controls .agent-count{font-family:'JetBrains Mono',monospace;font-size:20px;color:var(--rose-glow);min-width:80px;text-align:center}
+
+/* ── Block flash ── */
+@keyframes blockFlash{0%{opacity:0.5}100%{opacity:0}}
+.block-flash{position:fixed;top:0;left:0;width:100%;height:100%;background:var(--rose-deep);pointer-events:none;z-index:9995;animation:blockFlash 0.3s ease-out forwards}
+
+/* ── Contracts ref ── */
+.contracts-ref{position:absolute;top:32px;right:40px;z-index:100;text-align:right}
+.contracts-ref div{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim);line-height:1.7}
+.contracts-ref .contract-name{color:var(--text-soft)}
+</style>
+</head>
+<body>
+
+<!-- Atmosphere layers -->
+<svg class="atmosphere-grain" width="100%" height="100%">
+  <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter>
+  <rect width="100%" height="100%" filter="url(#grain)"/>
+</svg>
+<div class="atmosphere-scanlines"></div>
+<div class="atmosphere-vignette"></div>
+
+<!-- Three.js canvas -->
+<canvas id="three-canvas"></canvas>
+
+<!-- Pages -->
+<div class="page-container" id="pageContainer">
+
+  <!-- PAGE 1: THE CHAIN -->
+  <div class="page active" id="page1" data-page="0">
+    <div class="section-tag"><span>&mdash;&mdash; 01 &middot; the chain</span></div>
+    <div class="contracts-ref">
+      <div><span class="contract-name">USDC</span> 0x1c7D...7238</div>
+      <div><span class="contract-name">ClearingHouse</span> 0x17aB...3E25</div>
+      <div><span class="contract-name">OracleManager</span> 0x33B7...0542</div>
+    </div>
+    <div class="page-content">
+      <div class="chain-hero">
+        <div class="display-text">The Constellation</div>
+        <div class="subtitle body-text">Simplex BFT consensus. 50ms blocks. Hyperdimensional knowledge. A chain that learns.</div>
+        <div class="chain-stats">
+          <div class="chain-stat"><div class="value" id="statValidators">21</div><div class="stat-label">Validators</div></div>
+          <div class="chain-stat"><div class="value">50ms</div><div class="stat-label">Block Time</div></div>
+          <div class="chain-stat"><div class="value">10,000</div><div class="stat-label">HDC Dimensions</div></div>
+          <div class="chain-stat"><div class="value" id="statThreshold">15</div><div class="stat-label">2f+1 Threshold</div></div>
+        </div>
+        <div class="validator-controls">
+          <div class="control-group">
+            <label>Validator Count</label>
+            <input type="range" id="validatorSlider" min="7" max="100" value="21">
+          </div>
+          <div class="control-group">
+            <label>View Mode</label>
+            <div style="display:flex;gap:4px">
+              <button class="toggle-btn active" id="btnNotarize" onclick="setConsensusView('notarization')">Notarize</button>
+              <button class="toggle-btn" id="btnFinalize" onclick="setConsensusView('finalization')">Finalize</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="consensus-panel">
+        <div class="consensus-card glass">
+          <div class="card-title">Consensus</div>
+          <div class="card-value" id="consensusMode">Simplex BFT</div>
+        </div>
+        <div class="consensus-card glass">
+          <div class="card-title">Latency</div>
+          <div class="card-value" id="consensusLatency">~12ms</div>
+        </div>
+        <div class="consensus-card glass">
+          <div class="card-title">Throughput</div>
+          <div class="card-value">20 blocks/s</div>
+        </div>
+        <div class="consensus-card glass">
+          <div class="card-title">DKG Threshold</div>
+          <div class="card-value" id="dkgDisplay">15 of 21</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 2: HDC ENGINE -->
+  <div class="page" id="page2" data-page="1">
+    <div class="section-tag"><span>&mdash;&mdash; 02 &middot; hdc engine</span></div>
+    <div class="page-content">
+      <div class="hdc-layout">
+        <div class="hdc-title-area">
+          <div class="heading-text" style="color:var(--text-strong)">Hyperdimensional Computing</div>
+          <div style="color:var(--text-soft);font-size:15px;margin-top:6px">10,000-bit vectors. Three operations. Sub-millisecond knowledge retrieval.</div>
+        </div>
+        <div class="hdc-vectors" id="hdcVectors">
+          <div class="vector-row"><div class="vector-label">Vec A</div><div class="vector-ribbon" id="vecA"></div></div>
+          <div class="vector-row"><div class="vector-label">Vec B</div><div class="vector-ribbon" id="vecB"></div></div>
+          <div class="vector-row"><div class="vector-label">Result</div><div class="vector-ribbon" id="vecResult"></div></div>
+        </div>
+        <div class="hdc-ops">
+          <button class="op-btn" onclick="hdcOp('bind')">Bind (XOR)<span class="op-time">~2ns</span></button>
+          <button class="op-btn" onclick="hdcOp('bundle')">Bundle (Majority)<span class="op-time">~5&mu;s</span></button>
+          <button class="op-btn" onclick="hdcOp('permute')">Permute (Shift)<span class="op-time">~5ns</span></button>
+        </div>
+        <div class="hdc-perf">
+          <div class="perf-bar">
+            <div class="bar-label">HDC</div>
+            <div class="bar-track"><div class="bar-fill" id="barHDC" style="width:1.4%;background:var(--rose-glow)"></div></div>
+            <div class="bar-value">0.17ms</div>
+          </div>
+          <div class="perf-bar">
+            <div class="bar-label">Qdrant</div>
+            <div class="bar-track"><div class="bar-fill" id="barQdrant" style="width:0%;background:var(--dream-light)"></div></div>
+            <div class="bar-value">12ms</div>
+          </div>
+          <div class="perf-bar">
+            <div class="bar-label">SQL</div>
+            <div class="bar-track"><div class="bar-fill" id="barSQL" style="width:0%;background:var(--text-dim)"></div></div>
+            <div class="bar-value">45ms</div>
+          </div>
+        </div>
+        <div class="hdc-dim-control">
+          <label>Vector Dimensions</label>
+          <input type="range" id="hdcDimSlider" min="100" max="10000" value="10000" step="100">
+          <div class="dim-value" id="hdcDimValue">10,000</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">
+            Collision P: <span id="collisionP" style="color:var(--success)">~0%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 3: ISFR ORACLE -->
+  <div class="page" id="page3" data-page="2">
+    <div class="section-tag"><span>&mdash;&mdash; 03 &middot; isfr oracle</span></div>
+    <div class="page-content">
+      <div class="isfr-layout">
+        <div class="isfr-title-area">
+          <div class="heading-text" style="color:var(--text-strong)">Internet Secured Funding Rate</div>
+          <div style="color:var(--text-soft);font-size:15px;margin-top:6px">Manipulation-resistant composite from four rate classes. Updates every 25 blocks.</div>
+        </div>
+        <div class="isfr-left isfr-sources">
+          <div class="isfr-source glass" data-source="lending">
+            <div class="source-header">
+              <div class="source-name">Lending</div>
+              <div class="source-weight" id="lendingWeight">60%</div>
+            </div>
+            <div class="source-rate" id="lendingRate">4.82%</div>
+            <div class="source-providers">Aave V3 &middot; Compound V3</div>
+          </div>
+          <div class="isfr-source glass" data-source="structured">
+            <div class="source-header">
+              <div class="source-name">Structured</div>
+              <div class="source-weight" id="structuredWeight">25%</div>
+            </div>
+            <div class="source-rate" id="structuredRate">6.12%</div>
+            <div class="source-providers">Ethena sUSDe</div>
+          </div>
+        </div>
+        <div class="isfr-gauge-area">
+          <div class="isfr-gauge">
+            <canvas id="gaugeCanvas" width="440" height="440"></canvas>
+            <div class="isfr-rate">
+              <div class="rate-value" id="compositeRate">5.14%</div>
+              <div class="rate-label">Composite ISFR</div>
+            </div>
+          </div>
+        </div>
+        <div class="isfr-right isfr-sources">
+          <div class="isfr-source glass" data-source="funding">
+            <div class="source-header">
+              <div class="source-name">Funding</div>
+              <div class="source-weight" id="fundingWeight">10%</div>
+            </div>
+            <div class="source-rate" id="fundingRate">3.45%</div>
+            <div class="source-providers">Hyperliquid ETH Perp</div>
+          </div>
+          <div class="isfr-source glass" data-source="staking">
+            <div class="source-header">
+              <div class="source-name">Staking</div>
+              <div class="source-weight" id="stakingWeight">5%</div>
+            </div>
+            <div class="source-rate" id="stakingRate">3.21%</div>
+            <div class="source-providers">ETH Staking Rate</div>
+          </div>
+        </div>
+        <div class="isfr-formula">
+          <code>ISFR = ISFR<sub>oracle</sub> + EMA(ISFR<sub>market</sub> &minus; ISFR<sub>oracle</sub>)</code>
+        </div>
+        <div class="isfr-controls">
+          <div class="weight-slider">
+            <label>Lending</label>
+            <input type="range" id="wLending" min="0" max="100" value="60" oninput="updateISFRWeights()">
+            <div class="weight-val" id="wLendingVal">60%</div>
+          </div>
+          <div class="weight-slider">
+            <label>Structured</label>
+            <input type="range" id="wStructured" min="0" max="100" value="25" oninput="updateISFRWeights()">
+            <div class="weight-val" id="wStructuredVal">25%</div>
+          </div>
+          <div class="weight-slider">
+            <label>Funding</label>
+            <input type="range" id="wFunding" min="0" max="100" value="10" oninput="updateISFRWeights()">
+            <div class="weight-val" id="wFundingVal">10%</div>
+          </div>
+          <div class="weight-slider">
+            <label>Staking</label>
+            <input type="range" id="wStaking" min="0" max="100" value="5" oninput="updateISFRWeights()">
+            <div class="weight-val" id="wStakingVal">5%</div>
+          </div>
+          <div style="display:flex;gap:4px;align-self:flex-end">
+            <button class="toggle-btn active" id="btnV1" onclick="setISFRVersion('v1')">V1 Fixed</button>
+            <button class="toggle-btn" id="btnV2" onclick="setISFRVersion('v2')">V2 Bates-Granger</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 4: EXPONENTIAL -->
+  <div class="page" id="page4" data-page="3">
+    <div class="section-tag"><span>&mdash;&mdash; 04 &middot; exponential</span></div>
+    <div class="page-content">
+      <div class="exp-layout">
+        <div class="exp-title-area">
+          <div class="heading-text" style="color:var(--text-strong)">Network Effects at Scale</div>
+          <div style="color:var(--text-soft);font-size:15px;margin-top:6px">Superlinear scaling. Knowledge compounds. More agents, exponentially more intelligence.</div>
+        </div>
+        <div class="exp-chart">
+          <canvas id="chartCanvas" width="800" height="500"></canvas>
+        </div>
+        <div class="exp-layers">
+          <div class="exp-layer glass">
+            <div class="layer-num">L0</div>
+            <div class="layer-name">Raw Signals</div>
+            <div class="layer-count" id="layerL0">12</div>
+          </div>
+          <div class="exp-layer glass">
+            <div class="layer-num">L1</div>
+            <div class="layer-name">Synthesized</div>
+            <div class="layer-count" id="layerL1">8</div>
+          </div>
+          <div class="exp-layer glass">
+            <div class="layer-num">L2</div>
+            <div class="layer-name">Distilled</div>
+            <div class="layer-count" id="layerL2">4</div>
+          </div>
+          <div class="exp-layer glass">
+            <div class="layer-num">L3</div>
+            <div class="layer-name">Axiomatic</div>
+            <div class="layer-count" id="layerL3">1</div>
+          </div>
+          <div style="margin-top:16px;text-align:center">
+            <div class="label-text" style="margin-bottom:6px">Catalytic Score</div>
+            <div class="mono-value" style="font-size:22px" id="catalyticScore">0.42</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim);margin-top:4px">Ignition threshold: 1.50</div>
+          </div>
+        </div>
+        <div class="exp-flywheel">
+          <canvas id="flywheelCanvas" width="360" height="360"></canvas>
+          <div style="max-width:300px">
+            <div class="label-text" style="margin-bottom:8px">Flywheel Effect</div>
+            <div class="body-text" style="font-size:15px;color:var(--text-soft)">Agents deposit knowledge, improving routing for all agents. Better routing means faster completion, generating more knowledge. The cycle accelerates.</div>
+          </div>
+        </div>
+        <div class="exp-controls">
+          <label>Agent Count</label>
+          <input type="range" id="agentSlider" min="3" max="10000" value="3" step="1" oninput="updateAgentCount(this.value)">
+          <div class="agent-count" id="agentCountDisplay">3</div>
+          <div style="display:flex;gap:12px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">
+            <span style="color:var(--rose-glow)">&mdash; Superlinear (&beta;=1.15)</span>
+            <span style="color:var(--dream-light)">&mdash; Reed's Law (2^N)</span>
+            <span style="color:var(--text-dim)">&mdash; Linear</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<div class="nav-dots" id="navDots">
+  <div class="nav-dot active" onclick="goToPage(0)"></div>
+  <div class="nav-dot" onclick="goToPage(1)"></div>
+  <div class="nav-dot" onclick="goToPage(2)"></div>
+  <div class="nav-dot" onclick="goToPage(3)"></div>
+</div>
+<div class="nav-arrow nav-arrow-left" onclick="prevPage()">&larr;</div>
+<div class="nav-arrow" onclick="nextPage()">&rarr;</div>
+
+<!-- Chain Status Bar -->
+<div class="chain-status glass">
+  <span class="led green" id="chainLed"></span>
+  <span>CHAIN 1337</span>
+  <span class="block-number" id="statusBlockNum">#&mdash;</span>
+  <span class="block-hash" id="statusBlockHash">0x&hellip;</span>
+  <span style="margin-left:auto" class="chain-id">NUNCHI DEVNET</span>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+/* ═══════════════════════════════════════════
+   GLOBALS & STATE
+   ═══════════════════════════════════════════ */
+let currentPage = 0;
+const totalPages = 4;
+let blockNumber = 0;
+let blockHash = '0x0000000000000000000000000000000000000000000000000000000000000000';
+let chainConnected = false;
+let blockHueShift = 0;
+let blockVelocityMod = 1;
+let blockGlowIntensity = 0;
+let validatorCount = 21;
+let consensusView = 'notarization';
+let isfrVersion = 'v1';
+
+// HDC state
+let vecABits = [];
+let vecBBits = [];
+let vecResultBits = [];
+const DISPLAY_BITS = 200;
+
+// ISFR state
+let isfrRates = { lending: 4.82, structured: 6.12, funding: 3.45, staking: 3.21 };
+let isfrWeights = { lending: 60, structured: 25, funding: 10, staking: 5 };
+
+// Page transition
+window.goToPage = function(idx) {
+  if (idx < 0 || idx >= totalPages || idx === currentPage) return;
+  const pages = document.querySelectorAll('.page');
+  const prevIdx = currentPage;
+  pages[prevIdx].classList.remove('active');
+  pages[prevIdx].classList.add(idx > prevIdx ? 'exit-left' : '');
+  setTimeout(() => pages[prevIdx].classList.remove('exit-left'), 400);
+  pages[idx].classList.add('active');
+  currentPage = idx;
+  updateNavDots();
+  updateScene();
+};
+window.nextPage = function() { goToPage(currentPage + 1); };
+window.prevPage = function() { goToPage(currentPage - 1); };
+
+function updateNavDots() {
+  document.querySelectorAll('.nav-dot').forEach((d, i) => d.classList.toggle('active', i === currentPage));
+}
+
+// Keyboard nav
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') nextPage();
+  else if (e.key === 'ArrowLeft') prevPage();
+});
+
+/* ═══════════════════════════════════════════
+   THREE.JS SCENE
+   ═══════════════════════════════════════════ */
+const canvas = document.getElementById('three-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 30);
+
+const rootGroup = new THREE.Group();
+scene.add(rootGroup);
+
+// ── Particle system (instanced octahedra) ──
+const particleCount = 250;
+const octaGeo = new THREE.OctahedronGeometry(0.08, 0);
+const particleMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#dca5bd'),
+  transparent: true,
+  opacity: 0.7,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const instancedParticles = new THREE.InstancedMesh(octaGeo, particleMat, particleCount);
+rootGroup.add(instancedParticles);
+
+const particleData = [];
+const dummy = new THREE.Object3D();
+for (let i = 0; i < particleCount; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 4 + Math.random() * 14;
+  particleData.push({
+    x: r * Math.sin(phi) * Math.cos(theta),
+    y: r * Math.sin(phi) * Math.sin(theta),
+    z: r * Math.cos(phi),
+    vx: (Math.random() - 0.5) * 0.003,
+    vy: (Math.random() - 0.5) * 0.003,
+    vz: (Math.random() - 0.5) * 0.003,
+    scale: 0.5 + Math.random() * 1.5,
+    hue: Math.random()
+  });
+}
+
+// ── Validator ring nodes ──
+const validatorNodes = [];
+const validatorGeo = new THREE.OctahedronGeometry(0.15, 1);
+const validatorGroup = new THREE.Group();
+rootGroup.add(validatorGroup);
+
+function buildValidatorRing(count) {
+  validatorGroup.clear();
+  validatorNodes.length = 0;
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    const r = 5;
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color('#dca5bd'),
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending
+    });
+    const mesh = new THREE.Mesh(validatorGeo, mat);
+    mesh.position.set(Math.cos(angle) * r, Math.sin(angle) * r, 0);
+    validatorGroup.add(mesh);
+    validatorNodes.push({ mesh, angle, baseR: r });
+  }
+  // Connection lines
+  const lineMat = new THREE.LineBasicMaterial({ color: '#3a2030', transparent: true, opacity: 0.3 });
+  for (let i = 0; i < count; i++) {
+    const j = (i + 1) % count;
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      validatorNodes[i].mesh.position,
+      validatorNodes[j].mesh.position
+    ]);
+    validatorGroup.add(new THREE.Line(geo, lineMat));
+  }
+}
+buildValidatorRing(21);
+
+// ── Agent stars ──
+const agentStars = [];
+const agentGeo = new THREE.OctahedronGeometry(0.2, 1);
+for (let i = 0; i < 8; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color().setHSL(0.9 + i * 0.03, 0.4, 0.7),
+    transparent: true,
+    opacity: 0.8,
+    blending: THREE.AdditiveBlending
+  });
+  const mesh = new THREE.Mesh(agentGeo, mat);
+  const orbit = 8 + Math.random() * 6;
+  const speed = 0.1 + Math.random() * 0.15;
+  const phase = Math.random() * Math.PI * 2;
+  const tilt = (Math.random() - 0.5) * 1.5;
+  mesh.position.set(
+    Math.cos(phase) * orbit,
+    Math.sin(phase) * orbit * 0.6 + tilt,
+    (Math.random() - 0.5) * 4
+  );
+  rootGroup.add(mesh);
+  agentStars.push({ mesh, orbit, speed, phase, tilt });
+}
+
+// ── HDC nebula (particle cloud) ──
+const nebulaCount = 120;
+const nebulaGeo = new THREE.OctahedronGeometry(0.05, 0);
+const nebulaMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#7a7a98'),
+  transparent: true,
+  opacity: 0.35,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const nebulaInstanced = new THREE.InstancedMesh(nebulaGeo, nebulaMat, nebulaCount);
+rootGroup.add(nebulaInstanced);
+const nebulaData = [];
+for (let i = 0; i < nebulaCount; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = 2 + Math.random() * 3;
+  nebulaData.push({
+    x: Math.cos(a) * r + (Math.random() - 0.5) * 2,
+    y: Math.sin(a) * r + (Math.random() - 0.5) * 2,
+    z: (Math.random() - 0.5) * 3,
+    phase: Math.random() * Math.PI * 2
+  });
+}
+
+// ── Block pulse ring ──
+const pulseRingGeo = new THREE.RingGeometry(4.8, 5.2, 64);
+const pulseRingMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#dca5bd'),
+  transparent: true,
+  opacity: 0,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide
+});
+const pulseRing = new THREE.Mesh(pulseRingGeo, pulseRingMat);
+rootGroup.add(pulseRing);
+let pulseTimer = 0;
+
+function triggerPulse() {
+  pulseRingMat.opacity = 0.6;
+  pulseTimer = 1;
+}
+
+/* ═══════════════════════════════════════════
+   SCENE MODES PER PAGE
+   ═══════════════════════════════════════════ */
+let sceneTarget = { camZ: 30, rotSpeed: 0.08 };
+
+function updateScene() {
+  switch (currentPage) {
+    case 0: // The Chain - show validator ring
+      sceneTarget = { camZ: 22, rotSpeed: 0.06 };
+      validatorGroup.visible = true;
+      break;
+    case 1: // HDC Engine - nebula focus
+      sceneTarget = { camZ: 28, rotSpeed: 0.04 };
+      validatorGroup.visible = false;
+      break;
+    case 2: // ISFR Oracle
+      sceneTarget = { camZ: 35, rotSpeed: 0.03 };
+      validatorGroup.visible = false;
+      break;
+    case 3: // Exponential
+      sceneTarget = { camZ: 32, rotSpeed: 0.05 };
+      validatorGroup.visible = false;
+      break;
+  }
+}
+
+/* ═══════════════════════════════════════════
+   ANIMATION LOOP
+   ═══════════════════════════════════════════ */
+let startTime = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = (performance.now() - startTime) * 0.001;
+
+  // Root rotation
+  rootGroup.rotation.y += (sceneTarget.rotSpeed * 0.016 - 0) * 0.5;
+  rootGroup.rotation.y = t * sceneTarget.rotSpeed * 0.3;
+
+  // Camera approach
+  camera.position.z += (sceneTarget.camZ - camera.position.z) * 0.03;
+
+  // Hue shift from block data
+  const hueOff = blockHueShift;
+
+  // Update instanced particles
+  for (let i = 0; i < particleCount; i++) {
+    const p = particleData[i];
+    p.x += p.vx * blockVelocityMod;
+    p.y += p.vy * blockVelocityMod;
+    p.z += p.vz * blockVelocityMod;
+
+    // Gentle pull toward center
+    const dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+    if (dist > 18) {
+      p.vx -= p.x * 0.00002;
+      p.vy -= p.y * 0.00002;
+      p.vz -= p.z * 0.00002;
+    }
+
+    dummy.position.set(p.x, p.y, p.z);
+    dummy.scale.setScalar(p.scale * (0.8 + 0.2 * Math.sin(t * 0.5 + i)));
+    dummy.rotation.set(t * 0.3 + i, t * 0.2 + i * 0.5, 0);
+    dummy.updateMatrix();
+    instancedParticles.setMatrixAt(i, dummy.matrix);
+  }
+  instancedParticles.instanceMatrix.needsUpdate = true;
+
+  // Update nebula
+  for (let i = 0; i < nebulaCount; i++) {
+    const n = nebulaData[i];
+    dummy.position.set(
+      n.x + Math.sin(t * 0.3 + n.phase) * 0.5,
+      n.y + Math.cos(t * 0.25 + n.phase) * 0.5,
+      n.z + Math.sin(t * 0.2 + n.phase * 2) * 0.3
+    );
+    dummy.scale.setScalar(0.6 + 0.4 * Math.sin(t * 0.4 + n.phase));
+    dummy.updateMatrix();
+    nebulaInstanced.setMatrixAt(i, dummy.matrix);
+  }
+  nebulaInstanced.instanceMatrix.needsUpdate = true;
+
+  // Update validator nodes (pulse on block)
+  validatorNodes.forEach((v, i) => {
+    const pulse = Math.sin(t * 2 + i * 0.5) * 0.1;
+    v.mesh.scale.setScalar(1 + pulse + blockGlowIntensity * 0.5);
+    v.mesh.material.color.setHSL(0.92 + hueOff, 0.35, 0.65 + blockGlowIntensity * 0.2);
+  });
+
+  // Agent stars orbit
+  agentStars.forEach((a, i) => {
+    const angle = a.phase + t * a.speed;
+    a.mesh.position.x = Math.cos(angle) * a.orbit;
+    a.mesh.position.y = Math.sin(angle) * a.orbit * 0.6 + a.tilt;
+    a.mesh.position.z = Math.sin(angle * 0.5) * 2;
+    a.mesh.rotation.x = t * 0.5;
+    a.mesh.rotation.z = t * 0.3;
+  });
+
+  // Pulse ring decay
+  if (pulseTimer > 0) {
+    pulseTimer -= 0.02;
+    pulseRingMat.opacity = Math.max(0, pulseTimer * 0.6);
+    pulseRing.scale.setScalar(1 + (1 - pulseTimer) * 0.5);
+  }
+
+  // Block glow decay
+  blockGlowIntensity *= 0.96;
+
+  // Particle color shift
+  particleMat.color.setHSL(0.92 + hueOff, 0.35, 0.72);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+// Resize handler
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ═══════════════════════════════════════════
+   BLOCKCHAIN SUBSCRIPTION (HTTP POLLING)
+   ═══════════════════════════════════════════ */
+const RPC_URL = 'http://65.109.61.210:8545/';
+let pollInterval = null;
+
+async function rpcCall(method, params = []) {
+  try {
+    const res = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+    });
+    const data = await res.json();
+    return data.result;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function pollBlock() {
+  const numHex = await rpcCall('eth_blockNumber');
+  if (!numHex) {
+    setChainStatus('disconnected');
+    return;
+  }
+  const num = parseInt(numHex, 16);
+  if (num <= blockNumber && blockNumber > 0) {
+    setChainStatus('connected');
+    return;
+  }
+
+  // Fetch block details
+  const block = await rpcCall('eth_getBlockByNumber', [numHex, false]);
+  if (!block) {
+    setChainStatus('disconnected');
+    return;
+  }
+
+  setChainStatus('connected');
+  blockNumber = num;
+  blockHash = block.hash || blockHash;
+
+  // Update UI
+  document.getElementById('statusBlockNum').textContent = `#${blockNumber.toLocaleString()}`;
+  document.getElementById('statusBlockHash').textContent = blockHash.slice(0, 10) + '...' + blockHash.slice(-8);
+
+  // Extract artistic modulations from hash bytes
+  const hashBytes = blockHash.slice(2);
+  blockHueShift = parseInt(hashBytes.slice(0, 2), 16) / 255 * 0.1 - 0.05;
+  blockVelocityMod = 0.8 + parseInt(hashBytes.slice(2, 4), 16) / 255 * 0.8;
+  blockGlowIntensity = 0.8;
+
+  // Particle velocity perturbation from hash
+  for (let i = 0; i < Math.min(20, particleCount); i++) {
+    const byte1 = parseInt(hashBytes.slice((i * 3) % 60, (i * 3) % 60 + 2), 16) / 255;
+    const byte2 = parseInt(hashBytes.slice((i * 3 + 2) % 60, (i * 3 + 2) % 60 + 2), 16) / 255;
+    particleData[i].vx += (byte1 - 0.5) * 0.002;
+    particleData[i].vy += (byte2 - 0.5) * 0.002;
+  }
+
+  triggerPulse();
+  flashBlock();
+}
+
+function flashBlock() {
+  const flash = document.createElement('div');
+  flash.className = 'block-flash';
+  document.body.appendChild(flash);
+  setTimeout(() => flash.remove(), 350);
+}
+
+function setChainStatus(status) {
+  const led = document.getElementById('chainLed');
+  led.className = 'led';
+  if (status === 'connected') { led.classList.add('green'); chainConnected = true; }
+  else if (status === 'reconnecting') { led.classList.add('yellow'); }
+  else { led.classList.add('red'); chainConnected = false; }
+}
+
+// Start polling at 400ms
+pollInterval = setInterval(pollBlock, 400);
+pollBlock(); // Immediate first call
+
+/* ═══════════════════════════════════════════
+   PAGE 1: VALIDATOR CONTROLS
+   ═══════════════════════════════════════════ */
+document.getElementById('validatorSlider').addEventListener('input', function() {
+  validatorCount = parseInt(this.value);
+  document.getElementById('statValidators').textContent = validatorCount;
+  const f = Math.floor((validatorCount - 1) / 3);
+  const threshold = 2 * f + 1;
+  document.getElementById('statThreshold').textContent = threshold;
+  document.getElementById('dkgDisplay').textContent = `${threshold} of ${validatorCount}`;
+
+  // Approximate latency based on validator count
+  const latency = Math.round(8 + validatorCount * 0.3);
+  document.getElementById('consensusLatency').textContent = `~${latency}ms`;
+
+  buildValidatorRing(Math.min(validatorCount, 60)); // Cap visual nodes at 60
+});
+
+window.setConsensusView = function(mode) {
+  consensusView = mode;
+  document.getElementById('btnNotarize').classList.toggle('active', mode === 'notarization');
+  document.getElementById('btnFinalize').classList.toggle('active', mode === 'finalization');
+  document.getElementById('consensusMode').textContent = mode === 'notarization' ? 'Simplex BFT' : 'Finalization';
+  if (mode === 'finalization') {
+    document.getElementById('consensusLatency').textContent = '~400ms';
+  } else {
+    const latency = Math.round(8 + validatorCount * 0.3);
+    document.getElementById('consensusLatency').textContent = `~${latency}ms`;
+  }
+};
+
+/* ═══════════════════════════════════════════
+   PAGE 2: HDC ENGINE
+   ═══════════════════════════════════════════ */
+function initHDCVectors() {
+  vecABits = Array.from({ length: DISPLAY_BITS }, () => Math.random() > 0.5 ? 1 : 0);
+  vecBBits = Array.from({ length: DISPLAY_BITS }, () => Math.random() > 0.5 ? 1 : 0);
+  vecResultBits = Array.from({ length: DISPLAY_BITS }, () => 0);
+  renderVectors();
+}
+
+function renderVectors() {
+  ['vecA', 'vecB', 'vecResult'].forEach((id, idx) => {
+    const container = document.getElementById(id);
+    const bits = idx === 0 ? vecABits : idx === 1 ? vecBBits : vecResultBits;
+    container.innerHTML = '';
+    bits.forEach(b => {
+      const el = document.createElement('div');
+      el.className = `vector-bit ${b ? 'one' : 'zero'}`;
+      container.appendChild(el);
+    });
+  });
+}
+
+window.hdcOp = function(op) {
+  if (op === 'bind') {
+    vecResultBits = vecABits.map((a, i) => a ^ vecBBits[i]);
+  } else if (op === 'bundle') {
+    // Majority of A, B, and a random third vector
+    const vecC = Array.from({ length: DISPLAY_BITS }, () => Math.random() > 0.5 ? 1 : 0);
+    vecResultBits = vecABits.map((a, i) => (a + vecBBits[i] + vecC[i]) >= 2 ? 1 : 0);
+  } else if (op === 'permute') {
+    vecResultBits = [...vecABits.slice(1), vecABits[0]];
+  }
+
+  // Animate result bits cascading in
+  const resultEl = document.getElementById('vecResult');
+  resultEl.innerHTML = '';
+  vecResultBits.forEach((b, i) => {
+    const el = document.createElement('div');
+    el.className = `vector-bit ${b ? 'one' : 'zero'}`;
+    el.style.opacity = '0';
+    el.style.transition = `opacity 0.15s ease ${i * 2}ms`;
+    resultEl.appendChild(el);
+    requestAnimationFrame(() => requestAnimationFrame(() => el.style.opacity = '1'));
+  });
+};
+
+initHDCVectors();
+
+// Perf bars animate on page visit
+let perfAnimated = false;
+function animatePerfBars() {
+  if (perfAnimated) return;
+  perfAnimated = true;
+  setTimeout(() => {
+    document.getElementById('barHDC').style.width = '1.4%';
+    document.getElementById('barQdrant').style.width = '26.7%';
+    document.getElementById('barSQL').style.width = '100%';
+  }, 200);
+}
+
+// HDC dimension slider
+document.getElementById('hdcDimSlider').addEventListener('input', function() {
+  const dim = parseInt(this.value);
+  document.getElementById('hdcDimValue').textContent = dim.toLocaleString();
+  // Collision probability ~= e^(-d/8) approximation
+  const p = Math.exp(-dim / 100);
+  const pStr = p < 0.001 ? '~0%' : (p * 100).toFixed(2) + '%';
+  document.getElementById('collisionP').textContent = pStr;
+  document.getElementById('collisionP').style.color = p < 0.01 ? 'var(--success)' : p < 0.1 ? 'var(--warning)' : 'var(--danger)';
+});
+
+/* ═══════════════════════════════════════════
+   PAGE 3: ISFR ORACLE
+   ═══════════════════════════════════════════ */
+const gaugeCanvas = document.getElementById('gaugeCanvas');
+const gaugeCtx = gaugeCanvas.getContext('2d');
+
+function computeCompositeRate() {
+  const total = isfrWeights.lending + isfrWeights.structured + isfrWeights.funding + isfrWeights.staking;
+  if (total === 0) return 0;
+  return (
+    isfrRates.lending * isfrWeights.lending / total +
+    isfrRates.structured * isfrWeights.structured / total +
+    isfrRates.funding * isfrWeights.funding / total +
+    isfrRates.staking * isfrWeights.staking / total
+  );
+}
+
+function drawGauge() {
+  const w = gaugeCanvas.width;
+  const h = gaugeCanvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const r = w * 0.4;
+  gaugeCtx.clearRect(0, 0, w, h);
+
+  // Background arc
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, r, Math.PI * 0.75, Math.PI * 2.25, false);
+  gaugeCtx.strokeStyle = 'rgba(58,32,48,0.5)';
+  gaugeCtx.lineWidth = 8;
+  gaugeCtx.stroke();
+
+  // Rate arc
+  const rate = computeCompositeRate();
+  const maxRate = 12;
+  const frac = Math.min(rate / maxRate, 1);
+  const startAngle = Math.PI * 0.75;
+  const endAngle = startAngle + frac * Math.PI * 1.5;
+
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, r, startAngle, endAngle, false);
+  gaugeCtx.strokeStyle = '#dca5bd';
+  gaugeCtx.lineWidth = 8;
+  gaugeCtx.lineCap = 'butt';
+  gaugeCtx.stroke();
+
+  // Glow
+  gaugeCtx.beginPath();
+  gaugeCtx.arc(cx, cy, r, startAngle, endAngle, false);
+  gaugeCtx.strokeStyle = 'rgba(220,165,189,0.3)';
+  gaugeCtx.lineWidth = 20;
+  gaugeCtx.stroke();
+
+  // Tick marks
+  for (let i = 0; i <= 12; i++) {
+    const a = startAngle + (i / 12) * Math.PI * 1.5;
+    const inner = r - 14;
+    const outer = r + 14;
+    gaugeCtx.beginPath();
+    gaugeCtx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+    gaugeCtx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
+    gaugeCtx.strokeStyle = i % 3 === 0 ? 'rgba(200,184,192,0.4)' : 'rgba(200,184,192,0.15)';
+    gaugeCtx.lineWidth = i % 3 === 0 ? 2 : 1;
+    gaugeCtx.stroke();
+
+    if (i % 3 === 0) {
+      gaugeCtx.fillStyle = 'rgba(152,128,144,0.6)';
+      gaugeCtx.font = '11px JetBrains Mono';
+      gaugeCtx.textAlign = 'center';
+      gaugeCtx.textBaseline = 'middle';
+      gaugeCtx.fillText(`${i}%`, cx + Math.cos(a) * (outer + 16), cy + Math.sin(a) * (outer + 16));
+    }
+  }
+
+  // Source flow lines
+  const sources = [
+    { angle: Math.PI * 1.2, color: '#dca5bd', name: 'LEND' },
+    { angle: Math.PI * 0.9, color: '#9494b4', name: 'STRU' },
+    { angle: Math.PI * 2.1, color: '#c89a68', name: 'FUND' },
+    { angle: Math.PI * 2.4, color: '#7a8a78', name: 'STAK' }
+  ];
+  const t = performance.now() * 0.001;
+  sources.forEach(s => {
+    const flowPos = ((t * 0.3) % 1);
+    const sx = cx + Math.cos(s.angle) * (r + 60);
+    const sy = cy + Math.sin(s.angle) * (r + 60);
+    const ex = cx + Math.cos(s.angle) * (r + 5);
+    const ey = cy + Math.sin(s.angle) * (r + 5);
+    const mx = sx + (ex - sx) * flowPos;
+    const my = sy + (ey - sy) * flowPos;
+
+    gaugeCtx.beginPath();
+    gaugeCtx.moveTo(sx, sy);
+    gaugeCtx.lineTo(ex, ey);
+    gaugeCtx.strokeStyle = s.color + '30';
+    gaugeCtx.lineWidth = 1;
+    gaugeCtx.stroke();
+
+    gaugeCtx.beginPath();
+    gaugeCtx.arc(mx, my, 3, 0, Math.PI * 2);
+    gaugeCtx.fillStyle = s.color;
+    gaugeCtx.fill();
+  });
+
+  document.getElementById('compositeRate').textContent = rate.toFixed(2) + '%';
+
+  requestAnimationFrame(drawGauge);
+}
+drawGauge();
+
+window.updateISFRWeights = function() {
+  const wL = parseInt(document.getElementById('wLending').value);
+  const wS = parseInt(document.getElementById('wStructured').value);
+  const wF = parseInt(document.getElementById('wFunding').value);
+  const wK = parseInt(document.getElementById('wStaking').value);
+  const total = wL + wS + wF + wK;
+
+  isfrWeights = { lending: wL, structured: wS, funding: wF, staking: wK };
+
+  const pct = (v) => total > 0 ? Math.round(v / total * 100) : 0;
+  document.getElementById('wLendingVal').textContent = pct(wL) + '%';
+  document.getElementById('wStructuredVal').textContent = pct(wS) + '%';
+  document.getElementById('wFundingVal').textContent = pct(wF) + '%';
+  document.getElementById('wStakingVal').textContent = pct(wK) + '%';
+
+  document.getElementById('lendingWeight').textContent = pct(wL) + '%';
+  document.getElementById('structuredWeight').textContent = pct(wS) + '%';
+  document.getElementById('fundingWeight').textContent = pct(wF) + '%';
+  document.getElementById('stakingWeight').textContent = pct(wK) + '%';
+};
+
+window.setISFRVersion = function(v) {
+  isfrVersion = v;
+  document.getElementById('btnV1').classList.toggle('active', v === 'v1');
+  document.getElementById('btnV2').classList.toggle('active', v === 'v2');
+  if (v === 'v2') {
+    // Bates-Granger self-calibrating weights
+    isfrRates = { lending: 4.92, structured: 5.88, funding: 3.67, staking: 3.15 };
+    document.getElementById('lendingRate').textContent = '4.92%';
+    document.getElementById('structuredRate').textContent = '5.88%';
+    document.getElementById('fundingRate').textContent = '3.67%';
+    document.getElementById('stakingRate').textContent = '3.15%';
+  } else {
+    isfrRates = { lending: 4.82, structured: 6.12, funding: 3.45, staking: 3.21 };
+    document.getElementById('lendingRate').textContent = '4.82%';
+    document.getElementById('structuredRate').textContent = '6.12%';
+    document.getElementById('fundingRate').textContent = '3.45%';
+    document.getElementById('stakingRate').textContent = '3.21%';
+  }
+};
+
+// Simulate rate drift
+setInterval(() => {
+  const drift = () => (Math.random() - 0.5) * 0.04;
+  isfrRates.lending = Math.max(0.5, Math.min(10, isfrRates.lending + drift()));
+  isfrRates.structured = Math.max(1, Math.min(12, isfrRates.structured + drift()));
+  isfrRates.funding = Math.max(-2, Math.min(8, isfrRates.funding + drift()));
+  isfrRates.staking = Math.max(1, Math.min(6, isfrRates.staking + drift()));
+
+  document.getElementById('lendingRate').textContent = isfrRates.lending.toFixed(2) + '%';
+  document.getElementById('structuredRate').textContent = isfrRates.structured.toFixed(2) + '%';
+  document.getElementById('fundingRate').textContent = isfrRates.funding.toFixed(2) + '%';
+  document.getElementById('stakingRate').textContent = isfrRates.staking.toFixed(2) + '%';
+}, 1500);
+
+/* ═══════════════════════════════════════════
+   PAGE 4: EXPONENTIAL SCALING
+   ═══════════════════════════════════════════ */
+const chartCanvas = document.getElementById('chartCanvas');
+const chartCtx = chartCanvas.getContext('2d');
+const flywheelCanvas = document.getElementById('flywheelCanvas');
+const flywheelCtx = flywheelCanvas.getContext('2d');
+
+let agentCount = 3;
+
+function drawChart() {
+  const w = chartCanvas.width;
+  const h = chartCanvas.height;
+  const pad = { top: 30, right: 30, bottom: 40, left: 60 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  chartCtx.clearRect(0, 0, w, h);
+
+  // Grid
+  chartCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+  chartCtx.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const y = pad.top + (ch / 5) * i;
+    chartCtx.beginPath();
+    chartCtx.moveTo(pad.left, y);
+    chartCtx.lineTo(pad.left + cw, y);
+    chartCtx.stroke();
+  }
+
+  // Determine x scale based on agent count
+  const maxN = Math.max(agentCount * 1.2, 10);
+  const steps = 200;
+
+  // Compute max y
+  const beta = 1.15;
+  const superlinear = (n) => Math.pow(n, beta);
+  const linear = (n) => n;
+  const reeds = (n) => Math.min(Math.pow(2, Math.min(n, 20)), 1e8); // Cap Reed's
+  const maxY = Math.max(superlinear(maxN), Math.min(reeds(Math.min(maxN, 20)), superlinear(maxN) * 5));
+
+  function xToScreen(n) { return pad.left + (n / maxN) * cw; }
+  function yToScreen(v) { return pad.top + ch - (Math.min(v, maxY) / maxY) * ch; }
+
+  // Linear curve
+  chartCtx.beginPath();
+  chartCtx.strokeStyle = 'rgba(106,90,104,0.5)';
+  chartCtx.lineWidth = 1.5;
+  for (let i = 0; i <= steps; i++) {
+    const n = (i / steps) * maxN;
+    const x = xToScreen(n);
+    const y = yToScreen(linear(n));
+    i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
+  }
+  chartCtx.stroke();
+
+  // Superlinear curve
+  chartCtx.beginPath();
+  chartCtx.strokeStyle = '#dca5bd';
+  chartCtx.lineWidth = 2.5;
+  chartCtx.shadowColor = '#dca5bd';
+  chartCtx.shadowBlur = 8;
+  for (let i = 0; i <= steps; i++) {
+    const n = (i / steps) * maxN;
+    const x = xToScreen(n);
+    const y = yToScreen(superlinear(n));
+    i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
+  }
+  chartCtx.stroke();
+  chartCtx.shadowBlur = 0;
+
+  // Reed's Law curve (capped to avoid visual explosion)
+  chartCtx.beginPath();
+  chartCtx.strokeStyle = '#9494b4';
+  chartCtx.lineWidth = 1.5;
+  chartCtx.setLineDash([4, 4]);
+  for (let i = 0; i <= steps; i++) {
+    const n = (i / steps) * maxN;
+    const x = xToScreen(n);
+    const y = yToScreen(reeds(n));
+    i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y);
+  }
+  chartCtx.stroke();
+  chartCtx.setLineDash([]);
+
+  // Current agent count marker
+  const markerX = xToScreen(agentCount);
+  const markerY = yToScreen(superlinear(agentCount));
+  chartCtx.beginPath();
+  chartCtx.arc(markerX, markerY, 6, 0, Math.PI * 2);
+  chartCtx.fillStyle = '#dca5bd';
+  chartCtx.fill();
+  chartCtx.beginPath();
+  chartCtx.arc(markerX, markerY, 12, 0, Math.PI * 2);
+  chartCtx.strokeStyle = 'rgba(220,165,189,0.3)';
+  chartCtx.lineWidth = 2;
+  chartCtx.stroke();
+
+  // Axis labels
+  chartCtx.fillStyle = 'rgba(152,128,144,0.5)';
+  chartCtx.font = '11px JetBrains Mono';
+  chartCtx.textAlign = 'center';
+  chartCtx.fillText('Agents', pad.left + cw / 2, h - 8);
+  chartCtx.save();
+  chartCtx.translate(14, pad.top + ch / 2);
+  chartCtx.rotate(-Math.PI / 2);
+  chartCtx.fillText('Intelligence Output', 0, 0);
+  chartCtx.restore();
+}
+
+function drawFlywheel() {
+  const w = flywheelCanvas.width;
+  const h = flywheelCanvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const t = performance.now() * 0.001;
+  const speed = Math.min(agentCount / 50, 3); // Speed increases with agents
+
+  flywheelCtx.clearRect(0, 0, w, h);
+
+  // Three interlocking gears
+  const gears = [
+    { x: cx - 30, y: cy - 20, r: 40, teeth: 12, label: 'DEPOSIT', dir: 1 },
+    { x: cx + 35, y: cy - 10, r: 35, teeth: 10, label: 'ROUTE', dir: -1 },
+    { x: cx, y: cy + 35, r: 38, teeth: 11, label: 'LEARN', dir: 1 }
+  ];
+
+  gears.forEach(g => {
+    const rot = t * speed * g.dir;
+    flywheelCtx.save();
+    flywheelCtx.translate(g.x, g.y);
+    flywheelCtx.rotate(rot);
+
+    // Gear body
+    flywheelCtx.beginPath();
+    for (let i = 0; i < g.teeth * 2; i++) {
+      const a = (i / (g.teeth * 2)) * Math.PI * 2;
+      const r = i % 2 === 0 ? g.r : g.r - 6;
+      const px = Math.cos(a) * r;
+      const py = Math.sin(a) * r;
+      i === 0 ? flywheelCtx.moveTo(px, py) : flywheelCtx.lineTo(px, py);
+    }
+    flywheelCtx.closePath();
+    flywheelCtx.strokeStyle = speed > 1 ? '#dca5bd' : '#7a5060';
+    flywheelCtx.lineWidth = 1.5;
+    flywheelCtx.stroke();
+    flywheelCtx.fillStyle = speed > 1 ? 'rgba(220,165,189,0.05)' : 'rgba(58,32,48,0.1)';
+    flywheelCtx.fill();
+
+    // Center hub
+    flywheelCtx.beginPath();
+    flywheelCtx.arc(0, 0, 6, 0, Math.PI * 2);
+    flywheelCtx.fillStyle = speed > 1.5 ? '#dca5bd' : '#7a5060';
+    flywheelCtx.fill();
+
+    flywheelCtx.restore();
+
+    // Label (non-rotating)
+    flywheelCtx.fillStyle = 'rgba(152,128,144,0.5)';
+    flywheelCtx.font = '9px JetBrains Mono';
+    flywheelCtx.textAlign = 'center';
+    flywheelCtx.fillText(g.label, g.x, g.y + g.r + 18);
+  });
+
+  requestAnimationFrame(drawFlywheel);
+}
+drawFlywheel();
+
+window.updateAgentCount = function(val) {
+  agentCount = parseInt(val);
+  document.getElementById('agentCountDisplay').textContent = agentCount.toLocaleString();
+
+  // Update knowledge layers
+  const l0 = Math.round(agentCount * 4);
+  const l1 = Math.round(l0 * 0.6);
+  const l2 = Math.round(l1 * 0.4);
+  const l3 = Math.round(l2 * 0.25);
+  document.getElementById('layerL0').textContent = l0.toLocaleString();
+  document.getElementById('layerL1').textContent = l1.toLocaleString();
+  document.getElementById('layerL2').textContent = l2.toLocaleString();
+  document.getElementById('layerL3').textContent = Math.max(1, l3).toLocaleString();
+
+  // Catalytic score
+  const catScore = Math.min(3.0, 0.1 * Math.pow(agentCount, 0.45));
+  const catEl = document.getElementById('catalyticScore');
+  catEl.textContent = catScore.toFixed(2);
+  catEl.style.color = catScore >= 1.5 ? 'var(--rose-glow)' : catScore >= 1.0 ? 'var(--warning)' : 'var(--text-soft)';
+
+  drawChart();
+};
+
+// Initial chart draw
+drawChart();
+
+// Observe page transitions for animations
+const pageObserver = new MutationObserver(() => {
+  if (currentPage === 1) animatePerfBars();
+  if (currentPage === 3) drawChart();
+});
+document.querySelectorAll('.page').forEach(p => {
+  pageObserver.observe(p, { attributes: true, attributeFilter: ['class'] });
+});
+
+/* ═══════════════════════════════════════════
+   ISFR MANIPULATION RESISTANCE DEMO
+   ═══════════════════════════════════════════ */
+// Make source rate divs draggable (click to enter extreme value)
+document.querySelectorAll('.isfr-source').forEach(el => {
+  el.style.cursor = 'pointer';
+  el.addEventListener('click', function() {
+    const source = this.dataset.source;
+    if (!source) return;
+    // Toggle between extreme and normal
+    if (isfrRates[source] > 15 || isfrRates[source] < -5) {
+      // Reset to normal
+      const defaults = { lending: 4.82, structured: 6.12, funding: 3.45, staking: 3.21 };
+      isfrRates[source] = defaults[source];
+    } else {
+      // Push to extreme
+      isfrRates[source] = 25.0;
+    }
+    document.getElementById(source + 'Rate').textContent = isfrRates[source].toFixed(2) + '%';
+  });
+});
+
+</script>
+</body>
+</html>

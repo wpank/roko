@@ -1,0 +1,2150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Series A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<style>
+/* =======================================================
+   ROSEDUST DESIGN SYSTEM — V11 Continental Drift
+   ======================================================= */
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+
+  --dream: #585878;
+  --dream-bright: #7878a0;
+
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow: hidden;
+  width: 100%; height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Atmospheric Overlays --- */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9998; opacity: 0.03;
+  mix-blend-mode: overlay;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9997;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.12) 2px, rgba(0,0,0,0.12) 4px);
+  opacity: 0.05;
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9996;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* --- Typography --- */
+.headline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(32px, 4.5vw, 68px);
+  color: #d8c8d0;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-shadow: 0 0 40px rgba(170,112,136,0.15), 0 0 80px rgba(170,112,136,0.06);
+}
+.headline em {
+  color: var(--rose-neon);
+  font-style: italic;
+  text-shadow: 0 0 20px rgba(220,165,189,0.3), 0 0 60px rgba(220,165,189,0.12);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--t1);
+  max-width: 780px;
+}
+.body-text strong { color: var(--bone); font-weight: 500; }
+.body-text em { color: var(--rose-neon); font-style: italic; }
+
+.section-tag {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  position: absolute;
+  top: 24px; left: 32px;
+  z-index: 10;
+}
+
+/* --- Glass Panels --- */
+.glass {
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  background: rgba(8,8,12,0.5);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 2px;
+}
+
+/* --- Chassis --- */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  position: relative;
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+.chassis .body-inner {
+  padding: 20px;
+}
+
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* --- Pages --- */
+.page {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: none;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  z-index: 1;
+}
+.page.active {
+  display: flex;
+  opacity: 1;
+  z-index: 2;
+  transform: translateY(0);
+}
+.page.exit-up {
+  display: flex;
+  opacity: 0;
+  transform: translateY(-24px);
+}
+
+.page canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 0;
+}
+
+.page-content {
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+  pointer-events: none;
+}
+.page-content * {
+  pointer-events: auto;
+}
+
+/* --- Navigation --- */
+.page-nav {
+  position: fixed;
+  bottom: 28px;
+  left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px;
+  z-index: 9999;
+  user-select: none;
+}
+.nav-dots {
+  display: flex; gap: 10px;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  border: 1px solid var(--t-dim);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.nav-dot.active {
+  background: var(--rose);
+  border-color: var(--rose-hot);
+  box-shadow: 0 0 8px rgba(170,112,136,0.5);
+}
+.nav-dot:hover {
+  background: var(--rose-dim);
+  border-color: var(--rose);
+}
+.nav-arrow {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--t-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--rose); }
+
+/* --- Block HUD --- */
+.block-hud {
+  position: fixed;
+  top: 20px; right: 24px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--jade);
+  letter-spacing: 0.1em;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .block-pulse {
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--jade-hot);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: blockFlash 0.5s ease-out;
+}
+@keyframes blockFlash {
+  0% { box-shadow: 0 0 12px var(--jade-hot); transform: scale(1.8); }
+  100% { box-shadow: none; transform: scale(1); }
+}
+
+/* =======================================================
+   PAGE-SPECIFIC STYLES
+   ======================================================= */
+
+/* --- Page 0: Hero --- */
+.hero-content {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.hero-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(52px, 7vw, 100px);
+  color: #d8c8d0;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 60px rgba(170,112,136,0.2), 0 0 120px rgba(170,112,136,0.08);
+}
+.hero-subtitle {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.2vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.35em;
+  color: var(--rose);
+  margin-top: -4px;
+}
+.hero-thesis {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1vw, 15px);
+  color: var(--t1);
+  max-width: 580px;
+  line-height: 1.8;
+  margin-top: 20px;
+  opacity: 0.85;
+}
+.hero-series {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  letter-spacing: 0.2em;
+  position: absolute;
+  bottom: 80px;
+}
+
+/* --- Page 1: Plane Between --- */
+.strata-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  width: 100%;
+  max-width: 740px;
+}
+.strata-layer {
+  width: 100%;
+  padding: 18px 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  position: relative;
+}
+.strata-layer.top {
+  background: rgba(8,8,12,0.6);
+  border-bottom: none;
+  color: var(--t-dim);
+}
+.strata-layer.middle {
+  background: rgba(60,30,50,0.25);
+  border-color: var(--rose-dim);
+  color: var(--rose-neon);
+  box-shadow: 0 0 30px rgba(170,112,136,0.1), inset 0 0 20px rgba(170,112,136,0.05);
+}
+.strata-layer.bottom {
+  background: rgba(8,8,12,0.6);
+  border-top: none;
+  color: var(--t-dim);
+}
+.strata-label {
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  color: var(--rose-dim);
+}
+.strata-label.glow {
+  color: var(--rose-hot);
+  text-shadow: 0 0 10px rgba(220,165,189,0.3);
+}
+.strata-items {
+  font-size: 11px;
+  opacity: 0.7;
+  line-height: 1.6;
+}
+.strata-connector {
+  width: 1px;
+  height: 20px;
+  background: linear-gradient(180deg, transparent, var(--rose-dim), transparent);
+  margin: 0 auto;
+}
+.plane-thesis {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1vw, 13px);
+  color: var(--t1);
+  max-width: 600px;
+  text-align: center;
+  margin-top: 32px;
+  line-height: 1.8;
+}
+
+/* --- Page 2: Two Components --- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+  max-width: 960px;
+}
+@media (max-width: 768px) {
+  .two-col { grid-template-columns: 1fr; }
+}
+.component-card {
+  padding: 0;
+  overflow: hidden;
+}
+.component-card .head {
+  font-size: 10px;
+}
+.component-card .body-inner {
+  padding: 20px 24px;
+}
+.component-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(20px, 2.2vw, 28px);
+  color: #d8c8d0;
+  margin-bottom: 4px;
+}
+.component-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--rose-dim);
+  margin-bottom: 14px;
+}
+.component-list {
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 2;
+  color: var(--t1);
+}
+.component-list li::before {
+  content: ">";
+  color: var(--rose-dim);
+  margin-right: 8px;
+}
+.component-list li em { color: var(--rose-neon); font-style: normal; }
+.component-list li strong { color: var(--bone); font-weight: 500; }
+.two-col-footer {
+  font-family: var(--mono);
+  font-size: clamp(11px, 0.9vw, 13px);
+  color: var(--t1);
+  max-width: 820px;
+  text-align: center;
+  line-height: 1.8;
+  margin-top: 24px;
+  opacity: 0.8;
+}
+
+/* --- Page 3: Chain Architecture --- */
+.chain-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 680px;
+}
+.chain-layer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  background: rgba(8,8,12,0.6);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: border-color 0.3s, background 0.3s;
+}
+.chain-layer:hover {
+  border-color: var(--rose-dim);
+  background: rgba(60,30,50,0.12);
+}
+.chain-layer .depth-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--rose-dim);
+  min-width: 80px;
+}
+.chain-layer .layer-name {
+  color: var(--bone);
+  font-weight: 500;
+  min-width: 160px;
+}
+.chain-layer .layer-detail {
+  color: var(--t-dim);
+  font-size: 11px;
+}
+
+.commonware-box {
+  margin-top: 20px;
+  padding: 16px 24px;
+  border: 1px solid var(--rose-deep);
+  background: rgba(58,32,48,0.12);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t1);
+  max-width: 680px;
+  width: 100%;
+}
+.commonware-box .cw-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose);
+  margin-bottom: 8px;
+}
+.commonware-box code {
+  color: var(--rose-neon);
+  font-size: 11px;
+}
+
+.block-compare {
+  display: flex;
+  gap: 16px;
+  margin-top: 18px;
+  font-family: var(--mono);
+  font-size: 11px;
+  max-width: 680px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.block-item {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  background: rgba(8,8,12,0.4);
+  color: var(--t-dim);
+}
+.block-item.highlight {
+  border-color: var(--rose);
+  color: var(--rose-neon);
+  box-shadow: 0 0 12px rgba(170,112,136,0.15);
+}
+.block-item .chain-name {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  opacity: 0.6;
+}
+.block-item .chain-time {
+  font-size: 16px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+/* --- Page 4: HDC Interactive --- */
+.hdc-container {
+  width: 100%;
+  max-width: 700px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.hdc-step {
+  padding: 16px 24px;
+  border: 1px solid var(--border);
+  background: rgba(8,8,12,0.6);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+  opacity: 0.3;
+  transition: opacity 0.4s, border-color 0.4s, background 0.4s;
+  cursor: pointer;
+}
+.hdc-step.active-step {
+  opacity: 1;
+  border-color: var(--rose-dim);
+  background: rgba(60,30,50,0.1);
+}
+.hdc-step .step-num {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: var(--rose-dim);
+  margin-bottom: 6px;
+}
+.hdc-step.active-step .step-num {
+  color: var(--rose);
+}
+.hdc-step .step-title {
+  color: var(--bone);
+  font-weight: 500;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.hdc-step .step-body {
+  color: var(--t-dim);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.hdc-step.active-step .step-body {
+  color: var(--t1);
+}
+.hdc-step code {
+  color: var(--rose-neon);
+  font-size: 11px;
+}
+.hdc-step .bit-viz {
+  display: flex;
+  gap: 2px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.hdc-step .bit-viz span {
+  display: inline-block;
+  width: 5px; height: 12px;
+  background: var(--rose-deep);
+  transition: background 0.15s;
+}
+.hdc-step.active-step .bit-viz span.on {
+  background: var(--rose);
+}
+.hdc-step .metric {
+  color: var(--jade-hot);
+  font-weight: 500;
+}
+
+/* --- Page 5: ISFR --- */
+.isfr-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 640px;
+}
+.source-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+}
+@media (max-width: 600px) {
+  .source-group { grid-template-columns: 1fr; }
+}
+.source-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  background: rgba(8,8,12,0.5);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.source-item .src-name {
+  color: var(--bone-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-size: 10px;
+}
+.source-item .src-weight {
+  color: var(--rose);
+  font-weight: 500;
+}
+.source-item .src-protos {
+  color: var(--t-dim);
+  font-size: 10px;
+}
+.isfr-arrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--rose-dim);
+  letter-spacing: 0.3em;
+}
+.isfr-result {
+  padding: 16px 28px;
+  border: 1px solid var(--rose-dim);
+  background: rgba(60,30,50,0.15);
+  text-align: center;
+  font-family: var(--mono);
+  width: 100%;
+}
+.isfr-result .rate-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose);
+  margin-bottom: 4px;
+}
+.isfr-result .rate-value {
+  font-size: clamp(28px, 3vw, 40px);
+  font-weight: 500;
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.25);
+}
+.isfr-footer {
+  font-family: var(--mono);
+  font-size: clamp(10px, 0.9vw, 12px);
+  color: var(--t-dim);
+  text-align: center;
+  max-width: 520px;
+  line-height: 1.8;
+  margin-top: 12px;
+}
+.isfr-footer em { color: var(--rose-neon); font-style: normal; }
+
+/* --- Page 6: Collective --- */
+.collective-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  max-width: 600px;
+}
+.agent-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+  width: 100%;
+}
+.agent-slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--rose);
+  cursor: pointer;
+}
+.agent-slider-row .agent-count {
+  min-width: 60px;
+  text-align: right;
+  color: var(--rose-neon);
+  font-weight: 500;
+  font-size: 18px;
+}
+.collective-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  width: 100%;
+  font-family: var(--mono);
+}
+.coll-stat {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  background: rgba(8,8,12,0.5);
+  text-align: center;
+}
+.coll-stat .stat-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--rose-dim);
+  margin-bottom: 4px;
+}
+.coll-stat .stat-value {
+  font-size: 18px;
+  color: var(--bone);
+  font-weight: 500;
+}
+.collective-quote {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1vw, 13px);
+  color: var(--t1);
+  text-align: center;
+  line-height: 1.8;
+  max-width: 560px;
+  font-style: italic;
+}
+</style>
+</head>
+<body>
+
+<!-- Atmospheric overlays -->
+<canvas class="grain" id="grainCanvas"></canvas>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">
+  <span class="block-pulse"></span>
+  BLOCK <span id="blockNum">---</span>
+</div>
+
+<!-- ======= PAGE 0: HERO ======= -->
+<div class="page active" id="page0">
+  <canvas id="canvas0"></canvas>
+  <div class="page-content">
+    <div class="hero-content">
+      <div class="hero-title">Nunchi</div>
+      <div class="hero-subtitle">Agent Coordination Plane</div>
+      <div class="hero-thesis">The infrastructure layer between AI models and the applications they power.</div>
+      <div class="hero-series">Series A &middot; 2026</div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE 1: THE PLANE BETWEEN ======= -->
+<div class="page" id="page1">
+  <canvas id="canvas1"></canvas>
+  <div class="section-tag">01 / Position</div>
+  <div class="page-content">
+    <div class="headline" style="margin-bottom:28px; text-align:center; font-size:clamp(26px,3.5vw,48px);">The plane between the planes.</div>
+    <div class="strata-container">
+      <div class="strata-layer top">
+        <div class="strata-label">Application Layer</div>
+        <div class="strata-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+      </div>
+      <div class="strata-connector"></div>
+      <div class="strata-layer middle">
+        <div class="strata-label glow">Agent Coordination Plane</div>
+        <div class="strata-items" style="color:var(--rose-hot);">Nunchi &mdash; identity, routing, knowledge, policy, settlement</div>
+      </div>
+      <div class="strata-connector"></div>
+      <div class="strata-layer bottom">
+        <div class="strata-label">Execution Layer</div>
+        <div class="strata-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+      </div>
+    </div>
+    <div class="plane-thesis">Every adjacent layer is funded. The plane between them is empty. <em>Nunchi fills it.</em></div>
+  </div>
+</div>
+
+<!-- ======= PAGE 2: TWO COMPONENTS ======= -->
+<div class="page" id="page2">
+  <canvas id="canvas2"></canvas>
+  <div class="section-tag">02 / Architecture</div>
+  <div class="page-content">
+    <div class="headline" style="margin-bottom:24px; text-align:center; font-size:clamp(24px,3vw,42px);">Two components. One architecture.</div>
+    <div class="two-col">
+      <div class="component-card chassis">
+        <div class="head">
+          <span>Roko &middot; Runtime</span>
+          <span class="led"></span>
+        </div>
+        <div class="body-inner">
+          <div class="component-title">Roko</div>
+          <div class="component-sub">Open-source &middot; Apache 2.0</div>
+          <ul class="component-list">
+            <li>The cognitive runtime for governed agent execution</li>
+            <li><strong>18 crates</strong>, <em>177K lines</em> of Rust</li>
+            <li>CascadeRouter &mdash; cost-aware model routing</li>
+            <li>11 gates, 7 rungs between every call</li>
+            <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+            <li>Deterministic replay</li>
+          </ul>
+        </div>
+      </div>
+      <div class="component-card chassis">
+        <div class="head">
+          <span>Nunchi Chain &middot; Substrate</span>
+          <span class="led"></span>
+        </div>
+        <div class="body-inner">
+          <div class="component-title">Nunchi Chain</div>
+          <div class="component-sub">Verifiable substrate</div>
+          <ul class="component-list">
+            <li>Agent-native sovereign EVM L1</li>
+            <li>Built on <em>Commonware</em> &mdash; Rust blockchain anti-framework</li>
+            <li>Simplex BFT &mdash; <strong>~50ms</strong> blocks</li>
+            <li>HDC precompile at <em>0x09</em></li>
+            <li>ISFR Oracle &mdash; DeFi benchmark by validators</li>
+            <li>Knowledge demurrage &mdash; exponential decay</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="two-col-footer">Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.</div>
+  </div>
+</div>
+
+<!-- ======= PAGE 3: CHAIN ARCHITECTURE ======= -->
+<div class="page" id="page3">
+  <canvas id="canvas3"></canvas>
+  <div class="section-tag">03 / Chain</div>
+  <div class="page-content">
+    <div class="headline" style="margin-bottom:20px; text-align:center; font-size:clamp(24px,3vw,42px);">Built on Commonware.</div>
+    <div class="chain-layers">
+      <div class="chain-layer">
+        <span class="depth-tag">Crust</span>
+        <span class="layer-name">Consensus (Simplex BFT)</span>
+        <span class="layer-detail">~50ms blocks, 2-hop notarize, 3-hop finalize</span>
+      </div>
+      <div class="chain-layer">
+        <span class="depth-tag">Upper</span>
+        <span class="layer-name">Execution (revm)</span>
+        <span class="layer-detail">Full EVM, Block-STM parallel execution</span>
+      </div>
+      <div class="chain-layer">
+        <span class="depth-tag">Mid</span>
+        <span class="layer-name">Agent Registry (0x08)</span>
+        <span class="layer-detail">On-chain agent identity</span>
+      </div>
+      <div class="chain-layer">
+        <span class="depth-tag">Mid</span>
+        <span class="layer-name">HDC Precompile (0x09)</span>
+        <span class="layer-detail">Semantic search at consensus layer</span>
+      </div>
+      <div class="chain-layer">
+        <span class="depth-tag">Lower</span>
+        <span class="layer-name">ISFR Oracle (0xA01)</span>
+        <span class="layer-detail">DeFi rate computation</span>
+      </div>
+      <div class="chain-layer">
+        <span class="depth-tag">Core</span>
+        <span class="layer-name">Knowledge Layer</span>
+        <span class="layer-detail">InsightEntry, Merkle tree, demurrage</span>
+      </div>
+    </div>
+    <div class="commonware-box">
+      <div class="cw-label">Commonware Primitives</div>
+      <code>p2p::authenticated</code> &middot; <code>cryptography::bls12381</code> &middot; <code>runtime::deterministic</code> &middot; <code>consensus::simplex</code>
+    </div>
+    <div class="block-compare">
+      <div class="block-item"><div class="chain-name">Ethereum</div><div class="chain-time">12s</div></div>
+      <div class="block-item"><div class="chain-name">Solana</div><div class="chain-time">400ms</div></div>
+      <div class="block-item"><div class="chain-name">Sui</div><div class="chain-time">~390ms</div></div>
+      <div class="block-item highlight"><div class="chain-name">Nunchi</div><div class="chain-time">~50ms</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE 4: HDC INTERACTIVE ======= -->
+<div class="page" id="page4">
+  <canvas id="canvas4"></canvas>
+  <div class="section-tag">04 / HDC</div>
+  <div class="page-content" style="overflow-y:auto;">
+    <div class="headline" style="margin-bottom:20px; text-align:center; font-size:clamp(22px,2.8vw,38px);">Hyperdimensional Computing</div>
+    <div class="hdc-container" id="hdcSteps">
+      <div class="hdc-step active-step" data-step="0" onclick="setHdcStep(0)">
+        <div class="step-num">Step 01</div>
+        <div class="step-title">An agent finds a Uniswap transaction</div>
+        <div class="step-body">
+          <code>swap(USDC -> WETH, 50,000 USDC, pool 0x88e6...)</code><br>
+          gas: 142,891 &middot; block: 19,847,221
+        </div>
+      </div>
+      <div class="hdc-step" data-step="1" onclick="setHdcStep(1)">
+        <div class="step-num">Step 02</div>
+        <div class="step-title">Encode to hypervector</div>
+        <div class="step-body">
+          Each concept gets a random 10,000-bit base vector:<br>
+          <strong>Bind:</strong> swap XOR USDC XOR WETH = transaction identity<br>
+          <strong>Permute:</strong> shift for sequence position<br>
+          <strong>Bundle:</strong> majority vote into single episode vector
+        </div>
+        <div class="bit-viz" id="bitViz"></div>
+      </div>
+      <div class="hdc-step" data-step="2" onclick="setHdcStep(2)">
+        <div class="step-num">Step 03</div>
+        <div class="step-title">Post to chain</div>
+        <div class="step-body">
+          InsightEntry { content, hypervector (<em>1,250 bytes</em>), decay_params }<br>
+          &rarr; Transaction &rarr; Validator &rarr; sm_root updated
+        </div>
+      </div>
+      <div class="hdc-step" data-step="3" onclick="setHdcStep(3)">
+        <div class="step-num">Step 04</div>
+        <div class="step-title">Future agent searches</div>
+        <div class="step-body">
+          Query: "Uniswap USDC pool large swap"<br>
+          &rarr; Encode query to hypervector<br>
+          &rarr; Hamming distance search across all entries<br>
+          &rarr; Top-K results in <span class="metric">0.17ms</span> (vs 12ms for float embeddings)
+        </div>
+      </div>
+      <div class="hdc-step" data-step="4" onclick="setHdcStep(4)">
+        <div class="step-num">Step 05</div>
+        <div class="step-title">Results compound</div>
+        <div class="step-body">
+          10 confirmations = <em>6x half-life</em>.<br>
+          Knowledge many agents verify becomes long-lived.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE 5: ISFR ======= -->
+<div class="page" id="page5">
+  <canvas id="canvas5"></canvas>
+  <div class="section-tag">05 / ISFR</div>
+  <div class="page-content">
+    <div class="headline" style="margin-bottom:6px; text-align:center; font-size:clamp(24px,3vw,42px);">The first of many.</div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--t-dim);text-align:center;margin-bottom:20px;letter-spacing:0.15em;">INTERNET SECURED FUNDING RATE</div>
+    <div class="isfr-flow">
+      <div class="source-group">
+        <div class="source-item">
+          <div><div class="src-name">Lending</div><div class="src-protos">Aave, Compound, Spark, Morpho</div></div>
+          <div class="src-weight">60%</div>
+        </div>
+        <div class="source-item">
+          <div><div class="src-name">Structured</div><div class="src-protos">Pendle, Spectra, Term Finance</div></div>
+          <div class="src-weight">25%</div>
+        </div>
+        <div class="source-item">
+          <div><div class="src-name">Funding</div><div class="src-protos">dYdX, Hyperliquid, GMX</div></div>
+          <div class="src-weight">10%</div>
+        </div>
+        <div class="source-item">
+          <div><div class="src-name">Staking</div><div class="src-protos">Lido, Rocket Pool, Coinbase</div></div>
+          <div class="src-weight">5%</div>
+        </div>
+      </div>
+      <div class="isfr-arrow">||| VALIDATORS |||</div>
+      <div class="isfr-result">
+        <div class="rate-label">Composite DeFi Benchmark</div>
+        <div class="rate-value" id="isfrRate">4.73%</div>
+      </div>
+    </div>
+    <div class="isfr-footer">
+      The <em>$668 trillion</em> gap: traditional finance has SOFR. DeFi has nothing comparable.<br>
+      ISFR proves the pattern. Next: volatility indices, credit spreads, cross-chain rates.<br>
+      Each new index = new revenue line, same infrastructure.
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE 6: COLLECTIVE INTELLIGENCE ======= -->
+<div class="page" id="page6">
+  <canvas id="canvas6"></canvas>
+  <div class="section-tag">06 / Collective</div>
+  <div class="page-content">
+    <div class="headline" style="margin-bottom:20px; text-align:center; font-size:clamp(22px,2.8vw,40px);">Every agent makes every agent smarter.</div>
+    <div class="collective-wrap">
+      <div class="agent-slider-row">
+        <span style="color:var(--t-dim);font-size:11px;">AGENTS</span>
+        <input type="range" id="agentSlider" min="5" max="1000" value="5" step="1">
+        <span class="agent-count" id="agentCount">5</span>
+      </div>
+      <div class="collective-stats">
+        <div class="coll-stat">
+          <div class="stat-label">Connections</div>
+          <div class="stat-value" id="statConns">10</div>
+        </div>
+        <div class="coll-stat">
+          <div class="stat-label">Shared Context</div>
+          <div class="stat-value" id="statCtx">120</div>
+        </div>
+        <div class="coll-stat">
+          <div class="stat-label">Output Scale</div>
+          <div class="stat-value" id="statOutput">1.0x</div>
+        </div>
+      </div>
+      <div class="collective-quote">"The thousandth agent pulls 30,000 tokens of context the first agent never had."</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--t-dim);text-align:center;line-height:1.7;max-width:500px;">
+        Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents. Demurrage = pheromone evaporation. Confirmation = reinforcement. <em style="color:var(--rose-neon);">&beta; &asymp; 1.15</em> &mdash; when agents double, output grows 115%.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- ======= MAIN SCRIPT ======= -->
+<script type="module">
+import * as THREE from 'three';
+
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+// ═══════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════
+const navDots = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  navDots.appendChild(dot);
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') {
+    e.preventDefault();
+    goToPage(currentPage + 1);
+  }
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    goToPage(currentPage - 1);
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    goToPage(currentPage + 1);
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    goToPage(currentPage - 1);
+  }
+});
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// FILM GRAIN
+// ═══════════════════════════════════════════════════════
+const grainCanvas = document.getElementById('grainCanvas');
+const grainCtx = grainCanvas.getContext('2d');
+function resizeGrain() {
+  grainCanvas.width = window.innerWidth;
+  grainCanvas.height = window.innerHeight;
+}
+resizeGrain();
+window.addEventListener('resize', resizeGrain);
+
+function drawGrain() {
+  const w = grainCanvas.width, h = grainCanvas.height;
+  const img = grainCtx.createImageData(w, h);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.random() * 255;
+    d[i] = d[i+1] = d[i+2] = v;
+    d[i+3] = 255;
+  }
+  grainCtx.putImageData(img, 0, 0);
+  requestAnimationFrame(drawGrain);
+}
+drawGrain();
+
+// ═══════════════════════════════════════════════════════
+// MIRAGE BLOCK POLLING
+// ═══════════════════════════════════════════════════════
+let blockNumber = 0;
+let blockModulation = 0;
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  const hud = document.getElementById('blockHud');
+  document.getElementById('blockNum').textContent = n.toLocaleString();
+  hud.classList.add('visible');
+  setTimeout(() => {
+    const pulse = hud.querySelector('.block-pulse');
+    if (pulse) {
+      const clone = pulse.cloneNode(true);
+      pulse.parentNode.replaceChild(clone, pulse);
+    }
+  }, 10);
+}
+
+// ═══════════════════════════════════════════════════════
+// TERRAIN UTILITIES
+// ═══════════════════════════════════════════════════════
+
+// Simplex-like noise (good enough for terrain)
+function createNoise() {
+  const perm = new Uint8Array(512);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+
+  const grad3 = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+
+  function dot3(g, x, y, z) { return g[0]*x + g[1]*y + g[2]*z; }
+  function fade(t) { return t*t*t*(t*(t*6-15)+10); }
+  function lerp(a, b, t) { return a + t*(b-a); }
+
+  return function noise3D(x, y, z) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    const u = fade(x), v = fade(y), w = fade(z);
+    const A = perm[X]+Y, AA = perm[A]+Z, AB = perm[A+1]+Z;
+    const B = perm[X+1]+Y, BA = perm[B]+Z, BB = perm[B+1]+Z;
+    return lerp(
+      lerp(lerp(dot3(grad3[perm[AA]%12],x,y,z), dot3(grad3[perm[BA]%12],x-1,y,z),u),
+           lerp(dot3(grad3[perm[AB]%12],x,y-1,z), dot3(grad3[perm[BB]%12],x-1,y-1,z),u),v),
+      lerp(lerp(dot3(grad3[perm[AA+1]%12],x,y,z-1), dot3(grad3[perm[BA+1]%12],x-1,y,z-1),u),
+           lerp(dot3(grad3[perm[AB+1]%12],x,y-1,z-1), dot3(grad3[perm[BB+1]%12],x-1,y-1,z-1),u),v),w);
+  };
+}
+
+const noise = createNoise();
+
+function fbm(x, y, z, octaves, lacunarity, gain) {
+  let val = 0, amp = 1, freq = 1, maxAmp = 0;
+  for (let i = 0; i < octaves; i++) {
+    val += noise(x * freq, y * freq, z) * amp;
+    maxAmp += amp;
+    amp *= gain;
+    freq *= lacunarity;
+  }
+  return val / maxAmp;
+}
+
+// Create a terrain mesh with contour wireframe overlay
+function createTerrainScene(canvasId, opts = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x050507, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x050507, opts.fogDensity || 0.012);
+
+  const camera = new THREE.PerspectiveCamera(opts.fov || 55, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera.position.set(opts.camX || 0, opts.camY || 8, opts.camZ || 18);
+  camera.lookAt(opts.lookX || 0, opts.lookY || 0, opts.lookZ || 0);
+
+  return { renderer, scene, camera, canvas };
+}
+
+// Build terrain geometry with noise displacement
+function buildTerrain(segX, segZ, sizeX, sizeZ, heightFn) {
+  const geo = new THREE.PlaneGeometry(sizeX, sizeZ, segX, segZ);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    pos.setY(i, heightFn(x, z));
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Create contour line data from terrain
+function createContourLines(geo, levels, sizeX, sizeZ, segX, segZ) {
+  const points = [];
+  const pos = geo.attributes.position;
+  const cols = segX + 1;
+
+  for (const level of levels) {
+    // March through grid cells
+    for (let iz = 0; iz < segZ; iz++) {
+      for (let ix = 0; ix < segX; ix++) {
+        const i00 = iz * cols + ix;
+        const i10 = iz * cols + ix + 1;
+        const i01 = (iz+1) * cols + ix;
+        const i11 = (iz+1) * cols + ix + 1;
+
+        const y00 = pos.getY(i00), y10 = pos.getY(i10), y01 = pos.getY(i01), y11 = pos.getY(i11);
+
+        // Check all 4 edges
+        const edges = [
+          [i00, i10, y00, y10],
+          [i10, i11, y10, y11],
+          [i11, i01, y11, y01],
+          [i01, i00, y01, y00]
+        ];
+
+        const crossings = [];
+        for (const [a, b, ya, yb] of edges) {
+          if ((ya < level && yb >= level) || (ya >= level && yb < level)) {
+            const t = (level - ya) / (yb - ya);
+            const x = pos.getX(a) + t * (pos.getX(b) - pos.getX(a));
+            const z = pos.getZ(a) + t * (pos.getZ(b) - pos.getZ(a));
+            crossings.push(new THREE.Vector3(x, level + 0.02, z));
+          }
+        }
+        if (crossings.length >= 2) {
+          points.push(crossings[0], crossings[1]);
+        }
+      }
+    }
+  }
+  return points;
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 0: HERO — Vast terrain, aurora, contour lines
+// ═══════════════════════════════════════════════════════
+let scene0 = null;
+function initScene0() {
+  const s = createTerrainScene('canvas0', { camY: 6, camZ: 14, lookY: -1, fogDensity: 0.008, fov: 60 });
+  if (!s) return;
+
+  const segX = 180, segZ = 180;
+  const sizeX = 60, sizeZ = 60;
+
+  function heightFn(x, z) {
+    return fbm(x * 0.06, z * 0.06, 0, 5, 2.0, 0.5) * 3.5;
+  }
+
+  const geo = buildTerrain(segX, segZ, sizeX, sizeZ, heightFn);
+
+  // Solid terrain surface (very dark)
+  const surfaceMat = new THREE.MeshStandardMaterial({
+    color: 0x0a080c,
+    roughness: 0.95,
+    metalness: 0.1,
+    flatShading: true,
+  });
+  const surface = new THREE.Mesh(geo, surfaceMat);
+  s.scene.add(surface);
+
+  // Wireframe contour lines (rose)
+  const wireMat = new THREE.LineBasicMaterial({
+    color: 0xaa7088,
+    transparent: true,
+    opacity: 0.2,
+    linewidth: 1,
+  });
+  const wireGeo = new THREE.WireframeGeometry(geo);
+  const wireframe = new THREE.LineSegments(wireGeo, wireMat);
+  s.scene.add(wireframe);
+
+  // True contour lines at specific elevation levels
+  const levels = [];
+  for (let h = -1.5; h <= 3.0; h += 0.35) levels.push(h);
+  const contourPts = createContourLines(geo, levels, sizeX, sizeZ, segX, segZ);
+  if (contourPts.length > 1) {
+    const contourGeo = new THREE.BufferGeometry().setFromPoints(contourPts);
+    const contourMat = new THREE.LineBasicMaterial({
+      color: 0xcc90a8,
+      transparent: true,
+      opacity: 0.35,
+    });
+    const contourLines = new THREE.LineSegments(contourGeo, contourMat);
+    s.scene.add(contourLines);
+  }
+
+  // Aurora / horizon glow
+  const auroraGeo = new THREE.PlaneGeometry(80, 12, 1, 1);
+  const auroraMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uTime: { value: 0 },
+      uBlockMod: { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uBlockMod;
+      varying vec2 vUv;
+      void main() {
+        float glow = smoothstep(0.0, 0.6, vUv.y) * (1.0 - smoothstep(0.6, 1.0, vUv.y));
+        float wave = sin(vUv.x * 6.2831 * 2.0 + uTime * 0.3) * 0.3 + 0.7;
+        float wave2 = sin(vUv.x * 6.2831 * 3.5 + uTime * 0.5 + 1.5) * 0.2 + 0.8;
+
+        vec3 roseCol = vec3(0.67, 0.44, 0.54);
+        vec3 warmCol = vec3(0.8, 0.55, 0.4);
+        vec3 col = mix(roseCol, warmCol, vUv.x * 0.5 + sin(uTime * 0.2) * 0.2);
+
+        float alpha = glow * wave * wave2 * 0.22;
+        alpha += uBlockMod * 0.08 * glow;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `
+  });
+  const aurora = new THREE.Mesh(auroraGeo, auroraMat);
+  aurora.position.set(0, 3, -28);
+  s.scene.add(aurora);
+
+  // Soft dim light
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.5);
+  s.scene.add(ambient);
+
+  const dirLight = new THREE.DirectionalLight(0xaa7088, 0.4);
+  dirLight.position.set(-5, 10, 5);
+  s.scene.add(dirLight);
+
+  // Faint point light on the horizon
+  const horizonLight = new THREE.PointLight(0xcc90a8, 0.8, 50);
+  horizonLight.position.set(0, 2, -20);
+  s.scene.add(horizonLight);
+
+  scene0 = { ...s, aurora: auroraMat, wireframe, time: 0 };
+}
+
+function animateScene0(dt) {
+  if (!scene0) return;
+  scene0.time += dt;
+  scene0.aurora.uniforms.uTime.value = scene0.time;
+  scene0.aurora.uniforms.uBlockMod.value = blockModulation;
+
+  // Slow camera drift
+  scene0.camera.position.x = Math.sin(scene0.time * 0.04) * 2;
+  scene0.camera.position.y = 6 + Math.sin(scene0.time * 0.06) * 0.5;
+  scene0.camera.lookAt(Math.sin(scene0.time * 0.02) * 0.5, -1, -5);
+
+  // Pulse wireframe with blocks
+  scene0.wireframe.material.opacity = 0.15 + blockModulation * 0.15;
+
+  scene0.renderer.render(scene0.scene, scene0.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 1: PLANE BETWEEN — Three geological strata
+// ═══════════════════════════════════════════════════════
+let scene1 = null;
+function initScene1() {
+  const s = createTerrainScene('canvas1', { camY: 10, camZ: 16, lookY: 0, fogDensity: 0.01, fov: 50 });
+  if (!s) return;
+
+  const segX = 100, segZ = 100;
+  const sizeX = 40, sizeZ = 40;
+
+  // Three strata at different depths
+  function makeStratum(yBase, heightScale, color, opacity, detail) {
+    function hFn(x, z) {
+      return yBase + fbm(x * (0.05 + detail * 0.02), z * (0.05 + detail * 0.02), detail * 10, 4, 2.1, 0.45) * heightScale;
+    }
+    const geo = buildTerrain(segX, segZ, sizeX, sizeZ, hFn);
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      transparent: true,
+      opacity,
+      roughness: 0.9,
+      metalness: 0.05,
+      flatShading: true,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+
+    // Wireframe
+    const wireMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: opacity * 0.4 });
+    const wireGeo = new THREE.WireframeGeometry(geo);
+    const wire = new THREE.LineSegments(wireGeo, wireMat);
+
+    return { mesh, wire };
+  }
+
+  // Top stratum (Application) - faint
+  const top = makeStratum(3, 1.0, 0x584858, 0.25, 0);
+  s.scene.add(top.mesh);
+  s.scene.add(top.wire);
+
+  // Middle stratum (Nunchi) - glowing rose
+  const mid = makeStratum(0, 1.5, 0xaa7088, 0.5, 1);
+  s.scene.add(mid.mesh);
+  s.scene.add(mid.wire);
+
+  // Deep stratum (Execution) - dim
+  const deep = makeStratum(-4, 0.8, 0x302830, 0.3, 2);
+  s.scene.add(deep.mesh);
+  s.scene.add(deep.wire);
+
+  // Glow on middle stratum
+  const glowLight = new THREE.PointLight(0xaa7088, 1.2, 30);
+  glowLight.position.set(0, 1, 0);
+  s.scene.add(glowLight);
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.6);
+  s.scene.add(ambient);
+
+  scene1 = { ...s, mid, time: 0 };
+}
+
+function animateScene1(dt) {
+  if (!scene1) return;
+  scene1.time += dt;
+
+  // Gentle camera rotation
+  const t = scene1.time;
+  scene1.camera.position.x = Math.sin(t * 0.03) * 3;
+  scene1.camera.position.y = 10 + Math.sin(t * 0.05) * 0.8;
+  scene1.camera.lookAt(0, 0, 0);
+
+  // Pulse middle stratum glow
+  scene1.mid.mesh.material.opacity = 0.45 + Math.sin(t * 0.8) * 0.08 + blockModulation * 0.1;
+
+  scene1.renderer.render(scene1.scene, scene1.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 2: TWO COMPONENTS — Two landmasses with bridge
+// ═══════════════════════════════════════════════════════
+let scene2 = null;
+function initScene2() {
+  const s = createTerrainScene('canvas2', { camY: 9, camZ: 18, lookY: 0.5, fogDensity: 0.01, fov: 55 });
+  if (!s) return;
+
+  const seg = 80;
+
+  // Volcanic island (Roko) - left
+  function volcanoHeight(x, z) {
+    const cx = x + 8, cz = z;
+    const dist = Math.sqrt(cx*cx + cz*cz);
+    const base = Math.max(0, 3.5 - dist * 0.35);
+    const crater = dist < 1.5 ? -0.5 * (1.5 - dist) : 0;
+    const detail = fbm(x * 0.15, z * 0.15, 42, 3, 2.0, 0.4) * 0.8;
+    return base + crater + detail - 0.3;
+  }
+
+  const volcGeo = buildTerrain(seg, seg, 24, 24, volcanoHeight);
+  const volcMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1018,
+    roughness: 0.85,
+    metalness: 0.15,
+    flatShading: true,
+  });
+  const volcano = new THREE.Mesh(volcGeo, volcMat);
+  s.scene.add(volcano);
+
+  // Volcano wireframe
+  const volcWire = new THREE.LineSegments(
+    new THREE.WireframeGeometry(volcGeo),
+    new THREE.LineBasicMaterial({ color: 0xaa7088, transparent: true, opacity: 0.15 })
+  );
+  s.scene.add(volcWire);
+
+  // Volcano glow (lava)
+  const lavaLight = new THREE.PointLight(0xcc6644, 0.8, 12);
+  lavaLight.position.set(-8, 4, 0);
+  s.scene.add(lavaLight);
+
+  // Continental shelf (Chain) - right
+  function shelfHeight(x, z) {
+    const cx = x - 8;
+    const base = fbm(cx * 0.05, z * 0.05, 99, 5, 2.0, 0.5) * 2.0;
+    const edge = Math.max(0, 1 - Math.abs(cx - 4) * 0.15);
+    return base * 0.7 + edge * 0.5 - 0.5;
+  }
+
+  const shelfGeo = buildTerrain(seg, seg, 24, 24, shelfHeight);
+  const shelfMat = new THREE.MeshStandardMaterial({
+    color: 0x10101a,
+    roughness: 0.9,
+    metalness: 0.1,
+    flatShading: true,
+  });
+  const shelf = new THREE.Mesh(shelfGeo, shelfMat);
+  s.scene.add(shelf);
+
+  const shelfWire = new THREE.LineSegments(
+    new THREE.WireframeGeometry(shelfGeo),
+    new THREE.LineBasicMaterial({ color: 0x585878, transparent: true, opacity: 0.15 })
+  );
+  s.scene.add(shelfWire);
+
+  // Bridge / isthmus between them
+  const bridgeGeo = new THREE.PlaneGeometry(6, 1.5, 30, 5);
+  bridgeGeo.rotateX(-Math.PI / 2);
+  const bPos = bridgeGeo.attributes.position;
+  for (let i = 0; i < bPos.count; i++) {
+    const x = bPos.getX(i);
+    bPos.setY(i, fbm(x * 0.2, bPos.getZ(i) * 0.5, 77, 2, 2.0, 0.4) * 0.3 + 0.2);
+  }
+  bridgeGeo.computeVertexNormals();
+  const bridgeMat = new THREE.MeshStandardMaterial({
+    color: 0x3a2030,
+    roughness: 0.8,
+    flatShading: true,
+    transparent: true,
+    opacity: 0.8,
+  });
+  const bridge = new THREE.Mesh(bridgeGeo, bridgeMat);
+  bridge.position.set(0, 0.1, 0);
+  s.scene.add(bridge);
+
+  const bridgeWire = new THREE.LineSegments(
+    new THREE.WireframeGeometry(bridgeGeo),
+    new THREE.LineBasicMaterial({ color: 0xcc90a8, transparent: true, opacity: 0.3 })
+  );
+  bridgeWire.position.copy(bridge.position);
+  s.scene.add(bridgeWire);
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.6);
+  s.scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0x988090, 0.5);
+  dirLight.position.set(5, 10, 5);
+  s.scene.add(dirLight);
+
+  // Sea plane (very dark, just below terrain)
+  const seaGeo = new THREE.PlaneGeometry(60, 60, 1, 1);
+  seaGeo.rotateX(-Math.PI / 2);
+  const seaMat = new THREE.MeshStandardMaterial({
+    color: 0x050510,
+    transparent: true,
+    opacity: 0.7,
+    roughness: 1,
+  });
+  const sea = new THREE.Mesh(seaGeo, seaMat);
+  sea.position.y = -0.4;
+  s.scene.add(sea);
+
+  scene2 = { ...s, lavaLight, bridgeWire, time: 0 };
+}
+
+function animateScene2(dt) {
+  if (!scene2) return;
+  scene2.time += dt;
+  const t = scene2.time;
+
+  scene2.camera.position.x = Math.sin(t * 0.025) * 2;
+  scene2.camera.position.y = 9 + Math.sin(t * 0.04) * 0.5;
+  scene2.camera.lookAt(0, 0.5, 0);
+
+  // Lava pulse
+  scene2.lavaLight.intensity = 0.6 + Math.sin(t * 1.5) * 0.3 + blockModulation * 0.5;
+
+  // Bridge glow pulse
+  scene2.bridgeWire.material.opacity = 0.25 + Math.sin(t * 0.7) * 0.1 + blockModulation * 0.15;
+
+  scene2.renderer.render(scene2.scene, scene2.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 3: CHAIN ARCHITECTURE — Geological cross-section
+// ═══════════════════════════════════════════════════════
+let scene3 = null;
+function initScene3() {
+  const s = createTerrainScene('canvas3', { camY: 8, camZ: 16, lookY: 0, fogDensity: 0.009, fov: 50 });
+  if (!s) return;
+
+  // Create layered cross-section
+  const layerColors = [0xaa7088, 0x7a5060, 0x585878, 0x3a2030, 0x1a1018, 0x0a080c];
+  const layerYs = [2, 0.8, -0.3, -1.5, -2.8, -4.0];
+  const layerHeights = [0.6, 0.5, 0.4, 0.5, 0.4, 0.3];
+  const layers = [];
+
+  for (let i = 0; i < 6; i++) {
+    const seg = 80;
+    function hFn(x, z) {
+      return layerYs[i] + fbm(x * 0.08 + i * 5, z * 0.08, i * 10, 3, 2.0, 0.4) * layerHeights[i];
+    }
+    const geo = buildTerrain(seg, seg, 36, 36, hFn);
+    const mat = new THREE.MeshStandardMaterial({
+      color: layerColors[i],
+      roughness: 0.85,
+      metalness: 0.05 + i * 0.03,
+      flatShading: true,
+      transparent: true,
+      opacity: 0.6 - i * 0.05,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    s.scene.add(mesh);
+
+    const wireMat = new THREE.LineBasicMaterial({
+      color: layerColors[i],
+      transparent: true,
+      opacity: 0.15 + (i === 0 ? 0.1 : 0),
+    });
+    const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMat);
+    s.scene.add(wire);
+    layers.push({ mesh, wire, mat });
+  }
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.6);
+  s.scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xaa7088, 0.4);
+  dirLight.position.set(-5, 8, 5);
+  s.scene.add(dirLight);
+
+  scene3 = { ...s, layers, time: 0 };
+}
+
+function animateScene3(dt) {
+  if (!scene3) return;
+  scene3.time += dt;
+  const t = scene3.time;
+
+  scene3.camera.position.x = Math.sin(t * 0.03) * 3;
+  scene3.camera.position.y = 8 + Math.sin(t * 0.05) * 0.5;
+  scene3.camera.lookAt(0, -0.5, 0);
+
+  // Pulse top layer with blocks
+  scene3.layers[0].mat.opacity = 0.55 + blockModulation * 0.15;
+
+  scene3.renderer.render(scene3.scene, scene3.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 4: HDC — Seismic waves through terrain
+// ═══════════════════════════════════════════════════════
+let scene4 = null;
+function initScene4() {
+  const s = createTerrainScene('canvas4', { camY: 12, camZ: 20, lookY: 0, fogDensity: 0.008, fov: 50 });
+  if (!s) return;
+
+  const segX = 120, segZ = 120;
+  const sizeX = 40, sizeZ = 40;
+
+  function baseHeight(x, z) {
+    return fbm(x * 0.06, z * 0.06, 33, 4, 2.0, 0.45) * 2.0;
+  }
+
+  const geo = buildTerrain(segX, segZ, sizeX, sizeZ, baseHeight);
+  const basePositions = new Float32Array(geo.attributes.position.array);
+
+  const surfaceMat = new THREE.MeshStandardMaterial({
+    color: 0x0c0a0e,
+    roughness: 0.9,
+    metalness: 0.1,
+    flatShading: true,
+  });
+  const surface = new THREE.Mesh(geo, surfaceMat);
+  s.scene.add(surface);
+
+  const wireMat = new THREE.LineBasicMaterial({ color: 0xaa7088, transparent: true, opacity: 0.12 });
+  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMat);
+  s.scene.add(wire);
+
+  // Seismic epicenter markers
+  const epicenters = [
+    new THREE.Vector3(-6, 0, -3),
+    new THREE.Vector3(5, 0, 2),
+    new THREE.Vector3(-2, 0, 6),
+  ];
+  const markerMat = new THREE.MeshBasicMaterial({ color: 0xcc90a8, transparent: true, opacity: 0.6 });
+  for (const ep of epicenters) {
+    const markerGeo = new THREE.SphereGeometry(0.15, 8, 8);
+    const marker = new THREE.Mesh(markerGeo, markerMat.clone());
+    ep.y = baseHeight(ep.x, ep.z) + 0.3;
+    marker.position.copy(ep);
+    s.scene.add(marker);
+  }
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.5);
+  s.scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xaa7088, 0.3);
+  dirLight.position.set(5, 10, 5);
+  s.scene.add(dirLight);
+
+  scene4 = { ...s, geo, basePositions, epicenters, segX, segZ, sizeX, sizeZ, wire, time: 0, hdcStep: 0, wavePhase: 0 };
+}
+
+let currentHdcStep = 0;
+window.setHdcStep = function(step) {
+  currentHdcStep = step;
+  if (scene4) scene4.hdcStep = step;
+  document.querySelectorAll('.hdc-step').forEach((el, i) => {
+    el.classList.toggle('active-step', i === step);
+  });
+  // Trigger seismic wave
+  if (scene4) scene4.wavePhase = 0;
+};
+
+function animateScene4(dt) {
+  if (!scene4) return;
+  scene4.time += dt;
+  scene4.wavePhase += dt * 2;
+  const t = scene4.time;
+
+  // Seismic wave displacement
+  const pos = scene4.geo.attributes.position;
+  const base = scene4.basePositions;
+  const waveSpeed = 8;
+  const waveDecay = 0.15;
+  const waveAmplitude = scene4.hdcStep >= 1 ? 0.4 : 0.1;
+
+  for (let i = 0; i < pos.count; i++) {
+    const bx = base[i*3], bz = base[i*3+2], by = base[i*3+1];
+    let dy = 0;
+
+    for (const ep of scene4.epicenters) {
+      const dx = bx - ep.x, dz = bz - ep.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      const wave = Math.sin(dist * 1.2 - scene4.wavePhase * waveSpeed) * Math.exp(-dist * waveDecay) * waveAmplitude;
+      dy += wave;
+    }
+
+    pos.setY(i, by + dy);
+  }
+  pos.needsUpdate = true;
+  scene4.geo.computeVertexNormals();
+
+  // Update wireframe
+  scene4.wire.geometry.dispose();
+  scene4.wire.geometry = new THREE.WireframeGeometry(scene4.geo);
+
+  // Camera
+  scene4.camera.position.x = Math.sin(t * 0.03) * 3;
+  scene4.camera.position.y = 12 + Math.sin(t * 0.05) * 0.5;
+  scene4.camera.lookAt(0, 0, 0);
+
+  scene4.renderer.render(scene4.scene, scene4.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 5: ISFR — Rivers from mountain sources converging
+// ═══════════════════════════════════════════════════════
+let scene5 = null;
+function initScene5() {
+  const s = createTerrainScene('canvas5', { camY: 10, camZ: 16, lookY: -0.5, fogDensity: 0.01, fov: 55 });
+  if (!s) return;
+
+  const segX = 100, segZ = 100;
+  const sizeX = 40, sizeZ = 40;
+
+  // Mountain terrain with valleys (rivers)
+  function heightFn(x, z) {
+    const base = fbm(x * 0.06, z * 0.06, 55, 5, 2.0, 0.5) * 3.0;
+    // Carve river valleys
+    const river1 = Math.exp(-Math.pow((x + 10) * 0.3 + Math.sin(z * 0.3) * 2, 2) * 0.3) * -1.5;
+    const river2 = Math.exp(-Math.pow((x - 5) * 0.3 + Math.cos(z * 0.25) * 2, 2) * 0.3) * -1.2;
+    const river3 = Math.exp(-Math.pow((x + 2) * 0.25 + Math.sin(z * 0.2 + 1) * 2.5, 2) * 0.25) * -1.0;
+    // All converge toward z > 8
+    const convergence = z > 5 ? Math.exp(-Math.pow(x * 0.4, 2) * 0.5) * -1.8 * Math.min(1, (z - 5) * 0.15) : 0;
+    return base + river1 + river2 + river3 + convergence;
+  }
+
+  const geo = buildTerrain(segX, segZ, sizeX, sizeZ, heightFn);
+
+  const surfaceMat = new THREE.MeshStandardMaterial({
+    color: 0x0c0a0e,
+    roughness: 0.9,
+    flatShading: true,
+  });
+  const surface = new THREE.Mesh(geo, surfaceMat);
+  s.scene.add(surface);
+
+  const wireMat = new THREE.LineBasicMaterial({ color: 0x7a5060, transparent: true, opacity: 0.12 });
+  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMat);
+  s.scene.add(wire);
+
+  // Contour lines
+  const levels = [];
+  for (let h = -2; h <= 3; h += 0.4) levels.push(h);
+  const contourPts = createContourLines(geo, levels, sizeX, sizeZ, segX, segZ);
+  if (contourPts.length > 1) {
+    const cGeo = new THREE.BufferGeometry().setFromPoints(contourPts);
+    const cMat = new THREE.LineBasicMaterial({ color: 0xaa7088, transparent: true, opacity: 0.2 });
+    s.scene.add(new THREE.LineSegments(cGeo, cMat));
+  }
+
+  // River particles (flowing data)
+  const riverParticleCount = 500;
+  const rpGeo = new THREE.BufferGeometry();
+  const rpPositions = new Float32Array(riverParticleCount * 3);
+  const rpVelocities = [];
+  for (let i = 0; i < riverParticleCount; i++) {
+    const startX = (Math.random() - 0.5) * 20;
+    const startZ = -15 + Math.random() * 10;
+    rpPositions[i*3] = startX;
+    rpPositions[i*3+1] = heightFn(startX, startZ) + 0.15;
+    rpPositions[i*3+2] = startZ;
+    rpVelocities.push({ vx: -startX * 0.005, vz: 0.06 + Math.random() * 0.03 });
+  }
+  rpGeo.setAttribute('position', new THREE.BufferAttribute(rpPositions, 3));
+  const rpMat = new THREE.PointsMaterial({
+    color: 0xcc90a8,
+    size: 0.08,
+    transparent: true,
+    opacity: 0.6,
+    sizeAttenuation: true,
+  });
+  const riverParticles = new THREE.Points(rpGeo, rpMat);
+  s.scene.add(riverParticles);
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.5);
+  s.scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xaa7088, 0.4);
+  dirLight.position.set(-5, 10, 5);
+  s.scene.add(dirLight);
+
+  scene5 = { ...s, riverParticles, rpVelocities, rpPositions, heightFn, time: 0 };
+}
+
+function animateScene5(dt) {
+  if (!scene5) return;
+  scene5.time += dt;
+  const t = scene5.time;
+
+  // Animate river particles flowing downhill and converging
+  const pos = scene5.rpPositions;
+  const vels = scene5.rpVelocities;
+  for (let i = 0; i < vels.length; i++) {
+    pos[i*3] += vels[i].vx;
+    pos[i*3+2] += vels[i].vz;
+    // Converge toward x=0
+    vels[i].vx += -pos[i*3] * 0.0003;
+    // Update y to follow terrain
+    const h = scene5.heightFn(pos[i*3], pos[i*3+2]);
+    pos[i*3+1] = h + 0.15;
+
+    // Reset if past edge
+    if (pos[i*3+2] > 20) {
+      const startX = (Math.random() - 0.5) * 20;
+      pos[i*3] = startX;
+      pos[i*3+2] = -15 + Math.random() * 5;
+      pos[i*3+1] = scene5.heightFn(startX, pos[i*3+2]) + 0.15;
+      vels[i].vx = -startX * 0.005;
+      vels[i].vz = 0.06 + Math.random() * 0.03;
+    }
+  }
+  scene5.riverParticles.geometry.attributes.position.needsUpdate = true;
+
+  scene5.camera.position.x = Math.sin(t * 0.03) * 2;
+  scene5.camera.position.y = 10 + Math.sin(t * 0.05) * 0.5;
+  scene5.camera.lookAt(0, -0.5, 3);
+
+  scene5.renderer.render(scene5.scene, scene5.camera);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE 6: COLLECTIVE — Terrain that builds with slider
+// ═══════════════════════════════════════════════════════
+let scene6 = null;
+function initScene6() {
+  const s = createTerrainScene('canvas6', { camY: 10, camZ: 18, lookY: 0, fogDensity: 0.009, fov: 55 });
+  if (!s) return;
+
+  const segX = 120, segZ = 120;
+  const sizeX = 40, sizeZ = 40;
+
+  const geo = buildTerrain(segX, segZ, sizeX, sizeZ, (x, z) => 0);
+  const basePositions = new Float32Array(geo.attributes.position.count * 3);
+
+  // Precompute noise field for later scaling
+  const noiseField = new Float32Array(geo.attributes.position.count);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    noiseField[i] = fbm(x * 0.07, z * 0.07, 88, 5, 2.0, 0.5);
+    basePositions[i*3] = pos.getX(i);
+    basePositions[i*3+1] = 0;
+    basePositions[i*3+2] = pos.getZ(i);
+  }
+
+  const surfaceMat = new THREE.MeshStandardMaterial({
+    color: 0x0c0a0e,
+    roughness: 0.85,
+    flatShading: true,
+  });
+  const surface = new THREE.Mesh(geo, surfaceMat);
+  s.scene.add(surface);
+
+  const wireMat = new THREE.LineBasicMaterial({ color: 0xaa7088, transparent: true, opacity: 0.15 });
+  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMat);
+  s.scene.add(wire);
+
+  // Agent particles
+  const agentCount = 200;
+  const agentGeo = new THREE.BufferGeometry();
+  const agentPos = new Float32Array(agentCount * 3);
+  for (let i = 0; i < agentCount; i++) {
+    agentPos[i*3] = (Math.random() - 0.5) * 30;
+    agentPos[i*3+1] = 0.3;
+    agentPos[i*3+2] = (Math.random() - 0.5) * 30;
+  }
+  agentGeo.setAttribute('position', new THREE.BufferAttribute(agentPos, 3));
+  const agentMat = new THREE.PointsMaterial({
+    color: 0xdca5bd,
+    size: 0.12,
+    transparent: true,
+    opacity: 0.5,
+    sizeAttenuation: true,
+  });
+  const agents = new THREE.Points(agentGeo, agentMat);
+  s.scene.add(agents);
+
+  const ambient = new THREE.AmbientLight(0x1a1020, 0.6);
+  s.scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xaa7088, 0.4);
+  dirLight.position.set(-5, 10, 5);
+  s.scene.add(dirLight);
+
+  scene6 = { ...s, geo, basePositions, noiseField, wire, agents, agentPos, agentMat, currentScale: 0.01, time: 0 };
+}
+
+function updateCollectiveTerrain(agentN) {
+  if (!scene6) return;
+
+  // Map 5-1000 agents to 0.01-6.0 height scale
+  const scale = 0.01 + (agentN / 1000) * 6.0;
+  scene6.currentScale = scale;
+
+  const pos = scene6.geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, scene6.noiseField[i] * scale);
+  }
+  pos.needsUpdate = true;
+  scene6.geo.computeVertexNormals();
+
+  // Update wireframe
+  scene6.wire.geometry.dispose();
+  scene6.wire.geometry = new THREE.WireframeGeometry(scene6.geo);
+
+  // Update agent visibility
+  const visibleCount = Math.min(200, Math.floor(agentN * 0.2));
+  scene6.agentMat.opacity = Math.min(0.7, agentN / 500);
+
+  // Update agent positions to sit on terrain
+  const ap = scene6.agentPos;
+  for (let i = 0; i < visibleCount; i++) {
+    const x = ap[i*3], z = ap[i*3+2];
+    // Rough height estimate
+    const nx = (x / 40 + 0.5) * scene6.geo.parameters?.widthSegments || 0;
+    ap[i*3+1] = scene6.noiseField[Math.min(i, scene6.noiseField.length-1)] * scale + 0.3;
+  }
+  scene6.agents.geometry.attributes.position.needsUpdate = true;
+}
+
+function animateScene6(dt) {
+  if (!scene6) return;
+  scene6.time += dt;
+  const t = scene6.time;
+
+  scene6.camera.position.x = Math.sin(t * 0.03) * 4;
+  scene6.camera.position.y = 10 + scene6.currentScale * 0.5;
+  scene6.camera.lookAt(0, scene6.currentScale * 0.3, 0);
+
+  scene6.renderer.render(scene6.scene, scene6.camera);
+}
+
+// Slider wiring
+const slider = document.getElementById('agentSlider');
+const countEl = document.getElementById('agentCount');
+const connEl = document.getElementById('statConns');
+const ctxEl = document.getElementById('statCtx');
+const outputEl = document.getElementById('statOutput');
+
+slider.addEventListener('input', () => {
+  const n = parseInt(slider.value);
+  countEl.textContent = n;
+  connEl.textContent = Math.floor(n * (n - 1) / 2).toLocaleString();
+  ctxEl.textContent = (n * 30).toLocaleString();
+  const beta = 1.15;
+  const output = Math.pow(n / 5, beta).toFixed(1);
+  outputEl.textContent = output + 'x';
+  updateCollectiveTerrain(n);
+});
+
+// ═══════════════════════════════════════════════════════
+// HDC BIT VISUALIZATION
+// ═══════════════════════════════════════════════════════
+const bitViz = document.getElementById('bitViz');
+for (let i = 0; i < 80; i++) {
+  const b = document.createElement('span');
+  if (Math.random() > 0.5) b.classList.add('on');
+  bitViz.appendChild(b);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCENE LIFECYCLE
+// ═══════════════════════════════════════════════════════
+const sceneInits = [initScene0, initScene1, initScene2, initScene3, initScene4, initScene5, initScene6];
+const sceneAnimators = [animateScene0, animateScene1, animateScene2, animateScene3, animateScene4, animateScene5, animateScene6];
+const initializedScenes = new Set();
+
+function ensureSceneInit(idx) {
+  if (!initializedScenes.has(idx)) {
+    sceneInits[idx]();
+    initializedScenes.add(idx);
+  }
+}
+
+// Initialize first scene
+ensureSceneInit(0);
+
+function onPageEnter(idx) {
+  ensureSceneInit(idx);
+  // Pre-init adjacent scenes
+  if (idx > 0) ensureSceneInit(idx - 1);
+  if (idx < TOTAL_PAGES - 1) ensureSceneInit(idx + 1);
+}
+
+// ═══════════════════════════════════════════════════════
+// ANIMATION LOOP
+// ═══════════════════════════════════════════════════════
+let lastTime = performance.now();
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
+  // Only animate current page scene
+  if (sceneAnimators[currentPage]) {
+    sceneAnimators[currentPage](dt);
+  }
+}
+animate();
+
+// ═══════════════════════════════════════════════════════
+// RESIZE HANDLER
+// ═══════════════════════════════════════════════════════
+window.addEventListener('resize', () => {
+  const scenes = [scene0, scene1, scene2, scene3, scene4, scene5, scene6];
+  for (const s of scenes) {
+    if (s && s.renderer && s.camera) {
+      s.camera.aspect = window.innerWidth / window.innerHeight;
+      s.camera.updateProjectionMatrix();
+      s.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+  }
+});
+
+// ISFR rate slow oscillation
+let isfrTime = 0;
+setInterval(() => {
+  isfrTime += 0.05;
+  const base = 4.73;
+  const delta = Math.sin(isfrTime) * 0.12 + Math.sin(isfrTime * 2.3) * 0.05;
+  document.getElementById('isfrRate').textContent = (base + delta).toFixed(2) + '%';
+}, 100);
+</script>
+</body>
+</html>

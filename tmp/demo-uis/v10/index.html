@@ -1,0 +1,2024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Agent Coordination Plane</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+  --dream: #585878;
+  --dream-bright: #7878a0;
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+html, body {
+  overflow: hidden;
+  width: 100%; height: 100%;
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Pages */
+.page {
+  position: absolute;
+  width: 100%; height: 100%;
+  top: 0; left: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+.page.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+.page.exit-up {
+  opacity: 0;
+  transform: translateY(-24px);
+}
+
+/* Canvas behind pages */
+.page canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+.page-content {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  width: 90%;
+  pointer-events: auto;
+}
+
+/* Typography */
+.headline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(28px, 5vw, 56px);
+  line-height: 1.15;
+}
+.headline-sm {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(20px, 3.5vw, 36px);
+  line-height: 1.2;
+}
+.rose-glow {
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.section-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  margin-bottom: 12px;
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: clamp(12px, 1.4vw, 14px);
+  color: var(--t1);
+  line-height: 1.7;
+}
+.dim { color: var(--t-dim); }
+.jade { color: var(--jade-hot); }
+.bone { color: var(--bone); }
+
+/* Chassis panels */
+.chassis {
+  background: linear-gradient(180deg, rgba(12,10,14,0.88), rgba(8,8,16,0.92));
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.chassis .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+.chassis .body { padding: 20px; }
+
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Glass panel */
+.glass {
+  background: rgba(8,8,12,0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(170,112,136,0.15);
+  border-radius: 3px;
+  padding: 24px 32px;
+}
+
+/* Navigation */
+.page-nav {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 9999;
+  user-select: none;
+}
+.nav-arrow {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--t-dim);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: rgba(8,8,12,0.7);
+  backdrop-filter: blur(8px);
+}
+.nav-arrow:hover { border-color: var(--rose-dim); color: var(--rose); }
+.nav-dots { display: flex; gap: 8px; }
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.nav-dot.active {
+  background: var(--rose);
+  border-color: var(--rose);
+  box-shadow: 0 0 8px rgba(170,112,136,0.4);
+}
+.nav-dot:hover { border-color: var(--rose-dim); }
+
+/* Block HUD */
+.block-hud {
+  position: fixed;
+  top: 16px; right: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  letter-spacing: 0.1em;
+  z-index: 9997;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .block-num { color: var(--jade-hot); }
+.block-flash {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border: 1px solid var(--jade);
+  pointer-events: none;
+  z-index: 9996;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+/* Atmospheric overlays */
+.grain {
+  position: fixed;
+  top: -50%; left: -50%;
+  width: 200%; height: 200%;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grainShift 0.5s steps(4) infinite;
+}
+@keyframes grainShift {
+  0% { transform: translate(0,0); }
+  25% { transform: translate(-2%,-1%); }
+  50% { transform: translate(1%,2%); }
+  75% { transform: translate(-1%,-2%); }
+  100% { transform: translate(2%,1%); }
+}
+.scanlines {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0.05;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.15) 2px,
+    rgba(0,0,0,0.15) 4px
+  );
+}
+.vignette {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 9997;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Page-specific styles */
+
+/* Page 0 — Hero */
+.hero-content {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.hero-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(48px, 8vw, 96px);
+  color: #d8c8d0;
+  letter-spacing: 0.02em;
+}
+.hero-subtitle {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.32em;
+  font-size: clamp(10px, 1.6vw, 16px);
+  color: var(--rose-dim);
+}
+.hero-thesis {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1.4vw, 15px);
+  color: var(--t1);
+  max-width: 600px;
+  line-height: 1.7;
+  margin-top: 8px;
+}
+.hero-footer {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  letter-spacing: 0.2em;
+  position: absolute;
+  bottom: 80px;
+}
+
+/* Page 1 — Plane Between */
+.plane-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.plane-layer {
+  padding: 20px 28px;
+  border: 1px solid var(--border);
+  text-align: center;
+  position: relative;
+  transition: all 0.5s;
+}
+.plane-layer.top {
+  border-bottom: none;
+  background: rgba(8,8,12,0.6);
+  border-radius: 3px 3px 0 0;
+}
+.plane-layer.middle {
+  background: rgba(170,112,136,0.08);
+  border-color: var(--border-live);
+  box-shadow: 0 0 30px rgba(170,112,136,0.1), inset 0 0 30px rgba(170,112,136,0.03);
+}
+.plane-layer.bottom {
+  border-top: none;
+  background: rgba(8,8,12,0.6);
+  border-radius: 0 0 3px 3px;
+}
+.plane-layer-tag {
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.plane-layer-items {
+  font-size: 12px;
+  color: var(--t-dim);
+  line-height: 1.6;
+}
+.plane-flow {
+  width: 1px;
+  height: 20px;
+  background: linear-gradient(to bottom, var(--rose-dim), transparent);
+  margin: 0 auto;
+  position: relative;
+}
+
+/* Page 2 — Two Components */
+.two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+}
+@media (max-width: 768px) {
+  .two-cols { grid-template-columns: 1fr; }
+}
+.col-panel {
+  padding: 0;
+}
+.col-panel .col-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+}
+.col-panel .col-body {
+  padding: 20px;
+}
+.col-panel .col-body ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.col-panel .col-body li {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--t1);
+  line-height: 1.6;
+}
+.col-panel .col-body li::before {
+  content: '';
+  display: inline-block;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  margin-right: 10px;
+  vertical-align: middle;
+}
+.col-left li::before { background: var(--rose); }
+.col-right li::before { background: var(--jade); }
+
+/* Page 3 — Chain Architecture */
+.arch-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.arch-layer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+}
+.arch-icon {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  border: 1px solid;
+}
+.arch-label { font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; }
+.arch-desc { font-size: 12px; color: var(--t-dim); margin-top: 4px; }
+
+.block-compare {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 16px;
+}
+.block-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.block-bar .bar {
+  width: 40px;
+  border-radius: 2px 2px 0 0;
+  transition: height 0.5s;
+}
+.block-bar .bar-label {
+  font-size: 9px;
+  color: var(--t-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.block-bar .bar-value {
+  font-size: 10px;
+  color: var(--t1);
+  font-family: var(--mono);
+}
+
+/* Page 4 — HDC */
+.hdc-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.hdc-step {
+  opacity: 0.3;
+  transition: opacity 0.5s, transform 0.5s;
+  transform: translateX(-8px);
+}
+.hdc-step.active {
+  opacity: 1;
+  transform: translateX(0);
+}
+.hdc-step .step-num {
+  font-size: 10px;
+  color: var(--rose-dim);
+  letter-spacing: 0.2em;
+  margin-bottom: 6px;
+}
+.hdc-step .step-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  color: #d8c8d0;
+  margin-bottom: 6px;
+}
+.hdc-step .step-body {
+  font-size: 12px;
+  color: var(--t1);
+  line-height: 1.6;
+}
+.hdc-step code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--rose-hot);
+  background: rgba(170,112,136,0.08);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.hdc-nav {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 12px;
+}
+.hdc-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.hdc-dot.active { background: var(--rose); box-shadow: 0 0 6px rgba(170,112,136,0.5); }
+
+/* Page 5 — ISFR */
+.isfr-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+}
+.source-bar {
+  height: 6px;
+  border-radius: 3px;
+  transition: width 1s ease;
+}
+.source-label {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  width: 90px;
+  flex-shrink: 0;
+}
+.source-weight {
+  font-size: 10px;
+  color: var(--t-dim);
+  width: 40px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.source-names {
+  font-size: 10px;
+  color: var(--t-dim);
+  flex: 1;
+}
+
+/* Page 6 — Collective */
+.collective-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+.agent-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 500px;
+}
+.agent-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: var(--border);
+  outline: none;
+  border-radius: 1px;
+}
+.agent-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--rose);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(170,112,136,0.4);
+}
+.agent-count {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--rose-hot);
+  width: 60px;
+  text-align: right;
+}
+
+/* Scrollbar hide */
+::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Page 0: Hero -->
+<div class="page active" id="page0">
+  <canvas id="canvas0"></canvas>
+  <div class="page-content hero-content">
+    <div class="hero-title">Nunchi</div>
+    <div class="hero-subtitle">Agent Coordination Plane</div>
+    <div class="hero-thesis">The infrastructure layer between AI models and the applications they power.</div>
+  </div>
+  <div class="hero-footer">Series A &middot; 2026</div>
+</div>
+
+<!-- Page 1: Plane Between -->
+<div class="page" id="page1">
+  <canvas id="canvas1"></canvas>
+  <div class="page-content">
+    <div class="glass" style="padding: 32px;">
+      <div class="section-tag">architecture</div>
+      <div class="headline-sm" style="margin-bottom: 24px;">The plane between the planes.</div>
+      <div class="plane-layers">
+        <div class="plane-layer top">
+          <div class="plane-layer-tag" style="color: var(--bone-dim);">Application Layer</div>
+          <div class="plane-layer-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+        </div>
+        <div class="plane-layer middle">
+          <div class="plane-layer-tag rose-glow">Agent Coordination Plane</div>
+          <div class="plane-layer-items" style="color: var(--rose-hot);">Nunchi &mdash; identity, routing, knowledge, policy, settlement</div>
+        </div>
+        <div class="plane-layer bottom">
+          <div class="plane-layer-tag" style="color: var(--bone-dim);">Execution Layer</div>
+          <div class="plane-layer-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+        </div>
+      </div>
+      <div class="body-text" style="margin-top: 20px; text-align: center;">
+        Every adjacent layer is funded. The plane between them is empty. <span class="rose-glow">Nunchi fills it.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 2: Two Components -->
+<div class="page" id="page2">
+  <canvas id="canvas2"></canvas>
+  <div class="page-content">
+    <div class="section-tag" style="text-align:center;">architecture</div>
+    <div class="headline-sm" style="text-align:center; margin-bottom: 20px;">Two components. One architecture.</div>
+    <div class="two-cols">
+      <div class="col-panel chassis col-left">
+        <div class="head">
+          <span>Roko &middot; Runtime</span>
+          <span class="led"></span>
+        </div>
+        <div class="col-body">
+          <div style="font-size:11px; color:var(--t-dim); margin-bottom:12px;">The cognitive runtime that turns a model call into a governed event</div>
+          <ul>
+            <li>18 crates, 177K lines of Rust</li>
+            <li>CascadeRouter &mdash; cost-aware model routing</li>
+            <li>11 gates, 7 rungs between every call</li>
+            <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+            <li>Deterministic replay</li>
+          </ul>
+          <div style="margin-top:10px; font-size:10px; color:var(--rose-dim); letter-spacing:0.15em;">OPEN SOURCE &middot; APACHE 2.0</div>
+        </div>
+      </div>
+      <div class="col-panel chassis col-right">
+        <div class="head">
+          <span>Nunchi Chain &middot; Verifiable Substrate</span>
+          <span class="led"></span>
+        </div>
+        <div class="col-body">
+          <div style="font-size:11px; color:var(--t-dim); margin-bottom:12px;">Agent-native sovereign EVM L1</div>
+          <ul>
+            <li>Built on Commonware &mdash; Rust blockchain anti-framework</li>
+            <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+            <li>HDC precompile at 0x09 &mdash; semantic search at consensus</li>
+            <li>ISFR Oracle &mdash; DeFi benchmark by validators</li>
+            <li>Knowledge demurrage &mdash; decay + confirmation</li>
+          </ul>
+          <div style="margin-top:10px; font-size:10px; color:var(--jade); letter-spacing:0.15em;">SOVEREIGN L1</div>
+        </div>
+      </div>
+    </div>
+    <div class="body-text" style="margin-top:20px; text-align:center; max-width:700px; margin-left:auto; margin-right:auto;">
+      Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and <span class="rose-glow">verifiable settlement across trust boundaries.</span>
+    </div>
+  </div>
+</div>
+
+<!-- Page 3: Chain Architecture -->
+<div class="page" id="page3">
+  <canvas id="canvas3"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width:900px; margin:0 auto;">
+      <div class="section-tag">chain</div>
+      <div class="headline-sm" style="margin-bottom:20px;">Built on Commonware.</div>
+      <div style="font-size:12px; color:var(--t-dim); margin-bottom:16px; font-style:italic;">
+        "Not a framework. An anti-framework. Pick-and-choose Rust primitives."
+      </div>
+      <div style="font-size:10px; color:var(--rose-dim); margin-bottom:20px; letter-spacing:0.1em;">
+        p2p::authenticated &middot; cryptography::bls12381 &middot; runtime::deterministic &middot; consensus::simplex
+      </div>
+      <div class="arch-grid">
+        <div class="arch-layer chassis">
+          <div class="arch-icon" style="border-color:var(--rose-dim); color:var(--rose-hot);">C</div>
+          <div><div class="arch-label" style="color:var(--rose-hot);">Consensus &mdash; Simplex BFT</div><div class="arch-desc">~50ms blocks &middot; 2 hops notarize &middot; 3 hops finalize</div></div>
+        </div>
+        <div class="arch-layer chassis">
+          <div class="arch-icon" style="border-color:var(--dream); color:var(--dream-bright);">E</div>
+          <div><div class="arch-label" style="color:var(--dream-bright);">Execution &mdash; revm</div><div class="arch-desc">Full EVM compatibility &middot; Block-STM parallel execution</div></div>
+        </div>
+        <div class="arch-layer chassis">
+          <div class="arch-icon" style="border-color:var(--jade); color:var(--jade-hot);">P</div>
+          <div><div class="arch-label" style="color:var(--jade-hot);">Native Precompiles</div><div class="arch-desc">Agent Registry (0x08) &middot; HDC Precompile (0x09) &middot; ISFR Oracle (0xA01)</div></div>
+        </div>
+        <div class="arch-layer chassis">
+          <div class="arch-icon" style="border-color:var(--bone-dim); color:var(--bone);">K</div>
+          <div><div class="arch-label" style="color:var(--bone);">Knowledge Layer</div><div class="arch-desc">InsightEntry storage &middot; Merkle tree &middot; demurrage</div></div>
+        </div>
+        <div class="arch-layer chassis">
+          <div class="arch-icon" style="border-color:var(--t-dim); color:var(--t1);">N</div>
+          <div><div class="arch-label" style="color:var(--t1);">P2P &mdash; Authenticated</div><div class="arch-desc">Encrypted validator communication</div></div>
+        </div>
+      </div>
+      <div class="block-compare" id="blockCompare">
+        <div class="block-bar"><div class="bar" style="height:80px; background:var(--t-dim);"></div><div class="bar-value">12s</div><div class="bar-label">ETH</div></div>
+        <div class="block-bar"><div class="bar" style="height:28px; background:var(--dream);"></div><div class="bar-value">400ms</div><div class="bar-label">SOL</div></div>
+        <div class="block-bar"><div class="bar" style="height:26px; background:var(--dream);"></div><div class="bar-value">~390ms</div><div class="bar-label">SUI</div></div>
+        <div class="block-bar"><div class="bar" style="height:6px; background:var(--rose-hot); box-shadow: 0 0 12px rgba(204,144,168,0.5);"></div><div class="bar-value rose-glow" style="font-size:12px; font-weight:500;">~50ms</div><div class="bar-label rose-glow">Nunchi</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 4: HDC -->
+<div class="page" id="page4">
+  <canvas id="canvas4"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width:800px; margin:0 auto;">
+      <div class="section-tag">knowledge</div>
+      <div class="headline-sm" style="margin-bottom:20px;">Hyperdimensional Computing</div>
+      <div class="hdc-steps" id="hdcSteps">
+        <div class="hdc-step active" data-step="0">
+          <div class="step-num">01</div>
+          <div class="step-title">An agent finds a transaction</div>
+          <div class="step-body"><code>swap(USDC &rarr; WETH, 50,000 USDC, pool 0x88e6...)</code><br>gas: 142,891 &middot; block: 19,847,221</div>
+        </div>
+        <div class="hdc-step" data-step="1">
+          <div class="step-num">02</div>
+          <div class="step-title">Encode to hypervector</div>
+          <div class="step-body">Each concept &rarr; random 10,000-bit base vector<br><span class="rose-glow">Bind:</span> swap &oplus; USDC &oplus; WETH = identity<br><span class="rose-glow">Permute:</span> shift for sequence position<br><span class="rose-glow">Bundle:</span> majority vote &rarr; single episode vector</div>
+        </div>
+        <div class="hdc-step" data-step="2">
+          <div class="step-num">03</div>
+          <div class="step-title">Post to chain</div>
+          <div class="step-body">InsightEntry { content, hypervector (1,250 bytes), decay }<br>&rarr; Transaction &rarr; Validator &rarr; <code>sm_root</code> updated</div>
+        </div>
+        <div class="hdc-step" data-step="3">
+          <div class="step-num">04</div>
+          <div class="step-title">Future agent searches</div>
+          <div class="step-body">Query: &ldquo;Uniswap USDC pool large swap&rdquo;<br>&rarr; Encode to hypervector &rarr; Hamming distance search<br>&rarr; Top-K results in <span class="rose-glow">0.17ms</span> (vs 12ms float embeddings)</div>
+        </div>
+        <div class="hdc-step" data-step="4">
+          <div class="step-num">05</div>
+          <div class="step-title">Results compound</div>
+          <div class="step-body">10 confirmations = 6x half-life.<br>Knowledge many agents verify becomes <span class="rose-glow">long-lived.</span></div>
+        </div>
+      </div>
+      <div class="hdc-nav" id="hdcNav"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 5: ISFR -->
+<div class="page" id="page5">
+  <canvas id="canvas5"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width:800px; margin:0 auto;">
+      <div class="section-tag">finance</div>
+      <div class="headline-sm" style="margin-bottom:6px;">The first of many.</div>
+      <div class="body-text dim" style="margin-bottom:20px;">ISFR &mdash; Internet Secured Funding Rate. The first financial instrument native to agent coordination. Like SOFR for the internet economy, computed by validators every 10 seconds.</div>
+      <div class="isfr-flow">
+        <div class="source-row chassis">
+          <div class="source-label" style="color:var(--rose-hot);">Lending</div>
+          <div class="source-bar" style="width:60%; background: linear-gradient(90deg, var(--rose-deep), var(--rose-hot));"></div>
+          <div class="source-weight">60%</div>
+          <div class="source-names">Aave, Compound, Spark, Morpho</div>
+        </div>
+        <div class="source-row chassis">
+          <div class="source-label" style="color:var(--bone);">Structured</div>
+          <div class="source-bar" style="width:25%; background: linear-gradient(90deg, var(--bone-dim), var(--bone));"></div>
+          <div class="source-weight">25%</div>
+          <div class="source-names">Pendle, Spectra, Term Finance</div>
+        </div>
+        <div class="source-row chassis">
+          <div class="source-label" style="color:var(--dream-bright);">Funding</div>
+          <div class="source-bar" style="width:10%; background: linear-gradient(90deg, var(--dream), var(--dream-bright));"></div>
+          <div class="source-weight">10%</div>
+          <div class="source-names">dYdX, Hyperliquid, GMX</div>
+        </div>
+        <div class="source-row chassis">
+          <div class="source-label" style="color:var(--jade-hot);">Staking</div>
+          <div class="source-bar" style="width:5%; background: linear-gradient(90deg, var(--jade), var(--jade-hot));"></div>
+          <div class="source-weight">5%</div>
+          <div class="source-names">Lido, Rocket Pool, Coinbase</div>
+        </div>
+      </div>
+      <div class="body-text" style="margin-top:20px; text-align:center;">
+        The <span class="bone">$668 trillion</span> gap: traditional finance has SOFR. DeFi has nothing comparable.<br>
+        ISFR proves the pattern. Next: volatility indices, credit spreads, cross-chain rates.<br>
+        <span class="dim">Each new index = new revenue line, same infrastructure.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 6: Collective Intelligence -->
+<div class="page" id="page6">
+  <canvas id="canvas6"></canvas>
+  <div class="page-content collective-content">
+    <div class="glass" style="max-width:600px; text-align:center;">
+      <div class="section-tag">network effects</div>
+      <div class="headline-sm" style="margin-bottom:16px;">Every agent makes every agent smarter.</div>
+      <div class="agent-slider-wrap">
+        <span class="dim" style="font-size:10px;">5</span>
+        <input type="range" class="agent-slider" id="agentSlider" min="5" max="1000" value="5">
+        <span class="dim" style="font-size:10px;">1000</span>
+      </div>
+      <div class="agent-count" id="agentCount" style="width:100%; text-align:center; margin-top:4px;">5 agents</div>
+      <div class="body-text" style="margin-top:16px;">
+        Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents.
+        Demurrage = evaporation. Confirmation = reinforcement.
+      </div>
+      <div class="body-text" style="margin-top:12px;">
+        <span class="rose-glow">"The thousandth agent pulls 30,000 tokens of context the first agent never had."</span>
+      </div>
+      <div class="body-text dim" style="margin-top:8px; font-size:11px;">
+        Innovation rate: superlinear &mdash; &beta; &asymp; 1.15<br>When agents double, output grows 115%.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">BLOCK <span class="block-num" id="blockNum">---</span></div>
+<div class="block-flash" id="blockFlash"></div>
+
+<!-- Atmospheric overlays -->
+<div class="grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ─────────────────────────────────────────────
+// NAVIGATION
+// ─────────────────────────────────────────────
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+const navDots = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  navDots.appendChild(dot);
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') {
+    e.preventDefault();
+    if (currentPage === 4) {
+      // HDC sub-steps
+      if (hdcStep < 4) { setHdcStep(hdcStep + 1); return; }
+    }
+    goToPage(currentPage + 1);
+  }
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (currentPage === 4) {
+      if (hdcStep > 0) { setHdcStep(hdcStep - 1); return; }
+    }
+    goToPage(currentPage - 1);
+  }
+  if (e.key === 'ArrowDown') { e.preventDefault(); goToPage(currentPage + 1); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); goToPage(currentPage - 1); }
+});
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+function onPageEnter(idx) {
+  // Reset HDC step when entering page 4
+  if (idx === 4) setHdcStep(0);
+}
+
+// ─────────────────────────────────────────────
+// HDC SUB-STEPS
+// ─────────────────────────────────────────────
+let hdcStep = 0;
+const hdcNav = document.getElementById('hdcNav');
+for (let i = 0; i < 5; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'hdc-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => setHdcStep(i));
+  hdcNav.appendChild(dot);
+}
+
+function setHdcStep(n) {
+  hdcStep = n;
+  document.querySelectorAll('.hdc-step').forEach((el, i) => {
+    el.classList.toggle('active', i <= n);
+  });
+  document.querySelectorAll('.hdc-dot').forEach((d, i) => {
+    d.classList.toggle('active', i === n);
+  });
+}
+
+// ─────────────────────────────────────────────
+// MIRAGE BLOCK POLLING
+// ─────────────────────────────────────────────
+let blockNumber = 0;
+let blockModulation = 0;
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      onNewBlock(n);
+    }
+    document.getElementById('blockHud').classList.add('visible');
+  } catch(e) {
+    // mirage not running
+  }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  const numEl = document.getElementById('blockNum');
+  numEl.textContent = n.toString();
+  const flash = document.getElementById('blockFlash');
+  flash.style.opacity = '0.3';
+  setTimeout(() => { flash.style.opacity = '0'; }, 200);
+}
+
+// ─────────────────────────────────────────────
+// THREE.JS SCENES
+// ─────────────────────────────────────────────
+const W = window.innerWidth;
+const H = window.innerHeight;
+const clock = new THREE.Clock();
+
+// Colors from ROSEDUST
+const ROSE = new THREE.Color(0xaa7088);
+const ROSE_HOT = new THREE.Color(0xcc90a8);
+const ROSE_NEON = new THREE.Color(0xdca5bd);
+const ROSE_DIM = new THREE.Color(0x7a5060);
+const ROSE_DEEP = new THREE.Color(0x3a2030);
+const JADE = new THREE.Color(0x70887a);
+const BONE = new THREE.Color(0xc8b890);
+const DREAM = new THREE.Color(0x585878);
+const VOID = new THREE.Color(0x050507);
+
+// Shared renderer
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(W, H);
+renderer.setClearColor(0x050507, 1);
+
+// Scene containers per page
+const scenes = [];
+const cameras = [];
+const renderTargets = [];
+
+function createScene() {
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x050507, 0.015);
+  const camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 500);
+  return { scene, camera };
+}
+
+// Update canvases from single renderer
+const canvases = {};
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const c = document.getElementById('canvas' + i);
+  if (c) {
+    canvases[i] = c.getContext('2d');
+    c.width = W;
+    c.height = H;
+  }
+}
+
+// ─────────────────────────────────────────────
+// UTILITY: Create neural structures
+// ─────────────────────────────────────────────
+
+// Neuron node (soma)
+function createSoma(pos, color, size = 0.3) {
+  const geo = new THREE.SphereGeometry(size, 12, 8);
+  const mat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.8,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+
+  // Glow
+  const glowGeo = new THREE.SphereGeometry(size * 2.2, 12, 8);
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.08,
+  });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  mesh.add(glow);
+
+  return mesh;
+}
+
+// Axon (connection line between neurons)
+function createAxon(from, to, color, pulseColor) {
+  const curve = new THREE.CatmullRomCurve3([
+    from.clone(),
+    new THREE.Vector3(
+      (from.x + to.x) * 0.5 + (Math.random() - 0.5) * 2,
+      (from.y + to.y) * 0.5 + (Math.random() - 0.5) * 2,
+      (from.z + to.z) * 0.5 + (Math.random() - 0.5) * 1
+    ),
+    to.clone()
+  ]);
+  const points = curve.getPoints(40);
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = new THREE.LineBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.15,
+  });
+  const line = new THREE.Line(geo, mat);
+  line.userData.curve = curve;
+  line.userData.pulseColor = pulseColor || color;
+  return line;
+}
+
+// Neural pulse traveling along axon
+function createPulse(color, size = 0.12) {
+  const geo = new THREE.SphereGeometry(size, 8, 6);
+  const mat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+
+  // Trail glow
+  const trailGeo = new THREE.SphereGeometry(size * 3, 8, 6);
+  const trailMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.15,
+  });
+  const trail = new THREE.Mesh(trailGeo, trailMat);
+  mesh.add(trail);
+
+  return mesh;
+}
+
+// Dendrite tree (branching structure from a neuron)
+function createDendrites(origin, direction, depth, color, group) {
+  if (depth <= 0) return;
+  const len = 1.5 + Math.random() * 1.5;
+  const end = origin.clone().add(
+    direction.clone().multiplyScalar(len)
+  );
+
+  const points = [origin, end];
+  const geo = new THREE.BufferGeometry().setFromPoints(points);
+  const mat = new THREE.LineBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.06 + depth * 0.04,
+  });
+  group.add(new THREE.Line(geo, mat));
+
+  // Branch
+  const branches = depth > 2 ? 2 + Math.floor(Math.random() * 2) : 1 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < branches; i++) {
+    const newDir = direction.clone();
+    newDir.x += (Math.random() - 0.5) * 1.2;
+    newDir.y += (Math.random() - 0.5) * 1.2;
+    newDir.z += (Math.random() - 0.5) * 0.6;
+    newDir.normalize();
+    createDendrites(end, newDir, depth - 1, color, group);
+  }
+}
+
+
+// ─────────────────────────────────────────────
+// PAGE 0: Hero — Grand Neural Network
+// ─────────────────────────────────────────────
+const s0 = createScene();
+s0.camera.position.set(0, 0, 30);
+s0.camera.lookAt(0, 0, 0);
+
+// Central brain structure — cluster of soma nodes
+const brainGroup = new THREE.Group();
+s0.scene.add(brainGroup);
+
+const heroNeurons = [];
+const heroAxons = [];
+const heroPulses = [];
+
+// Core cluster
+for (let i = 0; i < 60; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 3 + Math.random() * 5;
+  const pos = new THREE.Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta),
+    r * Math.cos(phi) * 0.6
+  );
+  const colors = [ROSE, ROSE_HOT, ROSE_NEON, ROSE_DIM, DREAM];
+  const c = colors[Math.floor(Math.random() * colors.length)];
+  const soma = createSoma(pos, c, 0.15 + Math.random() * 0.25);
+  brainGroup.add(soma);
+  heroNeurons.push(soma);
+}
+
+// Radiating axons from center
+for (let i = 0; i < 35; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const rInner = 2 + Math.random() * 3;
+  const rOuter = 12 + Math.random() * 10;
+  const from = new THREE.Vector3(
+    rInner * Math.sin(phi) * Math.cos(theta),
+    rInner * Math.sin(phi) * Math.sin(theta),
+    rInner * Math.cos(phi) * 0.5
+  );
+  const to = new THREE.Vector3(
+    rOuter * Math.sin(phi) * Math.cos(theta),
+    rOuter * Math.sin(phi) * Math.sin(theta),
+    rOuter * Math.cos(phi) * 0.4
+  );
+  const axon = createAxon(from, to, ROSE_DIM, ROSE_NEON);
+  brainGroup.add(axon);
+  heroAxons.push(axon);
+
+  // Pulses
+  if (Math.random() > 0.4) {
+    const pulse = createPulse(ROSE_NEON, 0.08 + Math.random() * 0.06);
+    pulse.userData.t = Math.random();
+    pulse.userData.speed = 0.15 + Math.random() * 0.2;
+    pulse.userData.curve = axon.userData.curve;
+    brainGroup.add(pulse);
+    heroPulses.push(pulse);
+  }
+}
+
+// Outer dendrite trees
+for (let i = 0; i < 20; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 10 + Math.random() * 5;
+  const origin = new THREE.Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta),
+    r * Math.cos(phi) * 0.4
+  );
+  const dir = origin.clone().normalize();
+  createDendrites(origin, dir, 3, ROSE_DEEP, brainGroup);
+}
+
+// Ambient particles
+const ambientCount = 300;
+const ambientGeo = new THREE.BufferGeometry();
+const ambientPositions = new Float32Array(ambientCount * 3);
+const ambientColors = new Float32Array(ambientCount * 3);
+for (let i = 0; i < ambientCount; i++) {
+  ambientPositions[i * 3] = (Math.random() - 0.5) * 60;
+  ambientPositions[i * 3 + 1] = (Math.random() - 0.5) * 40;
+  ambientPositions[i * 3 + 2] = (Math.random() - 0.5) * 30;
+  const c = ROSE_DEEP.clone().lerp(DREAM, Math.random());
+  ambientColors[i * 3] = c.r;
+  ambientColors[i * 3 + 1] = c.g;
+  ambientColors[i * 3 + 2] = c.b;
+}
+ambientGeo.setAttribute('position', new THREE.BufferAttribute(ambientPositions, 3));
+ambientGeo.setAttribute('color', new THREE.BufferAttribute(ambientColors, 3));
+const ambientMat = new THREE.PointsMaterial({
+  size: 0.06,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.4,
+  sizeAttenuation: true,
+});
+s0.scene.add(new THREE.Points(ambientGeo, ambientMat));
+
+
+// ─────────────────────────────────────────────
+// PAGE 1: Plane Between — Three Neural Layers
+// ─────────────────────────────────────────────
+const s1 = createScene();
+s1.camera.position.set(0, 0, 25);
+s1.camera.lookAt(0, 0, 0);
+
+const layerGroup1 = new THREE.Group();
+s1.scene.add(layerGroup1);
+
+// Three horizontal layers of neurons (input / hidden / output)
+const layerYPositions = [6, 0, -6];
+const layerColors = [BONE, ROSE_NEON, JADE];
+const layerNeurons = [[], [], []];
+const layerCounts = [12, 8, 12];
+
+for (let l = 0; l < 3; l++) {
+  const y = layerYPositions[l];
+  const count = layerCounts[l];
+  for (let i = 0; i < count; i++) {
+    const x = (i - (count - 1) / 2) * 2.2;
+    const z = (Math.random() - 0.5) * 2;
+    const pos = new THREE.Vector3(x, y, z);
+    const soma = createSoma(pos, layerColors[l], 0.2);
+    layerGroup1.add(soma);
+    layerNeurons[l].push(soma);
+  }
+}
+
+// Connections between layers (input->hidden, hidden->output)
+const interLayerPulses1 = [];
+for (let conn = 0; conn < 2; conn++) {
+  const fromLayer = layerNeurons[conn];
+  const toLayer = layerNeurons[conn + 1];
+  for (let i = 0; i < fromLayer.length; i++) {
+    // Connect to 2-3 random neurons in next layer
+    const connCount = 2 + Math.floor(Math.random() * 2);
+    for (let j = 0; j < connCount; j++) {
+      const target = toLayer[Math.floor(Math.random() * toLayer.length)];
+      const fromPos = fromLayer[i].position;
+      const toPos = target.position;
+      const axon = createAxon(fromPos, toPos, layerColors[conn].clone().lerp(layerColors[conn+1], 0.5), ROSE_NEON);
+      layerGroup1.add(axon);
+
+      if (Math.random() > 0.6) {
+        const pulse = createPulse(ROSE_NEON, 0.06);
+        pulse.userData.t = Math.random();
+        pulse.userData.speed = 0.2 + Math.random() * 0.15;
+        pulse.userData.curve = axon.userData.curve;
+        layerGroup1.add(pulse);
+        interLayerPulses1.push(pulse);
+      }
+    }
+  }
+}
+
+// Middle layer glow plane
+const midPlaneGeo = new THREE.PlaneGeometry(30, 3);
+const midPlaneMat = new THREE.MeshBasicMaterial({
+  color: ROSE,
+  transparent: true,
+  opacity: 0.03,
+  side: THREE.DoubleSide,
+});
+const midPlane = new THREE.Mesh(midPlaneGeo, midPlaneMat);
+midPlane.position.y = 0;
+layerGroup1.add(midPlane);
+
+// Ambient dust
+const dust1Count = 200;
+const dust1Geo = new THREE.BufferGeometry();
+const dust1Pos = new Float32Array(dust1Count * 3);
+for (let i = 0; i < dust1Count; i++) {
+  dust1Pos[i * 3] = (Math.random() - 0.5) * 40;
+  dust1Pos[i * 3 + 1] = (Math.random() - 0.5) * 25;
+  dust1Pos[i * 3 + 2] = (Math.random() - 0.5) * 15;
+}
+dust1Geo.setAttribute('position', new THREE.BufferAttribute(dust1Pos, 3));
+s1.scene.add(new THREE.Points(dust1Geo, new THREE.PointsMaterial({
+  size: 0.04, color: ROSE_DEEP, transparent: true, opacity: 0.3, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// PAGE 2: Two Hemispheres
+// ─────────────────────────────────────────────
+const s2 = createScene();
+s2.camera.position.set(0, 0, 28);
+s2.camera.lookAt(0, 0, 0);
+
+const hemiGroup = new THREE.Group();
+s2.scene.add(hemiGroup);
+
+// Left hemisphere (Roko — structured)
+const leftNeurons = [];
+for (let i = 0; i < 30; i++) {
+  const theta = Math.random() * Math.PI;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 3 + Math.random() * 3;
+  const pos = new THREE.Vector3(
+    -7 + r * Math.sin(phi) * Math.cos(theta) * 0.6,
+    r * Math.sin(phi) * Math.sin(theta) * 0.8,
+    r * Math.cos(phi) * 0.5
+  );
+  const soma = createSoma(pos, ROSE.clone().lerp(ROSE_HOT, Math.random()), 0.12 + Math.random() * 0.15);
+  hemiGroup.add(soma);
+  leftNeurons.push(soma);
+}
+
+// Right hemisphere (Chain — distributed)
+const rightNeurons = [];
+for (let i = 0; i < 30; i++) {
+  const theta = Math.PI + Math.random() * Math.PI;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const r = 3 + Math.random() * 3;
+  const pos = new THREE.Vector3(
+    7 + r * Math.sin(phi) * Math.cos(theta) * 0.6,
+    r * Math.sin(phi) * Math.sin(theta) * 0.8,
+    r * Math.cos(phi) * 0.5
+  );
+  const soma = createSoma(pos, JADE.clone().lerp(DREAM, Math.random()), 0.12 + Math.random() * 0.15);
+  hemiGroup.add(soma);
+  rightNeurons.push(soma);
+}
+
+// Corpus callosum — bridges between hemispheres
+const corpusPulses = [];
+for (let i = 0; i < 12; i++) {
+  const l = leftNeurons[Math.floor(Math.random() * leftNeurons.length)];
+  const r = rightNeurons[Math.floor(Math.random() * rightNeurons.length)];
+  const axon = createAxon(l.position, r.position, ROSE_DIM, BONE);
+  axon.material.opacity = 0.08;
+  hemiGroup.add(axon);
+
+  const pulse = createPulse(BONE, 0.07);
+  pulse.userData.t = Math.random();
+  pulse.userData.speed = 0.1 + Math.random() * 0.12;
+  pulse.userData.curve = axon.userData.curve;
+  hemiGroup.add(pulse);
+  corpusPulses.push(pulse);
+}
+
+// Intra-hemisphere connections
+function connectWithin(neurons, color, group, pulseArr) {
+  for (let i = 0; i < neurons.length; i++) {
+    const nearest = neurons
+      .map((n, j) => ({ j, d: neurons[i].position.distanceTo(n.position) }))
+      .filter(x => x.j !== i)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 2);
+    for (const n of nearest) {
+      const axon = createAxon(neurons[i].position, neurons[n.j].position, color, color);
+      axon.material.opacity = 0.06;
+      group.add(axon);
+    }
+  }
+}
+connectWithin(leftNeurons, ROSE_DEEP, hemiGroup, []);
+connectWithin(rightNeurons, DREAM, hemiGroup, []);
+
+// Ambient
+const dust2Count = 150;
+const dust2Geo = new THREE.BufferGeometry();
+const dust2Pos = new Float32Array(dust2Count * 3);
+for (let i = 0; i < dust2Count; i++) {
+  dust2Pos[i * 3] = (Math.random() - 0.5) * 50;
+  dust2Pos[i * 3 + 1] = (Math.random() - 0.5) * 30;
+  dust2Pos[i * 3 + 2] = (Math.random() - 0.5) * 20;
+}
+dust2Geo.setAttribute('position', new THREE.BufferAttribute(dust2Pos, 3));
+s2.scene.add(new THREE.Points(dust2Geo, new THREE.PointsMaterial({
+  size: 0.04, color: ROSE_DEEP, transparent: true, opacity: 0.25, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// PAGE 3: Chain Architecture — Neural Cell Anatomy
+// ─────────────────────────────────────────────
+const s3 = createScene();
+s3.camera.position.set(0, 0, 22);
+s3.camera.lookAt(0, 0, 0);
+
+const cellGroup = new THREE.Group();
+s3.scene.add(cellGroup);
+
+// Nucleus (consensus) — center
+const nucleus = createSoma(new THREE.Vector3(0, 0, 0), ROSE_HOT, 1.2);
+cellGroup.add(nucleus);
+
+// Nuclear membrane
+const nucMemGeo = new THREE.RingGeometry(1.5, 1.7, 32);
+const nucMemMat = new THREE.MeshBasicMaterial({
+  color: ROSE_DIM, transparent: true, opacity: 0.15, side: THREE.DoubleSide,
+});
+const nucMem = new THREE.Mesh(nucMemGeo, nucMemMat);
+cellGroup.add(nucMem);
+
+// Dendrites (P2P) — input branches
+for (let i = 0; i < 8; i++) {
+  const angle = (i / 8) * Math.PI * 2;
+  const startR = 2;
+  const origin = new THREE.Vector3(
+    Math.cos(angle) * startR,
+    Math.sin(angle) * startR, 0
+  );
+  const dir = new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0);
+  createDendrites(origin, dir, 3, DREAM, cellGroup);
+}
+
+// Axon (execution) — long projection
+const axonCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, -1.5, 0),
+  new THREE.Vector3(0.5, -4, 0),
+  new THREE.Vector3(-0.3, -7, 0),
+  new THREE.Vector3(0.2, -10, 0),
+]);
+const axonPoints = axonCurve.getPoints(60);
+const axonGeo = new THREE.BufferGeometry().setFromPoints(axonPoints);
+const axonMat = new THREE.LineBasicMaterial({
+  color: ROSE, transparent: true, opacity: 0.3,
+});
+cellGroup.add(new THREE.Line(axonGeo, axonMat));
+
+// Myelin sheaths along axon
+for (let i = 0; i < 5; i++) {
+  const t = 0.15 + (i / 5) * 0.7;
+  const pos = axonCurve.getPoint(t);
+  const sheath = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.3, 0.3, 0.8, 8),
+    new THREE.MeshBasicMaterial({
+      color: BONE_DIM_COLOR(), transparent: true, opacity: 0.1,
+    })
+  );
+  sheath.position.copy(pos);
+  cellGroup.add(sheath);
+}
+
+function BONE_DIM_COLOR() { return new THREE.Color(0x8a7a5a); }
+
+// Synaptic terminals (precompiles)
+const terminalPositions = [
+  new THREE.Vector3(-1.5, -10, 0),
+  new THREE.Vector3(0, -11, 0),
+  new THREE.Vector3(1.5, -10, 0),
+];
+const termColors = [ROSE_HOT, JADE, DREAM];
+const termLabels = ['0x08', '0x09', '0xA01'];
+
+terminalPositions.forEach((pos, i) => {
+  const from = axonCurve.getPoint(0.95);
+  const axn = createAxon(from, pos, termColors[i], termColors[i]);
+  cellGroup.add(axn);
+  const term = createSoma(pos, termColors[i], 0.25);
+  cellGroup.add(term);
+});
+
+// Mitochondria (knowledge layer) — small organelles
+for (let i = 0; i < 5; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const r = 2.5 + Math.random() * 2;
+  const pos = new THREE.Vector3(Math.cos(angle) * r, Math.sin(angle) * r * 0.6, 0);
+  const mito = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 8, 6),
+    new THREE.MeshBasicMaterial({ color: BONE, transparent: true, opacity: 0.2 })
+  );
+  mito.position.copy(pos);
+  cellGroup.add(mito);
+}
+
+// Action potential pulse along axon
+const axonPulse3 = createPulse(ROSE_NEON, 0.1);
+axonPulse3.userData.t = 0;
+axonPulse3.userData.speed = 0.25;
+axonPulse3.userData.curve = axonCurve;
+cellGroup.add(axonPulse3);
+
+cellGroup.position.y = 2;
+cellGroup.scale.setScalar(0.8);
+
+// Ambient
+const dust3Count = 120;
+const dust3Geo = new THREE.BufferGeometry();
+const dust3Pos = new Float32Array(dust3Count * 3);
+for (let i = 0; i < dust3Count; i++) {
+  dust3Pos[i * 3] = (Math.random() - 0.5) * 35;
+  dust3Pos[i * 3 + 1] = (Math.random() - 0.5) * 30;
+  dust3Pos[i * 3 + 2] = (Math.random() - 0.5) * 15;
+}
+dust3Geo.setAttribute('position', new THREE.BufferAttribute(dust3Pos, 3));
+s3.scene.add(new THREE.Points(dust3Geo, new THREE.PointsMaterial({
+  size: 0.04, color: ROSE_DEEP, transparent: true, opacity: 0.25, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// PAGE 4: HDC — Neuron Firing Patterns
+// ─────────────────────────────────────────────
+const s4 = createScene();
+s4.camera.position.set(0, 0, 20);
+s4.camera.lookAt(0, 0, 0);
+
+const hdcGroup = new THREE.Group();
+s4.scene.add(hdcGroup);
+
+// Grid of neurons representing hypervector bits
+const hdcNeuronGrid = [];
+const gridW = 25;
+const gridH = 10;
+const spacing = 0.65;
+
+for (let y = 0; y < gridH; y++) {
+  for (let x = 0; x < gridW; x++) {
+    const pos = new THREE.Vector3(
+      (x - gridW / 2) * spacing,
+      (y - gridH / 2) * spacing,
+      (Math.random() - 0.5) * 0.5
+    );
+    const geo = new THREE.SphereGeometry(0.06, 6, 4);
+    const mat = new THREE.MeshBasicMaterial({
+      color: ROSE_DEEP,
+      transparent: true,
+      opacity: 0.15,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.copy(pos);
+    m.userData.baseOpacity = 0.15;
+    m.userData.fired = false;
+    hdcGroup.add(m);
+    hdcNeuronGrid.push(m);
+  }
+}
+
+// Sparse firing pattern — random neurons "fire"
+const firingIndices = new Set();
+while (firingIndices.size < 60) {
+  firingIndices.add(Math.floor(Math.random() * hdcNeuronGrid.length));
+}
+
+// Connection lines between some firing neurons
+const firingArr = Array.from(firingIndices);
+for (let i = 0; i < 20; i++) {
+  const a = hdcNeuronGrid[firingArr[Math.floor(Math.random() * firingArr.length)]];
+  const b = hdcNeuronGrid[firingArr[Math.floor(Math.random() * firingArr.length)]];
+  if (a !== b) {
+    const geo = new THREE.BufferGeometry().setFromPoints([a.position, b.position]);
+    const mat = new THREE.LineBasicMaterial({
+      color: ROSE_DIM, transparent: true, opacity: 0.06,
+    });
+    hdcGroup.add(new THREE.Line(geo, mat));
+  }
+}
+
+// Ambient
+const dust4Count = 100;
+const dust4Geo = new THREE.BufferGeometry();
+const dust4Pos = new Float32Array(dust4Count * 3);
+for (let i = 0; i < dust4Count; i++) {
+  dust4Pos[i * 3] = (Math.random() - 0.5) * 30;
+  dust4Pos[i * 3 + 1] = (Math.random() - 0.5) * 20;
+  dust4Pos[i * 3 + 2] = (Math.random() - 0.5) * 10;
+}
+dust4Geo.setAttribute('position', new THREE.BufferAttribute(dust4Pos, 3));
+s4.scene.add(new THREE.Points(dust4Geo, new THREE.PointsMaterial({
+  size: 0.03, color: DREAM, transparent: true, opacity: 0.2, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// PAGE 5: ISFR — Sensory/Inter/Motor neural flow
+// ─────────────────────────────────────────────
+const s5 = createScene();
+s5.camera.position.set(0, 0, 25);
+s5.camera.lookAt(0, 0, 0);
+
+const isfrGroup = new THREE.Group();
+s5.scene.add(isfrGroup);
+
+// Three columns: sensory (sources) -> interneurons (agents) -> motor (chain)
+const sensoryNeurons = [];
+const interNeurons = [];
+const motorNeurons = [];
+const isfrPulses5 = [];
+
+// Sensory (left) — 4 source classes
+const sensoryColors = [ROSE_HOT, BONE, DREAM, JADE];
+for (let i = 0; i < 4; i++) {
+  const y = (i - 1.5) * 3;
+  const pos = new THREE.Vector3(-10, y, 0);
+  const soma = createSoma(pos, sensoryColors[i], 0.3);
+  isfrGroup.add(soma);
+  sensoryNeurons.push(soma);
+
+  // Dendrite input fibers
+  for (let d = 0; d < 3; d++) {
+    const dEnd = new THREE.Vector3(-14 - Math.random() * 3, y + (Math.random() - 0.5) * 2, 0);
+    const geo = new THREE.BufferGeometry().setFromPoints([pos, dEnd]);
+    const mat = new THREE.LineBasicMaterial({
+      color: sensoryColors[i], transparent: true, opacity: 0.08
+    });
+    isfrGroup.add(new THREE.Line(geo, mat));
+  }
+}
+
+// Interneurons (middle) — agents
+for (let i = 0; i < 6; i++) {
+  const y = (i - 2.5) * 2.2;
+  const pos = new THREE.Vector3(0, y, (Math.random() - 0.5) * 2);
+  const soma = createSoma(pos, ROSE, 0.2);
+  isfrGroup.add(soma);
+  interNeurons.push(soma);
+}
+
+// Motor (right) — chain output
+for (let i = 0; i < 2; i++) {
+  const y = (i - 0.5) * 3;
+  const pos = new THREE.Vector3(10, y, 0);
+  const soma = createSoma(pos, ROSE_NEON, 0.35);
+  isfrGroup.add(soma);
+  motorNeurons.push(soma);
+}
+
+// Connections sensory -> inter
+for (const s of sensoryNeurons) {
+  for (let j = 0; j < 3; j++) {
+    const target = interNeurons[Math.floor(Math.random() * interNeurons.length)];
+    const axon = createAxon(s.position, target.position, ROSE_DIM, ROSE_NEON);
+    isfrGroup.add(axon);
+    if (Math.random() > 0.5) {
+      const pulse = createPulse(ROSE_NEON, 0.06);
+      pulse.userData.t = Math.random();
+      pulse.userData.speed = 0.15 + Math.random() * 0.1;
+      pulse.userData.curve = axon.userData.curve;
+      isfrGroup.add(pulse);
+      isfrPulses5.push(pulse);
+    }
+  }
+}
+
+// Connections inter -> motor
+for (const n of interNeurons) {
+  const target = motorNeurons[Math.floor(Math.random() * motorNeurons.length)];
+  const axon = createAxon(n.position, target.position, ROSE_DIM, BONE);
+  isfrGroup.add(axon);
+  if (Math.random() > 0.4) {
+    const pulse = createPulse(BONE, 0.06);
+    pulse.userData.t = Math.random();
+    pulse.userData.speed = 0.18 + Math.random() * 0.1;
+    pulse.userData.curve = axon.userData.curve;
+    isfrGroup.add(pulse);
+    isfrPulses5.push(pulse);
+  }
+}
+
+// Ambient
+const dust5Count = 120;
+const dust5Geo = new THREE.BufferGeometry();
+const dust5Pos = new Float32Array(dust5Count * 3);
+for (let i = 0; i < dust5Count; i++) {
+  dust5Pos[i * 3] = (Math.random() - 0.5) * 40;
+  dust5Pos[i * 3 + 1] = (Math.random() - 0.5) * 25;
+  dust5Pos[i * 3 + 2] = (Math.random() - 0.5) * 12;
+}
+dust5Geo.setAttribute('position', new THREE.BufferAttribute(dust5Pos, 3));
+s5.scene.add(new THREE.Points(dust5Geo, new THREE.PointsMaterial({
+  size: 0.04, color: ROSE_DEEP, transparent: true, opacity: 0.2, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// PAGE 6: Collective — Growing Neural Network
+// ─────────────────────────────────────────────
+const s6 = createScene();
+s6.camera.position.set(0, 0, 30);
+s6.camera.lookAt(0, 0, 0);
+
+const collectiveGroup = new THREE.Group();
+s6.scene.add(collectiveGroup);
+
+// Pre-generate many neuron positions
+const maxCollectiveNeurons = 200;
+const collectiveNeuronData = [];
+for (let i = 0; i < maxCollectiveNeurons; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const r = 2 + Math.random() * 12;
+  const pos = new THREE.Vector3(
+    Math.cos(theta) * r + (Math.random() - 0.5) * 3,
+    Math.sin(theta) * r * 0.7 + (Math.random() - 0.5) * 3,
+    (Math.random() - 0.5) * 8
+  );
+  const colors = [ROSE, ROSE_HOT, ROSE_DIM, DREAM, JADE, BONE];
+  const c = colors[Math.floor(Math.random() * colors.length)];
+  const soma = createSoma(pos, c, 0.1 + Math.random() * 0.12);
+  soma.visible = false;
+  collectiveGroup.add(soma);
+  collectiveNeuronData.push({ mesh: soma, pos, connections: [] });
+}
+
+// Pre-generate connections (nearest neighbor)
+const collectiveAxons = [];
+for (let i = 0; i < maxCollectiveNeurons; i++) {
+  const nearest = collectiveNeuronData
+    .map((n, j) => ({ j, d: collectiveNeuronData[i].pos.distanceTo(n.pos) }))
+    .filter(x => x.j !== i)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3);
+
+  for (const n of nearest) {
+    if (!collectiveNeuronData[i].connections.includes(n.j) &&
+        !collectiveNeuronData[n.j].connections.includes(i)) {
+      collectiveNeuronData[i].connections.push(n.j);
+      const axon = createAxon(
+        collectiveNeuronData[i].pos,
+        collectiveNeuronData[n.j].pos,
+        ROSE_DEEP, ROSE_NEON
+      );
+      axon.visible = false;
+      axon.userData.fromIdx = i;
+      axon.userData.toIdx = n.j;
+      collectiveGroup.add(axon);
+      collectiveAxons.push(axon);
+    }
+  }
+}
+
+// Collective pulses
+const collectivePulses = [];
+for (let i = 0; i < 40; i++) {
+  const axon = collectiveAxons[Math.floor(Math.random() * collectiveAxons.length)];
+  const pulse = createPulse(ROSE_NEON, 0.05);
+  pulse.userData.t = Math.random();
+  pulse.userData.speed = 0.12 + Math.random() * 0.15;
+  pulse.userData.curve = axon.userData.curve;
+  pulse.userData.axonRef = axon;
+  pulse.visible = false;
+  collectiveGroup.add(pulse);
+  collectivePulses.push(pulse);
+}
+
+// Slider handler
+let activeAgentCount = 5;
+const agentSlider = document.getElementById('agentSlider');
+const agentCountEl = document.getElementById('agentCount');
+
+agentSlider.addEventListener('input', (e) => {
+  activeAgentCount = parseInt(e.target.value);
+  agentCountEl.textContent = activeAgentCount + ' agents';
+  updateCollectiveNetwork(activeAgentCount);
+});
+
+function updateCollectiveNetwork(count) {
+  // Map slider 5-1000 to visible neurons 3-200
+  const visibleCount = Math.max(3, Math.min(maxCollectiveNeurons, Math.floor(count * 0.2)));
+
+  for (let i = 0; i < maxCollectiveNeurons; i++) {
+    collectiveNeuronData[i].mesh.visible = i < visibleCount;
+  }
+
+  for (const axon of collectiveAxons) {
+    const show = axon.userData.fromIdx < visibleCount && axon.userData.toIdx < visibleCount;
+    axon.visible = show;
+  }
+
+  for (const pulse of collectivePulses) {
+    pulse.visible = pulse.userData.axonRef.visible;
+  }
+}
+updateCollectiveNetwork(5);
+
+// Ambient
+const dust6Count = 180;
+const dust6Geo = new THREE.BufferGeometry();
+const dust6Pos = new Float32Array(dust6Count * 3);
+for (let i = 0; i < dust6Count; i++) {
+  dust6Pos[i * 3] = (Math.random() - 0.5) * 50;
+  dust6Pos[i * 3 + 1] = (Math.random() - 0.5) * 35;
+  dust6Pos[i * 3 + 2] = (Math.random() - 0.5) * 20;
+}
+dust6Geo.setAttribute('position', new THREE.BufferAttribute(dust6Pos, 3));
+s6.scene.add(new THREE.Points(dust6Geo, new THREE.PointsMaterial({
+  size: 0.04, color: ROSE_DEEP, transparent: true, opacity: 0.2, sizeAttenuation: true,
+})));
+
+
+// ─────────────────────────────────────────────
+// ANIMATION LOOP
+// ─────────────────────────────────────────────
+const allScenes = [s0, s1, s2, s3, s4, s5, s6];
+
+function animatePulses(pulses, time) {
+  for (const pulse of pulses) {
+    if (!pulse.visible && pulse.parent && pulse.parent.visible === false) continue;
+    pulse.userData.t += pulse.userData.speed * 0.016;
+    if (pulse.userData.t > 1) pulse.userData.t -= 1;
+    const pos = pulse.userData.curve.getPoint(pulse.userData.t);
+    pulse.position.copy(pos);
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = clock.getDelta();
+
+  // Only render current page scene
+  const idx = currentPage;
+  const { scene, camera } = allScenes[idx];
+
+  // Page-specific animations
+  switch(idx) {
+    case 0: {
+      brainGroup.rotation.y = Math.sin(t * 0.15) * 0.3;
+      brainGroup.rotation.x = Math.sin(t * 0.1) * 0.1;
+      animatePulses(heroPulses, t);
+      // Neuron pulse glow
+      for (let i = 0; i < heroNeurons.length; i++) {
+        const n = heroNeurons[i];
+        const phase = t * 0.8 + i * 0.3;
+        n.material.opacity = 0.5 + 0.3 * Math.sin(phase);
+        if (n.children[0]) n.children[0].material.opacity = 0.04 + 0.04 * Math.sin(phase);
+      }
+      // Block modulation
+      if (blockModulation > 0.01) {
+        for (const p of heroPulses) {
+          p.scale.setScalar(1 + blockModulation * 0.5);
+        }
+      }
+      break;
+    }
+    case 1: {
+      layerGroup1.rotation.y = Math.sin(t * 0.12) * 0.15;
+      animatePulses(interLayerPulses1, t);
+      // Pulse neurons
+      for (let l = 0; l < 3; l++) {
+        for (let i = 0; i < layerNeurons[l].length; i++) {
+          const n = layerNeurons[l][i];
+          const phase = t * 1.2 + i * 0.5 + l * 1.5;
+          n.material.opacity = 0.4 + 0.4 * Math.sin(phase);
+        }
+      }
+      // Middle plane pulse
+      midPlaneMat.opacity = 0.02 + 0.015 * Math.sin(t * 0.5);
+      break;
+    }
+    case 2: {
+      hemiGroup.rotation.y = Math.sin(t * 0.1) * 0.12;
+      animatePulses(corpusPulses, t);
+      // Neuron pulses
+      for (const n of leftNeurons) {
+        n.material.opacity = 0.5 + 0.3 * Math.sin(t * 0.9 + n.position.x);
+      }
+      for (const n of rightNeurons) {
+        n.material.opacity = 0.5 + 0.3 * Math.sin(t * 0.9 + n.position.x * 0.7);
+      }
+      break;
+    }
+    case 3: {
+      cellGroup.rotation.y = Math.sin(t * 0.08) * 0.1;
+      // Action potential
+      axonPulse3.userData.t += axonPulse3.userData.speed * 0.016;
+      if (axonPulse3.userData.t > 1) axonPulse3.userData.t -= 1;
+      const apPos = axonPulse3.userData.curve.getPoint(axonPulse3.userData.t);
+      axonPulse3.position.copy(apPos);
+      // Nucleus pulse
+      nucleus.material.opacity = 0.6 + 0.3 * Math.sin(t * 0.7);
+      if (nucleus.children[0]) nucleus.children[0].material.opacity = 0.06 + 0.04 * Math.sin(t * 0.7);
+      break;
+    }
+    case 4: {
+      hdcGroup.rotation.y = Math.sin(t * 0.05) * 0.05;
+      // Sparse firing animation
+      const fireRate = t * 2;
+      for (let i = 0; i < hdcNeuronGrid.length; i++) {
+        const n = hdcNeuronGrid[i];
+        if (firingIndices.has(i)) {
+          const phase = fireRate + i * 0.1;
+          const fire = Math.sin(phase) > 0.3;
+          n.material.color = fire ? ROSE_NEON : ROSE_DIM;
+          n.material.opacity = fire ? 0.9 : 0.3;
+          n.scale.setScalar(fire ? 1.8 : 1);
+        } else {
+          n.material.opacity = 0.08 + 0.05 * Math.sin(t * 0.3 + i * 0.02);
+        }
+      }
+      break;
+    }
+    case 5: {
+      isfrGroup.rotation.y = Math.sin(t * 0.08) * 0.08;
+      animatePulses(isfrPulses5, t);
+      // Sensory neuron pulse
+      for (let i = 0; i < sensoryNeurons.length; i++) {
+        const n = sensoryNeurons[i];
+        n.material.opacity = 0.6 + 0.3 * Math.sin(t * 1.5 + i * 1.2);
+      }
+      break;
+    }
+    case 6: {
+      collectiveGroup.rotation.y = Math.sin(t * 0.06) * 0.12;
+      // Pulses
+      for (const pulse of collectivePulses) {
+        if (!pulse.visible) continue;
+        pulse.userData.t += pulse.userData.speed * 0.016;
+        if (pulse.userData.t > 1) pulse.userData.t -= 1;
+        const pos = pulse.userData.curve.getPoint(pulse.userData.t);
+        pulse.position.copy(pos);
+      }
+      // Hebbian strengthening — brighter connections for denser regions
+      const vc = Math.max(3, Math.min(maxCollectiveNeurons, Math.floor(activeAgentCount * 0.2)));
+      for (const axon of collectiveAxons) {
+        if (!axon.visible) continue;
+        const density = vc / maxCollectiveNeurons;
+        axon.material.opacity = 0.05 + density * 0.2;
+      }
+      break;
+    }
+  }
+
+  // Render
+  renderer.render(scene, camera);
+
+  // Copy to current page canvas
+  const ctx = canvases[idx];
+  if (ctx) {
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(renderer.domElement, 0, 0);
+  }
+}
+
+animate();
+
+// ─────────────────────────────────────────────
+// RESIZE HANDLER
+// ─────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setSize(w, h);
+  for (const s of allScenes) {
+    s.camera.aspect = w / h;
+    s.camera.updateProjectionMatrix();
+  }
+  for (let i = 0; i < TOTAL_PAGES; i++) {
+    const c = document.getElementById('canvas' + i);
+    if (c) {
+      c.width = w;
+      c.height = h;
+    }
+  }
+});
+
+</script>
+</body>
+</html>

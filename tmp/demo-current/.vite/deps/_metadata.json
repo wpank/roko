@@ -1,0 +1,52 @@
+{
+  "hash": "f03ec85e",
+  "configHash": "90971f0f",
+  "lockfileHash": "3022b00f",
+  "browserHash": "a527d20d",
+  "optimized": {
+    "react/jsx-dev-runtime": {
+      "src": "../../node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "a4480387",
+      "needsInterop": true
+    },
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "78ecbb2c",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "ce54dcdb",
+      "needsInterop": true
+    },
+    "react-router": {
+      "src": "../../node_modules/react-router/dist/development/index.mjs",
+      "file": "react-router.js",
+      "fileHash": "3d4be2d2",
+      "needsInterop": false
+    },
+    "@xterm/xterm": {
+      "src": "../../node_modules/@xterm/xterm/lib/xterm.mjs",
+      "file": "@xterm_xterm.js",
+      "fileHash": "d34200ab",
+      "needsInterop": false
+    },
+    "@xterm/addon-fit": {
+      "src": "../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
+      "file": "@xterm_addon-fit.js",
+      "fileHash": "e7560010",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-FVSFQDBK": {
+      "file": "chunk-FVSFQDBK.js"
+    },
+    "chunk-5WRI5ZAA": {
+      "file": "chunk-5WRI5ZAA.js"
+    }
+  }
+}

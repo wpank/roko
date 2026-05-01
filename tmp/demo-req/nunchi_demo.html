@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>nunchi audit — live demo</title>
+<style>
+  :root {
+    --bg: #0A080C;
+    --panel: #12101A;
+    --panel-2: #16131E;
+    --bone: #C8B890;
+    --rose-gray: #988090;
+    --muted: #584858;
+    --rose: #AA7088;
+    --rose-bright: #CC90A8;
+    --rose-deep: #3A2030;
+    --success: #80A88A;
+    --warning: #C09870;
+    --danger: #C06878;
+    --border: #1F1825;
+    --border-strong: #2A2030;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--bone); font-family: 'JetBrains Mono', 'SF Mono', Menlo, ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.55; min-height: 100vh; }
+  body { padding: 24px 32px 48px; }
+
+  /* CRT scanlines, very subtle */
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 100;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(170, 112, 136, 0.018) 0px,
+      rgba(170, 112, 136, 0.018) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: soft-light;
+  }
+
+  header.bar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 14px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+    color: var(--rose-gray); font-size: 11px;
+  }
+  header.bar .brand { color: var(--rose); letter-spacing: 0.18em; font-size: 11px; }
+  header.bar .meta { color: var(--muted); letter-spacing: 0.12em; font-size: 10px; }
+  header.bar .meta .ok { color: var(--success); }
+
+  .term {
+    background: transparent;
+    max-width: 1100px; margin: 0 auto;
+  }
+  .term .frame {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .term .frame .titlebar {
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px; display: flex; gap: 8px; align-items: center;
+    color: var(--muted); font-size: 11px; letter-spacing: 0.05em;
+  }
+  .term .frame .titlebar .dots { display: flex; gap: 6px; }
+  .term .frame .titlebar .dots span {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--rose-deep);
+  }
+  .term .frame .titlebar .path { margin-left: 8px; color: var(--rose-gray); }
+  .term .frame .body {
+    padding: 18px 22px 22px; min-height: 600px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  .line { display: block; }
+  .indent { padding-left: 14px; border-left: 1px solid var(--border-strong); margin-left: 0; }
+  .pipe::before { content: '│  '; color: var(--rose-deep); }
+  .end::before  { content: '└  '; color: var(--rose-deep); }
+  .branch::before  { content: '├  '; color: var(--rose-deep); }
+  .ok    { color: var(--success); }
+  .warn  { color: var(--warning); }
+  .fail  { color: var(--danger); }
+  .accent{ color: var(--rose); }
+  .bright{ color: var(--rose-bright); }
+  .muted { color: var(--muted); }
+  .gray  { color: var(--rose-gray); }
+  .bone  { color: var(--bone); }
+  .b     { font-weight: 600; }
+  .small { font-size: 11px; }
+  .prompt { color: var(--rose); }
+  .cmd { color: var(--bone); font-weight: 600; }
+  .arrow { color: var(--rose); }
+  .highlight {
+    background: rgba(170, 112, 136, 0.08);
+    border-left: 2px solid var(--rose);
+    padding: 2px 8px; margin: 4px -8px;
+    display: inline-block;
+  }
+
+  /* Cursor */
+  .cursor {
+    display: inline-block; width: 0.6em; height: 1.1em;
+    background: var(--bone); margin-left: 1px;
+    vertical-align: text-bottom;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { to { visibility: hidden; } }
+
+  /* Receipt card */
+  .receipt {
+    margin-top: 14px; padding: 14px 18px;
+    background: var(--panel-2);
+    border: 1px solid var(--rose);
+    border-radius: 2px;
+  }
+  .receipt .label {
+    color: var(--rose); letter-spacing: 0.12em; font-size: 10px; margin-bottom: 8px;
+  }
+  .receipt .row {
+    display: grid; grid-template-columns: 130px 1fr;
+    gap: 12px; padding: 4px 0; font-size: 12px;
+  }
+  .receipt .row .k { color: var(--muted); }
+  .receipt .row .v { color: var(--bone); word-break: break-all; }
+  .receipt .row .v.acc { color: var(--rose-bright); }
+
+  /* footer / controls */
+  footer {
+    max-width: 1100px; margin: 14px auto 0;
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--muted); font-size: 11px;
+  }
+  footer .keys b { color: var(--rose); font-weight: 600; }
+  footer button {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--rose-gray);
+    padding: 6px 14px;
+    font-family: inherit; font-size: 11px;
+    letter-spacing: 0.08em; cursor: pointer;
+    border-radius: 2px;
+    transition: all 120ms;
+  }
+  footer button:hover {
+    color: var(--bone); border-color: var(--rose);
+    background: rgba(170, 112, 136, 0.06);
+  }
+
+  /* progress bar inline */
+  .prog {
+    display: inline-block; width: 14ch; color: var(--rose-deep);
+  }
+  .prog .filled { color: var(--rose); }
+
+  /* scroll indicator */
+  .scrollhint {
+    display: none;
+    text-align: center; color: var(--muted); font-size: 10px;
+    margin-top: 16px; letter-spacing: 0.2em;
+  }
+
+  /* Disclosure ribbon */
+  .disclose {
+    max-width: 1100px; margin: 0 auto 18px;
+    color: var(--muted); font-size: 10px;
+    letter-spacing: 0.08em;
+    padding-bottom: 10px;
+    border-bottom: 1px dashed var(--border-strong);
+  }
+  .disclose b { color: var(--rose-gray); font-weight: normal; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">NUNCHI &nbsp;·&nbsp; LIVE DEMO</div>
+  <div class="meta">
+    <span>nunchi audit</span> &nbsp;·&nbsp;
+    <span class="ok">DETERMINISTIC REPLAY</span> &nbsp;·&nbsp;
+    <span>v0.7.2</span>
+  </div>
+</header>
+
+<div class="disclose">
+  <b>Honest read.</b> &nbsp;This is a deterministic replay against a cached model server. The runtime is real; the model calls are cached for time and reproducibility. The same trace runs un-cached in ~6m at $1.42 against any compatible OpenAI-style endpoint.
+</div>
+
+<main class="term">
+  <div class="frame">
+    <div class="titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="path">~/payments-svc &nbsp;·&nbsp; main &nbsp;·&nbsp; <span style="color:var(--rose-gray)">replay 0xa1b2c3d4</span></div>
+    </div>
+    <div class="body" id="term"></div>
+  </div>
+</main>
+
+<footer>
+  <div class="keys">
+    <b>SPACE</b> pause / resume &nbsp;·&nbsp;
+    <b>R</b> restart &nbsp;·&nbsp;
+    <b>F</b> fast-forward &nbsp;·&nbsp;
+    <b>S</b> skip to end
+  </div>
+  <button id="restart">RESTART  ↻</button>
+</footer>
+
+<script>
+(() => {
+  const term = document.getElementById('term');
+  const restartBtn = document.getElementById('restart');
+  let speed = 1; // 1 = normal, 4 = fast
+  let paused = false;
+  let cancelled = false;
+  let cursorEl = null;
+
+  const sleep = (ms) => new Promise((res) => {
+    const start = performance.now();
+    function tick() {
+      if (cancelled) return res();
+      if (paused) { return requestAnimationFrame(tick); }
+      const elapsed = (performance.now() - start) * speed;
+      if (elapsed >= ms) res();
+      else requestAnimationFrame(tick);
+    }
+    tick();
+  });
+
+  function el(tag, cls, html) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+
+  function attachCursor() {
+    if (cursorEl && cursorEl.parentNode) cursorEl.parentNode.removeChild(cursorEl);
+    cursorEl = el('span', 'cursor');
+    const last = term.lastElementChild;
+    if (last) last.appendChild(cursorEl);
+    else term.appendChild(cursorEl);
+  }
+
+  function detachCursor() {
+    if (cursorEl && cursorEl.parentNode) cursorEl.parentNode.removeChild(cursorEl);
+  }
+
+  function line(html, cls) {
+    detachCursor();
+    const l = el('div', 'line ' + (cls || ''), html);
+    term.appendChild(l);
+    attachCursor();
+    window.scrollTo(0, document.body.scrollHeight);
+    return l;
+  }
+
+  // type one character at a time
+  async function type(html, cls, speed_per_char = 12) {
+    detachCursor();
+    const l = el('div', 'line ' + (cls || ''));
+    term.appendChild(l);
+    attachCursor();
+
+    // Naive typing — for HTML we just append the rendered text, no token-by-token risk
+    // We render all-at-once but with delays, char-by-char if string
+    const tmp = document.createElement('span');
+    tmp.innerHTML = html;
+    // collect plain text + attach mode: easier: just set innerHTML char-stream
+    // We'll do: split by raw HTML tokens using simple parser to keep tags intact
+    const tokens = [];
+    const re = /<[^>]+>|[\s\S]/g; let m;
+    while ((m = re.exec(html))) tokens.push(m[0]);
+
+    let buf = '';
+    for (const tok of tokens) {
+      buf += tok;
+      l.innerHTML = buf;
+      attachCursor();
+      window.scrollTo(0, document.body.scrollHeight);
+      if (tok.length === 1 && tok !== '\n') await sleep(speed_per_char);
+    }
+    return l;
+  }
+
+  function progress(pct) {
+    const total = 14;
+    const filled = Math.round((pct/100) * total);
+    const fStr = '█'.repeat(filled);
+    const eStr = '▒'.repeat(total - filled);
+    return `<span class="prog"><span class="filled">${fStr}</span>${eStr}</span>`;
+  }
+
+  function clearTerm() {
+    term.innerHTML = '';
+    detachCursor();
+  }
+
+  async function run() {
+    cancelled = false;
+    clearTerm();
+
+    // ===== HEADER / BANNER =====
+    line('<span class="muted">     ╭─────────────────────────────────────╮</span>');
+    line('<span class="muted">     │</span>  <span class="accent b">NUNCHI</span>  <span class="gray">·</span>  <span class="bone">durable runtime for production agents</span>  <span class="muted">│</span>');
+    line('<span class="muted">     ╰─────────────────────────────────────╯</span>');
+    line('');
+    await sleep(280);
+
+    // ===== PROMPT + COMMAND =====
+    await type('<span class="prompt">❯</span> <span class="cmd">nunchi audit deployment payments-svc</span>', 'line', 22);
+    line('');
+    await sleep(420);
+
+    // ===== PRE-FLIGHT =====
+    line('<span class="bright b">◆ pre-flight</span>  <span class="muted">// loading config from .nunchi/config.toml</span>', '');
+    await sleep(220);
+    line('<span class="end gray">runtime <span class="bone">v0.7.2</span> &nbsp; chain <span class="muted">simulator</span> &nbsp; cache <span class="ok">connected</span></span>', '');
+    await sleep(380);
+    line('');
+
+    // ===== STEP 1: IDENTITY =====
+    line('<span class="bright b">◆ identity</span>     <span class="muted">// fetching ERC-8004 reputation from registry</span>', '');
+    await sleep(450);
+    line('<span class="branch gray"><span class="bone">agent-7f3a91</span> &nbsp;·&nbsp; <span class="muted">0xa1b2…c3d4</span></span>', '');
+    await sleep(120);
+    line('<span class="branch gray">reputation &nbsp;·&nbsp; coding=<span class="ok">0.91</span> &nbsp;security=<span class="ok">0.74</span> &nbsp;ops=<span class="ok">0.71</span></span>', '');
+    await sleep(120);
+    line('<span class="end ok">✔ identity verified</span> <span class="muted">(stake 4.2 NUNCHI · slashable)</span>', '');
+    await sleep(380);
+    line('');
+
+    // ===== STEP 2: ROUTE =====
+    line('<span class="bright b">◆ route</span>        <span class="muted">// cascade routing on task complexity</span>', '');
+    await sleep(380);
+    line('<span class="branch gray">tier-1 &nbsp;·&nbsp; haiku-3.5 &nbsp;<span class="ok">selected</span> &nbsp; <span class="muted">complexity 0.42 &lt; 0.6</span></span>', '');
+    await sleep(140);
+    line('<span class="branch gray">budget  &nbsp;·&nbsp; <span class="bone">$1.50</span> envelope &nbsp; <span class="muted">decision &lt; 6ms</span></span>', '');
+    await sleep(140);
+    line('<span class="end ok">✔ routed</span> <span class="muted">to haiku-3.5  (escalation=auto on gate fail)</span>', '');
+    await sleep(380);
+    line('');
+
+    // ===== STEP 3: KNOWLEDGE =====
+    line('<span class="bright b">◆ knowledge</span>    <span class="muted">// HDC top-K over signal substrate</span>', '');
+    await sleep(420);
+    line('<span class="branch gray">queried &nbsp;<span class="bone">12 signals</span> &nbsp;·&nbsp; <span class="muted">k=12 in 4.1ms</span></span>', '');
+    await sleep(140);
+    line('<span class="branch gray">cited   &nbsp;<span class="bone">3</span> &nbsp;·&nbsp; <span class="muted">payments-svc/handler.rs (rep 0.94, 0.88, 0.82)</span></span>', '');
+    await sleep(120);
+    line('<span class="end ok">✔ context window</span> <span class="muted">2,148 tokens · cache prefix shared (5×)</span>', '');
+    await sleep(380);
+    line('');
+
+    // ===== STEP 4: GATE PRE-SCREEN =====
+    line('<span class="bright b">◆ gate.pre-screen</span>  <span class="muted">// 4 of 11 gates run before model call</span>', '');
+    await sleep(360);
+    line('<span class="branch gray">compile  ' + progress(100) + '  <span class="ok">ok</span> &nbsp; <span class="muted">cargo check, 2.1s</span></span>', '');
+    await sleep(220);
+    line('<span class="branch gray">test     ' + progress(100) + '  <span class="ok">ok</span> &nbsp; <span class="muted">cargo test, 14.2s</span></span>', '');
+    await sleep(220);
+    line('<span class="branch gray">diff     ' + progress(100) + '  <span class="ok">ok</span> &nbsp; <span class="muted">structural Δ within bounds</span></span>', '');
+    await sleep(220);
+    line('<span class="branch gray">lint     ' + progress(100) + '  <span class="ok">ok</span> &nbsp; <span class="muted">clippy clean</span></span>', '');
+    await sleep(180);
+    line('<span class="end ok">✔ pre-screen passed</span> <span class="muted">4/4 · 18.6s · saved one frontier call</span>', '');
+    await sleep(440);
+    line('');
+
+    // ===== STEP 5: EXEC — and PANIC =====
+    line('<span class="bright b">◆ exec</span>         <span class="muted">// applying changes to payments-svc/handler.rs</span>', '');
+    await sleep(380);
+    line('<span class="branch gray">model   &nbsp;haiku-3.5 &nbsp;·&nbsp; <span class="muted">streaming  4,182 / 8,000 tokens</span></span>', '');
+    await sleep(420);
+    line('<span class="branch gray">tools   &nbsp;<span class="bone">edit_file</span>, <span class="bone">run_tests</span> &nbsp;·&nbsp; <span class="muted">2 calls</span></span>', '');
+    await sleep(620);
+
+    // === FAILURE ===
+    line('<span class="branch warn">⚠ &nbsp;upstream rate-limit detected on model.anthropic.com</span>', '');
+    await sleep(280);
+    line('<span class="branch warn">⚠ &nbsp;backoff 1.0s · retry 1/3</span>', '');
+    await sleep(900);
+    line('<span class="branch warn">⚠ &nbsp;backoff 2.0s · retry 2/3</span>', '');
+    await sleep(1100);
+    line('<span class="branch warn">⚠ &nbsp;backoff 4.0s · retry 3/3</span>', '');
+    await sleep(1300);
+    line('<span class="branch fail">✖ gate.security timed out (30s) — circuit broken</span>', '');
+    await sleep(280);
+    line('<span class="end fail">✖ exec aborted</span> &nbsp;<span class="muted">at offset 4 · run-id 0xa1b2c3d4 · committed to event log</span>', '');
+    await sleep(680);
+    line('');
+
+    // ===== USER CTRL+C =====
+    line('<span class="muted">^C  </span><span class="warn">interrupt received</span>', '');
+    await sleep(380);
+    line('<span class="muted">cleaning up · flushing pulse buffer · 41 events flushed</span>', '');
+    await sleep(420);
+    line('<span class="muted">state preserved at  <span class="bone">.nunchi/runs/0xa1b2c3d4.jsonl</span></span>', '');
+    await sleep(900);
+    line('');
+
+    // ===== RESUME =====
+    line('<span class="muted">// 30 seconds later — upstream recovered, operator runs:</span>', '');
+    await sleep(700);
+    await type('<span class="prompt">❯</span> <span class="cmd">nunchi audit --resume 0xa1b2c3d4</span>', '', 22);
+    line('');
+    await sleep(420);
+    line('<span class="bright b">◆ resume</span>       <span class="muted">// reading event log offset 0..4</span>', '');
+    await sleep(360);
+    line('<span class="branch gray">replayed &nbsp;<span class="bone">4 events</span> &nbsp;·&nbsp; <span class="muted">identity, route, knowledge, pre-screen</span></span>', '');
+    await sleep(220);
+    line('<span class="branch gray">verified &nbsp;<span class="bone">deterministic</span> &nbsp;·&nbsp; <span class="muted">hash matches snapshot</span></span>', '');
+    await sleep(220);
+    line('<span class="end ok">✔ resumed at offset 4</span> <span class="muted">(skipping completed steps)</span>', '');
+    await sleep(440);
+    line('');
+
+    // ===== STEP 5 (RETRY) =====
+    line('<span class="bright b">◆ exec</span>         <span class="muted">// retry — same context, new model call</span>', '');
+    await sleep(420);
+    line('<span class="branch gray">model    &nbsp;haiku-3.5 &nbsp;·&nbsp; <span class="ok">stream complete</span> &nbsp; <span class="muted">7,914 tokens · 4.2s</span></span>', '');
+    await sleep(220);
+    line('<span class="branch gray">tools    &nbsp;<span class="bone">edit_file</span>(handler.rs +24 −6) &nbsp;·&nbsp; <span class="bone">run_tests</span>(38 passed)</span>', '');
+    await sleep(220);
+    line('<span class="end ok">✔ exec complete</span>', '');
+    await sleep(380);
+    line('');
+
+    // ===== STEP 6: VERIFY =====
+    line('<span class="bright b">◆ gate.verify</span>  <span class="muted">// 7 post-exec gates</span>', '');
+    await sleep(360);
+    const gates = [
+      ['security', 'no secrets · no injection · clean'],
+      ['coverage', 'Δ +2.1% · threshold met'],
+      ['semantic', 'embed-distance to spec 0.91'],
+      ['budget',   '$1.42 spent · envelope $1.50 · ok'],
+      ['latency',  '6m41s · SLO 10m · ok'],
+      ['policy',   'no PII · no external calls · ok'],
+      ['replay',   'event log → identical receipt'],
+    ];
+    for (const [g, d] of gates) {
+      line(`<span class="branch gray">${g.padEnd(8)} ${progress(100)}  <span class="ok">ok</span> &nbsp; <span class="muted">${d}</span></span>`, '');
+      await sleep(180);
+    }
+    line('<span class="end ok">✔ all gates passed</span> <span class="muted">11/11 · ZK receipt generated</span>', '');
+    await sleep(500);
+    line('');
+
+    // ===== DONE =====
+    line('<span class="ok b">✔  done in 6m41s &nbsp;·&nbsp; cost $1.42 &nbsp;·&nbsp; receipt signed by validator-04</span>', '');
+    await sleep(420);
+    line('');
+
+    // ===== RECEIPT CARD =====
+    const r = el('div', 'receipt');
+    r.innerHTML = `
+      <div class="label">RECEIPT  ·  POSTED TO CHAIN  ·  REPLAYABLE</div>
+      <div class="row"><div class="k">run-id</div>   <div class="v acc">0xa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4</div></div>
+      <div class="row"><div class="k">agent</div>    <div class="v">agent-7f3a91 &nbsp;·&nbsp; <span class="muted">ERC-8004 token #4192</span></div></div>
+      <div class="row"><div class="k">deployment</div><div class="v">payments-svc / main</div></div>
+      <div class="row"><div class="k">duration</div> <div class="v">6m 41s &nbsp;<span class="muted">(of which 18.6s in pre-screen, 4.2s in model)</span></div></div>
+      <div class="row"><div class="k">cost</div>     <div class="v acc">$1.42</div></div>
+      <div class="row"><div class="k">events</div>   <div class="v">87 &nbsp;<span class="muted">flushed to substrate · content-addressed</span></div></div>
+      <div class="row"><div class="k">gates</div>    <div class="v">11 / 11 passed</div></div>
+      <div class="row"><div class="k">zk-receipt</div><div class="v"><span class="muted">groth16</span> &nbsp; 0x9f8e7d6c5b4a3928 1726354493a2b1c0 &nbsp;<span class="ok">verified</span></div></div>
+      <div class="row"><div class="k">replay</div>   <div class="v"><span class="muted">nunchi run --replay</span> 0xa1b2c3d4 &nbsp; <span class="muted">→ deterministic</span></div></div>
+      <div class="row"><div class="k">share</div>    <div class="v"><span class="muted">nunchi run --share</span> 0xa1b2c3d4 &nbsp; <span class="muted">→ public dollar-delta receipt</span></div></div>
+    `;
+    detachCursor();
+    term.appendChild(r);
+    window.scrollTo(0, document.body.scrollHeight);
+
+    await sleep(700);
+    line('');
+    line('<span class="muted">// the same trace runs un-cached against any compatible OpenAI-style endpoint.</span>');
+    line('<span class="muted">// real-time wall-clock for an un-cached run on this task class: ~6m  ·  cost: $1.42.</span>');
+    line('');
+    await type('<span class="prompt">❯</span> <span class="cursor"></span>', '', 30);
+    detachCursor();
+  }
+
+  // controls
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    if (e.code === 'KeyR') { cancelled = true; setTimeout(() => run(), 100); }
+    if (e.code === 'KeyF') { speed = (speed === 1) ? 4 : 1; }
+    if (e.code === 'KeyS') { speed = 50; }
+  });
+  restartBtn.addEventListener('click', () => { cancelled = true; setTimeout(() => { speed = 1; run(); }, 100); });
+
+  // start
+  run();
+})();
+</script>
+</body>
+</html>

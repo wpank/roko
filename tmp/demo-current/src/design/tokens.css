@@ -1,0 +1,87 @@
+:root {
+  /* ─── Backgrounds ─── */
+  --bg-void: #060608;
+  --bg-raised: #0a0810;
+  --bg-mid: #080810;
+  --bg-deeper: #040406;
+  --bg-glass: rgba(8, 8, 12, 0.45);
+  --bg-glass-hover: rgba(58, 32, 48, 0.14);
+  --bg-glass-active: rgba(58, 32, 48, 0.32);
+
+  /* ─── Borders ─── */
+  --border: rgba(255, 255, 255, 0.07);
+  --border-soft: rgba(255, 255, 255, 0.04);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-active: var(--rose-glow);
+
+  /* ─── Rose spectrum ─── */
+  --rose: #aa7088;
+  --rose-bright: #cc90a8;
+  --rose-glow: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --rose-ember: #482838;
+
+  /* ─── Bone spectrum ─── */
+  --bone: #c8b890;
+  --bone-bright: #d8c8a0;
+  --bone-dim: #8a7a5a;
+
+  /* ─── Text ─── */
+  --text-primary: #c8b8c0;
+  --text-strong: #d8c8d0;
+  --text-soft: #988090;
+  --text-dim: #6a5a68;
+  --text-ghost: #3a303a;
+
+  /* ─── Semantic ─── */
+  --dream: #7a7a98;
+  --dream-bright: #9494b4;
+  --dream-deep: #282848;
+  --success: #7a8a78;
+  --warning: #c89a68;
+  --danger: #cc5555;
+
+  /* ─── Typography ─── */
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --display: "Fraunces", "Times New Roman", serif;
+
+  /* ─── Spacing ─── */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 16px;
+  --gap-lg: 24px;
+  --gap-xl: 40px;
+  --gap-2xl: 64px;
+
+  /* ─── Radii ─── */
+  --radius-none: 0;
+
+  /* ─── Shadows ─── */
+  --shadow-sm:
+    0 1px 3px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-md:
+    0 4px 16px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-lg:
+    0 12px 40px rgba(0, 0, 0, 0.6);
+  --shadow-glow-rose:
+    0 0 0 1px rgba(220, 165, 189, 0.3),
+    0 0 20px rgba(170, 112, 136, 0.15);
+
+  /* ─── Motion ─── */
+  --ease-snappy: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  --duration-instant: 80ms;
+  --duration-fast: 150ms;
+  --duration-normal: 220ms;
+  --duration-slow: 350ms;
+
+  /* ─── Focus ─── */
+  --focus-ring:
+    0 0 0 2px var(--bg-void),
+    0 0 0 4px rgba(220, 165, 189, 0.7);
+}

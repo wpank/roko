@@ -1,0 +1,8 @@
+`crates/roko-acp/` already contains the ACP01 scaffold, and I left the worktree scope-clean by not touching anything outside that directory. The manifest at [crates/roko-acp/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235114/crates/roko-acp/Cargo.toml:1), module hub at [crates/roko-acp/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235114/crates/roko-acp/src/lib.rs:1), and all 16 source files under `crates/roko-acp/src/` are present with the expected ACP01 stub layout.
+
+Verification is split:
+- `rustc --crate-type lib --edition 2024 crates/roko-acp/src/lib.rs` succeeds.
+- `cargo check --manifest-path crates/roko-acp/Cargo.toml` still fails before it reaches `roko-acp`, because the root workspace is invalid due to duplicate `roko-learn` entries in [crates/roko-cli/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235114/crates/roko-cli/Cargo.toml:21) and [crates/roko-cli/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235114/crates/roko-cli/Cargo.toml:27).
+- The root [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235114/Cargo.toml:1) also does not include `crates/roko-acp`, and I did not re-edit it because this batch is scope-locked to `crates/roko-acp/`.
+
+If you want ACP01 fully closed as originally written, the allowed write scope needs to include the root `Cargo.toml`, and for root-level `cargo check -p roko-acp` to pass cleanly, the pre-existing `crates/roko-cli/Cargo.toml` manifest error also needs to be in scope.

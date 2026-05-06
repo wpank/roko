@@ -1,0 +1,3 @@
+ACP01 is satisfied. I removed the leftover over-implementation from the prior failed attempt and restored `crates/roko-acp/src/{types,config,config_options,commands,session}.rs` plus `lib.rs` to the minimal scaffold shape expected for this batch.
+
+The workspace was already correctly wired: root [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235845/Cargo.toml:54) already includes `crates/roko-acp`, and [crates/roko-cli/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235845/crates/roko-cli/Cargo.toml:21) already has exactly one `roko-learn` dependency entry. `crates/roko-acp/src/` contains all 16 required module files, `cargo check -p roko-acp` passes, and `git status --short` is clean.

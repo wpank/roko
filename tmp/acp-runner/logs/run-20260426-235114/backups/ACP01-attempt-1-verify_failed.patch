@@ -1,0 +1,12 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 360c66fc..93396c2e 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -46,6 +46,7 @@ members = [
+     # (prompt → compose → agent → gate → persist → policy) against a working
+     # directory. Reads its agent/gate config from ./roko.toml.
+     "crates/roko-cli",
++    "crates/roko-acp",
+     # HTTP server crate extracted from roko-cli's serve module.
+     "crates/roko-serve",
+     # Per-agent HTTP server extracted from the legacy mirage dashboard surface.

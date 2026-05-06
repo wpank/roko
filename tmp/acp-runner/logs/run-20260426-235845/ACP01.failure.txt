@@ -1,0 +1,43 @@
+Diff gate failed: batch produced no changes.
+
+Recent log tail:
+-pub struct SessionInfo {
+-    /// Stable session identifier.
+-    pub session_id: String,
+-    /// Optional user-facing session name.
+-    #[serde(default)]
+-    pub session_name: Option<String>,
+-    /// RFC 3339 creation timestamp.
+-    pub created_at: String,
+-}
+-
+-/// Parameters for `session/load`.
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-#[serde(rename_all = "camelCase")]
+-pub struct SessionLoadParams {
+-    /// Target session identifier.
+-    pub session_id: String,
+-}
+-
+-/// Parameters for legacy `session/set_mode`.
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-#[serde(rename_all = "camelCase")]
+-pub struct SessionSetModeParams {
+-    /// Target session identifier.
+-    pub session_id: String,
+-    /// Mode identifier to activate.
+-    pub mode_id: String,
+-}
++// Stubbed — implementation in batch ACPnn
+
+2026-04-26T22:04:31.951429Z ERROR codex_core::session: failed to record rollout items: thread 019dcbd1-0fd7-7bb3-b87b-ff62ff10421d not found
+tokens used
+47,582
+ACP01 is satisfied. I removed the leftover over-implementation from the prior failed attempt and restored `crates/roko-acp/src/{types,config,config_options,commands,session}.rs` plus `lib.rs` to the minimal scaffold shape expected for this batch.
+
+The workspace was already correctly wired: root [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235845/Cargo.toml:54) already includes `crates/roko-acp`, and [crates/roko-cli/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260426-235845/crates/roko-cli/Cargo.toml:21) already has exactly one `roko-learn` dependency entry. `crates/roko-acp/src/` contains all 16 required module files, `cargo check -p roko-acp` passes, and `git status --short` is clean.
+
+=== Finished: 2026-04-27T00:04:32+02:00 ===
+=== Duration: 1m 43s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes; batch produced no effect

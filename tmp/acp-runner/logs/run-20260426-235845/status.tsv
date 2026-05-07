@@ -1,0 +1,29 @@
+2026-04-26T23:58:46+02:00	ACP01	1	spawn_started	codex exec started
+2026-04-26T23:59:32+02:00	ACP01	1	spawn_succeeded	codex exec completed
+2026-04-26T23:59:32+02:00	ACP01	1	verify_running	scope+diff+terms+check+clippy+test
+2026-04-26T23:59:32+02:00	ACP01	1	verify_failed	diff_gate
+2026-04-26T23:59:32+02:00	ACP01	2	spawn_started	codex exec started
+2026-04-27T00:02:48+02:00	ACP01	2	spawn_succeeded	codex exec completed
+2026-04-27T00:02:48+02:00	ACP01	2	verify_running	scope+diff+terms+check+clippy+test
+2026-04-27T00:02:48+02:00	ACP01	2	verify_failed	scope_gate
+2026-04-27T00:02:49+02:00	ACP01	3	spawn_started	codex exec started
+2026-04-27T00:04:32+02:00	ACP01	3	spawn_succeeded	codex exec completed
+2026-04-27T00:04:32+02:00	ACP01	3	verify_running	scope+diff+terms+check+clippy+test
+2026-04-27T00:04:32+02:00	ACP01	3	verify_failed	diff_gate
+2026-04-27T00:04:32+02:00	ACP02	0	blocked	waiting on ACP01
+2026-04-27T00:04:32+02:00	ACP03	0	blocked	waiting on ACP02
+2026-04-27T00:04:32+02:00	ACP04	0	blocked	waiting on ACP03
+2026-04-27T00:04:32+02:00	ACP05	0	blocked	waiting on ACP04
+2026-04-27T00:04:32+02:00	ACP06	0	blocked	waiting on ACP05
+2026-04-27T00:04:32+02:00	ACP07	0	blocked	waiting on ACP06
+2026-04-27T00:04:32+02:00	ACP08	0	blocked	waiting on ACP07
+2026-04-27T00:04:32+02:00	ACP09	0	blocked	waiting on ACP06
+2026-04-27T00:04:32+02:00	ACP10	0	blocked	waiting on ACP06
+2026-04-27T00:04:32+02:00	ACP11	0	blocked	waiting on ACP06
+2026-04-27T00:04:32+02:00	ACP12	0	blocked	waiting on ACP06
+2026-04-27T00:04:33+02:00	ACP13	0	blocked	waiting on ACP06
+2026-04-27T00:04:33+02:00	ACP14	0	blocked	waiting on ACP06
+2026-04-27T00:04:33+02:00	ACP15	0	blocked	waiting on ACP05
+2026-04-27T00:04:33+02:00	ACP16	0	blocked	waiting on ACP05
+2026-04-27T00:04:33+02:00	ACP17	0	blocked	waiting on ACP05
+2026-04-27T00:04:33+02:00	ACP18	0	blocked	waiting on ACP07

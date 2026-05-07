@@ -1,0 +1,5 @@
+2026-04-27T00:15:26+02:00	ACP01	1	spawn_started	codex exec started
+2026-04-27T00:16:27+02:00	ACP01	1	spawn_succeeded	codex exec completed
+2026-04-27T00:16:27+02:00	ACP01	1	verify_running	scope+diff+terms+check+clippy+test
+2026-04-27T00:16:27+02:00	ACP01	1	verify_failed	diff_gate
+2026-04-27T00:16:27+02:00	ACP01	2	spawn_started	codex exec started

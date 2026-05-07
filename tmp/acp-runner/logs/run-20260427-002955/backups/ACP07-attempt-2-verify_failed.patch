@@ -1,0 +1,116 @@
+diff --git a/crates/roko-acp/src/lib.rs b/crates/roko-acp/src/lib.rs
+index b299fc79..8b1effb2 100644
+--- a/crates/roko-acp/src/lib.rs
++++ b/crates/roko-acp/src/lib.rs
+@@ -19,3 +19,6 @@ pub mod permissions;
+ pub mod session;
+ pub mod transport;
+ pub mod types;
++
++pub use config::AcpConfig;
++pub use handler::run_acp_server;
+diff --git a/crates/roko-cli/Cargo.toml b/crates/roko-cli/Cargo.toml
+index 88ffe2a9..43e98385 100644
+--- a/crates/roko-cli/Cargo.toml
++++ b/crates/roko-cli/Cargo.toml
+@@ -33,6 +33,7 @@ roko-runtime = { path = "../roko-runtime" }
+ roko-serve = { path = "../roko-serve" }
+ roko-index = { path = "../roko-index" }
+ roko-chain = { path = "../roko-chain", features = ["alloy-backend"] }
++roko-acp = { path = "../roko-acp" }
+ 
+ clap = { workspace = true, features = ["derive"] }
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "net", "signal", "io-util"] }
+diff --git a/crates/roko-cli/src/main.rs b/crates/roko-cli/src/main.rs
+index 2f0661d1..6329bfa8 100644
+--- a/crates/roko-cli/src/main.rs
++++ b/crates/roko-cli/src/main.rs
+@@ -211,7 +211,7 @@ COMMAND GROUPS:
+   Benchmarks:        bench
+   Configuration:     config (providers, models, subscriptions, plugins, secrets)
+   Code intelligence: index
+-  Server:            up, serve, daemon, deploy, worker
++  Server:            up, serve, acp, daemon, deploy, worker
+   Interactive:       dashboard
+   Utilities:         replay, inject, completions, new, explain"
+ )]
+@@ -441,6 +441,21 @@ Examples:
+         #[arg(long)]
+         tui: bool,
+     },
++    /// Start ACP (Agent Client Protocol) server for editor integration.
++    Acp {
++        /// Working directory.
++        #[arg(long, default_value = ".")]
++        workdir: PathBuf,
++        /// Configuration profile.
++        #[arg(long, default_value = "default")]
++        profile: String,
++        /// Path to roko.toml config file.
++        #[arg(long)]
++        config: Option<PathBuf>,
++        /// Log file path (stdout is the protocol channel).
++        #[arg(long, default_value = ".roko/acp.log")]
++        log_file: PathBuf,
++    },
+     /// Manage daemon mode (start, stop, status, logs, install).
+     Daemon {
+         #[command(subcommand)]
+@@ -1971,6 +1986,21 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
+                 Ok(EXIT_SUCCESS)
+             }
+         }
++        Command::Acp {
++            workdir,
++            profile,
++            config,
++            log_file,
++        } => {
++            let acp_config = roko_acp::AcpConfig {
++                workdir,
++                profile,
++                config_path: config,
++                log_file,
++            };
++            roko_acp::run_acp_server(acp_config).await?;
++            Ok(EXIT_SUCCESS)
++        }
+         Command::Daemon { cmd } => commands::server::cmd_daemon(cli, cmd).await,
+         Command::Deploy { cmd } => commands::server::cmd_deploy(cli, cmd).await,
+         Command::Worker { port } => {
+@@ -2613,6 +2643,35 @@ mod tests {
+         ));
+     }
+ 
++    #[test]
++    fn cli_parses_acp_subcommand() {
++        let cli = Cli::try_parse_from([
++            "roko",
++            "acp",
++            "--workdir",
++            "/tmp/project",
++            "--profile",
++            "editor",
++            "--config",
++            "/tmp/project/roko.toml",
++            "--log-file",
++            ".roko/editor-acp.log",
++        ])
++        .unwrap();
++        assert!(matches!(
++            cli.command,
++            Some(Command::Acp {
++                workdir,
++                profile,
++                config: Some(config),
++                log_file,
++            }) if workdir == PathBuf::from("/tmp/project")
++                && profile == "editor"
++                && config == PathBuf::from("/tmp/project/roko.toml")
++                && log_file == PathBuf::from(".roko/editor-acp.log")
++        ));
++    }
++
+     #[test]
+     fn cli_parses_agent_serve_subcommand() {
+         let cli = Cli::try_parse_from([

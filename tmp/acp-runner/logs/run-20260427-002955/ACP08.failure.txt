@@ -1,0 +1,43 @@
+Required-terms gate failed: expected vocabulary absent.
+
+Recent log tail:
++                "prompt": [{ "type": "text", "text": "hello" }],
++                "includeContext": false,
++            }),
++        )
++        .await?;
++
++    assert_eq!(response_error(&response)["code"], json!(SESSION_NOT_FOUND));
++
++    harness.shutdown().await
++}
++
++#[tokio::test]
++async fn test_malformed_json() -> Result<()> {
++    let mut harness = TestHarness::new().await;
++
++    harness.client.send_raw_line("{").await?;
++    let response = harness.client.read_message().await?;
++
++    assert_eq!(response_error(&response)["code"], json!(PARSE_ERROR));
++    assert!(response["id"].is_null());
++
++    harness.shutdown().await
++}
+
+2026-04-26T23:26:35.655037Z ERROR codex_core::session: failed to record rollout items: thread 019dcc19-a685-7763-9b22-4d56c5245fc3 not found
+2026-04-26T23:26:35.655069Z ERROR codex_core::session: failed to record rollout items: thread 019dcc1a-4343-7561-8207-ff8312e82691 not found
+2026-04-26T23:26:35.655075Z ERROR codex_core::session: failed to record rollout items: thread 019dcc1a-4384-7002-8ba1-bae8343b1c6d not found
+tokens used
+86,192
+Added ACP end-to-end protocol conformance coverage in [protocol_conformance.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/tests/protocol_conformance.rs:16). The harness runs the real server over in-memory duplex streams and covers all 8 requested cases: `initialize`, `session/new`, `session/list`, prompt streaming, cancel, unknown method, invalid session, and malformed JSON.
+
+To make those tests possible, I exposed a generic in-memory server entry point and made malformed JSON return a real `-32700` response in [handler.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/handler.rs:34), added `JsonRpcId::Null` in [types.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/types.rs:61), and taught the active prompt loop to consume `session/cancel` while a prompt is in flight in [bridge_events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/bridge_events.rs:137). I also made the placeholder prompt return usage and wait briefly so cancellation is observable end to end in [bridge_events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/bridge_events.rs:306).
+
+Verified with `cargo test -p roko-acp`.
+
+=== Finished: 2026-04-27T01:26:35+02:00 ===
+=== Duration: 4m 29s ===
+=== Exit code: 0 ===
+[verify] diff_gate: 4 changed path(s)
+[verify] required-term check: none of the changed files mention pattern: test_initialize|test_session

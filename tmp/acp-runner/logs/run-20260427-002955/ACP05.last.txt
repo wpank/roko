@@ -1,0 +1,7 @@
+Implemented ACP05 session management in [session.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/session.rs), [config.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/config.rs), and the required integration updates in [handler.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/handler.rs).
+
+`AcpConfig` now matches the batch shape: `workdir`, `profile`, `config_path`, and `log_file`, with the requested defaults. Session handling now has `CancelToken`, `SessionConfigState` with the ACP05 defaults, `AcpSession` using `DateTime<Utc>` plus atomic busy state, and a `SessionManager` that owns create/get/list/load. The handler now uses `SessionManager` instead of a raw `HashMap`, keeps `session/new` and `session/load` aligned with the new session result shape, and still returns empty config options for now as intended for later wiring.
+
+Verification passed:
+- `cargo test -p roko-acp --lib`
+- `cargo clippy -p roko-acp --no-deps -- -D warnings`

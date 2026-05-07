@@ -1,0 +1,240 @@
+diff --git a/crates/roko-acp/src/bridge_events.rs b/crates/roko-acp/src/bridge_events.rs
+index 196e1e95..cb4ed3ee 100644
+--- a/crates/roko-acp/src/bridge_events.rs
++++ b/crates/roko-acp/src/bridge_events.rs
+@@ -1,5 +1,7 @@
+ //! Cognitive event to session/update streaming.
+ 
++use std::time::Duration;
++
+ use thiserror::Error;
+ use tokio::{
+     io::{AsyncRead, AsyncWrite},
+@@ -9,10 +11,11 @@ use tracing::{debug, warn};
+ 
+ use crate::{
+     session::{AcpSession, CancelToken},
+-    transport::{StdioTransport, TransportError},
++    transport::{StdioTransport, TransportError, TransportResult},
+     types::{
+-        ContentBlock, PlanEntry, PlanStatus, Priority, SESSION_BUSY, SessionPromptParams,
+-        SessionPromptResult, SessionUpdate, StopReason, ToolCallKind, ToolCallStatus, UsageInfo,
++        ContentBlock, JsonRpcMessage, PlanEntry, PlanStatus, Priority, SESSION_BUSY,
++        SessionCancelParams, SessionPromptParams, SessionPromptResult, SessionUpdate, StopReason,
++        ToolCallKind, ToolCallStatus, UsageInfo,
+     },
+ };
+ 
+@@ -132,8 +135,21 @@ where
+     W: AsyncWrite + Unpin,
+ {
+     loop {
+-        tokio::select! {
+-            _ = cancel_token.cancelled() => {
++        enum StreamAction {
++            Cancelled,
++            Event(Option<CognitiveEvent>),
++            Inbound(TransportResult<Option<JsonRpcMessage>>),
++        }
++
++        let action = tokio::select! {
++            biased;
++            _ = cancel_token.cancelled() => StreamAction::Cancelled,
++            maybe_event = events.recv() => StreamAction::Event(maybe_event),
++            inbound = transport.read_message() => StreamAction::Inbound(inbound),
++        };
++
++        match action {
++            StreamAction::Cancelled => {
+                 debug!(session_id, "ACP prompt cancelled while streaming events");
+                 return Ok(SessionPromptResult {
+                     session_id: session_id.to_owned(),
+@@ -141,7 +157,7 @@ where
+                     usage: None,
+                 });
+             }
+-            maybe_event = events.recv() => {
++            StreamAction::Event(maybe_event) => {
+                 let Some(event) = maybe_event else {
+                     warn!(session_id, "ACP event stream closed without an explicit completion event");
+                     let stop_reason = if cancel_token.is_cancelled() {
+@@ -177,6 +193,52 @@ where
+                     }
+                 }
+             }
++            StreamAction::Inbound(inbound) => match inbound? {
++                Some(JsonRpcMessage::Notification(notification))
++                    if notification.method == "session/cancel" =>
++                {
++                    match serde_json::from_value::<SessionCancelParams>(
++                        notification.params.unwrap_or(serde_json::Value::Null),
++                    ) {
++                        Ok(params) if params.session_id == session_id => {
++                            cancel_token.cancel();
++                        }
++                        Ok(_) => {}
++                        Err(error) => {
++                            warn!(
++                                session_id,
++                                error = %error,
++                                "received malformed session/cancel while prompt was active"
++                            );
++                        }
++                    }
++                }
++                Some(JsonRpcMessage::Notification(notification)) => {
++                    warn!(
++                        session_id,
++                        method = %notification.method,
++                        "ignoring unsupported notification while prompt was active"
++                    );
++                }
++                Some(JsonRpcMessage::Response(response)) => {
++                    transport.handle_incoming_response(response);
++                }
++                Some(JsonRpcMessage::Request(request)) => {
++                    warn!(
++                        session_id,
++                        method = %request.method,
++                        "ignoring inbound request while prompt was active"
++                    );
++                }
++                None => {
++                    warn!(session_id, "ACP client disconnected while prompt was active");
++                    return Ok(SessionPromptResult {
++                        session_id: session_id.to_owned(),
++                        stop_reason: StopReason::Cancelled,
++                        usage: None,
++                    });
++                }
++            },
+         }
+     }
+ }
+@@ -269,10 +331,26 @@ async fn run_placeholder_cognitive_task(
+         return Ok(());
+     }
+ 
++    tokio::select! {
++        _ = cancel_token.cancelled() => return Ok(()),
++        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
++    }
++
++    if cancel_token.is_cancelled() {
++        return Ok(());
++    }
++
+     let _ = event_sender
+         .send(CognitiveEvent::Complete {
+             stop_reason: StopReason::EndTurn,
+-            usage: None,
++            usage: Some(UsageInfo {
++                total_tokens: 16,
++                input_tokens: 6,
++                output_tokens: 10,
++                thought_tokens: None,
++                cached_read_tokens: None,
++                cached_write_tokens: None,
++            }),
+         })
+         .await;
+ 
+diff --git a/crates/roko-acp/src/handler.rs b/crates/roko-acp/src/handler.rs
+index 2dbd28a8..37d84b85 100644
+--- a/crates/roko-acp/src/handler.rs
++++ b/crates/roko-acp/src/handler.rs
+@@ -3,6 +3,7 @@
+ use std::path::Path;
+ 
+ use anyhow::{Context, Result, anyhow};
++use tokio::io::{AsyncRead, AsyncWrite};
+ use tracing::{debug, error, info, warn};
+ use tracing_appender::non_blocking::WorkerGuard;
+ use tracing_subscriber::EnvFilter;
+@@ -15,7 +16,8 @@ use crate::{
+     types::{
+         ACP_PROTOCOL_VERSION, ACP_SPEC_VERSION, AgentCapabilities, AgentInfo, ConfigUpdateParams,
+         ConfigUpdateResult, InitializeParams, InitializeResult, JsonRpcMessage,
+-        JsonRpcNotification, JsonRpcRequest, METHOD_NOT_FOUND, McpCapabilities,
++        JsonRpcId, JsonRpcNotification, JsonRpcRequest, METHOD_NOT_FOUND, McpCapabilities,
++        PARSE_ERROR,
+         PromptCapabilities, SESSION_NOT_FOUND, SessionCancelParams,
+         SessionLoadParams, SessionNewParams, SessionPromptParams, SessionSetModeParams,
+     },
+@@ -29,10 +31,18 @@ pub async fn run_acp_server(config: AcpConfig) -> Result<()> {
+     run_acp_server_with_transport(config, &mut transport).await
+ }
+ 
+-async fn run_acp_server_with_transport(
++/// Runs the ACP server against an injected transport.
++///
++/// This is primarily used by integration tests to exercise the full JSON-RPC
++/// lifecycle over in-memory streams.
++pub async fn run_acp_server_with_transport<R, W>(
+     _config: AcpConfig,
+-    transport: &mut StdioTransport,
+-) -> Result<()> {
++    transport: &mut StdioTransport<R, W>,
++) -> Result<()>
++where
++    R: AsyncRead + Unpin,
++    W: AsyncWrite + Unpin,
++{
+     let mut sessions = SessionManager::new();
+ 
+     loop {
+@@ -44,6 +54,14 @@ async fn run_acp_server_with_transport(
+             }
+             Err(TransportError::Json(error)) => {
+                 error!(error = %error, "failed to decode inbound JSON-RPC message");
++                transport
++                    .send_error(
++                        JsonRpcId::Null,
++                        PARSE_ERROR,
++                        format!("failed to parse JSON-RPC message: {error}"),
++                    )
++                    .await
++                    .context("failed to send JSON-RPC parse error response")?;
+                 continue;
+             }
+             Err(error) => return Err(error).context("failed to read ACP message"),
+@@ -64,7 +82,7 @@ async fn run_acp_server_with_transport(
+ }
+ 
+ async fn handle_request(
+-    transport: &mut StdioTransport,
++    transport: &mut StdioTransport<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+     sessions: &mut SessionManager,
+     request: JsonRpcRequest,
+ ) -> Result<()> {
+@@ -276,7 +294,7 @@ fn session_not_found_error(session_id: &str) -> (i32, String) {
+ }
+ 
+ async fn send_success<T>(
+-    transport: &mut StdioTransport,
++    transport: &mut StdioTransport<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+     id: crate::types::JsonRpcId,
+     result: T,
+ ) -> Result<()>
+@@ -291,7 +309,7 @@ where
+ }
+ 
+ async fn send_error_response(
+-    transport: &mut StdioTransport,
++    transport: &mut StdioTransport<impl AsyncRead + Unpin, impl AsyncWrite + Unpin>,
+     id: crate::types::JsonRpcId,
+     error: (i32, String),
+ ) -> Result<()> {
+diff --git a/crates/roko-acp/src/types.rs b/crates/roko-acp/src/types.rs
+index 3d7bffe9..3be400e8 100644
+--- a/crates/roko-acp/src/types.rs
++++ b/crates/roko-acp/src/types.rs
+@@ -66,6 +66,8 @@ pub enum JsonRpcId {
+     Number(u64),
+     /// String request identifier.
+     String(String),
++    /// Null identifier used for parse-level failures before an id is known.
++    Null,
+ }
+ 
+ /// A JSON-RPC 2.0 response.

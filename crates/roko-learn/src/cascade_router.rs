@@ -1938,7 +1938,7 @@ impl CascadeRouter {
         let slug = if ctx.task_category == TaskCategory::Research {
             self.model_slugs
                 .iter()
-                .find(|s| s.as_str() == "sonar-pro" || s.as_str() == "sonar")
+                .find(|s| slug_family(s) == Some("sonar"))
                 .cloned()
                 .unwrap_or_else(|| {
                     self.role_table
@@ -2452,21 +2452,13 @@ mod cascade_router_tests {
 
     #[test]
     fn replay_observation_increments_confidence_stats() {
-        let router = CascadeRouter::new(vec![
-            "claude-sonnet-4-5".into(),
-            "claude-haiku-4-5".into(),
-        ]);
+        let router =
+            CascadeRouter::new(vec!["claude-sonnet-4-5".into(), "claude-haiku-4-5".into()]);
         let context_features = vec![0.0; crate::model_router::CONTEXT_DIM];
 
         // Replay 10 observations for the first model.
         for _ in 0..10 {
-            router.replay_observation(
-                "claude-sonnet-4-5",
-                &context_features,
-                0,
-                0.85,
-                true,
-            );
+            router.replay_observation("claude-sonnet-4-5", &context_features, 0, 0.85, true);
         }
 
         let stats = router.confidence_stats.lock();
@@ -2481,13 +2473,7 @@ mod cascade_router_tests {
         let context_features = vec![0.0; crate::model_router::CONTEXT_DIM];
 
         // This should log a warning and not panic.
-        router.replay_observation(
-            "nonexistent-model",
-            &context_features,
-            0,
-            1.0,
-            true,
-        );
+        router.replay_observation("nonexistent-model", &context_features, 0, 1.0, true);
 
         let stats = router.confidence_stats.lock();
         assert!(stats.get("nonexistent-model").is_none());
@@ -2495,10 +2481,8 @@ mod cascade_router_tests {
 
     #[test]
     fn replay_observation_uses_current_index_on_mismatch() {
-        let router = CascadeRouter::new(vec![
-            "claude-haiku-4-5".into(),
-            "claude-sonnet-4-5".into(),
-        ]);
+        let router =
+            CascadeRouter::new(vec!["claude-haiku-4-5".into(), "claude-sonnet-4-5".into()]);
         let context_features = vec![0.0; crate::model_router::CONTEXT_DIM];
 
         // WAL says model_idx=0 but the slug maps to current index 1.

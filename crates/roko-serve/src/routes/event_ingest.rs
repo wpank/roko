@@ -208,18 +208,17 @@ mod tests {
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;
     use axum::http::Request;
-    use http_body_util::BodyExt;
     use roko_core::config::schema::RokoConfig;
     use tower::ServiceExt as _;
 
     /// Build a test state + router using the same pattern as routes/mod.rs tests.
     fn build_test_state_and_router(
-        config: RokoConfig,
+        mut config: RokoConfig,
     ) -> (tempfile::TempDir, Arc<AppState>, axum::Router) {
+        config.serve.auth.enabled = false;
         let dir = tempfile::tempdir().expect("tempdir");
         let deploy = Arc::from(
-            crate::deploy::create_backend("manual", None, None, None)
-                .expect("manual backend"),
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
         );
         let state = Arc::new(
             AppState::new(
@@ -230,11 +229,7 @@ mod tests {
             )
             .expect("AppState::new"),
         );
-        let router = super::super::build_router(
-            Arc::clone(&state),
-            &[],
-            config.serve.auth.clone(),
-        );
+        let router = super::super::build_router(Arc::clone(&state), &[], config.serve.auth.clone());
         // Wrap with MockConnectInfo so ConnectInfo<SocketAddr> is available.
         let router = router.layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
         (dir, state, router)
@@ -378,13 +373,13 @@ mod tests {
     async fn non_loopback_without_auth_is_forbidden() {
         // Configure a non-loopback bind so the security check rejects.
         let mut config = RokoConfig::default();
+        config.serve.auth.enabled = false;
         config.server.bind = "0.0.0.0".to_string();
 
         let (_dir, _state, router) = {
             let dir = tempfile::tempdir().expect("tempdir");
             let deploy = Arc::from(
-                crate::deploy::create_backend("manual", None, None, None)
-                    .expect("manual backend"),
+                crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
             );
             let state = Arc::new(
                 AppState::new(
@@ -395,15 +390,10 @@ mod tests {
                 )
                 .expect("AppState::new"),
             );
-            let router = super::super::build_router(
-                Arc::clone(&state),
-                &[],
-                config.serve.auth.clone(),
-            );
+            let router =
+                super::super::build_router(Arc::clone(&state), &[], config.serve.auth.clone());
             // Use a non-loopback remote address.
-            let router = router.layer(MockConnectInfo(
-                SocketAddr::from(([10, 0, 0, 5], 54321)),
-            ));
+            let router = router.layer(MockConnectInfo(SocketAddr::from(([10, 0, 0, 5], 54321))));
             (dir, state, router)
         };
 
@@ -412,7 +402,7 @@ mod tests {
             .body(Body::from(agent_output_body().to_string()))
             .expect("build request");
 
-        let resp = _router.oneshot(req).await.expect("oneshot");
+        let resp = router.oneshot(req).await.expect("oneshot");
         assert_eq!(
             resp.status(),
             StatusCode::FORBIDDEN,

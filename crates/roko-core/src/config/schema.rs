@@ -39,6 +39,20 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// Config layout version for migration tooling.
 pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
+/// Check whether a binary is findable on the system `PATH`.
+fn binary_on_path(name: &str) -> bool {
+    if name.contains('/') || name.contains('\\') {
+        return std::path::Path::new(name).exists();
+    }
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        if dir.join(name).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Returns `true` when the raw TOML text contains an explicit `config_version`
 /// key (as opposed to relying on the serde default).  Used to avoid spurious
 /// version-1 warnings for partial configs (e.g. the global `~/.roko/config.toml`)
@@ -205,6 +219,78 @@ impl Default for RokoConfig {
     }
 }
 
+// ---- standard provider synthesis -----------------------------------------
+
+/// Check well-known API-key env vars and synthesize provider entries.
+///
+/// Each env var is checked independently — setting only `OPENAI_API_KEY` will
+/// produce a single `"openai"` entry while the others are skipped.
+///
+/// Callers should merge these *under* user-defined providers so that explicit
+/// `[providers.*]` config always takes precedence.
+#[must_use]
+pub fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
+    synthesize_standard_providers_with_env(|key| std::env::var(key).ok())
+}
+
+fn synthesize_standard_providers_with_env(
+    env_fn: impl Fn(&str) -> Option<String>,
+) -> HashMap<String, ProviderConfig> {
+    use super::provider::{
+        default_provider_connect_timeout_ms, default_provider_timeout_ms,
+        default_provider_ttft_timeout_ms,
+    };
+
+    let specs: &[(&str, &str, ProviderKind, Option<&str>)] = &[
+        (
+            "anthropic",
+            "ANTHROPIC_API_KEY",
+            ProviderKind::AnthropicApi,
+            Some("https://api.anthropic.com"),
+        ),
+        (
+            "openai",
+            "OPENAI_API_KEY",
+            ProviderKind::OpenAiCompat,
+            Some("https://api.openai.com"),
+        ),
+        (
+            "gemini",
+            "GEMINI_API_KEY",
+            ProviderKind::GeminiApi,
+            Some("https://generativelanguage.googleapis.com"),
+        ),
+        (
+            "perplexity",
+            "PERPLEXITY_API_KEY",
+            ProviderKind::PerplexityApi,
+            None,
+        ),
+    ];
+
+    let mut providers = HashMap::new();
+    for &(name, env_var, kind, base_url) in specs {
+        if env_fn(env_var).filter(|value| !value.is_empty()).is_some() {
+            providers.insert(
+                name.to_string(),
+                ProviderConfig {
+                    kind,
+                    base_url: base_url.map(String::from),
+                    api_key_env: Some(env_var.to_string()),
+                    command: None,
+                    args: None,
+                    timeout_ms: default_provider_timeout_ms(),
+                    ttft_timeout_ms: default_provider_ttft_timeout_ms(),
+                    connect_timeout_ms: default_provider_connect_timeout_ms(),
+                    extra_headers: None,
+                    max_concurrent: None,
+                },
+            );
+        }
+    }
+    providers
+}
+
 // ---- RokoConfig impl -----------------------------------------------------
 
 impl RokoConfig {
@@ -271,29 +357,44 @@ impl RokoConfig {
 
     /// Return the explicit provider registry that should be used at runtime.
     ///
-    /// Empty configs do not receive a synthetic provider. Callers that need
-    /// legacy command-backed behavior must materialize a transient provider at
-    /// their boundary before dispatch.
+    /// Synthesized standard providers (from env vars) are merged first, then
+    /// user-defined providers override them. This ensures that setting e.g.
+    /// `ANTHROPIC_API_KEY` is enough to get an "anthropic" provider without
+    /// any TOML config, while explicit `[providers.*]` entries always win.
     #[must_use]
     pub fn effective_providers(&self) -> IndexMap<String, ProviderConfig> {
-        if !self.providers.is_empty() {
-            let mut providers = self.providers.clone();
-            // Ensure ClaudeCli providers always have a command — the adapter
-            // requires it and users commonly omit it from config.
-            let claude_command = self
-                .agent
-                .command
-                .clone()
-                .unwrap_or_else(|| "claude".to_string());
-            for pc in providers.values_mut() {
-                if pc.kind == ProviderKind::ClaudeCli && pc.command.is_none() {
-                    pc.command = Some(claude_command.clone());
-                }
-            }
-            return providers;
+        self.effective_providers_with_env(|key| std::env::var(key).ok())
+    }
+
+    fn effective_providers_with_env(
+        &self,
+        env_fn: impl Fn(&str) -> Option<String>,
+    ) -> IndexMap<String, ProviderConfig> {
+        // Start with env-synthesized providers as the base layer.
+        let mut providers: IndexMap<String, ProviderConfig> =
+            synthesize_standard_providers_with_env(env_fn)
+                .into_iter()
+                .collect();
+
+        // User-defined providers override synthesized ones.
+        for (name, pc) in &self.providers {
+            providers.insert(name.clone(), pc.clone());
         }
 
-        IndexMap::new()
+        // Ensure ClaudeCli providers always have a command — the adapter
+        // requires it and users commonly omit it from config.
+        let claude_command = self
+            .agent
+            .command
+            .clone()
+            .unwrap_or_else(|| "claude".to_string());
+        for pc in providers.values_mut() {
+            if pc.kind == ProviderKind::ClaudeCli && pc.command.is_none() {
+                pc.command = Some(claude_command.clone());
+            }
+        }
+
+        providers
     }
 
     /// Return the explicit model registry that should be used at runtime.
@@ -466,21 +567,40 @@ impl RokoConfig {
 
     /// Returns `true` when this provider entry is ready for outbound use.
     ///
-    /// CLI / ACP providers rely on machine-local auth and are always treated as
-    /// available. HTTP-family providers need a non-empty `api_key_env` name with
+    /// CLI / ACP providers check that the binary exists on `PATH`.
+    /// HTTP-family providers need a non-empty `api_key_env` name with
     /// a value in the process environment or in [`AgentConfig::env`].
     #[must_use]
     pub fn is_provider_available(&self, provider: &ProviderConfig) -> bool {
+        self.is_provider_available_with_env(provider, |name| std::env::var(name).ok())
+    }
+
+    fn is_provider_available_with_env(
+        &self,
+        provider: &ProviderConfig,
+        env_fn: impl Fn(&str) -> Option<String>,
+    ) -> bool {
         if matches!(
             provider.kind,
             ProviderKind::ClaudeCli | ProviderKind::CursorAcp
         ) {
-            return true;
+            let default_cmd = if provider.kind == ProviderKind::ClaudeCli {
+                "claude"
+            } else {
+                "cursor"
+            };
+            let command = provider
+                .command
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(default_cmd);
+            return binary_on_path(command);
         }
         match provider.api_key_env.as_ref().map(|s| s.trim()) {
             None => false,
             Some("") => true,
-            Some(name) => std::env::var(name).is_ok() || self.agent_env_value(name).is_some(),
+            Some(name) => env_fn(name).is_some() || self.agent_env_value(name).is_some(),
         }
     }
 
@@ -1790,7 +1910,7 @@ default_model = "claude-sonnet-4-6"
             ),
         ]);
 
-        let providers = cfg.effective_providers();
+        let providers = cfg.effective_providers_with_env(|_| None);
         assert!(providers.is_empty());
     }
 
@@ -1804,7 +1924,7 @@ default_model = "claude-sonnet-4-6"
         // so look up the configured default model by its key (not by slug).
         let default_key = cfg.agent.default_model.as_str();
         let default_model = models.get(default_key).expect("default model");
-        assert_eq!(default_model.slug, "glm-5.1");
+        assert_eq!(default_model.slug, "gpt-5.4-mini");
         assert!(
             !default_model.provider.is_empty(),
             "default model must declare a provider"
@@ -2058,9 +2178,9 @@ default_model = "claude-sonnet-4-6"
             extra_headers: None,
             max_concurrent: None,
         };
-        assert!(!cfg.is_provider_available(&p));
+        assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
-        assert!(cfg.is_provider_available(&p));
+        assert!(cfg.is_provider_available_with_env(&p, |_| None));
     }
 
     #[test]
@@ -2105,6 +2225,70 @@ default_model = "claude-sonnet-4-6"
         assert_eq!(
             cfg.model_slugs_for_cascade(),
             vec!["configured-wire-slug".to_string()]
+        );
+    }
+
+    #[test]
+    fn provider_available_claude_cli_missing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            command: Some("roko-nonexistent-binary-xyz-090".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            !cfg.is_provider_available(&provider),
+            "ClaudeCli with nonexistent binary should not be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_claude_cli_existing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            // "sh" is always present on unix
+            command: Some("sh".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            cfg.is_provider_available(&provider),
+            "ClaudeCli with 'sh' binary should be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_cursor_missing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::CursorAcp,
+            command: Some("roko-nonexistent-cursor-xyz-090".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            !cfg.is_provider_available(&provider),
+            "CursorAcp with nonexistent binary should not be available"
         );
     }
 }

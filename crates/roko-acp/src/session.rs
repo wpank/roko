@@ -2,7 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -104,6 +104,20 @@ fn default_provider() -> String {
 const MAX_HISTORY_TURNS: usize = 40;
 /// Maximum total characters across all history turns.
 const MAX_HISTORY_CHARS: usize = 64_000;
+/// Maximum bytes per pinned file content (32 KiB).
+const MAX_PINNED_FILE_BYTES: usize = 32 * 1024;
+
+/// A file pinned into the session context, injected into every turn's system prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedFile {
+    /// URI identifying the pinned resource (e.g. file path or URL).
+    pub uri: String,
+    /// Content of the pinned file (truncated to 32 KiB).
+    pub content: String,
+    /// When this file was pinned.
+    pub added_at: DateTime<Utc>,
+}
 
 /// A single turn in the conversation history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +310,16 @@ pub struct AcpSession {
     /// Loaded from workspace trust at session creation; updated on "always allow" decisions.
     #[serde(skip, default)]
     pub always_allowed: HashSet<crate::types::PermissionAction>,
+    /// Whether builtin tool definitions are sent to the model.
+    #[serde(default = "default_true")]
+    pub tools_enabled: bool,
+    /// Files pinned into every turn's system prompt (session-scoped, not persisted to disk).
+    #[serde(default)]
+    pub pinned_context: Vec<PinnedFile>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl AcpSession {
@@ -320,6 +344,8 @@ impl AcpSession {
             shared_run: new_shared_run(),
             cached_conventions: None,
             always_allowed: HashSet::new(),
+            tools_enabled: true,
+            pinned_context: Vec::new(),
         }
     }
 
@@ -365,6 +391,8 @@ impl AcpSession {
             shared_run: new_shared_run(),
             cached_conventions: None,
             always_allowed: HashSet::new(),
+            tools_enabled: true,
+            pinned_context: Vec::new(),
         }
     }
 
@@ -471,6 +499,35 @@ impl AcpSession {
         self.busy.load(Ordering::Acquire)
     }
 
+    /// Pin a file into the session context. Content is truncated to 32 KiB.
+    /// If a file with the same URI is already pinned, its content and timestamp are updated.
+    pub fn pin_file(&mut self, uri: String, content: String) {
+        let truncated: String = content.chars().take(MAX_PINNED_FILE_BYTES).collect();
+        if let Some(existing) = self.pinned_context.iter_mut().find(|p| p.uri == uri) {
+            existing.content = truncated;
+            existing.added_at = Utc::now();
+        } else {
+            self.pinned_context.push(PinnedFile {
+                uri,
+                content: truncated,
+                added_at: Utc::now(),
+            });
+        }
+    }
+
+    /// Remove a pinned file by URI. Returns `true` if the file was found and removed.
+    pub fn unpin_file(&mut self, uri: &str) -> bool {
+        let before = self.pinned_context.len();
+        self.pinned_context.retain(|p| p.uri != uri);
+        self.pinned_context.len() < before
+    }
+
+    /// Returns a snapshot of all currently pinned files.
+    #[must_use]
+    pub fn list_pinned(&self) -> &[PinnedFile] {
+        &self.pinned_context
+    }
+
     /// Updates the current legacy mode identifier. Clears history on mode change.
     pub fn set_mode(&mut self, mode_id: String) {
         if self.config_state.agent_mode != mode_id {
@@ -526,6 +583,18 @@ impl AcpSession {
             .filter(|text| !text.trim().is_empty())
         {
             builder = builder.with_gate_feedback_text(feedback.as_str());
+        }
+
+        // Inject pinned files after the base prompt layers.
+        if !self.pinned_context.is_empty() {
+            let mut pinned_section = String::from("\n## Pinned Context\n");
+            for pinned in &self.pinned_context {
+                pinned_section.push_str(&format!(
+                    "\n### {}\n```\n{}\n```\n",
+                    pinned.uri, pinned.content,
+                ));
+            }
+            builder = builder.with_domain(pinned_section);
         }
 
         builder.build()
@@ -1168,25 +1237,44 @@ fn build_config_options(
     provider_options.sort_by(|a, b| a.value.cmp(&b.value));
 
     // ── Model options filtered by selected provider ──
-    let mut model_options: Vec<ConfigOptionValue> = roko_config
+    // Build full list first, then filter out unavailable models.
+    // If ALL would be filtered, keep them all but marked as unavailable.
+    let mut all_model_options: Vec<ConfigOptionValue> = roko_config
         .models
         .iter()
         .filter(|(_, profile)| profile.provider == state.provider)
-        .map(|(key, profile)| ConfigOptionValue {
-            value: key.clone(),
-            name: capitalize_model_key(key),
-            description: Some(format!(
-                "{} (max output: {})",
-                profile.slug,
-                profile.effective_max_output()
-            )),
-            ready: roko_config
+        .map(|(key, profile)| {
+            let provider_available = roko_config
                 .providers
                 .get(&profile.provider)
-                .is_some_and(|provider| roko_config.is_provider_available(provider)),
+                .is_some_and(|provider| roko_config.is_provider_available(provider));
+            ConfigOptionValue {
+                value: key.clone(),
+                name: capitalize_model_key(key),
+                description: Some(format!(
+                    "{} (max output: {})",
+                    profile.slug,
+                    profile.effective_max_output()
+                )),
+                ready: provider_available,
+            }
         })
         .collect();
-    model_options.sort_by(|a, b| a.value.cmp(&b.value));
+    all_model_options.sort_by(|a, b| a.value.cmp(&b.value));
+
+    let available_model_options: Vec<ConfigOptionValue> = all_model_options
+        .iter()
+        .filter(|opt| opt.ready)
+        .cloned()
+        .collect();
+
+    // If at least one model is available, show only available ones;
+    // otherwise keep all (marked unavailable) so the dropdown isn't empty.
+    let model_options = if available_model_options.is_empty() {
+        all_model_options
+    } else {
+        available_model_options
+    };
 
     vec![
         // 1. Provider
@@ -1367,6 +1455,30 @@ const BARE_MODE_COMMANDS: &[&str] = &[
     "analyze",
 ];
 
+/// Auto-detect bare mode from workspace state.
+///
+/// - If `config_override` is `Some(true)` or `Some(false)`, use that value directly
+///   (explicit `bare_mode = true/false` in config overrides auto-detect).
+/// - Otherwise, auto-detect: if `.roko/` directory exists in `workdir` with workspace
+///   state (signals, episodes, etc.) → full mode (`false`); if no meaningful `.roko/`
+///   → bare mode (`true`), limiting commands to those appropriate for non-roko projects.
+pub fn resolve_bare_mode(config_override: Option<bool>, workdir: &Path) -> bool {
+    if let Some(explicit) = config_override {
+        return explicit;
+    }
+    // Auto-detect from workspace state:
+    // A roko workspace has `.roko/` with state content, or `roko.toml` at root.
+    let roko_dir = workdir.join(".roko");
+    let has_roko_dir = roko_dir.is_dir()
+        && (roko_dir.join("state").is_dir()
+            || roko_dir.join("signals.jsonl").exists()
+            || roko_dir.join("episodes.jsonl").exists());
+    let has_config = workdir.join("roko.toml").is_file();
+
+    // Full mode if this looks like a roko workspace, bare mode otherwise.
+    !(has_roko_dir || has_config)
+}
+
 fn bare_mode_allows_command(name: &str) -> bool {
     BARE_MODE_COMMANDS.contains(&name)
 }
@@ -1390,6 +1502,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             None,
         ),
         slash_command("config", "Show roko.toml configuration", "system", None),
+        slash_command(
+            "models",
+            "List available models with their status",
+            "system",
+            None,
+        ),
         slash_command(
             "learn",
             "Learning state: episodes, routing, experiments, efficiency",
@@ -1492,6 +1610,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "Single prompt -> universal loop (compose->agent->gate->persist)",
             "implementation",
             Some("prompt text"),
+        ),
+        slash_command(
+            "do",
+            "Execute a task with roko do (agentic coding)",
+            "implementation",
+            Some("describe the task..."),
         ),
         slash_command(
             "agents",
@@ -1639,6 +1763,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             "Run a named workflow pipeline",
             "workflow",
             Some("pipeline name"),
+        ),
+        slash_command(
+            "note",
+            "Append a note to .roko/notes/ (capture ideas without leaving editor)",
+            "system",
+            Some("note text"),
         ),
         slash_command("help", "List all available commands", "help", None),
     ];

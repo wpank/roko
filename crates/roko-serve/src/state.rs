@@ -412,7 +412,8 @@ pub struct ISFRState {
     /// Current keeper epoch (updated each tick from keeper's epoch counter).
     pub current_epoch: std::sync::atomic::AtomicU64,
     /// Contract addresses from ISFR bootstrap (populated on auto-deploy).
-    pub contract_addresses: tokio::sync::RwLock<Option<roko_chain::chain_profile::ContractAddresses>>,
+    pub contract_addresses:
+        tokio::sync::RwLock<Option<roko_chain::chain_profile::ContractAddresses>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +839,10 @@ impl AppState {
     pub fn state_hub_for_workdir(workdir: &Path) -> roko_runtime::SharedStateHub {
         let layout = RokoLayout::for_project(workdir);
         let event_log_path = layout.root().join("events.jsonl");
-        roko_runtime::SharedStateHub::new(roko_runtime::StateHub::with_event_log(1024, &event_log_path))
+        roko_runtime::SharedStateHub::new(roko_runtime::StateHub::with_event_log(
+            1024,
+            &event_log_path,
+        ))
     }
 
     /// Construct a new `AppState` from the working directory and loaded configs.
@@ -1028,10 +1032,15 @@ impl AppState {
     }
 
     /// Build chain client + wallet from the `[chain]` config section.
-    /// Returns `(None, None)` when `chain.rpc_url` is not set.
+    /// Returns `(None, None)` when chain is disabled or `chain.rpc_url` is not set.
     fn init_chain(
         config: &RokoConfig,
     ) -> (Option<Arc<AlloyChainClient>>, Option<Arc<AlloyChainWallet>>) {
+        if !config.chain.enabled {
+            tracing::info!("chain subsystem disabled via config");
+            return (None, None);
+        }
+
         let rpc_url = match config.chain.rpc_url.as_deref() {
             Some(url) if !url.is_empty() => url,
             _ => return (None, None),

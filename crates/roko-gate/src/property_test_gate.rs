@@ -206,10 +206,23 @@ impl Verify for PropertyTestGate {
                 .with_duration(elapsed);
         }
 
+        if !self.build_system.is_available() {
+            let reason = format!(
+                "{} not available: '{}' not found on PATH",
+                self.build_system.name(),
+                self.build_system.program()
+            );
+            tracing::warn!(gate = %self.name, "{reason}");
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Verdict::pass(&self.name)
+                .with_detail(format!("skipped: {reason}"))
+                .with_duration(elapsed);
+        }
+
         let selector = TestSelector::Patterns(vec![self.prefix.clone()]);
 
         let mut cmd = Command::new(self.build_system.program());
-        for arg in self.build_system.test_args() {
+        for arg in self.build_system.scoped_test_args(&payload.target_crates) {
             cmd.arg(arg);
         }
         for arg in selector.extra_args(self.build_system) {

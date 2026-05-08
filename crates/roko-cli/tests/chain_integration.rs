@@ -188,14 +188,18 @@ async fn chain_wallet_info_returns_live_details() {
     assert!(body["nonce"].is_u64(), "nonce should be present as u64");
 }
 
-// ── Test 5: chain_handler_map creates all 14 handlers (live client) ─────
+// ── Test 5: chain_handler_map creates all canonical handlers (live client) ─────
 
 #[tokio::test]
-async fn chain_handler_map_creates_all_14_tools() {
+async fn chain_handler_map_creates_all_canonical_tools() {
     let client = make_client();
     let map = chain_handler_map(client as Arc<dyn ChainClient>, None);
 
-    assert_eq!(map.len(), 14, "should create exactly 14 handlers");
+    assert_eq!(
+        map.len(),
+        CHAIN_TOOL_NAMES.len(),
+        "should create exactly the canonical chain handlers"
+    );
 
     for name in CHAIN_TOOL_NAMES {
         let handler = map
@@ -243,6 +247,7 @@ async fn chain_aware_resolver_resolves_both_domains() {
 fn chain_config_round_trips_through_toml() {
     let mut config = RokoConfig::default();
     config.chain = ChainConfig {
+        enabled: true,
         rpc_url: Some(MIRAGE_RPC.to_string()),
         chain_id: Some(CHAIN_ID),
         wallet_key: Some(DEPLOYER_KEY.to_string()),
@@ -252,6 +257,9 @@ fn chain_config_round_trips_through_toml() {
         deployer: Some(DEPLOYER.to_string()),
         agent_registry: None,
         bounty_market: None,
+        profile: "mirage".to_string(),
+        auto_deploy_contracts: false,
+        contracts_dir: None,
     };
 
     let toml_str = toml::to_string_pretty(&config).expect("serialize to TOML");

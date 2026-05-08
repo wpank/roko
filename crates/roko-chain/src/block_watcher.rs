@@ -78,6 +78,22 @@ mod signatures {
 /// Callback type for publishing block watcher events.
 pub type PublishFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
+/// Compute exponential backoff duration for consecutive failures.
+///
+/// Formula: `min(2^min(failures, 5) * 2000ms, 60_000ms) + jitter`.
+/// Jitter is derived from `subsec_nanos() % 1000` ms (no rand dep).
+#[must_use]
+pub fn compute_backoff(consecutive_failures: u32) -> Duration {
+    let exp = consecutive_failures.min(5);
+    let base_ms: u64 = 2u64.pow(exp) * 2000;
+    let capped_ms = base_ms.min(60_000);
+    let jitter_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::from(d.subsec_nanos() % 1000))
+        .unwrap_or(0);
+    Duration::from_millis(capped_ms + jitter_ms)
+}
+
 /// Poll-based block watcher that streams block, tx, and event data.
 pub struct BlockWatcher {
     provider: Arc<DynProvider>,
@@ -97,6 +113,7 @@ impl BlockWatcher {
     const BACKFILL_COUNT: u64 = 20;
 
     /// Run the watcher loop until cancelled.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(self, publish: PublishFn, cancel: CancellationToken) {
         let mut last_block: u64 = 0;
         let mut seeded = false;
@@ -142,19 +159,44 @@ impl BlockWatcher {
             }
         }
 
+        let mut consecutive_failures: u32 = 0;
+
         loop {
+            let sleep_dur = if consecutive_failures > 0 {
+                compute_backoff(consecutive_failures)
+            } else {
+                self.poll_interval
+            };
+
             select! {
                 _ = cancel.cancelled() => {
                     debug!("block_watcher cancelled");
                     break;
                 }
-                _ = tokio::time::sleep(self.poll_interval) => {}
+                _ = tokio::time::sleep(sleep_dur) => {}
             }
 
             let current = match self.provider.get_block_number().await {
-                Ok(n) => n,
+                Ok(n) => {
+                    if consecutive_failures > 0 {
+                        info!(
+                            previous_failures = consecutive_failures,
+                            block = n,
+                            "block_watcher recovered after failures"
+                        );
+                    }
+                    consecutive_failures = 0;
+                    n
+                }
                 Err(e) => {
-                    warn!(error = %e, "block_watcher poll failed");
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let backoff = compute_backoff(consecutive_failures);
+                    warn!(
+                        error = %e,
+                        consecutive_failures,
+                        next_retry_secs = backoff.as_secs_f32(),
+                        "block_watcher poll failed, backing off"
+                    );
                     continue;
                 }
             };
@@ -169,7 +211,11 @@ impl BlockWatcher {
             if !seeded {
                 seeded = true;
                 let start = current.saturating_sub(Self::BACKFILL_COUNT);
-                info!(from = start + 1, to = current, "block_watcher late-seed backfill");
+                info!(
+                    from = start + 1,
+                    to = current,
+                    "block_watcher late-seed backfill"
+                );
                 for num in (start + 1)..=current {
                     if cancel.is_cancelled() {
                         return;
@@ -209,7 +255,7 @@ impl BlockWatcher {
             Ok(Some(b)) => b,
             Ok(None) => return,
             Err(e) => {
-                warn!(block = num, error = %e, "failed to fetch block");
+                tracing::debug!(block = num, error = %e, "failed to fetch block");
                 return;
             }
         };
@@ -221,7 +267,11 @@ impl BlockWatcher {
         let mut actual_tx_count = 0u32;
         if let Some(transactions) = block.transactions.as_transactions() {
             if !transactions.is_empty() {
-                info!(block = num, tx_count = transactions.len(), "processing full transactions");
+                info!(
+                    block = num,
+                    tx_count = transactions.len(),
+                    "processing full transactions"
+                );
             }
             for tx in transactions {
                 self.process_full_tx(num, tx, publish).await;
@@ -230,7 +280,11 @@ impl BlockWatcher {
         } else if let Some(hashes) = block.transactions.as_hashes() {
             // mirage-rs / some providers return hash-only blocks even with .full().
             // Fetch each transaction individually.
-            info!(block = num, hash_count = hashes.len(), "fetching transactions by hash");
+            info!(
+                block = num,
+                hash_count = hashes.len(),
+                "fetching transactions by hash"
+            );
             for hash in hashes {
                 match self.provider.get_transaction_by_hash(*hash).await {
                     Ok(Some(tx)) => {
@@ -351,7 +405,11 @@ impl BlockWatcher {
             }
         }
         if count > 0 {
-            info!(block = block_number, tx_count = count, "recovered transactions via raw extraction");
+            info!(
+                block = block_number,
+                tx_count = count,
+                "recovered transactions via raw extraction"
+            );
         }
         count
     }
@@ -376,14 +434,14 @@ impl BlockWatcher {
 
         // Fetch receipt for gas_used and logs.
         let hash_b256: B256 = tx.tx_hash();
-        let (gas_used, success, logs) =
-            match self.provider.get_transaction_receipt(hash_b256).await {
-                Ok(Some(receipt)) => {
-                    let logs: Vec<_> = receipt.inner.logs().to_vec();
-                    (receipt.gas_used, receipt.status(), logs)
-                }
-                _ => (0, true, vec![]),
-            };
+        let (gas_used, success, logs) = match self.provider.get_transaction_receipt(hash_b256).await
+        {
+            Ok(Some(receipt)) => {
+                let logs: Vec<_> = receipt.inner.logs().to_vec();
+                (receipt.gas_used, receipt.status(), logs)
+            }
+            _ => (0, true, vec![]),
+        };
 
         let tx_info = TxInfo {
             block_number,
@@ -410,8 +468,7 @@ impl BlockWatcher {
 
             let topic0 = format!("{:#x}", topics[0]);
             let contract = format!("{:#x}", log.inner.address);
-            let (event_name, decoded) =
-                decode_event(&topic0, topics, &log.inner.data.data);
+            let (event_name, decoded) = decode_event(&topic0, topics, &log.inner.data.data);
 
             let event_info = ContractEventInfo {
                 block_number,
@@ -431,11 +488,7 @@ impl BlockWatcher {
 }
 
 /// Decode a known contract event or return the raw topic0.
-fn decode_event(
-    topic0: &str,
-    topics: &[B256],
-    data: &[u8],
-) -> (String, serde_json::Value) {
+fn decode_event(topic0: &str, topics: &[B256], data: &[u8]) -> (String, serde_json::Value) {
     match topic0 {
         s if s == signatures::RATE_SUBMITTED => {
             let epoch_id = topics.get(1).map(|t| format!("{t:#x}")).unwrap_or_default();
@@ -567,5 +620,35 @@ impl ChainState {
         while ring.len() > Self::MAX_EVENTS {
             ring.pop_front();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_backoff_grows_exponentially() {
+        // 0 failures → 2^0 * 2000 = 2000ms base
+        let b0 = compute_backoff(0);
+        assert!(b0.as_millis() >= 2000 && b0.as_millis() < 3100);
+
+        // 1 failure → 2^1 * 2000 = 4000ms base
+        let b1 = compute_backoff(1);
+        assert!(b1.as_millis() >= 4000 && b1.as_millis() < 5100);
+
+        // 5 failures → 2^5 * 2000 = 64000 → capped at 60000ms
+        let b5 = compute_backoff(5);
+        assert!(b5.as_millis() >= 60000 && b5.as_millis() < 61100);
+    }
+
+    #[test]
+    fn compute_backoff_caps_at_60s() {
+        // Beyond 5 failures, exponent is capped at 5 → always 60s base.
+        let b10 = compute_backoff(10);
+        assert!(b10.as_millis() >= 60000 && b10.as_millis() < 61100);
+
+        let b100 = compute_backoff(100);
+        assert!(b100.as_millis() >= 60000 && b100.as_millis() < 61100);
     }
 }

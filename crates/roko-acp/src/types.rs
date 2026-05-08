@@ -462,6 +462,14 @@ pub enum ContentBlock {
         /// Referenced resource.
         resource: ResourceRef,
     },
+    /// An inline image content block (base64-encoded).
+    Image {
+        /// Base64-encoded image data.
+        data: String,
+        /// MIME type (e.g. `image/png`).
+        #[serde(alias = "mimeType")]
+        mime_type: String,
+    },
     /// A textual diff content block.
     Diff {
         /// Path the diff applies to.
@@ -476,6 +484,10 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<String>,
     },
+    /// Catch-all for unknown/future content block types (e.g. 'audio').
+    /// Prevents deserialization failures when the ACP spec adds new types.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Reference to an ACP resource.

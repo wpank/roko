@@ -26,7 +26,7 @@ use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classifica
 use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
     MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanState as OrcPlanState,
-    RecoveryEngine,
+    RecoveryEngine, TransitionError,
 };
 use roko_runtime::{HttpEventSink, RunLedger, WorkflowConfig};
 use tokio::sync::mpsc;
@@ -41,6 +41,7 @@ use crate::dispatch::{
 };
 use crate::inline::DiffEntry;
 use crate::knowledge_helpers::{build_knowledge_routing_advice, neuro_prompt_task_category};
+use crate::task_helpers::task_target_crates;
 use crate::task_parser::TaskDef;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
@@ -58,12 +59,13 @@ use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{SnapshotPayload, SnapshotWriter};
 use super::state::RunState;
+use super::task_dag::task_status_is_terminal;
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
     GateVerdictSummary, PlanOutcome, PlanRunSummary, PromptAssemblyDiagnostics, ResumeMarker,
     ResumeOutcome, RetryAction, RunConfig, RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind,
-    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus,
+    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, effective_plan_timeout_secs,
 };
 
 // ─── RunReport ──────────────────────────────────────────────────────────
@@ -141,7 +143,7 @@ pub(crate) fn agent_dispatch_timeout(config: &RunConfig) -> Duration {
 pub(crate) fn plan_total_timeout(config: &RunConfig) -> Duration {
     config.roko_config.as_deref().map_or_else(
         || Duration::from_secs(config.plan_timeout_secs),
-        |cfg| cfg.timeouts.plan_total(),
+        |cfg| Duration::from_secs(effective_plan_timeout_secs(cfg)),
     )
 }
 
@@ -200,6 +202,7 @@ struct RunContext<'a> {
     sink: &'a dyn RunOutputSink,
     tui: &'a TuiBridge,
     state: &'a mut RunState,
+    active_agent_tasks: &'a mut HashMap<String, String>,
     agent_handles: &'a mut HashMap<String, AgentHandle>,
     agent_tx: &'a mpsc::Sender<AgentEvent>,
     gate_tx: &'a mpsc::Sender<GateCompletion>,
@@ -217,6 +220,15 @@ struct RunContext<'a> {
     /// Playbook IDs per attempt key — populated at dispatch, consumed on gate
     /// terminal to call `PlaybookStore::record_outcome`.
     task_playbook_ids: &'a mut HashMap<String, Vec<String>>,
+}
+
+// Result of dispatching one executor action. Most actions are internal phase
+// advances; the runner ledger only records an agent start when a runtime was
+// actually launched for a concrete task.
+enum ActionDispatchOutcome {
+    Noop,
+    Handled,
+    AgentStarted { plan_id: String, task_id: String },
 }
 
 // ─── Main Entry Point ───────────────────────────────────────────────────
@@ -596,9 +608,13 @@ pub async fn run(
                 &resume_report.drifted_tasks,
             );
         }
+    } else {
+        seed_completed_tasks_from_plan_status(&mut state, &plans);
+        initialize_terminal_plan_phases(&mut executor, &state, &plans);
     }
 
     let mut agent_handles: HashMap<String, AgentHandle> = HashMap::new();
+    let mut active_agent_tasks: HashMap<String, String> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -779,6 +795,10 @@ pub async fn run(
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
+                publish_learning_agent_event(&learning_event_bus, &event, &state);
+                if is_turn_done || is_exited {
+                    active_agent_tasks.remove(&state.plan_id);
+                }
 
                 // ── Forward progress-relevant agent events to RuntimeEvent ──
                 if let Some(http_sink) = config.http_event_sink.as_ref() {
@@ -802,27 +822,21 @@ pub async fn run(
                     }
                 }
 
-                // Per-turn budget enforcement.
+                // Per-turn budget observation. This event arrives after the
+                // provider turn has already completed, so a successful turn
+                // should still move on to gating; otherwise we throw away a
+                // potentially valid patch after paying for it.
                 if is_turn_done {
                     let max_turn = config.max_turn_usd;
-                    if max_turn > 0.0 && state.cost_usd > max_turn {
+                    if let AgentEvent::TurnCompleted { total_cost_usd, .. } = &event
+                        && turn_exceeds_budget(*total_cost_usd, max_turn)
+                    {
                         warn!(
                             task = %state.current_task,
-                            turn_cost = state.cost_usd,
+                            turn_cost = total_cost_usd.unwrap_or_default(),
                             limit = max_turn,
-                            "single turn exceeded per-turn budget limit -- stopping agent"
+                            "single turn exceeded per-turn budget limit -- continuing to gate completed work"
                         );
-                        stop_all_agents(&mut agent_handles, &mut state, Duration::from_secs(3)).await;
-                        let plan_id = state.plan_id.clone();
-                        if !plan_id.is_empty() {
-                            let _ = executor.apply_event(
-                                &plan_id,
-                                &ExecutorEvent::Fatal(format!(
-                                    "turn cost ${:.2} exceeded per-turn limit ${:.2}",
-                                    state.cost_usd, max_turn,
-                                )),
-                            );
-                        }
                     }
                 }
 
@@ -886,10 +900,19 @@ pub async fn run(
                     let plan_id = state.plan_id.clone();
                     if !plan_id.is_empty() {
                         if turn_error {
-                            let message = "agent reported an error result".to_string();
+                            let message = agent_failure_message(&state.agent_output)
+                                .unwrap_or_else(|| "agent reported an error result".to_string());
                             fire_on_error_hook(config, &message, "agent_turn", &tui, &state.plan_id, &state.current_task).await;
-                            tui.error(&message);
-                            let _ = executor.apply_event(&plan_id, &ExecutorEvent::Fatal(message));
+                            handle_agent_failure(
+                                &mut executor,
+                                &task_index,
+                                &mut state,
+                                &paths,
+                                &tui,
+                                sink,
+                                config,
+                                message,
+                            );
                         } else {
                             apply_agent_completion(&mut executor, &plan_id, &tui);
                         }
@@ -956,8 +979,16 @@ pub async fn run(
                                     },
                                 ),
                             );
-                            tui.error(&message);
-                            let _ = executor.apply_event(&plan_id, &ExecutorEvent::Fatal(message));
+                            handle_agent_failure(
+                                &mut executor,
+                                &task_index,
+                                &mut state,
+                                &paths,
+                                &tui,
+                                sink,
+                                config,
+                                message,
+                            );
                         }
                     }
 
@@ -1254,13 +1285,60 @@ pub async fn run(
                     }
                 }
 
-                if completion.passed {
+                if completion.passed && completion.task_id.is_empty() {
+                    // The post-implementation gate is plan-level: it proves the
+                    // current aggregate worktree, not an individual task. Do not
+                    // count it as another completed task.
+                    state.clear_retry_backoff(&completion.plan_id);
+                    match executor.apply_event(&completion.plan_id, &ExecutorEvent::GatePassed) {
+                        Ok(phase) => {
+                            info!(
+                                plan_id = %completion.plan_id,
+                                phase = ?phase,
+                                "plan gate passed — running plan verify"
+                            );
+                        }
+                        Err(err) => {
+                            error!(
+                                plan_id = %completion.plan_id,
+                                error = %err,
+                                "plan gate transition failed"
+                            );
+                            let _ = executor.apply_event(
+                                &completion.plan_id,
+                                &ExecutorEvent::Fatal(format!("plan gate transition failed: {err}")),
+                            );
+                        }
+                    }
+
+                    // Queue dream consolidation only when this run actually
+                    // spawned agents. Verification-only runs do not create new
+                    // agent episodes, and blocking after run.completed on old
+                    // episodes makes no-op reruns look stuck.
+                    if state.total_agent_calls > 0 {
+                        dream_completion_pending = true;
+                        debug!("dream consolidation queued after plan gate completion");
+                    } else {
+                        debug!("dream consolidation skipped after verification-only plan gate");
+                    }
+                } else if completion.passed {
                     // Mark this task completed in the DAG and check for more.
                     state.clear_retry_backoff(&completion.plan_id);
-                    state.mark_task_completed(&completion.plan_id, &completion.task_id);
+                    let newly_completed =
+                        state.mark_task_completed(&completion.plan_id, &completion.task_id);
+                    let task_declared_files = task_index
+                        .get(completion.plan_id.as_str())
+                        .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                        .map(|task| task.files.clone())
+                        .unwrap_or_default();
                     // Snapshot which files this task produced so downstream
                     // tasks can be told what their dependencies already created.
-                    let output_diffs = git_diff_entries_since_task_start(&config.workdir);
+                    let output_diffs = git_diff_entries_since_task_start(&config.workdir)
+                        .into_iter()
+                        .filter(|entry| {
+                            task_path_allowed_by_declared_files(&entry.path, &task_declared_files)
+                        })
+                        .collect::<Vec<_>>();
                     let output_files = output_diffs
                         .iter()
                         .map(|entry| entry.path.clone())
@@ -1270,7 +1348,9 @@ pub async fn run(
                         &completion.task_id,
                         output_files,
                     );
-                    state.task_completed();
+                    if newly_completed {
+                        state.task_completed();
+                    }
                     // Record task completion in the run ledger.
                     if let Some(ref mut ledger) = run_ledger {
                         let now_ms = std::time::SystemTime::now()
@@ -1327,12 +1407,17 @@ pub async fn run(
                         &config.workdir,
                         &completion.plan_id,
                         &completion.task_id,
+                        &task_declared_files,
                     );
 
                     let total_task_ms = state.task_elapsed_ms();
                     let dispatch_ms = state.last_dispatch_ms;
                     let gate_ms = completion.duration_ms;
-                    let agent_ms = total_task_ms.saturating_sub(dispatch_ms + gate_ms);
+                    let agent_ms = if state.task_agent_calls == 0 {
+                        0
+                    } else {
+                        total_task_ms.saturating_sub(dispatch_ms + gate_ms)
+                    };
 
                     sink.diff_block(&completion.plan_id, &completion.task_id, &output_diffs);
                     sink.task_completed(
@@ -1351,6 +1436,7 @@ pub async fn run(
                     );
 
                     let completed = state.plan_completed_tasks(&completion.plan_id);
+                    let failed = state.plan_failed_tasks(&completion.plan_id);
                     let completed_plans = completed_plan_ids(&executor, &task_index);
                     let has_more = task_index
                         .get(completion.plan_id.as_str())
@@ -1359,6 +1445,8 @@ pub async fn run(
                                 .values()
                                 .any(|t| {
                                     !completed.contains(&t.id)
+                                        && !failed.contains(&t.id)
+                                        && !task_status_is_terminal(&t.status)
                                         && t.is_ready_with_plan_deps(completed, &completed_plans)
                                 })
                         })
@@ -1372,20 +1460,29 @@ pub async fn run(
                             ps.current_phase = PlanPhase::Implementing;
                         }
                         let remaining = task_index.get(completion.plan_id.as_str())
-                            .map(|t| t.len().saturating_sub(completed.len())).unwrap_or(0);
+                            .map(|t| t.len().saturating_sub(completed.len() + failed.len())).unwrap_or(0);
                         info!(
                             plan_id = %completion.plan_id,
                             remaining,
                             "task passed — advancing to next task"
                         );
                     } else {
-                        // All tasks done — let the plan proceed to completion.
+                        // All tasks done — run the plan-level verify chain.
                         let _ = executor.apply_event(&completion.plan_id, &ExecutorEvent::GatePassed);
-                        info!(plan_id = %completion.plan_id, "all tasks passed — plan completing");
+                        info!(plan_id = %completion.plan_id, "all tasks passed — running plan verify");
 
-                        // Queue dream consolidation for the post-run drain.
-                        dream_completion_pending = true;
-                        debug!("dream consolidation queued after plan completion");
+                        // Queue dream consolidation only when this run actually
+                        // spawned agents. Verification-only runs do not create
+                        // new agent episodes, and blocking after run.completed
+                        // on old episodes makes no-op reruns look stuck.
+                        if state.total_agent_calls > 0 {
+                            dream_completion_pending = true;
+                            debug!("dream consolidation queued after plan completion");
+                        } else {
+                            debug!(
+                                "dream consolidation skipped after verification-only plan completion"
+                            );
+                        }
                     }
                 } else {
                     let failure_kind = completion
@@ -1591,11 +1688,51 @@ pub async fn run(
                             false,
                             &reason,
                         );
-                        let _ = executor.apply_event(
-                            &completion.plan_id,
-                            &ExecutorEvent::Fatal(reason.clone()),
-                        );
-                        tui.error(&reason);
+
+                        // Track this task as failed so dependents are skipped.
+                        state.mark_task_failed(&completion.plan_id, &completion.task_id);
+
+                        // Check if there are still runnable tasks in this plan
+                        // (tasks whose deps don't include the failed task).
+                        let completed = state.plan_completed_tasks(&completion.plan_id);
+                        let failed = state.plan_failed_tasks(&completion.plan_id);
+                        let completed_plans = completed_plan_ids(&executor, &task_index);
+                        let has_runnable = task_index
+                            .get(completion.plan_id.as_str())
+                            .map(|tasks| {
+                                tasks.values().any(|t| {
+                                    !completed.contains(&t.id)
+                                        && !failed.contains(&t.id)
+                                        && !task_status_is_terminal(&t.status)
+                                        && t.is_ready_with_plan_deps(completed, &completed_plans)
+                                })
+                            })
+                            .unwrap_or(false);
+
+                        if has_runnable {
+                            // Keep the plan in Implementing so the next tick
+                            // picks up the next independent task.
+                            if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                                ps.gate_results.clear();
+                                ps.current_phase = PlanPhase::Implementing;
+                            }
+                            warn!(
+                                plan_id = %completion.plan_id,
+                                task_id = %completion.task_id,
+                                "task failed — skipping, other tasks remain"
+                            );
+                            tui.error(&format!(
+                                "task {} failed (skipped) — continuing with remaining tasks",
+                                completion.task_id
+                            ));
+                        } else {
+                            // No more runnable tasks — fail the plan.
+                            let _ = executor.apply_event(
+                                &completion.plan_id,
+                                &ExecutorEvent::Fatal(reason.clone()),
+                            );
+                            tui.error(&reason);
+                        }
                     }
                 }
 
@@ -1632,6 +1769,7 @@ pub async fn run(
                         sink,
                         tui: &tui,
                         state: &mut state,
+                        active_agent_tasks: &mut active_agent_tasks,
                         agent_handles: &mut agent_handles,
                         agent_tx: &agent_tx,
                         gate_tx: &gate_tx,
@@ -1646,34 +1784,35 @@ pub async fn run(
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
-                    dispatch_action(&action, &mut ctx).await;
+                    let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
-                    if matches!(&action, ExecutorAction::SpawnAgent { .. }) {
+                    if let ActionDispatchOutcome::AgentStarted { plan_id, task_id } = dispatch_outcome {
                         ctx.state.last_dispatch_ms = dispatch_ms;
+                        let action_label = format!("{plan_id}/{task_id}");
                         info!(action = %action_label, dispatch_ms, "agent action dispatched");
                         // Record task start in the run ledger.
                         if let Some(ref mut ledger) = run_ledger {
-                            if let ExecutorAction::SpawnAgent { plan_id, task, .. } = &action {
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
-                                ledger.record_phase_transition(
-                                    roko_runtime::Phase::Pending,
-                                    roko_runtime::Phase::Implementing,
-                                    now_ms,
-                                );
-                                append_ledger_entry(
-                                    &paths.run_ledger_jsonl,
-                                    "task_started",
-                                    &serde_json::json!({
-                                        "plan_id": plan_id,
-                                        "task_id": task,
-                                        "timestamp_ms": now_ms,
-                                    }),
-                                );
-                            }
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            ledger.record_phase_transition(
+                                roko_runtime::Phase::Pending,
+                                roko_runtime::Phase::Implementing,
+                                now_ms,
+                            );
+                            append_ledger_entry(
+                                &paths.run_ledger_jsonl,
+                                "task_started",
+                                &serde_json::json!({
+                                    "plan_id": plan_id,
+                                    "task_id": task_id,
+                                    "timestamp_ms": now_ms,
+                                }),
+                            );
                         }
+                    } else if matches!(&action, ExecutorAction::SpawnAgent { .. }) {
+                        debug!(action = %action_label, dispatch_ms, "agent action suppressed or delayed");
                     } else if dispatch_ms > 50 {
                         info!(action = %action_label, dispatch_ms, "action dispatched (slow)");
                     } else {
@@ -1800,9 +1939,12 @@ pub async fn run(
 
     let report = build_report(&executor, &plans, &state);
 
-    // Shut down the learning subscriber background task.
-    learning_subscriber_handle.abort();
-    let _ = learning_subscriber_handle.await;
+    // Shut down the learning subscriber after the event bus is closed so
+    // pending turn events are flushed to `.roko/learn/efficiency.jsonl`.
+    drop(learning_event_bus);
+    if let Err(err) = learning_subscriber_handle.await {
+        warn!(error = %err, "learning subscriber task failed during shutdown");
+    }
 
     // Shutdown Phase 0 subsystems and persist learned state.
     shutdown_subsystems(config, &tui).await;
@@ -1858,6 +2000,316 @@ fn apply_agent_completion(executor: &mut ParallelExecutor, plan_id: &str, tui: &
     }
 }
 
+fn no_ready_spawn_event(phase_kind: PhaseKind, requested_task: &str) -> Option<ExecutorEvent> {
+    match phase_kind {
+        PhaseKind::Implementing => Some(ExecutorEvent::ImplementationDone),
+        PhaseKind::Complete | PhaseKind::Done | PhaseKind::Failed | PhaseKind::Skipped => None,
+        _ => Some(ExecutorEvent::Fatal(format!(
+            "agent spawn requested for {requested_task:?} while plan is in {phase_kind:?}, but no runnable task was available"
+        ))),
+    }
+}
+
+fn turn_exceeds_budget(total_cost_usd: Option<f64>, max_turn_usd: f64) -> bool {
+    max_turn_usd > 0.0 && total_cost_usd.is_some_and(|cost| cost > max_turn_usd)
+}
+
+fn agent_failure_message(agent_output: &str) -> Option<String> {
+    agent_output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && (line.contains("API Error")
+                    || line.to_ascii_lowercase().contains("error")
+                    || line.to_ascii_lowercase().contains("failed"))
+        })
+        .map(ToOwned::to_owned)
+}
+
+fn build_agent_retry_context(message: &str, agent_output: &str, attempt_num: u32) -> String {
+    let agent_excerpt = if agent_output.len() > 3000 {
+        &agent_output[..3000]
+    } else {
+        agent_output
+    };
+    format!(
+        "## IMPORTANT: Your previous agent turn failed\n\n\
+         Attempt {attempt_num} ended with an agent/runtime error.\n\n\
+         ### Error\n```\n{message}\n```\n\n\
+         ### Previous agent output\n```\n{agent_excerpt}\n```"
+    )
+}
+
+fn handle_agent_failure(
+    executor: &mut ParallelExecutor,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    state: &mut RunState,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    sink: &dyn RunOutputSink,
+    config: &RunConfig,
+    message: String,
+) {
+    let plan_id = state.plan_id.clone();
+    let task_id = state.current_task.clone();
+    if plan_id.is_empty() || task_id.is_empty() {
+        tui.error(&message);
+        return;
+    }
+
+    let failure_text = format!("{message}\n{}", state.agent_output);
+    let failure_kind = RunnerFailureKind::from_output(&failure_text);
+    let retry_budget = config.max_retries;
+    let can_retry = executor
+        .plan_state(&plan_id)
+        .map(|ps| ps.iteration <= retry_budget && failure_kind.is_retryable())
+        .unwrap_or(false);
+    let attempt = state.current_attempt_ref();
+    let run_id = state.run_id().to_string();
+
+    if can_retry {
+        let mut next_attempt = None;
+        let mut cooldown_ms = 0;
+        if let Some(ps) = executor.plan_state_mut(&plan_id) {
+            let failed_attempt = ps.iteration;
+            ps.reset_for_retry();
+            ps.current_phase = PlanPhase::Implementing;
+            state.set_retry_backoff(&plan_id, failure_kind, failed_attempt);
+            state.set_iteration(&plan_id, &task_id, ps.iteration);
+            next_attempt = Some(ps.iteration);
+            cooldown_ms = state
+                .retry_cooldown_remaining(&plan_id)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+        }
+
+        let retry_attempt = next_attempt.unwrap_or_else(|| {
+            state
+                .iteration_for(&plan_id, &task_id)
+                .saturating_add(1)
+                .max(1)
+        });
+        state.set_replan_context(
+            &plan_id,
+            &task_id,
+            build_agent_retry_context(&message, &state.agent_output, retry_attempt),
+        );
+        emit_runner_event(
+            paths,
+            state,
+            tui,
+            config,
+            RunnerEvent::retry_decision(
+                &run_id,
+                attempt,
+                RetryAction::RetryAfterBackoff,
+                failure_kind,
+                next_attempt,
+                cooldown_ms,
+                "agent turn failed and retry policy allows another attempt".to_string(),
+            ),
+        );
+        warn!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            failure_kind = ?failure_kind,
+            cooldown_ms,
+            "agent turn failed — retrying task after backoff"
+        );
+        tui.error(&format!(
+            "agent turn failed for {task_id}; retrying after {}s",
+            cooldown_ms / 1000
+        ));
+        return;
+    }
+
+    state.task_failed();
+    let reason = if failure_kind.is_retryable() {
+        format!("agent turn failed and retries exhausted: {message}")
+    } else {
+        format!("agent turn failed with non-retryable {failure_kind:?} failure: {message}")
+    };
+    state.record_task_failure(&plan_id, &task_id, &reason);
+    state.mark_task_failed(&plan_id, &task_id);
+    sink.task_failed(&plan_id, &task_id, &reason);
+    tui.task_completed(&plan_id, &task_id, "failed");
+
+    append_ledger_entry(
+        &paths.run_ledger_jsonl,
+        "task_failed",
+        &serde_json::json!({
+            "plan_id": &plan_id,
+            "task_id": &task_id,
+            "passed": false,
+            "reason": &reason,
+            "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+        }),
+    );
+
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::retry_decision(
+            &run_id,
+            attempt.clone(),
+            if failure_kind.is_retryable() {
+                RetryAction::Exhausted
+            } else {
+                RetryAction::NotRetryable
+            },
+            failure_kind,
+            None,
+            0,
+            reason.clone(),
+        ),
+    );
+    let agent_model = state.agent_model.clone();
+    let agent_provider = state.agent_provider.clone();
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt,
+            if failure_kind.is_retryable() {
+                TaskAttemptOutcome::Exhausted
+            } else {
+                TaskAttemptOutcome::Failed
+            },
+            Some(failure_kind),
+            state.task_elapsed_ms(),
+            agent_model,
+            agent_provider,
+        ),
+    );
+    record_daimon_task_outcome(
+        config,
+        state.current_daimon_strategy,
+        &plan_id,
+        &task_id,
+        false,
+        &reason,
+    );
+
+    let completed = state.plan_completed_tasks(&plan_id);
+    let failed = state.plan_failed_tasks(&plan_id);
+    let completed_plans = completed_plan_ids(executor, task_index);
+    let has_runnable = task_index
+        .get(plan_id.as_str())
+        .map(|tasks| {
+            tasks.values().any(|t| {
+                !completed.contains(&t.id)
+                    && !failed.contains(&t.id)
+                    && !task_status_is_terminal(&t.status)
+                    && t.is_ready_with_plan_deps(completed, &completed_plans)
+            })
+        })
+        .unwrap_or(false);
+
+    if has_runnable {
+        if let Some(ps) = executor.plan_state_mut(&plan_id) {
+            ps.gate_results.clear();
+            ps.current_phase = PlanPhase::Implementing;
+        }
+        warn!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            "agent failed task — continuing with remaining independent tasks"
+        );
+        tui.error(&format!(
+            "task {task_id} failed after agent error — continuing with remaining tasks"
+        ));
+    } else if let Err(err) = executor.apply_event(&plan_id, &ExecutorEvent::Fatal(reason.clone())) {
+        error!(plan_id = %plan_id, error = %err, "failed to apply Fatal event after agent failure");
+        state.force_plan_terminal(&plan_id);
+        tui.error(&reason);
+    } else {
+        tui.error(&reason);
+    }
+}
+
+fn complete_plan_after_successful_verify(
+    plan_id: &str,
+    executor: &mut ParallelExecutor,
+) -> Result<PlanPhase, TransitionError> {
+    let mut phase = match executor.plan_state(plan_id) {
+        Some(state) if matches!(state.current_phase, PlanPhase::Complete) => {
+            return Ok(PlanPhase::Complete);
+        }
+        Some(state) if state.current_phase.kind() == PhaseKind::Verifying => {
+            executor.apply_event(plan_id, &ExecutorEvent::VerifyPassed)?
+        }
+        Some(state) if state.current_phase.kind() == PhaseKind::Reviewing => {
+            state.current_phase.clone()
+        }
+        Some(state) if state.current_phase.kind() == PhaseKind::DocRevision => {
+            state.current_phase.clone()
+        }
+        Some(state) if state.current_phase.kind() == PhaseKind::Merging => {
+            state.current_phase.clone()
+        }
+        Some(state) => {
+            let from = state.current_phase.kind();
+            return Err(TransitionError {
+                from,
+                to: PhaseKind::Complete,
+                reason: format!("cannot complete verified plan from unexpected phase {from:?}"),
+            });
+        }
+        None => {
+            return Err(TransitionError {
+                from: PhaseKind::Queued,
+                to: PhaseKind::Complete,
+                reason: format!("plan '{plan_id}' not found"),
+            });
+        }
+    };
+
+    if phase.kind() == PhaseKind::Reviewing {
+        phase = executor.apply_event(plan_id, &ExecutorEvent::ReviewApproved)?;
+    }
+    if phase.kind() == PhaseKind::DocRevision {
+        phase = executor.apply_event(plan_id, &ExecutorEvent::DocRevisionDone)?;
+    }
+    if phase.kind() == PhaseKind::Merging {
+        phase = executor.apply_event(plan_id, &ExecutorEvent::MergeSucceeded)?;
+    }
+
+    Ok(phase)
+}
+
+fn complete_verified_plan_success(
+    plan_id: &str,
+    executor: &mut ParallelExecutor,
+    state: &mut RunState,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> Result<PlanPhase, TransitionError> {
+    let was_complete = executor
+        .plan_state(plan_id)
+        .is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete));
+    let phase = complete_plan_after_successful_verify(plan_id, executor)?;
+    if !was_complete {
+        tui.plan_completed(plan_id, true);
+        let run_id = state.run_id().to_string();
+        emit_runner_event(
+            paths,
+            state,
+            tui,
+            config,
+            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
+        );
+    }
+    Ok(phase)
+}
+
 fn handle_plan_verify_completion(
     completion: &GateCompletion,
     executor: &mut ParallelExecutor,
@@ -1871,16 +2323,29 @@ fn handle_plan_verify_completion(
 ) {
     if completion.passed {
         state.clear_retry_backoff(&completion.plan_id);
-        match executor.apply_event(&completion.plan_id, &ExecutorEvent::VerifyPassed) {
+        match complete_verified_plan_success(
+            &completion.plan_id,
+            executor,
+            state,
+            paths,
+            tui,
+            config,
+        ) {
             Ok(phase) => {
                 tui.phase_transition(&completion.plan_id, "verifying", &format!("{phase:?}"));
-                info!(plan_id = %completion.plan_id, phase = ?phase, "plan verify passed");
+                info!(plan_id = %completion.plan_id, phase = ?phase, "plan verify passed — plan complete");
             }
-            Err(e) => warn!(
-                plan_id = %completion.plan_id,
-                err = %e,
-                "transition error after plan verify pass"
-            ),
+            Err(e) => {
+                warn!(
+                    plan_id = %completion.plan_id,
+                    err = %e,
+                    "transition error while completing plan after verify pass"
+                );
+                let _ = executor.apply_event(
+                    &completion.plan_id,
+                    &ExecutorEvent::Fatal(format!("plan verify transition failed: {e}")),
+                );
+            }
         }
     } else {
         let failure_kind = completion
@@ -1937,7 +2402,15 @@ fn handle_plan_verify_completion(
         }
     }
 
-    save_snapshot(config, executor, paths, state, merge_queue, gate_thresholds, writer);
+    save_snapshot(
+        config,
+        executor,
+        paths,
+        state,
+        merge_queue,
+        gate_thresholds,
+        writer,
+    );
 }
 
 fn merge_branch_from_task_id(task_id: &str) -> Option<String> {
@@ -2049,7 +2522,15 @@ fn handle_merge_completion(
     {
         info!(plan_id = %next_plan_id, "started next queued merge");
     }
-    save_snapshot(config, executor, paths, state, merge_queue, gate_thresholds, writer);
+    save_snapshot(
+        config,
+        executor,
+        paths,
+        state,
+        merge_queue,
+        gate_thresholds,
+        writer,
+    );
 }
 
 fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState) {
@@ -2070,6 +2551,65 @@ fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState
     if let Err(err) = persist::append_jsonl(&paths.events_jsonl, &payload) {
         warn!(error = %err, "failed to append runner event");
     }
+}
+
+fn publish_learning_agent_event(
+    bus: &roko_learn::events::EventBus,
+    event: &AgentEvent,
+    state: &RunState,
+) {
+    match event {
+        AgentEvent::Started {
+            provider, model, ..
+        } => {
+            bus.publish(roko_learn::events::AgentEvent::TurnStarted {
+                task_id: learning_task_id(state),
+                model: model.clone(),
+                provider: provider.clone(),
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        AgentEvent::TurnCompleted {
+            total_cost_usd,
+            num_turns,
+            is_error,
+            ..
+        } => {
+            let finish_reason = if *is_error {
+                roko_agent::chat_types::FinishReason::Error("agent reported an error".to_string())
+            } else {
+                roko_agent::chat_types::FinishReason::Stop
+            };
+            bus.publish(roko_learn::events::AgentEvent::TurnCompleted {
+                turn: num_turns.unwrap_or(1),
+                usage: roko_agent::Usage {
+                    input_tokens: saturating_u32(state.tokens_in),
+                    output_tokens: saturating_u32(state.tokens_out),
+                    cache_read_tokens: saturating_u32(state.cache_read_tokens),
+                    cache_create_tokens: saturating_u32(state.cache_write_tokens),
+                    cost_usd: total_cost_usd.unwrap_or(state.cost_usd) as f32,
+                    wall_ms: state.task_elapsed_ms(),
+                },
+                tool_call_count: 0,
+                gate_passed: None,
+                finish_reason,
+            });
+        }
+        _ => {}
+    }
+}
+
+fn learning_task_id(state: &RunState) -> String {
+    if state.plan_id.is_empty() {
+        state.current_task.clone()
+    } else {
+        let agent_call = state.total_agent_calls.max(1);
+        format!("{}:{}:{}", state.plan_id, state.current_task, agent_call)
+    }
+}
+
+fn saturating_u32(value: u64) -> u32 {
+    value.min(u64::from(u32::MAX)) as u32
 }
 
 fn agent_event_json(event: &AgentEvent) -> serde_json::Value {
@@ -2691,6 +3231,10 @@ fn runner_event_to_feedback(
             provider,
             ..
         } => {
+            if model.trim().is_empty() {
+                return None;
+            }
+
             let succeeded = matches!(outcome, TaskAttemptOutcome::Passed);
             let agent_outcome = AgentOutcome {
                 task_id: attempt.task_id.clone(),
@@ -2939,6 +3483,53 @@ fn restore_state_from_resume_snapshot(
     state.tasks_completed = state.completed_tasks.values().map(Vec::len).sum::<usize>();
 }
 
+fn seed_completed_tasks_from_plan_status(state: &mut RunState, plans: &[Plan]) {
+    for plan in plans {
+        for task in &plan.tasks.tasks {
+            if task_status_is_terminal(&task.status) {
+                state.mark_task_completed(&plan.id, &task.id);
+            }
+        }
+    }
+
+    state.tasks_completed = state.completed_tasks.values().map(Vec::len).sum::<usize>();
+    if state.tasks_completed > 0 {
+        info!(
+            tasks_completed = state.tasks_completed,
+            "seeded completed tasks from plan status"
+        );
+    }
+}
+
+fn initialize_terminal_plan_phases(
+    executor: &mut ParallelExecutor,
+    state: &RunState,
+    plans: &[Plan],
+) {
+    for plan in plans {
+        if plan.tasks.tasks.is_empty() {
+            continue;
+        }
+        let completed = state.plan_completed_tasks(&plan.id);
+        let all_tasks_terminal = plan
+            .tasks
+            .tasks
+            .iter()
+            .all(|task| completed.contains(&task.id) || task_status_is_terminal(&task.status));
+
+        if all_tasks_terminal
+            && let Some(plan_state) = executor.plan_state_mut(&plan.id)
+            && !plan_state.is_terminal()
+        {
+            plan_state.current_phase = PlanPhase::Gating;
+            info!(
+                plan_id = %plan.id,
+                "initialized completed plan at gating phase"
+            );
+        }
+    }
+}
+
 // ─── Resume ─────────────────────────────────────────────────────────────
 
 struct ResumeLoad {
@@ -2950,27 +3541,31 @@ struct ResumeLoad {
 /// Load a resumable executor snapshot when compatible, otherwise start fresh
 /// and emit a structured resume marker explaining the decision.
 fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[String]) -> ResumeLoad {
-    // Try the orchestrator checkpoint first (returns None on NotFound),
-    // then fall back to legacy executor.json. No separate existence checks.
     let (snapshot, merge_queue, snapshot_path) = match load_orchestrator_checkpoint(paths) {
         Ok(Some((snapshot, merge_queue))) => (
             snapshot,
             merge_queue,
             paths.orchestrator_json.display().to_string(),
         ),
-        Ok(None) => {
-            // No orchestrator snapshot — try legacy executor.json
-            let snapshot_path = paths.executor_json.display().to_string();
-            let json = match std::fs::read_to_string(&paths.executor_json) {
-                Ok(j) => j,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Neither snapshot exists — fresh start
+        Ok(None) => match load_unified_state_checkpoint(paths) {
+            Ok(Some((snapshot, merge_queue))) => (
+                snapshot,
+                merge_queue,
+                paths.state_snapshot_json.display().to_string(),
+            ),
+            Ok(None) => match load_legacy_executor_checkpoint(paths) {
+                Ok(Some(snapshot)) => (
+                    snapshot,
+                    MergeQueue::new(),
+                    paths.executor_json.display().to_string(),
+                ),
+                Ok(None) => {
                     return ResumeLoad {
                         executor: ParallelExecutor::new(config.clone()),
                         merge_queue: MergeQueue::new(),
                         marker: ResumeMarker {
                             outcome: ResumeOutcome::Fresh,
-                            snapshot_path,
+                            snapshot_path: paths.state_snapshot_json.display().to_string(),
                             snapshot_plan_ids: Vec::new(),
                             current_plan_ids: plan_ids.to_vec(),
                             message: Some("no executor snapshot found".to_string()),
@@ -2978,52 +3573,77 @@ fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[Stri
                     };
                 }
                 Err(e) => {
-                    warn!(err = %e, "failed to read executor snapshot");
-                    return ResumeLoad {
-                        executor: ParallelExecutor::new(config.clone()),
-                        merge_queue: MergeQueue::new(),
-                        marker: ResumeMarker {
-                            outcome: ResumeOutcome::ReadFailed,
-                            snapshot_path,
-                            snapshot_plan_ids: Vec::new(),
-                            current_plan_ids: plan_ids.to_vec(),
-                            message: Some(format!("failed to read executor snapshot: {e}")),
-                        },
-                    };
+                    let snapshot_path = paths.executor_json.display().to_string();
+                    warn!(err = %e, "failed to load legacy executor snapshot");
+                    return fresh_after_snapshot_error(
+                        Some((snapshot_path, ResumeOutcome::Corrupt, e)),
+                        config,
+                        plan_ids,
+                    );
                 }
-            };
-            match ExecutorSnapshot::from_json(&json) {
-                Ok(snapshot) => (snapshot, MergeQueue::new(), snapshot_path),
-                Err(e) => {
-                    warn!(err = %e, "corrupt executor snapshot — starting fresh");
-                    return ResumeLoad {
-                        executor: ParallelExecutor::new(config.clone()),
-                        merge_queue: MergeQueue::new(),
-                        marker: ResumeMarker {
-                            outcome: ResumeOutcome::Corrupt,
-                            snapshot_path,
-                            snapshot_plan_ids: Vec::new(),
-                            current_plan_ids: plan_ids.to_vec(),
-                            message: Some(format!("corrupt executor snapshot: {e}")),
-                        },
-                    };
+            },
+            Err(e) => {
+                let snapshot_path = paths.state_snapshot_json.display().to_string();
+                warn!(err = %e, "failed to load unified state snapshot");
+                let first_error = (snapshot_path, ResumeOutcome::Corrupt, e);
+                match load_legacy_executor_checkpoint(paths) {
+                    Ok(Some(snapshot)) => (
+                        snapshot,
+                        MergeQueue::new(),
+                        paths.executor_json.display().to_string(),
+                    ),
+                    Ok(None) => {
+                        return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                    }
+                    Err(e) => {
+                        warn!(err = %e, "failed to load legacy executor snapshot");
+                        return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                    }
                 }
             }
-        }
+        },
         Err(e) => {
             let snapshot_path = paths.orchestrator_json.display().to_string();
-            warn!(err = %e, "corrupt orchestrator snapshot — starting fresh");
-            return ResumeLoad {
-                executor: ParallelExecutor::new(config.clone()),
-                merge_queue: MergeQueue::new(),
-                marker: ResumeMarker {
-                    outcome: ResumeOutcome::Corrupt,
-                    snapshot_path,
-                    snapshot_plan_ids: Vec::new(),
-                    current_plan_ids: plan_ids.to_vec(),
-                    message: Some(format!("corrupt orchestrator snapshot: {e}")),
+            warn!(err = %e, "failed to load orchestrator snapshot");
+            let first_error = (snapshot_path, ResumeOutcome::Corrupt, e);
+            match load_unified_state_checkpoint(paths) {
+                Ok(Some((snapshot, merge_queue))) => (
+                    snapshot,
+                    merge_queue,
+                    paths.state_snapshot_json.display().to_string(),
+                ),
+                Ok(None) => match load_legacy_executor_checkpoint(paths) {
+                    Ok(Some(snapshot)) => (
+                        snapshot,
+                        MergeQueue::new(),
+                        paths.executor_json.display().to_string(),
+                    ),
+                    Ok(None) => {
+                        return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                    }
+                    Err(e) => {
+                        warn!(err = %e, "failed to load legacy executor snapshot");
+                        return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                    }
                 },
-            };
+                Err(e) => {
+                    warn!(err = %e, "failed to load unified state snapshot");
+                    match load_legacy_executor_checkpoint(paths) {
+                        Ok(Some(snapshot)) => (
+                            snapshot,
+                            MergeQueue::new(),
+                            paths.executor_json.display().to_string(),
+                        ),
+                        Ok(None) => {
+                            return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                        }
+                        Err(e) => {
+                            warn!(err = %e, "failed to load legacy executor snapshot");
+                            return fresh_after_snapshot_error(Some(first_error), config, plan_ids);
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -3055,7 +3675,7 @@ fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[Stri
     info!(
         path = %snapshot_path,
         plans = ?snap_plan_ids,
-        "resuming from orchestrator snapshot"
+        "resuming from executor snapshot"
     );
     let mut executor = ParallelExecutor::from_snapshot(config.clone(), snapshot.clone());
     let recovery = RecoveryEngine::new().recover_from_executor_snapshot(snapshot);
@@ -3091,6 +3711,31 @@ fn load_executor(paths: &PersistPaths, config: &ExecutorConfig, plan_ids: &[Stri
     }
 }
 
+fn fresh_after_snapshot_error(
+    first_error: Option<(String, ResumeOutcome, String)>,
+    config: &ExecutorConfig,
+    plan_ids: &[String],
+) -> ResumeLoad {
+    let (snapshot_path, outcome, message) = first_error.unwrap_or_else(|| {
+        (
+            String::new(),
+            ResumeOutcome::ReadFailed,
+            "failed to load executor snapshot".to_string(),
+        )
+    });
+    ResumeLoad {
+        executor: ParallelExecutor::new(config.clone()),
+        merge_queue: MergeQueue::new(),
+        marker: ResumeMarker {
+            outcome,
+            snapshot_path,
+            snapshot_plan_ids: Vec::new(),
+            current_plan_ids: plan_ids.to_vec(),
+            message: Some(message),
+        },
+    }
+}
+
 fn load_orchestrator_checkpoint(
     paths: &PersistPaths,
 ) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
@@ -3106,6 +3751,52 @@ fn load_orchestrator_checkpoint(
         .map(MergeQueue::from_snapshot)
         .unwrap_or_else(MergeQueue::new);
     Ok(Some((snapshot.executor, merge_queue)))
+}
+
+fn load_unified_state_checkpoint(
+    paths: &PersistPaths,
+) -> Result<Option<(ExecutorSnapshot, MergeQueue)>, String> {
+    let unified = persist::load_state_snapshot(paths)
+        .map_err(|err| format!("failed to read unified state snapshot: {err}"))?;
+    let Some(unified) = unified else {
+        return Ok(None);
+    };
+
+    if !unified.orchestrator_json.trim().is_empty() {
+        match OrchestratorSnapshot::from_json(&unified.orchestrator_json) {
+            Ok(snapshot) => {
+                let merge_queue = snapshot
+                    .merge_queue
+                    .map(MergeQueue::from_snapshot)
+                    .unwrap_or_else(MergeQueue::new);
+                return Ok(Some((snapshot.executor, merge_queue)));
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to parse orchestrator_json from unified state snapshot; trying executor_json"
+                );
+            }
+        }
+    }
+
+    let snapshot = ExecutorSnapshot::from_json(&unified.executor_json).map_err(|err| {
+        format!("failed to parse executor_json from unified state snapshot: {err}")
+    })?;
+    Ok(Some((snapshot, MergeQueue::new())))
+}
+
+fn load_legacy_executor_checkpoint(
+    paths: &PersistPaths,
+) -> Result<Option<ExecutorSnapshot>, String> {
+    let json = match std::fs::read_to_string(&paths.executor_json) {
+        Ok(json) => json,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("failed to read executor snapshot: {e}")),
+    };
+    ExecutorSnapshot::from_json(&json)
+        .map(Some)
+        .map_err(|err| format!("corrupt executor snapshot: {err}"))
 }
 
 // ─── Action Dispatcher ──────────────────────────────────────────────────
@@ -3171,7 +3862,22 @@ fn gate_plan_complexity_for_task(task_def: Option<&TaskDef>) -> PlanComplexity {
     }
 }
 
-async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
+fn task_role_is_read_only(task_def: Option<&TaskDef>) -> bool {
+    task_def
+        .and_then(|task| task.role.as_deref())
+        .map_or(false, |role| {
+            matches!(role, "researcher" | "strategist" | "quick-reviewer")
+        })
+}
+
+fn task_should_preflight_verify(task_def: &TaskDef, attempt_num: u32) -> bool {
+    attempt_num == 1 && !task_def.verify.is_empty() && !task_role_is_read_only(Some(task_def))
+}
+
+async fn dispatch_action(
+    action: &ExecutorAction,
+    ctx: &mut RunContext<'_>,
+) -> ActionDispatchOutcome {
     match action {
         ExecutorAction::DispatchPlan { plan_id } => {
             info!(plan_id = %plan_id, "dispatching plan");
@@ -3179,7 +3885,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
 
             if let Err(e) = ctx.executor.apply_event(plan_id, &ExecutorEvent::Start) {
                 error!(plan_id = %plan_id, err = %e, "failed to start plan");
-                return;
+                return ActionDispatchOutcome::Noop;
             }
             let run_id = ctx.state.run_id().to_string();
             emit_runner_event(
@@ -3205,6 +3911,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 ctx.tui
                     .phase_transition(plan_id, "enriching", "implementing");
             }
+            ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::SpawnAgent { plan_id, task, .. } => {
@@ -3212,6 +3919,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
             // by walking the plan's DAG and finding the first ready task.
             let resolved_task = if task == "next" || task == "fix" || task == "regen-verify" {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
+                let failed = ctx.state.plan_failed_tasks(plan_id);
                 let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
                 let plan_tasks = ctx.task_index.get(plan_id.as_str());
                 plan_tasks.and_then(|tasks| {
@@ -3222,6 +3930,8 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                         .iter()
                         .find(|t| {
                             !completed.contains(&t.id)
+                                && !failed.contains(&t.id)
+                                && !task_status_is_terminal(&t.status)
                                 && t.is_ready_with_plan_deps(completed, &completed_plans)
                         })
                         .map(|t| t.id.clone())
@@ -3242,14 +3952,62 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
             let task_id = match resolved_task {
                 Some(id) => id,
                 None => {
-                    // No more ready tasks — all done for this plan.
-                    info!(plan_id = %plan_id, "no more ready tasks — implementation complete");
-                    let _ = ctx
+                    let Some(phase_kind) = ctx
                         .executor
-                        .apply_event(plan_id, &ExecutorEvent::ImplementationDone);
-                    return;
+                        .plan_state(plan_id)
+                        .map(|state| state.current_phase.kind())
+                    else {
+                        warn!(plan_id = %plan_id, requested_task = %task, "no ready task for unknown plan");
+                        return ActionDispatchOutcome::Noop;
+                    };
+
+                    let Some(event) = no_ready_spawn_event(phase_kind, &task) else {
+                        debug!(
+                            plan_id = %plan_id,
+                            requested_task = %task,
+                            phase = ?phase_kind,
+                            "no ready task for terminal plan"
+                        );
+                        return ActionDispatchOutcome::Noop;
+                    };
+
+                    if matches!(event, ExecutorEvent::ImplementationDone) {
+                        info!(plan_id = %plan_id, "no more ready tasks — implementation complete");
+                    } else {
+                        warn!(
+                            plan_id = %plan_id,
+                            requested_task = %task,
+                            phase = ?phase_kind,
+                            "agent spawn requested with no runnable task"
+                        );
+                    }
+
+                    if let Err(e) = ctx.executor.apply_event(plan_id, &event) {
+                        error!(
+                            plan_id = %plan_id,
+                            requested_task = %task,
+                            phase = ?phase_kind,
+                            err = %e,
+                            "failed to transition after no-ready spawn request"
+                        );
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    if let ExecutorEvent::Fatal(reason) = event {
+                        ctx.tui.error(&reason);
+                    }
+                    return ActionDispatchOutcome::Noop;
                 }
             };
+
+            if let Some(active_task) = ctx.active_agent_tasks.get(plan_id.as_str()) {
+                debug!(
+                    plan_id = %plan_id,
+                    task = %task_id,
+                    active_task = %active_task,
+                    "agent already active for this plan — suppressing duplicate spawn"
+                );
+                return ActionDispatchOutcome::Noop;
+            }
 
             if ctx.agent_handles.contains_key(plan_id.as_str()) {
                 debug!(
@@ -3257,7 +4015,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     task = %task_id,
                     "agent already active for this plan — suppressing duplicate spawn"
                 );
-                return;
+                return ActionDispatchOutcome::Noop;
             }
 
             if let Some(remaining) = ctx.state.retry_cooldown_remaining(plan_id) {
@@ -3267,7 +4025,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     cooldown_ms = remaining.as_millis(),
                     "retry backoff active — delaying spawn"
                 );
-                return;
+                return ActionDispatchOutcome::Noop;
             }
 
             info!(plan_id = %plan_id, task = %task_id, "spawning agent");
@@ -3295,7 +4053,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                         "failed to apply Fatal event -- forcing plan terminal");
                     ctx.state.force_plan_terminal(plan_id);
                 }
-                return;
+                return ActionDispatchOutcome::Noop;
             }
 
             let task_def = match ctx
@@ -3314,7 +4072,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                             "failed to apply Fatal event -- forcing plan terminal");
                         ctx.state.force_plan_terminal(plan_id);
                     }
-                    return;
+                    return ActionDispatchOutcome::Noop;
                 }
             };
 
@@ -3326,10 +4084,142 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 .unwrap_or(1);
             ctx.state.reset_for_task(plan_id, &task_id);
             ctx.state.set_iteration(plan_id, &task_id, attempt_num);
+            let role = task_def.role.as_deref().unwrap_or("implementer");
+
+            if task_should_preflight_verify(task_def, attempt_num) {
+                let gates_config = gates_config_for_run(ctx.config);
+                let has_cargo_toml =
+                    std::fs::metadata(ctx.config.workdir.join("Cargo.toml")).is_ok();
+                if gates_config.has_custom_rungs() || has_cargo_toml {
+                    let pipeline_rung = ctx.config.max_gate_rung;
+                    info!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        rung = pipeline_rung,
+                        "running task verification preflight before agent dispatch"
+                    );
+                    let preflight = gate_dispatch::run_gate_once(
+                        plan_id.clone(),
+                        task_id.clone(),
+                        pipeline_rung,
+                        ctx.config.workdir.clone(),
+                        gates_config,
+                        gate_plan_complexity_for_task(Some(task_def)),
+                        task_def.verify.clone(),
+                        duration_secs(gate_timeout(ctx.config, pipeline_rung)),
+                        task_target_crates(Some(task_def)),
+                    )
+                    .await;
+
+                    if preflight.passed {
+                        info!(
+                            plan_id = %plan_id,
+                            task = %task_id,
+                            duration_ms = preflight.duration_ms,
+                            "task verification already passes -- skipping agent"
+                        );
+                        ctx.sink.task_started(
+                            plan_id,
+                            &task_id,
+                            role,
+                            &task_def.title,
+                            attempt_num,
+                        );
+                        ctx.tui
+                            .task_started(plan_id, &task_id, &task_def.title, "verifying");
+                        let attempt_ref =
+                            TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
+                        let run_id = ctx.state.run_id().to_string();
+                        emit_runner_event(
+                            ctx.paths,
+                            ctx.state,
+                            ctx.tui,
+                            ctx.config,
+                            RunnerEvent::task_attempt_started(
+                                &run_id,
+                                attempt_ref.clone(),
+                                &task_def.title,
+                            ),
+                        );
+
+                        let effect_key = gate_effect_key(
+                            plan_id,
+                            &task_id,
+                            pipeline_rung,
+                            GateCompletionKind::Gate,
+                        );
+                        if !ctx.state.mark_gate_active(effect_key.clone()) {
+                            debug!(
+                                plan_id = %plan_id,
+                                task = %task_id,
+                                rung = pipeline_rung,
+                                "preflight gate result found an already active gate effect"
+                            );
+                        }
+                        emit_runner_event(
+                            ctx.paths,
+                            ctx.state,
+                            ctx.tui,
+                            ctx.config,
+                            RunnerEvent::gate_dispatch_started(
+                                &run_id,
+                                attempt_ref.clone(),
+                                GateCompletionKind::Gate,
+                                pipeline_rung,
+                            ),
+                        );
+
+                        match ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::ImplementationDone)
+                        {
+                            Ok(phase) => {
+                                ctx.tui.phase_transition(plan_id, "implementing", "gating");
+                                info!(
+                                    plan_id = %plan_id,
+                                    task = %task_id,
+                                    phase = ?phase,
+                                    "preflight verification advanced task to gate"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(plan_id = %plan_id, task = %task_id, err = %e,
+                                    "transition error after preflight verification");
+                            }
+                        }
+
+                        let gate_tx = ctx.gate_tx.clone();
+                        let fatal_tx = ctx.fatal_tx.clone();
+                        let plan_id_fatal = plan_id.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = gate_tx.send(preflight).await {
+                                error!(plan_id = %plan_id_fatal, err = %e,
+                                    "CRITICAL: failed to send preflight gate completion -- sending fatal");
+                                let _ = fatal_tx
+                                    .send(AgentEvent::Error {
+                                        message: format!(
+                                            "gate channel closed for plan {plan_id_fatal}: {e}"
+                                        ),
+                                    })
+                                    .await;
+                            }
+                        });
+                        return ActionDispatchOutcome::Handled;
+                    }
+
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        duration_ms = preflight.duration_ms,
+                        output = %preflight.output,
+                        "task verification preflight failed -- dispatching agent"
+                    );
+                }
+            }
+
             ctx.state.total_agent_calls += 1;
             ctx.state.task_agent_calls += 1;
 
-            let role = task_def.role.as_deref().unwrap_or("implementer");
             let role_enum = parse_dispatch_role(role);
             let task_category = neuro_prompt_task_category(role_enum);
 
@@ -3385,7 +4275,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 plan_id: plan_id.clone(),
                 role: role.to_string(),
                 workdir: ctx.config.workdir.clone(),
-                model_hint: Some(ctx.config.model.clone()),
+                model_hint: None,
                 force_backend: ctx.config.cli_model_override.clone(),
                 budget_remaining_usd: if ctx.config.max_plan_usd > 0.0 {
                     (ctx.config.max_plan_usd - ctx.state.plan_cost(plan_id)).max(0.0)
@@ -3414,35 +4304,39 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                         ctx.state.force_plan_terminal(plan_id);
                     }
                     ctx.tui.error(&message);
-                    return;
+                    return ActionDispatchOutcome::Noop;
                 }
             };
             let baseline_model = dispatch_plan.model.slug.clone();
             let baseline_score = knowledge_advice.score_for(&baseline_model);
             let mut selected_source = "dispatcher".to_string();
-            if let Some(best_hint) = knowledge_advice
-                .hints
-                .iter()
-                .filter(|hint| hint.model_slug != baseline_model)
-                .max_by(|left, right| {
-                    left.score
-                        .total_cmp(&right.score)
-                        .then_with(|| left.model_slug.cmp(&right.model_slug))
-                })
-            {
-                if best_hint.score + bias_weight > baseline_score {
-                    debug!(
-                        from = %baseline_model,
-                        to = %best_hint.model_slug,
-                        baseline_score,
-                        hint_score = best_hint.score,
-                        bias_weight = bias_weight,
-                        reason = %best_hint.reason,
-                        supporting_entries = best_hint.supporting_entries,
-                        "knowledge store nudged model selection"
-                    );
-                    dispatch_plan.model = ModelSpec::from_slug(best_hint.model_slug.clone());
-                    selected_source = "dispatcher+knowledge".to_string();
+            let allow_learned_model_modulation =
+                task_def.model_hint.is_none() && !dispatch_plan.forced;
+            if allow_learned_model_modulation {
+                if let Some(best_hint) = knowledge_advice
+                    .hints
+                    .iter()
+                    .filter(|hint| hint.model_slug != baseline_model)
+                    .max_by(|left, right| {
+                        left.score
+                            .total_cmp(&right.score)
+                            .then_with(|| left.model_slug.cmp(&right.model_slug))
+                    })
+                {
+                    if best_hint.score + bias_weight > baseline_score {
+                        debug!(
+                            from = %baseline_model,
+                            to = %best_hint.model_slug,
+                            baseline_score,
+                            hint_score = best_hint.score,
+                            bias_weight = bias_weight,
+                            reason = %best_hint.reason,
+                            supporting_entries = best_hint.supporting_entries,
+                            "knowledge store nudged model selection"
+                        );
+                        dispatch_plan.model = ModelSpec::from_slug(best_hint.model_slug.clone());
+                        selected_source = "dispatcher+knowledge".to_string();
+                    }
                 }
             }
             let mut dispatch_turn_limit = DEFAULT_AGENT_TURN_LIMIT;
@@ -3452,7 +4346,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     ctx.config,
                     hook,
                     &dispatch_plan.model.slug,
-                    !dispatch_plan.forced,
+                    allow_learned_model_modulation,
                 )
             });
             if let Some(modulation) = &daimon_modulation {
@@ -3566,7 +4460,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                                 ctx.state.force_plan_terminal(plan_id);
                             }
                             ctx.tui.error(&message);
-                            return;
+                            return ActionDispatchOutcome::Noop;
                         }
                     }
                 }
@@ -3668,7 +4562,13 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                                 "implementing",
                             );
                             ctx.agent_handles.insert(plan_id.to_string(), handle);
+                            ctx.active_agent_tasks
+                                .insert(plan_id.to_string(), task_id.clone());
                             register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
+                            return ActionDispatchOutcome::AgentStarted {
+                                plan_id: plan_id.clone(),
+                                task_id,
+                            };
                         }
                         Err(e) => {
                             error!(err = %e, "failed to spawn agent");
@@ -3721,6 +4621,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                                     "failed to apply Fatal event -- forcing plan terminal");
                                 ctx.state.force_plan_terminal(plan_id);
                             }
+                            return ActionDispatchOutcome::Noop;
                         }
                     }
                 }
@@ -3771,7 +4672,13 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                         .agent_spawned(&agent_id, role, &format!("{provider_id}:{model}"));
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
+                    ctx.active_agent_tasks
+                        .insert(plan_id.to_string(), task_id.clone());
                     register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
+                    return ActionDispatchOutcome::AgentStarted {
+                        plan_id: plan_id.clone(),
+                        task_id,
+                    };
                 }
             }
         }
@@ -3792,16 +4699,9 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     "gate-pipeline:default",
                     "skipped: no Cargo.toml in workspace",
                 );
-                return;
+                return ActionDispatchOutcome::Handled;
             }
 
-            info!(
-                plan_id = %plan_id,
-                requested_rung = *rung,
-                rung = pipeline_rung,
-                custom_rungs = gates_config.has_custom_rungs(),
-                "dispatching gate pipeline"
-            );
             let effect_key =
                 gate_effect_key(plan_id, &task_id, pipeline_rung, GateCompletionKind::Gate);
             if !ctx.state.mark_gate_active(effect_key.clone()) {
@@ -3811,8 +4711,15 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     rung = pipeline_rung,
                     "gate pipeline already active - suppressing duplicate dispatch"
                 );
-                return;
+                return ActionDispatchOutcome::Noop;
             }
+            info!(
+                plan_id = %plan_id,
+                requested_rung = *rung,
+                rung = pipeline_rung,
+                custom_rungs = gates_config.has_custom_rungs(),
+                "dispatching gate pipeline"
+            );
             let run_id = ctx.state.run_id().to_string();
             let attempt_ref = TaskAttemptRef::new(
                 plan_id.clone(),
@@ -3835,9 +4742,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 .task_index
                 .get(plan_id.as_str())
                 .and_then(|tasks| tasks.get(task_id.as_str()));
-            let is_read_only_role = task_def.and_then(|t| t.role.as_deref()).map_or(false, |r| {
-                matches!(r, "researcher" | "strategist" | "quick-reviewer")
-            });
+            let is_read_only_role = task_role_is_read_only(task_def);
 
             if is_read_only_role {
                 // Read-only tasks don't produce artifacts — auto-pass the gate.
@@ -3883,6 +4788,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
             } else {
                 let verify_steps = task_def.map(|task| task.verify.clone()).unwrap_or_default();
                 let complexity = gate_plan_complexity_for_task(task_def);
+                let target_crates = task_target_crates(task_def);
                 gate_dispatch::spawn_gate(
                     plan_id.clone(),
                     task_id,
@@ -3891,11 +4797,13 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     gates_config,
                     complexity,
                     verify_steps,
-                    duration_secs(gate_timeout(ctx.config, *rung)),
+                    duration_secs(gate_timeout(ctx.config, pipeline_rung)),
                     ctx.gate_tx.clone(),
                     ctx.gate_sem.clone(),
+                    target_crates,
                 );
             }
+            ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::RunVerify { plan_id } => {
@@ -3915,10 +4823,41 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
 
             if verify_steps.is_empty() {
                 info!(plan_id = %plan_id, "no declared plan verify steps — passing verify phase");
-                let _ = ctx
-                    .executor
-                    .apply_event(plan_id, &ExecutorEvent::VerifyPassed);
-                return;
+                match complete_verified_plan_success(
+                    plan_id,
+                    ctx.executor,
+                    ctx.state,
+                    ctx.paths,
+                    ctx.tui,
+                    ctx.config,
+                ) {
+                    Ok(phase) => {
+                        ctx.tui
+                            .phase_transition(plan_id, "verifying", &format!("{phase:?}"));
+                        info!(plan_id = %plan_id, phase = ?phase, "plan verify passed — plan complete");
+                    }
+                    Err(err) => {
+                        warn!(
+                            plan_id = %plan_id,
+                            error = %err,
+                            "transition error while completing plan with no verify steps"
+                        );
+                        let _ = ctx.executor.apply_event(
+                            plan_id,
+                            &ExecutorEvent::Fatal(format!("plan verify transition failed: {err}")),
+                        );
+                    }
+                }
+                save_snapshot(
+                    ctx.config,
+                    ctx.executor,
+                    ctx.paths,
+                    ctx.state,
+                    ctx.merge_queue,
+                    ctx.gate_thresholds,
+                    ctx.snapshot_writer,
+                );
+                return ActionDispatchOutcome::Handled;
             }
 
             let effect_key = gate_effect_key(
@@ -3932,7 +4871,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     plan_id = %plan_id,
                     "plan verify already active — suppressing duplicate dispatch"
                 );
-                return;
+                return ActionDispatchOutcome::Noop;
             }
             let run_id = ctx.state.run_id().to_string();
             let attempt_ref = TaskAttemptRef::new(
@@ -3966,6 +4905,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 ctx.gate_tx.clone(),
                 ctx.gate_sem.clone(),
             );
+            ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::CompletePlan { plan_id } => {
@@ -3988,6 +4928,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                 ctx.gate_thresholds,
                 ctx.snapshot_writer,
             );
+            ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::FailPlan { plan_id, reason } => {
@@ -4010,6 +4951,7 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     Some(reason.clone()),
                 ),
             );
+            ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::MergeBranch { plan_id } => {
@@ -4065,10 +5007,12 @@ async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) {
                     );
                 }
             }
+            ActionDispatchOutcome::Handled
         }
 
         _ => {
             info!(action = ?action, "auto-advancing action");
+            ActionDispatchOutcome::Handled
         }
     }
 }
@@ -4469,7 +5413,15 @@ async fn handle_plan_timeout(
         "plan execution exceeded wall-clock timeout"
     );
     stop_all_agents(agent_handles, state, Duration::from_secs(3)).await;
-    save_snapshot(config, executor, paths, state, merge_queue, gate_thresholds, writer);
+    save_snapshot(
+        config,
+        executor,
+        paths,
+        state,
+        merge_queue,
+        gate_thresholds,
+        writer,
+    );
     writer.flush();
     shutdown_subsystems(config, tui).await;
     let event = build_run_completed_event(executor, plans, state, RunOutcome::Failed);
@@ -4959,6 +5911,42 @@ fn git_diff_entries_since_task_start(workdir: &Path) -> Vec<DiffEntry> {
     entries
 }
 
+fn normalized_task_git_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return None;
+    }
+    let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed.starts_with('/')
+        || trimmed.starts_with("../")
+        || trimmed.contains("/../")
+    {
+        return None;
+    }
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
+fn task_declared_git_paths(declared_files: &[String]) -> Vec<String> {
+    let mut paths = declared_files
+        .iter()
+        .filter_map(|path| normalized_task_git_path(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn task_path_allowed_by_declared_files(path: &str, declared_files: &[String]) -> bool {
+    let Some(path) = normalized_task_git_path(path) else {
+        return false;
+    };
+    task_declared_git_paths(declared_files)
+        .iter()
+        .any(|declared| path == *declared || path.starts_with(&format!("{declared}/")))
+}
+
 fn all_plans_terminal(executor: &ParallelExecutor, plans: &[Plan]) -> bool {
     plans
         .iter()
@@ -4994,7 +5982,16 @@ fn build_gate_retry_context(
     prev_agent_output: &str,
     attempt_num: u32,
 ) -> String {
-    let classification = classify_gate_failure("gate", gate_output);
+    let lower_gate_output = gate_output.to_ascii_lowercase();
+    let classification_gate = if lower_gate_output.contains("test result: failed")
+        || lower_gate_output.contains("assertion failed")
+        || lower_gate_output.contains("panicked at")
+    {
+        "test"
+    } else {
+        "gate"
+    };
+    let classification = classify_gate_failure(classification_gate, gate_output);
     let analysis = render_failure_classification(&classification);
 
     let gate_excerpt = if gate_output.len() > 3000 {
@@ -5019,17 +6016,34 @@ fn build_gate_retry_context(
 
 /// Commit working tree changes for a completed task.
 ///
-/// Only acts if there are uncommitted changes. Silently succeeds if git is
-/// not available or the workdir is not a git repo. Uses `--no-verify` to
-/// avoid triggering hooks in generated workspaces.
-fn commit_task_changes(workdir: &std::path::Path, plan_id: &str, task_id: &str) {
+/// Only acts if there are uncommitted changes in the task's declared files.
+/// Silently succeeds if git is not available or the workdir is not a git repo.
+/// Uses `--no-verify` to avoid triggering hooks in generated workspaces.
+fn commit_task_changes(
+    workdir: &std::path::Path,
+    plan_id: &str,
+    task_id: &str,
+    declared_files: &[String],
+) {
     use std::process::Command;
 
-    // Check if there are changes to commit
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(workdir)
-        .output();
+    let paths = task_declared_git_paths(declared_files);
+    if paths.is_empty() {
+        debug!(
+            %plan_id,
+            %task_id,
+            "task has no declared files -- skipping auto-commit"
+        );
+        return;
+    }
+
+    // Check if there are changes to commit in this task's declared write set.
+    let mut status_cmd = Command::new("git");
+    status_cmd
+        .args(["status", "--porcelain", "--"])
+        .args(&paths)
+        .current_dir(workdir);
+    let status = status_cmd.output();
     let has_changes = status
         .as_ref()
         .map(|o| !o.stdout.is_empty())
@@ -5040,18 +6054,22 @@ fn commit_task_changes(workdir: &std::path::Path, plan_id: &str, task_id: &str) 
     }
 
     let msg = format!("[roko] {plan_id}: {task_id} completed");
-    let add = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(workdir)
-        .status();
+    let mut add_cmd = Command::new("git");
+    add_cmd
+        .args(["add", "--"])
+        .args(&paths)
+        .current_dir(workdir);
+    let add = add_cmd.status();
     if add.is_err() || !add.as_ref().map(|s| s.success()).unwrap_or(false) {
         debug!(%plan_id, %task_id, "git add failed -- skipping commit");
         return;
     }
-    let commit = Command::new("git")
-        .args(["commit", "-m", &msg, "--no-verify"])
-        .current_dir(workdir)
-        .status();
+    let mut commit_cmd = Command::new("git");
+    commit_cmd
+        .args(["commit", "-m", &msg, "--no-verify", "--only", "--"])
+        .args(&paths)
+        .current_dir(workdir);
+    let commit = commit_cmd.status();
     match commit {
         Ok(s) if s.success() => {
             info!(%plan_id, %task_id, "committed task changes to git");
@@ -5132,6 +6150,301 @@ fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task_parser::TasksFile;
+
+    #[test]
+    fn successful_plan_verify_finalizes_runner_plan() {
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan-verify"));
+
+        executor
+            .apply_event("plan-verify", &ExecutorEvent::Start)
+            .unwrap();
+        executor
+            .apply_event("plan-verify", &ExecutorEvent::EnrichmentDone)
+            .unwrap();
+        executor
+            .apply_event("plan-verify", &ExecutorEvent::ImplementationDone)
+            .unwrap();
+        executor
+            .apply_event("plan-verify", &ExecutorEvent::GatePassed)
+            .unwrap();
+
+        let phase = complete_plan_after_successful_verify("plan-verify", &mut executor).unwrap();
+
+        assert_eq!(phase, PlanPhase::Complete);
+        assert!(executor.plan_state("plan-verify").unwrap().is_terminal());
+        assert!(
+            executor.tick().is_empty(),
+            "completed plan must not request review/doc agents or rerun tasks"
+        );
+    }
+
+    #[test]
+    fn fresh_run_seeds_done_tasks_from_plan_status() {
+        let tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "seed-test"
+total = 3
+status = "ready"
+
+[[task]]
+id = "T1"
+title = "done dependency"
+status = "done"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "T2"
+title = "ready follow-up"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["T1"]
+
+[[task]]
+id = "T3"
+title = "also done"
+status = "done"
+tier = "focused"
+role = "implementer"
+depends_on = []
+"#,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: "seed-test".to_string(),
+            dir: std::path::PathBuf::from("plans/seed-test"),
+            tasks,
+            prd_excerpt: String::new(),
+        };
+        let mut state = RunState::new(3);
+
+        seed_completed_tasks_from_plan_status(&mut state, &[plan]);
+
+        assert_eq!(state.tasks_completed, 2);
+        assert_eq!(state.plan_completed_tasks("seed-test"), ["T1", "T3"]);
+    }
+
+    #[test]
+    fn completed_plan_initializes_at_gating_phase() {
+        let tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "done-plan"
+total = 2
+done = 2
+status = "done"
+
+[[task]]
+id = "T1"
+title = "one"
+status = "done"
+tier = "focused"
+role = "implementer"
+files = ["Cargo.toml"]
+verify = [{ phase = "structural", command = "true" }]
+depends_on = []
+
+[[task]]
+id = "T2"
+title = "two"
+status = "complete"
+tier = "focused"
+role = "implementer"
+files = ["Cargo.toml"]
+verify = [{ phase = "structural", command = "true" }]
+depends_on = []
+"#,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: "done-plan".to_string(),
+            dir: std::path::PathBuf::from("plans/done-plan"),
+            tasks,
+            prd_excerpt: String::new(),
+        };
+        let mut state = RunState::new(2);
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("done-plan"));
+
+        seed_completed_tasks_from_plan_status(&mut state, std::slice::from_ref(&plan));
+        initialize_terminal_plan_phases(&mut executor, &state, &[plan]);
+
+        assert!(matches!(
+            executor
+                .plan_state("done-plan")
+                .map(|state| &state.current_phase),
+            Some(PlanPhase::Gating)
+        ));
+    }
+
+    #[test]
+    fn no_ready_spawn_only_completes_implementing_phase() {
+        assert_eq!(
+            no_ready_spawn_event(PhaseKind::Implementing, "next"),
+            Some(ExecutorEvent::ImplementationDone)
+        );
+
+        assert!(matches!(
+            no_ready_spawn_event(PhaseKind::RegeneratingVerify, "regen-verify"),
+            Some(ExecutorEvent::Fatal(reason))
+                if reason.contains("no runnable task was available")
+        ));
+        assert!(matches!(
+            no_ready_spawn_event(PhaseKind::AutoFixing, "fix"),
+            Some(ExecutorEvent::Fatal(reason))
+                if reason.contains("no runnable task was available")
+        ));
+        assert_eq!(no_ready_spawn_event(PhaseKind::Complete, "next"), None);
+    }
+
+    #[test]
+    fn load_executor_resumes_from_unified_state_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = persist::PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut snapshot = ExecutorSnapshot::new(123);
+        snapshot
+            .plan_states
+            .insert("self-dev-ux".to_string(), OrcPlanState::new("self-dev-ux"));
+        snapshot.queue_order.push("self-dev-ux".to_string());
+        let orchestrator_json = OrchestratorSnapshot::new(snapshot.clone(), 123)
+            .to_json()
+            .unwrap();
+        let unified = roko_runtime::StateSnapshot::new(
+            123,
+            snapshot.to_json().unwrap(),
+            orchestrator_json,
+            "{}".to_string(),
+            "{}".to_string(),
+        );
+        persist::save_state_snapshot(&paths, &unified).unwrap();
+
+        let resume = load_executor(
+            &paths,
+            &ExecutorConfig::default(),
+            &["self-dev-ux".to_string()],
+        );
+
+        assert_eq!(resume.marker.outcome, ResumeOutcome::Resumed);
+        assert_eq!(
+            resume.marker.snapshot_path,
+            paths.state_snapshot_json.display().to_string()
+        );
+        assert!(resume.executor.plan_state("self-dev-ux").is_some());
+    }
+
+    #[test]
+    fn task_path_filter_only_allows_declared_files() {
+        let declared = vec![
+            "crates/roko-core/src/lib.rs".to_string(),
+            "crates/roko-cli/src/runner".to_string(),
+        ];
+
+        assert!(task_path_allowed_by_declared_files(
+            "crates/roko-core/src/lib.rs",
+            &declared
+        ));
+        assert!(task_path_allowed_by_declared_files(
+            "crates/roko-cli/src/runner/event_loop.rs",
+            &declared
+        ));
+        assert!(!task_path_allowed_by_declared_files(
+            "crates/roko-core/src/lib.rs.bak",
+            &declared
+        ));
+        assert!(!task_path_allowed_by_declared_files(
+            "../outside.rs",
+            &declared
+        ));
+    }
+
+    #[test]
+    fn turn_budget_check_is_disabled_when_limit_is_zero() {
+        assert!(!turn_exceeds_budget(Some(100.0), 0.0));
+        assert!(!turn_exceeds_budget(None, 3.0));
+        assert!(!turn_exceeds_budget(Some(3.0), 3.0));
+        assert!(turn_exceeds_budget(Some(3.01), 3.0));
+    }
+
+    #[test]
+    fn verification_only_task_does_not_emit_model_feedback() {
+        let event = RunnerEvent::task_attempt_completed(
+            "run-1",
+            TaskAttemptRef::new("plan".to_string(), "task".to_string(), 1),
+            TaskAttemptOutcome::Passed,
+            None,
+            123,
+            "",
+            "",
+        );
+
+        let feedback = runner_event_to_feedback(&event, &None, &TaskUsageSnapshot::default());
+
+        assert!(
+            feedback.is_none(),
+            "verification-only tasks have no model to reward in the cascade router"
+        );
+    }
+
+    #[test]
+    fn commit_task_changes_only_commits_declared_files() {
+        fn git(workdir: &std::path::Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workdir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+                args,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(dir.path(), &["config", "user.name", "Roko Test"]);
+
+        std::fs::write(dir.path().join("declared.txt"), "before\n").unwrap();
+        std::fs::write(dir.path().join("unrelated.txt"), "before\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "initial"]);
+
+        std::fs::write(dir.path().join("declared.txt"), "after\n").unwrap();
+        std::fs::write(dir.path().join("unrelated.txt"), "after\n").unwrap();
+
+        commit_task_changes(dir.path(), "plan", "task", &["declared.txt".to_string()]);
+
+        let show = std::process::Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(show.status.success());
+        let committed_files = String::from_utf8_lossy(&show.stdout);
+        assert!(committed_files.contains("declared.txt"));
+        assert!(!committed_files.contains("unrelated.txt"));
+
+        let status = std::process::Command::new("git")
+            .args(["status", "--short"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let status = String::from_utf8_lossy(&status.stdout);
+        assert!(status.contains("unrelated.txt"));
+        assert!(!status.contains("declared.txt"));
+    }
 
     #[test]
     fn build_gate_retry_context_compile_error_produces_analysis() {
@@ -5167,7 +6480,13 @@ mod tests {
 
         // Agent output truncated to 2000 chars
         let agent_section = &result[agent_section_start..];
-        let y_count = agent_section.chars().filter(|c| *c == 'y').count();
+        let agent_block_start = agent_section.find("```\n").unwrap() + "```\n".len();
+        let agent_block = &agent_section[agent_block_start..];
+        let agent_block_end = agent_block.find("\n```").unwrap();
+        let y_count = agent_block[..agent_block_end]
+            .chars()
+            .filter(|c| *c == 'y')
+            .count();
         assert_eq!(y_count, 2000);
     }
 

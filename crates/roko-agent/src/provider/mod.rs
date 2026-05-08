@@ -636,7 +636,7 @@ pub fn map_provider_error(
         || err_lower.contains("unauthorized")
     {
         return format!(
-            "API key invalid for provider '{}'. Check ${} or roko.toml [providers.{}].",
+            "API key invalid for provider '{}' (HTTP 401). Check ${} or roko.toml [providers.{}].",
             provider_name, env_var, provider_name
         );
     }
@@ -646,7 +646,7 @@ pub fn map_provider_error(
         || err_lower.contains("too many requests")
     {
         return format!(
-            "Rate limited by provider '{}'. Wait and retry, or switch providers.",
+            "Rate limited by provider '{}' (HTTP 429). Wait and retry, or switch providers.",
             provider_name
         );
     }
@@ -656,7 +656,7 @@ pub fn map_provider_error(
         || err_lower.contains("model not found")
     {
         return format!(
-            "Model not found on provider '{}'. Verify the slug in roko.toml [models.*].",
+            "Model not found on provider '{}' (HTTP 404). Verify the slug in roko.toml [models.*].",
             provider_name
         );
     }
@@ -771,6 +771,8 @@ pub enum AgentCreationError {
     InvalidKind(ProviderKind),
     #[error("Failed to load mock fixture: {0}")]
     FixtureLoad(String),
+    #[error("Binary not found on PATH: {0}")]
+    BinaryNotFound(String),
 }
 
 #[cfg(test)]

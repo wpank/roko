@@ -359,6 +359,9 @@ impl ModelCallService {
             .mcp_config
             .clone()
             .or_else(|| self.config_agent_mcp_config());
+        if !req.tools.is_empty() {
+            options.pre_discovered_mcp_tools = Some(Arc::new(req.tools.clone()));
+        }
         options
     }
 
@@ -575,7 +578,11 @@ impl ModelCallService {
             (schema::LABEL_STATUS, status),
         ]);
         registry
-            .register_counter(schema::ROKO_LLM_CALLS_TOTAL, "Total LLM calls by provider, model, and status", call_labels)
+            .register_counter(
+                schema::ROKO_LLM_CALLS_TOTAL,
+                "Total LLM calls by provider, model, and status",
+                call_labels,
+            )
             .inc();
 
         // roko_llm_tokens_total{provider, model, direction="input"|"output"}
@@ -586,7 +593,11 @@ impl ModelCallService {
                 (schema::LABEL_DIRECTION, "input"),
             ]);
             registry
-                .register_counter(schema::ROKO_LLM_TOKENS_TOTAL, "LLM tokens consumed/produced, by provider, model, direction", in_labels)
+                .register_counter(
+                    schema::ROKO_LLM_TOKENS_TOTAL,
+                    "LLM tokens consumed/produced, by provider, model, direction",
+                    in_labels,
+                )
                 .inc_by(usage.input_tokens);
         }
         if usage.output_tokens > 0 {
@@ -596,7 +607,11 @@ impl ModelCallService {
                 (schema::LABEL_DIRECTION, "output"),
             ]);
             registry
-                .register_counter(schema::ROKO_LLM_TOKENS_TOTAL, "LLM tokens consumed/produced, by provider, model, direction", out_labels)
+                .register_counter(
+                    schema::ROKO_LLM_TOKENS_TOTAL,
+                    "LLM tokens consumed/produced, by provider, model, direction",
+                    out_labels,
+                )
                 .inc_by(usage.output_tokens);
         }
 
@@ -608,7 +623,11 @@ impl ModelCallService {
             ]);
             let cost_micro = (usage.cost_usd * 1_000_000.0) as u64;
             registry
-                .register_counter(schema::ROKO_LLM_COST_USD_TOTAL, "Cumulative LLM spend in microdollars, by provider and model", cost_labels)
+                .register_counter(
+                    schema::ROKO_LLM_COST_USD_TOTAL,
+                    "Cumulative LLM spend in microdollars, by provider and model",
+                    cost_labels,
+                )
                 .inc_by(cost_micro);
         }
 
@@ -633,11 +652,7 @@ impl ModelCallService {
             let models = self.config.effective_models();
             let context_window = models
                 .get(model)
-                .or_else(|| {
-                    models
-                        .values()
-                        .find(|p| p.slug == model)
-                })
+                .or_else(|| models.values().find(|p| p.slug == model))
                 .map(|p| p.context_window)
                 .unwrap_or(0);
             if context_window > 0 {
@@ -690,7 +705,11 @@ impl ModelCallService {
             (schema::LABEL_ERROR_TYPE, error_type),
         ]);
         registry
-            .register_counter(schema::ROKO_LLM_ERRORS_TOTAL, "Total LLM errors by provider, model, and error type", labels)
+            .register_counter(
+                schema::ROKO_LLM_ERRORS_TOTAL,
+                "Total LLM errors by provider, model, and error type",
+                labels,
+            )
             .inc();
     }
 
@@ -2012,6 +2031,7 @@ mod tests {
     use super::*;
     use crate::task_runner::ModelPricing;
     use futures::StreamExt;
+    use roko_core::tool::{ToolCategory, ToolDef, ToolPermission};
     use roko_core::{
         ModelStreamEvent, model_call_failure_to_stream, model_call_response_to_stream,
     };
@@ -2047,6 +2067,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         }
     }
 
@@ -2162,6 +2183,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
         assert_eq!(svc.resolve_model(&req), "claude-sonnet-4-20250514");
     }
@@ -2184,6 +2206,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
         assert_eq!(svc.resolve_model(&req), "claude-opus-4-20250514");
     }
@@ -2209,6 +2232,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
@@ -2297,6 +2321,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
         let model = svc.resolve_model(&req);
         let config = svc.config_for_model(&model);
@@ -2331,12 +2356,35 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
 
         assert_eq!(svc.resolve_model(&req), "claude");
 
         let options = svc.build_agent_options(&req, None);
         assert_eq!(options.mcp_config, Some(PathBuf::from("/tmp/mcp.json")));
+    }
+
+    #[test]
+    fn request_tools_are_threaded_to_agent_options() {
+        let svc = ModelCallService::new("claude".into());
+        let tool = ToolDef::new(
+            "read_file",
+            "Read a file",
+            ToolCategory::Read,
+            ToolPermission {
+                read: true,
+                ..Default::default()
+            },
+        );
+        let req = ModelCallRequest {
+            tools: vec![tool.clone()],
+            ..user_request("claude", "hello")
+        };
+
+        let options = svc.build_agent_options(&req, None);
+        let tools = options.pre_discovered_mcp_tools.expect("tools threaded");
+        assert_eq!(tools.as_ref(), &vec![tool]);
     }
 
     #[test]
@@ -2368,6 +2416,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
 
         let estimate = svc.cost_predict(&req);
@@ -2409,6 +2458,7 @@ mod tests {
             budget_remaining: None,
             routing_hints: Vec::new(),
             cache_policy: roko_core::foundation::CachePolicy::Default,
+            tools: Vec::new(),
         };
 
         let estimate = svc.cost_predict(&req);
@@ -2662,8 +2712,8 @@ mod tests {
         use std::sync::Arc;
 
         let registry = Arc::new(MetricRegistry::new());
-        let svc = ModelCallService::new("test-model".to_string())
-            .with_metrics(Arc::clone(&registry));
+        let svc =
+            ModelCallService::new("test-model".to_string()).with_metrics(Arc::clone(&registry));
 
         let usage = TokenUsage {
             input_tokens: 1000,

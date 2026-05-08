@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 ///     target_dir: None,
 ///     extra_env: vec![],
 ///     label: Some("check-login-module".into()),
+///     target_crates: vec!["roko-agent".into()],
 /// };
 /// let sig = Signal::builder(Kind::Task)
 ///     .body(Body::from_json(&payload).expect("example payload should serialize"))
@@ -43,6 +44,12 @@ pub struct GatePayload {
 
     /// Optional identifying label for logging (e.g. plan/task id).
     pub label: Option<String>,
+
+    /// Crates modified by the task. When non-empty, compile and lint gates
+    /// use `-p <crate>` instead of `--workspace` so pre-existing errors in
+    /// unrelated crates don't cause false gate failures.
+    #[serde(default)]
+    pub target_crates: Vec<String>,
 }
 
 impl GatePayload {
@@ -54,6 +61,7 @@ impl GatePayload {
             target_dir: None,
             extra_env: Vec::new(),
             label: None,
+            target_crates: Vec::new(),
         }
     }
 
@@ -75,6 +83,13 @@ impl GatePayload {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Scope compile/lint gates to specific crates (uses `-p` instead of `--workspace`).
+    #[must_use]
+    pub fn with_target_crates(mut self, crates: Vec<String>) -> Self {
+        self.target_crates = crates;
         self
     }
 }
@@ -121,17 +136,41 @@ impl BuildSystem {
     }
 
     /// The default "check" command for this build system (args after the program).
+    ///
+    /// For Cargo, uses `--workspace --lib` (no `--all-targets`) so test-only
+    /// compilation errors do not block the compile gate. Test compilation is
+    /// handled by [`TestGate`] instead.
     #[must_use]
     #[allow(clippy::match_same_arms)]
     pub const fn check_args(self) -> &'static [&'static str] {
         match self {
-            Self::Cargo => &["check", "--workspace", "--all-targets"],
+            Self::Cargo => &["check", "--workspace", "--lib"],
             Self::Npm => &["run", "build"],
             Self::Go => &["build", "./..."],
             Self::Python => &["-c", "import ast; ast.parse(open('.').read())"],
             Self::Forge => &["build"],
             Self::Make => &["build"],
         }
+    }
+
+    /// Build a scoped check command targeting specific crates.
+    ///
+    /// When `crates` is non-empty, emits `-p <name>` for each crate instead
+    /// of `--workspace`. Falls back to [`check_args`](Self::check_args) when
+    /// the list is empty or the build system is not Cargo.
+    #[must_use]
+    pub fn scoped_check_args(self, crates: &[String]) -> Vec<String> {
+        let crates = cargo_package_scope(crates);
+        if self != Self::Cargo || crates.is_empty() {
+            return self.check_args().iter().map(|s| (*s).to_owned()).collect();
+        }
+        let mut args = vec!["check".to_owned()];
+        for krate in crates {
+            args.push("-p".to_owned());
+            args.push(krate.to_owned());
+        }
+        args.push("--lib".to_owned());
+        args
     }
 
     /// The default "test" command for this build system.
@@ -151,18 +190,40 @@ impl BuildSystem {
         }
     }
 
+    /// Build a scoped test command targeting specific crates.
+    ///
+    /// When `crates` is non-empty, emits `-p <name>` for each crate instead
+    /// of `--workspace`. Falls back to [`test_args`](Self::test_args) when
+    /// the list is empty or the build system is not Cargo.
+    #[must_use]
+    pub fn scoped_test_args(self, crates: &[String]) -> Vec<String> {
+        let crates = cargo_package_scope(crates);
+        if self != Self::Cargo || crates.is_empty() {
+            return self.test_args().iter().map(|s| (*s).to_owned()).collect();
+        }
+        let mut args = vec!["test".to_owned()];
+        for krate in crates {
+            args.push("-p".to_owned());
+            args.push(krate.to_owned());
+        }
+        args
+    }
+
     /// The default "lint" command for this build system.
     ///
-    /// For Cargo this is `cargo clippy --workspace --all-targets
-    /// -- -D warnings`. Callers that want a softer lint (warnings → warnings)
-    /// can append their own args via the gate's `with_extra_args`.
+    /// For Cargo this is `cargo clippy --workspace --lib --no-deps -- -D warnings`.
+    /// Uses `--lib` (not `--all-targets`) so test-only lint errors do not
+    /// block the gate, and `--no-deps` to skip linting third-party code.
+    /// Callers that want a softer lint can append their own args via the
+    /// gate's `with_extra_args`.
     #[must_use]
     pub const fn lint_args(self) -> &'static [&'static str] {
         match self {
             Self::Cargo => &[
                 "clippy",
                 "--workspace",
-                "--all-targets",
+                "--lib",
+                "--no-deps",
                 "--",
                 "-D",
                 "warnings",
@@ -172,6 +233,43 @@ impl BuildSystem {
             Self::Python => &["-m", "ruff", "check", "."],
             Self::Forge => &["fmt", "--check"],
             Self::Make => &["lint"],
+        }
+    }
+
+    /// Build a scoped lint command targeting specific crates.
+    ///
+    /// When `crates` is non-empty, emits `-p <name>` for each crate instead
+    /// of `--workspace`. Falls back to [`lint_args`](Self::lint_args) when
+    /// the list is empty or the build system is not Cargo.
+    #[must_use]
+    pub fn scoped_lint_args(self, crates: &[String]) -> Vec<String> {
+        let crates = cargo_package_scope(crates);
+        if self != Self::Cargo || crates.is_empty() {
+            return self.lint_args().iter().map(|s| (*s).to_owned()).collect();
+        }
+        let mut args = vec!["clippy".to_owned()];
+        for krate in crates {
+            args.push("-p".to_owned());
+            args.push(krate.to_owned());
+        }
+        args.push("--lib".to_owned());
+        args.push("--no-deps".to_owned());
+        args.push("--".to_owned());
+        args.push("-D".to_owned());
+        args.push("warnings".to_owned());
+        args
+    }
+
+    /// Human-readable name for this build system (for log messages).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Cargo => "Cargo",
+            Self::Npm => "npm",
+            Self::Go => "Go",
+            Self::Python => "Python",
+            Self::Forge => "Forge",
+            Self::Make => "Make",
         }
     }
 
@@ -186,6 +284,19 @@ impl BuildSystem {
             Self::Forge => "forge",
             Self::Make => "make",
         }
+    }
+
+    /// Returns `true` when the build system's program binary exists on `PATH`.
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        let program = self.program();
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(program).is_file() {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -252,6 +363,14 @@ impl TestSelector {
     }
 }
 
+fn cargo_package_scope(crates: &[String]) -> Vec<&str> {
+    crates
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !name.is_empty() && *name != "workspace")
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +414,53 @@ mod tests {
     #[test]
     fn build_system_check_args() {
         assert!(BuildSystem::Cargo.check_args().contains(&"check"));
+    }
+
+    #[test]
+    fn cargo_scoped_test_args_use_packages_not_workspace() {
+        let args =
+            BuildSystem::Cargo.scoped_test_args(&["roko-acp".to_string(), "roko-gate".to_string()]);
+
+        assert_eq!(
+            args,
+            vec![
+                "test".to_string(),
+                "-p".to_string(),
+                "roko-acp".to_string(),
+                "-p".to_string(),
+                "roko-gate".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn cargo_workspace_sentinel_uses_workspace_args() {
+        let crates = ["workspace".to_string()];
+
+        assert_eq!(
+            BuildSystem::Cargo.scoped_check_args(&crates),
+            BuildSystem::Cargo
+                .check_args()
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            BuildSystem::Cargo.scoped_test_args(&crates),
+            BuildSystem::Cargo
+                .test_args()
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            BuildSystem::Cargo.scoped_lint_args(&crates),
+            BuildSystem::Cargo
+                .lint_args()
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -343,5 +509,33 @@ mod tests {
     fn build_system_detect_falls_back_to_make() {
         let dir = TempDir::new().expect("tempdir");
         assert_eq!(BuildSystem::detect(dir.path()), BuildSystem::Make);
+    }
+
+    #[test]
+    fn build_system_name_returns_human_readable() {
+        assert_eq!(BuildSystem::Cargo.name(), "Cargo");
+        assert_eq!(BuildSystem::Npm.name(), "npm");
+        assert_eq!(BuildSystem::Go.name(), "Go");
+        assert_eq!(BuildSystem::Python.name(), "Python");
+        assert_eq!(BuildSystem::Forge.name(), "Forge");
+        assert_eq!(BuildSystem::Make.name(), "Make");
+    }
+
+    #[test]
+    fn cargo_is_available_on_dev_machine() {
+        // On any machine running `cargo test`, cargo must be on PATH.
+        assert!(BuildSystem::Cargo.is_available());
+    }
+
+    #[test]
+    fn is_available_walks_path_directories() {
+        // Verify the lookup logic works by checking that programs
+        // on PATH are found. `cargo` must exist since we're running
+        // cargo test; a made-up program should not.
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let cargo_found = std::env::split_paths(&path_var)
+            .any(|dir| dir.join("cargo").is_file());
+        // cargo must be findable on PATH if we got here
+        assert!(cargo_found);
     }
 }

@@ -100,6 +100,9 @@ pub struct RunState {
     // ─── Task DAG ───────────────────────────────────────────────────
     /// Completed task IDs per plan (for DAG dependency resolution).
     pub completed_tasks: HashMap<String, Vec<String>>,
+    /// Failed task IDs per plan. Tasks depending on a failed task are
+    /// skipped rather than blocking the entire plan.
+    pub failed_tasks: HashMap<String, HashSet<String>>,
     /// Files created or modified by each completed task.
     /// Key: `"{plan_id}:{task_id}"`, value: list of file paths.
     pub task_outputs: HashMap<String, Vec<String>>,
@@ -179,6 +182,7 @@ impl RunState {
             last_failure_kind: HashMap::new(),
             active_gate_effects: HashSet::new(),
             completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
             task_outputs: HashMap::new(),
             snapshot_fail_streak: 0,
             snapshot_degraded: false,
@@ -443,6 +447,7 @@ impl RunState {
         self.gate_output.clear();
         // iteration is per-task in self.iterations, set from executor state
         self.task_started_at = Instant::now();
+        self.last_dispatch_ms = 0;
         self.routing_context = None;
     }
 
@@ -573,11 +578,22 @@ impl RunState {
     }
 
     /// Mark a task as completed for DAG dependency tracking.
-    pub fn mark_task_completed(&mut self, plan_id: &str, task_id: &str) {
-        self.completed_tasks
-            .entry(plan_id.to_string())
-            .or_default()
-            .push(task_id.to_string());
+    ///
+    /// Returns true only when this call newly recorded a concrete task.
+    pub fn mark_task_completed(&mut self, plan_id: &str, task_id: &str) -> bool {
+        if task_id.is_empty() {
+            return false;
+        }
+        let completed = self.completed_tasks.entry(plan_id.to_string()).or_default();
+        if !completed
+            .iter()
+            .any(|completed_task| completed_task == task_id)
+        {
+            completed.push(task_id.to_string());
+            true
+        } else {
+            false
+        }
     }
 
     /// Get completed task IDs for a plan.
@@ -586,6 +602,20 @@ impl RunState {
             .get(plan_id)
             .map(|v| v.as_slice())
             .unwrap_or_default()
+    }
+
+    /// Mark a task as permanently failed for DAG tracking.
+    pub fn mark_task_failed(&mut self, plan_id: &str, task_id: &str) {
+        self.failed_tasks
+            .entry(plan_id.to_string())
+            .or_default()
+            .insert(task_id.to_string());
+    }
+
+    /// Get the set of failed task IDs for a plan.
+    pub fn plan_failed_tasks(&self, plan_id: &str) -> &HashSet<String> {
+        static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
+        self.failed_tasks.get(plan_id).unwrap_or(&EMPTY)
     }
 
     /// Record the files produced by a completed task.
@@ -639,5 +669,22 @@ impl RunState {
     /// Take (and remove) stored replan context for a task.
     pub fn take_replan_context(&mut self, plan_id: &str, task_id: &str) -> Option<String> {
         self.replan_contexts.remove(&format!("{plan_id}/{task_id}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunState;
+
+    #[test]
+    fn mark_task_completed_ignores_empty_and_duplicates() {
+        let mut state = RunState::new(2);
+
+        assert!(!state.mark_task_completed("plan", ""));
+        assert!(state.plan_completed_tasks("plan").is_empty());
+
+        assert!(state.mark_task_completed("plan", "T1"));
+        assert!(!state.mark_task_completed("plan", "T1"));
+        assert_eq!(state.plan_completed_tasks("plan"), ["T1"]);
     }
 }

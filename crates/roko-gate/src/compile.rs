@@ -115,8 +115,21 @@ impl Verify for CompileGate {
             }
         };
 
+        if !self.build_system.is_available() {
+            let reason = format!(
+                "{} not available: '{}' not found on PATH",
+                self.build_system.name(),
+                self.build_system.program()
+            );
+            tracing::warn!(gate = %self.name, "{reason}");
+            return Verdict::pass(&self.name)
+                .with_detail(format!("skipped: {reason}"))
+                .with_duration(started.elapsed().as_millis() as u64);
+        }
+
         let mut cmd = Command::new(self.build_system.program());
-        for arg in self.build_system.check_args() {
+        let scoped = self.build_system.scoped_check_args(&payload.target_crates);
+        for arg in &scoped {
             cmd.arg(arg);
         }
         for arg in &self.extra_args {

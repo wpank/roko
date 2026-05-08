@@ -10917,7 +10917,12 @@ impl PlanRunner {
                 format!("Plan: {plan_id}\nTask: {task_id}\n\nImplement the task described above.")
             });
         let failing_command = task_def
-            .and_then(|td| td.verify.iter().find(|v| v.phase == gate).map(|v| v.command.as_str()))
+            .and_then(|td| {
+                td.verify
+                    .iter()
+                    .find(|v| v.phase == gate)
+                    .map(|v| v.command.as_str())
+            })
             .unwrap_or("unknown");
         let prompt = task_def
             .map(|task| task.build_fix_prompt(&base_prompt, gate, failing_command, error_output))
@@ -13284,6 +13289,7 @@ impl PlanRunner {
                 total: 1,
                 done: 0,
                 status: "ready".to_string(),
+                superseded_by: None,
                 max_parallel: old_tasks.meta.max_parallel,
                 estimated_total_minutes: old_tasks.meta.estimated_total_minutes,
                 skip_enrichment: old_tasks.meta.skip_enrichment,
@@ -14201,11 +14207,18 @@ impl PlanRunner {
 
         let mut fix_prompt = if let Some(ref td) = task_def {
             let original_prompt = td.build_prompt(plan_id, &self.workdir);
-            let failing_command = td.verify.iter()
+            let failing_command = td
+                .verify
+                .iter()
                 .find(|v| v.phase == gate_phase)
                 .map(|v| v.command.as_str())
                 .unwrap_or("unknown");
-            td.build_fix_prompt(&original_prompt, &gate_phase, failing_command, &gate_context)
+            td.build_fix_prompt(
+                &original_prompt,
+                &gate_phase,
+                failing_command,
+                &gate_context,
+            )
         } else {
             let truncated = gate_context.chars().take(4000).collect::<String>();
             format!(
@@ -23338,5 +23351,37 @@ command = "cargo check -p roko-cli"
         assert_eq!(merged.tasks[2].id, "N3");
         assert_eq!(merged.tasks[2].depends_on, vec!["N2"]);
         assert!(merged.tasks.iter().all(|task| task.id != "N1"));
+    }
+
+    #[tokio::test]
+    async fn run_verify_steps_pass() {
+        let tmp = TempDir::new().expect("tempdir");
+        let runner = runner_for_repo(tmp.path(), false).await;
+        let steps = vec![crate::task_parser::VerifyStep {
+            phase: "structural".to_string(),
+            command: "true".to_string(),
+            fail_msg: None,
+            timeout_ms: 5_000,
+        }];
+        let result = runner.run_verify_steps("t1", &steps, tmp.path()).await;
+        assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn run_verify_steps_fail() {
+        let tmp = TempDir::new().expect("tempdir");
+        let runner = runner_for_repo(tmp.path(), false).await;
+        let steps = vec![crate::task_parser::VerifyStep {
+            phase: "compile".to_string(),
+            command: "false".to_string(),
+            fail_msg: Some("forced failure".to_string()),
+            timeout_ms: 5_000,
+        }];
+        let result = runner.run_verify_steps("t1", &steps, tmp.path()).await;
+        assert!(result.is_err(), "expected Err, got Ok");
+        let (task_id, phase, cmd, _stderr) = result.unwrap_err();
+        assert_eq!(task_id, "t1");
+        assert_eq!(phase, "compile");
+        assert_eq!(cmd, "false");
     }
 }

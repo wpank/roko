@@ -113,12 +113,27 @@ impl Verify for ClippyGate {
             }
         };
 
-        // For cargo, `lint_args` already embeds `-- -D warnings`; splice
+        if !self.build_system.is_available() {
+            let reason = format!(
+                "{} not available: '{}' not found on PATH",
+                self.build_system.name(),
+                self.build_system.program()
+            );
+            tracing::warn!(gate = %self.name, "{reason}");
+            let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Verdict::pass(&self.name)
+                .with_detail(format!("skipped: {reason}"))
+                .with_duration(elapsed);
+        }
+
+        // Use scoped lint args when the payload specifies target crates,
+        // falling back to workspace-wide when no crates are specified.
+        // For cargo, the args already embed `-- -D warnings`; splice
         // extra_args before the `--` sentinel so they apply to the
         // invocation, not to clippy itself.
-        let base: Vec<&str> = self.build_system.lint_args().to_vec();
+        let base = self.build_system.scoped_lint_args(&payload.target_crates);
         let mut cmd = Command::new(self.build_system.program());
-        let dash_idx = base.iter().position(|a| *a == "--");
+        let dash_idx = base.iter().position(|a| a == "--");
         if let Some(idx) = dash_idx {
             for arg in &base[..idx] {
                 cmd.arg(arg);

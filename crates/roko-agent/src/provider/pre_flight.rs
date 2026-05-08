@@ -20,23 +20,28 @@ pub struct ProviderReadinessIssue {
     pub message: String,
 }
 
-/// Check all providers referenced by configured models for readiness.
+/// Check providers referenced by configured models for readiness.
+///
+/// Only warns loudly about the provider backing `default_model`. Issues for
+/// other providers are logged at `debug` level to avoid noisy startup output
+/// when the user has many providers configured but only uses one.
 ///
 /// Returns an empty `Vec` when all referenced providers are ready.
-/// Only checks providers that are actually referenced by at least one model
-/// profile in `config.models`. Providers that are configured but unreferenced
-/// do not block startup.
-///
-/// Checks performed:
-/// - For `ClaudeCli` kind: verifies the command binary exists on PATH.
-/// - For API kinds: verifies that `api_key_env` is set and the corresponding
-///   environment variable has a non-empty value.
-/// - For `CursorAcp` kind: only checks if an explicit command is configured.
 ///
 /// No network requests are made.
 #[must_use]
 pub fn check_provider_readiness(config: &RokoConfig) -> Vec<ProviderReadinessIssue> {
     let mut issues = Vec::new();
+
+    // Determine which provider backs the default model — only warn loudly about it.
+    let default_provider: Option<&str> = if config.agent.default_model.is_empty() {
+        None
+    } else {
+        config
+            .models
+            .get(config.agent.default_model.as_str())
+            .map(|m| m.provider.as_str())
+    };
 
     // Collect the set of provider keys referenced by model profiles.
     let referenced_providers: HashSet<&str> = config
@@ -52,18 +57,36 @@ pub fn check_provider_readiness(config: &RokoConfig) -> Vec<ProviderReadinessIss
     let effective_providers = config.effective_providers();
 
     for provider_name in &referenced_providers {
+        let is_default = default_provider == Some(provider_name);
+
         let Some(provider) = effective_providers.get(*provider_name) else {
-            issues.push(ProviderReadinessIssue {
-                provider_name: provider_name.to_string(),
-                message: format!(
-                    "provider '{}' referenced by a model but not defined in config.",
-                    provider_name
-                ),
-            });
+            if is_default {
+                issues.push(ProviderReadinessIssue {
+                    provider_name: provider_name.to_string(),
+                    message: format!(
+                        "provider '{}' referenced by a model but not defined in config.",
+                        provider_name
+                    ),
+                });
+            } else {
+                tracing::debug!(
+                    provider = provider_name,
+                    "provider referenced by a model but not defined in config (not default, suppressing warning)"
+                );
+            }
             continue;
         };
 
-        check_single_provider(provider_name, provider, &mut issues);
+        if is_default {
+            check_single_provider(provider_name, provider, &mut issues);
+        } else {
+            // Non-default providers: check silently, log at debug level.
+            let mut non_default_issues = Vec::new();
+            check_single_provider(provider_name, provider, &mut non_default_issues);
+            for issue in &non_default_issues {
+                tracing::debug!(provider = %issue.provider_name, "{}", issue.message);
+            }
+        }
     }
 
     issues
@@ -166,7 +189,7 @@ fn check_api_key_env(
 }
 
 /// Check whether a binary name is findable on the system PATH.
-fn binary_on_path(name: &str) -> bool {
+pub(crate) fn binary_on_path(name: &str) -> bool {
     // If the name contains a path separator, check directly.
     if name.contains('/') || name.contains('\\') {
         return std::path::Path::new(name).exists();
@@ -229,6 +252,7 @@ mod tests {
     #[test]
     fn readiness_missing_provider_definition() {
         let mut config = RokoConfig::default();
+        config.agent.default_model = "test-model".to_string();
         config.models.insert(
             "test-model".to_string(),
             ModelProfile {
@@ -245,6 +269,7 @@ mod tests {
     #[test]
     fn readiness_missing_api_key_env_variable() {
         let mut config = RokoConfig::default();
+        config.agent.default_model = "test-model".to_string();
         config.providers.insert(
             "test-api".to_string(),
             ProviderConfig {
@@ -284,6 +309,7 @@ mod tests {
     #[test]
     fn readiness_claude_cli_nonexistent_command() {
         let mut config = RokoConfig::default();
+        config.agent.default_model = "test-model".to_string();
         config.providers.insert(
             "claude-local".to_string(),
             ProviderConfig {

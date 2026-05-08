@@ -186,9 +186,7 @@ async fn delete_feed(
 // ── Feed catalog handler ─────────────────────────────────────────
 
 /// `GET /api/feeds/catalog` — aggregated feed catalog from feed agents.
-async fn get_feed_catalog(
-    State(state): State<Arc<AppState>>,
-) -> Json<FeedCatalogResponse> {
+async fn get_feed_catalog(State(state): State<Arc<AppState>>) -> Json<FeedCatalogResponse> {
     let snapshot = state.feed_agent_catalog.read().await;
     Json(FeedCatalogResponse {
         agents: snapshot.agents.clone(),
@@ -550,11 +548,13 @@ mod tests {
             .expect("body");
         let feeds: Vec<roko_core::FeedRuntimeStatus> =
             serde_json::from_slice(&body).expect("parse");
-        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds.len(), 3);
         assert_eq!(feeds[0].id, "file-watch-roko-dir");
         assert_eq!(feeds[0].topic, "fs.changed");
         assert_eq!(feeds[1].id, "provider-health-feed");
         assert_eq!(feeds[1].topic, "provider.health");
+        assert_eq!(feeds[2].id, "isfr-keeper");
+        assert_eq!(feeds[2].topic, "isfr.rates");
     }
 
     #[tokio::test]
@@ -579,8 +579,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body");
-        let status: roko_core::FeedRuntimeStatus =
-            serde_json::from_slice(&body).expect("parse");
+        let status: roko_core::FeedRuntimeStatus = serde_json::from_slice(&body).expect("parse");
         assert_eq!(status.id, "file-watch-roko-dir");
         assert_eq!(status.kind, "Raw");
         // .roko/ dir was created above so it should be connected.

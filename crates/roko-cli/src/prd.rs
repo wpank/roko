@@ -17,6 +17,7 @@ mod dry_run_fs;
 #[path = "plan_validate.rs"]
 mod plan_validate;
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -675,11 +676,11 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
         for path in &published {
             let entry = read_prd_entry(path);
             let cov = if entry.coverage > 0.0 {
-                format!("{:.0}%", entry.coverage * 100.0)
+                format!("coverage: {:.0}%", entry.coverage * 100.0)
             } else {
-                "—".into()
+                String::new()
             };
-            println!("  {:<35} coverage: {cov}", entry.title);
+            println!("  {:<30} slug: {:<25} {cov}", entry.title, entry.slug);
         }
     }
 
@@ -691,7 +692,7 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
     } else {
         for path in &drafts {
             let entry = read_prd_entry(path);
-            println!("  {:<35} [draft]", entry.title);
+            println!("  {:<30} slug: {}", entry.title, entry.slug);
         }
     }
 
@@ -712,6 +713,37 @@ pub fn cmd_list(workdir: &Path) -> Result<()> {
     }
     if ideas_lines.is_empty() {
         println!("  (none)");
+    }
+
+    // Show actionable hints for ACP / CLI users.
+    let has_drafts = !drafts.is_empty();
+    let has_published = !published.is_empty();
+    let has_ideas = idea_count > 0;
+    if has_drafts || has_published || has_ideas {
+        println!();
+        println!("═══ Actions ═══");
+        if has_ideas {
+            println!("  /prd-draft <slug>         Draft a PRD from an idea");
+        }
+        if has_drafts {
+            let first_draft = read_prd_entry(&drafts[0]);
+            println!(
+                "  /enhance-prd {:<12} Research & enrich a draft",
+                first_draft.slug
+            );
+            println!(
+                "  /prd-plan {:<15} Generate implementation plan from draft",
+                first_draft.slug
+            );
+        }
+        if has_published {
+            let first_pub = read_prd_entry(&published[0]);
+            println!(
+                "  /prd-plan {:<15} Generate implementation plan from PRD",
+                first_pub.slug
+            );
+        }
+        println!("  /prd-idea \"<text>\"        Capture a new idea");
     }
 
     Ok(())
@@ -990,6 +1022,38 @@ pub async fn generate_plan_from_prd_with_failure_context(
     Ok(plans_root)
 }
 
+/// Default model escalation chain: haiku → sonnet → opus.
+const DEFAULT_ESCALATION_CHAIN: &[&str] =
+    &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"];
+
+/// Return the next-tier model for escalation on validation failures.
+///
+/// Checks `tier_models` config first (keys: `"haiku"`, `"sonnet"`, `"opus"`),
+/// falling back to [`DEFAULT_ESCALATION_CHAIN`]. Returns `None` if the current
+/// model is already at the highest tier.
+fn next_tier_model(current: Option<&str>, tier_models: &HashMap<String, String>) -> Option<String> {
+    // Build the chain from config or defaults.
+    let chain: Vec<&str> = if tier_models.is_empty() {
+        DEFAULT_ESCALATION_CHAIN.to_vec()
+    } else {
+        // Config keys in escalation order.
+        ["haiku", "sonnet", "opus"]
+            .iter()
+            .filter_map(|k| tier_models.get(*k).map(String::as_str))
+            .collect()
+    };
+
+    let current_slug = current.unwrap_or("");
+    // Find position of the current model in the chain.
+    let pos = chain.iter().position(|m| *m == current_slug);
+    match pos {
+        Some(i) if i + 1 < chain.len() => Some(chain[i + 1].to_string()),
+        // Current model not in chain — escalate to the last (strongest) tier.
+        None if !chain.is_empty() => Some(chain[chain.len() - 1].to_string()),
+        _ => None,
+    }
+}
+
 async fn generate_plan_from_prd_with_outcome(
     slug: &str,
     prd_path: &Path,
@@ -1221,14 +1285,42 @@ async fn generate_plan_from_prd_with_outcome(
         // First attempt uses the output we already have.
         let mut validated_toml = try_extract_and_validate(&output);
 
-        // Retry up to 2 times on extraction/validation failure.
+        // Retry up to 2 times on extraction/validation failure, escalating
+        // to a higher-tier model when TOML validation keeps failing.
         if validated_toml.is_err() {
             let max_retries = 2u32;
+            let mut escalated_model: Option<String> = None;
+            let mut last_output = output.clone();
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
+
+                // Escalate model on format/validation failures (not auth/network).
+                let current_model = escalated_model
+                    .as_deref()
+                    .or(effective_model);
+                if resolved.config.agent.escalation.escalate_model {
+                    if let Some(next) =
+                        next_tier_model(current_model, &resolved.config.agent.tier_models)
+                    {
+                        tracing::info!(
+                            from = current_model.unwrap_or("<default>"),
+                            to = next.as_str(),
+                            attempt,
+                            "prd plan: escalating model tier on validation failure"
+                        );
+                        eprintln!(
+                            "⬆️  Escalating model: {} → {next}",
+                            current_model.unwrap_or("<default>"),
+                        );
+                        escalated_model = Some(next);
+                    }
+                }
+                let retry_model = escalated_model.as_deref().or(effective_model);
+
                 tracing::warn!(
                     attempt,
                     max_retries,
+                    model = retry_model.unwrap_or("<default>"),
                     err = validated_toml.as_ref().unwrap_err().as_str(),
                     "prd plan: TOML extraction/validation failed, retrying"
                 );
@@ -1237,8 +1329,16 @@ async fn generate_plan_from_prd_with_outcome(
                     attempt,
                     max_retries + 1,
                 );
+                let error = validated_toml.as_ref().unwrap_err();
+                let truncated_output = if last_output.len() > 2000 {
+                    format!("{}…(truncated)", &last_output[..2000])
+                } else {
+                    last_output.clone()
+                };
                 let retry_prompt = format!(
-                    "Your previous output could not be parsed as valid TOML. \
+                    "Previous attempt produced invalid TOML. Error: {error}\n\n\
+                     Invalid output:\n```\n{truncated_output}\n```\n\n\
+                     Please fix and regenerate a valid tasks.toml.\n\n\
                      Output ONLY the ```toml fenced block with no other text.\n\n\
                      The plan must start with a [meta] section followed by [[task]] entries.\n\n\
                      PRD slug: {slug}"
@@ -1246,7 +1346,7 @@ async fn generate_plan_from_prd_with_outcome(
                 let retry_result = run_agent_capture_silent(AgentExecOpts {
                     prompt: &retry_prompt,
                     workdir: workdir_ref,
-                    model: effective_model,
+                    model: retry_model,
                     effort: Some(resolved.config.agent.effort.as_str()),
                     system_prompt: Some(&system),
                     resume_session: None,
@@ -1258,10 +1358,12 @@ async fn generate_plan_from_prd_with_outcome(
 
                 match retry_result {
                     Ok((0, retry_output)) if !retry_output.trim().is_empty() => {
+                        last_output = retry_output.clone();
                         validated_toml = try_extract_and_validate(&retry_output);
                         if validated_toml.is_ok() {
                             tracing::info!(
                                 attempt,
+                                model = retry_model.unwrap_or("<default>"),
                                 retry_ms = t_retry.elapsed().as_millis() as u64,
                                 "prd plan: retry succeeded"
                             );
@@ -1269,21 +1371,27 @@ async fn generate_plan_from_prd_with_outcome(
                             break;
                         }
                     }
+                    // Non-zero exit (auth/network errors) — do NOT escalate model,
+                    // just log and retry with the same model.
                     Ok((code, _)) => {
                         tracing::warn!(
                             attempt,
                             code,
                             retry_ms = t_retry.elapsed().as_millis() as u64,
-                            "prd plan: retry agent failed"
+                            "prd plan: retry agent failed (not escalating — agent error)"
                         );
+                        // Revert escalation: auth/network failures won't be fixed
+                        // by a different model.
+                        escalated_model = None;
                     }
                     Err(err) => {
                         tracing::warn!(
                             attempt,
                             %err,
                             retry_ms = t_retry.elapsed().as_millis() as u64,
-                            "prd plan: retry agent error"
+                            "prd plan: retry agent error (not escalating — transport error)"
                         );
+                        escalated_model = None;
                     }
                 }
             }
@@ -1355,11 +1463,13 @@ async fn generate_plan_from_prd_with_outcome(
                 None,
             )
             .await;
+            eprintln!("--- Raw model output (first 2000 chars) ---");
+            eprintln!("{}", &output[..output.len().min(2000)]);
+            eprintln!("--- End raw model output ---");
             return Err(anyhow!(
                 "Plan generation failed after retries: no valid tasks.toml was produced.\n\
                  Last error: {final_err}\n\
                  The agent output ({} bytes) did not contain a parseable ```toml block.\n\
-                 Output preview:\n---\n{preview}\n---\n\
                  hint: Try again, or create plans/{slug}/tasks.toml manually.{toml_hint}",
                 output.len()
             ));
@@ -2294,6 +2404,62 @@ fn validate_and_fix_generated_plan(
                             }
                         }
                     }
+
+                    // Auto-add verify entries for implementer tasks with files
+                    // but no verify block. Researchers/strategists/scribes skip.
+                    if task.get("verify").is_none() {
+                        let role = task
+                            .get("role")
+                            .and_then(toml::Value::as_str)
+                            .unwrap_or("implementer");
+                        let files: Vec<String> = task
+                            .get("files")
+                            .and_then(toml::Value::as_array)
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(toml::Value::as_str)
+                                    .map(String::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        if role == "implementer" && !files.is_empty() {
+                            let mut auto_verify = Vec::new();
+
+                            // Infer crate name from file paths for compile check
+                            let crate_name = infer_crate_from_paths(&files);
+                            let compile_cmd = match &crate_name {
+                                Some(c) => format!("cargo check -p {c}"),
+                                None => "cargo check --workspace".to_string(),
+                            };
+                            auto_verify.push(make_verify_entry(
+                                "compile",
+                                &compile_cmd,
+                                &format!(
+                                    "{} must compile",
+                                    crate_name.as_deref().unwrap_or("workspace"),
+                                ),
+                            ));
+
+                            // Add structural grep for expected symbols from title
+                            if let Some(title) = task.get("title").and_then(toml::Value::as_str) {
+                                let structural_cmd = build_structural_verify_cmd(title, &files);
+                                if let Some(cmd) = structural_cmd {
+                                    auto_verify.push(make_verify_entry(
+                                        "structural",
+                                        &cmd,
+                                        "Expected symbols must exist in source",
+                                    ));
+                                }
+                            }
+
+                            task.insert("verify".to_string(), toml::Value::Array(auto_verify));
+                            eprintln!(
+                                "info: {task_id_label}: auto-added verify entries \
+                                 (compile + structural)"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2346,9 +2512,72 @@ fn validate_and_fix_generated_plan(
     Ok(serialized)
 }
 
+/// Infer the crate name from a list of file paths.
+/// Looks for `crates/<name>/` pattern. Returns `None` if no crate path found.
+fn infer_crate_from_paths(files: &[String]) -> Option<String> {
+    for f in files {
+        // Match patterns like "crates/roko-cli/src/foo.rs"
+        if let Some(rest) = f.strip_prefix("crates/") {
+            if let Some(slash) = rest.find('/') {
+                return Some(rest[..slash].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Build a `[[task.verify]]` TOML table value.
+fn make_verify_entry(phase: &str, command: &str, fail_msg: &str) -> toml::Value {
+    let mut table = toml::value::Table::new();
+    table.insert("phase".to_string(), toml::Value::String(phase.to_string()));
+    table.insert(
+        "command".to_string(),
+        toml::Value::String(command.to_string()),
+    );
+    table.insert(
+        "fail_msg".to_string(),
+        toml::Value::String(fail_msg.to_string()),
+    );
+    toml::Value::Table(table)
+}
+
+/// Build a structural verify command that greps for expected symbols.
+/// Extracts likely function/struct names from the task title and greps
+/// the first file in the list for them.
+fn build_structural_verify_cmd(title: &str, files: &[String]) -> Option<String> {
+    let target_file = files.first()?;
+    // Extract words that look like identifiers (snake_case or CamelCase)
+    let candidates: Vec<&str> = title
+        .split_whitespace()
+        .filter(|w| {
+            w.len() >= 4
+                && w.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && w.chars().next().is_some_and(|c| c.is_alphabetic())
+                // Skip common non-symbol words
+                && !matches!(
+                    w.to_lowercase().as_str(),
+                    "with" | "from" | "into" | "that" | "this" | "pass" | "when"
+                        | "does" | "make" | "have" | "task" | "file" | "test"
+                        | "only" | "also" | "each" | "them" | "should" | "implement"
+                        | "create" | "update" | "remove" | "validate" | "generate"
+                )
+        })
+        .take(2)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    // Build a grep -q 'sym1\|sym2' file command
+    let pattern = candidates.join("\\|");
+    Some(format!("grep -q '{pattern}' {target_file}"))
+}
+
 /// Slugify a title.
+///
+/// Output is capped at 200 bytes, truncated at the last hyphen before the
+/// limit (word boundary) to avoid filesystem path-length errors.
 pub fn slugify(title: &str) -> String {
-    title
+    let slug: String = title
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
@@ -2356,7 +2585,19 @@ pub fn slugify(title: &str) -> String {
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("-")
+        .join("-");
+
+    const MAX_LEN: usize = 200;
+    if slug.len() <= MAX_LEN {
+        return slug;
+    }
+
+    // Truncate at the last hyphen before the limit (word boundary).
+    if let Some(pos) = slug[..MAX_LEN].rfind('-') {
+        slug[..pos].to_string()
+    } else {
+        slug[..MAX_LEN].to_string()
+    }
 }
 
 #[must_use]
@@ -2662,6 +2903,34 @@ mod tests {
         assert_eq!(slugify("Agent Self-Improvement"), "agent-self-improvement");
         assert_eq!(slugify("  foo  BAR  "), "foo-bar");
         assert_eq!(slugify("hello"), "hello");
+    }
+
+    #[test]
+    fn slugify_long_input_capped_at_200() {
+        // Build a title that would produce a slug longer than 200 bytes.
+        let long_title = "word ".repeat(100); // 500 chars → ~400+ byte slug
+        let slug = slugify(&long_title);
+        assert!(slug.len() <= 200, "slug len {} > 200", slug.len());
+        // Should end at a word boundary (no trailing hyphen).
+        assert!(!slug.ends_with('-'));
+        assert!(!slug.is_empty());
+    }
+
+    #[test]
+    fn slugify_exactly_200_not_truncated() {
+        // Build a slug that's exactly 200 bytes — should not be truncated.
+        let word = "abcdefghij"; // 10 chars
+        // 19 words of 10 + 18 hyphens = 208; 18 words = 198; need filler
+        let title = format!("{} ab", vec![word; 19].join(" ")); // yields 19*10+18+3 = 211 → truncated
+        let slug = slugify(&title);
+        assert!(slug.len() <= 200, "slug len {} > 200", slug.len());
+    }
+
+    #[test]
+    fn slugify_short_input_unchanged() {
+        let slug = slugify("small title");
+        assert_eq!(slug, "small-title");
+        assert!(slug.len() < 200);
     }
 
     #[test]
@@ -3347,7 +3616,7 @@ model_hint = "gpt-nonexistent"
     }
 
     #[test]
-    fn validate_normalizes_model_alias() {
+    fn validate_removes_model_alias_hint() {
         let toml = r#"
 [meta]
 plan = "test"
@@ -3365,10 +3634,9 @@ model_hint = "haiku"
         let models = sample_models();
         let result = validate_and_fix_generated_plan(toml, "test", &models, None).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
-        assert_eq!(
-            parsed["task"][0]["model_hint"].as_str().unwrap(),
-            "claude-haiku-4-5",
-            "alias should be normalized to full name"
+        assert!(
+            parsed["task"][0].get("model_hint").is_none(),
+            "model_hint aliases should be removed so runtime selects"
         );
     }
 

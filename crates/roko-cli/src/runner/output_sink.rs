@@ -537,14 +537,7 @@ impl fmt::Debug for FormattedStderrSink {
 }
 
 impl RunOutputSink for FormattedStderrSink {
-    fn task_started(
-        &self,
-        plan_id: &str,
-        task_id: &str,
-        role: &str,
-        title: &str,
-        attempt: u32,
-    ) {
+    fn task_started(&self, plan_id: &str, task_id: &str, role: &str, title: &str, attempt: u32) {
         let attempt_str = if attempt > 1 {
             format!(" (attempt {attempt})")
         } else {
@@ -683,10 +676,7 @@ impl RunOutputSink for FormattedStderrSink {
             self.emit_pass(
                 plan_id,
                 task_id,
-                &format!(
-                    "Gate passed: {} ({secs:.1}s)",
-                    result.gate_name
-                ),
+                &format!("Gate passed: {} ({secs:.1}s)", result.gate_name),
             );
         } else {
             let summary_trunc = truncate_chars(&result.summary, 80);
@@ -701,13 +691,7 @@ impl RunOutputSink for FormattedStderrSink {
         }
     }
 
-    fn gate_retry(
-        &self,
-        plan_id: &str,
-        task_id: &str,
-        next_attempt: u32,
-        cooldown_ms: u64,
-    ) {
+    fn gate_retry(&self, plan_id: &str, task_id: &str, next_attempt: u32, cooldown_ms: u64) {
         let secs = cooldown_ms as f64 / 1000.0;
         self.emit_progress(
             plan_id,
@@ -777,6 +761,161 @@ impl RunOutputSink for FormattedStderrSink {
         } else {
             self.emit(&format!("{pfx} | {line}"));
         }
+    }
+}
+
+// ─── AcpProgressSink ──────────────────────────────────────────────────────────
+
+/// Emits `ROKO_PROGRESS: <json>` lines to stdout for structured progress parsing.
+///
+/// Designed to run alongside `FormattedStderrSink`. The ACP layer reads stdout
+/// of CLI subprocess output and parses these prefixed JSON lines to track
+/// task/agent progress without scraping human-readable stderr.
+pub struct AcpProgressSink;
+
+impl AcpProgressSink {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Write a JSON progress line to stdout.
+    fn emit(&self, value: &serde_json::Value) {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "ROKO_PROGRESS: ");
+        let _ = serde_json::to_writer(&mut stdout, value);
+        let _ = writeln!(stdout);
+    }
+}
+
+impl Default for AcpProgressSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for AcpProgressSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AcpProgressSink")
+    }
+}
+
+impl RunOutputSink for AcpProgressSink {
+    fn task_started(&self, plan_id: &str, task_id: &str, role: &str, title: &str, attempt: u32) {
+        self.emit(&serde_json::json!({
+            "type": "task_started",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "role": role,
+            "title": title,
+            "attempt": attempt,
+        }));
+    }
+
+    fn task_completed(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        completed: usize,
+        total: usize,
+        duration_ms: u64,
+    ) {
+        self.emit(&serde_json::json!({
+            "type": "task_completed",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "completed": completed,
+            "total": total,
+            "duration_ms": duration_ms,
+        }));
+    }
+
+    fn task_failed(&self, plan_id: &str, task_id: &str, error: &str) {
+        self.emit(&serde_json::json!({
+            "type": "task_failed",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "error": error,
+        }));
+    }
+
+    fn agent_started(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        provider: &str,
+        model: &str,
+        pid: Option<u32>,
+    ) {
+        self.emit(&serde_json::json!({
+            "type": "agent_started",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "provider": provider,
+            "model": model,
+            "pid": pid,
+        }));
+    }
+
+    fn tool_call(&self, plan_id: &str, task_id: &str, tool_id: &str, tool_name: &str) {
+        self.emit(&serde_json::json!({
+            "type": "tool_call",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "tool_id": tool_id,
+            "tool": tool_name,
+        }));
+    }
+
+    fn agent_turn_completed(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        total_cost_usd: Option<f64>,
+        is_error: bool,
+        model: &str,
+        total_input_tokens: u64,
+        total_output_tokens: u64,
+    ) {
+        self.emit(&serde_json::json!({
+            "type": "agent_turn_completed",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "total_cost_usd": total_cost_usd,
+            "is_error": is_error,
+            "model": model,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+        }));
+    }
+
+    fn gate_result(&self, plan_id: &str, task_id: &str, result: &GateResultSummary) {
+        self.emit(&serde_json::json!({
+            "type": "gate_result",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "rung": result.rung,
+            "passed": result.passed,
+            "gate_name": result.gate_name,
+            "summary": result.summary,
+            "duration_ms": result.duration_ms,
+        }));
+    }
+
+    fn plan_summary(
+        &self,
+        plan_id: &str,
+        tasks_passed: usize,
+        tasks_failed: usize,
+        total_duration_ms: u64,
+    ) {
+        self.emit(&serde_json::json!({
+            "type": "plan_summary",
+            "plan_id": plan_id,
+            "tasks_passed": tasks_passed,
+            "tasks_failed": tasks_failed,
+            "total_duration_ms": total_duration_ms,
+        }));
     }
 }
 
@@ -865,29 +1004,27 @@ pub fn format_dashboard_event(
             let trunc = truncate_chars(preview, 100);
             (format!("[{agent_id}]"), "|", trunc)
         }
-        DashboardEvent::AgentCompleted { agent_id } => (
-            format!("[{agent_id}]"),
-            "+",
-            format!("Agent completed"),
-        ),
+        DashboardEvent::AgentCompleted { agent_id } => {
+            (format!("[{agent_id}]"), "+", format!("Agent completed"))
+        }
         DashboardEvent::GateResult {
             plan_id,
             task_id,
             gate,
             passed,
         } => {
-            let (icon, word) = if *passed { ("+", "passed") } else { ("x", "failed") };
+            let (icon, word) = if *passed {
+                ("+", "passed")
+            } else {
+                ("x", "failed")
+            };
             (
                 format!("[{plan_id}/{task_id}]"),
                 icon,
                 format!("Gate {word}: {gate}"),
             )
         }
-        DashboardEvent::PhaseTransition {
-            plan_id,
-            from,
-            to,
-        } => (
+        DashboardEvent::PhaseTransition { plan_id, from, to } => (
             format!("[{plan_id}]"),
             ">",
             format!("Phase: {from} -> {to}"),
@@ -1073,7 +1210,13 @@ mod tests {
     fn formatted_sink_in_arc_does_not_panic() {
         let sink: Arc<dyn RunOutputSink> = Arc::new(FormattedStderrSink::new(false));
         sink.task_started("plan-1", "task-1", "implementer", "Build feature X", 1);
-        sink.agent_started("plan-1", "task-1", "claude", "claude-sonnet-4-6", Some(1234));
+        sink.agent_started(
+            "plan-1",
+            "task-1",
+            "claude",
+            "claude-sonnet-4-6",
+            Some(1234),
+        );
         sink.agent_text_delta("plan-1", "task-1", "hello ");
         sink.agent_text_delta("plan-1", "task-1", "world\n");
         sink.flush_agent_text("plan-1", "task-1");
@@ -1140,18 +1283,20 @@ mod tests {
 
     #[test]
     fn truncation_short_input_unchanged() {
-        let lines: Vec<&str> = (0..10).map(|i| match i {
-            0 => "line-0",
-            1 => "line-1",
-            2 => "line-2",
-            3 => "line-3",
-            4 => "line-4",
-            5 => "line-5",
-            6 => "line-6",
-            7 => "line-7",
-            8 => "line-8",
-            _ => "line-9",
-        }).collect();
+        let lines: Vec<&str> = (0..10)
+            .map(|i| match i {
+                0 => "line-0",
+                1 => "line-1",
+                2 => "line-2",
+                3 => "line-3",
+                4 => "line-4",
+                5 => "line-5",
+                6 => "line-6",
+                7 => "line-7",
+                8 => "line-8",
+                _ => "line-9",
+            })
+            .collect();
         let result = format_truncated_lines(&lines);
         assert_eq!(result.len(), 10);
         assert_eq!(result[0], "line-0");

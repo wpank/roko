@@ -6,6 +6,7 @@
 
 pub mod acp_adapter;
 pub mod bridge_events;
+pub mod builtin_tools;
 pub mod config;
 pub mod config_watch;
 pub mod event_forward;

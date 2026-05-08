@@ -29,14 +29,15 @@ use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
 use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
-    Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId,
-    PipeMode, Plan, ReplMode, RepoRegistry, SessionStatus, Source, WizardInputs, config_cmd,
-    load_resolved_config, run_init_wizard, run_once,
+    Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
+    ReplMode, RepoRegistry, SessionStatus, Source, WizardInputs, config_cmd, load_resolved_config,
+    run_init_wizard, run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
 use roko_core::agent::{AgentRole, ProviderKind};
 use roko_core::config::ServeDeployWebhookConfig;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
+use roko_core::shutdown::GracefulShutdown;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{ContentHash, Context, DaimonPolicy, Kind, Query, Store};
 use roko_core::{Headlines, TaskMetric, compute_headlines};
@@ -217,10 +218,10 @@ fn long_version() -> &'static str {
     about = "Minimal CLI for the Roko universal loop",
     after_long_help = "\
 COMMAND GROUPS:
-  Core workflow:     init, do, run, status, doctor
+  Core workflow:     init, do, develop, run, status, doctor
   Planning:          plan, prd
   Agents:            agent (create, start, stop, chat, serve)
-  Research:          research, think
+  Research:          research, think, note
   Knowledge:         knowledge (query, dream, custody, archive)
   Learning:          learn (router, experiments, efficiency, tune)
   Jobs:              job
@@ -370,7 +371,37 @@ Examples:
         /// Disable cascade routing for this run.
         #[arg(long)]
         no_cascade: bool,
+        /// Additional context files/dirs/globs to include in the prompt.
+        #[arg(long = "context", value_name = "PATH")]
+        context: Vec<PathBuf>,
         /// Prompt words. Quoted prompts are recommended.
+        #[arg(value_name = "PROMPT")]
+        prompt: Vec<String>,
+    },
+    /// Plan-first development: generate plan, approve, execute.
+    #[command(after_help = "\
+Examples:
+  roko develop \"Add user auth\"          Generate plan, approve, execute
+  roko develop --dry-run \"Add auth\"     Show plan without executing
+  roko develop --yes \"Quick fix\"        Skip approval, auto-execute
+  roko develop --continue                Resume from last snapshot")]
+    Develop {
+        /// Preview the generated plan without executing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the approval prompt and execute immediately.
+        #[arg(long)]
+        yes: bool,
+        /// Resume interrupted work from the last snapshot.
+        #[arg(long)]
+        r#continue: bool,
+        /// Working directory (default: cwd or --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Override the provider for this run.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Prompt describing what to develop.
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
@@ -458,6 +489,20 @@ Examples:
         #[arg(long)]
         serve_url: Option<String>,
     },
+    /// Interactive setup wizard: detect providers, init workspace, verify.
+    #[command(after_help = "\
+Examples:
+  roko setup                        Interactive guided setup
+  roko setup --yes                  Non-interactive (use first available provider)
+  roko setup --workdir /path        Setup in a specific directory")]
+    Setup {
+        /// Directory to set up (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Non-interactive mode: skip prompts, use first available provider.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Check workspace layer dependency rules.
     LayerCheck,
 
@@ -497,6 +542,22 @@ Examples:
         /// Working directory (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
+    },
+    /// Capture a quick note (no LLM, instant).
+    #[command(after_help = "\
+Examples:
+  roko note \"my thought here\"
+  roko note --tag feature \"add cursor support\"
+  roko note --tag bug --tag urgent \"login is broken\"")]
+    Note {
+        /// Tag(s) to attach to the note.
+        #[arg(long = "tag", short = 't')]
+        tags: Vec<String>,
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Note text.
+        text: Vec<String>,
     },
     /// Adjust behavior by writing roko.toml.
     #[command(
@@ -1233,12 +1294,11 @@ enum CompletionShell {
 /// Execution engine for `roko plan run`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum PlanEngine {
-    /// Graph Engine (default). Converts plans to graphs and executes via the Engine.
-    #[default]
+    /// Graph Engine. Converts plans to graphs and executes via the Engine.
     #[value(name = "graph")]
     Graph,
-    /// Runner v2 (legacy). Uses the streaming event-loop plan executor.
-    #[cfg(feature = "legacy-runner-v2")]
+    /// Runner v2. Uses the streaming event-loop plan executor.
+    #[default]
     #[value(name = "runner-v2")]
     RunnerV2,
 }
@@ -1332,6 +1392,9 @@ Examples:
         /// Treat source as a file path to read (instead of inline text).
         #[arg(long)]
         from_file: Option<PathBuf>,
+        /// Additional context files/dirs/globs to include in the prompt.
+        #[arg(long = "context", value_name = "PATH")]
+        context: Vec<PathBuf>,
     },
     /// Regenerate an existing plan from its source PRD / plan extract.
     Regenerate {
@@ -1852,7 +1915,11 @@ enum ConfigProviderCmd {
 #[derive(Debug, Subcommand)]
 enum ConfigModelCmd {
     /// List configured models and their capabilities.
+    #[command(alias = "ls")]
     List {
+        /// Print only model names, one per line (for shell completion scripts).
+        #[arg(long)]
+        names_only: bool,
         /// Directory containing `roko.toml` (default: cwd / --repo).
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -2081,6 +2148,8 @@ fn main() {
         .enable_all()
         .build()
         .expect("failed to build Tokio runtime");
+    let shutdown = setup_graceful_shutdown();
+    install_sigterm_handler(&runtime, shutdown.clone());
 
     let code = match runtime.block_on(dispatch(cli)) {
         Ok(code) => {
@@ -2282,6 +2351,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     None,
                     false,
                     provider,
+                    Vec::new(),
                 )
                 .await;
             }
@@ -2298,6 +2368,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             compare,
             r#continue,
             no_cascade,
+            context,
             prompt,
         } => {
             commands::do_cmd::cmd_do(
@@ -2313,8 +2384,20 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 r#continue,
                 no_cascade,
                 provider,
+                context,
             )
             .await
+        }
+        Command::Develop {
+            dry_run,
+            yes,
+            r#continue,
+            workdir,
+            provider,
+            prompt,
+        } => {
+            commands::develop::cmd_develop(cli, workdir, prompt, dry_run, yes, r#continue, provider)
+                .await
         }
         Command::Status {
             workdir,
@@ -2335,6 +2418,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         Command::Doctor { workdir, serve_url } => {
             commands::util::cmd_doctor(cli, workdir, serve_url).await
         }
+        Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
         Command::LayerCheck => roko_cli::layer_check::run_layer_check(),
         Command::Plan { cmd } => {
             let wd = resolve_workdir(cli);
@@ -2357,6 +2441,14 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         }
         Command::Think { question, workdir } => {
             commands::think::cmd_think(cli, question, workdir).await
+        }
+        Command::Note {
+            tags,
+            workdir,
+            text,
+        } => {
+            let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+            commands::note::cmd_note(&wd, text, tags, cli.json)
         }
         Command::Tune(cmd) => commands::tune::cmd_tune(cli, cmd).await,
         Command::Knowledge { cmd } => commands::knowledge::dispatch_knowledge(cli, cmd).await,
@@ -2967,6 +3059,41 @@ fn prepare_runtime_hooks(workdir: &Path, quiet: bool) {
     }
     run_process_lifecycle_hooks(workdir, quiet);
 }
+
+fn setup_graceful_shutdown() -> GracefulShutdown {
+    let shutdown = GracefulShutdown::new();
+    shutdown.register("reap_orphaned_children", || async {
+        let reaped = reap_orphaned_children();
+        if reaped > 0 {
+            tracing::warn!(reaped, "SIGTERM shutdown reaped orphaned children");
+        }
+    });
+    shutdown
+}
+
+#[cfg(unix)]
+fn install_sigterm_handler(runtime: &tokio::runtime::Runtime, shutdown: GracefulShutdown) {
+    std::mem::drop(runtime.spawn(async move {
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::warn!("failed to install SIGTERM handler");
+            return;
+        };
+        sigterm.recv().await;
+        let report = shutdown.drain().await;
+        tracing::info!(
+            drained_hooks = report.drained_hooks,
+            timed_out_hooks = report.timed_out_hooks,
+            elapsed_ms = report.elapsed_ms,
+            "SIGTERM graceful shutdown complete"
+        );
+        std::process::exit(EXIT_SUCCESS);
+    }));
+}
+
+#[cfg(not(unix))]
+fn install_sigterm_handler(_runtime: &tokio::runtime::Runtime, _shutdown: GracefulShutdown) {}
 
 fn bootstrap_observability_dirs(workdir: &Path) -> std::io::Result<()> {
     // Only create .roko/ if the user has expressed intent (roko.toml exists or .roko/ already exists).
@@ -3733,7 +3860,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_capture_episode_records_memory_episode() {
+    async fn persist_capture_episode_records_learning_episode() {
         let dir = tempdir().unwrap();
         let workdir = dir.path();
 
@@ -3752,7 +3879,7 @@ mod tests {
         .await
         .unwrap();
 
-        let episodes_path = workdir.join(".roko").join("memory").join("episodes.jsonl");
+        let episodes_path = workdir.join(".roko").join("learn").join("episodes.jsonl");
         let episodes = EpisodeLogger::read_all_lossy(&episodes_path).await.unwrap();
         assert_eq!(episodes.len(), 1);
 
@@ -4947,8 +5074,7 @@ mod tests {
 
     #[test]
     fn cli_parses_feed_status() {
-        let cli =
-            Cli::try_parse_from(["roko", "feed", "status", "file-watch-roko-dir"]).unwrap();
+        let cli = Cli::try_parse_from(["roko", "feed", "status", "file-watch-roko-dir"]).unwrap();
         match cli.command {
             Some(Command::Feed {
                 cmd: commands::feed::FeedCmd::Status { id },

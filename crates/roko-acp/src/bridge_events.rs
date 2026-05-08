@@ -44,6 +44,7 @@ use roko_dreams::{load_dream_routing_advice, relevant_pattern_summaries};
 use roko_learn::{
     cascade_router::CascadeRouter,
     cost_table::CostTable,
+    efficiency::AgentEfficiencyEvent,
     episode_logger::{Episode, EpisodeLogger, Usage as EpUsage},
     model_router::RoutingContext,
     playbook::Playbook,
@@ -58,6 +59,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::builtin_tools::acp_builtin_tools;
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
 use crate::runner::run_with_workflow_engine;
@@ -427,6 +429,181 @@ async fn append_acp_episode(
             "failed to append ACP episode"
         );
     }
+
+    // Spawn background distillation so the knowledge store learns from each ACP interaction.
+    let distill_workdir = workdir.to_path_buf();
+    let distill_model = roko_config.agent.default_model.clone();
+    let distill_caller: Arc<dyn roko_core::foundation::ModelCaller> =
+        Arc::new(ModelCallService::new(distill_model).with_config(roko_config.clone()));
+    roko_neuro::spawn_episode_distillation(distill_workdir, episode, Some(distill_caller));
+
+    // Auto-dream consolidation: after enough episodes accumulate, spawn a
+    // background dream cycle so patterns are extracted into `.roko/dreams/`.
+    maybe_spawn_dream_consolidation(workdir, roko_config);
+}
+
+/// Default number of episodes that must accumulate since the last dream report
+/// before a background dream consolidation is triggered.
+const DREAM_EPISODE_THRESHOLD: usize = 10;
+
+/// If the number of episodes since the last dream report exceeds
+/// [`DREAM_EPISODE_THRESHOLD`], spawn a background dream consolidation.
+/// This is fire-and-forget: failures are logged but never block the caller.
+fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
+    let episodes_path = workdir.join(".roko").join("episodes.jsonl");
+    let dream_dir = workdir.join(".roko").join("dreams");
+    let workdir = workdir.to_path_buf();
+
+    // Count episodes since the last dream report.  Both helpers are
+    // cheap (file I/O only, no LLM calls) so running them on the
+    // current thread is acceptable.
+    let last_dream_ts = roko_dreams::runner::load_latest_dream_report(&dream_dir)
+        .ok()
+        .flatten()
+        .map(|r| r.completed_at);
+
+    let text = match std::fs::read_to_string(&episodes_path) {
+        Ok(t) => t,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            debug!(?err, "skipping dream check: could not read episode log");
+            return;
+        }
+    };
+
+    let episodes_since_dream = match last_dream_ts {
+        Some(ts) => text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Episode>(line).ok())
+            .filter(|ep| ep.timestamp > ts)
+            .count(),
+        None => text.lines().filter(|line| !line.trim().is_empty()).count(),
+    };
+
+    if episodes_since_dream < DREAM_EPISODE_THRESHOLD {
+        return;
+    }
+
+    info!(
+        episodes_since_dream,
+        threshold = DREAM_EPISODE_THRESHOLD,
+        "triggering background dream consolidation"
+    );
+
+    let dream_config = roko_dreams::DreamLoopConfig {
+        auto_dream: true,
+        idle_threshold_mins: 0,
+        min_episodes_for_dream: 1,
+        agent: roko_dreams::DreamAgentConfig {
+            command: config
+                .agent
+                .command
+                .clone()
+                .unwrap_or_else(|| "claude".into()),
+            args: Vec::new(),
+            model: Some(config.agent.default_model.clone()),
+            bare_mode: true,
+            effort: "medium".to_string(),
+            fallback_model: None,
+            timeout_ms: 120_000,
+            env: Vec::new(),
+        },
+    };
+
+    // `consolidate_now` internally calls `block_on`, so it must run on a
+    // blocking thread rather than the async runtime.
+    tokio::task::spawn_blocking(move || {
+        let mut runner = roko_dreams::DreamRunner::new(&workdir, dream_config);
+        if let Err(err) = runner.consolidate_now() {
+            warn!(?err, "background dream consolidation failed");
+        }
+    });
+}
+
+/// Emit an [`AgentEfficiencyEvent`] to `.roko/learn/efficiency.jsonl`.
+///
+/// This is fire-and-forget: the write is spawned on a blocking thread so it
+/// never delays the response stream, and failures are logged but swallowed.
+fn emit_acp_efficiency_event(
+    workdir: &Path,
+    session_id: &str,
+    resolved: &ResolvedModel,
+    dispatch_started: Instant,
+    stream_result: Option<&StreamResult>,
+    succeeded: bool,
+    cost_override: Option<f64>,
+) {
+    let elapsed_ms = dispatch_started.elapsed().as_millis() as u64;
+    let usage = stream_result.and_then(|sr| sr.usage.as_ref());
+
+    let input_tokens = usage.map_or(0, |u| u.input_tokens);
+    let output_tokens = usage.map_or(0, |u| u.output_tokens);
+    let cached_read = usage.and_then(|u| u.cached_read_tokens).unwrap_or(0);
+    let cached_write = usage.and_then(|u| u.cached_write_tokens).unwrap_or(0);
+
+    let cost_usd = cost_override.unwrap_or_else(|| {
+        calculate_cost_for_model_slug(&resolved.slug, input_tokens, output_tokens, cached_read)
+            .unwrap_or(0.0)
+    });
+    let cost_usd_without_cache = cost_override.unwrap_or_else(|| {
+        calculate_cost_without_cache_for_model_slug(
+            &resolved.slug,
+            input_tokens,
+            output_tokens,
+            cached_read,
+        )
+        .unwrap_or(cost_usd)
+    });
+
+    let outcome = if succeeded { "success" } else { "failure" }.to_string();
+
+    let event = AgentEfficiencyEvent {
+        agent_id: session_id.to_string(),
+        backend: resolved.provider_kind.label().to_string(),
+        model: resolved.slug.clone(),
+        model_used: resolved.slug.clone(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: cached_read,
+        cache_write_tokens: cached_write,
+        cost_usd,
+        cost_usd_without_cache,
+        wall_time_ms: elapsed_ms,
+        duration_ms: elapsed_ms,
+        outcome,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        ..AgentEfficiencyEvent::default()
+    };
+
+    let path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
+
+    task::spawn_blocking(move || {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let line = match serde_json::to_string(&event) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to serialize efficiency event");
+                return;
+            }
+        };
+        use std::io::Write;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path);
+        match file {
+            Ok(mut f) => {
+                if let Err(err) = writeln!(f, "{line}") {
+                    tracing::warn!(error = %err, "failed to write efficiency event");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to open efficiency.jsonl");
+            }
+        }
+    });
 }
 
 fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext {
@@ -1040,7 +1217,21 @@ where
         let mut full_system = system_prompt.clone();
         full_system = append_context(&full_system, &file_context);
         full_system = append_context(&full_system, &knowledge_context);
-        session.build_messages_array(&full_system, &prompt_text)
+        let mut msgs = session.build_messages_array(&full_system, &prompt_text);
+        // If the prompt contains Image blocks, replace the last user message's
+        // content with a multi-part content array in the appropriate format.
+        let image_parts = if resolved.provider_kind == ProviderKind::AnthropicApi {
+            build_anthropic_content_parts(&params.prompt)
+        } else {
+            build_openai_content_parts(&params.prompt)
+        };
+        if let Some(parts) = image_parts
+            && let Some(last) = msgs.last_mut()
+            && last.get("role").and_then(|v| v.as_str()) == Some("user")
+        {
+            last["content"] = serde_json::Value::Array(parts);
+        }
+        msgs
     } else {
         Vec::new()
     };
@@ -1077,6 +1268,7 @@ where
     let max_iterations = session.config_state.max_iterations;
     let review_strictness = session.config_state.review_strictness.clone();
     let session_mcp_servers = session.mcp_servers.clone();
+    let session_tools_enabled = session.tools_enabled;
     // Effort level from the IDE dropdown (low/medium/high/max). Passed to
     // config_with_session_effort() at dispatch time so the provider backend
     // sees it as `agent.default_effort`. See that function's doc comment for
@@ -1148,7 +1340,7 @@ where
                 &session_id,
                 prompt_text.trim(),
                 &workdir,
-                resolved.slug.clone(),
+                model_key.clone(), // run_slash_command uses model_key, not the resolved slug.
                 cancel_token,
                 event_sender,
                 shared_run,
@@ -1256,7 +1448,9 @@ where
                     &model_key,
                     &resolved.slug,
                     &roko_config,
+                    &workdir,
                     &session_effort,
+                    session_tools_enabled,
                     cancel_token,
                     event_sender,
                 )
@@ -1273,6 +1467,7 @@ where
                     &workdir,
                     &session_mcp_servers,
                     &session_effort,
+                    session_tools_enabled,
                     cancel_token,
                     event_sender,
                 )
@@ -1391,6 +1586,16 @@ where
         )
         .await;
 
+        emit_acp_efficiency_event(
+            &workdir_for_logging,
+            &session.session_id,
+            &resolved_for_logging,
+            dispatch_started,
+            stream_result.as_ref().ok(),
+            task_error.is_none() && stream_error.is_none(),
+            cost_override,
+        );
+
         let stream_result_ref = stream_result.as_ref().ok();
         let dispatch_succeeded = acp_dispatch_succeeded(
             stream_result_ref,
@@ -1443,9 +1648,14 @@ where
     }
 
     // Push assistant turn after streaming completes (skip slash commands).
+    // If dispatch failed (empty assistant text), pop the user turn we pushed earlier
+    // to prevent a dangling user message with no response in the history.
     match &stream_result {
         Ok(sr) if !is_slash_command && !sr.assistant_text.is_empty() => {
             session.push_assistant_turn(truncate_assistant_history(&sr.assistant_text));
+        }
+        _ if !is_slash_command => {
+            session.conversation_history.pop();
         }
         _ => {}
     }
@@ -1464,15 +1674,14 @@ async fn run_anthropic_cognitive_task(
     model_key: &str,
     slug: &str,
     roko_config: &RokoConfig,
+    workdir: &Path,
     effort: &str,
+    tools_enabled: bool,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
-    let Some(model_call_config) = anthropic_model_call_config(
-        &config_with_session_effort(roko_config, effort),
-        model_key,
-        slug,
-    ) else {
+    let config = config_with_session_effort(roko_config, effort);
+    let Some(model_call_config) = anthropic_model_call_config(&config, model_key, slug) else {
         emit_dispatch_failure(
             &event_sender,
             "Error: Anthropic provider is not configured for ACP dispatch.".to_string(),
@@ -1493,10 +1702,203 @@ async fn run_anthropic_cognitive_task(
         return Ok(());
     }
 
-    let caller = ModelCallService::new(model_key.to_string()).with_config(model_call_config);
-    let request = model_call_request_from_acp_messages(model_key, messages);
+    // Builtin tool-loop path: when tools are enabled, run the ToolLoop with
+    // Anthropic translator so the model can invoke read_file, bash, etc. and
+    // receive tool_result content blocks in a loop (up to 25 iterations).
+    if tools_enabled
+        && run_anthropic_builtin_tool_loop(
+            session_id,
+            messages,
+            model_key,
+            slug,
+            &config,
+            workdir,
+            cancel_token.clone(),
+            event_sender.clone(),
+        )
+        .await?
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    // Fallback: plain streaming with no tool execution loop.
+    let caller =
+        ModelCallService::new(model_key.to_string()).with_config(model_call_config.clone());
+    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let request = model_call_request_from_acp_messages(model_key, messages, tools);
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
         .await
+}
+
+/// Anthropic-native builtin tool loop.
+///
+/// Uses the Anthropic Messages API tool format (`tool_use` / `tool_result` content
+/// blocks) and the shared [`ToolLoop`] infrastructure. When the model emits
+/// `tool_use` blocks the loop executes them via [`execute_acp_builtin_tool`],
+/// appends `tool_result` blocks, and re-calls the model until it produces a
+/// text-only response (or hits the 25-iteration cap).
+///
+/// Returns `Ok(Some(true))` if the loop handled the request, `Ok(Some(false))`
+/// if the caller should fall through to the plain streaming path, and `Ok(None)`
+/// if the Anthropic API key is not available.
+#[allow(clippy::too_many_arguments)]
+async fn run_anthropic_builtin_tool_loop(
+    session_id: &str,
+    messages: &[serde_json::Value],
+    model_key: &str,
+    slug: &str,
+    roko_config: &RokoConfig,
+    workdir: &Path,
+    cancel_token: CancelToken,
+    event_sender: mpsc::Sender<CognitiveEvent>,
+) -> Result<Option<bool>> {
+    // Resolve the Anthropic provider to get the API key.
+    let api_key = roko_config
+        .providers
+        .iter()
+        .find(|(_, p)| p.kind == ProviderKind::AnthropicApi)
+        .and_then(|(_, p)| p.resolve_api_key());
+
+    let Some(api_key) = api_key else {
+        debug!(
+            session_id,
+            model_key, "Anthropic builtin tool loop skipped: no API key"
+        );
+        return Ok(None);
+    };
+
+    let timeout_ms = roko_config
+        .providers
+        .iter()
+        .find(|(_, p)| p.kind == ProviderKind::AnthropicApi)
+        .and_then(|(_, p)| p.timeout_ms)
+        .unwrap_or(roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS);
+
+    // Build builtin tool definitions and handler map.
+    let tools = acp_builtin_tools();
+    if tools.is_empty() {
+        return Ok(Some(false));
+    }
+
+    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
+    for tool in &tools {
+        handlers.insert(
+            tool.name.clone(),
+            Arc::new(AcpBuiltinToolHandler {
+                tool_name: tool.name.clone(),
+                workdir: workdir.to_path_buf(),
+                event_sender: event_sender.clone(),
+            }),
+        );
+    }
+
+    let (backend, translator) =
+        roko_agent::provider::anthropic_api::tool_loop::create_anthropic_backend_simple(
+            api_key, slug, timeout_ms,
+        );
+
+    let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
+    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+
+    let model_profile = roko_config
+        .effective_models()
+        .get(model_key)
+        .cloned()
+        .unwrap_or_else(|| ModelProfile {
+            slug: slug.to_string(),
+            context_window: 200_000,
+            ..Default::default()
+        });
+    let context_limit = usize::try_from(model_profile.context_window).unwrap_or(usize::MAX);
+
+    let tool_loop = ToolLoop::new(translator, dispatcher, backend)
+        .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
+        .with_context_token_limit(context_limit);
+
+    let (chunk_sender, chunk_receiver) = mpsc::channel(256);
+    let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
+        chunk_receiver,
+        event_sender.clone(),
+    ));
+
+    let tool_context = ToolContext::testing(workdir)
+        .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
+    let mut tool_context = tool_context;
+    tool_context.capabilities = ToolPermission {
+        read: true,
+        write: true,
+        exec: true,
+        git: true,
+        network: true,
+    };
+
+    let output = tool_loop
+        .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)
+        .await;
+    let _ = forwarder.await;
+
+    let usage = usage_info_from_tool_loop_usage(&output.total_usage);
+    match output.stop_reason {
+        ToolLoopStopReason::Stop => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::MaxIterations => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::TokenChunk(format!(
+                    "\n[stopped after {} tool rounds because the model kept requesting tools]",
+                    DEFAULT_MAX_TOOL_ITERATIONS
+                )),
+            )
+            .await;
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::MaxTokens,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::Cancelled => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::BudgetExhausted => {
+            emit_dispatch_failure(
+                &event_sender,
+                "Error: Anthropic builtin tool loop stopped because the model-call budget was exhausted."
+                    .to_string(),
+            )
+            .await;
+            return Err(anyhow::anyhow!("ACP Anthropic builtin tool loop budget exhausted").into());
+        }
+        ToolLoopStopReason::BackendError(error) => {
+            warn!(
+                session_id,
+                error = %error,
+                "Anthropic builtin tool loop backend error, falling through to plain streaming"
+            );
+            return Ok(Some(false));
+        }
+    }
+
+    Ok(Some(true))
 }
 
 fn anthropic_model_call_config(
@@ -1539,6 +1941,7 @@ fn anthropic_model_call_config(
 fn model_call_request_from_acp_messages(
     model_key: &str,
     messages: &[serde_json::Value],
+    tools: Vec<ToolDef>,
 ) -> ModelCallRequest {
     ModelCallRequest {
         model: model_key.to_string(),
@@ -1547,6 +1950,7 @@ fn model_call_request_from_acp_messages(
             .filter_map(model_call_chat_message_from_acp)
             .collect(),
         caller: Some("acp".to_string()),
+        tools,
         ..Default::default()
     }
 }
@@ -1558,11 +1962,32 @@ fn model_call_chat_message_from_acp(message: &serde_json::Value) -> Option<ChatM
         "user" => MessageRole::User,
         _ => return None,
     };
-    let content = message
-        .get("content")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let content_val = message.get("content")?;
+    let content = if let Some(s) = content_val.as_str() {
+        s.to_string()
+    } else if content_val.is_array() {
+        // Multi-part content (e.g. text + image_url). Extract text parts for
+        // the string-only ChatMessage; the original JSON messages array
+        // preserves the full structure for backends that consume it directly.
+        content_val
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| {
+                        if p.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            p.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     Some(ChatMessage { role, content })
 }
 
@@ -1739,6 +2164,7 @@ async fn run_openai_compat_cognitive_task(
     workdir: &Path,
     mcp_servers: &[crate::types::McpServerConfig],
     effort: &str,
+    tools_enabled: bool,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
@@ -1758,6 +2184,7 @@ async fn run_openai_compat_cognitive_task(
         return Ok(());
     }
 
+    // MCP tool-loop path (OpenAI-compatible providers with MCP servers).
     if !mcp_servers.is_empty()
         && openai_compat_tool_loop_supported(resolved.provider_kind)
         && run_openai_compat_mcp_tool_loop(
@@ -1774,8 +2201,28 @@ async fn run_openai_compat_cognitive_task(
         return Ok(());
     }
 
+    // Builtin tool-loop path: when tools are enabled and the provider supports
+    // tool calls, run the ToolLoop with ACP builtin tools so the model can
+    // invoke read_file, bash, etc. and receive results in a loop.
+    if tools_enabled
+        && openai_compat_tool_loop_supported(resolved.provider_kind)
+        && run_openai_compat_builtin_tool_loop(
+            session_id,
+            messages,
+            &resolved,
+            workdir,
+            cancel_token.clone(),
+            event_sender.clone(),
+        )
+        .await?
+    {
+        return Ok(());
+    }
+
+    // Fallback: plain streaming with no tool execution loop.
     let caller = ModelCallService::new(model_key.to_string()).with_config(roko_config.clone());
-    let request = model_call_request_from_acp_messages(model_key, messages);
+    let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
+    let request = model_call_request_from_acp_messages(model_key, messages, tools);
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
         .await
 }
@@ -1984,6 +2431,158 @@ async fn run_openai_compat_mcp_tool_loop(
             )
             .await;
             return Err(anyhow::anyhow!("ACP MCP tool loop failed: {error}").into());
+        }
+    }
+
+    Ok(true)
+}
+
+/// Builtin-tool loop for OpenAI-compatible providers.
+///
+/// Mirrors [`run_openai_compat_mcp_tool_loop`] but wires the 8 ACP builtin tools
+/// (read_file, write_file, edit_file, glob, grep, bash, ls, web_fetch) through the
+/// same [`ToolLoop`] infrastructure. When the model emits `tool_use` blocks the loop
+/// executes them via [`execute_acp_builtin_tool`], appends the results, and re-calls
+/// the model until it produces a text-only response (or hits the 25-iteration cap).
+#[allow(clippy::too_many_arguments)]
+async fn run_openai_compat_builtin_tool_loop(
+    session_id: &str,
+    messages: &[serde_json::Value],
+    resolved: &ResolvedModel,
+    workdir: &Path,
+    cancel_token: CancelToken,
+    event_sender: mpsc::Sender<CognitiveEvent>,
+) -> Result<bool> {
+    let Some(provider) = resolved.provider_config.as_ref() else {
+        debug!(
+            session_id,
+            model_key = %resolved.model_key,
+            "builtin tool loop skipped: no explicit provider config"
+        );
+        return Ok(false);
+    };
+    let Some(model) = resolved.profile.as_ref() else {
+        debug!(
+            session_id,
+            model_key = %resolved.model_key,
+            "builtin tool loop skipped: no explicit model profile"
+        );
+        return Ok(false);
+    };
+
+    // Build builtin tool definitions and handler map.
+    let tools = acp_builtin_tools();
+    if tools.is_empty() {
+        return Ok(false);
+    }
+
+    let mut handlers: HashMap<String, Arc<dyn ToolHandler>> = HashMap::new();
+    for tool in &tools {
+        handlers.insert(
+            tool.name.clone(),
+            Arc::new(AcpBuiltinToolHandler {
+                tool_name: tool.name.clone(),
+                workdir: workdir.to_path_buf(),
+                event_sender: event_sender.clone(),
+            }),
+        );
+    }
+
+    let translator: Arc<dyn Translator> = if provider.kind == ProviderKind::CerebrasApi {
+        Arc::new(StrictOpenAiTranslator)
+    } else {
+        Arc::new(OpenAiTranslator)
+    };
+    let backend = create_openai_compat_backend(provider, model, Arc::new(ReqwestPoster::new()))
+        .map_err(|error| anyhow::anyhow!("create ACP builtin tool-loop backend: {error}"))?;
+    let registry = Arc::new(VecToolRegistry::from_tools(tools.clone()));
+    let resolver: Arc<dyn HandlerResolver> = Arc::new(AcpBuiltinHandlerResolver { handlers });
+    let dispatcher = Arc::new(ToolDispatcher::new(registry, resolver));
+    let context_limit = usize::try_from(model.context_window).unwrap_or(usize::MAX);
+    let tool_loop = ToolLoop::new(translator, dispatcher, backend)
+        .with_max_iterations(DEFAULT_MAX_TOOL_ITERATIONS)
+        .with_context_token_limit(context_limit);
+
+    let (chunk_sender, chunk_receiver) = mpsc::channel(256);
+    let forwarder = tokio::spawn(forward_tool_loop_stream_chunks(
+        chunk_receiver,
+        event_sender.clone(),
+    ));
+    let tool_context = ToolContext::testing(workdir)
+        .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
+    let mut tool_context = tool_context;
+    tool_context.capabilities = ToolPermission {
+        read: true,
+        write: true,
+        exec: true,
+        git: true,
+        network: true,
+    };
+
+    let output = tool_loop
+        .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)
+        .await;
+    let _ = forwarder.await;
+
+    let usage = usage_info_from_tool_loop_usage(&output.total_usage);
+    match output.stop_reason {
+        ToolLoopStopReason::Stop => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::MaxIterations => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::TokenChunk(format!(
+                    "\n[stopped after {} tool rounds because the model kept requesting tools]",
+                    DEFAULT_MAX_TOOL_ITERATIONS
+                )),
+            )
+            .await;
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::MaxTokens,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::Cancelled => {
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                },
+            )
+            .await;
+        }
+        ToolLoopStopReason::BudgetExhausted => {
+            emit_dispatch_failure(
+                &event_sender,
+                "Error: builtin tool loop stopped because the model-call budget was exhausted."
+                    .to_string(),
+            )
+            .await;
+            return Err(anyhow::anyhow!("ACP builtin tool loop budget exhausted").into());
+        }
+        ToolLoopStopReason::BackendError(error) => {
+            // Fall through to the plain streaming path so that providers that
+            // don't fully support streaming tool loops (or mock servers in
+            // tests) still work.
+            warn!(
+                session_id,
+                error = %error,
+                "builtin tool loop backend error, falling through to plain streaming"
+            );
+            return Ok(false);
         }
     }
 
@@ -2303,6 +2902,45 @@ struct AcpToolCancelToken(CancelToken);
 impl roko_core::tool::CancelToken for AcpToolCancelToken {
     fn is_cancelled(&self) -> bool {
         self.0.is_cancelled()
+    }
+}
+
+// ── Builtin tool handler adapter ──────────────────────────────────────
+
+/// Wraps [`execute_acp_builtin_tool`] in the [`ToolHandler`] trait so that
+/// the [`ToolLoop`] infrastructure can dispatch builtin tools identically to
+/// MCP tools.
+struct AcpBuiltinToolHandler {
+    tool_name: String,
+    workdir: PathBuf,
+    event_sender: mpsc::Sender<CognitiveEvent>,
+}
+
+#[async_trait]
+impl ToolHandler for AcpBuiltinToolHandler {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    async fn execute(&self, call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+        let output = crate::builtin_tools::execute_acp_builtin_tool(
+            &self.tool_name,
+            &call.arguments,
+            &self.workdir,
+            &self.event_sender,
+        )
+        .await;
+        ToolResult::text(output)
+    }
+}
+
+struct AcpBuiltinHandlerResolver {
+    handlers: HashMap<String, Arc<dyn ToolHandler>>,
+}
+
+impl HandlerResolver for AcpBuiltinHandlerResolver {
+    fn resolve(&self, name: &str) -> Option<Arc<dyn ToolHandler>> {
+        self.handlers.get(name).cloned()
     }
 }
 
@@ -2714,7 +3352,7 @@ async fn run_slash_command(
     session_id: &str,
     raw_input: &str,
     workdir: &Path,
-    model_slug: String,
+    model_key: String,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
     shared_run: crate::session::SharedWorkflowRun,
@@ -2752,12 +3390,19 @@ async fn run_slash_command(
         "status" => vec!["status".into()],
         "doctor" => vec!["doctor".into()],
         "config" => vec!["config".into(), "show".into()],
+        "models" => vec!["config".into(), "models".into(), "list".into()],
         "learn" => vec!["learn".into(), "all".into()],
 
         // ── Research (foraging phase) ──
         "research" => {
             require_args!("research", "<topic>");
-            vec!["research".into(), "topic".into(), args.into()]
+            vec![
+                "research".into(),
+                "topic".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
         "search" => {
             require_args!("search", "<query>");
@@ -2765,7 +3410,13 @@ async fn run_slash_command(
         }
         "enhance-prd" => {
             require_args!("enhance-prd", "<slug>");
-            vec!["research".into(), "enhance-prd".into(), args.into()]
+            vec![
+                "research".into(),
+                "enhance-prd".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
 
         // ── Specification (PRD lifecycle) ──
@@ -2775,13 +3426,26 @@ async fn run_slash_command(
         }
         "prd-draft" => {
             require_args!("prd-draft", "<slug>");
-            vec!["prd".into(), "draft".into(), "new".into(), args.into()]
+            vec![
+                "prd".into(),
+                "draft".into(),
+                "new".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
         "prd-list" => vec!["prd".into(), "list".into()],
         "prd-status" => vec!["prd".into(), "status".into()],
         "prd-plan" => {
             require_args!("prd-plan", "<slug>");
-            vec!["prd".into(), "plan".into(), args.into()]
+            vec![
+                "prd".into(),
+                "plan".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
         "prd-consolidate" => vec!["prd".into(), "consolidate".into()],
 
@@ -2789,7 +3453,23 @@ async fn run_slash_command(
         "plan-list" => vec!["plan".into(), "list".into()],
         "plan-generate" => {
             require_args!("plan-generate", "<description>");
-            vec!["plan".into(), "generate".into(), args.into()]
+            vec![
+                "plan".into(),
+                "generate".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
+        }
+        "plan-regenerate" => {
+            require_args!("plan-regenerate", "<description>");
+            vec![
+                "plan".into(),
+                "regenerate".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
         "plan-validate" => {
             let dir = if args.is_empty() { "plans/" } else { args };
@@ -2803,12 +3483,33 @@ async fn run_slash_command(
         // ── Implementation & Execution ──
         "run" => {
             require_args!("run", "<prompt>");
-            vec!["run".into(), args.into()]
+            vec![
+                "run".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
+        }
+        "do" => {
+            require_args!("do", "<prompt>");
+            vec![
+                "do".into(),
+                "--model".into(),
+                model_key.clone(),
+                args.into(),
+            ]
         }
         "agents" => vec!["agent".into(), "list".into()],
         "agent-chat" => {
             require_args!("agent-chat", "<agent name>");
-            vec!["agent".into(), "chat".into(), "--agent".into(), args.into()]
+            vec![
+                "agent".into(),
+                "chat".into(),
+                "--agent".into(),
+                args.into(),
+                "--model".into(),
+                model_key.clone(),
+            ]
         }
 
         // ── Verification & Gates ──
@@ -2936,6 +3637,10 @@ async fn run_slash_command(
             require_args!("agent-stop", "<name>");
             vec!["agent".into(), "stop".into(), "--name".into(), args.into()]
         }
+        "note" => {
+            require_args!("note", "<note text>");
+            vec!["note".into(), args.into()]
+        }
         "knowledge-gc" => vec!["knowledge".into(), "gc".into()],
         "knowledge-backup" => vec!["knowledge".into(), "backup".into()],
         "audit" => vec!["config".into(), "plugins".into(), "audit".into()],
@@ -3020,7 +3725,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         clippy_enabled: true,
                         tests_enabled: true,
                         review_strictness: "standard".to_string(),
-                        model_slug: model_slug.clone(),
+                        model_slug: model_key.clone(),
                     },
                     cancel_token,
                     event_sender,
@@ -3063,7 +3768,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         clippy_enabled: true,
                         tests_enabled: true,
                         review_strictness: "standard".to_string(),
-                        model_slug: model_slug.clone(),
+                        model_slug: model_key.clone(),
                     },
                     cancel_token,
                     event_sender,
@@ -3243,49 +3948,113 @@ Available commands (organized by Will's core loop):
         }
     };
 
-    // Stream stdout line-by-line.
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut reader = tokio::io::BufReader::new(stdout);
-    let mut line = String::new();
+    // Interleave stdout and stderr reading.
+    let mut stdout_lines =
+        tokio::io::BufReader::new(child.stdout.take().expect("stdout was piped")).lines();
+    let mut stderr_lines =
+        tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
     let mut output = String::new();
+    let mut progress_task_counter: u64 = 0;
 
     loop {
-        if cancel_token.is_cancelled() {
-            let _ = child.kill().await;
-            return Ok(());
+        if stdout_done && stderr_done {
+            break;
         }
-        line.clear();
-        let read = tokio::select! {
+        tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
                 let _ = child.kill().await;
                 return Ok(());
             }
-            r = reader.read_line(&mut line) => r,
-        };
-        match read {
-            Ok(0) => break,
-            Ok(_) => output.push_str(&line),
-            Err(e) => {
-                warn!(session_id, error = %e, "error reading slash command output");
-                break;
+            line = stdout_lines.next_line(), if !stdout_done => {
+                match line {
+                    Ok(Some(l)) => {
+                        if let Some(json_str) = l.strip_prefix("ROKO_PROGRESS: ") {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                match value.get("type").and_then(|t| t.as_str()) {
+                                    Some("task_started") => {
+                                        progress_task_counter += 1;
+                                        let title = value.get("title")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("task");
+                                        let task_id = value.get("task_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        let call_id = format!("progress-{}-{}", task_id, progress_task_counter);
+                                        let _ = event_sender.send(CognitiveEvent::ToolCallStart {
+                                            tool_call_id: call_id,
+                                            title: title.to_string(),
+                                            kind: ToolCallKind::Terminal,
+                                            locations: None,
+                                        }).await;
+                                    }
+                                    Some("task_completed") => {
+                                        let task_id = value.get("task_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        let completed = value.get("completed")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        let total = value.get("total")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        let call_id = format!("progress-{}-{}", task_id, progress_task_counter);
+                                        let _ = event_sender.send(CognitiveEvent::ToolCallComplete {
+                                            tool_call_id: call_id,
+                                            status: ToolCallStatus::Completed,
+                                            content: vec![ContentBlock::Text {
+                                                text: format!("{}/{} tasks done", completed, total),
+                                            }],
+                                        }).await;
+                                    }
+                                    Some("agent_started") => {
+                                        let provider = value.get("provider")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        let model = value.get("model")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        let _ = event_sender.send(CognitiveEvent::TokenChunk(
+                                            format!("[agent] {} ({})\n", model, provider),
+                                        )).await;
+                                    }
+                                    _ => {
+                                        // Unknown progress type — pass through as text
+                                        output.push_str(&l);
+                                        output.push('\n');
+                                    }
+                                }
+                            } else {
+                                // JSON parse failed — pass through as plain text
+                                output.push_str(&l);
+                                output.push('\n');
+                            }
+                        } else {
+                            output.push_str(&l);
+                            output.push('\n');
+                        }
+                    }
+                    Ok(None) => stdout_done = true,
+                    Err(e) => {
+                        warn!(session_id, error = %e, "error reading slash command stdout");
+                        stdout_done = true;
+                    }
+                }
             }
-        }
-    }
-
-    // Also capture stderr.
-    if let Some(stderr) = child.stderr.take() {
-        let mut stderr_buf = String::new();
-        let mut stderr_reader = tokio::io::BufReader::new(stderr);
-        while let Ok(n) = stderr_reader.read_line(&mut stderr_buf).await {
-            if n == 0 {
-                break;
+            line = stderr_lines.next_line(), if !stderr_done => {
+                match line {
+                    Ok(Some(l)) => {
+                        output.push_str(&format!("\x1b[2m{}\x1b[0m\n", l));
+                    }
+                    Ok(None) => stderr_done = true,
+                    Err(e) => {
+                        warn!(session_id, error = %e, "error reading slash command stderr");
+                        stderr_done = true;
+                    }
+                }
             }
-        }
-        let stderr_trimmed = stderr_buf.trim();
-        if !stderr_trimmed.is_empty() {
-            output.push_str("\n--- stderr ---\n");
-            output.push_str(stderr_trimmed);
         }
     }
 
@@ -3306,13 +4075,14 @@ Available commands (organized by Will's core loop):
     Ok(())
 }
 
-/// Runs a raw shell command (for /build, /test, /clippy) and streams output.
+/// Runs a raw shell command (for /build, /test, /clippy) and streams each
+/// stdout line as a TokenChunk immediately via tokio::select with cancel_token.
 async fn run_shell_command(
     session_id: &str,
     shell_cmd: &str,
     workdir: &Path,
     cancel_token: CancelToken,
-    event_sender: mpsc::Sender<CognitiveEvent>,
+    event_sender: mpsc::Sender<CognitiveEvent>, // streams each line as TokenChunk
 ) -> Result<()> {
     info!(session_id, shell_cmd, "executing shell command");
 
@@ -3341,61 +4111,75 @@ async fn run_shell_command(
         }
     };
 
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut reader = tokio::io::BufReader::new(stdout);
-    let mut line = String::new();
-    let mut output = String::new();
+    // Interleave stdout and stderr reading.
+    let mut stdout_lines =
+        tokio::io::BufReader::new(child.stdout.take().expect("stdout was piped")).lines();
+    let mut stderr_lines =
+        tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut had_output = false;
 
     loop {
-        if cancel_token.is_cancelled() {
-            let _ = child.kill().await;
-            return Ok(());
+        if stdout_done && stderr_done {
+            break;
         }
-        line.clear();
-        let read = tokio::select! {
+        tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
                 let _ = child.kill().await;
                 return Ok(());
             }
-            r = reader.read_line(&mut line) => r,
-        };
-        match read {
-            Ok(0) => break,
-            Ok(_) => output.push_str(&line),
-            Err(e) => {
-                warn!(session_id, error = %e, "error reading shell command output");
-                break;
+            line = stdout_lines.next_line(), if !stdout_done => {
+                match line {
+                    Ok(Some(l)) => {
+                        had_output = true;
+                        let _ = event_sender
+                            .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+                            .await;
+                    }
+                    Ok(None) => stdout_done = true,
+                    Err(e) => {
+                        warn!(session_id, error = %e, "error reading shell command stdout");
+                        stdout_done = true;
+                    }
+                }
             }
-        }
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        let mut stderr_buf = String::new();
-        let mut stderr_reader = tokio::io::BufReader::new(stderr);
-        while let Ok(n) = stderr_reader.read_line(&mut stderr_buf).await {
-            if n == 0 {
-                break;
+            line = stderr_lines.next_line(), if !stderr_done => {
+                match line {
+                    Ok(Some(l)) => {
+                        had_output = true;
+                        let _ = event_sender
+                            .send(CognitiveEvent::TokenChunk(format!("\x1b[2m{l}\x1b[0m\n")))
+                            .await;
+                    }
+                    Ok(None) => stderr_done = true,
+                    Err(e) => {
+                        warn!(session_id, error = %e, "error reading shell command stderr");
+                        stderr_done = true;
+                    }
+                }
             }
-        }
-        let stderr_trimmed = stderr_buf.trim();
-        if !stderr_trimmed.is_empty() {
-            output.push_str("\n--- stderr ---\n");
-            output.push_str(stderr_trimmed);
         }
     }
 
     let exit_status = child.wait().await;
     let code = exit_status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
     if code != 0 {
-        output.push_str(&format!("\n\nProcess exited with code {code}"));
+        let _ = event_sender
+            .send(CognitiveEvent::TokenChunk(format!(
+                "\n\nProcess exited with code {code}"
+            )))
+            .await;
     }
 
-    if output.is_empty() {
-        output = format!("`{shell_cmd}` completed (no output)");
+    if !had_output {
+        let _ = event_sender
+            .send(CognitiveEvent::TokenChunk(format!(
+                "`{shell_cmd}` completed (no output)"
+            )))
+            .await;
     }
-
-    let _ = event_sender.send(CognitiveEvent::TokenChunk(output)).await;
     let _ = event_sender
         .send(CognitiveEvent::Complete {
             stop_reason: StopReason::EndTurn,
@@ -3468,7 +4252,52 @@ fn dispatch_failure_update(message: String) -> SessionUpdate {
     }
 }
 
+/// Pattern-match known error strings and return an actionable user-facing message.
+/// The original error is always appended so nothing is suppressed.
+fn format_acp_error_for_user(error: &str) -> String {
+    // Missing API key – extract the env var name and tell the user how to set it.
+    if let Some(rest) = error
+        .strip_prefix("Missing API key: env var ")
+        .or_else(|| error.strip_prefix("missing API key: env var "))
+    {
+        let var = rest.split_whitespace().next().unwrap_or(rest);
+        return format!(
+            "Set {var} in your environment. Run: export {var}=your-key\n\n(Original error: {error})"
+        );
+    }
+
+    // OpenAI-compat models that reject max_tokens in favour of max_completion_tokens.
+    if error.contains("max_tokens is not supported") {
+        return format!(
+            "This model needs use_max_completion_tokens. Auto-fixing...\n\n(Original error: {error})"
+        );
+    }
+
+    // Model not found / not configured.
+    if error.contains("model not found") || error.contains("model_not_found") {
+        return format!(
+            "Model isn't configured or doesn't exist. Check your roko.toml [models] section.\n\n(Original error: {error})"
+        );
+    }
+
+    // Rate limiting (HTTP 429 or explicit rate_limit error code).
+    if error.contains("rate_limit") || error.contains("429") {
+        return format!("Rate limited. Waiting 30s before retry...\n\n(Original error: {error})");
+    }
+
+    // Context length exceeded.
+    if error.contains("context_length_exceeded") || error.contains("maximum context length") {
+        return format!(
+            "Prompt too long for this model. Consider truncating or switching to a model with a larger context window.\n\n(Original error: {error})"
+        );
+    }
+
+    // No pattern matched – return as-is.
+    error.to_string()
+}
+
 async fn emit_dispatch_failure(event_sender: &mpsc::Sender<CognitiveEvent>, message: String) {
+    let message = format_acp_error_for_user(&message);
     send_cognitive_event(event_sender, CognitiveEvent::Failure { message }).await;
 }
 
@@ -3504,12 +4333,76 @@ fn extract_prompt_text(prompt: &[ContentBlock]) -> String {
         .map(|block| match block {
             ContentBlock::Text { text } => text.clone(),
             ContentBlock::Resource { .. } => String::new(),
+            ContentBlock::Image { .. } => String::new(),
             ContentBlock::Diff { path, diff, .. } => {
                 format!("diff {path}:\n{}", diff.as_deref().unwrap_or(""))
+            }
+            ContentBlock::Unknown => {
+                tracing::debug!("skipping unknown content block type in prompt");
+                String::new()
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Builds an OpenAI-compatible content array from prompt blocks, converting
+/// `Image` blocks into `image_url` content parts with inline data URIs.
+/// Returns `None` when no images are present (caller can use a plain string).
+fn build_openai_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>> {
+    let has_image = prompt
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    if !has_image {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for block in prompt {
+        match block {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                parts.push(serde_json::json!({"type": "text", "text": text}));
+            }
+            ContentBlock::Image { data, mime_type } => {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{mime_type};base64,{data}") }
+                }));
+            }
+            _ => {}
+        }
+    }
+    Some(parts)
+}
+
+/// Converts prompt blocks into Anthropic multi-part content (text + base64 image).
+/// Returns `None` when there are no image blocks, so the caller can skip replacement.
+fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>> {
+    let has_image = prompt
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    if !has_image {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for block in prompt {
+        match block {
+            ContentBlock::Text { text } if !text.is_empty() => {
+                parts.push(serde_json::json!({"type": "text", "text": text}));
+            }
+            ContentBlock::Image { data, mime_type } => {
+                parts.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": data,
+                    }
+                }));
+            }
+            _ => {}
+        }
+    }
+    Some(parts)
 }
 
 /// Extracts `file://` URIs from Resource blocks in the prompt.
@@ -3600,7 +4493,10 @@ pub(crate) async fn resolve_context_items(prompt: &[ContentBlock], workdir: &Pat
                     }
                 }
             }
-            ContentBlock::Diff { .. } => {}
+            ContentBlock::Image { .. } | ContentBlock::Diff { .. } => {}
+            ContentBlock::Unknown => {
+                tracing::debug!("skipping unknown content block in context resolution");
+            }
         }
     }
 
@@ -3841,6 +4737,7 @@ mod tests {
                 json!({"role": "assistant", "content": "hi"}),
                 json!({"role": "unknown", "content": "skip"}),
             ],
+            Vec::new(),
         );
 
         assert_eq!(request.model, "claude-sonnet-4-6");

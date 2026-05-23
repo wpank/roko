@@ -344,16 +344,13 @@ mod tests {
         let entry = &entries[0];
         assert_eq!(entry.kind, KnowledgeKind::Warning);
         assert_eq!(entry.source.as_deref(), Some("dream"));
-        assert_eq!(
-            entry.tags,
-            vec![
-                "dream".to_string(),
-                "threat".to_string(),
-                "warning".to_string(),
-                "fmea".to_string(),
-                "fta".to_string(),
-            ]
-        );
+        assert_eq!(entry.tags, vec![
+            "dream".to_string(),
+            "threat".to_string(),
+            "warning".to_string(),
+            "fmea".to_string(),
+            "fta".to_string(),
+        ]);
         assert!(entry.content.contains("Mitigation:"));
         assert_eq!(
             entry.half_life_days,

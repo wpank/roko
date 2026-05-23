@@ -147,15 +147,12 @@ pub(crate) fn task_runner_cost_table(
     let mut cost_table = RunnerCostTable::default();
 
     if let Some(profile) = resolved.profile.as_ref() {
-        cost_table.insert(
-            resolved.slug.clone(),
-            RunnerModelPricing {
-                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
-                output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
-                cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
-                cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
-            },
-        );
+        cost_table.insert(resolved.slug.clone(), RunnerModelPricing {
+            input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+            output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
+            cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
+            cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
+        });
     }
 
     cost_table
@@ -240,6 +237,8 @@ pub(crate) fn model_matches_forced_backend(
             forced_backend == "perplexity" || forced_backend == "sonar"
         }
         roko_core::agent::AgentBackend::Cerebras => forced_backend == "cerebras",
+        roko_core::agent::AgentBackend::Hermes => forced_backend == "hermes",
+        roko_core::agent::AgentBackend::OpenClaw => forced_backend == "openclaw",
         _ => false,
     }
 }

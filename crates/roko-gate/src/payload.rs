@@ -421,16 +421,13 @@ mod tests {
         let args =
             BuildSystem::Cargo.scoped_test_args(&["roko-acp".to_string(), "roko-gate".to_string()]);
 
-        assert_eq!(
-            args,
-            vec![
-                "test".to_string(),
-                "-p".to_string(),
-                "roko-acp".to_string(),
-                "-p".to_string(),
-                "roko-gate".to_string(),
-            ]
-        );
+        assert_eq!(args, vec![
+            "test".to_string(),
+            "-p".to_string(),
+            "roko-acp".to_string(),
+            "-p".to_string(),
+            "roko-gate".to_string(),
+        ]);
     }
 
     #[test]
@@ -533,8 +530,7 @@ mod tests {
         // on PATH are found. `cargo` must exist since we're running
         // cargo test; a made-up program should not.
         let path_var = std::env::var("PATH").unwrap_or_default();
-        let cargo_found = std::env::split_paths(&path_var)
-            .any(|dir| dir.join("cargo").is_file());
+        let cargo_found = std::env::split_paths(&path_var).any(|dir| dir.join("cargo").is_file());
         // cargo must be findable on PATH if we got here
         assert!(cargo_found);
     }

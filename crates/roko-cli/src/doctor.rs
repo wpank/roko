@@ -191,6 +191,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_serve_auth(&loaded_config));
     checks.push(check_serve_health(options.serve_url.as_deref(), &loaded_config).await?);
     checks.push(check_v2_abstractions());
+    checks.extend(check_harness_providers(&loaded_config));
 
     let summary = DoctorSummary::from_checks(&checks);
     Ok(DoctorReport {
@@ -927,6 +928,82 @@ fn check_v2_abstractions() -> DoctorCheck {
             fix: None,
         }
     }
+}
+
+/// Check for configured harness providers (Hermes, OpenClaw) and verify
+/// their binaries are available on PATH.
+fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
+    use roko_core::agent::ProviderKind;
+
+    let Some(config) = &loaded_config.resolved else {
+        return vec![];
+    };
+
+    let mut checks = Vec::new();
+    for (id, provider) in &config.providers {
+        match provider.kind {
+            ProviderKind::Hermes => {
+                let binary = provider.command.as_deref().unwrap_or("hermes");
+                let available = std::process::Command::new(binary)
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                checks.push(DoctorCheck {
+                    id: format!("harness_{id}"),
+                    status: if available {
+                        DoctorStatus::Ok
+                    } else {
+                        DoctorStatus::Warn
+                    },
+                    message: if available {
+                        format!("hermes provider `{id}` binary found")
+                    } else {
+                        format!("hermes provider `{id}` binary `{binary}` not found on PATH")
+                    },
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: if available {
+                        None
+                    } else {
+                        Some(format!("install hermes or set providers.{id}.command"))
+                    },
+                });
+            }
+            ProviderKind::OpenClaw => {
+                let binary = provider.command.as_deref().unwrap_or("openclaw");
+                let available = std::process::Command::new(binary)
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                checks.push(DoctorCheck {
+                    id: format!("harness_{id}"),
+                    status: if available {
+                        DoctorStatus::Ok
+                    } else {
+                        DoctorStatus::Warn
+                    },
+                    message: if available {
+                        format!("openclaw provider `{id}` binary found")
+                    } else {
+                        format!("openclaw provider `{id}` binary `{binary}` not found on PATH")
+                    },
+                    detail: None,
+                    path: None,
+                    url: None,
+                    fix: if available {
+                        None
+                    } else {
+                        Some(format!("install openclaw or set providers.{id}.command"))
+                    },
+                });
+            }
+            _ => {} // Non-harness providers handled by existing checks.
+        }
+    }
+    checks
 }
 
 #[cfg(test)]

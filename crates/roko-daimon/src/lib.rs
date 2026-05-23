@@ -924,83 +924,69 @@ impl CanonicalStrategyProfile {
 fn classify_dimension_role(label: &str, index: usize) -> DimensionRole {
     let normalized = label.trim().to_ascii_lowercase();
 
-    if contains_role_keyword(
-        &normalized,
-        &["complex", "difficulty", "volatility", "unstable"],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "complex",
+        "difficulty",
+        "volatility",
+        "unstable",
+    ]) {
         return DimensionRole::Difficulty;
     }
-    if contains_role_keyword(
-        &normalized,
-        &[
-            "risk",
-            "danger",
-            "exposure",
-            "leverage",
-            "slippage",
-            "counterparty",
-            "blast",
-        ],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "risk",
+        "danger",
+        "exposure",
+        "leverage",
+        "slippage",
+        "counterparty",
+        "blast",
+    ]) {
         return DimensionRole::Danger;
     }
-    if contains_role_keyword(
-        &normalized,
-        &[
-            "novel",
-            "familiar",
-            "correlation",
-            "similarity",
-            "ambiguity",
-        ],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "novel",
+        "familiar",
+        "correlation",
+        "similarity",
+        "ambiguity",
+    ]) {
         return DimensionRole::Familiarity;
     }
     if contains_role_keyword(&normalized, &["confidence", "conviction", "certainty"]) {
         return DimensionRole::SelfAssessment;
     }
-    if contains_role_keyword(
-        &normalized,
-        &["time", "deadline", "horizon", "urgency", "latency"],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "time", "deadline", "horizon", "urgency", "latency",
+    ]) {
         return DimensionRole::Urgency;
     }
-    if contains_role_keyword(
-        &normalized,
-        &[
-            "scope",
-            "breadth",
-            "concentration",
-            "liquidity",
-            "surface",
-            "coverage",
-        ],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "scope",
+        "breadth",
+        "concentration",
+        "liquidity",
+        "surface",
+        "coverage",
+    ]) {
         return DimensionRole::Breadth;
     }
-    if contains_role_keyword(
-        &normalized,
-        &[
-            "revers",
-            "rollback",
-            "recover",
-            "counterparty",
-            "exit",
-            "undo",
-        ],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "revers",
+        "rollback",
+        "recover",
+        "counterparty",
+        "exit",
+        "undo",
+    ]) {
         return DimensionRole::Recoverability;
     }
-    if contains_role_keyword(
-        &normalized,
-        &[
-            "dependency",
-            "coupling",
-            "regulatory",
-            "compliance",
-            "integration",
-        ],
-    ) {
+    if contains_role_keyword(&normalized, &[
+        "dependency",
+        "coupling",
+        "regulatory",
+        "compliance",
+        "integration",
+    ]) {
         return DimensionRole::Coupling;
     }
 

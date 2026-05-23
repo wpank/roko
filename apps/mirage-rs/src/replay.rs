@@ -617,22 +617,19 @@ impl TargetedFollower {
             if fork.db.dirty.watch_list.len() >= self.classifier.config().max_watched_contracts {
                 return Err(MirageError::WatchListFull);
             }
-            fork.db.dirty.watch_list.insert(
-                address,
-                WatchEntry {
-                    source: if parent == Address::ZERO {
-                        WatchSource::AutoClassified
-                    } else {
-                        WatchSource::Contagion { parent }
-                    },
-                    added_at_block: block_number,
-                    initial_slot_count: diff
-                        .accounts
-                        .get(&address)
-                        .map_or(0, |account| account.storage_written.len()),
-                    replay_count: 0,
+            fork.db.dirty.watch_list.insert(address, WatchEntry {
+                source: if parent == Address::ZERO {
+                    WatchSource::AutoClassified
+                } else {
+                    WatchSource::Contagion { parent }
                 },
-            );
+                added_at_block: block_number,
+                initial_slot_count: diff
+                    .accounts
+                    .get(&address)
+                    .map_or(0, |account| account.storage_written.len()),
+                replay_count: 0,
+            });
         }
         Ok(())
     }
@@ -892,18 +889,15 @@ impl SpeculativeExecutor {
                     storage.insert(*slot, value);
                 }
             }
-            dirty.accounts.insert(
-                *address,
-                DirtyAccount {
-                    balance: account.balance,
-                    nonce: account.nonce,
-                    code: account.code.clone(),
-                    code_hash: account.code_hash,
-                    erc20_balance_slot: account.erc20_balance_slot,
-                    erc20_balances: account.erc20_balances.clone(),
-                    storage,
-                },
-            );
+            dirty.accounts.insert(*address, DirtyAccount {
+                balance: account.balance,
+                nonce: account.nonce,
+                code: account.code.clone(),
+                code_hash: account.code_hash,
+                erc20_balance_slot: account.erc20_balance_slot,
+                erc20_balances: account.erc20_balances.clone(),
+                storage,
+            });
         }
         dirty.watch_list = state.db.dirty.watch_list.clone();
         dirty.unwatch_list = state.db.dirty.unwatch_list.clone();
@@ -1072,17 +1066,14 @@ mod tests {
             data: Bytes::from_static(&[0xaa]),
             log_index: 0,
         });
-        diff.accounts.insert(
-            address,
-            super::AccountDiff {
-                info_changed: true,
-                new_balance: Some(U256::from(1_u64)),
-                new_nonce: Some(1),
-                new_code: None,
-                storage_written: std::iter::once((U256::from(1_u64), U256::from(2_u64))).collect(),
-                storage_read: std::iter::once(U256::from(1_u64)).collect(),
-            },
-        );
+        diff.accounts.insert(address, super::AccountDiff {
+            info_changed: true,
+            new_balance: Some(U256::from(1_u64)),
+            new_nonce: Some(1),
+            new_code: None,
+            storage_written: std::iter::once((U256::from(1_u64), U256::from(2_u64))).collect(),
+            storage_read: std::iter::once(U256::from(1_u64)).collect(),
+        });
 
         assert_eq!(diff.accounts[&address].storage_written.len(), 1);
         assert_eq!(diff.accounts[&address].storage_read.len(), 1);
@@ -1097,24 +1088,16 @@ mod tests {
         let address = address!("0x3000000000000000000000000000000000000003");
         let slot = U256::from(1_u64);
         let store = MultiVersionStore::default();
-        store.record(
-            address,
-            slot,
-            VersionEntry {
-                tx_index: 0,
-                value: U256::from(5_u64),
-                incarnation: 0,
-            },
-        );
-        store.record(
-            address,
-            slot,
-            VersionEntry {
-                tx_index: 1,
-                value: U256::from(9_u64),
-                incarnation: 0,
-            },
-        );
+        store.record(address, slot, VersionEntry {
+            tx_index: 0,
+            value: U256::from(5_u64),
+            incarnation: 0,
+        });
+        store.record(address, slot, VersionEntry {
+            tx_index: 1,
+            value: U256::from(9_u64),
+            incarnation: 0,
+        });
 
         let materialized = store.materialize();
         assert_eq!(materialized.get(&(address, slot)), Some(&U256::from(9_u64)));
@@ -1164,41 +1147,32 @@ mod tests {
         {
             let state_handle = mirage.state();
             let mut state = state_handle.write();
-            state.fork.db.dirty.watch_list.insert(
-                root,
-                WatchEntry {
-                    source: WatchSource::Manual,
-                    added_at_block: 1,
-                    initial_slot_count: 0,
-                    replay_count: 0,
-                },
-            );
-            state.fork.db.dirty.watch_list.insert(
-                parent,
-                WatchEntry {
-                    source: WatchSource::Contagion { parent: root },
-                    added_at_block: 2,
-                    initial_slot_count: 0,
-                    replay_count: 0,
-                },
-            );
+            state.fork.db.dirty.watch_list.insert(root, WatchEntry {
+                source: WatchSource::Manual,
+                added_at_block: 1,
+                initial_slot_count: 0,
+                replay_count: 0,
+            });
+            state.fork.db.dirty.watch_list.insert(parent, WatchEntry {
+                source: WatchSource::Contagion { parent: root },
+                added_at_block: 2,
+                initial_slot_count: 0,
+                replay_count: 0,
+            });
         }
 
         let mut diff = StateDiff::default();
-        diff.accounts.insert(
-            grandchild,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: std::iter::once((U256::from(21_u64), U256::from(1_u64)))
-                    .chain(std::iter::once((U256::from(22_u64), U256::from(2_u64))))
-                    .chain(std::iter::once((U256::from(23_u64), U256::from(3_u64))))
-                    .collect(),
-                storage_read: HashSet::new(),
-            },
-        );
+        diff.accounts.insert(grandchild, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: std::iter::once((U256::from(21_u64), U256::from(1_u64)))
+                .chain(std::iter::once((U256::from(22_u64), U256::from(2_u64))))
+                .chain(std::iter::once((U256::from(23_u64), U256::from(3_u64))))
+                .collect(),
+            storage_read: HashSet::new(),
+        });
 
         let mut fork_state = mirage.state().read().fork.clone();
         follower
@@ -1304,15 +1278,12 @@ mod tests {
         {
             let state_handle = mirage.state();
             let mut state = state_handle.write();
-            state.fork.db.dirty.watch_list.insert(
-                watched,
-                WatchEntry {
-                    source: WatchSource::Manual,
-                    added_at_block: 0,
-                    initial_slot_count: 0,
-                    replay_count: 0,
-                },
-            );
+            state.fork.db.dirty.watch_list.insert(watched, WatchEntry {
+                source: WatchSource::Manual,
+                added_at_block: 0,
+                initial_slot_count: 0,
+                replay_count: 0,
+            });
         }
 
         let budget = Duration::from_millis(80);
@@ -1370,15 +1341,12 @@ mod tests {
             let mut state = state_handle.write();
             for i in 0..1000_u64 {
                 let addr = Address::from_word(B256::from(U256::from(i + 1)));
-                state.fork.db.dirty.watch_list.insert(
-                    addr,
-                    WatchEntry {
-                        source: WatchSource::Manual,
-                        added_at_block: 0,
-                        initial_slot_count: 0,
-                        replay_count: 0,
-                    },
-                );
+                state.fork.db.dirty.watch_list.insert(addr, WatchEntry {
+                    source: WatchSource::Manual,
+                    added_at_block: 0,
+                    initial_slot_count: 0,
+                    replay_count: 0,
+                });
             }
         }
 
@@ -1800,51 +1768,31 @@ mod tests {
         // Tx 0 executes once. Tx 1 conflicts, re-executes once, and writes two
         // slots; re-execution accounting must stay transaction-based instead of
         // counting each rewritten slot separately.
-        store.record(
-            addr,
-            slot_a,
-            VersionEntry {
-                tx_index: 0,
-                value: U256::from(10_u64),
-                incarnation: 0,
-            },
-        );
-        store.record(
-            addr,
-            slot_a,
-            VersionEntry {
-                tx_index: 1,
-                value: U256::from(20_u64),
-                incarnation: 0,
-            },
-        );
-        store.record(
-            addr,
-            slot_b,
-            VersionEntry {
-                tx_index: 1,
-                value: U256::from(30_u64),
-                incarnation: 0,
-            },
-        );
-        store.record(
-            addr,
-            slot_a,
-            VersionEntry {
-                tx_index: 1,
-                value: U256::from(21_u64),
-                incarnation: 1,
-            },
-        );
-        store.record(
-            addr,
-            slot_b,
-            VersionEntry {
-                tx_index: 1,
-                value: U256::from(31_u64),
-                incarnation: 1,
-            },
-        );
+        store.record(addr, slot_a, VersionEntry {
+            tx_index: 0,
+            value: U256::from(10_u64),
+            incarnation: 0,
+        });
+        store.record(addr, slot_a, VersionEntry {
+            tx_index: 1,
+            value: U256::from(20_u64),
+            incarnation: 0,
+        });
+        store.record(addr, slot_b, VersionEntry {
+            tx_index: 1,
+            value: U256::from(30_u64),
+            incarnation: 0,
+        });
+        store.record(addr, slot_a, VersionEntry {
+            tx_index: 1,
+            value: U256::from(21_u64),
+            incarnation: 1,
+        });
+        store.record(addr, slot_b, VersionEntry {
+            tx_index: 1,
+            value: U256::from(31_u64),
+            incarnation: 1,
+        });
 
         // The materialized view returns the latest version for each slot.
         let materialized = store.materialize();

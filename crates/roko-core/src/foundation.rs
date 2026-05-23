@@ -634,21 +634,18 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(
-            events,
-            vec![
-                ModelStreamEvent::Started {
-                    model: "model-a".to_string()
-                },
-                ModelStreamEvent::ContentDelta {
-                    text: "hello".to_string()
-                },
-                ModelStreamEvent::Usage { usage },
-                ModelStreamEvent::Completed {
-                    stop_reason: Some("end_turn".to_string())
-                }
-            ]
-        );
+        assert_eq!(events, vec![
+            ModelStreamEvent::Started {
+                model: "model-a".to_string()
+            },
+            ModelStreamEvent::ContentDelta {
+                text: "hello".to_string()
+            },
+            ModelStreamEvent::Usage { usage },
+            ModelStreamEvent::Completed {
+                stop_reason: Some("end_turn".to_string())
+            }
+        ]);
     }
 
     #[tokio::test]
@@ -664,11 +661,8 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(
-            events,
-            vec![ModelStreamEvent::Failed {
-                error: "invalid input: provider unavailable".to_string()
-            }]
-        );
+        assert_eq!(events, vec![ModelStreamEvent::Failed {
+            error: "invalid input: provider unavailable".to_string()
+        }]);
     }
 }

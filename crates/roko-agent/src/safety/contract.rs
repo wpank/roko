@@ -771,25 +771,20 @@ mod tests {
         let auto_fixer = AgentContract::load_for_role("auto-fixer").expect("load auto-fixer");
 
         assert_eq!(implementer.role, "implementer");
-        assert!(matches!(
-            implementer.invariants.as_slice(),
-            [
-                Invariant::MaxTokensPerTurn(_),
-                Invariant::RequireGateBeforeCommit,
-            ]
-        ));
+        assert!(matches!(implementer.invariants.as_slice(), [
+            Invariant::MaxTokensPerTurn(_),
+            Invariant::RequireGateBeforeCommit,
+        ]));
 
         assert_eq!(reviewer.role, "reviewer");
-        assert!(matches!(
-            reviewer.invariants.as_slice(),
-            [Invariant::NoNetworkAccess]
-        ));
+        assert!(matches!(reviewer.invariants.as_slice(), [
+            Invariant::NoNetworkAccess
+        ]));
 
         assert_eq!(researcher.role, "researcher");
-        assert!(matches!(
-            researcher.invariants.as_slice(),
-            [Invariant::MaxTokensPerTurn(_)]
-        ));
+        assert!(matches!(researcher.invariants.as_slice(), [
+            Invariant::MaxTokensPerTurn(_)
+        ]));
 
         assert_eq!(architect.role, "architect");
         assert!(!architect.governance.is_empty());
@@ -809,19 +804,16 @@ mod tests {
     fn bundled_contract_registry_covers_expected_roles() {
         let roles: Vec<_> = BUNDLED_CONTRACTS.iter().map(|asset| asset.role).collect();
 
-        assert_eq!(
-            roles,
-            vec![
-                "architect",
-                "auditor",
-                "auto-fixer",
-                "implementer",
-                "researcher",
-                "reviewer",
-                "scribe",
-                "strategist",
-            ]
-        );
+        assert_eq!(roles, vec![
+            "architect",
+            "auditor",
+            "auto-fixer",
+            "implementer",
+            "researcher",
+            "reviewer",
+            "scribe",
+            "strategist",
+        ]);
 
         for asset in BUNDLED_CONTRACTS {
             assert_eq!(PathBuf::from(asset.path), contract_asset_path(asset.role));

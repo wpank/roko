@@ -450,13 +450,11 @@ mod tests {
         assert!(!clean.needs_revert());
         assert!(clean.failing_tests.is_empty());
 
-        let regression = PostMergeFollowUp::from_result(
-            "p-bad",
-            &PostMergeResult::RegressionDetected {
+        let regression =
+            PostMergeFollowUp::from_result("p-bad", &PostMergeResult::RegressionDetected {
                 failing_tests: vec!["test: boom".to_string()],
                 reverted: false,
-            },
-        );
+            });
         assert!(regression.needs_revert());
         assert_eq!(regression.failing_tests, vec!["test: boom".to_string()]);
     }

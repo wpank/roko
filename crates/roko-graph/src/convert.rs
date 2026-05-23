@@ -214,24 +214,21 @@ mod tests {
     use serde_json::json;
 
     fn make_task(id: &str, depends_on: &[&str]) -> (String, PlanTaskInfo) {
-        (
-            id.to_string(),
-            PlanTaskInfo {
-                title: format!("Task {id}"),
-                description: None,
-                role: Some("implementer".to_string()),
-                tier: "mechanical".to_string(),
-                model_hint: None,
-                files: vec![],
-                depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
-                depends_on_plan: vec![],
-                timeout_secs: 300,
-                max_retries: 2,
-                domain: None,
-                sequence: 0,
-                full_config_json: json!({"id": id, "title": format!("Task {id}")}),
-            },
-        )
+        (id.to_string(), PlanTaskInfo {
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "mechanical".to_string(),
+            model_hint: None,
+            files: vec![],
+            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
+            depends_on_plan: vec![],
+            timeout_secs: 300,
+            max_retries: 2,
+            domain: None,
+            sequence: 0,
+            full_config_json: json!({"id": id, "title": format!("Task {id}")}),
+        })
     }
 
     #[test]
@@ -308,24 +305,21 @@ mod tests {
 
     #[test]
     fn node_config_contains_task_metadata() {
-        let tasks = vec![(
-            "T1".to_string(),
-            PlanTaskInfo {
-                title: "Build feature".to_string(),
-                description: Some("A detailed description".to_string()),
-                role: Some("implementer".to_string()),
-                tier: "focused".to_string(),
-                model_hint: Some("claude-sonnet-4-20250514".to_string()),
-                files: vec!["src/lib.rs".to_string()],
-                depends_on: vec![],
-                depends_on_plan: vec![],
-                timeout_secs: 600,
-                max_retries: 3,
-                domain: Some("coding".to_string()),
-                sequence: 0,
-                full_config_json: json!({"id": "T1"}),
-            },
-        )];
+        let tasks = vec![("T1".to_string(), PlanTaskInfo {
+            title: "Build feature".to_string(),
+            description: Some("A detailed description".to_string()),
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: Some("claude-sonnet-4-20250514".to_string()),
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: vec![],
+            depends_on_plan: vec![],
+            timeout_secs: 600,
+            max_retries: 3,
+            domain: Some("coding".to_string()),
+            sequence: 0,
+            full_config_json: json!({"id": "T1"}),
+        })];
         let graph = plan_to_graph("meta-test", "/work", &tasks, 1).unwrap();
         let node = graph.get_node("T1").unwrap();
 
@@ -345,24 +339,21 @@ mod tests {
 
     #[test]
     fn cross_plan_deps_are_skipped() {
-        let tasks = vec![(
-            "T1".to_string(),
-            PlanTaskInfo {
-                title: "Task with cross-plan dep".to_string(),
-                description: None,
-                role: None,
-                tier: "mechanical".to_string(),
-                model_hint: None,
-                files: vec![],
-                depends_on: vec![],
-                depends_on_plan: vec!["other-plan".to_string()],
-                timeout_secs: 300,
-                max_retries: 2,
-                domain: None,
-                sequence: 0,
-                full_config_json: json!({}),
-            },
-        )];
+        let tasks = vec![("T1".to_string(), PlanTaskInfo {
+            title: "Task with cross-plan dep".to_string(),
+            description: None,
+            role: None,
+            tier: "mechanical".to_string(),
+            model_hint: None,
+            files: vec![],
+            depends_on: vec![],
+            depends_on_plan: vec!["other-plan".to_string()],
+            timeout_secs: 300,
+            max_retries: 2,
+            domain: None,
+            sequence: 0,
+            full_config_json: json!({}),
+        })];
         // Should succeed despite cross-plan dep (logged as warning, not an error).
         let graph = plan_to_graph("cross", "/tmp", &tasks, 1).unwrap();
         assert_eq!(graph.node_count(), 1);

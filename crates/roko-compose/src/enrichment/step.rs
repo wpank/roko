@@ -33,7 +33,7 @@ impl From<roko_core::agent::AgentBackend> for LlmBackend {
             AgentBackend::Codex | AgentBackend::OpenAi | AgentBackend::Cerebras => Self::Codex,
             AgentBackend::Cursor => Self::Cursor,
             AgentBackend::Ollama => Self::Ollama,
-            AgentBackend::Perplexity => Self::Codex,
+            AgentBackend::Perplexity | AgentBackend::Hermes | AgentBackend::OpenClaw => Self::Codex,
             _ => Self::Codex,
         }
     }

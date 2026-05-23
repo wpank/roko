@@ -1380,7 +1380,9 @@ fn backend_for_model(model: &str) -> &'static str {
         AgentBackend::OpenAi => "openai",
         AgentBackend::Perplexity => "perplexity",
         AgentBackend::Cerebras => "cerebras",
-        _ => "codex",
+        AgentBackend::Hermes => "hermes",
+        AgentBackend::OpenClaw => "openclaw",
+        _ => "unknown",
     }
 }
 

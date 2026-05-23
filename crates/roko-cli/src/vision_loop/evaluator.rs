@@ -368,24 +368,20 @@ mod tests {
     #[test]
     fn find_vision_model_returns_first_match() {
         let mut config = RokoConfig::default();
-        config.models.insert(
-            "text-only".to_string(),
-            ModelProfile {
-                provider: "openai".to_string(),
-                slug: "gpt-4".to_string(),
-                supports_vision: false,
-                ..Default::default()
-            },
-        );
-        config.models.insert(
-            "vision-model".to_string(),
-            ModelProfile {
+        config.models.insert("text-only".to_string(), ModelProfile {
+            provider: "openai".to_string(),
+            slug: "gpt-4".to_string(),
+            supports_vision: false,
+            ..Default::default()
+        });
+        config
+            .models
+            .insert("vision-model".to_string(), ModelProfile {
                 provider: "anthropic".to_string(),
                 slug: "claude-opus-4-6".to_string(),
                 supports_vision: true,
                 ..Default::default()
-            },
-        );
+            });
 
         let found = find_vision_model(&config);
         assert!(found.is_some());
@@ -398,13 +394,10 @@ mod tests {
     #[test]
     fn find_vision_model_returns_none_when_no_vision() {
         let mut config = RokoConfig::default();
-        config.models.insert(
-            "text-only".to_string(),
-            ModelProfile {
-                supports_vision: false,
-                ..Default::default()
-            },
-        );
+        config.models.insert("text-only".to_string(), ModelProfile {
+            supports_vision: false,
+            ..Default::default()
+        });
         assert!(find_vision_model(&config).is_none());
     }
 
@@ -452,9 +445,9 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "vision-model".to_string();
-        config.providers.insert(
-            "vision-cli".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("vision-cli".to_string(), ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -465,17 +458,15 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "vision-model".to_string(),
-            ModelProfile {
+            });
+        config
+            .models
+            .insert("vision-model".to_string(), ModelProfile {
                 provider: "vision-cli".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
                 supports_vision: true,
                 ..Default::default()
-            },
-        );
+            });
 
         let evaluator = VisionEvaluator::new(
             config,

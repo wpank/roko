@@ -192,9 +192,14 @@ impl ISFRKeeper {
         // fallback before going offline — this lets the keeper fetch live
         // mainnet data when mirage is down.
         #[cfg(feature = "alloy-backend")]
-        let eth_rpc_fallback: Option<String> = std::env::var("ETH_RPC_URL").ok().filter(|v| !v.trim().is_empty());
+        let eth_rpc_fallback: Option<String> = std::env::var("ETH_RPC_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
         #[cfg(feature = "alloy-backend")]
-        let (reachable_rpcs, rpc_rewrites): (std::collections::HashSet<String>, std::collections::HashMap<String, String>) = {
+        let (reachable_rpcs, rpc_rewrites): (
+            std::collections::HashSet<String>,
+            std::collections::HashMap<String, String>,
+        ) = {
             let mut set = std::collections::HashSet::new();
             let mut rewrites = std::collections::HashMap::new();
             let mut checked = std::collections::HashSet::new();
@@ -206,7 +211,12 @@ impl ISFRKeeper {
                     let host = parsed.host_str().unwrap_or("127.0.0.1").to_string();
                     let port = parsed.port().unwrap_or(443);
                     if let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
-                        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok() {
+                        if std::net::TcpStream::connect_timeout(
+                            &addr,
+                            std::time::Duration::from_secs(2),
+                        )
+                        .is_ok()
+                        {
                             info!(rpc = %fb, "ETH_RPC_URL fallback reachable");
                             set.insert(fb.clone());
                             fallback_reachable = true;

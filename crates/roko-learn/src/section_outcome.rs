@@ -772,10 +772,10 @@ mod tests {
         assert_eq!(summary.successes, 1);
         assert_eq!(summary.task_types, vec!["coding_task", "review"]);
         assert_eq!(summary.role_ids, vec!["implementer", "reviewer"]);
-        assert_eq!(
-            summary.provider_models,
-            vec!["codex/gpt-5.5", "openai/gpt-5.4"]
-        );
+        assert_eq!(summary.provider_models, vec![
+            "codex/gpt-5.5",
+            "openai/gpt-5.4"
+        ]);
     }
 
     #[tokio::test]

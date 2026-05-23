@@ -30,6 +30,13 @@ pub enum StreamChunk {
     Done(FinishReason),
     /// Terminal provider or transport error surfaced as a stream event.
     Error(String),
+    /// Progress update from a running tool (harness adapters).
+    ToolProgress {
+        /// Tool name or identifier.
+        tool: String,
+        /// Human-readable progress status.
+        status: String,
+    },
 }
 
 /// Provider-neutral stream event covering both OpenAI SSE and Claude CLI protocols.
@@ -132,6 +139,12 @@ impl From<StreamChunk> for UnifiedStreamEvent {
             },
             StreamChunk::Done(_) => Self::Done,
             StreamChunk::Error(error) => Self::Error(error),
+            StreamChunk::ToolProgress { .. } => {
+                // Tool progress events are purely informational and carry no
+                // content. Map to an empty ContentDelta so that accumulators
+                // append nothing and no spurious Done signal is emitted.
+                Self::ContentDelta(String::new())
+            }
         }
     }
 }
@@ -249,6 +262,9 @@ impl StreamAccumulator {
                 }
             }
             StreamChunk::Error(_) => {}
+            StreamChunk::ToolProgress { .. } => {
+                // Tool progress is informational; does not affect the accumulated response.
+            }
         }
     }
 
@@ -434,5 +450,45 @@ mod tests {
     #[test]
     fn sse_parser_ignores_non_data_lines() {
         assert!(parse_sse_line("event: message").is_none());
+    }
+
+    #[test]
+    fn tool_progress_does_not_mutate_accumulator() {
+        let mut accumulator = StreamAccumulator::new();
+        accumulator.push(StreamChunk::ContentDelta("hello".to_string()));
+        accumulator.push(StreamChunk::Done(FinishReason::Stop));
+
+        // Snapshot the content and finish_reason before the ToolProgress.
+        // Pushing ToolProgress must leave both unchanged.
+        accumulator.push(StreamChunk::ToolProgress {
+            tool: "test".into(),
+            status: "running".into(),
+        });
+
+        let response = accumulator.finalize();
+        assert_eq!(response.content, "hello");
+        assert_eq!(response.finish_reason, FinishReason::Stop);
+    }
+
+    #[test]
+    fn tool_progress_from_impl_is_not_done() {
+        use super::UnifiedStreamEvent;
+
+        let event: UnifiedStreamEvent = StreamChunk::ToolProgress {
+            tool: "test".into(),
+            status: "running".into(),
+        }
+        .into();
+
+        // Must NOT be the Done variant — that would emit a spurious stream-complete signal.
+        assert!(
+            !matches!(event, UnifiedStreamEvent::Done),
+            "ToolProgress must not convert to UnifiedStreamEvent::Done"
+        );
+        // Must be an empty ContentDelta (truly inert for all accumulators).
+        assert!(
+            matches!(event, UnifiedStreamEvent::ContentDelta(ref s) if s.is_empty()),
+            "ToolProgress should convert to ContentDelta(String::new())"
+        );
     }
 }

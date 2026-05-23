@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "capability": "model",
+  "transport": "api",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250514",
+  "attempts": 3,
+  "outputs": [],
+  "error": {"kind": "auth", "message": "API key invalid"}
+}

@@ -1465,13 +1465,10 @@ mod tests {
     #[test]
     fn post_dispatch_check_passes_clean_output() {
         let layer = SafetyLayer::with_defaults();
-        let violations = layer.post_dispatch_check(
-            "plan-1",
-            "task-1",
-            "implementer",
-            "all tests pass",
-            &["src/lib.rs".to_string()],
-        );
+        let violations =
+            layer.post_dispatch_check("plan-1", "task-1", "implementer", "all tests pass", &[
+                "src/lib.rs".to_string(),
+            ]);
         assert!(violations.is_empty());
     }
 
@@ -1484,13 +1481,10 @@ mod tests {
             .push(GovernanceRule::ForbiddenTools(vec![
                 "write_file".to_string(),
             ]));
-        let violations = layer.post_dispatch_check(
-            "plan-1",
-            "task-1",
-            "reviewer",
-            "reviewed code",
-            &["src/lib.rs".to_string()],
-        );
+        let violations =
+            layer.post_dispatch_check("plan-1", "task-1", "reviewer", "reviewed code", &[
+                "src/lib.rs".to_string(),
+            ]);
         assert!(!violations.is_empty());
         assert!(
             violations

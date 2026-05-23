@@ -368,10 +368,9 @@ async fn gemini_native_generate_content_with_google_search_grounding() {
     let grounding = metadata
         .grounding_metadata
         .expect("grounding metadata should be preserved");
-    assert_eq!(
-        grounding.web_search_queries.expect("search queries"),
-        vec!["rust edition 2024 let chains".to_string()]
-    );
+    assert_eq!(grounding.web_search_queries.expect("search queries"), vec![
+        "rust edition 2024 let chains".to_string()
+    ]);
     assert_eq!(
         grounding.grounding_chunks.expect("grounding chunks")[0]
             .web
@@ -538,18 +537,14 @@ async fn gemini_openai_compat_path_for_flash_lite() {
             }
         }),
     )]);
-    let config = gemini_config(
-        server.base_url(),
-        "gemini-2-5-flash-lite",
-        ModelProfile {
-            slug: "gemini-2.5-flash-lite".to_string(),
-            supports_thinking: false,
-            supports_grounding: false,
-            supports_code_execution: false,
-            tool_format: "openai_json".to_string(),
-            ..gemini_model("gemini-2.5-flash-lite")
-        },
-    );
+    let config = gemini_config(server.base_url(), "gemini-2-5-flash-lite", ModelProfile {
+        slug: "gemini-2.5-flash-lite".to_string(),
+        supports_thinking: false,
+        supports_grounding: false,
+        supports_code_execution: false,
+        tool_format: "openai_json".to_string(),
+        ..gemini_model("gemini-2.5-flash-lite")
+    });
 
     let agent = create_agent_for_model(&config, "gemini-2-5-flash-lite", AgentOptions::default())
         .expect("create flash-lite agent");

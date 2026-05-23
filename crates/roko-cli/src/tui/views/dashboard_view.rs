@@ -441,14 +441,11 @@ fn render_agent_routes_table(
         .collect::<Vec<_>>();
 
     frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(14),
-                Constraint::Min(18),
-                Constraint::Length(10),
-            ],
-        )
+        Table::new(rows, [
+            Constraint::Length(14),
+            Constraint::Min(18),
+            Constraint::Length(10),
+        ])
         .header(
             Row::new(["Agent", "Model", "Tier"]).style(theme.accent().add_modifier(Modifier::BOLD)),
         )
@@ -1069,14 +1066,11 @@ fn render_diagnosis_panel(
         .collect::<Vec<_>>();
 
     frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(10),
-                Constraint::Min(20),
-                Constraint::Min(0),
-            ],
-        )
+        Table::new(rows, [
+            Constraint::Length(10),
+            Constraint::Min(20),
+            Constraint::Min(0),
+        ])
         .header(
             Row::new(["Severity", "Signal", "Message"])
                 .style(theme.accent().add_modifier(Modifier::BOLD)),
@@ -1484,17 +1478,14 @@ fn render_gate_verdict_summary(
         .collect();
 
     frame.render_widget(
-        Table::new(
-            table_rows,
-            [
-                Constraint::Length(gate_width as u16),
-                Constraint::Length(runs_width as u16),
-                Constraint::Length(pass_width as u16),
-                Constraint::Length(avg_width as u16),
-                Constraint::Min(12),
-                Constraint::Length(last_width as u16),
-            ],
-        )
+        Table::new(table_rows, [
+            Constraint::Length(gate_width as u16),
+            Constraint::Length(runs_width as u16),
+            Constraint::Length(pass_width as u16),
+            Constraint::Length(avg_width as u16),
+            Constraint::Min(12),
+            Constraint::Length(last_width as u16),
+        ])
         .header(
             Row::new(["gate", "runs", "pass", "avg", "trend", "last"])
                 .style(theme.accent().add_modifier(Modifier::BOLD)),
@@ -1631,15 +1622,12 @@ fn render_gate_trend_grid(
         .collect::<Vec<_>>();
 
     frame.render_widget(
-        Table::new(
-            table_rows,
-            [
-                Constraint::Length(gate_width as u16),
-                Constraint::Length(pass_width as u16),
-                Constraint::Min(8),
-                Constraint::Length(fail_width as u16),
-            ],
-        )
+        Table::new(table_rows, [
+            Constraint::Length(gate_width as u16),
+            Constraint::Length(pass_width as u16),
+            Constraint::Min(8),
+            Constraint::Length(fail_width as u16),
+        ])
         .header(
             Row::new(["gate", "pass", "timeline", "fail"])
                 .style(theme.accent().add_modifier(Modifier::BOLD)),

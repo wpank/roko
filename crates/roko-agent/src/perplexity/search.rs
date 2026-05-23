@@ -316,21 +316,18 @@ mod tests {
 
     #[tokio::test]
     async fn perplexity_search_single_returns_results() {
-        let body = canned_results(
-            "rust async patterns",
-            &[
-                (
-                    "https://example.com/1",
-                    "Async Rust Patterns",
-                    "Async in Rust...",
-                ),
-                (
-                    "https://example.com/2",
-                    "Tokio Guide",
-                    "Tokio is a runtime...",
-                ),
-            ],
-        );
+        let body = canned_results("rust async patterns", &[
+            (
+                "https://example.com/1",
+                "Async Rust Patterns",
+                "Async in Rust...",
+            ),
+            (
+                "https://example.com/2",
+                "Tokio Guide",
+                "Tokio is a runtime...",
+            ),
+        ]);
         let (mock, _) = MockPoster::ok(body);
         let client = client_with(Box::new(mock));
         let resp = client.search("rust async patterns").await.expect("ok");
@@ -376,14 +373,16 @@ mod tests {
     #[tokio::test]
     async fn perplexity_search_batch_returns_one_response_per_query() {
         let body = canned_batch(&[
-            (
-                "rust traits",
-                &[("https://a.com", "Traits", "Trait info...")],
-            ),
-            (
-                "rust lifetimes",
-                &[("https://b.com", "Lifetimes", "Lifetime info...")],
-            ),
+            ("rust traits", &[(
+                "https://a.com",
+                "Traits",
+                "Trait info...",
+            )]),
+            ("rust lifetimes", &[(
+                "https://b.com",
+                "Lifetimes",
+                "Lifetime info...",
+            )]),
         ]);
         let (mock, _) = MockPoster::ok(body);
         let client = client_with(Box::new(mock));

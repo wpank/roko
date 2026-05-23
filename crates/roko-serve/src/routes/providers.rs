@@ -729,9 +729,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.providers.insert(
-            "zai".into(),
-            roko_core::config::schema::ProviderConfig {
+        config
+            .providers
+            .insert("zai".into(), roko_core::config::schema::ProviderConfig {
                 kind: roko_core::agent::ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.z.ai/api/paas/v4".into()),
                 api_key_env: Some("ROKO_TEST_ZAI_API_KEY_NEVER_SET".into()),
@@ -742,11 +742,10 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "glm-5-1".into(),
-            roko_core::config::schema::ModelProfile {
+            });
+        config
+            .models
+            .insert("glm-5-1".into(), roko_core::config::schema::ModelProfile {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
@@ -780,8 +779,7 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
-            },
-        );
+            });
 
         let state = Arc::new(
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
@@ -833,9 +831,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.models.insert(
-            "glm-5-1".into(),
-            roko_core::config::schema::ModelProfile {
+        config
+            .models
+            .insert("glm-5-1".into(), roko_core::config::schema::ModelProfile {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
@@ -869,8 +867,7 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
-            },
-        );
+            });
 
         let state = Arc::new(
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
@@ -933,9 +930,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.providers.insert(
-            "zai".into(),
-            roko_core::config::schema::ProviderConfig {
+        config
+            .providers
+            .insert("zai".into(), roko_core::config::schema::ProviderConfig {
                 kind: roko_core::agent::ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.z.ai/api/paas/v4".into()),
                 api_key_env: Some("ROKO_TEST_ZAI_API_KEY_NEVER_SET".into()),
@@ -946,8 +943,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
+            });
         config.providers.insert(
             "anthropic".into(),
             roko_core::config::schema::ProviderConfig {
@@ -963,9 +959,9 @@ mod tests {
                 max_concurrent: None,
             },
         );
-        config.models.insert(
-            "glm-5-1".into(),
-            roko_core::config::schema::ModelProfile {
+        config
+            .models
+            .insert("glm-5-1".into(), roko_core::config::schema::ModelProfile {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 200_000,
@@ -999,8 +995,7 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
-            },
-        );
+            });
         config.models.insert(
             "claude-sonnet-4-6".into(),
             roko_core::config::schema::ModelProfile {
@@ -1104,9 +1099,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.providers.insert(
-            "zai".into(),
-            roko_core::config::schema::ProviderConfig {
+        config
+            .providers
+            .insert("zai".into(), roko_core::config::schema::ProviderConfig {
                 kind: roko_core::agent::ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.z.ai/api/paas/v4".into()),
                 api_key_env: Some("ROKO_TEST_ZAI_API_KEY_NEVER_SET".into()),
@@ -1117,8 +1112,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
+            });
 
         let state = Arc::new(
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
@@ -1193,9 +1187,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.providers.insert(
-            "zai".into(),
-            roko_core::config::schema::ProviderConfig {
+        config
+            .providers
+            .insert("zai".into(), roko_core::config::schema::ProviderConfig {
                 kind: roko_core::agent::ProviderKind::OpenAiCompat,
                 base_url: Some(base_url),
                 api_key_env: Some("PATH".into()),
@@ -1206,11 +1200,10 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "glm-5-1".into(),
-            roko_core::config::schema::ModelProfile {
+            });
+        config
+            .models
+            .insert("glm-5-1".into(), roko_core::config::schema::ModelProfile {
                 provider: "zai".into(),
                 slug: "glm-5.1".into(),
                 context_window: 128_000,
@@ -1244,8 +1237,7 @@ mod tests {
                 search_context_size: None,
                 cost_per_request: None,
                 tier: None,
-            },
-        );
+            });
 
         let state = Arc::new(
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
@@ -1319,9 +1311,9 @@ mod tests {
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut config = roko_core::config::schema::RokoConfig::default();
-        config.providers.insert(
-            "zai".into(),
-            roko_core::config::schema::ProviderConfig {
+        config
+            .providers
+            .insert("zai".into(), roko_core::config::schema::ProviderConfig {
                 kind: roko_core::agent::ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.z.ai/api/paas/v4".into()),
                 api_key_env: Some("ROKO_TEST_ZAI_API_KEY_NEVER_SET".into()),
@@ -1332,8 +1324,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
+            });
 
         let state = Arc::new(
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)

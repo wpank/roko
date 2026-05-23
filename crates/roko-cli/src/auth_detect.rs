@@ -15,6 +15,11 @@ use roko_core::agent::ProviderKind;
 pub enum AuthMethod {
     /// The `claude` CLI is installed and logged in.
     ClaudeCli,
+    /// A non-Claude CLI provider (e.g. Hermes, OpenClaw) is installed and available.
+    CliProvider {
+        /// The provider's label (e.g. "hermes", "openclaw").
+        label: String,
+    },
     /// Anthropic API key from env or config.
     AnthropicApi {
         key: String,
@@ -37,6 +42,7 @@ impl AuthMethod {
     pub fn label(&self) -> String {
         match self {
             Self::ClaudeCli => "claude CLI".to_string(),
+            Self::CliProvider { label } => format!("{label} CLI"),
             Self::AnthropicApi { model, .. } => {
                 if let Some(m) = model {
                     format!("{m} (Anthropic API)")
@@ -73,16 +79,30 @@ pub fn detect_auth_from_config(workdir: &Path) -> AuthMethod {
 
 fn detect_from_config(config: &roko_core::config::schema::RokoConfig) -> Option<AuthMethod> {
     for (_name, provider) in &config.providers {
-        // CLI providers don't need an API key — check binary availability.
-        if provider.kind == ProviderKind::ClaudeCli {
-            let cmd = provider.command.as_deref().unwrap_or("claude");
+        // CLI-based providers don't need an API key — check binary availability.
+        // ClaudeCli, Hermes (CLI one-shot), and OpenClaw (CLI one-shot) all
+        // dispatch via a local subprocess.
+        if matches!(
+            provider.kind,
+            ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+        ) {
+            let default_cmd = provider.kind.label();
+            let cmd = provider.command.as_deref().unwrap_or(match provider.kind {
+                ProviderKind::ClaudeCli => "claude",
+                _ => default_cmd,
+            });
             if Command::new(cmd)
                 .arg("--version")
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
             {
-                return Some(AuthMethod::ClaudeCli);
+                return Some(match provider.kind {
+                    ProviderKind::ClaudeCli => AuthMethod::ClaudeCli,
+                    _ => AuthMethod::CliProvider {
+                        label: provider.kind.label().to_string(),
+                    },
+                });
             }
             continue;
         }
@@ -97,6 +117,9 @@ fn detect_from_config(config: &roko_core::config::schema::RokoConfig) -> Option<
 
         return Some(match provider.kind {
             ProviderKind::AnthropicApi => AuthMethod::AnthropicApi { key, model: None },
+            // All remaining API-backed providers (OpenAiCompat, CursorAcp,
+            // CursorCli, PerplexityApi, GeminiApi, CerebrasApi) use
+            // OpenAI-compatible auth.
             _ => AuthMethod::OpenAiCompat {
                 key,
                 base_url: provider.base_url.clone().unwrap_or_default(),
@@ -207,5 +230,23 @@ mod tests {
             "glm-5.1 (OpenAI-compat)"
         );
         assert_eq!(AuthMethod::NeedsSetup.label(), "none");
+    }
+
+    #[test]
+    fn cli_provider_label_uses_provider_label_and_cli_suffix() {
+        assert_eq!(
+            AuthMethod::CliProvider {
+                label: "hermes".into(),
+            }
+            .label(),
+            "hermes CLI"
+        );
+        assert_eq!(
+            AuthMethod::CliProvider {
+                label: "openclaw".into(),
+            }
+            .label(),
+            "openclaw CLI"
+        );
     }
 }

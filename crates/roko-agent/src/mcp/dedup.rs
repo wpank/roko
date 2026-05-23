@@ -59,10 +59,10 @@ mod tests {
 
     #[test]
     fn mcp_dedup_single_server() {
-        let tools = vec![(
-            "fs".to_string(),
-            vec![tool("fs.read", "read"), tool("fs.write", "write")],
-        )];
+        let tools = vec![("fs".to_string(), vec![
+            tool("fs.read", "read"),
+            tool("fs.write", "write"),
+        ])];
         let result = dedup_tools(tools);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "fs.read");
@@ -85,14 +85,14 @@ mod tests {
     #[test]
     fn mcp_dedup_last_writer_wins() {
         let tools = vec![
-            (
-                "server_a".to_string(),
-                vec![tool("shared.search", "search v1")],
-            ),
-            (
-                "server_b".to_string(),
-                vec![tool("shared.search", "search v2")],
-            ),
+            ("server_a".to_string(), vec![tool(
+                "shared.search",
+                "search v1",
+            )]),
+            ("server_b".to_string(), vec![tool(
+                "shared.search",
+                "search v2",
+            )]),
         ];
         let result = dedup_tools(tools);
         assert_eq!(result.len(), 1);
@@ -113,14 +113,14 @@ mod tests {
     #[test]
     fn mcp_dedup_mixed_overlap_and_unique() {
         let tools = vec![
-            (
-                "a".to_string(),
-                vec![tool("shared.read", "v1"), tool("a.only", "only a")],
-            ),
-            (
-                "b".to_string(),
-                vec![tool("shared.read", "v2"), tool("b.only", "only b")],
-            ),
+            ("a".to_string(), vec![
+                tool("shared.read", "v1"),
+                tool("a.only", "only a"),
+            ]),
+            ("b".to_string(), vec![
+                tool("shared.read", "v2"),
+                tool("b.only", "only b"),
+            ]),
         ];
         let result = dedup_tools(tools);
         assert_eq!(result.len(), 3);

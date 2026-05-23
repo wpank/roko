@@ -1932,17 +1932,14 @@ mod tests {
             .iter()
             .map(|section| section.name.as_str())
             .collect();
-        assert_eq!(
-            ordered,
-            vec![
-                "role_identity",
-                "conventions",
-                "tool_instructions",
-                "domain_context",
-                "task_context",
-                "affect_guidance",
-            ]
-        );
+        assert_eq!(ordered, vec![
+            "role_identity",
+            "conventions",
+            "tool_instructions",
+            "domain_context",
+            "task_context",
+            "affect_guidance",
+        ]);
 
         let prompt = SystemPromptBuilder::new("Role")
             .with_conventions("Conv")

@@ -990,24 +990,21 @@ impl DreamRunner {
 
 impl Default for DreamRunner {
     fn default() -> Self {
-        Self::new(
-            PathBuf::from("."),
-            DreamLoopConfig {
-                auto_dream: true,
-                idle_threshold_mins: 15,
-                min_episodes_for_dream: 5,
-                agent: DreamAgentConfig {
-                    command: "cat".to_string(),
-                    args: Vec::new(),
-                    model: None,
-                    bare_mode: true,
-                    effort: "medium".to_string(),
-                    fallback_model: None,
-                    timeout_ms: 120_000,
-                    env: Vec::new(),
-                },
+        Self::new(PathBuf::from("."), DreamLoopConfig {
+            auto_dream: true,
+            idle_threshold_mins: 15,
+            min_episodes_for_dream: 5,
+            agent: DreamAgentConfig {
+                command: "cat".to_string(),
+                args: Vec::new(),
+                model: None,
+                bare_mode: true,
+                effort: "medium".to_string(),
+                fallback_model: None,
+                timeout_ms: 120_000,
+                env: Vec::new(),
             },
-        )
+        })
     }
 }
 

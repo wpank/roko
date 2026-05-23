@@ -485,15 +485,11 @@ mod tests {
 
     #[test]
     fn causal_link_tags_override_freeform_content() {
-        let entry = entry(
-            KnowledgeKind::CausalLink,
-            "something vague",
-            &[
-                "cause:high complexity",
-                "effect:more review",
-                "domain:coding",
-            ],
-        );
+        let entry = entry(KnowledgeKind::CausalLink, "something vague", &[
+            "cause:high complexity",
+            "effect:more review",
+            "domain:coding",
+        ]);
         let parts = CausalLinkParts::from_entry(&entry).expect("causal parts");
         assert_eq!(parts.cause, "high complexity");
         assert_eq!(parts.effect, "more review");
@@ -560,16 +556,12 @@ mod tests {
 
     #[test]
     fn query_by_role_finds_matching_entries() {
-        let coding_entry = entry(
-            KnowledgeKind::Insight,
-            "Prefer small functions",
-            &["domain:coding"],
-        );
-        let infra_entry = entry(
-            KnowledgeKind::Insight,
-            "Use retry for flaky networks",
-            &["domain:infra"],
-        );
+        let coding_entry = entry(KnowledgeKind::Insight, "Prefer small functions", &[
+            "domain:coding",
+        ]);
+        let infra_entry = entry(KnowledgeKind::Insight, "Use retry for flaky networks", &[
+            "domain:infra",
+        ]);
         let coded = KnowledgeHdcEncoder::encode_structured(&coding_entry);
         let infrad = KnowledgeHdcEncoder::encode_structured(&infra_entry);
 
@@ -580,11 +572,9 @@ mod tests {
 
     #[test]
     fn unbind_role_recovers_filler_direction() {
-        let e = entry(
-            KnowledgeKind::Insight,
-            "Retry after transient failures",
-            &["domain:networking"],
-        );
+        let e = entry(KnowledgeKind::Insight, "Retry after transient failures", &[
+            "domain:networking",
+        ]);
         let composite = KnowledgeHdcEncoder::encode_structured(&e);
 
         // Unbinding "kind" should be closer to text_hv("insight") than to
@@ -629,18 +619,12 @@ mod tests {
 
     #[test]
     fn resonance_skips_same_domain_pairs() {
-        let e1 = entry_with_id(
-            "k1",
-            KnowledgeKind::Heuristic,
-            "Use small functions",
-            &["domain:coding"],
-        );
-        let e2 = entry_with_id(
-            "k2",
-            KnowledgeKind::Heuristic,
-            "Use small functions",
-            &["domain:coding"],
-        );
+        let e1 = entry_with_id("k1", KnowledgeKind::Heuristic, "Use small functions", &[
+            "domain:coding",
+        ]);
+        let e2 = entry_with_id("k2", KnowledgeKind::Heuristic, "Use small functions", &[
+            "domain:coding",
+        ]);
 
         let detector = ResonanceDetector::new(0.3, 10);
         let pairs = detector.detect_resonances(&[e1, e2]);

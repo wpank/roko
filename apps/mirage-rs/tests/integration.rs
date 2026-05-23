@@ -652,51 +652,31 @@ fn integration_block_stm_conflict_rate_uses_transaction_reexecutions() {
     let slot_b = U256::from(2_u64);
     let total_txs = 50;
 
-    store.record(
-        address,
-        slot_a,
-        VersionEntry {
-            tx_index: 0,
-            value: U256::from(10_u64),
-            incarnation: 0,
-        },
-    );
-    store.record(
-        address,
-        slot_a,
-        VersionEntry {
-            tx_index: 1,
-            value: U256::from(20_u64),
-            incarnation: 0,
-        },
-    );
-    store.record(
-        address,
-        slot_b,
-        VersionEntry {
-            tx_index: 1,
-            value: U256::from(30_u64),
-            incarnation: 0,
-        },
-    );
-    store.record(
-        address,
-        slot_a,
-        VersionEntry {
-            tx_index: 1,
-            value: U256::from(21_u64),
-            incarnation: 1,
-        },
-    );
-    store.record(
-        address,
-        slot_b,
-        VersionEntry {
-            tx_index: 1,
-            value: U256::from(31_u64),
-            incarnation: 1,
-        },
-    );
+    store.record(address, slot_a, VersionEntry {
+        tx_index: 0,
+        value: U256::from(10_u64),
+        incarnation: 0,
+    });
+    store.record(address, slot_a, VersionEntry {
+        tx_index: 1,
+        value: U256::from(20_u64),
+        incarnation: 0,
+    });
+    store.record(address, slot_b, VersionEntry {
+        tx_index: 1,
+        value: U256::from(30_u64),
+        incarnation: 0,
+    });
+    store.record(address, slot_a, VersionEntry {
+        tx_index: 1,
+        value: U256::from(21_u64),
+        incarnation: 1,
+    });
+    store.record(address, slot_b, VersionEntry {
+        tx_index: 1,
+        value: U256::from(31_u64),
+        incarnation: 1,
+    });
 
     assert_eq!(store.re_execution_count(), 1);
     let conflict_rate = store.conflict_rate(total_txs);

@@ -1167,28 +1167,20 @@ async fn build_knowledge_graph(
             pheromone_weight: insight.pheromone,
             confirmations: insight.confirmations,
         });
-        push_edge(
-            &mut edges,
-            &mut seen,
-            KnowledgeEdge {
-                from: insight.poster.clone(),
-                to: insight_node_id(&insight.id),
-                kind: "posted".into(),
-            },
-        );
+        push_edge(&mut edges, &mut seen, KnowledgeEdge {
+            from: insight.poster.clone(),
+            to: insight_node_id(&insight.id),
+            kind: "posted".into(),
+        });
         let id = U256::from_str_radix(&insight.id, 10)?;
         for name in worker_names() {
             let confirmer = prepared.ctx.wallet_address(name)?;
             if board.confirmed(id, confirmer).call().await.unwrap_or(false) {
-                push_edge(
-                    &mut edges,
-                    &mut seen,
-                    KnowledgeEdge {
-                        from: name.into(),
-                        to: insight_node_id(&insight.id),
-                        kind: "confirmed".into(),
-                    },
-                );
+                push_edge(&mut edges, &mut seen, KnowledgeEdge {
+                    from: name.into(),
+                    to: insight_node_id(&insight.id),
+                    kind: "confirmed".into(),
+                });
             }
         }
     }

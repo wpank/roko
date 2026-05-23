@@ -106,14 +106,10 @@ mod tests {
     #[test]
     fn round_trip_serde() {
         let call = ToolCall::new("c1", "echo", serde_json::json!({"x": 1}));
-        let cp = Checkpoint::new(
-            3,
-            vec![call],
-            vec![
-                serde_json::json!({"role": "system", "content": "sys"}),
-                serde_json::json!({"role": "user", "content": "usr"}),
-            ],
-        );
+        let cp = Checkpoint::new(3, vec![call], vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "usr"}),
+        ]);
         let bytes = cp.to_bytes().expect("serialize");
         let recovered = Checkpoint::from_bytes(&bytes).expect("deserialize");
         assert_eq!(recovered.iterations, 3);

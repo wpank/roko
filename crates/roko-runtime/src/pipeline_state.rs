@@ -928,13 +928,10 @@ mod tests {
         let out = sm.step(PipelineInput::StrategyComplete {
             brief: "plan".into(),
         });
-        assert!(matches!(
-            out,
-            PipelineOutput::SpawnImplementer {
-                context: Some(_),
-                ..
-            }
-        ));
+        assert!(matches!(out, PipelineOutput::SpawnImplementer {
+            context: Some(_),
+            ..
+        }));
     }
 
     #[test]
@@ -961,12 +958,9 @@ mod tests {
         sm.step(PipelineInput::Start);
 
         let out = sm.step(PipelineInput::UserCancel);
-        assert!(matches!(
-            out,
-            PipelineOutput::Done {
-                outcome: WorkflowOutcome::Cancelled
-            }
-        ));
+        assert!(matches!(out, PipelineOutput::Done {
+            outcome: WorkflowOutcome::Cancelled
+        }));
         assert_eq!(sm.phase, Phase::Cancelled);
     }
 
@@ -1069,10 +1063,10 @@ role = "implementer"
         let json = sm.checkpoint().unwrap();
         let restored = PipelineStateV2::from_checkpoint(&json).unwrap();
 
-        assert_eq!(
-            restored.review_findings,
-            vec!["needs error handling", "add docs"]
-        );
+        assert_eq!(restored.review_findings, vec![
+            "needs error handling",
+            "add docs"
+        ]);
         assert_eq!(restored.iteration, 2);
     }
 
@@ -1229,12 +1223,9 @@ role = "implementer"
             outcome: CommitOutcome::NoChanges,
         });
 
-        assert!(matches!(
-            out,
-            PipelineOutput::Done {
-                outcome: WorkflowOutcome::Success { commit_hash: None }
-            }
-        ));
+        assert!(matches!(out, PipelineOutput::Done {
+            outcome: WorkflowOutcome::Success { commit_hash: None }
+        }));
         assert_eq!(sm.phase, Phase::Complete);
         assert_eq!(sm.commit_hash, None);
     }

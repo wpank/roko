@@ -725,27 +725,18 @@ mod tests {
         let snapshot = LearnCascadeRouterSnapshot {
             model_slugs: vec!["configured".into(), "history".into()],
             confidence_stats: std::collections::HashMap::from([
-                (
-                    "configured".into(),
-                    LearnCascadeRouterModelStats {
-                        trials: 10,
-                        successes: 0,
-                    },
-                ),
-                (
-                    "history".into(),
-                    LearnCascadeRouterModelStats {
-                        trials: 4,
-                        successes: 2,
-                    },
-                ),
-                (
-                    "legacy".into(),
-                    LearnCascadeRouterModelStats {
-                        trials: 3,
-                        successes: 0,
-                    },
-                ),
+                ("configured".into(), LearnCascadeRouterModelStats {
+                    trials: 10,
+                    successes: 0,
+                }),
+                ("history".into(), LearnCascadeRouterModelStats {
+                    trials: 4,
+                    successes: 2,
+                }),
+                ("legacy".into(), LearnCascadeRouterModelStats {
+                    trials: 3,
+                    successes: 0,
+                }),
             ]),
             total_observations: 17,
             stage_transitions: Vec::new(),

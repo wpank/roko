@@ -177,282 +177,210 @@ impl CostTable {
     #[must_use]
     pub fn with_defaults() -> Self {
         let mut models = HashMap::new();
-        models.insert(
-            "kimi-k2.5".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 3.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.10),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "moonshotai/kimi-k2.5".to_string(),
-            ModelPricing {
-                input_per_m: 0.38,
-                output_per_m: 1.72,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.10),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "kimi-k2-thinking".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 2.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.15),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-5.1".to_string(),
-            ModelPricing {
-                input_per_m: 1.40,
-                output_per_m: 4.40,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.26),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "z-ai/glm-5.1".to_string(),
-            ModelPricing {
-                input_per_m: 1.26,
-                output_per_m: 3.96,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: Some(0.26),
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-5".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 3.20,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "glm-4.7".to_string(),
-            ModelPricing {
-                input_per_m: 0.60,
-                output_per_m: 2.20,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "anthropic/claude-opus-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 15.00,
-                output_per_m: 75.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-2.5-pro".to_string(),
-            ModelPricing {
-                input_per_m: 1.25,
-                output_per_m: 10.00,
-                input_per_m_high: Some(2.50),
-                output_per_m_high: Some(15.00),
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-2.5-flash".to_string(),
-            ModelPricing {
-                input_per_m: 0.30,
-                output_per_m: 2.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-2.5-flash-lite".to_string(),
-            ModelPricing {
-                input_per_m: 0.10,
-                output_per_m: 0.40,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-3.1-pro-preview".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 12.00,
-                input_per_m_high: Some(4.00),
-                output_per_m_high: Some(18.00),
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-3-flash-preview".to_string(),
-            ModelPricing {
-                input_per_m: 0.50,
-                output_per_m: 3.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
-        models.insert(
-            "gemini-3.1-flash-lite-preview".to_string(),
-            ModelPricing {
-                input_per_m: 0.25,
-                output_per_m: 1.50,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: None,
-            },
-        );
+        models.insert("kimi-k2.5".to_string(), ModelPricing {
+            input_per_m: 0.60,
+            output_per_m: 3.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: Some(0.10),
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("moonshotai/kimi-k2.5".to_string(), ModelPricing {
+            input_per_m: 0.38,
+            output_per_m: 1.72,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: Some(0.10),
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("kimi-k2-thinking".to_string(), ModelPricing {
+            input_per_m: 0.60,
+            output_per_m: 2.50,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: Some(0.15),
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("glm-5.1".to_string(), ModelPricing {
+            input_per_m: 1.40,
+            output_per_m: 4.40,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: Some(0.26),
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("z-ai/glm-5.1".to_string(), ModelPricing {
+            input_per_m: 1.26,
+            output_per_m: 3.96,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: Some(0.26),
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("glm-5".to_string(), ModelPricing {
+            input_per_m: 1.00,
+            output_per_m: 3.20,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("glm-4.7".to_string(), ModelPricing {
+            input_per_m: 0.60,
+            output_per_m: 2.20,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("anthropic/claude-opus-4-6".to_string(), ModelPricing {
+            input_per_m: 15.00,
+            output_per_m: 75.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-2.5-pro".to_string(), ModelPricing {
+            input_per_m: 1.25,
+            output_per_m: 10.00,
+            input_per_m_high: Some(2.50),
+            output_per_m_high: Some(15.00),
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-2.5-flash".to_string(), ModelPricing {
+            input_per_m: 0.30,
+            output_per_m: 2.50,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-2.5-flash-lite".to_string(), ModelPricing {
+            input_per_m: 0.10,
+            output_per_m: 0.40,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-3.1-pro-preview".to_string(), ModelPricing {
+            input_per_m: 2.00,
+            output_per_m: 12.00,
+            input_per_m_high: Some(4.00),
+            output_per_m_high: Some(18.00),
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-3-flash-preview".to_string(), ModelPricing {
+            input_per_m: 0.50,
+            output_per_m: 3.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
+        models.insert("gemini-3.1-flash-lite-preview".to_string(), ModelPricing {
+            input_per_m: 0.25,
+            output_per_m: 1.50,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: None,
+        });
 
         // Perplexity Sonar models — include per-request search fee.
-        models.insert(
-            "sonar".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 1.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.005),
-            },
-        );
-        models.insert(
-            "sonar-pro".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.014),
-            },
-        );
-        models.insert(
-            "sonar-reasoning".to_string(),
-            ModelPricing {
-                input_per_m: 1.00,
-                output_per_m: 5.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.005),
-            },
-        );
-        models.insert(
-            "sonar-reasoning-pro".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.008),
-            },
-        );
-        models.insert(
-            "sonar-deep-research".to_string(),
-            ModelPricing {
-                input_per_m: 2.00,
-                output_per_m: 8.00,
-                input_per_m_high: None,
-                output_per_m_high: None,
-                cache_read_per_m: None,
-                cache_write_per_m: None,
-                per_request: Some(0.005),
-            },
-        );
+        models.insert("sonar".to_string(), ModelPricing {
+            input_per_m: 1.00,
+            output_per_m: 1.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: Some(0.005),
+        });
+        models.insert("sonar-pro".to_string(), ModelPricing {
+            input_per_m: 3.00,
+            output_per_m: 15.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: Some(0.014),
+        });
+        models.insert("sonar-reasoning".to_string(), ModelPricing {
+            input_per_m: 1.00,
+            output_per_m: 5.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: Some(0.005),
+        });
+        models.insert("sonar-reasoning-pro".to_string(), ModelPricing {
+            input_per_m: 2.00,
+            output_per_m: 8.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: Some(0.008),
+        });
+        models.insert("sonar-deep-research".to_string(), ModelPricing {
+            input_per_m: 2.00,
+            output_per_m: 8.00,
+            input_per_m_high: None,
+            output_per_m_high: None,
+            cache_read_per_m: None,
+            cache_write_per_m: None,
+            per_request: Some(0.005),
+        });
         // Bare Anthropic direct API slugs (used by cascade router).
-        models.insert(
-            "claude-opus-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 15.00,
-                output_per_m: 75.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-sonnet-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-sonnet-4-6".to_string(),
-            ModelPricing {
-                input_per_m: 3.00,
-                output_per_m: 15.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-haiku-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 0.80,
-                output_per_m: 4.00,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
-        models.insert(
-            "claude-haiku-4-5".to_string(),
-            ModelPricing {
-                input_per_m: 0.25,
-                output_per_m: 1.25,
-                cache_read_per_m: None,
-                ..Default::default()
-            },
-        );
+        models.insert("claude-opus-4-6".to_string(), ModelPricing {
+            input_per_m: 15.00,
+            output_per_m: 75.00,
+            cache_read_per_m: None,
+            ..Default::default()
+        });
+        models.insert("claude-sonnet-4-5".to_string(), ModelPricing {
+            input_per_m: 3.00,
+            output_per_m: 15.00,
+            cache_read_per_m: None,
+            ..Default::default()
+        });
+        models.insert("claude-sonnet-4-6".to_string(), ModelPricing {
+            input_per_m: 3.00,
+            output_per_m: 15.00,
+            cache_read_per_m: None,
+            ..Default::default()
+        });
+        models.insert("claude-haiku-4-5".to_string(), ModelPricing {
+            input_per_m: 0.80,
+            output_per_m: 4.00,
+            cache_read_per_m: None,
+            ..Default::default()
+        });
+        models.insert("claude-haiku-4-5".to_string(), ModelPricing {
+            input_per_m: 0.25,
+            output_per_m: 1.25,
+            cache_read_per_m: None,
+            ..Default::default()
+        });
 
         Self { models }
     }

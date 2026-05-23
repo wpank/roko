@@ -159,10 +159,12 @@ edition = "2024"
 fn seed_git_repo(workdir: &Path) {
     run_process(workdir, &["git", "init"]);
     run_process(workdir, &["git", "config", "user.name", "Self Host Test"]);
-    run_process(
-        workdir,
-        &["git", "config", "user.email", "self-host@example.com"],
-    );
+    run_process(workdir, &[
+        "git",
+        "config",
+        "user.email",
+        "self-host@example.com",
+    ]);
     run_process(workdir, &["git", "add", "."]);
     run_process(workdir, &["git", "commit", "-m", "seed"]);
 }

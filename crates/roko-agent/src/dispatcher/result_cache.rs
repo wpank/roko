@@ -154,15 +154,12 @@ impl ToolResultCache {
         let paths = extract_paths(call);
         let now = Instant::now();
 
-        self.entries.insert(
-            key,
-            CacheEntry {
-                result,
-                created_at: now,
-                last_accessed: now,
-                affected_paths: paths,
-            },
-        );
+        self.entries.insert(key, CacheEntry {
+            result,
+            created_at: now,
+            last_accessed: now,
+            affected_paths: paths,
+        });
     }
 
     /// Invalidate cache entries affected by a write operation.

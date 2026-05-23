@@ -792,14 +792,11 @@ fn persisted_circuit_breaker_state(state: CircuitBreakerState) -> PersistedCircu
             .records
             .into_iter()
             .map(|(plan_id, record)| {
-                (
-                    plan_id,
-                    PersistedCircuitBreakerFailureRecord {
-                        count: record.count,
-                        last_failure_ms: record.last_failure_ms,
-                        reasons: record.reasons,
-                    },
-                )
+                (plan_id, PersistedCircuitBreakerFailureRecord {
+                    count: record.count,
+                    last_failure_ms: record.last_failure_ms,
+                    reasons: record.reasons,
+                })
             })
             .collect(),
     }
@@ -812,14 +809,11 @@ fn restored_circuit_breaker_state(state: PersistedCircuitBreakerState) -> Circui
             .records
             .into_iter()
             .map(|(plan_id, record)| {
-                (
-                    plan_id,
-                    FailureRecord {
-                        count: record.count,
-                        last_failure_ms: record.last_failure_ms,
-                        reasons: record.reasons,
-                    },
-                )
+                (plan_id, FailureRecord {
+                    count: record.count,
+                    last_failure_ms: record.last_failure_ms,
+                    reasons: record.reasons,
+                })
             })
             .collect(),
     }
@@ -894,15 +888,12 @@ fn task_runner_cost_table(resolved: &roko_core::agent::ResolvedModel) -> RunnerC
     let mut cost_table = RunnerCostTable::default();
 
     if let Some(profile) = resolved.profile.as_ref() {
-        cost_table.insert(
-            resolved.slug.clone(),
-            RunnerModelPricing {
-                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
-                output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
-                cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
-                cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
-            },
-        );
+        cost_table.insert(resolved.slug.clone(), RunnerModelPricing {
+            input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+            output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
+            cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
+            cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
+        });
     }
 
     cost_table
@@ -981,6 +972,9 @@ fn model_matches_forced_backend(
         roko_core::agent::AgentBackend::Perplexity => {
             forced_backend == "perplexity" || forced_backend == "sonar"
         }
+        roko_core::agent::AgentBackend::Cerebras => forced_backend == "cerebras",
+        roko_core::agent::AgentBackend::Hermes => forced_backend == "hermes",
+        roko_core::agent::AgentBackend::OpenClaw => forced_backend == "openclaw",
         _ => false,
     }
 }
@@ -2792,6 +2786,9 @@ pub struct PlanRunner {
     extension_chain: ExtensionChain,
     /// TTL cache for efficiency signals to avoid re-reading `efficiency.jsonl`.
     efficiency_cache: EfficiencyCache,
+    /// Harness adapter registry, populated from config at startup.
+    /// `None` if no harness providers are configured or initialization failed.
+    harness_registry: Option<roko_agent::HarnessRegistry>,
 }
 
 /// Tracks per-task completion within a plan. Lives in PlanRunner (CLI crate),
@@ -4322,15 +4319,12 @@ impl PlanRunner {
                 .to_string_lossy()
                 .to_string();
             let parent = plans_dir.parent().unwrap_or(plans_dir);
-            (
-                parent,
-                vec![roko_orchestrator::plan_discovery::PlanInfo {
-                    base,
-                    num: String::new(),
-                    path: md_path,
-                    frontmatter: None,
-                }],
-            )
+            (parent, vec![roko_orchestrator::plan_discovery::PlanInfo {
+                base,
+                num: String::new(),
+                path: md_path,
+                frontmatter: None,
+            }])
         } else {
             (
                 plans_dir.as_ref(),
@@ -4577,6 +4571,20 @@ impl PlanRunner {
             _ => None,
         };
         let safety_layer = SafetyLayer::from_config(&roko_config);
+        let harness_registry = match roko_agent::HarnessRegistry::from_config(&roko_config) {
+            Ok(registry) => {
+                tracing::info!(
+                    adapters = registry.adapter_count(),
+                    services = registry.service_count(),
+                    "harness registry initialized"
+                );
+                Some(registry)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "harness registry initialization failed (non-fatal)");
+                None
+            }
+        };
         let max_concurrent = config.executor.max_concurrent_tasks;
         Ok(Self {
             workdir: workdir.to_path_buf(),
@@ -4689,6 +4697,7 @@ impl PlanRunner {
                 loaded_at: Instant::now() - Duration::from_secs(11),
                 ttl: Duration::from_secs(10),
             },
+            harness_registry,
         })
     }
 
@@ -4797,6 +4806,20 @@ impl PlanRunner {
             _ => None,
         };
         let safety_layer = SafetyLayer::from_config(&roko_config);
+        let harness_registry = match roko_agent::HarnessRegistry::from_config(&roko_config) {
+            Ok(registry) => {
+                tracing::info!(
+                    adapters = registry.adapter_count(),
+                    services = registry.service_count(),
+                    "harness registry initialized"
+                );
+                Some(registry)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "harness registry initialization failed (non-fatal)");
+                None
+            }
+        };
         let max_concurrent = config.executor.max_concurrent_tasks;
         Ok(Self {
             workdir: workdir.to_path_buf(),
@@ -4900,6 +4923,7 @@ impl PlanRunner {
             custody_logger: custody_logger_for(workdir),
             extension_chain: ExtensionChain::new(),
             efficiency_cache: EfficiencyCache::new(Duration::from_secs(10)),
+            harness_registry,
         })
     }
 
@@ -5010,6 +5034,20 @@ impl PlanRunner {
             _ => None,
         };
         let safety_layer = SafetyLayer::from_config(&roko_config);
+        let harness_registry = match roko_agent::HarnessRegistry::from_config(&roko_config) {
+            Ok(registry) => {
+                tracing::info!(
+                    adapters = registry.adapter_count(),
+                    services = registry.service_count(),
+                    "harness registry initialized"
+                );
+                Some(registry)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "harness registry initialization failed (non-fatal)");
+                None
+            }
+        };
         let max_concurrent = config.executor.max_concurrent_tasks;
         Ok(Self {
             workdir: workdir.to_path_buf(),
@@ -5113,6 +5151,7 @@ impl PlanRunner {
             custody_logger: custody_logger_for(workdir),
             extension_chain: ExtensionChain::new(),
             efficiency_cache: EfficiencyCache::new(Duration::from_secs(10)),
+            harness_registry,
         })
     }
 
@@ -6490,14 +6529,10 @@ impl PlanRunner {
             return Ok(None);
         }
 
-        UnifiedTaskDag::build(
-            &plan_tasks,
-            &plan_deps,
-            DagConfig {
-                infer_file_overlap: false,
-                max_wave_width: 0,
-            },
-        )
+        UnifiedTaskDag::build(&plan_tasks, &plan_deps, DagConfig {
+            infer_file_overlap: false,
+            max_wave_width: 0,
+        })
         .map(Some)
     }
 
@@ -7542,13 +7577,11 @@ impl PlanRunner {
                     "[orchestrate] created Gemini context cache for {plan_id} using {}",
                     model.slug
                 );
-                self.gemini_plan_caches.insert(
-                    plan_id.to_string(),
-                    GeminiPlanCache {
+                self.gemini_plan_caches
+                    .insert(plan_id.to_string(), GeminiPlanCache {
                         model_slug: model.slug,
                         cache_id: cache_id.clone(),
-                    },
-                );
+                    });
                 Ok(Some(cache_id))
             }
             Err(error) => {
@@ -8331,8 +8364,34 @@ impl PlanRunner {
     /// delegates to [`run_all()`] which drives the state machine. The phase
     /// handlers (handle_enriching, handle_implementing, etc.) use the
     /// trackers for task-level granularity.
+    /// Start any harness gateway services registered in the harness registry.
+    ///
+    /// This is best-effort: individual service start failures are logged as
+    /// warnings but do not block plan execution. Harness adapters that rely
+    /// on local gateways (Hermes HTTP, OpenClaw WebSocket) will benefit from
+    /// having their services pre-started before dispatch begins.
+    async fn start_harness_services(&mut self) {
+        let Some(ref registry) = self.harness_registry else {
+            return;
+        };
+        if registry.service_count() == 0 {
+            return;
+        }
+        tracing::info!(
+            services = registry.service_count(),
+            adapters = registry.adapter_count(),
+            "starting harness gateway services"
+        );
+        if let Err(e) = registry.start_services().await {
+            tracing::warn!(error = %e, "harness service startup encountered errors (non-fatal)");
+        }
+    }
+
     #[instrument(skip_all, fields(plan_dir = %path.display()))]
     pub async fn run_task_plans(&mut self, path: &Path) -> Result<OrchestrationReport> {
+        // Pre-start harness gateway services before dispatching tasks.
+        self.start_harness_services().await;
+
         enum RunExit {
             Completed(Result<OrchestrationReport>),
             Signaled(Result<OrchestrationReport>),
@@ -14495,17 +14554,15 @@ impl PlanRunner {
                 let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let output_text = result.output.body.as_text().unwrap_or_default().to_string();
 
-                let parsed_review = parse_structured_review_verdict(
-                    &output_text,
-                    ReviewVerdictContext {
+                let parsed_review =
+                    parse_structured_review_verdict(&output_text, ReviewVerdictContext {
                         verdict_id: format!("review:{plan_id}:{}", result.output.id),
                         batch_id: plan_id.to_string(),
                         task_id: plan_id.to_string(),
                         reviewer_role_id: AgentRole::Auditor.label().to_string(),
                         raw_output_ref: result.output.id.to_string(),
                         created_at: chrono::Utc::now().to_rfc3339(),
-                    },
-                );
+                    });
                 let mut approved = parsed_review.passed();
                 let drift_report = self
                     .task_trackers
@@ -16495,16 +16552,13 @@ impl PlanRunner {
 
             let mut usage = task_result.total_usage;
             usage.cost_usd = task_result.total_cost_usd as f32;
-            (
-                backend_id,
-                AgentResult {
-                    output: task_result.output,
-                    trace: Vec::new(),
-                    usage,
-                    usage_obs: Some(usage.into()),
-                    success: task_result.gate_passed,
-                },
-            )
+            (backend_id, AgentResult {
+                output: task_result.output,
+                trace: Vec::new(),
+                usage,
+                usage_obs: Some(usage.into()),
+                success: task_result.gate_passed,
+            })
         } else if self.config.agent.command == "ollama" {
             use parking_lot::RwLock;
             use roko_agent::OllamaLlmBackend;
@@ -16635,16 +16689,13 @@ impl PlanRunner {
                 .tag("tool_calls", output.tool_calls.len().to_string())
                 .tag("iterations", output.iterations.to_string())
                 .build();
-            (
-                "ollama_tool_loop".to_string(),
-                AgentResult {
-                    output: output_signal,
-                    trace: Vec::new(),
-                    usage: output.total_usage,
-                    usage_obs: Some(output.total_usage.into()),
-                    success,
-                },
-            )
+            ("ollama_tool_loop".to_string(), AgentResult {
+                output: output_signal,
+                trace: Vec::new(),
+                usage: output.total_usage,
+                usage_obs: Some(output.total_usage.into()),
+                success,
+            })
         } else {
             let task_role = task_def
                 .as_ref()
@@ -16759,16 +16810,13 @@ impl PlanRunner {
 
             let mut usage = task_result.total_usage;
             usage.cost_usd = task_result.total_cost_usd as f32;
-            (
-                backend_id,
-                AgentResult {
-                    output: task_result.output,
-                    trace: Vec::new(),
-                    usage,
-                    usage_obs: Some(usage.into()),
-                    success: task_result.gate_passed,
-                },
-            )
+            (backend_id, AgentResult {
+                output: task_result.output,
+                trace: Vec::new(),
+                usage,
+                usage_obs: Some(usage.into()),
+                success: task_result.gate_passed,
+            })
         };
         let result = scrub_agent_result(&result, &self.safety_layer.scrub_policy);
         invocation_record.backend_id = backend_id.clone();
@@ -19546,15 +19594,12 @@ async fn git_merge_branch_into(
     // SAFE-01: Enforce safety layer on git merge subprocess.
     if let Some(layer) = safety {
         layer
-            .check_exec_command(
-                "git",
-                &[
-                    "merge".into(),
-                    "--no-ff".into(),
-                    "--no-edit".into(),
-                    branch.to_string(),
-                ],
-            )
+            .check_exec_command("git", &[
+                "merge".into(),
+                "--no-ff".into(),
+                "--no-edit".into(),
+                branch.to_string(),
+            ])
             .map_err(|e| anyhow!("safety layer blocked git merge: {e}"))?;
     }
     let output = tokio::process::Command::new("git")
@@ -21118,13 +21163,10 @@ title = "Test task"
         let initial = TasksFile::parse(&tasks_path).expect("parse initial tasks");
         let mut tracker = TaskTracker::new(initial, plan_dir.clone());
 
-        write_tasks_fixture(
-            &tasks_path,
-            &[
-                ("T1", "Initial task", "focused"),
-                ("T2", "Generated follow-up", "fast"),
-            ],
-        );
+        write_tasks_fixture(&tasks_path, &[
+            ("T1", "Initial task", "focused"),
+            ("T2", "Generated follow-up", "fast"),
+        ]);
         let updated = TasksFile::parse(&tasks_path).expect("parse updated tasks");
         tracker.refresh_tasks(updated);
 
@@ -21248,10 +21290,9 @@ title = "Test task"
         assert!(ledger_json.contains("\"plan-1\": 2"));
         let ledger: ReplanLedger = serde_json::from_str(&ledger_json).expect("parse replan ledger");
         assert_eq!(ledger.revision_requests.len(), 2);
-        assert_eq!(
-            ledger.revision_requests[0].failure_pattern_ids,
-            vec!["compile::E0425 first failure".to_string()]
-        );
+        assert_eq!(ledger.revision_requests[0].failure_pattern_ids, vec![
+            "compile::E0425 first failure".to_string()
+        ]);
         assert_eq!(
             ledger.revision_requests[0].disposition.to_string(),
             "needs_replan"
@@ -22198,17 +22239,15 @@ acceptance = []
 
     #[test]
     fn review_verdict_free_text_fails_closed() {
-        let parsed = parse_structured_review_verdict(
-            "The code looks good, LGTM!",
-            ReviewVerdictContext {
+        let parsed =
+            parse_structured_review_verdict("The code looks good, LGTM!", ReviewVerdictContext {
                 verdict_id: "v1".into(),
                 batch_id: "p1".into(),
                 task_id: "p1".into(),
                 reviewer_role_id: "auditor".into(),
                 raw_output_ref: "signal:raw".into(),
                 created_at: "2026-04-25T12:43:56Z".into(),
-            },
-        );
+            });
 
         assert!(!parsed.passed());
         assert!(structured_review_feedback(&parsed).contains("required_next_action=Human"));
@@ -22310,10 +22349,10 @@ depends_on = []
 
         let gate_errors = gate_failure_errors(Some(&tracker));
 
-        assert_eq!(
-            gate_errors,
-            vec!["gate_rung=2".to_string(), "compile failed".to_string()]
-        );
+        assert_eq!(gate_errors, vec![
+            "gate_rung=2".to_string(),
+            "compile failed".to_string()
+        ]);
     }
 
     #[test]
@@ -22716,15 +22755,12 @@ read_files = [
         )
         .unwrap();
 
-        assert_eq!(
-            task_read_cli_args(&task),
-            vec![
-                "--read".to_string(),
-                "src/lib.rs".to_string(),
-                "--read".to_string(),
-                "src/mod.rs".to_string(),
-            ]
-        );
+        assert_eq!(task_read_cli_args(&task), vec![
+            "--read".to_string(),
+            "src/lib.rs".to_string(),
+            "--read".to_string(),
+            "src/mod.rs".to_string(),
+        ]);
     }
 
     #[test]
@@ -22745,22 +22781,19 @@ read_files = [
             },
         ];
 
-        assert_eq!(
-            workflow_enabled_gate_names(&gates),
-            vec!["shell".to_string(), "compile".to_string()]
-        );
+        assert_eq!(workflow_enabled_gate_names(&gates), vec![
+            "shell".to_string(),
+            "compile".to_string()
+        ]);
 
         let shell_gates = workflow_shell_gate_commands(&gates);
         assert_eq!(shell_gates.len(), 1);
         assert_eq!(shell_gates[0].program, "python");
-        assert_eq!(
-            shell_gates[0].args,
-            vec![
-                "-m".to_string(),
-                "pytest".to_string(),
-                "--maxfail=1".to_string()
-            ]
-        );
+        assert_eq!(shell_gates[0].args, vec![
+            "-m".to_string(),
+            "pytest".to_string(),
+            "--maxfail=1".to_string()
+        ]);
         assert_eq!(shell_gates[0].timeout_ms, 42);
     }
 
@@ -22783,27 +22816,21 @@ read_files = [
 
     #[test]
     fn pre_agent_remediation_builds_scoped_cargo_commands() {
-        assert_eq!(
-            cargo_fix_args(Some("roko-gate")),
-            vec![
-                "fix",
-                "-p",
-                "roko-gate",
-                "--all-targets",
-                "--allow-dirty",
-                "--allow-staged"
-            ]
-        );
-        assert_eq!(
-            cargo_check_json_args(Some("roko-cli")),
-            vec![
-                "check",
-                "-p",
-                "roko-cli",
-                "--all-targets",
-                "--message-format=json"
-            ]
-        );
+        assert_eq!(cargo_fix_args(Some("roko-gate")), vec![
+            "fix",
+            "-p",
+            "roko-gate",
+            "--all-targets",
+            "--allow-dirty",
+            "--allow-staged"
+        ]);
+        assert_eq!(cargo_check_json_args(Some("roko-cli")), vec![
+            "check",
+            "-p",
+            "roko-cli",
+            "--all-targets",
+            "--message-format=json"
+        ]);
         assert!(cargo_fix_args(None).contains(&"--workspace".to_string()));
     }
 
@@ -22818,10 +22845,9 @@ read_files = [
             "crates/roko-cli/src/run.rs".to_string(),
             "plans/p1/brief.md".to_string(),
         ];
-        assert_eq!(
-            remediation_new_changed_files(&before, &after),
-            vec!["crates/roko-cli/src/run.rs".to_string()]
-        );
+        assert_eq!(remediation_new_changed_files(&before, &after), vec![
+            "crates/roko-cli/src/run.rs".to_string()
+        ]);
 
         let allowed = vec!["crates/roko-cli/src/orchestrate.rs".to_string()];
         assert!(remediation_scope_ok(
@@ -22965,10 +22991,9 @@ verify = []
             Some("error[E0308]: mismatched types\nexpected `String`, found `&str`"),
         );
 
-        assert_eq!(
-            ctx.files,
-            vec!["crates/roko-cli/src/orchestrate.rs".to_string()]
-        );
+        assert_eq!(ctx.files, vec![
+            "crates/roko-cli/src/orchestrate.rs".to_string()
+        ]);
         assert_eq!(ctx.match_category.as_deref(), Some("implementation"));
         assert_eq!(ctx.error_signature.as_deref(), Some("E0308"));
         assert_eq!(ctx.role, "implementer");

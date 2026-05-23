@@ -923,12 +923,9 @@ mod tests {
 
         let input = driver.commit("test commit").await;
 
-        assert!(matches!(
-            input,
-            PipelineInput::CommitFinished {
-                outcome: CommitOutcome::NoChanges
-            }
-        ));
+        assert!(matches!(input, PipelineInput::CommitFinished {
+            outcome: CommitOutcome::NoChanges
+        }));
     }
 
     #[tokio::test]
@@ -948,12 +945,9 @@ mod tests {
 
         let input = driver.commit("test commit").await;
 
-        assert!(matches!(
-            input,
-            PipelineInput::CommitFinished {
-                outcome: CommitOutcome::NoChanges
-            }
-        ));
+        assert!(matches!(input, PipelineInput::CommitFinished {
+            outcome: CommitOutcome::NoChanges
+        }));
     }
 
     #[test]

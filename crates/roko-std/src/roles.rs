@@ -121,18 +121,19 @@ pub const IMPLEMENTER_TOOL_PROFILE: RoleToolProfile =
     RoleToolProfile::allow_all(RoleToolProfileKind::Implementer);
 
 /// Researcher: read-only tools only, with mutation and shell commands blocked.
-pub const RESEARCHER_TOOL_PROFILE: RoleToolProfile = RoleToolProfile::allow_deny(
-    RoleToolProfileKind::Researcher,
-    &READ_TOOLS,
-    &[write_file::NAME, edit_file::NAME, bash::NAME],
-);
+pub const RESEARCHER_TOOL_PROFILE: RoleToolProfile =
+    RoleToolProfile::allow_deny(RoleToolProfileKind::Researcher, &READ_TOOLS, &[
+        write_file::NAME,
+        edit_file::NAME,
+        bash::NAME,
+    ]);
 
 /// Reviewer: read tools plus lightweight comment/note tooling.
-pub const REVIEWER_TOOL_PROFILE: RoleToolProfile = RoleToolProfile::allow_deny(
-    RoleToolProfileKind::Reviewer,
-    &REVIEWER_TOOLS,
-    &[write_file::NAME, edit_file::NAME],
-);
+pub const REVIEWER_TOOL_PROFILE: RoleToolProfile =
+    RoleToolProfile::allow_deny(RoleToolProfileKind::Reviewer, &REVIEWER_TOOLS, &[
+        write_file::NAME,
+        edit_file::NAME,
+    ]);
 
 /// Strategist: read tools plus plan-management tooling, with destructive ops denied.
 pub const STRATEGIST_TOOL_PROFILE: RoleToolProfile = RoleToolProfile::allow_deny(
@@ -382,10 +383,11 @@ mod tests {
     #[test]
     fn researcher_profile_is_read_only_plus_blocked_tools() {
         assert_eq!(RESEARCHER_TOOL_PROFILE.allowed_tools, Some(&READ_TOOLS[..]));
-        assert_eq!(
-            RESEARCHER_TOOL_PROFILE.denied_tools,
-            &[write_file::NAME, edit_file::NAME, bash::NAME]
-        );
+        assert_eq!(RESEARCHER_TOOL_PROFILE.denied_tools, &[
+            write_file::NAME,
+            edit_file::NAME,
+            bash::NAME
+        ]);
     }
 
     #[test]
@@ -394,10 +396,10 @@ mod tests {
             REVIEWER_TOOL_PROFILE.allowed_tools,
             Some(&REVIEWER_TOOLS[..])
         );
-        assert_eq!(
-            REVIEWER_TOOL_PROFILE.denied_tools,
-            &[write_file::NAME, edit_file::NAME]
-        );
+        assert_eq!(REVIEWER_TOOL_PROFILE.denied_tools, &[
+            write_file::NAME,
+            edit_file::NAME
+        ]);
     }
 
     #[test]

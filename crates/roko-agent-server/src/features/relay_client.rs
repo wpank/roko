@@ -187,13 +187,10 @@ pub async fn connect(
     )
     .await?;
     await_hello_ack(&mut socket).await?;
-    send_frame(
-        &mut socket,
-        AgentInboundFrame::Card {
-            card: relay_card,
-            card_uri: Some(config.card_uri(state.agent_id())?),
-        },
-    )
+    send_frame(&mut socket, AgentInboundFrame::Card {
+        card: relay_card,
+        card_uri: Some(config.card_uri(state.agent_id())?),
+    })
     .await?;
 
     // Channel used by `RelayHandle` to enqueue outbound pub/sub frames.

@@ -916,10 +916,9 @@ mod tests {
             .unwrap();
         assert_eq!(episode.model, "sonnet");
         assert_eq!(episode.extra.get("run_id"), Some(&serde_json::json!("r1")));
-        assert_eq!(
-            episode.gate_verdicts,
-            vec![GateVerdict::new("compile", true)]
-        );
+        assert_eq!(episode.gate_verdicts, vec![GateVerdict::new(
+            "compile", true
+        )]);
     }
 
     #[test]

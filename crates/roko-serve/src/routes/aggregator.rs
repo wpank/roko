@@ -875,13 +875,10 @@ async fn sync_agent_streams(
         let task = tokio::spawn(async move {
             forward_agent_stream(agent, input_rx, tx).await;
         });
-        streams.insert(
-            agent_id,
-            AgentStreamHandle {
-                sender: input_tx,
-                task,
-            },
-        );
+        streams.insert(agent_id, AgentStreamHandle {
+            sender: input_tx,
+            task,
+        });
     }
 }
 

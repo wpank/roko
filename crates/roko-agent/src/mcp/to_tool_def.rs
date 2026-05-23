@@ -150,12 +150,9 @@ mod tests {
         assert!(def.permission.read);
         assert!(def.permission.write);
         assert!(!def.permission.network);
-        assert_eq!(
-            def.source,
-            ToolSource::Mcp {
-                server: "fs".to_string()
-            }
-        );
+        assert_eq!(def.source, ToolSource::Mcp {
+            server: "fs".to_string()
+        });
         assert_eq!(def.metadata, None);
     }
 

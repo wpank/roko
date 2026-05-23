@@ -201,14 +201,11 @@ impl ColdStore for ArchiveColdSubstrate {
 
         {
             let mut idx = self.index.write();
-            idx.insert(
-                hash,
-                ColdIndexEntry {
-                    file,
-                    offset,
-                    archived_at: Utc::now().timestamp_millis(),
-                },
-            );
+            idx.insert(hash, ColdIndexEntry {
+                file,
+                offset,
+                archived_at: Utc::now().timestamp_millis(),
+            });
         }
 
         self.save_index().await?;
@@ -225,14 +222,11 @@ impl ColdStore for ArchiveColdSubstrate {
 
             {
                 let mut idx = self.index.write();
-                idx.insert(
-                    hash,
-                    ColdIndexEntry {
-                        file,
-                        offset,
-                        archived_at: Utc::now().timestamp_millis(),
-                    },
-                );
+                idx.insert(hash, ColdIndexEntry {
+                    file,
+                    offset,
+                    archived_at: Utc::now().timestamp_millis(),
+                });
             }
             count += 1;
         }

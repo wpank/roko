@@ -289,13 +289,10 @@ mod tests {
     #[test]
     fn tool_result_structured_sets_flag() {
         let r = ToolResult::structured(r#"{"x":1}"#);
-        assert!(matches!(
-            r,
-            ToolResult::Ok {
-                is_structured: true,
-                ..
-            }
-        ));
+        assert!(matches!(r, ToolResult::Ok {
+            is_structured: true,
+            ..
+        }));
     }
 
     #[test]

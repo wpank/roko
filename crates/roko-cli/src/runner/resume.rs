@@ -356,10 +356,9 @@ mod tests {
         // All three logs should be reported as Clean.
         assert_eq!(report.recovered_files.len(), 3);
         for f in &report.recovered_files {
-            assert!(matches!(
-                f.recovery,
-                JsonlRecoveryReport::Clean { lines: 0 }
-            ));
+            assert!(matches!(f.recovery, JsonlRecoveryReport::Clean {
+                lines: 0
+            }));
         }
     }
 

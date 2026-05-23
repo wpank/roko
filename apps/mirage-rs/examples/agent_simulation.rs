@@ -1162,16 +1162,9 @@ async fn agent_loop(client: Client, base: String, def: &'static AgentDef) {
                 // Create a task (50% chance)
                 if rng.gen_range(0.0f32..1.0) < 0.5 {
                     let tmpl = TASK_TEMPLATES[rng.gen_range(0..TASK_TEMPLATES.len())];
-                    create_task(
-                        &client,
-                        &base,
-                        tmpl.0,
-                        tmpl.1,
-                        tmpl.2,
-                        tmpl.3,
-                        def.id,
-                        &["defi"],
-                    )
+                    create_task(&client, &base, tmpl.0, tmpl.1, tmpl.2, tmpl.3, def.id, &[
+                        "defi",
+                    ])
                     .await;
                     eprintln!("[{}] {} created task: {}", chrono_now(), def.id, tmpl.0);
                 }
@@ -1327,16 +1320,9 @@ async fn agent_loop(client: Client, base: String, def: &'static AgentDef) {
                 // Task creation for infra
                 if cycle % 3 == 0 {
                     let tmpl = TASK_TEMPLATES[rng.gen_range(0..TASK_TEMPLATES.len())];
-                    create_task(
-                        &client,
-                        &base,
-                        tmpl.0,
-                        tmpl.1,
-                        tmpl.2,
-                        tmpl.3,
-                        def.id,
-                        &["infra"],
-                    )
+                    create_task(&client, &base, tmpl.0, tmpl.1, tmpl.2, tmpl.3, def.id, &[
+                        "infra",
+                    ])
                     .await;
                 }
             }

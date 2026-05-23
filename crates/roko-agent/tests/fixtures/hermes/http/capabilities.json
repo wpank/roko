@@ -1,0 +1,15 @@
+{
+  "version": "0.14.0",
+  "features": {
+    "chat_completions": true,
+    "responses_api": true,
+    "runs_api": true,
+    "capabilities_api": true,
+    "jobs_api": true,
+    "tool_progress_events": true,
+    "profiles": true,
+    "gateway": true
+  },
+  "supported_models": ["hermes-agent"],
+  "tools_count": 42
+}

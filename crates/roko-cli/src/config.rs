@@ -3246,32 +3246,29 @@ build_system = "cargo"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.agent.command, "ollama");
-        assert_eq!(
-            cfg.agent.args,
-            vec!["run".to_string(), "llama3".to_string()]
-        );
+        assert_eq!(cfg.agent.args, vec![
+            "run".to_string(),
+            "llama3".to_string()
+        ]);
         assert_eq!(cfg.agent.timeout_ms, 30_000);
         assert_eq!(cfg.budget.warn_at_percent, 90);
         assert!(!cfg.dreams.auto_dream);
         assert_eq!(cfg.dreams.idle_threshold_mins, 30);
         assert_eq!(cfg.dreams.min_episodes_for_dream, 8);
         assert!(cfg.tools.prefer_mcp);
-        assert_eq!(
-            cfg.tools.global_denied,
-            vec!["write_file".to_string(), "edit_file".to_string()]
-        );
+        assert_eq!(cfg.tools.global_denied, vec![
+            "write_file".to_string(),
+            "edit_file".to_string()
+        ]);
         assert_eq!(cfg.tools.mcp_timeout_secs, 45);
         assert_eq!(cfg.prompt.token_budget, 20_000);
         assert_eq!(cfg.repos.len(), 1);
         assert_eq!(cfg.repos[0].name, "roko");
-        assert_eq!(
-            cfg.repos[0].templates,
-            vec![
-                "pr-reviewer".to_string(),
-                "test-writer".to_string(),
-                "ci-fixer".to_string()
-            ]
-        );
+        assert_eq!(cfg.repos[0].templates, vec![
+            "pr-reviewer".to_string(),
+            "test-writer".to_string(),
+            "ci-fixer".to_string()
+        ]);
         assert_eq!(cfg.repos[0].subscriptions.len(), 1);
         assert_eq!(cfg.repos[0].subscriptions[0].template, "code-implementer");
         assert_eq!(
@@ -3363,10 +3360,10 @@ repo = "roko"
 "#;
         let cfg = Config::parse_toml(toml).unwrap();
         assert_eq!(cfg.serve.deploy.provider, "fly");
-        assert_eq!(
-            cfg.serve.deploy.environment,
-            vec!["GITHUB_TOKEN".to_string(), "SLACK_BOT_TOKEN".to_string()]
-        );
+        assert_eq!(cfg.serve.deploy.environment, vec![
+            "GITHUB_TOKEN".to_string(),
+            "SLACK_BOT_TOKEN".to_string()
+        ]);
         assert_eq!(cfg.serve.deploy.webhooks.len(), 1);
         assert_eq!(cfg.serve.deploy.webhooks[0].provider, "github");
         assert_eq!(cfg.serve.deploy.webhooks[0].owner, "nunchi");
@@ -3458,15 +3455,12 @@ plan_timeout_secs = 1200
         assert!(cfg.serve.auth.enabled);
         assert!(cfg.serve.auth.api_key.is_empty());
         assert_eq!(cfg.serve.deploy.provider, "railway");
-        assert_eq!(
-            cfg.serve.deploy.environment,
-            vec![
-                "GITHUB_TOKEN".to_string(),
-                "GITHUB_WEBHOOK_SECRET".to_string(),
-                "SLACK_BOT_TOKEN".to_string(),
-                "SLACK_SIGNING_SECRET".to_string()
-            ]
-        );
+        assert_eq!(cfg.serve.deploy.environment, vec![
+            "GITHUB_TOKEN".to_string(),
+            "GITHUB_WEBHOOK_SECRET".to_string(),
+            "SLACK_BOT_TOKEN".to_string(),
+            "SLACK_SIGNING_SECRET".to_string()
+        ]);
         assert!(cfg.serve.deploy.webhooks.is_empty());
     }
 
@@ -3677,10 +3671,10 @@ token_budget = 8000
 
         let merged = global.merge(project).resolve().unwrap();
         assert_eq!(merged.agent.command, "mods");
-        assert_eq!(
-            merged.agent.args,
-            vec!["run".to_string(), "llama3".to_string()]
-        );
+        assert_eq!(merged.agent.args, vec![
+            "run".to_string(),
+            "llama3".to_string()
+        ]);
         assert_eq!(merged.agent.timeout_ms, 60_000);
         assert!(merged.tools.prefer_mcp);
         assert_eq!(merged.tools.global_denied, vec!["web_fetch".to_string()]);

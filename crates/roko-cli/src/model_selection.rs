@@ -801,9 +801,9 @@ mod tests {
         let mut config = RokoConfig::default();
         config.models.clear();
         config.providers.clear();
-        config.providers.insert(
-            "openai_compat".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("openai_compat".to_string(), ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: None,
                 api_key_env: Some("OPENAI_API_KEY".to_string()),
@@ -814,8 +814,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
+            });
 
         let err = resolve_effective_model(
             Some("gpt-new-unconfigured".to_string()),
@@ -899,12 +898,9 @@ mod tests {
         let err = resolve_effective_model(Some("".to_string()), None, None, None, &config, None)
             .expect_err("empty model should error");
 
-        assert!(matches!(
-            err,
-            Error::EmptyModel {
-                selection_source: SelectionSource::CliOverride
-            }
-        ));
+        assert!(matches!(err, Error::EmptyModel {
+            selection_source: SelectionSource::CliOverride
+        }));
     }
 
     /// Fallback scenario 4: whitespace-only `--model` is treated as empty.
@@ -915,12 +911,9 @@ mod tests {
         let err = resolve_effective_model(Some("   ".to_string()), None, None, None, &config, None)
             .expect_err("whitespace-only model should error");
 
-        assert!(matches!(
-            err,
-            Error::EmptyModel {
-                selection_source: SelectionSource::CliOverride
-            }
-        ));
+        assert!(matches!(err, Error::EmptyModel {
+            selection_source: SelectionSource::CliOverride
+        }));
     }
 
     /// Fallback scenario 5: role config with empty model falls through to

@@ -1461,13 +1461,13 @@ impl AppState {
         ttl: Duration,
         value: serde_json::Value,
     ) {
-        self.aggregator_cache.write().await.insert(
-            key.into(),
-            CachedJsonValue {
+        self.aggregator_cache
+            .write()
+            .await
+            .insert(key.into(), CachedJsonValue {
                 expires_at: Instant::now() + ttl,
                 value,
-            },
-        );
+            });
     }
 
     /// Find a supervised process by its label (agent_id).

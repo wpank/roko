@@ -96,27 +96,20 @@ impl ProjectConventions {
     pub fn to_prompt_fragment(&self) -> String {
         let mut lines = Vec::new();
 
-        lines.push(format!(
-            "- Naming convention: {}",
-            match self.naming {
-                NamingStyle::SnakeCase => "snake_case (Rust-style)",
-                NamingStyle::CamelCase => "camelCase (JS-style)",
-                NamingStyle::PascalCase => "PascalCase",
-                NamingStyle::Mixed => "mixed",
-            }
-        ));
+        lines.push(format!("- Naming convention: {}", match self.naming {
+            NamingStyle::SnakeCase => "snake_case (Rust-style)",
+            NamingStyle::CamelCase => "camelCase (JS-style)",
+            NamingStyle::PascalCase => "PascalCase",
+            NamingStyle::Mixed => "mixed",
+        }));
 
-        lines.push(format!(
-            "- Error handling: {}",
-            match self.error_handling {
-                ErrorPattern::Thiserror => "thiserror derive macros",
-                ErrorPattern::Anyhow => "anyhow for ad-hoc errors",
-                ErrorPattern::ThiserrorAndAnyhow =>
-                    "thiserror for library errors, anyhow in binaries",
-                ErrorPattern::Custom => "custom error types",
-                ErrorPattern::Unknown => "not determined",
-            }
-        ));
+        lines.push(format!("- Error handling: {}", match self.error_handling {
+            ErrorPattern::Thiserror => "thiserror derive macros",
+            ErrorPattern::Anyhow => "anyhow for ad-hoc errors",
+            ErrorPattern::ThiserrorAndAnyhow => "thiserror for library errors, anyhow in binaries",
+            ErrorPattern::Custom => "custom error types",
+            ErrorPattern::Unknown => "not determined",
+        }));
 
         lines.push(format!(
             "- Module organization: {}",

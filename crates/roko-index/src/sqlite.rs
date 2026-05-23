@@ -270,10 +270,9 @@ impl SqliteIndex {
             }
 
             // Remove stale data for this file.
-            tx.execute(
-                "DELETE FROM symbols WHERE file_path = ?1",
-                params![path_str],
-            )?;
+            tx.execute("DELETE FROM symbols WHERE file_path = ?1", params![
+                path_str
+            ])?;
             tx.execute(
                 "DELETE FROM edges WHERE from_file = ?1 OR to_file = ?1",
                 params![path_str],

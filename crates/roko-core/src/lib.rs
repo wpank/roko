@@ -202,9 +202,9 @@ pub use datum::Datum;
 pub use decay::Decay;
 pub use demurrage::Demurrage;
 pub use dispatch_plan::{
-    DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller, DispatchError,
-    DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy, TransportAuth,
-    TransportPlan,
+    ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
+    DispatchError, DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy,
+    TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};
 pub use engram::{Engram, EngramBuilder, HdcFingerprint};

@@ -215,15 +215,12 @@ fn summarize_gate_entries(entries: &[Value]) -> Value {
             } else {
                 acc.total_duration_ms / total_runs as f64
             };
-            Some((
-                gate,
-                GateSummary {
-                    total_runs,
-                    pass_rate,
-                    avg_duration_ms,
-                    last_run,
-                },
-            ))
+            Some((gate, GateSummary {
+                total_runs,
+                pass_rate,
+                avg_duration_ms,
+                last_run,
+            }))
         })
         .collect();
 

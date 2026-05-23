@@ -106,13 +106,10 @@ impl ReadCache {
 
     /// Inserts an account into the cache.
     pub fn insert_account(&mut self, address: Address, info: AccountInfo) {
-        self.account_infos.put(
-            address,
-            TimedEntry {
-                value: info,
-                fetched_at: Instant::now(),
-            },
-        );
+        self.account_infos.put(address, TimedEntry {
+            value: info,
+            fetched_at: Instant::now(),
+        });
     }
 
     /// Returns a cached storage value if it is still fresh.
@@ -137,13 +134,10 @@ impl ReadCache {
 
     /// Inserts a storage value into the cache.
     pub fn insert_storage(&mut self, address: Address, slot: U256, value: U256) {
-        self.storage.put(
-            (address, slot),
-            TimedEntry {
-                value,
-                fetched_at: Instant::now(),
-            },
-        );
+        self.storage.put((address, slot), TimedEntry {
+            value,
+            fetched_at: Instant::now(),
+        });
     }
 
     /// Inserts a block hash into the cache.
@@ -1719,28 +1713,22 @@ impl EvmExecutor {
         state.db.set_nonce(from, next_nonce);
         state.db.set_balance(to_address, to_balance);
 
-        diff.accounts.insert(
-            from,
-            AccountDiff {
-                info_changed: true,
-                new_balance: Some(from_balance),
-                new_nonce: Some(next_nonce),
-                new_code: None,
-                storage_written: HashMap::new(),
-                storage_read: HashSet::new(),
-            },
-        );
-        diff.accounts.insert(
-            to_address,
-            AccountDiff {
-                info_changed: true,
-                new_balance: Some(to_balance),
-                new_nonce: None,
-                new_code: None,
-                storage_written: HashMap::new(),
-                storage_read: HashSet::new(),
-            },
-        );
+        diff.accounts.insert(from, AccountDiff {
+            info_changed: true,
+            new_balance: Some(from_balance),
+            new_nonce: Some(next_nonce),
+            new_code: None,
+            storage_written: HashMap::new(),
+            storage_read: HashSet::new(),
+        });
+        diff.accounts.insert(to_address, AccountDiff {
+            info_changed: true,
+            new_balance: Some(to_balance),
+            new_nonce: None,
+            new_code: None,
+            storage_written: HashMap::new(),
+            storage_read: HashSet::new(),
+        });
 
         Self::finalize_transaction(
             state,
@@ -1825,17 +1813,14 @@ impl EvmExecutor {
             data: encode_u256(amount),
             log_index: 0,
         });
-        diff.accounts.insert(
-            token,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written,
-                storage_read,
-            },
-        );
+        diff.accounts.insert(token, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written,
+            storage_read,
+        });
 
         let next_nonce = state
             .db
@@ -1844,17 +1829,14 @@ impl EvmExecutor {
             .nonce
             .saturating_add(1);
         state.db.set_nonce(from, next_nonce);
-        diff.accounts.insert(
-            from,
-            AccountDiff {
-                info_changed: true,
-                new_balance: None,
-                new_nonce: Some(next_nonce),
-                new_code: None,
-                storage_written: HashMap::new(),
-                storage_read: HashSet::new(),
-            },
-        );
+        diff.accounts.insert(from, AccountDiff {
+            info_changed: true,
+            new_balance: None,
+            new_nonce: Some(next_nonce),
+            new_code: None,
+            storage_written: HashMap::new(),
+            storage_read: HashSet::new(),
+        });
 
         Self::finalize_transaction(
             state,
@@ -1929,28 +1911,22 @@ impl EvmExecutor {
             data: input.clone(),
             log_index: 0,
         });
-        diff.accounts.insert(
-            contract,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written,
-                storage_read: HashSet::from([slot0, slot1, slot2]),
-            },
-        );
-        diff.accounts.insert(
-            from,
-            AccountDiff {
-                info_changed: true,
-                new_balance: None,
-                new_nonce: Some(next_nonce),
-                new_code: None,
-                storage_written: HashMap::new(),
-                storage_read: HashSet::new(),
-            },
-        );
+        diff.accounts.insert(contract, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written,
+            storage_read: HashSet::from([slot0, slot1, slot2]),
+        });
+        diff.accounts.insert(from, AccountDiff {
+            info_changed: true,
+            new_balance: None,
+            new_nonce: Some(next_nonce),
+            new_code: None,
+            storage_written: HashMap::new(),
+            storage_read: HashSet::new(),
+        });
 
         Self::finalize_transaction(
             state,
@@ -2362,15 +2338,12 @@ mod tests {
     fn hybrid_db_dirty_store_wins() {
         let upstream = Arc::new(UpstreamRpc::mock(1));
         let address = address!("0x1000000000000000000000000000000000000000");
-        upstream.set_mock_account(
-            address,
-            AccountInfo {
-                balance: U256::from(10_u64),
-                nonce: 7,
-                code_hash: Bytecode::default().hash_slow(),
-                code: Some(Bytecode::default()),
-            },
-        );
+        upstream.set_mock_account(address, AccountInfo {
+            balance: U256::from(10_u64),
+            nonce: 7,
+            code_hash: Bytecode::default().hash_slow(),
+            code: Some(Bytecode::default()),
+        });
         let mut db = HybridDB::new(upstream, 16, Duration::from_secs(12), TEST_CACHE_SIZE, 1);
         db.set_balance(address, U256::from(5_u64));
 
@@ -2420,15 +2393,12 @@ mod tests {
         let upstream = Arc::new(UpstreamRpc::mock(1));
         let address = address!("0x3000000000000000000000000000000000000000");
         let code = Bytecode::new_raw(bytes!("6001600055"));
-        upstream.set_mock_account(
-            address,
-            AccountInfo {
-                balance: U256::from(100_u64),
-                nonce: 2,
-                code_hash: code.hash_slow(),
-                code: Some(code.clone()),
-            },
-        );
+        upstream.set_mock_account(address, AccountInfo {
+            balance: U256::from(100_u64),
+            nonce: 2,
+            code_hash: code.hash_slow(),
+            code: Some(code.clone()),
+        });
         let mut db = HybridDB::new(upstream, 16, Duration::from_secs(12), TEST_CACHE_SIZE, 1);
         db.set_balance(address, U256::from(77_u64));
 
@@ -2488,23 +2458,20 @@ mod tests {
         let address = address!("0x5000000000000000000000000000000000000000");
         let classifier = DiffClassifier::new(ClassificationConfig::default());
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(1), U256::from(1)),
-                    (U256::from(2), U256::from(2)),
-                    (U256::from(3), U256::from(3)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(1), U256::from(1)),
+                (U256::from(2), U256::from(2)),
+                (U256::from(3), U256::from(3)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
 
         assert_eq!(
             classifier.classify(&diff).get(&address),
@@ -2517,23 +2484,20 @@ mod tests {
         let address = address!("0x6000000000000000000000000000000000000000");
         let classifier = DiffClassifier::new(ClassificationConfig::default());
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(50), U256::from(1)),
-                    (U256::from(60), U256::from(2)),
-                    (U256::from(70), U256::from(3)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(50), U256::from(1)),
+                (U256::from(60), U256::from(2)),
+                (U256::from(70), U256::from(3)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
 
         assert_eq!(
             classifier.classify(&diff).get(&address),
@@ -2549,23 +2513,20 @@ mod tests {
             ..ClassificationConfig::default()
         });
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(50), U256::from(1)),
-                    (U256::from(60), U256::from(2)),
-                    (U256::from(70), U256::from(3)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(50), U256::from(1)),
+                (U256::from(60), U256::from(2)),
+                (U256::from(70), U256::from(3)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
 
         assert_eq!(
             classifier.classify(&diff).get(&address),
@@ -2578,17 +2539,14 @@ mod tests {
         let address = address!("0xA001000000000000000000000000000000000001");
         let classifier = DiffClassifier::new(ClassificationConfig::default());
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: Default::default(),
-                storage_read: [U256::from(1_u64)].into_iter().collect(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: Default::default(),
+            storage_read: [U256::from(1_u64)].into_iter().collect(),
+        });
         assert_eq!(
             classifier.classify(&diff).get(&address),
             Some(&Classification::ReadOnly)
@@ -2600,23 +2558,20 @@ mod tests {
         let address = address!("0x7000000000000000000000000000000000000000");
         let classifier = DiffClassifier::new(ClassificationConfig::default());
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: true,
-                new_balance: Some(U256::from(1_u64)),
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(1), U256::from(1)),
-                    (U256::from(2), U256::from(1)),
-                    (U256::from(3), U256::from(1)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: true,
+            new_balance: Some(U256::from(1_u64)),
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(1), U256::from(1)),
+                (U256::from(2), U256::from(1)),
+                (U256::from(3), U256::from(1)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
         let mut store = DirtyStore::default();
         store.unwatch_list.insert(address);
 
@@ -2632,23 +2587,20 @@ mod tests {
         let address = address!("0x7100000000000000000000000000000000000000");
         let classifier = DiffClassifier::new(ClassificationConfig::default());
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            address,
-            AccountDiff {
-                info_changed: true,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(1), U256::from(1)),
-                    (U256::from(2), U256::from(2)),
-                    (U256::from(3), U256::from(3)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(address, AccountDiff {
+            info_changed: true,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(1), U256::from(1)),
+                (U256::from(2), U256::from(2)),
+                (U256::from(3), U256::from(3)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
         let mut store = DirtyStore::default();
         store.demote_protocols_to_slot_only = true;
 
@@ -2662,15 +2614,12 @@ mod tests {
     fn test_hybrid_db_tier_priority() {
         let upstream = Arc::new(UpstreamRpc::mock(1));
         let addr = address!("0xAAAA000000000000000000000000000000000001");
-        upstream.set_mock_account(
-            addr,
-            AccountInfo {
-                balance: U256::from(100_u64),
-                nonce: 1,
-                code_hash: Bytecode::default().hash_slow(),
-                code: Some(Bytecode::default()),
-            },
-        );
+        upstream.set_mock_account(addr, AccountInfo {
+            balance: U256::from(100_u64),
+            nonce: 1,
+            code_hash: Bytecode::default().hash_slow(),
+            code: Some(Bytecode::default()),
+        });
         let mut db = HybridDB::new(
             Arc::clone(&upstream),
             16,
@@ -2699,15 +2648,12 @@ mod tests {
     fn hybrid_db_implements_revm_database_trait() {
         let upstream = Arc::new(UpstreamRpc::mock(1));
         let addr = address!("0x9000000000000000000000000000000000000001");
-        upstream.set_mock_account(
-            addr,
-            AccountInfo {
-                balance: U256::from(3_u64),
-                nonce: 0,
-                code_hash: Bytecode::default().hash_slow(),
-                code: Some(Bytecode::default()),
-            },
-        );
+        upstream.set_mock_account(addr, AccountInfo {
+            balance: U256::from(3_u64),
+            nonce: 0,
+            code_hash: Bytecode::default().hash_slow(),
+            code: Some(Bytecode::default()),
+        });
         upstream.set_mock_storage(addr, U256::from(5_u64), U256::from(9_u64));
         let mut db = HybridDB::new(
             Arc::clone(&upstream),
@@ -2743,13 +2689,10 @@ mod tests {
 
         let mut cache = ReadCache::new(16, Duration::from_millis(1));
         let addr = address!("0xBBBB000000000000000000000000000000000001");
-        cache.insert_account(
-            addr,
-            AccountInfo {
-                balance: U256::from(10_u64),
-                ..AccountInfo::default()
-            },
-        );
+        cache.insert_account(addr, AccountInfo {
+            balance: U256::from(10_u64),
+            ..AccountInfo::default()
+        });
         // Fresh entry should be returned
         assert!(cache.get_account(&addr).is_some());
 
@@ -2765,22 +2708,19 @@ mod tests {
 
         // Below threshold (2 slots < 3): should NOT be Protocol
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            addr,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(1), U256::from(1)),
-                    (U256::from(2), U256::from(2)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(addr, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(1), U256::from(1)),
+                (U256::from(2), U256::from(2)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
         assert_eq!(
             classifier.classify(&diff).get(&addr),
             Some(&Classification::SlotOnly)
@@ -2800,23 +2740,20 @@ mod tests {
 
         let make_protocol_diff = |addr| {
             let mut diff = StateDiff::success(21_000, Bytes::default());
-            diff.accounts.insert(
-                addr,
-                AccountDiff {
-                    info_changed: false,
-                    new_balance: None,
-                    new_nonce: None,
-                    new_code: None,
-                    storage_written: [
-                        (U256::from(1), U256::from(1)),
-                        (U256::from(2), U256::from(2)),
-                        (U256::from(3), U256::from(3)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    storage_read: HashSet::default(),
-                },
-            );
+            diff.accounts.insert(addr, AccountDiff {
+                info_changed: false,
+                new_balance: None,
+                new_nonce: None,
+                new_code: None,
+                storage_written: [
+                    (U256::from(1), U256::from(1)),
+                    (U256::from(2), U256::from(2)),
+                    (U256::from(3), U256::from(3)),
+                ]
+                .into_iter()
+                .collect(),
+                storage_read: HashSet::default(),
+            });
             diff
         };
 
@@ -2849,23 +2786,20 @@ mod tests {
         let classifier = DiffClassifier::new(ClassificationConfig::default());
 
         let mut diff = StateDiff::success(21_000, Bytes::default());
-        diff.accounts.insert(
-            addr,
-            AccountDiff {
-                info_changed: false,
-                new_balance: None,
-                new_nonce: None,
-                new_code: None,
-                storage_written: [
-                    (U256::from(1), U256::from(1)),
-                    (U256::from(2), U256::from(2)),
-                    (U256::from(3), U256::from(3)),
-                ]
-                .into_iter()
-                .collect(),
-                storage_read: HashSet::default(),
-            },
-        );
+        diff.accounts.insert(addr, AccountDiff {
+            info_changed: false,
+            new_balance: None,
+            new_nonce: None,
+            new_code: None,
+            storage_written: [
+                (U256::from(1), U256::from(1)),
+                (U256::from(2), U256::from(2)),
+                (U256::from(3), U256::from(3)),
+            ]
+            .into_iter()
+            .collect(),
+            storage_read: HashSet::default(),
+        });
 
         let mut store = DirtyStore::default();
         classifier.apply(&mut store, &diff, 42).unwrap();
@@ -2975,15 +2909,12 @@ mod tests {
         let contract = address!("0xbb00000000000000000000000000000000000001");
         let caller = address!("0xcc00000000000000000000000000000000000001");
         let code = Bytecode::new_raw(bytes!("6001600055"));
-        upstream.set_mock_account(
-            contract,
-            AccountInfo {
-                balance: U256::ZERO,
-                nonce: 0,
-                code_hash: code.hash_slow(),
-                code: Some(code),
-            },
-        );
+        upstream.set_mock_account(contract, AccountInfo {
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: code.hash_slow(),
+            code: Some(code),
+        });
 
         let mut db = HybridDB::new(
             Arc::clone(&upstream),
@@ -3025,15 +2956,12 @@ mod tests {
         balance_calldata.extend_from_slice(owner.as_slice());
 
         let usdc = address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
-        upstream.set_mock_account(
-            usdc,
-            AccountInfo {
-                balance: U256::ZERO,
-                nonce: 1,
-                code_hash: Bytecode::default().hash_slow(),
-                code: Some(Bytecode::default()),
-            },
-        );
+        upstream.set_mock_account(usdc, AccountInfo {
+            balance: U256::ZERO,
+            nonce: 1,
+            code_hash: Bytecode::default().hash_slow(),
+            code: Some(Bytecode::default()),
+        });
 
         let mut db2 = HybridDB::new(upstream, 16, Duration::from_secs(12), TEST_CACHE_SIZE, 1);
         db2.set_erc20_balance(usdc, owner, U256::from(42_u64))

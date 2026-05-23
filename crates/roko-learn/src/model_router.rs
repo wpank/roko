@@ -1412,10 +1412,11 @@ fn default_static_table(model_slugs: &[String]) -> HashMap<ModelTier, String> {
     );
     table.insert(
         ModelTier::Standard,
-        pick_static_slug(
-            model_slugs,
-            &["glm-5.1", "claude-sonnet-4-6", "claude-sonnet-4-5"],
-        ),
+        pick_static_slug(model_slugs, &[
+            "glm-5.1",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5",
+        ]),
     );
     table.insert(
         ModelTier::Premium,

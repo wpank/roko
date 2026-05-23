@@ -682,70 +682,62 @@ enum TransferRole {
 fn classify_transfer_role(label: &str, index: usize) -> TransferRole {
     let normalized = label.trim().to_ascii_lowercase();
 
-    if contains_any(
-        &normalized,
-        &["complex", "difficulty", "volatility", "unstable"],
-    ) {
+    if contains_any(&normalized, &[
+        "complex",
+        "difficulty",
+        "volatility",
+        "unstable",
+    ]) {
         return TransferRole::Difficulty;
     }
-    if contains_any(
-        &normalized,
-        &[
-            "risk", "danger", "leverage", "exposure", "blast", "slippage",
-        ],
-    ) {
+    if contains_any(&normalized, &[
+        "risk", "danger", "leverage", "exposure", "blast", "slippage",
+    ]) {
         return TransferRole::Danger;
     }
-    if contains_any(
-        &normalized,
-        &[
-            "novel",
-            "familiar",
-            "correlation",
-            "similarity",
-            "ambiguity",
-        ],
-    ) {
+    if contains_any(&normalized, &[
+        "novel",
+        "familiar",
+        "correlation",
+        "similarity",
+        "ambiguity",
+    ]) {
         return TransferRole::Familiarity;
     }
     if contains_any(&normalized, &["confidence", "conviction", "certainty"]) {
         return TransferRole::SelfAssessment;
     }
-    if contains_any(
-        &normalized,
-        &["time", "deadline", "horizon", "urgency", "latency"],
-    ) {
+    if contains_any(&normalized, &[
+        "time", "deadline", "horizon", "urgency", "latency",
+    ]) {
         return TransferRole::Urgency;
     }
-    if contains_any(
-        &normalized,
-        &["scope", "breadth", "concentration", "liquidity", "surface"],
-    ) {
+    if contains_any(&normalized, &[
+        "scope",
+        "breadth",
+        "concentration",
+        "liquidity",
+        "surface",
+    ]) {
         return TransferRole::Breadth;
     }
-    if contains_any(
-        &normalized,
-        &[
-            "revers",
-            "rollback",
-            "recover",
-            "counterparty",
-            "exit",
-            "undo",
-        ],
-    ) {
+    if contains_any(&normalized, &[
+        "revers",
+        "rollback",
+        "recover",
+        "counterparty",
+        "exit",
+        "undo",
+    ]) {
         return TransferRole::Recoverability;
     }
-    if contains_any(
-        &normalized,
-        &[
-            "dependency",
-            "coupling",
-            "regulatory",
-            "compliance",
-            "integration",
-        ],
-    ) {
+    if contains_any(&normalized, &[
+        "dependency",
+        "coupling",
+        "regulatory",
+        "compliance",
+        "integration",
+    ]) {
         return TransferRole::Coupling;
     }
 

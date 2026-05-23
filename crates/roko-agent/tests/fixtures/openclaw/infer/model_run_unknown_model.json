@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "capability": "model",
+  "transport": "api",
+  "provider": "openai",
+  "model": "nonexistent/model-9",
+  "attempts": 2,
+  "outputs": [],
+  "error": {"kind": "unknown_model", "message": "Model 'nonexistent/model-9' not found"}
+}

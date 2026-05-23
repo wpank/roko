@@ -134,15 +134,12 @@ timeout_ms = 5000
     // WorkflowEngine writes workflow-complete episodes to the canonical root log.
     let episodes_path = tmp.path().join(".roko").join("episodes.jsonl");
     let before = fs::read_to_string(&episodes_path).unwrap_or_default();
-    run_roko_isolated(
-        tmp.path(),
-        &[
-            "run",
-            "write a hello function",
-            "--workdir",
-            tmp.path().to_str().expect("workdir"),
-        ],
-    )
+    run_roko_isolated(tmp.path(), &[
+        "run",
+        "write a hello function",
+        "--workdir",
+        tmp.path().to_str().expect("workdir"),
+    ])
     .success();
     let after = fs::read_to_string(&episodes_path).expect("read episodes.jsonl");
 
@@ -342,15 +339,12 @@ fn item_07_dashboard_text_renders_once() {
     let tmp = TempDir::new().expect("tempdir");
     init_workspace(tmp.path());
 
-    let assert = run_roko(
-        tmp.path(),
-        &[
-            "dashboard",
-            "--text",
-            "--workdir",
-            tmp.path().to_str().expect("workdir"),
-        ],
-    )
+    let assert = run_roko(tmp.path(), &[
+        "dashboard",
+        "--text",
+        "--workdir",
+        tmp.path().to_str().expect("workdir"),
+    ])
     .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
 

@@ -880,9 +880,11 @@ mod tests {
         let (_dir, state) = test_state(backend)?;
         let (worker_url, recorded, worker_handle) = spawn_mock_worker_server().await?;
 
-        state.deployments.write().await.insert(
-            "dep-1".to_string(),
-            Deployment {
+        state
+            .deployments
+            .write()
+            .await
+            .insert("dep-1".to_string(), Deployment {
                 id: "dep-1".to_string(),
                 name: "roko-worker-reviewer".to_string(),
                 status: DeploymentStatus::Ready {
@@ -890,8 +892,7 @@ mod tests {
                 },
                 url: Some(worker_url),
                 created_at: chrono::Utc::now(),
-            },
-        );
+            });
 
         let app = router(state);
         let response = app
@@ -943,9 +944,11 @@ mod tests {
             "http://worker.invalid".to_string(),
         )));
         let (_dir, state) = test_state(backend)?;
-        state.deployments.write().await.insert(
-            "dep-1".to_string(),
-            Deployment {
+        state
+            .deployments
+            .write()
+            .await
+            .insert("dep-1".to_string(), Deployment {
                 id: "dep-1".to_string(),
                 name: "roko-worker-reviewer".to_string(),
                 status: DeploymentStatus::Ready {
@@ -953,8 +956,7 @@ mod tests {
                 },
                 url: Some("http://worker.invalid".to_string()),
                 created_at: chrono::Utc::now(),
-            },
-        );
+            });
         let app = router(Arc::clone(&state));
 
         let response = app

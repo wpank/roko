@@ -520,13 +520,12 @@ pub async fn post_insight(
         crate::chain::knowledge::PostOutcome::Accepted { .. }
     ) {
         let author_str = String::from_utf8_lossy(&broadcast_author_for_stats).into_owned();
-        chain.agent_registry.add_stats_delta(
-            &author_str,
-            &crate::chain::agent::AgentStats {
+        chain
+            .agent_registry
+            .add_stats_delta(&author_str, &crate::chain::agent::AgentStats {
                 insights_posted: 1,
                 ..Default::default()
-            },
-        );
+            });
     }
 
     #[cfg(feature = "roko")]
@@ -599,13 +598,12 @@ pub async fn confirm_entry(
         .map_err(knowledge_error_to_api)?;
 
     // Update confirmer's stats
-    chain.agent_registry.add_stats_delta(
-        &confirmer_str,
-        &crate::chain::agent::AgentStats {
+    chain
+        .agent_registry
+        .add_stats_delta(&confirmer_str, &crate::chain::agent::AgentStats {
             confirmations_given: 1,
             ..Default::default()
-        },
-    );
+        });
 
     #[cfg(feature = "roko")]
     if let Some(bus) = &chain.insight_bus {
@@ -661,13 +659,12 @@ pub async fn challenge_entry(
         .map_err(knowledge_error_to_api)?;
 
     // Update challenger's stats
-    chain.agent_registry.add_stats_delta(
-        &challenger_str,
-        &crate::chain::agent::AgentStats {
+    chain
+        .agent_registry
+        .add_stats_delta(&challenger_str, &crate::chain::agent::AgentStats {
             challenges_given: 1,
             ..Default::default()
-        },
-    );
+        });
 
     #[cfg(feature = "roko")]
     if let Some(bus) = &chain.insight_bus {

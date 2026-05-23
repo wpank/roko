@@ -337,13 +337,10 @@ mod tests {
         assert!(check_plugin_tier(tier, &Capability::WritePath(PathBuf::from("/tmp"))).is_err());
         assert!(check_plugin_tier(tier, &Capability::Exec("ls".into())).is_err());
         assert!(
-            check_plugin_tier(
-                tier,
-                &Capability::Network {
-                    host: "example.com".into(),
-                    port: 443
-                }
-            )
+            check_plugin_tier(tier, &Capability::Network {
+                host: "example.com".into(),
+                port: 443
+            })
             .is_err()
         );
     }
@@ -377,13 +374,10 @@ mod tests {
         assert!(tier.allows_secrets());
         assert!(tier.allows_writes());
         assert!(
-            check_plugin_tier(
-                tier,
-                &Capability::Network {
-                    host: "example.com".into(),
-                    port: 443
-                }
-            )
+            check_plugin_tier(tier, &Capability::Network {
+                host: "example.com".into(),
+                port: 443
+            })
             .is_ok()
         );
     }

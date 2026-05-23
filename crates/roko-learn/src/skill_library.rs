@@ -2262,10 +2262,10 @@ mod tests {
             skill.postcondition,
             "The crate compiles and the failing test scope passes"
         );
-        assert_eq!(
-            skill.task_categories,
-            vec!["implementation", "verification"]
-        );
+        assert_eq!(skill.task_categories, vec![
+            "implementation",
+            "verification"
+        ]);
         assert_eq!(skill.source_episodes, vec!["ep-001", "ep-002"]);
         assert!(!skill.created_at.is_empty());
     }
@@ -2593,11 +2593,9 @@ mod tests {
         other.score = 0.9;
         library.register(&other).await.unwrap();
 
-        let results = library.query(
-            &["src/lib.rs".into()],
-            "implementation",
-            &["resolve_symbols".into()],
-        );
+        let results = library.query(&["src/lib.rs".into()], "implementation", &[
+            "resolve_symbols".into(),
+        ]);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "matched");
@@ -2743,10 +2741,10 @@ mod tests {
         assert_eq!(candidate.source_episode_id, "ep-success-1");
         assert_eq!(candidate.task_category, "implementation");
         assert_eq!(candidate.complexity, "complex");
-        assert_eq!(
-            candidate.files_involved,
-            vec!["src/lib.rs".to_string(), "src/parser.rs".to_string()]
-        );
+        assert_eq!(candidate.files_involved, vec![
+            "src/lib.rs".to_string(),
+            "src/parser.rs".to_string()
+        ]);
         assert_eq!(candidate.gate_results.len(), 2);
         assert!(candidate.gate_results.iter().all(|result| result.passed));
         assert!(candidate.skill_description.contains("patch the parser"));

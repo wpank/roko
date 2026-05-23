@@ -828,13 +828,10 @@ fn collect_file_snapshots(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, F
         if meta.is_dir() {
             collect_file_snapshots(root, &path, out);
         } else if meta.is_file() {
-            out.insert(
-                rel.to_path_buf(),
-                FileSnapshot {
-                    modified: meta.modified().ok(),
-                    len: meta.len(),
-                },
-            );
+            out.insert(rel.to_path_buf(), FileSnapshot {
+                modified: meta.modified().ok(),
+                len: meta.len(),
+            });
         }
     }
 }

@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -537,11 +537,7 @@ impl CursorConnection {
     /// Graceful shutdown: kill_tree handles stdin-close → SIGTERM → SIGKILL.
     async fn kill(&mut self) {
         let pid = self.child.id();
-        let _ = kill_tree(
-            &mut self.child,
-            Duration::from_millis(GRACE_STDIN_CLOSE_MS),
-        )
-        .await;
+        let _ = kill_tree(&mut self.child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
         if let Some(pid) = pid {
             unregister_pid(pid);
         }
@@ -853,7 +849,11 @@ done
 
     #[tokio::test]
     async fn cursor_cli_agent_json_rpc_request_serialization() {
-        let req = JsonRpcRequest::new(42, "session/prompt", Some(serde_json::json!({"test": true})));
+        let req = JsonRpcRequest::new(
+            42,
+            "session/prompt",
+            Some(serde_json::json!({"test": true})),
+        );
         let json = serde_json::to_string(&req).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["jsonrpc"], "2.0");
@@ -919,10 +919,8 @@ done
         assert!(!msg.is_server_request());
 
         // Notification (has method, no id)
-        let msg: RawServerMessage = serde_json::from_str(
-            r#"{"method":"session/update","params":{"update":{}}}"#,
-        )
-        .unwrap();
+        let msg: RawServerMessage =
+            serde_json::from_str(r#"{"method":"session/update","params":{"update":{}}}"#).unwrap();
         assert!(msg.is_notification());
         assert!(!msg.is_response());
         assert!(!msg.is_server_request());

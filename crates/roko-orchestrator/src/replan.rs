@@ -423,19 +423,14 @@ mod tests {
 
     #[test]
     fn plan_revision_request_preserves_structured_evidence() {
-        let request = PlanRevisionRequest::gate_failure_limit(
-            "plan-1",
-            "T1",
-            3,
-            vec![
-                PlanRevisionEvidence::gate("compile:cargo")
-                    .with_classification(Some("architectural_conflict_requires_replan".into()))
-                    .with_failure_pattern_ids(vec!["E0425::src/lib.rs".into()])
-                    .with_blocking_findings(vec![
-                        "failure requires plan shape or dependency revision".into(),
-                    ]),
-            ],
-        );
+        let request = PlanRevisionRequest::gate_failure_limit("plan-1", "T1", 3, vec![
+            PlanRevisionEvidence::gate("compile:cargo")
+                .with_classification(Some("architectural_conflict_requires_replan".into()))
+                .with_failure_pattern_ids(vec!["E0425::src/lib.rs".into()])
+                .with_blocking_findings(vec![
+                    "failure requires plan shape or dependency revision".into(),
+                ]),
+        ]);
 
         assert_eq!(request.disposition, FailureDisposition::NeedsReplan);
         assert_eq!(request.failure_pattern_ids, vec!["E0425::src/lib.rs"]);

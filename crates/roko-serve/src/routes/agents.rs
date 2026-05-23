@@ -186,14 +186,11 @@ fn agent_dashboard_payload(
         .as_deref()
         .map(|provider| provider_health_json(state, provider));
 
-    let heartbeat = latest_heartbeat_for_agent(
-        heartbeats,
-        &[
-            input.agent_id.as_str(),
-            input.label.as_str(),
-            input.agent.and_then(|a| a.label.as_deref()).unwrap_or(""),
-        ],
-    );
+    let heartbeat = latest_heartbeat_for_agent(heartbeats, &[
+        input.agent_id.as_str(),
+        input.label.as_str(),
+        input.agent.and_then(|a| a.label.as_deref()).unwrap_or(""),
+    ]);
     let heartbeat_summary = heartbeat.map(heartbeat_summary_json);
     let performance = agent_performance_json(input.agent, heartbeat);
     let learning = agent_learning_json(input.agent, heartbeat);
@@ -963,11 +960,8 @@ async fn get_agent(
     let last_heartbeat_ts = last_hb.map(|hb| hb.timestamp.clone());
 
     if let Some(agent) = state.discovered_agent(&id).await {
-        let mut payload = agent_dashboard_payload(
-            &state,
-            &config,
-            &heartbeats,
-            AgentDashboardInput {
+        let mut payload =
+            agent_dashboard_payload(&state, &config, &heartbeats, AgentDashboardInput {
                 agent_id: agent.agent_id.clone(),
                 label: agent
                     .label
@@ -981,8 +975,7 @@ async fn get_agent(
                 },
                 current_task: Value::Null,
                 agent: Some(&agent),
-            },
-        );
+            });
         // Enrich with process lifecycle fields.
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("process_status".to_string(), json!(process_status));
@@ -1007,19 +1000,15 @@ async fn get_agent(
 
     match found {
         Some((pid, label)) => {
-            let mut payload = agent_dashboard_payload(
-                &state,
-                &config,
-                &heartbeats,
-                AgentDashboardInput {
+            let mut payload =
+                agent_dashboard_payload(&state, &config, &heartbeats, AgentDashboardInput {
                     agent_id: label.clone(),
                     label,
                     process_id: Some(pid.0),
                     status: "running".to_string(),
                     current_task: Value::Null,
                     agent: None,
-                },
-            );
+                });
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("process_status".to_string(), json!("running"));
             }
@@ -2252,14 +2241,13 @@ mode = "self_hosted"
         let tempdir = tempdir().expect("tempdir");
         let mut config = RokoConfig::default();
         config.agent.default_model = "claude-sonnet-4-20250514".into();
-        config.models.insert(
-            "claude-sonnet-4-20250514".into(),
-            ModelProfile {
+        config
+            .models
+            .insert("claude-sonnet-4-20250514".into(), ModelProfile {
                 provider: "claude_cli".into(),
                 slug: "claude-sonnet-4-20250514".into(),
                 ..ModelProfile::default()
-            },
-        );
+            });
         let state = Arc::new(
             AppState::new(
                 tempdir.path().to_path_buf(),

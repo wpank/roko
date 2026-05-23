@@ -165,15 +165,12 @@ fn run_with_research_domain_uses_shell_gate() {
 
     // `roko run` with cat should succeed even without Cargo.toml,
     // because the [[gate]] in the config is `true`.
-    roko(
-        workdir,
-        &[
-            "run",
-            "summarize the codebase",
-            "--workdir",
-            &workdir.display().to_string(),
-        ],
-    )
+    roko(workdir, &[
+        "run",
+        "summarize the codebase",
+        "--workdir",
+        &workdir.display().to_string(),
+    ])
     .success();
 }
 

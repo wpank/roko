@@ -1618,15 +1618,12 @@ impl CascadeRouter {
             .iter()
             .any(|candidate| candidate.model == selected_model)
         {
-            candidates.insert(
-                0,
-                CandidateEntry {
-                    model: selected_model.to_string(),
-                    provider: log.provider_for_model(selected_model),
-                    score: 1.0,
-                    disqualified: log.disqualified_reason(selected_model),
-                },
-            );
+            candidates.insert(0, CandidateEntry {
+                model: selected_model.to_string(),
+                provider: log.provider_for_model(selected_model),
+                score: 1.0,
+                disqualified: log.disqualified_reason(selected_model),
+            });
         }
         if candidates.is_empty() {
             candidates.push(CandidateEntry {
@@ -1664,37 +1661,34 @@ impl CascadeRouter {
             .lock()
             .iter()
             .map(|(k, v)| {
-                (
-                    k.clone(),
-                    CascadeObservationStats {
-                        trials: v.trials,
-                        successes: v.successes,
-                        total_citations: v.total_citations,
-                        avg_citations_per_response: v.avg_citations_per_response(),
-                        total_search_latency_ms: v.total_search_latency_ms,
-                        avg_search_latency_ms: v.avg_search_latency_ms(),
-                        total_cost_usd: v.total_cost_usd,
-                        avg_cost_usd: v.avg_cost_usd(),
-                        perplexity_requests: v.perplexity_requests,
-                        total_gemini_thinking_tokens: v.total_gemini_thinking_tokens,
-                        avg_gemini_thinking_tokens_per_response: v
-                            .avg_gemini_thinking_tokens_per_response(),
-                        total_gemini_cached_tokens: v.total_gemini_cached_tokens,
-                        avg_gemini_cached_tokens_per_response: v
-                            .avg_gemini_cached_tokens_per_response(),
-                        total_gemini_grounding_queries: v.total_gemini_grounding_queries,
-                        avg_gemini_grounding_queries_per_response: v
-                            .avg_gemini_grounding_queries_per_response(),
-                        gemini_code_execution_successes: v.gemini_code_execution_successes,
-                        gemini_code_execution_failures: v.gemini_code_execution_failures,
-                        gemini_code_execution_success_rate: v.gemini_code_execution_success_rate(),
-                        gemini_requests: v.gemini_requests,
-                        gemini_context_window_le_200k_requests: v
-                            .gemini_context_window_le_200k_requests,
-                        gemini_context_window_gt_200k_requests: v
-                            .gemini_context_window_gt_200k_requests,
-                    },
-                )
+                (k.clone(), CascadeObservationStats {
+                    trials: v.trials,
+                    successes: v.successes,
+                    total_citations: v.total_citations,
+                    avg_citations_per_response: v.avg_citations_per_response(),
+                    total_search_latency_ms: v.total_search_latency_ms,
+                    avg_search_latency_ms: v.avg_search_latency_ms(),
+                    total_cost_usd: v.total_cost_usd,
+                    avg_cost_usd: v.avg_cost_usd(),
+                    perplexity_requests: v.perplexity_requests,
+                    total_gemini_thinking_tokens: v.total_gemini_thinking_tokens,
+                    avg_gemini_thinking_tokens_per_response: v
+                        .avg_gemini_thinking_tokens_per_response(),
+                    total_gemini_cached_tokens: v.total_gemini_cached_tokens,
+                    avg_gemini_cached_tokens_per_response: v
+                        .avg_gemini_cached_tokens_per_response(),
+                    total_gemini_grounding_queries: v.total_gemini_grounding_queries,
+                    avg_gemini_grounding_queries_per_response: v
+                        .avg_gemini_grounding_queries_per_response(),
+                    gemini_code_execution_successes: v.gemini_code_execution_successes,
+                    gemini_code_execution_failures: v.gemini_code_execution_failures,
+                    gemini_code_execution_success_rate: v.gemini_code_execution_success_rate(),
+                    gemini_requests: v.gemini_requests,
+                    gemini_context_window_le_200k_requests: v
+                        .gemini_context_window_le_200k_requests,
+                    gemini_context_window_gt_200k_requests: v
+                        .gemini_context_window_gt_200k_requests,
+                })
             })
             .collect()
     }
@@ -1710,27 +1704,24 @@ impl CascadeRouter {
                 .lock()
                 .iter()
                 .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        PersistedModelStats {
-                            trials: v.trials,
-                            successes: v.successes,
-                            total_citations: v.total_citations,
-                            total_search_latency_ms: v.total_search_latency_ms,
-                            total_cost_usd: v.total_cost_usd,
-                            perplexity_requests: v.perplexity_requests,
-                            total_gemini_thinking_tokens: v.total_gemini_thinking_tokens,
-                            total_gemini_cached_tokens: v.total_gemini_cached_tokens,
-                            total_gemini_grounding_queries: v.total_gemini_grounding_queries,
-                            gemini_code_execution_successes: v.gemini_code_execution_successes,
-                            gemini_code_execution_failures: v.gemini_code_execution_failures,
-                            gemini_context_window_le_200k_requests: v
-                                .gemini_context_window_le_200k_requests,
-                            gemini_context_window_gt_200k_requests: v
-                                .gemini_context_window_gt_200k_requests,
-                            gemini_requests: v.gemini_requests,
-                        },
-                    )
+                    (k.clone(), PersistedModelStats {
+                        trials: v.trials,
+                        successes: v.successes,
+                        total_citations: v.total_citations,
+                        total_search_latency_ms: v.total_search_latency_ms,
+                        total_cost_usd: v.total_cost_usd,
+                        perplexity_requests: v.perplexity_requests,
+                        total_gemini_thinking_tokens: v.total_gemini_thinking_tokens,
+                        total_gemini_cached_tokens: v.total_gemini_cached_tokens,
+                        total_gemini_grounding_queries: v.total_gemini_grounding_queries,
+                        gemini_code_execution_successes: v.gemini_code_execution_successes,
+                        gemini_code_execution_failures: v.gemini_code_execution_failures,
+                        gemini_context_window_le_200k_requests: v
+                            .gemini_context_window_le_200k_requests,
+                        gemini_context_window_gt_200k_requests: v
+                            .gemini_context_window_gt_200k_requests,
+                        gemini_requests: v.gemini_requests,
+                    })
                 })
                 .collect(),
             total_observations: self.linucb.total_observations(),
@@ -1792,27 +1783,24 @@ impl CascadeRouter {
         // Restore confidence stats.
         let mut stats = router.confidence_stats.lock();
         for (model, persisted) in &migrated_stats {
-            stats.insert(
-                model.clone(),
-                ModelStats {
-                    trials: persisted.trials,
-                    successes: persisted.successes,
-                    total_citations: persisted.total_citations,
-                    total_search_latency_ms: persisted.total_search_latency_ms,
-                    total_cost_usd: persisted.total_cost_usd,
-                    perplexity_requests: persisted.perplexity_requests,
-                    total_gemini_thinking_tokens: persisted.total_gemini_thinking_tokens,
-                    total_gemini_cached_tokens: persisted.total_gemini_cached_tokens,
-                    total_gemini_grounding_queries: persisted.total_gemini_grounding_queries,
-                    gemini_code_execution_successes: persisted.gemini_code_execution_successes,
-                    gemini_code_execution_failures: persisted.gemini_code_execution_failures,
-                    gemini_context_window_le_200k_requests: persisted
-                        .gemini_context_window_le_200k_requests,
-                    gemini_context_window_gt_200k_requests: persisted
-                        .gemini_context_window_gt_200k_requests,
-                    gemini_requests: persisted.gemini_requests,
-                },
-            );
+            stats.insert(model.clone(), ModelStats {
+                trials: persisted.trials,
+                successes: persisted.successes,
+                total_citations: persisted.total_citations,
+                total_search_latency_ms: persisted.total_search_latency_ms,
+                total_cost_usd: persisted.total_cost_usd,
+                perplexity_requests: persisted.perplexity_requests,
+                total_gemini_thinking_tokens: persisted.total_gemini_thinking_tokens,
+                total_gemini_cached_tokens: persisted.total_gemini_cached_tokens,
+                total_gemini_grounding_queries: persisted.total_gemini_grounding_queries,
+                gemini_code_execution_successes: persisted.gemini_code_execution_successes,
+                gemini_code_execution_failures: persisted.gemini_code_execution_failures,
+                gemini_context_window_le_200k_requests: persisted
+                    .gemini_context_window_le_200k_requests,
+                gemini_context_window_gt_200k_requests: persisted
+                    .gemini_context_window_gt_200k_requests,
+                gemini_requests: persisted.gemini_requests,
+            });
         }
         drop(stats);
 
@@ -2366,27 +2354,24 @@ impl CascadeRouter {
         for slug in &self.model_slugs {
             match stats.get(slug) {
                 Some(model_stats) if model_stats.trials > 0 => {
-                    observations.insert(
-                        slug.clone(),
-                        ModelObservation {
-                            pass_rate: model_stats.pass_rate(),
-                            cost_per_success: model_stats.cost_per_success().unwrap_or_else(|| {
-                                pareto_cost_proxy(slug, &self.tier_map)
-                                    / model_stats.pass_rate().max(0.01)
-                            }),
-                            avg_latency_ms: if model_stats.perplexity_requests > 0 {
-                                model_stats.avg_search_latency_ms()
-                            } else {
-                                pareto_latency_proxy(slug, &self.tier_map)
-                            },
-                            reliability: if model_stats.trials > 0 {
-                                model_stats.pass_rate().max(0.5)
-                            } else {
-                                0.5
-                            },
-                            observations: model_stats.trials,
+                    observations.insert(slug.clone(), ModelObservation {
+                        pass_rate: model_stats.pass_rate(),
+                        cost_per_success: model_stats.cost_per_success().unwrap_or_else(|| {
+                            pareto_cost_proxy(slug, &self.tier_map)
+                                / model_stats.pass_rate().max(0.01)
+                        }),
+                        avg_latency_ms: if model_stats.perplexity_requests > 0 {
+                            model_stats.avg_search_latency_ms()
+                        } else {
+                            pareto_latency_proxy(slug, &self.tier_map)
                         },
-                    );
+                        reliability: if model_stats.trials > 0 {
+                            model_stats.pass_rate().max(0.5)
+                        } else {
+                            0.5
+                        },
+                        observations: model_stats.trials,
+                    });
                 }
                 _ => unobserved.push(slug.clone()),
             }

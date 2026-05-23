@@ -96,18 +96,14 @@ fn sample_episode(
 
 fn sample_experiment_store(path: &Path) {
     let mut store = ExperimentStore::new();
-    let experiment = PromptExperiment::new(
-        "exp-path-test",
-        "model-routing",
-        vec![PromptVariant {
-            id: "variant-a".to_string(),
-            name: "Variant A".to_string(),
-            section_name: "model-routing".to_string(),
-            content: "claude-sonnet-4-6".to_string(),
-            slug: Some("claude-sonnet-4-6".to_string()),
-            active: true,
-        }],
-    );
+    let experiment = PromptExperiment::new("exp-path-test", "model-routing", vec![PromptVariant {
+        id: "variant-a".to_string(),
+        name: "Variant A".to_string(),
+        section_name: "model-routing".to_string(),
+        content: "claude-sonnet-4-6".to_string(),
+        slug: Some("claude-sonnet-4-6".to_string()),
+        active: true,
+    }]);
     store.register(experiment);
     store.save(path).expect("save experiments.json");
 }

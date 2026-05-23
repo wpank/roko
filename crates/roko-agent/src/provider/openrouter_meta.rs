@@ -135,19 +135,20 @@ impl OpenRouterModel {
             context_window,
             max_output,
             supports_tools: supports_parameters(&supported_parameters, &["tools", "tool_choice"]),
-            supports_thinking: supports_parameters(
-                &supported_parameters,
-                &["reasoning", "include_reasoning", "thinking"],
-            ),
+            supports_thinking: supports_parameters(&supported_parameters, &[
+                "reasoning",
+                "include_reasoning",
+                "thinking",
+            ]),
             supports_vision: architecture
                 .as_ref()
                 .is_some_and(|arch| arch.input_modalities.iter().any(|item| item == "image")),
             supports_web_search: supports_parameters(&supported_parameters, &["web_search"]),
             supports_mcp_tools: supports_parameters(&supported_parameters, &["mcp", "mcp_tools"]),
-            supports_partial: supports_parameters(
-                &supported_parameters,
-                &["partial", "continuation"],
-            ),
+            supports_partial: supports_parameters(&supported_parameters, &[
+                "partial",
+                "continuation",
+            ]),
             supports_grounding: false,
             supports_code_execution: false,
             supports_caching: false,

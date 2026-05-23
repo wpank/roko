@@ -150,18 +150,16 @@ mod tests {
         fs::write(&path, "one\ntwo\n").expect("seed file");
 
         let mut cursor = JsonlCursor::new(&path);
-        assert_eq!(
-            cursor.read_new_lines().expect("initial tick"),
-            vec!["one", "two"]
-        );
+        assert_eq!(cursor.read_new_lines().expect("initial tick"), vec![
+            "one", "two"
+        ]);
         assert_eq!(cursor.last_line(), 2);
 
         fs::write(&path, "reset\n").expect("truncate file");
 
-        assert_eq!(
-            cursor.read_new_lines().expect("after truncation"),
-            vec!["reset"]
-        );
+        assert_eq!(cursor.read_new_lines().expect("after truncation"), vec![
+            "reset"
+        ]);
         assert_eq!(cursor.last_line(), 1);
         assert_eq!(
             cursor.offset(),
@@ -176,10 +174,9 @@ mod tests {
         fs::write(&path, "one\ntwo\n").expect("seed file");
 
         let mut cursor = JsonlCursor::new(&path);
-        assert_eq!(
-            cursor.read_new_lines().expect("initial tick"),
-            vec!["one", "two"]
-        );
+        assert_eq!(cursor.read_new_lines().expect("initial tick"), vec![
+            "one", "two"
+        ]);
         assert_eq!(cursor.last_line(), 2);
 
         fs::remove_file(&path).expect("remove file");
@@ -193,10 +190,9 @@ mod tests {
 
         fs::write(&path, "fresh\n").expect("recreate file");
 
-        assert_eq!(
-            cursor.read_new_lines().expect("recreated file"),
-            vec!["fresh"]
-        );
+        assert_eq!(cursor.read_new_lines().expect("recreated file"), vec![
+            "fresh"
+        ]);
         assert_eq!(cursor.last_line(), 1);
         assert_eq!(
             cursor.offset(),
@@ -224,10 +220,9 @@ mod tests {
 
         append(&path, "ial\n");
 
-        assert_eq!(
-            cursor.read_new_lines().expect("completed line"),
-            vec!["partial"]
-        );
+        assert_eq!(cursor.read_new_lines().expect("completed line"), vec![
+            "partial"
+        ]);
         assert_eq!(cursor.last_line(), 2);
         assert_eq!(
             cursor.offset(),

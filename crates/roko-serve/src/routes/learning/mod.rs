@@ -668,14 +668,10 @@ mod tests {
         .await
         .map_err(|err| anyhow!("failed to write cascade snapshot fixture: {err}"))?;
 
-        let app = build_router(
-            Arc::clone(&state),
-            &[],
-            ServeAuthConfig {
-                enabled: false,
-                ..ServeAuthConfig::default()
-            },
-        );
+        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        });
         let response = app
             .oneshot(
                 Request::builder()
@@ -763,14 +759,10 @@ mod tests {
         );
         state.store_roko_config(config);
 
-        let app = build_router(
-            Arc::clone(&state),
-            &[],
-            ServeAuthConfig {
-                enabled: false,
-                ..ServeAuthConfig::default()
-            },
-        );
+        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        });
 
         let cascade_response = app
             .clone()
@@ -952,14 +944,10 @@ mod tests {
     async fn cfactor_trend_returns_empty_array_when_missing() -> Result<(), Box<dyn Error>> {
         let (_dir, state) = test_state()?;
 
-        let response = build_router(
-            Arc::clone(&state),
-            &[],
-            ServeAuthConfig {
-                enabled: false,
-                ..ServeAuthConfig::default()
-            },
-        )
+        let response = build_router(Arc::clone(&state), &[], ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        })
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -1024,14 +1012,10 @@ mod tests {
         .await
         .map_err(|err| anyhow!("failed to write c-factor trend fixture: {err}"))?;
 
-        let response = build_router(
-            Arc::clone(&state),
-            &[],
-            ServeAuthConfig {
-                enabled: false,
-                ..ServeAuthConfig::default()
-            },
-        )
+        let response = build_router(Arc::clone(&state), &[], ServeAuthConfig {
+            enabled: false,
+            ..ServeAuthConfig::default()
+        })
         .oneshot(
             Request::builder()
                 .method("GET")

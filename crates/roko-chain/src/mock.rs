@@ -624,10 +624,10 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            ChainError::InsufficientFunds { have: 5, need: 10 }
-        ));
+        assert!(matches!(err, ChainError::InsufficientFunds {
+            have: 5,
+            need: 10
+        }));
         assert_eq!(w.nonce().await.unwrap(), 0);
     }
 
@@ -642,13 +642,10 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            ChainError::NonceGap {
-                expected: 0,
-                got: 5
-            }
-        ));
+        assert!(matches!(err, ChainError::NonceGap {
+            expected: 0,
+            got: 5
+        }));
     }
 
     #[tokio::test(flavor = "current_thread")]

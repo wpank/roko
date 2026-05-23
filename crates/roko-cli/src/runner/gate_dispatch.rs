@@ -357,15 +357,12 @@ async fn run_verify_steps(
 }
 
 fn verify_step_gate(task_id: &str, step: &VerifyStep) -> ShellGate {
-    ShellGate::new(
-        "bash",
-        vec![
-            "-o".into(),
-            "pipefail".into(),
-            "-c".into(),
-            step.command.clone(),
-        ],
-    )
+    ShellGate::new("bash", vec![
+        "-o".into(),
+        "pipefail".into(),
+        "-c".into(),
+        step.command.clone(),
+    ])
     .with_name(format!("task-verify:{}:{}", task_id, step.phase))
     .with_timeout_ms(step.timeout_ms)
 }

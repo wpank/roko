@@ -107,14 +107,13 @@ impl RelayState {
             if let Some(card) = hello.card {
                 inner.cards.insert(agent.agent_id.clone(), card);
             }
-            inner.agents.insert(
-                agent.agent_id.clone(),
-                ConnectedAgentHandle {
+            inner
+                .agents
+                .insert(agent.agent_id.clone(), ConnectedAgentHandle {
                     session_id,
                     agent: agent.clone(),
                     tx,
-                },
-            );
+                });
         }
 
         let _ = self.events_tx.send(RelayEvent::AgentConnected {
@@ -202,13 +201,10 @@ impl RelayState {
                 return Err(BeginMessageError::UnknownAgent);
             };
             let agent_tx = agent.tx.clone();
-            inner.pending.insert(
-                message_id.clone(),
-                PendingResponse {
-                    agent_id: request.agent_id.clone(),
-                    tx: response_tx,
-                },
-            );
+            inner.pending.insert(message_id.clone(), PendingResponse {
+                agent_id: request.agent_id.clone(),
+                tx: response_tx,
+            });
             agent_tx
         };
 

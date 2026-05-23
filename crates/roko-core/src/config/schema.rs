@@ -271,21 +271,18 @@ fn synthesize_standard_providers_with_env(
     let mut providers = HashMap::new();
     for &(name, env_var, kind, base_url) in specs {
         if env_fn(env_var).filter(|value| !value.is_empty()).is_some() {
-            providers.insert(
-                name.to_string(),
-                ProviderConfig {
-                    kind,
-                    base_url: base_url.map(String::from),
-                    api_key_env: Some(env_var.to_string()),
-                    command: None,
-                    args: None,
-                    timeout_ms: default_provider_timeout_ms(),
-                    ttft_timeout_ms: default_provider_ttft_timeout_ms(),
-                    connect_timeout_ms: default_provider_connect_timeout_ms(),
-                    extra_headers: None,
-                    max_concurrent: None,
-                },
-            );
+            providers.insert(name.to_string(), ProviderConfig {
+                kind,
+                base_url: base_url.map(String::from),
+                api_key_env: Some(env_var.to_string()),
+                command: None,
+                args: None,
+                timeout_ms: default_provider_timeout_ms(),
+                ttft_timeout_ms: default_provider_ttft_timeout_ms(),
+                connect_timeout_ms: default_provider_connect_timeout_ms(),
+                extra_headers: None,
+                max_concurrent: None,
+            });
         }
     }
     providers
@@ -582,12 +579,18 @@ impl RokoConfig {
     ) -> bool {
         if matches!(
             provider.kind,
-            ProviderKind::ClaudeCli | ProviderKind::CursorAcp
+            ProviderKind::ClaudeCli
+                | ProviderKind::CursorAcp
+                | ProviderKind::CursorCli
+                | ProviderKind::Hermes
+                | ProviderKind::OpenClaw
         ) {
-            let default_cmd = if provider.kind == ProviderKind::ClaudeCli {
-                "claude"
-            } else {
-                "cursor"
+            let default_cmd = match provider.kind {
+                ProviderKind::ClaudeCli => "claude",
+                ProviderKind::CursorAcp | ProviderKind::CursorCli => "cursor",
+                ProviderKind::Hermes => "hermes",
+                ProviderKind::OpenClaw => "openclaw",
+                _ => unreachable!(),
             };
             let command = provider
                 .command
@@ -2030,9 +2033,8 @@ default_model = "claude-sonnet-4-6"
     fn validate_references_warns_on_unknown_provider_with_suggestion() {
         let mut cfg = RokoConfig::default();
         cfg.agent.default_model = "glm-5-1".to_string();
-        cfg.providers.insert(
-            "openrouter".to_string(),
-            ProviderConfig {
+        cfg.providers
+            .insert("openrouter".to_string(), ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://openrouter.ai/api/v1".to_string()),
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
@@ -2043,27 +2045,20 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        cfg.models.insert(
-            "glm-5-1".to_string(),
-            ModelProfile {
-                provider: "openruoter".to_string(),
-                slug: "z-ai/glm-5.1".to_string(),
-                context_window: 200_000,
-                supports_tools: true,
-                ..Default::default()
-            },
-        );
+            });
+        cfg.models.insert("glm-5-1".to_string(), ModelProfile {
+            provider: "openruoter".to_string(),
+            slug: "z-ai/glm-5.1".to_string(),
+            context_window: 200_000,
+            supports_tools: true,
+            ..Default::default()
+        });
         let warnings = validate_references(&cfg);
-        assert_eq!(
-            warnings,
-            vec![ValidationWarning::UnknownProvider {
-                model: "glm-5-1".to_string(),
-                provider: "openruoter".to_string(),
-                similar: Some("openrouter".to_string())
-            }]
-        );
+        assert_eq!(warnings, vec![ValidationWarning::UnknownProvider {
+            model: "glm-5-1".to_string(),
+            provider: "openruoter".to_string(),
+            similar: Some("openrouter".to_string())
+        }]);
     }
 
     #[test]
@@ -2118,21 +2113,18 @@ default_model = "claude-sonnet-4-6"
             "authorization_file".to_string(),
             secret_path.display().to_string(),
         );
-        config.providers.insert(
-            "test".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: None,
-                api_key_env: None,
-                command: None,
-                args: None,
-                timeout_ms: None,
-                ttft_timeout_ms: None,
-                connect_timeout_ms: None,
-                extra_headers: Some(headers),
-                max_concurrent: None,
-            },
-        );
+        config.providers.insert("test".to_string(), ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: Some(headers),
+            max_concurrent: None,
+        });
         config.resolve_file_secrets();
         let resolved = config.providers["test"]
             .extra_headers
@@ -2190,9 +2182,8 @@ default_model = "claude-sonnet-4-6"
         cfg.providers.clear();
         cfg.models.clear();
 
-        cfg.providers.insert(
-            "missing-key-provider".into(),
-            ProviderConfig {
+        cfg.providers
+            .insert("missing-key-provider".into(), ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://example.invalid/v1".into()),
                 api_key_env: Some("ROKO_TEST_CASCADE_MISSING_API_KEY_NEVER_SET".into()),
@@ -2203,29 +2194,23 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        cfg.models.insert(
-            "configured-model".into(),
-            ModelProfile {
-                provider: "missing-key-provider".into(),
-                slug: "configured-wire-slug".into(),
-                context_window: 4096,
-                ..Default::default()
-            },
-        );
+            });
+        cfg.models.insert("configured-model".into(), ModelProfile {
+            provider: "missing-key-provider".into(),
+            slug: "configured-wire-slug".into(),
+            context_window: 4096,
+            ..Default::default()
+        });
 
         assert!(!cfg.provider_available_for_model_key("configured-model"));
         assert!(cfg.available_model_keys_for_cascade().is_empty());
         assert!(cfg.available_model_slugs_for_cascade().is_empty());
-        assert_eq!(
-            cfg.model_keys_for_cascade(),
-            vec!["configured-model".to_string()]
-        );
-        assert_eq!(
-            cfg.model_slugs_for_cascade(),
-            vec!["configured-wire-slug".to_string()]
-        );
+        assert_eq!(cfg.model_keys_for_cascade(), vec![
+            "configured-model".to_string()
+        ]);
+        assert_eq!(cfg.model_slugs_for_cascade(), vec![
+            "configured-wire-slug".to_string()
+        ]);
     }
 
     #[test]
@@ -2290,5 +2275,111 @@ default_model = "claude-sonnet-4-6"
             !cfg.is_provider_available(&provider),
             "CursorAcp with nonexistent binary should not be available"
         );
+    }
+
+    #[test]
+    fn provider_available_hermes_missing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            command: Some("roko-nonexistent-hermes-xyz-090".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            !cfg.is_provider_available(&provider),
+            "Hermes with nonexistent binary should not be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_hermes_existing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            // "sh" is always present on unix
+            command: Some("sh".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            cfg.is_provider_available(&provider),
+            "Hermes with 'sh' binary should be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_openclaw_missing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenClaw,
+            command: Some("roko-nonexistent-openclaw-xyz-090".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            !cfg.is_provider_available(&provider),
+            "OpenClaw with nonexistent binary should not be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_openclaw_existing_binary() {
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenClaw,
+            command: Some("sh".to_string()),
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        assert!(
+            cfg.is_provider_available(&provider),
+            "OpenClaw with 'sh' binary should be available"
+        );
+    }
+
+    #[test]
+    fn provider_available_hermes_default_command() {
+        // When no command is set, Hermes defaults to "hermes"
+        let cfg = RokoConfig::default();
+        let provider = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            command: None,
+            base_url: None,
+            api_key_env: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        // Whether this passes depends on whether hermes is installed;
+        // just verify it doesn't panic.
+        let _ = cfg.is_provider_available(&provider);
     }
 }

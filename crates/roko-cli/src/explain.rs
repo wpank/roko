@@ -398,29 +398,26 @@ mod tests {
 
     #[test]
     fn cli_explain_detection_handles_global_flags_with_values() {
-        assert!(invocation_looks_like_cli_explain(
-            "roko",
-            [
-                "--config",
-                "/tmp/roko.toml",
-                "--model",
-                "gpt-4o",
-                "explain",
-                "gates"
-            ]
-        ));
-        assert!(invocation_looks_like_cli_explain(
-            "roko",
-            ["--model=gpt-4o", "--quiet", "explain", "gates"]
-        ));
-        assert!(!invocation_looks_like_cli_explain(
-            "roko",
-            ["--model", "explain", "repl"]
-        ));
-        assert!(!invocation_looks_like_cli_explain(
-            "roko_cli-123",
-            ["explain", "gates"]
-        ));
+        assert!(invocation_looks_like_cli_explain("roko", [
+            "--config",
+            "/tmp/roko.toml",
+            "--model",
+            "gpt-4o",
+            "explain",
+            "gates"
+        ]));
+        assert!(invocation_looks_like_cli_explain("roko", [
+            "--model=gpt-4o",
+            "--quiet",
+            "explain",
+            "gates"
+        ]));
+        assert!(!invocation_looks_like_cli_explain("roko", [
+            "--model", "explain", "repl"
+        ]));
+        assert!(!invocation_looks_like_cli_explain("roko_cli-123", [
+            "explain", "gates"
+        ]));
     }
 
     #[test]

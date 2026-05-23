@@ -392,16 +392,19 @@ mod eval_fixtures {
             (builtin::read_file::NAME, &["read", "contents", "file"]),
             (builtin::write_file::NAME, &["write", "new file", "create"]),
             (builtin::edit_file::NAME, &["replace", "edit", "change"]),
-            (
-                builtin::grep::NAME,
-                &["search", "find", "occurrences", "grep"],
-            ),
+            (builtin::grep::NAME, &[
+                "search",
+                "find",
+                "occurrences",
+                "grep",
+            ]),
             (builtin::glob::NAME, &["find", "files", "glob"]),
             (builtin::bash::NAME, &["run", "execute", "cargo", "command"]),
-            (
-                builtin::web_search::NAME,
-                &["search", "web", "documentation"],
-            ),
+            (builtin::web_search::NAME, &[
+                "search",
+                "web",
+                "documentation",
+            ]),
             (builtin::web_fetch::NAME, &["fetch", "url", "download"]),
         ];
 

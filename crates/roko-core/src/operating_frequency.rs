@@ -256,39 +256,33 @@ impl Task {
 
 fn is_reactive_task(task: &Task) -> bool {
     task_tag_matches(task, "quick_fix")
-        || task_text_matches(
-            task,
-            &[
-                "quick fix",
-                "quick-fix",
-                "gate re-check",
-                "gate recheck",
-                "permission check",
-                "permission checks",
-                "tool permission",
-                "tool permissions",
-                "subscription filter",
-                "filter evaluation",
-            ],
-        )
+        || task_text_matches(task, &[
+            "quick fix",
+            "quick-fix",
+            "gate re-check",
+            "gate recheck",
+            "permission check",
+            "permission checks",
+            "tool permission",
+            "tool permissions",
+            "subscription filter",
+            "filter evaluation",
+        ])
 }
 
 fn is_reflective_task(task: &Task) -> bool {
-    task_text_matches(
-        task,
-        &[
-            "dream",
-            "dream cycle",
-            "plan regeneration",
-            "regeneration",
-            "retrospective",
-            "retrospective analysis",
-            "retro",
-            "meta-cognition",
-            "meta cognition",
-            "consolidation",
-        ],
-    )
+    task_text_matches(task, &[
+        "dream",
+        "dream cycle",
+        "plan regeneration",
+        "regeneration",
+        "retrospective",
+        "retrospective analysis",
+        "retro",
+        "meta-cognition",
+        "meta cognition",
+        "consolidation",
+    ])
 }
 
 fn affect_suggests_reflection(affect: &impl OperatingFrequencyAffect) -> bool {

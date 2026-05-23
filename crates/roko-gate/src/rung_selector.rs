@@ -310,10 +310,12 @@ mod tests {
     #[test]
     fn standard_selects_compile_lint_test_and_symbol() {
         let rungs = select_rungs(PlanComplexity::Standard, &all_caps(), 0);
-        assert_eq!(
-            rungs,
-            vec![Rung::Compile, Rung::Lint, Rung::Test, Rung::Symbol]
-        );
+        assert_eq!(rungs, vec![
+            Rung::Compile,
+            Rung::Lint,
+            Rung::Test,
+            Rung::Symbol
+        ]);
     }
 
     #[test]
@@ -405,10 +407,12 @@ mod tests {
     #[test]
     fn two_failures_escalate_trivial_to_standard() {
         let rungs = select_rungs(PlanComplexity::Trivial, &all_caps(), 2);
-        assert_eq!(
-            rungs,
-            vec![Rung::Compile, Rung::Lint, Rung::Test, Rung::Symbol]
-        );
+        assert_eq!(rungs, vec![
+            Rung::Compile,
+            Rung::Lint,
+            Rung::Test,
+            Rung::Symbol
+        ]);
     }
 
     #[test]

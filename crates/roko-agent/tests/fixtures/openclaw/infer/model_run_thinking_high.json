@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "capability": "model",
+  "transport": "api",
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "attempts": 1,
+  "outputs": [
+    {"type": "text", "value": "The answer is 42."}
+  ],
+  "error": null
+}

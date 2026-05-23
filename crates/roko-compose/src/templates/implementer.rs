@@ -248,22 +248,19 @@ mod tests {
 
         // Verify section names
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            names,
-            &[
-                "agents_instructions",
-                "plan_spec",
-                "brief",
-                "tasks",
-                "workspace_map",
-                "preflight",
-                "registry",
-                "prev_reviews",
-                "verify_chain",
-                "invariants",
-                "enhanced_sections",
-            ]
-        );
+        assert_eq!(names, &[
+            "agents_instructions",
+            "plan_spec",
+            "brief",
+            "tasks",
+            "workspace_map",
+            "preflight",
+            "registry",
+            "prev_reviews",
+            "verify_chain",
+            "invariants",
+            "enhanced_sections",
+        ]);
 
         // Critical sections
         assert_eq!(sections[0].priority, SectionPriority::Critical); // agents_instructions

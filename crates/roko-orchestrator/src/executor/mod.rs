@@ -1010,13 +1010,10 @@ mod tests {
         ex.apply_event("plan-42", &ExecutorEvent::EnrichmentDone)
             .unwrap();
         let actions = ex.tick();
-        assert!(matches!(
-            &actions[0],
-            ExecutorAction::SpawnAgent {
-                role: roko_core::AgentRole::Implementer,
-                ..
-            }
-        ));
+        assert!(matches!(&actions[0], ExecutorAction::SpawnAgent {
+            role: roko_core::AgentRole::Implementer,
+            ..
+        }));
 
         // ImplementationDone -> Gating
         ex.apply_event("plan-42", &ExecutorEvent::ImplementationDone)

@@ -35,18 +35,15 @@ pub(crate) fn default_role_model_table(model_slugs: &[String]) -> HashMap<AgentR
     // Research role -> Perplexity Sonar when available, standard-tier fallback.
     table.insert(
         AgentRole::Researcher,
-        pick_static_slug(
-            model_slugs,
-            &[
-                "sonar-pro",
-                "sonar",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "kimi-k2.5",
-                "claude-sonnet-4-6",
-                "claude-sonnet-4-5",
-            ],
-        ),
+        pick_static_slug(model_slugs, &[
+            "sonar-pro",
+            "sonar",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "kimi-k2.5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5",
+        ]),
     );
 
     let all_roles: Vec<AgentRole> = std::iter::once(AgentRole::Conductor)
@@ -60,26 +57,20 @@ pub(crate) fn default_role_model_table(model_slugs: &[String]) -> HashMap<AgentR
             ModelTier::Fast => {
                 pick_static_slug(model_slugs, &["gemini-2.5-flash-lite", "claude-haiku-4-5"])
             }
-            ModelTier::Premium => pick_static_slug(
-                model_slugs,
-                &[
-                    "claude-opus-4-6",
-                    "gemini-3.1-pro-preview",
-                    "gemini-2.5-pro",
-                ],
-            ),
+            ModelTier::Premium => pick_static_slug(model_slugs, &[
+                "claude-opus-4-6",
+                "gemini-3.1-pro-preview",
+                "gemini-2.5-pro",
+            ]),
             // Standard and forward-compat
-            _ => pick_static_slug(
-                model_slugs,
-                &[
-                    "gemini-2.5-flash",
-                    "gemini-2.5-pro",
-                    "kimi-k2.5",
-                    "kimi-k2-thinking",
-                    "claude-sonnet-4-6",
-                    "claude-sonnet-4-5",
-                ],
-            ),
+            _ => pick_static_slug(model_slugs, &[
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "kimi-k2.5",
+                "kimi-k2-thinking",
+                "claude-sonnet-4-6",
+                "claude-sonnet-4-5",
+            ]),
         };
         table.insert(role, slug);
     }
@@ -620,20 +611,29 @@ pub(crate) fn infer_shadow_routing_context(
 }
 
 fn infer_task_category(lower_prompt: &str) -> TaskCategory {
-    if contains_any(
-        lower_prompt,
-        &["research", "investigate", "why", "citation", "source"],
-    ) {
+    if contains_any(lower_prompt, &[
+        "research",
+        "investigate",
+        "why",
+        "citation",
+        "source",
+    ]) {
         TaskCategory::Research
-    } else if contains_any(
-        lower_prompt,
-        &["test", "verify", "assert", "failing", "regression"],
-    ) {
+    } else if contains_any(lower_prompt, &[
+        "test",
+        "verify",
+        "assert",
+        "failing",
+        "regression",
+    ]) {
         TaskCategory::Verification
-    } else if contains_any(
-        lower_prompt,
-        &["integrate", "integration", "wire up", "hook up", "connect"],
-    ) {
+    } else if contains_any(lower_prompt, &[
+        "integrate",
+        "integration",
+        "wire up",
+        "hook up",
+        "connect",
+    ]) {
         TaskCategory::Integration
     } else if contains_any(lower_prompt, &["refactor", "cleanup", "rename", "extract"]) {
         TaskCategory::Refactor
@@ -649,30 +649,24 @@ fn infer_task_category(lower_prompt: &str) -> TaskCategory {
 fn infer_task_complexity(prompt: &str, lower_prompt: &str) -> TaskComplexityBand {
     let word_count = prompt.split_whitespace().count();
 
-    if contains_any(
-        lower_prompt,
-        &[
-            "architecture",
-            "cross-crate",
-            "multi-crate",
-            "end-to-end",
-            "system design",
-            "migration",
-        ],
-    ) || word_count > 250
+    if contains_any(lower_prompt, &[
+        "architecture",
+        "cross-crate",
+        "multi-crate",
+        "end-to-end",
+        "system design",
+        "migration",
+    ]) || word_count > 250
     {
         TaskComplexityBand::Complex
-    } else if contains_any(
-        lower_prompt,
-        &[
-            "typo",
-            "format",
-            "lint",
-            "rename",
-            "small fix",
-            "single file",
-        ],
-    ) || word_count < 40
+    } else if contains_any(lower_prompt, &[
+        "typo",
+        "format",
+        "lint",
+        "rename",
+        "small fix",
+        "single file",
+    ]) || word_count < 40
     {
         TaskComplexityBand::Fast
     } else {
@@ -770,12 +764,9 @@ fn result_text(result: &AgentResult) -> Option<&str> {
 
 fn prompt_expects_code(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    contains_any(
-        &lower,
-        &[
-            "code", "rust", "function", "impl", "struct", "test", "fix", "patch", "refactor",
-        ],
-    )
+    contains_any(&lower, &[
+        "code", "rust", "function", "impl", "struct", "test", "fix", "patch", "refactor",
+    ])
 }
 
 fn output_contains_code(text: &str) -> bool {

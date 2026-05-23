@@ -1705,14 +1705,11 @@ fn build_rpc_module(
         let tip = state.fork.local_block_number;
         let id = state.fork.next_filter_id;
         state.fork.next_filter_id += U256::from(1);
-        state.fork.filters.insert(
-            id,
-            EthFilter::Log {
-                topics,
-                addresses,
-                last_poll_block: tip,
-            },
-        );
+        state.fork.filters.insert(id, EthFilter::Log {
+            topics,
+            addresses,
+            last_poll_block: tip,
+        });
         Ok::<_, ErrorObjectOwned>(hex_u256(id))
     })?;
 
@@ -1721,12 +1718,9 @@ fn build_rpc_module(
         let tip = state.fork.local_block_number;
         let id = state.fork.next_filter_id;
         state.fork.next_filter_id += U256::from(1);
-        state.fork.filters.insert(
-            id,
-            EthFilter::Block {
-                last_poll_block: tip,
-            },
-        );
+        state.fork.filters.insert(id, EthFilter::Block {
+            last_poll_block: tip,
+        });
         Ok::<_, ErrorObjectOwned>(hex_u256(id))
     })?;
 
@@ -1736,12 +1730,12 @@ fn build_rpc_module(
             let mut state = ctx.state.write();
             let id = state.fork.next_filter_id;
             state.fork.next_filter_id += U256::from(1);
-            state.fork.filters.insert(
-                id,
-                EthFilter::PendingTransaction {
+            state
+                .fork
+                .filters
+                .insert(id, EthFilter::PendingTransaction {
                     seen: std::collections::HashSet::new(),
-                },
-            );
+                });
             Ok::<_, ErrorObjectOwned>(hex_u256(id))
         },
     )?;
@@ -2570,15 +2564,17 @@ fn register_mirage_methods(
         with_state_write(&ctx.state, |state| {
             touch_request(state);
             let added_at_block = state.fork.local_block_number;
-            state.fork.db.dirty.watch_list.insert(
-                address,
-                crate::fork::WatchEntry {
+            state
+                .fork
+                .db
+                .dirty
+                .watch_list
+                .insert(address, crate::fork::WatchEntry {
                     source: crate::fork::WatchSource::Manual,
                     added_at_block,
                     initial_slot_count: 0,
                     replay_count: 0,
-                },
-            );
+                });
         })
         .await;
         Ok::<_, ErrorObjectOwned>(true)
@@ -2874,16 +2870,13 @@ fn register_mirage_methods(
                     (refreshed_snapshot, Some(baseline_fork))
                 };
                 let set_id = format!("set-{}", state.scenarios.len() + 1);
-                state.scenarios.insert(
-                    set_id.clone(),
-                    ScenarioSet {
-                        id: set_id.clone(),
-                        baseline_snapshot_id,
-                        baseline_fork,
-                        scenarios: Vec::new(),
-                        status: ScenarioSetStatus::Draft,
-                    },
-                );
+                state.scenarios.insert(set_id.clone(), ScenarioSet {
+                    id: set_id.clone(),
+                    baseline_snapshot_id,
+                    baseline_fork,
+                    scenarios: Vec::new(),
+                    status: ScenarioSetStatus::Draft,
+                });
                 Ok::<_, ErrorObjectOwned>(set_id)
             })
             .await
@@ -2923,16 +2916,13 @@ fn register_mirage_methods(
                 }
                 set.status = ScenarioSetStatus::Running;
                 let job_id = format!("job-{}", state.jobs.len() + 1);
-                state.jobs.insert(
-                    job_id.clone(),
-                    ScenarioJob {
-                        job_id: job_id.clone(),
-                        set_id: set_id.clone(),
-                        status: JobStatus::Running,
-                        results: None,
-                        total_wall_time_ms: None,
-                    },
-                );
+                state.jobs.insert(job_id.clone(), ScenarioJob {
+                    job_id: job_id.clone(),
+                    set_id: set_id.clone(),
+                    status: JobStatus::Running,
+                    results: None,
+                    total_wall_time_ms: None,
+                });
                 job_id
             };
             let state = Arc::clone(&ctx.state);
@@ -5432,24 +5422,18 @@ mod tests {
         let mut state = state_handle.write();
         let manual = address!("0x4000000000000000000000000000000000000004");
         let auto = address!("0x5000000000000000000000000000000000000005");
-        state.fork.db.dirty.watch_list.insert(
-            manual,
-            WatchEntry {
-                source: WatchSource::Manual,
-                added_at_block: 0,
-                initial_slot_count: 0,
-                replay_count: 0,
-            },
-        );
-        state.fork.db.dirty.watch_list.insert(
-            auto,
-            WatchEntry {
-                source: WatchSource::AutoClassified,
-                added_at_block: 0,
-                initial_slot_count: 0,
-                replay_count: 0,
-            },
-        );
+        state.fork.db.dirty.watch_list.insert(manual, WatchEntry {
+            source: WatchSource::Manual,
+            added_at_block: 0,
+            initial_slot_count: 0,
+            replay_count: 0,
+        });
+        state.fork.db.dirty.watch_list.insert(auto, WatchEntry {
+            source: WatchSource::AutoClassified,
+            added_at_block: 0,
+            initial_slot_count: 0,
+            replay_count: 0,
+        });
         state.reject_new_forks = false;
         state.fork.db.dirty.demote_protocols_to_slot_only = false;
 

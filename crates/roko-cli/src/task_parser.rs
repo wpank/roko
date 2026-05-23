@@ -1987,10 +1987,12 @@ depends_on = []
 "#;
         let issues = validate_modern_fields_content(content).unwrap();
         assert_eq!(issues.len(), 1);
-        assert_eq!(
-            issues[0].missing_fields,
-            vec!["tier", "model_hint", "read_files", "verify"]
-        );
+        assert_eq!(issues[0].missing_fields, vec![
+            "tier",
+            "model_hint",
+            "read_files",
+            "verify"
+        ]);
     }
 
     #[test]
@@ -2153,7 +2155,10 @@ depends_on = []
 max_loc = 0
 "#;
         let parsed: TasksFile = toml::from_str(toml).unwrap();
-        assert_eq!(parsed.tasks[0].max_loc, None, "max_loc=0 should normalize to None");
+        assert_eq!(
+            parsed.tasks[0].max_loc, None,
+            "max_loc=0 should normalize to None"
+        );
     }
 
     #[test]
@@ -2208,6 +2213,9 @@ max_loc = 0
         let parsed: TasksFile = toml::from_str(toml).unwrap();
         let issues = parsed.validate_against_schema();
         let max_loc_issues: Vec<_> = issues.iter().filter(|i| i.contains("max_loc")).collect();
-        assert!(max_loc_issues.is_empty(), "max_loc=0 should not produce validation errors");
+        assert!(
+            max_loc_issues.is_empty(),
+            "max_loc=0 should not produce validation errors"
+        );
     }
 }

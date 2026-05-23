@@ -582,13 +582,10 @@ mod tests {
     #[test]
     fn phi_independent_subsystems_is_zero() {
         // Two independent subsystems: no MI between them.
-        let mi = MutualInfoMatrix::new(
-            2,
-            vec![
-                1.0, 0.0, // H(0)=1, MI(0,1)=0
-                0.0, 1.0, // MI(1,0)=0, H(1)=1
-            ],
-        );
+        let mi = MutualInfoMatrix::new(2, vec![
+            1.0, 0.0, // H(0)=1, MI(0,1)=0
+            0.0, 1.0, // MI(1,0)=0, H(1)=1
+        ]);
         let result = IitPhiMetric::compute(&mi);
         assert!(
             result.phi < 1e-10,
@@ -600,13 +597,10 @@ mod tests {
     #[test]
     fn phi_integrated_subsystems_is_positive() {
         // Two highly integrated subsystems.
-        let mi = MutualInfoMatrix::new(
-            2,
-            vec![
-                1.0, 0.8, // H(0)=1, MI(0,1)=0.8
-                0.8, 1.0, // MI(1,0)=0.8, H(1)=1
-            ],
-        );
+        let mi = MutualInfoMatrix::new(2, vec![
+            1.0, 0.8, // H(0)=1, MI(0,1)=0.8
+            0.8, 1.0, // MI(1,0)=0.8, H(1)=1
+        ]);
         let result = IitPhiMetric::compute(&mi);
         assert!(
             result.phi > 0.1,
@@ -618,14 +612,11 @@ mod tests {
     #[test]
     fn phi_three_subsystems() {
         // Three subsystems with varying integration.
-        let mi = MutualInfoMatrix::new(
-            3,
-            vec![
-                1.0, 0.5, 0.3, // H(0)=1
-                0.5, 1.0, 0.4, // H(1)=1
-                0.3, 0.4, 1.0, // H(2)=1
-            ],
-        );
+        let mi = MutualInfoMatrix::new(3, vec![
+            1.0, 0.5, 0.3, // H(0)=1
+            0.5, 1.0, 0.4, // H(1)=1
+            0.3, 0.4, 1.0, // H(2)=1
+        ]);
         let result = IitPhiMetric::compute(&mi);
         assert!(result.phi > 0.0);
         assert_eq!(result.num_subsystems, 3);
@@ -636,13 +627,10 @@ mod tests {
     #[test]
     fn phi_from_correlations() {
         // Two correlated subsystems.
-        let mi = MutualInfoMatrix::from_correlations(
-            2,
-            &[
-                1.0, 0.9, // near-perfect correlation
-                0.9, 1.0,
-            ],
-        );
+        let mi = MutualInfoMatrix::from_correlations(2, &[
+            1.0, 0.9, // near-perfect correlation
+            0.9, 1.0,
+        ]);
         let result = IitPhiMetric::compute(&mi);
         // MI from Gaussian approx: I(X;Y) = -0.5 * ln(1 - r^2)
         // The Phi value depends on the normalization. For two subsystems:

@@ -548,6 +548,9 @@ impl ChatAgentSession {
             "gemini_api" => ProviderKind::GeminiApi,
             "cerebras_api" => ProviderKind::CerebrasApi,
             "openai_compat" => ProviderKind::OpenAiCompat,
+            "cursor_cli" => ProviderKind::CursorCli,
+            "hermes" => ProviderKind::Hermes,
+            "openclaw" => ProviderKind::OpenClaw,
             _ => ProviderKind::OpenAiCompat,
         }
     }
@@ -2308,14 +2311,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-final","model":"claude-sonnet
                 ..
             } if session_id == "sess-final"
         )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            AgentRuntimeEvent::TokenUsage {
-                input_tokens: 11,
-                output_tokens: 22,
-                ..
-            }
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentRuntimeEvent::TokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 22,
+                    ..
+                }))
+        );
     }
 
     #[tokio::test]
@@ -2791,10 +2795,10 @@ sleep 5
                 })
                 .collect();
 
-            assert_eq!(
-                text_deltas,
-                vec!["Hello, ".to_string(), "world!".to_string()]
-            );
+            assert_eq!(text_deltas, vec![
+                "Hello, ".to_string(),
+                "world!".to_string()
+            ]);
         }
 
         #[test]

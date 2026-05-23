@@ -165,20 +165,17 @@ impl AgentRegistry {
         if self.agents.contains_key(&id) {
             return false;
         }
-        self.agents.insert(
-            id.clone(),
-            AgentEntry {
-                id: id.clone(),
-                address,
-                role,
-                owner,
-                registered_at: timestamp,
-                last_heartbeat_block: 0,
-                last_heartbeat_ts: timestamp,
-                stats: AgentStats::default(),
-                skills: HashMap::new(),
-            },
-        );
+        self.agents.insert(id.clone(), AgentEntry {
+            id: id.clone(),
+            address,
+            role,
+            owner,
+            registered_at: timestamp,
+            last_heartbeat_block: 0,
+            last_heartbeat_ts: timestamp,
+            stats: AgentStats::default(),
+            skills: HashMap::new(),
+        });
         self.traces.insert(id, Vec::new());
         true
     }
@@ -367,18 +364,15 @@ mod tests {
         let mut reg = AgentRegistry::new();
         reg.register("agent-1".into(), vec![], "coder".into(), "0x1".into(), 0);
         for i in 0..5 {
-            reg.add_trace(
-                "agent-1",
-                AgentTrace {
-                    cycle: i,
-                    phase: CognitivePhase::Reason,
-                    reads: vec![format!("file-{i}")],
-                    reasoning: format!("thought-{i}"),
-                    action: format!("action-{i}"),
-                    action_id: format!("id-{i}"),
-                    timestamp: i * 10,
-                },
-            );
+            reg.add_trace("agent-1", AgentTrace {
+                cycle: i,
+                phase: CognitivePhase::Reason,
+                reads: vec![format!("file-{i}")],
+                reasoning: format!("thought-{i}"),
+                action: format!("action-{i}"),
+                action_id: format!("id-{i}"),
+                timestamp: i * 10,
+            });
         }
         let (traces, total) = reg.get_traces("agent-1", 3, 0).unwrap();
         assert_eq!(total, 5);

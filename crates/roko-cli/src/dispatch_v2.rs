@@ -322,7 +322,24 @@ impl CliProviderConfig {
                     })
                 }
             }
-            kind => Err(DispatchV2Error::UnsupportedCliProvider { provider_id, kind }),
+            // Hermes and OpenClaw support CLI one-shot mode; treat like ClaudeCli
+            // when a command is configured.
+            ProviderKind::Hermes | ProviderKind::OpenClaw => {
+                let command = required_command(&provider_id, provider)?;
+                let mut config = Self::claude(provider_id, command);
+                config.provider_args = provider.args.clone().unwrap_or_default();
+                Ok(config)
+            }
+            // API-backed and ACP providers are dispatched via AgentResultBridge,
+            // not as CLI subprocesses.
+            kind @ (ProviderKind::AnthropicApi
+            | ProviderKind::CursorAcp
+            | ProviderKind::CursorCli
+            | ProviderKind::PerplexityApi
+            | ProviderKind::GeminiApi
+            | ProviderKind::CerebrasApi) => {
+                Err(DispatchV2Error::UnsupportedCliProvider { provider_id, kind })
+            }
         }
     }
 }
@@ -1175,6 +1192,10 @@ fn agent_event_from_chunk(chunk: StreamChunk) -> AgentRuntimeEvent {
             is_error: false,
         },
         StreamChunk::Error(message) => AgentRuntimeEvent::Error { message },
+        StreamChunk::ToolProgress { tool, status } => AgentRuntimeEvent::ToolOutput {
+            id: tool,
+            output: status,
+        },
     }
 }
 
@@ -1224,7 +1245,9 @@ fn classify_runtime(
         | ProviderKind::GeminiApi
         | ProviderKind::CursorAcp
         | ProviderKind::CursorCli
-        | ProviderKind::CerebrasApi => ProviderRuntime::AgentResultBridge { provider_kind },
+        | ProviderKind::CerebrasApi
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw => ProviderRuntime::AgentResultBridge { provider_kind },
         ProviderKind::ClaudeCli => ProviderRuntime::Unsupported(UnsupportedProvider {
             reason: UnsupportedProviderReason::UnsupportedCliProvider,
             detail: format!("provider `{provider_id}` is not dispatchable as configured"),
@@ -1399,9 +1422,9 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "dispatch-model".to_string();
-        config.providers.insert(
-            "dispatch-cli".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("dispatch-cli".to_string(), ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -1412,16 +1435,14 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "dispatch-model".to_string(),
-            ModelProfile {
+            });
+        config
+            .models
+            .insert("dispatch-model".to_string(), ModelProfile {
                 provider: "dispatch-cli".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
                 ..Default::default()
-            },
-        );
+            });
 
         let request = AgentDispatchRequest {
             model_key: "dispatch-model".to_string(),

@@ -277,15 +277,12 @@ pub async fn execute_acp_builtin_tool(
     let title = format_tool_title(name, args);
 
     // Emit start event.
-    emit(
-        event_sender,
-        CognitiveEvent::ToolCallStart {
-            tool_call_id: tool_call_id.clone(),
-            title: title.clone(),
-            kind,
-            locations: None,
-        },
-    )
+    emit(event_sender, CognitiveEvent::ToolCallStart {
+        tool_call_id: tool_call_id.clone(),
+        title: title.clone(),
+        kind,
+        locations: None,
+    })
     .await;
 
     let result = match name {
@@ -306,16 +303,13 @@ pub async fn execute_acp_builtin_tool(
     };
 
     // Emit completion event.
-    emit(
-        event_sender,
-        CognitiveEvent::ToolCallComplete {
-            tool_call_id,
-            status,
-            content: vec![ContentBlock::Text {
-                text: output.clone(),
-            }],
-        },
-    )
+    emit(event_sender, CognitiveEvent::ToolCallComplete {
+        tool_call_id,
+        status,
+        content: vec![ContentBlock::Text {
+            text: output.clone(),
+        }],
+    })
     .await;
 
     output

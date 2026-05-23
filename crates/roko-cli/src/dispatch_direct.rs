@@ -41,7 +41,7 @@ pub async fn dispatch_prompt(auth: &AuthMethod, prompt: &str) -> Result<Dispatch
          use ChatAgentSession instead (see crates/roko-cli/src/chat_session.rs)"
     );
     match auth {
-        AuthMethod::ClaudeCli => dispatch_claude_cli(prompt).await,
+        AuthMethod::ClaudeCli | AuthMethod::CliProvider { .. } => dispatch_claude_cli(prompt).await,
         AuthMethod::AnthropicApi { key, model } => {
             dispatch_anthropic_api(key, model.as_deref(), prompt).await
         }

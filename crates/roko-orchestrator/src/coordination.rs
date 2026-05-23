@@ -1772,12 +1772,9 @@ mod tests {
     #[test]
     fn subnet_membership_role_model() {
         let subnet = SubnetId::new("collective-a".to_owned(), "verifiers").unwrap();
-        let mut membership = SubnetMembership::new(
-            subnet,
-            AccessModel::Role {
-                required_role: "verifier".to_owned(),
-            },
-        );
+        let mut membership = SubnetMembership::new(subnet, AccessModel::Role {
+            required_role: "verifier".to_owned(),
+        });
 
         // Wrong role: rejected.
         assert!(!membership.try_admit("agent-1", Some("researcher"), None));
@@ -1794,13 +1791,10 @@ mod tests {
     #[test]
     fn subnet_membership_reputation_model() {
         let subnet = SubnetId::new("collective-a".to_owned(), "experts").unwrap();
-        let mut membership = SubnetMembership::new(
-            subnet,
-            AccessModel::Reputation {
-                domain: "testing".to_owned(),
-                min_score: 0.7,
-            },
-        );
+        let mut membership = SubnetMembership::new(subnet, AccessModel::Reputation {
+            domain: "testing".to_owned(),
+            min_score: 0.7,
+        });
 
         // Below threshold.
         assert!(!membership.try_admit("agent-1", None, Some(0.5)));

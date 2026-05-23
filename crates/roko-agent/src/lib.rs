@@ -60,6 +60,8 @@ pub mod file_cache;
 pub mod format;
 pub mod gateway_events;
 pub mod gemini;
+pub mod harness;
+pub mod hermes;
 pub mod http;
 pub mod introspection;
 pub mod lifecycle;
@@ -73,6 +75,7 @@ pub mod observer;
 pub mod ollama;
 pub mod openai_agent;
 pub mod openai_compat_backend;
+pub mod openclaw;
 pub mod perplexity;
 pub mod pointer;
 pub mod pool;
@@ -116,6 +119,21 @@ pub use gemini::{
     GeminiCompatAgent, GeminiEmbedAgent, GeminiMetadata, GeminiNativeAgent, GenerateContentRequest,
     GenerateContentResponse, GroundingMetadata,
 };
+pub use harness::{
+    AcpError, AcpEvent, AcpInitResponse, AcpNotification, AcpPromptPayload, AcpPromptResult,
+    AcpStdioClient, AcpStdioConfig, BearerAuth, CancelMode, CapabilityMismatch, ChildProcessRunner,
+    ClaudeStreamJsonParser, CliOutput, EventParser, HarnessAdapter, HarnessCapabilities,
+    HarnessError, HarnessEvent, HarnessProbe, HarnessRegistry, HarnessService,
+    HarnessTaskRequirements, HealthReport, McpMode, NewSessionOpts, OneShotMode, ProbeError,
+    RegistryConfig, RegistryError, ScrubbedEnv, ServiceEndpoint, ServiceStatus, SessionId,
+    SessionResumeMode, SpawnedChild, StreamingMode, ToolInjection, TransportFlavor,
+    harness_events_to_agent_result, validate_for_task,
+};
+pub use hermes::{
+    CrashRecoveryConfig, HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesFlavor,
+    HermesGatewayService, HermesHttpAgent, HermesOneShotAgent, HermesOneShotConfig,
+    ToolProgressInspector, probe_hermes,
+};
 pub use http::{HttpPoster, ReqwestPoster, shared_http_client, shared_http_client_from};
 pub use introspection::{AgentIdentity, Intervention, MetacognitiveMonitor, Turn};
 pub use lifecycle::*;
@@ -126,6 +144,11 @@ pub use multi_pool::{KillReport, MultiAgentPool, WarmEntry};
 pub use observer::{InferenceObserver, NoopInferenceObserver};
 pub use ollama::agent::{OllamaAgent, OllamaLlmBackend};
 pub use openai_compat_backend::OpenAiCompatLlmBackend;
+pub use openclaw::{
+    ConfigError as OpenClawConfigError, InferEnvelope, InferError, InferEventParser, InferOutput,
+    OpenClawAcpAgent, OpenClawAcpConfig, OpenClawConfig, OpenClawGatewayService,
+    OpenClawInferAgent, OpenClawInferConfig, TransportHint, probe_openclaw_infer,
+};
 pub use perplexity::{
     Annotation, PerplexityChatAgent, PerplexityDeepResearchAgent, PerplexityEmbedAgent,
     PerplexityMetadata, PerplexitySearchClient, SearchOptions, SearchResult,

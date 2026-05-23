@@ -126,15 +126,12 @@ impl DedupCache {
         }
 
         let now = Instant::now();
-        self.entries.insert(
-            key.clone(),
-            DedupEntry {
-                created_at: now,
-                in_flight: true,
-                success: None,
-                completed_at: None,
-            },
-        );
+        self.entries.insert(key.clone(), DedupEntry {
+            created_at: now,
+            in_flight: true,
+            success: None,
+            completed_at: None,
+        });
         self.dispatch_count += 1;
 
         DedupStatus::New
@@ -283,10 +280,10 @@ mod tests {
         cache.complete(&key, true);
 
         let status = cache.check(&key);
-        assert!(matches!(
-            status,
-            DedupStatus::Completed { success: true, .. }
-        ));
+        assert!(matches!(status, DedupStatus::Completed {
+            success: true,
+            ..
+        }));
         assert_eq!(cache.dedup_count(), 1);
     }
 
@@ -362,9 +359,9 @@ mod tests {
         cache.complete(&key, false);
 
         let status = cache.check(&key);
-        assert!(matches!(
-            status,
-            DedupStatus::Completed { success: false, .. }
-        ));
+        assert!(matches!(status, DedupStatus::Completed {
+            success: false,
+            ..
+        }));
     }
 }

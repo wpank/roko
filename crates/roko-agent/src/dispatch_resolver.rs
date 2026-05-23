@@ -237,6 +237,17 @@ fn transport_for(provider: &ProviderConfig) -> TransportPlan {
                 protocol: http_protocol(provider.kind).to_string(),
             },
         ),
+        ProviderKind::Hermes | ProviderKind::OpenClaw => TransportPlan::Harness {
+            harness_id: provider.kind.label().to_string(),
+            transport: if provider.base_url.is_some() {
+                "http_openai".to_string()
+            } else {
+                "oneshot_json".to_string()
+            },
+            binary: provider.command.clone(),
+            endpoint_url: provider.base_url.clone(),
+            config_bag: roko_core::dispatch_plan::ConfigBag::new(),
+        },
     }
 }
 
@@ -247,9 +258,11 @@ fn http_protocol(kind: ProviderKind) -> &'static str {
         ProviderKind::OpenAiCompat | ProviderKind::PerplexityApi | ProviderKind::CerebrasApi => {
             "chat_completions"
         }
-        ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => {
-            "unsupported_http"
-        }
+        ProviderKind::ClaudeCli
+        | ProviderKind::CursorAcp
+        | ProviderKind::CursorCli
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw => "unsupported_http",
     }
 }
 
@@ -471,13 +484,10 @@ mod dispatch_resolver_tests {
             .resolve_existing(request)
             .expect("dispatch plan");
 
-        assert_eq!(
-            plan.requirements,
-            vec![
-                DispatchRequirement::Streaming,
-                DispatchRequirement::McpTools,
-            ]
-        );
+        assert_eq!(plan.requirements, vec![
+            DispatchRequirement::Streaming,
+            DispatchRequirement::McpTools,
+        ]);
         assert!(
             plan.diagnostics
                 .iter()

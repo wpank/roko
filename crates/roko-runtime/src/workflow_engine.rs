@@ -849,28 +849,25 @@ fn review_requests_revision(output: &str) -> bool {
     }
 
     let normalized = output.to_ascii_lowercase();
-    contains_any(
-        &normalized,
-        &[
-            "changes requested",
-            "request changes",
-            "requested changes",
-            "needs changes",
-            "needs revision",
-            "needs revisions",
-            "requires revision",
-            "requires revisions",
-            "please revise",
-            "must fix",
-            "required changes",
-            "blocking issue",
-            "blocking issues",
-            "not approved",
-            "do not approve",
-            "cannot approve",
-            "rejected",
-        ],
-    )
+    contains_any(&normalized, &[
+        "changes requested",
+        "request changes",
+        "requested changes",
+        "needs changes",
+        "needs revision",
+        "needs revisions",
+        "requires revision",
+        "requires revisions",
+        "please revise",
+        "must fix",
+        "required changes",
+        "blocking issue",
+        "blocking issues",
+        "not approved",
+        "do not approve",
+        "cannot approve",
+        "rejected",
+    ])
 }
 
 fn review_approves(output: &str) -> bool {
@@ -879,18 +876,15 @@ fn review_approves(output: &str) -> bool {
     }
 
     let normalized = output.to_ascii_lowercase();
-    contains_any(
-        &normalized,
-        &[
-            "approved",
-            "approve",
-            "lgtm",
-            "looks good to me",
-            "no issues found",
-            "ready to merge",
-            "ship it",
-        ],
-    )
+    contains_any(&normalized, &[
+        "approved",
+        "approve",
+        "lgtm",
+        "looks good to me",
+        "no issues found",
+        "ready to merge",
+        "ship it",
+    ])
 }
 
 fn structured_review_decision(output: &str) -> Option<bool> {
@@ -942,31 +936,25 @@ fn parse_fenced_json_review(output: &str) -> Option<serde_json::Value> {
 
 fn decision_requests_revision(decision: &str) -> bool {
     let normalized = decision.to_ascii_lowercase();
-    contains_any(
-        &normalized,
-        &[
-            "changes_requested",
-            "request_changes",
-            "changes requested",
-            "revise",
-            "revision",
-            "reject",
-            "rejected",
-            "not approved",
-            "fail",
-            "failed",
-        ],
-    )
+    contains_any(&normalized, &[
+        "changes_requested",
+        "request_changes",
+        "changes requested",
+        "revise",
+        "revision",
+        "reject",
+        "rejected",
+        "not approved",
+        "fail",
+        "failed",
+    ])
 }
 
 fn decision_approves(decision: &str) -> bool {
     let normalized = decision.to_ascii_lowercase();
-    contains_any(
-        &normalized,
-        &[
-            "approved", "approve", "accepted", "pass", "passed", "lgtm", "ready",
-        ],
-    )
+    contains_any(&normalized, &[
+        "approved", "approve", "accepted", "pass", "passed", "lgtm", "ready",
+    ])
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -1665,13 +1653,10 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(
-                    event,
-                    RuntimeEvent::WorkflowCompleted {
-                        outcome: roko_core::runtime_event::WorkflowOutcome::Success { .. },
-                        ..
-                    }
-                ))
+                .filter(|event| matches!(event, RuntimeEvent::WorkflowCompleted {
+                    outcome: roko_core::runtime_event::WorkflowOutcome::Success { .. },
+                    ..
+                }))
                 .count(),
             1
         );

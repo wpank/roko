@@ -762,12 +762,9 @@ mod tests {
     #[test]
     fn registry_histogram_renders_with_buckets_sum_count() {
         let reg = MetricRegistry::new();
-        let h = reg.register_histogram(
-            "roko_latency_seconds",
-            "latency",
-            LabelSet::new(),
-            vec![0.5, 1.0],
-        );
+        let h = reg.register_histogram("roko_latency_seconds", "latency", LabelSet::new(), vec![
+            0.5, 1.0,
+        ]);
         h.observe(0.25);
         h.observe(0.75);
         h.observe(3.0);

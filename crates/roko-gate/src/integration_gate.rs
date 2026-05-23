@@ -314,8 +314,7 @@ async fn run_build_test(
             build.program()
         );
         tracing::warn!(gate = %gate_name, "{reason}");
-        return Verdict::pass(gate_name)
-            .with_detail(format!("skipped: {reason}"));
+        return Verdict::pass(gate_name).with_detail(format!("skipped: {reason}"));
     }
 
     let payload: Option<GatePayload> = signal.body.as_json().ok();

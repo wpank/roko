@@ -243,8 +243,11 @@ fn check_provider_readiness(config: &roko_core::config::schema::RokoConfig) -> O
         );
     }
     for (_name, provider) in &config.providers {
-        if provider.kind == ProviderKind::ClaudeCli {
-            // Claude CLI providers don't need an API key env var.
+        if provider.kind == ProviderKind::ClaudeCli
+            || provider.kind == ProviderKind::Hermes
+            || provider.kind == ProviderKind::OpenClaw
+        {
+            // CLI-based providers (ClaudeCli, Hermes, OpenClaw) don't need an API key env var.
             return None;
         }
         if let Some(env_var) = &provider.api_key_env

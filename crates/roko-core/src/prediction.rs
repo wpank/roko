@@ -1335,20 +1335,17 @@ impl PredictiveScorer {
     ) -> f32 {
         let uncertainty = (1.0 - summary.confidence).clamp(0.0, 1.0) as f32;
         let low_accuracy = (1.0 - summary.recent_accuracy).clamp(0.0, 1.0) as f32;
-        let warningish = keyword_weight(
-            body,
-            &[
-                "warning",
-                "risk",
-                "uncertain",
-                "verify",
-                "counterexample",
-                "prediction",
-                "error",
-                "failure",
-                "fallback",
-            ],
-        );
+        let warningish = keyword_weight(body, &[
+            "warning",
+            "risk",
+            "uncertain",
+            "verify",
+            "counterexample",
+            "prediction",
+            "error",
+            "failure",
+            "fallback",
+        ]);
         (signal.score.novelty.max(0.0)
             + warningish * (0.45 + 0.35 * uncertainty)
             + low_accuracy * 0.20)

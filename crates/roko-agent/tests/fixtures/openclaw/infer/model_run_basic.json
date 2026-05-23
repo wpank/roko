@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "capability": "model",
+  "transport": "api",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250514",
+  "attempts": 1,
+  "outputs": [{"type": "text", "value": "Paris is the capital of France."}],
+  "error": null
+}

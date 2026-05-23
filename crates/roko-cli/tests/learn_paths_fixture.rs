@@ -122,13 +122,10 @@ fn write_learn_fixture(workdir: &Path) {
     efficiency_b.timestamp = efficiency_last.to_rfc3339();
 
     let efficiency_path = learn_dir.join("efficiency.jsonl");
-    write_jsonl(
-        &efficiency_path,
-        &[
-            serde_json::to_string(&efficiency_a).expect("serialize efficiency fixture a"),
-            serde_json::to_string(&efficiency_b).expect("serialize efficiency fixture b"),
-        ],
-    );
+    write_jsonl(&efficiency_path, &[
+        serde_json::to_string(&efficiency_a).expect("serialize efficiency fixture a"),
+        serde_json::to_string(&efficiency_b).expect("serialize efficiency fixture b"),
+    ]);
 
     let episodes_first = utc("2026-04-10T12:00:00Z");
     let episodes_last = utc("2026-04-10T12:45:00Z");
@@ -182,23 +179,19 @@ fn write_learn_fixture(workdir: &Path) {
     episode_b.completed_at = episodes_last.clone();
 
     let episodes_path = learn_dir.join("episodes.jsonl");
-    write_jsonl(
-        &episodes_path,
-        &[
-            serde_json::to_string(&episode_a).expect("serialize episode fixture a"),
-            serde_json::to_string(&episode_b).expect("serialize episode fixture b"),
-        ],
-    );
+    write_jsonl(&episodes_path, &[
+        serde_json::to_string(&episode_a).expect("serialize episode fixture a"),
+        serde_json::to_string(&episode_b).expect("serialize episode fixture b"),
+    ]);
 
     let knowledge_path = neuro_dir.join("knowledge.jsonl");
-    write_jsonl(
-        &knowledge_path,
-        &[serde_json::to_string(&serde_json::json!({
+    write_jsonl(&knowledge_path, &[serde_json::to_string(
+        &serde_json::json!({
             "id": "knowledge-1",
             "topic": "fixture"
-        }))
-        .expect("serialize knowledge fixture")],
-    );
+        }),
+    )
+    .expect("serialize knowledge fixture")]);
 }
 
 #[test]

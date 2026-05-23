@@ -229,10 +229,12 @@ mod tests {
     #[test]
     fn typed_context_defaults() {
         let ctx = TypedContext::new(DomainProfile::Coding);
-        assert_eq!(
-            ctx.effective_gate_rungs(),
-            vec!["compile", "test", "clippy", "diff_review"]
-        );
+        assert_eq!(ctx.effective_gate_rungs(), vec![
+            "compile",
+            "test",
+            "clippy",
+            "diff_review"
+        ]);
         assert!(
             ctx.effective_tool_categories()
                 .contains(&"exec".to_string())

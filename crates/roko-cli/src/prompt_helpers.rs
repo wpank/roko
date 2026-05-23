@@ -91,17 +91,12 @@ pub(crate) fn build_system_prompt_with_context(
     if let Some(context) = context_layer.filter(|context| !context.trim().is_empty()) {
         task_context = task_context.with_context(context);
     }
-    build_role_system_prompt(
-        role,
-        task_context,
-        tools_csv,
-        PromptBuildOptions {
-            affect_state,
-            complexity: Some(prompt_budget_complexity(task_def)),
-            extra_conventions: task_dispatch_conventions(task_def),
-            ..PromptBuildOptions::default()
-        },
-    )
+    build_role_system_prompt(role, task_context, tools_csv, PromptBuildOptions {
+        affect_state,
+        complexity: Some(prompt_budget_complexity(task_def)),
+        extra_conventions: task_dispatch_conventions(task_def),
+        ..PromptBuildOptions::default()
+    })
 }
 
 pub(crate) fn build_system_prompt_with_context_validated(

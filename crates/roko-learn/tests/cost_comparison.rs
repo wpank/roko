@@ -11,36 +11,27 @@ const CLAUDE: &str = "claude-opus-4-6";
 fn pricing_table() -> CostTable {
     CostTable {
         models: HashMap::from([
-            (
-                KIMI.to_string(),
-                ModelPricing {
-                    input_per_m: 0.60,
-                    output_per_m: 3.00,
-                    cache_read_per_m: 0.10,
-                    cache_write_per_m: 0.75,
-                    tokenizer_ratio: 0.98,
-                },
-            ),
-            (
-                GLM.to_string(),
-                ModelPricing {
-                    input_per_m: 1.40,
-                    output_per_m: 4.40,
-                    cache_read_per_m: 0.26,
-                    cache_write_per_m: 1.75,
-                    tokenizer_ratio: 1.05,
-                },
-            ),
-            (
-                CLAUDE.to_string(),
-                ModelPricing {
-                    input_per_m: 15.00,
-                    output_per_m: 75.00,
-                    cache_read_per_m: 3.75,
-                    cache_write_per_m: 18.75,
-                    tokenizer_ratio: 1.0,
-                },
-            ),
+            (KIMI.to_string(), ModelPricing {
+                input_per_m: 0.60,
+                output_per_m: 3.00,
+                cache_read_per_m: 0.10,
+                cache_write_per_m: 0.75,
+                tokenizer_ratio: 0.98,
+            }),
+            (GLM.to_string(), ModelPricing {
+                input_per_m: 1.40,
+                output_per_m: 4.40,
+                cache_read_per_m: 0.26,
+                cache_write_per_m: 1.75,
+                tokenizer_ratio: 1.05,
+            }),
+            (CLAUDE.to_string(), ModelPricing {
+                input_per_m: 15.00,
+                output_per_m: 75.00,
+                cache_read_per_m: 3.75,
+                cache_write_per_m: 18.75,
+                tokenizer_ratio: 1.0,
+            }),
         ]),
     }
 }

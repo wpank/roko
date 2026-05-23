@@ -99,13 +99,10 @@ mod tests {
         let replay = bus.replay_from(0);
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].payload.tag(), "resource_warning");
-        assert_eq!(
-            replay[0].payload,
-            MirageTelemetryEvent::ResourceWarning {
-                resource: "memory".into(),
-                utilization: 0.62,
-            }
-        );
+        assert_eq!(replay[0].payload, MirageTelemetryEvent::ResourceWarning {
+            resource: "memory".into(),
+            utilization: 0.62,
+        });
     }
 
     #[test]

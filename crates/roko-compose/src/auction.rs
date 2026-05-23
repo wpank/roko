@@ -548,11 +548,12 @@ mod tests {
     #[test]
     fn detects_high_correlation() {
         let correlated = detect_bid_correlation(
-            &[(
-                SubsystemId::Neuro,
-                SubsystemId::Research,
-                vec![(0.1, 0.11), (0.2, 0.19), (0.3, 0.31), (0.4, 0.39)],
-            )],
+            &[(SubsystemId::Neuro, SubsystemId::Research, vec![
+                (0.1, 0.11),
+                (0.2, 0.19),
+                (0.3, 0.31),
+                (0.4, 0.39),
+            ])],
             0.85,
         );
 

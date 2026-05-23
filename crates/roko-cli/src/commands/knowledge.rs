@@ -16,15 +16,12 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             force,
             top_n,
         } => {
-            cmd_neuro(
-                cli,
-                NeuroCmd::Backup {
-                    workdir,
-                    destination,
-                    force,
-                    top_n,
-                },
-            )
+            cmd_neuro(cli, NeuroCmd::Backup {
+                workdir,
+                destination,
+                force,
+                top_n,
+            })
             .await
         }
         KnowledgeCmd::Restore {
@@ -35,17 +32,14 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             min_confidence,
             generation,
         } => {
-            cmd_neuro(
-                cli,
-                NeuroCmd::Restore {
-                    workdir,
-                    source,
-                    force,
-                    types,
-                    min_confidence,
-                    generation,
-                },
-            )
+            cmd_neuro(cli, NeuroCmd::Restore {
+                workdir,
+                source,
+                force,
+                types,
+                min_confidence,
+                generation,
+            })
             .await
         }
         KnowledgeCmd::Sync {
@@ -54,15 +48,12 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             direction,
             max_send,
         } => {
-            cmd_neuro(
-                cli,
-                NeuroCmd::Sync {
-                    peer,
-                    workdir,
-                    direction,
-                    max_send,
-                },
-            )
+            cmd_neuro(cli, NeuroCmd::Sync {
+                peer,
+                workdir,
+                direction,
+                max_send,
+            })
             .await
         }
         KnowledgeCmd::Dream { cmd } => dispatch_knowledge_dream(cli, cmd).await,
@@ -776,24 +767,21 @@ pub(crate) async fn cmd_dream(cli: &Cli, cmd: DreamCmdLegacy) -> Result<i32> {
 
 pub(crate) fn build_dream_runner(cli: &Cli, workdir: &Path) -> Result<DreamRunner> {
     let cli_config = resolve_config_for_workdir(cli, workdir)?;
-    Ok(DreamRunner::new(
-        workdir.to_path_buf(),
-        DreamLoopConfig {
-            auto_dream: cli_config.dreams.auto_dream,
-            idle_threshold_mins: cli_config.dreams.idle_threshold_mins,
-            min_episodes_for_dream: cli_config.dreams.min_episodes_for_dream,
-            agent: DreamAgentConfig {
-                command: cli_config.agent.command.clone(),
-                args: cli_config.agent.args.clone(),
-                model: cli_config.agent.model.clone(),
-                bare_mode: cli_config.agent.bare_mode,
-                effort: cli_config.agent.effort.clone(),
-                fallback_model: cli_config.agent.fallback_model.clone(),
-                timeout_ms: cli_config.agent.timeout_ms,
-                env: cli_config.agent.env.clone(),
-            },
+    Ok(DreamRunner::new(workdir.to_path_buf(), DreamLoopConfig {
+        auto_dream: cli_config.dreams.auto_dream,
+        idle_threshold_mins: cli_config.dreams.idle_threshold_mins,
+        min_episodes_for_dream: cli_config.dreams.min_episodes_for_dream,
+        agent: DreamAgentConfig {
+            command: cli_config.agent.command.clone(),
+            args: cli_config.agent.args.clone(),
+            model: cli_config.agent.model.clone(),
+            bare_mode: cli_config.agent.bare_mode,
+            effort: cli_config.agent.effort.clone(),
+            fallback_model: cli_config.agent.fallback_model.clone(),
+            timeout_ms: cli_config.agent.timeout_ms,
+            env: cli_config.agent.env.clone(),
         },
-    ))
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

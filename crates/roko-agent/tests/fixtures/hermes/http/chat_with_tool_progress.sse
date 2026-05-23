@@ -1,0 +1,15 @@
+data: {"id":"chatcmpl-hermes-2","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-hermes-2","choices":[{"index":0,"delta":{"content":"Let me check"},"finish_reason":null}]}
+
+event: hermes.tool.progress
+data: {"tool": "terminal", "status": "start", "args": {"command": "ls -la"}}
+
+event: hermes.tool.progress
+data: {"tool": "terminal", "status": "done"}
+
+data: {"id":"chatcmpl-hermes-2","choices":[{"index":0,"delta":{"content":" the files."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-hermes-2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":10,"total_tokens":25}}
+
+data: [DONE]

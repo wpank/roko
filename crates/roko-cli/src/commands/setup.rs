@@ -136,7 +136,9 @@ fn prompt_for_api_key() -> Result<AuthMethod> {
 /// Pick a sensible default model based on detected auth.
 fn default_model_for_auth(auth: &AuthMethod) -> &'static str {
     match auth {
-        AuthMethod::ClaudeCli | AuthMethod::AnthropicApi { .. } => "claude-sonnet-4-6",
+        AuthMethod::ClaudeCli
+        | AuthMethod::CliProvider { .. }
+        | AuthMethod::AnthropicApi { .. } => "claude-sonnet-4-6",
         AuthMethod::OpenAiCompat { .. } => "gpt-5.4-mini",
         AuthMethod::NeedsSetup => "claude-sonnet-4-6",
     }

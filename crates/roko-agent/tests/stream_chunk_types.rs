@@ -31,24 +31,18 @@ fn stream_chunk_types_cover_glm_stream_events() {
 
     assert!(matches!(chunks[0], StreamChunk::ReasoningDelta(_)));
     assert!(matches!(chunks[1], StreamChunk::ContentDelta(_)));
-    assert!(matches!(
-        chunks[2],
-        StreamChunk::ToolCallDelta {
-            index: 0,
-            id_delta: Some(_),
-            name_delta: Some(_),
-            ..
-        }
-    ));
-    assert!(matches!(
-        chunks[3],
-        StreamChunk::ToolCallDelta {
-            index: 0,
-            id_delta: None,
-            name_delta: None,
-            ..
-        }
-    ));
+    assert!(matches!(chunks[2], StreamChunk::ToolCallDelta {
+        index: 0,
+        id_delta: Some(_),
+        name_delta: Some(_),
+        ..
+    }));
+    assert!(matches!(chunks[3], StreamChunk::ToolCallDelta {
+        index: 0,
+        id_delta: None,
+        name_delta: None,
+        ..
+    }));
     assert!(matches!(chunks[4], StreamChunk::Usage(_)));
     assert!(matches!(
         chunks[5],
@@ -77,15 +71,12 @@ fn stream_chunk_types_cover_kimi_stream_events() {
     ];
 
     assert!(matches!(chunks[0], StreamChunk::ReasoningDelta(_)));
-    assert!(matches!(
-        chunks[1],
-        StreamChunk::ToolCallDelta {
-            index: 0,
-            id_delta: Some(_),
-            name_delta: Some(_),
-            ..
-        }
-    ));
+    assert!(matches!(chunks[1], StreamChunk::ToolCallDelta {
+        index: 0,
+        id_delta: Some(_),
+        name_delta: Some(_),
+        ..
+    }));
     assert!(matches!(chunks[2], StreamChunk::ContentDelta(_)));
     assert!(matches!(chunks[3], StreamChunk::Usage(_)));
     assert!(matches!(chunks[4], StreamChunk::Done(FinishReason::Stop)));

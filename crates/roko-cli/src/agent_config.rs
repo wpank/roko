@@ -99,6 +99,8 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
         ProviderKind::GeminiApi => Some("GEMINI_API_KEY".to_string()),
         ProviderKind::CerebrasApi => Some("CEREBRAS_API_KEY".to_string()),
         ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => None,
+        // Harness adapters handle auth via their own probe mechanism.
+        ProviderKind::Hermes | ProviderKind::OpenClaw => None,
     }
 }
 
@@ -112,9 +114,9 @@ fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> Roko
     config.agent.command = Some(command.to_string());
     config.agent.default_model = model.to_string();
     config.agent.default_backend = command.to_string();
-    config.providers.insert(
-        provider_id.clone(),
-        ProviderConfig {
+    config
+        .providers
+        .insert(provider_id.clone(), ProviderConfig {
             kind,
             base_url: None,
             api_key_env: provider_api_key_env(kind),
@@ -125,16 +127,12 @@ fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> Roko
             connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
             extra_headers: None,
             max_concurrent: None,
-        },
-    );
-    config.models.insert(
-        model.to_string(),
-        ModelProfile {
-            provider: provider_id,
-            slug: model.to_string(),
-            ..Default::default()
-        },
-    );
+        });
+    config.models.insert(model.to_string(), ModelProfile {
+        provider: provider_id,
+        slug: model.to_string(),
+        ..Default::default()
+    });
     config
 }
 
@@ -274,15 +272,12 @@ command = "claude"
         );
 
         let GatewayEnv { vars } = load_gateway_env(&workdir);
-        assert_eq!(
-            vars,
-            vec![
-                (
-                    "ANTHROPIC_BASE_URL".to_string(),
-                    "https://example.test".to_string()
-                ),
-                ("ANTHROPIC_AUTH_TOKEN".to_string(), "secret".to_string()),
-            ]
-        );
+        assert_eq!(vars, vec![
+            (
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://example.test".to_string()
+            ),
+            ("ANTHROPIC_AUTH_TOKEN".to_string(), "secret".to_string()),
+        ]);
     }
 }

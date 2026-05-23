@@ -535,10 +535,13 @@ fn extract_tool_calls_from_value(value: &Value) -> Vec<(String, String)> {
 fn extract_tool_call_from_object(
     object: &serde_json::Map<String, Value>,
 ) -> Option<(String, String)> {
-    let name = extract_named_string(
-        object,
-        &["tool_name", "tool", "name", "action_type", "kind"],
-    )
+    let name = extract_named_string(object, &[
+        "tool_name",
+        "tool",
+        "name",
+        "action_type",
+        "kind",
+    ])
     .or_else(|| {
         object
             .get("function")
@@ -1101,24 +1104,16 @@ mod tests {
 
     fn sample_steps() -> Vec<PlaybookStep> {
         vec![
-            PlaybookStep::new(
-                0,
-                "Read failing test output",
-                "read_file",
-                vec!["test_output".into()],
-            ),
-            PlaybookStep::new(
-                1,
-                "Patch the faulty module",
-                "edit_file",
-                vec!["file_patched".into(), "compile_ok".into()],
-            ),
-            PlaybookStep::new(
-                2,
-                "Re-run the test",
-                "run_command",
-                vec!["tests_green".into()],
-            ),
+            PlaybookStep::new(0, "Read failing test output", "read_file", vec![
+                "test_output".into(),
+            ]),
+            PlaybookStep::new(1, "Patch the faulty module", "edit_file", vec![
+                "file_patched".into(),
+                "compile_ok".into(),
+            ]),
+            PlaybookStep::new(2, "Re-run the test", "run_command", vec![
+                "tests_green".into(),
+            ]),
         ]
     }
 
@@ -1176,11 +1171,10 @@ mod tests {
     fn extract_playbook_from_episode_returns_none_for_empty_tool_calls() {
         assert!(extract_playbook_from_episode("task-1", "prompt", &[]).is_none());
         assert!(
-            extract_playbook_from_episode(
-                "task-1",
-                "prompt",
-                &[("   ".to_string(), "   ".to_string())],
-            )
+            extract_playbook_from_episode("task-1", "prompt", &[(
+                "   ".to_string(),
+                "   ".to_string()
+            )],)
             .is_none()
         );
     }
@@ -1499,21 +1493,16 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let store = PlaybookStore::new(tmp.path());
 
-        let first = learned_playbook(
-            "ep-task-1-111",
-            "Audit dependencies",
-            vec![("read_file", "Read Cargo.toml")],
-        );
+        let first = learned_playbook("ep-task-1-111", "Audit dependencies", vec![(
+            "read_file",
+            "Read Cargo.toml",
+        )]);
         store.save(&first).await.expect("save first");
 
-        let second = learned_playbook(
-            "ep-task-1-222",
-            "Audit dependencies",
-            vec![
-                ("read_file", "Read Cargo.toml"),
-                ("run_command", "Run cargo tree"),
-            ],
-        );
+        let second = learned_playbook("ep-task-1-222", "Audit dependencies", vec![
+            ("read_file", "Read Cargo.toml"),
+            ("run_command", "Run cargo tree"),
+        ]);
         store.save_or_merge(&second).await.expect("merge second");
 
         let loaded = store
@@ -1531,18 +1520,16 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let store = PlaybookStore::new(tmp.path());
 
-        let first = learned_playbook(
-            "ep-task-1-111",
-            "Audit dependencies",
-            vec![("read_file", "Read Cargo.toml")],
-        );
+        let first = learned_playbook("ep-task-1-111", "Audit dependencies", vec![(
+            "read_file",
+            "Read Cargo.toml",
+        )]);
         store.save(&first).await.expect("save first");
 
-        let other = learned_playbook(
-            "ep-task-2-222",
-            "Rewrite the dashboard theme",
-            vec![("edit_file", "Update CSS variables")],
-        );
+        let other = learned_playbook("ep-task-2-222", "Rewrite the dashboard theme", vec![(
+            "edit_file",
+            "Update CSS variables",
+        )]);
         store.save_or_merge(&other).await.expect("save other");
 
         let mut listed = store.list().await.expect("list");
@@ -1558,11 +1545,10 @@ mod tests {
         let store = PlaybookStore::new(tmp.path());
 
         // Seed with initial playbook.
-        let seed = learned_playbook(
-            "merge-race",
-            "Concurrent merge target",
-            vec![("read_file", "Read config")],
-        );
+        let seed = learned_playbook("merge-race", "Concurrent merge target", vec![(
+            "read_file",
+            "Read config",
+        )]);
         store.save(&seed).await.expect("save seed");
 
         // Spawn 16 concurrent save_or_merge calls with similar playbooks.
@@ -1571,11 +1557,9 @@ mod tests {
         let mut handles = Vec::new();
         for i in 0..16u32 {
             let store = store.clone();
-            let pb = learned_playbook(
-                &format!("merge-race-{i}"),
-                "Concurrent merge target",
-                vec![("read_file", "Read config")],
-            );
+            let pb = learned_playbook(&format!("merge-race-{i}"), "Concurrent merge target", vec![
+                ("read_file", "Read config"),
+            ]);
             handles.push(tokio::spawn(async move { store.save_or_merge(&pb).await }));
         }
         for h in handles {
@@ -1598,12 +1582,10 @@ mod tests {
         let store = PlaybookStore::new(tmp.path());
         let mut pb = Playbook::new("ordered", "Preserve order");
         for i in 0..8u32 {
-            pb.steps.push(PlaybookStep::new(
-                i,
-                format!("step {i}"),
-                "noop",
-                vec![format!("signal-{i}")],
-            ));
+            pb.steps
+                .push(PlaybookStep::new(i, format!("step {i}"), "noop", vec![
+                    format!("signal-{i}"),
+                ]));
         }
         store.save(&pb).await.expect("save");
         let loaded = store.load("ordered").await.expect("load").expect("some");

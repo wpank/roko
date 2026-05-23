@@ -1,0 +1,6 @@
+data: {"id":"chatcmpl-hermes-crash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-hermes-crash","choices":[{"index":0,"delta":{"content":"I'm working on"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-hermes-crash","choices":[{"index":0,"delta":{"content":" your request"},"finish_reason":null}]}
+

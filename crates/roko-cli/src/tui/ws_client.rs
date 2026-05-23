@@ -407,14 +407,11 @@ mod tests {
         .await;
 
         result.expect("timed out");
-        assert_eq!(
-            observed,
-            vec![
-                StreamChunk::Connected,
-                StreamChunk::Text("hello".to_string()),
-                StreamChunk::Done { session: None }
-            ]
-        );
+        assert_eq!(observed, vec![
+            StreamChunk::Connected,
+            StreamChunk::Text("hello".to_string()),
+            StreamChunk::Done { session: None }
+        ]);
 
         server.abort();
     }
@@ -475,14 +472,11 @@ mod tests {
         .await;
 
         result.expect("timed out");
-        assert_eq!(
-            observed,
-            vec![
-                StreamChunk::Connected,
-                StreamChunk::Text("visible".to_string()),
-                StreamChunk::Done { session: None }
-            ]
-        );
+        assert_eq!(observed, vec![
+            StreamChunk::Connected,
+            StreamChunk::Text("visible".to_string()),
+            StreamChunk::Done { session: None }
+        ]);
 
         server.abort();
     }

@@ -205,6 +205,10 @@ async fn stream_prompt(
                 "error": error,
                 "done": false,
             }),
+            StreamChunk::ToolProgress { tool, status } => json!({
+                "tool_progress": { "tool": tool, "status": status },
+                "done": false,
+            }),
         };
 
         send_socket_payload(socket, payload).await?;

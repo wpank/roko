@@ -177,16 +177,13 @@ impl MapElitesArchive {
                 } else {
                     InsertResult::NewCell
                 };
-                grid.insert(
-                    key,
-                    ArchiveCell {
-                        strategy,
-                        quality,
-                        descriptors,
-                        update_count,
-                        last_updated: Utc::now(),
-                    },
-                );
+                grid.insert(key, ArchiveCell {
+                    strategy,
+                    quality,
+                    descriptors,
+                    update_count,
+                    last_updated: Utc::now(),
+                });
                 result
             }
         }

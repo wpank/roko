@@ -1877,12 +1877,10 @@ fn build_regression_entry(cluster: &DreamCluster, created_at: DateTime<Utc>) -> 
     };
     let confidence = if cluster.failure_count > 0 { 0.9 } else { 0.0 };
     KnowledgeEntry {
-        id: derive_knowledge_id(
+        id: derive_knowledge_id(kind, &content, &cluster.episode_ids, &[knowledge_kind_tag(
             kind,
-            &content,
-            &cluster.episode_ids,
-            &[knowledge_kind_tag(kind).to_string()],
-        ),
+        )
+        .to_string()]),
         kind,
         source: Some("dream".to_string()),
         content,
@@ -2311,20 +2309,15 @@ fn build_mistake_insight_entry(
     }
 
     KnowledgeEntry {
-        id: derive_knowledge_id(
-            KnowledgeKind::Insight,
-            &content,
-            &cluster.episode_ids,
-            &[
-                knowledge_kind_tag(KnowledgeKind::Insight).to_string(),
-                "dream".to_string(),
-                "mistake".to_string(),
-                "failure".to_string(),
-                format!("plan:{}", cluster.key.plan_id),
-                format!("task_type:{}", cluster.key.task_type),
-                format!("model:{}", cluster.key.model),
-            ],
-        ),
+        id: derive_knowledge_id(KnowledgeKind::Insight, &content, &cluster.episode_ids, &[
+            knowledge_kind_tag(KnowledgeKind::Insight).to_string(),
+            "dream".to_string(),
+            "mistake".to_string(),
+            "failure".to_string(),
+            format!("plan:{}", cluster.key.plan_id),
+            format!("task_type:{}", cluster.key.task_type),
+            format!("model:{}", cluster.key.model),
+        ]),
         kind: KnowledgeKind::Insight,
         source: Some("dream".to_string()),
         content,

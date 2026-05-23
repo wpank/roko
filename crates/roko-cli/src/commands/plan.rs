@@ -310,14 +310,12 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 let config = load_resolved_config(&wd)?.config;
 
                 // Bootstrap: workspace check + unified config load.
-                let boot = roko_cli::bootstrap::RokoBootstrap::new(
-                    &wd,
-                    roko_cli::bootstrap::BootOpts {
+                let boot =
+                    roko_cli::bootstrap::RokoBootstrap::new(&wd, roko_cli::bootstrap::BootOpts {
                         require_workspace: true,
                         require_provider: false, // explicit preflight below is more detailed
                         acquire_lock: false,
-                    },
-                )?;
+                    })?;
                 let early_roko_config = boot.config;
 
                 // Pre-flight: fail fast if the default model's provider is misconfigured.

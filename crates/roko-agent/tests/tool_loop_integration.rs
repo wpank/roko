@@ -191,15 +191,12 @@ async fn tool_loop_glm_e2e() {
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].id, "call-read-1");
     assert_eq!(result.tool_calls[0].name, "read_file");
-    assert_eq!(
-        result.total_usage,
-        Usage {
-            input_tokens: 38,
-            output_tokens: 13,
-            cache_read_tokens: 6,
-            ..Default::default()
-        }
-    );
+    assert_eq!(result.total_usage, Usage {
+        input_tokens: 38,
+        output_tokens: 13,
+        cache_read_tokens: 6,
+        ..Default::default()
+    });
 
     let requests = captured_requests.lock().expect("capture lock");
     assert_eq!(requests.len(), 2);

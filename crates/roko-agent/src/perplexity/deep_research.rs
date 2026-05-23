@@ -422,10 +422,9 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_completes_immediately() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-001"))],
-            vec![Ok(poll_completed("deep research result"))],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-001"))], vec![Ok(poll_completed(
+            "deep research result",
+        ))]);
         let result = agent_with(mock)
             .run(&prompt("research question"), &Context::now())
             .await;
@@ -440,14 +439,11 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_pending_then_completed() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-002"))],
-            vec![
-                Ok(poll_pending()),
-                Ok(poll_processing()),
-                Ok(poll_completed("answer after waiting")),
-            ],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-002"))], vec![
+            Ok(poll_pending()),
+            Ok(poll_processing()),
+            Ok(poll_completed("answer after waiting")),
+        ]);
         let result = agent_with(mock)
             .run(&prompt("complex question"), &Context::now())
             .await;
@@ -460,10 +456,10 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_failed_status_is_failure() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-003"))],
-            vec![Ok(poll_pending()), Ok(poll_failed())],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-003"))], vec![
+            Ok(poll_pending()),
+            Ok(poll_failed()),
+        ]);
         let result = agent_with(mock).run(&prompt("q"), &Context::now()).await;
         assert!(!result.success);
         assert_eq!(result.output.tag("failed"), Some("true"));
@@ -516,10 +512,9 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_poll_http_error_is_failure() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-005"))],
-            vec![Err(HttpPostError::http(500, "server error"))],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-005"))], vec![Err(
+            HttpPostError::http(500, "server error"),
+        )]);
         let result = agent_with(mock).run(&prompt("q"), &Context::now()).await;
         assert!(!result.success);
         let body = result.output.body.as_text().expect("text body");
@@ -528,10 +523,9 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_usage_is_mapped() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-006"))],
-            vec![Ok(poll_completed("result"))],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-006"))], vec![Ok(poll_completed(
+            "result",
+        ))]);
         let result = agent_with(mock).run(&prompt("q"), &Context::now()).await;
         assert!(result.success);
         assert_eq!(result.usage.input_tokens, 500);
@@ -540,10 +534,9 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_polling_citations_in_pplx_meta() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-007"))],
-            vec![Ok(poll_completed("cited answer"))],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-007"))], vec![Ok(poll_completed(
+            "cited answer",
+        ))]);
         let result = agent_with(mock).run(&prompt("q"), &Context::now()).await;
         assert!(result.success);
 
@@ -556,10 +549,9 @@ mod tests {
 
     #[tokio::test]
     async fn deep_research_request_timeout_override_reaches_http_layer() {
-        let mock = SequentialMock::new(
-            vec![Ok(submit_ok("req-008"))],
-            vec![Ok(poll_completed("timeout-aware answer"))],
-        );
+        let mock = SequentialMock::new(vec![Ok(submit_ok("req-008"))], vec![Ok(poll_completed(
+            "timeout-aware answer",
+        ))]);
         let post_timeouts = mock.post_timeouts.clone();
         let get_timeouts = mock.get_timeouts.clone();
 

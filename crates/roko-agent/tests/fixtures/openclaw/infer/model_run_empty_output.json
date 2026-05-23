@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "capability": "model",
+  "transport": "gateway",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5-20250514",
+  "attempts": 1,
+  "outputs": [],
+  "error": null
+}

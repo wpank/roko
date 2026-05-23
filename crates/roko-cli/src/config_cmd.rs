@@ -874,40 +874,34 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
         .ok_or_else(|| anyhow!("legacy config is missing agent.command"))?;
 
     match command {
-        "claude" => Ok((
-            "claude_cli".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::ClaudeCli,
-                base_url: None,
-                api_key_env: None,
-                command: Some(command.to_string()),
-                args: config.agent.args.clone(),
-                timeout_ms: config.agent.timeout_ms,
-                ttft_timeout_ms: None,
-                connect_timeout_ms: None,
-                extra_headers: None,
-                max_concurrent: None,
-            },
-        )),
-        "ollama" => Ok((
-            "ollama".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: Some(
-                    legacy_agent_env(config.agent.env.as_ref(), "OLLAMA_HOST")
-                        .unwrap_or("http://localhost:11434")
-                        .to_string(),
-                ),
-                api_key_env: None,
-                command: None,
-                args: None,
-                timeout_ms: config.agent.timeout_ms,
-                ttft_timeout_ms: None,
-                connect_timeout_ms: None,
-                extra_headers: None,
-                max_concurrent: None,
-            },
-        )),
+        "claude" => Ok(("claude_cli".to_string(), ProviderConfig {
+            kind: ProviderKind::ClaudeCli,
+            base_url: None,
+            api_key_env: None,
+            command: Some(command.to_string()),
+            args: config.agent.args.clone(),
+            timeout_ms: config.agent.timeout_ms,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        })),
+        "ollama" => Ok(("ollama".to_string(), ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(
+                legacy_agent_env(config.agent.env.as_ref(), "OLLAMA_HOST")
+                    .unwrap_or("http://localhost:11434")
+                    .to_string(),
+            ),
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: config.agent.timeout_ms,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        })),
         other => Err(anyhow!(
             "legacy agent.command '{other}' cannot be migrated safely; only 'claude' and 'ollama' are supported"
         )),
@@ -1537,10 +1531,10 @@ mod tests {
             r#"["write_file","bash"]"#,
         )
         .unwrap();
-        assert_eq!(
-            layer.tools.unwrap().global_denied.unwrap(),
-            vec!["write_file".to_string(), "bash".to_string()]
-        );
+        assert_eq!(layer.tools.unwrap().global_denied.unwrap(), vec![
+            "write_file".to_string(),
+            "bash".to_string()
+        ]);
     }
 
     #[test]
@@ -1661,14 +1655,11 @@ mod tests {
             role = "use ${ANTHROPIC_API_KEY}"
         "#;
         let tokens = collect_env_tokens(text).unwrap();
-        assert_eq!(
-            tokens.into_iter().collect::<Vec<_>>(),
-            vec![
-                "ANTHROPIC_API_KEY".to_string(),
-                "GITHUB_TOKEN".to_string(),
-                "SLACK_BOT_TOKEN".to_string(),
-            ]
-        );
+        assert_eq!(tokens.into_iter().collect::<Vec<_>>(), vec![
+            "ANTHROPIC_API_KEY".to_string(),
+            "GITHUB_TOKEN".to_string(),
+            "SLACK_BOT_TOKEN".to_string(),
+        ]);
     }
 
     #[test]
@@ -1755,14 +1746,11 @@ mechanical = "claude-haiku-4-5"
 
         let legacy = Config::parse_toml(&plan.rendered).unwrap();
         assert_eq!(legacy.agent.command, "claude");
-        assert_eq!(
-            legacy.agent.args,
-            vec![
-                "--print".to_string(),
-                "--output-format".to_string(),
-                "stream-json".to_string(),
-            ]
-        );
+        assert_eq!(legacy.agent.args, vec![
+            "--print".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+        ]);
         assert_eq!(legacy.agent.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
@@ -1804,40 +1792,36 @@ command = "claude"
         let client = reqwest::Client::builder().build().unwrap();
         let mut config = RokoConfig::default();
         config.agent.default_model = "kimi-k2-5".to_string();
-        config.models.insert(
-            "kimi-k2-5".to_string(),
-            ModelProfile {
-                provider: "moonshot".to_string(),
-                slug: "kimi-k2.5".to_string(),
-                context_window: 256_000,
-                max_output: None,
-                supports_tools: true,
-                supports_thinking: false,
-                supports_vision: false,
-                supports_web_search: false,
-                supports_mcp_tools: false,
-                supports_partial: false,
-                provider_routing: None,
-                tool_format: "openai_json".to_string(),
-                cost_input_per_m: None,
-                cost_output_per_m: None,
-                cost_cache_read_per_m: None,
-                cost_cache_write_per_m: None,
-                max_tools: None,
-                tokenizer_ratio: None,
-                ..Default::default()
-            },
-        );
+        config.models.insert("kimi-k2-5".to_string(), ModelProfile {
+            provider: "moonshot".to_string(),
+            slug: "kimi-k2.5".to_string(),
+            context_window: 256_000,
+            max_output: None,
+            supports_tools: true,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_web_search: false,
+            supports_mcp_tools: false,
+            supports_partial: false,
+            provider_routing: None,
+            tool_format: "openai_json".to_string(),
+            cost_input_per_m: None,
+            cost_output_per_m: None,
+            cost_cache_read_per_m: None,
+            cost_cache_write_per_m: None,
+            max_tools: None,
+            tokenizer_ratio: None,
+            ..Default::default()
+        });
 
         let report = semantic_validate_config(&config, &client).await;
         assert_eq!(report.error_count(), 0);
         assert_eq!(report.warning_count(), 1);
         assert_eq!(report.schema_warning_count(), 1);
         assert_eq!(report.field_warning_count(), 0);
-        assert_eq!(
-            report.schema_warnings,
-            vec!["Model 'kimi-k2-5' references missing provider 'moonshot'".to_string()]
-        );
+        assert_eq!(report.schema_warnings, vec![
+            "Model 'kimi-k2-5' references missing provider 'moonshot'".to_string()
+        ]);
     }
 
     #[tokio::test]
@@ -1847,9 +1831,9 @@ command = "claude"
 
         let mut config = RokoConfig::default();
         config.agent.default_model.clear();
-        config.providers.insert(
-            "moonshot".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("moonshot".to_string(), ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: None,
                 api_key_env: Some(env_name.to_string()),
@@ -1860,19 +1844,15 @@ command = "claude"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
+            });
 
         let report = semantic_validate_config(&config, &client).await;
 
         assert_eq!(report.error_count(), 1);
         assert_eq!(report.warning_count(), 0);
-        assert_eq!(
-            report.api_key_errors,
-            vec![format!(
-                "Provider 'moonshot' requires env var '{env_name}', but it is not set"
-            )]
-        );
+        assert_eq!(report.api_key_errors, vec![format!(
+            "Provider 'moonshot' requires env var '{env_name}', but it is not set"
+        )]);
     }
 
     #[tokio::test]
@@ -1888,10 +1868,9 @@ command = "claude"
         assert_eq!(report.warning_count(), 1);
         assert_eq!(report.schema_warning_count(), 1);
         assert_eq!(report.field_warning_count(), 0);
-        assert_eq!(
-            report.schema_warnings,
-            vec!["agent.fallback_model references missing model 'missing-model'".to_string()]
-        );
+        assert_eq!(report.schema_warnings, vec![
+            "agent.fallback_model references missing model 'missing-model'".to_string()
+        ]);
     }
 
     #[tokio::test]
@@ -1927,45 +1906,39 @@ command = "claude"
             .unwrap();
         let mut config = RokoConfig::default();
         config.agent.default_model = "kimi-k2-5".to_string();
-        config.providers = indexmap::IndexMap::from([(
-            "moonshot".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: Some("http://127.0.0.1:9".to_string()),
-                api_key_env: None,
-                command: None,
-                args: None,
-                timeout_ms: None,
-                ttft_timeout_ms: None,
-                connect_timeout_ms: None,
-                extra_headers: None,
-                max_concurrent: None,
-            },
-        )]);
-        config.models.insert(
-            "kimi-k2-5".to_string(),
-            ModelProfile {
-                provider: "moonshot".to_string(),
-                slug: "kimi-k2.5".to_string(),
-                context_window: 256_000,
-                max_output: None,
-                supports_tools: true,
-                supports_thinking: false,
-                supports_vision: false,
-                supports_web_search: false,
-                supports_mcp_tools: false,
-                supports_partial: false,
-                provider_routing: None,
-                tool_format: "openai_json".to_string(),
-                cost_input_per_m: None,
-                cost_output_per_m: None,
-                cost_cache_read_per_m: None,
-                cost_cache_write_per_m: None,
-                max_tools: None,
-                tokenizer_ratio: None,
-                ..Default::default()
-            },
-        );
+        config.providers = indexmap::IndexMap::from([("moonshot".to_string(), ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        })]);
+        config.models.insert("kimi-k2-5".to_string(), ModelProfile {
+            provider: "moonshot".to_string(),
+            slug: "kimi-k2.5".to_string(),
+            context_window: 256_000,
+            max_output: None,
+            supports_tools: true,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_web_search: false,
+            supports_mcp_tools: false,
+            supports_partial: false,
+            provider_routing: None,
+            tool_format: "openai_json".to_string(),
+            cost_input_per_m: None,
+            cost_output_per_m: None,
+            cost_cache_read_per_m: None,
+            cost_cache_write_per_m: None,
+            max_tools: None,
+            tokenizer_ratio: None,
+            ..Default::default()
+        });
 
         let report = semantic_validate_config(&config, &client).await;
 

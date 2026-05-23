@@ -190,14 +190,11 @@ impl BudgetPredictor {
             obs.ema_success = self.alpha * success_val + (1.0 - self.alpha) * obs.ema_success;
         } else {
             // First observation: use actuals directly.
-            self.observations.insert(
-                key.clone(),
-                BudgetObservation {
-                    ema_tokens: actual,
-                    ema_success: if success { 1.0 } else { 0.0 },
-                    count: 1,
-                },
-            );
+            self.observations.insert(key.clone(), BudgetObservation {
+                ema_tokens: actual,
+                ema_success: if success { 1.0 } else { 0.0 },
+                count: 1,
+            });
         }
 
         // If the task failed, inflate the EMA to encourage a larger budget next time.

@@ -174,13 +174,14 @@ async fn start_bench_run(
         started_at,
     ));
 
-    state.active_bench_runs.write().await.insert(
-        run_id.clone(),
-        BenchRunHandle {
+    state
+        .active_bench_runs
+        .write()
+        .await
+        .insert(run_id.clone(), BenchRunHandle {
             id: run_id.clone(),
             handle,
-        },
-    );
+        });
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -300,14 +301,12 @@ async fn execute_bench_run(
                     .map(|u| (u.input_tokens, u.output_tokens))
                     .unwrap_or((0, 0));
 
-                let cost_usd = cost_table.calculate(
-                    overrides.model.as_deref().unwrap_or(""),
-                    &CoreUsage {
+                let cost_usd =
+                    cost_table.calculate(overrides.model.as_deref().unwrap_or(""), &CoreUsage {
                         input_tokens: input_tokens as u32,
                         output_tokens: output_tokens as u32,
                         ..CoreUsage::default()
-                    },
-                );
+                    });
                 let output_preview = run_result
                     .output_text
                     .as_ref()

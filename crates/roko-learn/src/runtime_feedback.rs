@@ -1422,10 +1422,10 @@ impl LearningRuntime {
 
         let pattern_miner = parking_lot::Mutex::new(PatternMiner::new(3, 0.5));
         let latency_registry = LatencyRegistry::load_or_new(&paths.latency_stats_json);
-        let cascade_router = CascadeRouter::load_or_new(
-            &paths.cascade_router_json,
-            vec!["claude-sonnet-4-5".into(), "claude-haiku-4-5".into()],
-        );
+        let cascade_router = CascadeRouter::load_or_new(&paths.cascade_router_json, vec![
+            "claude-sonnet-4-5".into(),
+            "claude-haiku-4-5".into(),
+        ]);
         let context_pack_cache = ContextPackCache::new(256, paths.root.join("context-cache.json"));
         let experiment_store = ExperimentStore::load_or_new(&paths.experiments_json);
         let local_rewards = load_local_rewards(&paths.local_rewards_json);
@@ -4225,18 +4225,15 @@ mod tests {
             distiller_every_n: 1,
         });
 
-        let mut experiment = PromptExperiment::new(
-            "skip-only-exp",
-            "model-routing",
-            vec![PromptVariant {
+        let mut experiment =
+            PromptExperiment::new("skip-only-exp", "model-routing", vec![PromptVariant {
                 id: "blocked".to_string(),
                 name: "Blocked".to_string(),
                 section_name: "model-routing".to_string(),
                 content: String::new(),
                 slug: Some("claude-opus-4-6".to_string()),
                 active: true,
-            }],
-        );
+            }]);
         experiment.min_trials_per_variant = 100;
         runtime.experiment_store().lock().register(experiment);
 
@@ -4408,10 +4405,10 @@ mod tests {
         legacy_episode.task_id = "task-legacy".to_string();
 
         write_jsonl(memory_dir.join("episodes.jsonl"), &[memory_episode]);
-        write_jsonl(
-            roko.join("episodes.jsonl"),
-            &[duplicate_episode, legacy_episode],
-        );
+        write_jsonl(roko.join("episodes.jsonl"), &[
+            duplicate_episode,
+            legacy_episode,
+        ]);
 
         let efficiency_event = AgentEfficiencyEvent {
             agent_id: "agent-1".to_string(),
@@ -4494,18 +4491,15 @@ mod tests {
             distiller_every_n: 4,
         });
 
-        let mut experiment = PromptExperiment::new(
-            "cadence-exp",
-            "model-routing",
-            vec![PromptVariant {
+        let mut experiment =
+            PromptExperiment::new("cadence-exp", "model-routing", vec![PromptVariant {
                 id: "cadence".to_string(),
                 name: "Cadence".to_string(),
                 section_name: "model-routing".to_string(),
                 content: String::new(),
                 slug: Some("claude-opus-4-6".to_string()),
                 active: true,
-            }],
-        );
+            }]);
         experiment.min_trials_per_variant = 100;
         runtime.experiment_store().lock().register(experiment);
 
@@ -4800,39 +4794,32 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let learn_root = tmp.path().join(".roko").join("learn");
         let paths = LearningPaths::under(&learn_root);
-        let runtime = LearningRuntime::open_with_models(
-            paths.clone(),
-            RegressionConfig::default(),
-            vec![
+        let runtime =
+            LearningRuntime::open_with_models(paths.clone(), RegressionConfig::default(), vec![
                 "claude-sonnet-4-20250514".to_string(),
                 "claude-haiku-4-5-20251001".to_string(),
-            ],
-        )
-        .await
-        .unwrap();
+            ])
+            .await
+            .unwrap();
 
-        let mut experiment = PromptExperiment::new(
-            "model-routing-exp",
-            "model-routing",
-            vec![
-                PromptVariant {
-                    id: "sonnet".to_string(),
-                    name: "Sonnet".to_string(),
-                    section_name: "model-routing".to_string(),
-                    content: String::new(),
-                    slug: Some("claude-sonnet-4-20250514".to_string()),
-                    active: true,
-                },
-                PromptVariant {
-                    id: "haiku".to_string(),
-                    name: "Haiku".to_string(),
-                    section_name: "model-routing".to_string(),
-                    content: String::new(),
-                    slug: Some("claude-haiku-4-5-20251001".to_string()),
-                    active: true,
-                },
-            ],
-        );
+        let mut experiment = PromptExperiment::new("model-routing-exp", "model-routing", vec![
+            PromptVariant {
+                id: "sonnet".to_string(),
+                name: "Sonnet".to_string(),
+                section_name: "model-routing".to_string(),
+                content: String::new(),
+                slug: Some("claude-sonnet-4-20250514".to_string()),
+                active: true,
+            },
+            PromptVariant {
+                id: "haiku".to_string(),
+                name: "Haiku".to_string(),
+                section_name: "model-routing".to_string(),
+                content: String::new(),
+                slug: Some("claude-haiku-4-5-20251001".to_string()),
+                active: true,
+            },
+        ]);
         experiment.role = Some("implementer".to_string());
         experiment.min_trials_per_variant = 1;
         experiment.min_effect_size = 0.5;
@@ -4901,14 +4888,10 @@ mod tests {
             "claude-haiku-4-5-20251001"
         );
 
-        let reloaded = LearningRuntime::open_with_models(
-            paths,
-            RegressionConfig::default(),
-            vec![
-                "claude-sonnet-4-20250514".to_string(),
-                "claude-haiku-4-5-20251001".to_string(),
-            ],
-        )
+        let reloaded = LearningRuntime::open_with_models(paths, RegressionConfig::default(), vec![
+            "claude-sonnet-4-20250514".to_string(),
+            "claude-haiku-4-5-20251001".to_string(),
+        ])
         .await
         .unwrap();
         assert_eq!(
@@ -5425,21 +5408,15 @@ mod tests {
         let wal_path = learn_root.join("wal.jsonl");
         let entries = replay_wal(&wal_path).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(matches!(
-            entries[0],
-            WalEntry::GateThresholdUpdate {
-                rung: 2,
-                passed: true,
-                ..
-            }
-        ));
-        assert!(matches!(
-            entries[1],
-            WalEntry::GateThresholdUpdate {
-                rung: 3,
-                passed: false,
-                ..
-            }
-        ));
+        assert!(matches!(entries[0], WalEntry::GateThresholdUpdate {
+            rung: 2,
+            passed: true,
+            ..
+        }));
+        assert!(matches!(entries[1], WalEntry::GateThresholdUpdate {
+            rung: 3,
+            passed: false,
+            ..
+        }));
     }
 }

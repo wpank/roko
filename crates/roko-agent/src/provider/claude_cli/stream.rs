@@ -364,15 +364,12 @@ mod tests {
             events[0],
             AgentRuntimeEvent::MessageDelta { ref text } if text == "hi"
         ));
-        assert!(matches!(
-            events[1],
-            AgentRuntimeEvent::TokenUsage {
-                input_tokens: 3,
-                output_tokens: 1,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-            }
-        ));
+        assert!(matches!(events[1], AgentRuntimeEvent::TokenUsage {
+            input_tokens: 3,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        }));
     }
 
     #[test]

@@ -299,12 +299,10 @@ impl TaskDag {
                 if plan.is_terminal(&child_id) {
                     continue;
                 }
-                plan.skipped.insert(
-                    child_id.clone(),
-                    SkippedReason::PrerequisiteFailed {
+                plan.skipped
+                    .insert(child_id.clone(), SkippedReason::PrerequisiteFailed {
                         prerequisite: current.clone(),
-                    },
-                );
+                    });
                 plan.running.remove(&child_id);
                 newly_skipped.push(child_id.clone());
                 frontier.push(child_id);

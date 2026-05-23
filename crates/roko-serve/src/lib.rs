@@ -356,7 +356,9 @@ impl ServerBuilder {
                 let contracts_path = state.workdir.join(contracts_dir);
 
                 if contracts_path.join("out").is_dir() {
-                    match roko_chain::isfr_bootstrap::bootstrap_isfr(rpc, key, &contracts_path).await {
+                    match roko_chain::isfr_bootstrap::bootstrap_isfr(rpc, key, &contracts_path)
+                        .await
+                    {
                         Ok(addrs) => {
                             tracing::info!(
                                 oracle = ?addrs.isfr_oracle,
@@ -2335,13 +2337,21 @@ fn start_block_watcher(state: Arc<AppState>) -> JoinHandle<()> {
     // Startup probe: quick TCP connect to check if the RPC endpoint is alive.
     // Avoids the 30-attempt seed loop (60s waste) when mirage is dead.
     {
-        let rpc_url = state.load_roko_config().chain.rpc_url.clone().unwrap_or_default();
+        let rpc_url = state
+            .load_roko_config()
+            .chain
+            .rpc_url
+            .clone()
+            .unwrap_or_default();
         if let Ok(parsed) = reqwest::Url::parse(&rpc_url) {
             let host = parsed.host_str().unwrap_or("127.0.0.1").to_string();
             let port = parsed.port().unwrap_or(8545);
             if let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
                 if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_err() {
-                    tracing::warn!(rpc_url, "block_watcher RPC startup probe failed; skipping watcher");
+                    tracing::warn!(
+                        rpc_url,
+                        "block_watcher RPC startup probe failed; skipping watcher"
+                    );
                     return tokio::spawn(async {});
                 }
             }
@@ -2935,10 +2945,9 @@ mod tests {
 
         state.shutdown().await;
 
-        let reloaded = CascadeRouter::load_or_new(
-            &state.layout.cascade_router_path(),
-            vec!["claude-sonnet-4-6".to_string()],
-        );
+        let reloaded = CascadeRouter::load_or_new(&state.layout.cascade_router_path(), vec![
+            "claude-sonnet-4-6".to_string(),
+        ]);
         assert_eq!(reloaded.total_observations(), 1);
     }
 

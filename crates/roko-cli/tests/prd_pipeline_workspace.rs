@@ -41,12 +41,9 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
         "decoy workspace received idea despite --repo:\n{decoy_ideas}"
     );
 
-    run_roko_from(
-        decoy_root,
-        selected_root,
-        FIXTURE,
-        &["prd", "draft", "new", TITLE],
-    )
+    run_roko_from(decoy_root, selected_root, FIXTURE, &[
+        "prd", "draft", "new", TITLE,
+    ])
     .success();
 
     let selected_draft = selected_root
@@ -65,12 +62,9 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
         "draft was written to decoy workspace"
     );
 
-    run_roko_from(
-        decoy_root,
-        selected_root,
-        FIXTURE,
-        &["prd", "draft", "promote", SLUG],
-    )
+    run_roko_from(decoy_root, selected_root, FIXTURE, &[
+        "prd", "draft", "promote", SLUG,
+    ])
     .success();
 
     let selected_published = selected_root
@@ -108,12 +102,11 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
         "generated tasks.toml missing fixture task:\n{tasks}"
     );
 
-    run_roko_from(
-        decoy_root,
-        selected_root,
-        FIXTURE,
-        &["plan", "validate", ".roko/plans"],
-    )
+    run_roko_from(decoy_root, selected_root, FIXTURE, &[
+        "plan",
+        "validate",
+        ".roko/plans",
+    ])
     .success();
 }
 
@@ -124,12 +117,12 @@ fn prd_draft_new_succeeds_when_agent_writes_draft_then_exits_nonzero() {
     common::init_workspace(root);
     common::seed_minimal_rust_project(root);
 
-    run_roko_from(
-        root,
-        root,
-        WRITE_THEN_FAIL_FIXTURE,
-        &["prd", "draft", "new", WRITE_THEN_FAIL_TITLE],
-    )
+    run_roko_from(root, root, WRITE_THEN_FAIL_FIXTURE, &[
+        "prd",
+        "draft",
+        "new",
+        WRITE_THEN_FAIL_TITLE,
+    ])
     .success();
 
     let draft_path = root

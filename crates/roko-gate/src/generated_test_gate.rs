@@ -552,13 +552,10 @@ mod tests {
 
         let mut listed = s.list("p1", "generated-tests/");
         listed.sort();
-        assert_eq!(
-            listed,
-            vec![
-                "generated-tests/gen_a.rs".to_string(),
-                "generated-tests/gen_b.rs".into(),
-            ]
-        );
+        assert_eq!(listed, vec![
+            "generated-tests/gen_a.rs".to_string(),
+            "generated-tests/gen_b.rs".into(),
+        ]);
         assert_eq!(
             s.read("p1", "generated-tests/gen_a.rs").unwrap(),
             b"fn a() {}".to_vec()

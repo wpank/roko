@@ -816,14 +816,13 @@ mod tests {
             max_failures: 2,
             ..PersistedCircuitBreakerState::default()
         };
-        circuit_breaker.records.insert(
-            "plan-1".into(),
-            PersistedCircuitBreakerFailureRecord {
+        circuit_breaker
+            .records
+            .insert("plan-1".into(), PersistedCircuitBreakerFailureRecord {
                 count: 2,
                 last_failure_ms: Some(200),
                 reasons: vec!["compile".into(), "tests".into()],
-            },
-        );
+            });
         snap.conductor_circuit_breaker = Some(circuit_breaker);
 
         let json = snap.to_json().unwrap();
@@ -834,10 +833,9 @@ mod tests {
 
         assert_eq!(restored_breaker.max_failures, 2);
         assert_eq!(restored_breaker.records["plan-1"].count, 2);
-        assert_eq!(
-            restored_breaker.records["plan-1"].reasons,
-            vec!["compile", "tests"]
-        );
+        assert_eq!(restored_breaker.records["plan-1"].reasons, vec![
+            "compile", "tests"
+        ]);
     }
 
     // ─── ORCH-03: Delta snapshot tests ──────────────────────────────────

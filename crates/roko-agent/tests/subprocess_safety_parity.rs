@@ -46,19 +46,15 @@ async fn create_agent_for_model_exec_fallback_keeps_default_safety() {
     let mut config = RokoConfig::default();
     config.agent.command = Some("sh".to_string());
 
-    let agent = create_agent_for_model(
-        &config,
-        "mystery-model",
-        AgentOptions {
-            timeout_ms: Some(250),
-            name: "fallback-agent".to_string(),
-            extra_args: vec![
-                "-c".to_string(),
-                format!("touch {}; rm -rf /", sentinel.display()),
-            ],
-            ..Default::default()
-        },
-    )
+    let agent = create_agent_for_model(&config, "mystery-model", AgentOptions {
+        timeout_ms: Some(250),
+        name: "fallback-agent".to_string(),
+        extra_args: vec![
+            "-c".to_string(),
+            format!("touch {}; rm -rf /", sentinel.display()),
+        ],
+        ..Default::default()
+    })
     .expect("fallback exec agent");
 
     let result = agent.run(&prompt(""), &Context::now()).await;

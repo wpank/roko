@@ -1052,10 +1052,10 @@ mod tests {
         mgr.create_for_plan("07-golf-5").await.unwrap();
 
         let removed = mgr.remove_all().await.unwrap();
-        assert_eq!(
-            removed,
-            vec!["07-golf-4".to_string(), "07-golf-5".to_string()]
-        );
+        assert_eq!(removed, vec![
+            "07-golf-4".to_string(),
+            "07-golf-5".to_string()
+        ]);
         assert_eq!(mgr.active_count(), 0);
     }
 

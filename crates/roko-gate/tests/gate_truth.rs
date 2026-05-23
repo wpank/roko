@@ -57,15 +57,11 @@ path = "src/lib.rs"
 #[tokio::test]
 async fn shell_gate_true_passes_and_is_not_skipped() {
     let tmp = TempDir::new().expect("tempdir");
-    let report = run_gate_service(
-        tmp.path(),
-        &["shell"],
-        vec![ShellGateCommand {
-            program: "true".into(),
-            args: vec![],
-            timeout_ms: 1_000,
-        }],
-    )
+    let report = run_gate_service(tmp.path(), &["shell"], vec![ShellGateCommand {
+        program: "true".into(),
+        args: vec![],
+        timeout_ms: 1_000,
+    }])
     .await;
 
     assert_eq!(report.verdicts.len(), 1);
@@ -79,15 +75,11 @@ async fn shell_gate_true_passes_and_is_not_skipped() {
 #[tokio::test]
 async fn shell_gate_false_fails_and_is_not_skipped() {
     let tmp = TempDir::new().expect("tempdir");
-    let report = run_gate_service(
-        tmp.path(),
-        &["shell"],
-        vec![ShellGateCommand {
-            program: "false".into(),
-            args: vec![],
-            timeout_ms: 1_000,
-        }],
-    )
+    let report = run_gate_service(tmp.path(), &["shell"], vec![ShellGateCommand {
+        program: "false".into(),
+        args: vec![],
+        timeout_ms: 1_000,
+    }])
     .await;
 
     assert_eq!(report.verdicts.len(), 1);
@@ -101,10 +93,10 @@ async fn shell_gate_false_fails_and_is_not_skipped() {
 
 #[tokio::test]
 async fn shell_gate_failure_keeps_stderr_in_the_verdict() {
-    let gate = ShellGate::new(
-        "sh",
-        vec!["-c".into(), "printf 'shell stderr\\n' >&2; exit 1".into()],
-    )
+    let gate = ShellGate::new("sh", vec![
+        "-c".into(),
+        "printf 'shell stderr\\n' >&2; exit 1".into(),
+    ])
     .with_timeout_ms(1_000);
 
     let verdict = gate.verify(&empty_signal(), &Context::now()).await;

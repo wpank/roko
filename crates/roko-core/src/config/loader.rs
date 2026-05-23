@@ -1011,15 +1011,12 @@ slug = "claude-sonnet-4-20250514"
 "#;
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
-        let result = load_config_with_options(
-            dir.path(),
-            &LoadOptions {
-                merge_global: false,
-                apply_env_overrides: false,
-                apply_hierarchical_env: false,
-                strict_validation: false,
-            },
-        );
+        let result = load_config_with_options(dir.path(), &LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        });
         assert!(
             result.is_err(),
             "strict mode should reject dangling provider ref"
@@ -1052,15 +1049,12 @@ slug = "claude-sonnet-4-20250514"
 "#;
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
-        let result = load_config_with_options(
-            dir.path(),
-            &LoadOptions {
-                merge_global: false,
-                apply_env_overrides: false,
-                apply_hierarchical_env: false,
-                strict_validation: false,
-            },
-        );
+        let result = load_config_with_options(dir.path(), &LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        });
         assert!(
             result.is_ok(),
             "lenient mode should allow dangling provider ref: {:?}",
@@ -1079,15 +1073,12 @@ strict_validation = true
 "#;
         std::fs::write(dir.path().join("roko.toml"), toml_text).expect("write roko.toml");
 
-        let result = load_config_with_options(
-            dir.path(),
-            &LoadOptions {
-                merge_global: false,
-                apply_env_overrides: false,
-                apply_hierarchical_env: false,
-                strict_validation: false,
-            },
-        );
+        let result = load_config_with_options(dir.path(), &LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        });
         assert!(
             result.is_ok(),
             "empty models should not trigger validation: {:?}",

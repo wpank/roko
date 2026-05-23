@@ -453,15 +453,12 @@ impl CostTable {
             if let (Some(input), Some(output)) =
                 (profile.cost_input_per_m, profile.cost_output_per_m)
             {
-                table.insert(
-                    profile.slug.clone(),
-                    ModelPricing {
-                        input_per_m: input,
-                        output_per_m: output,
-                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
-                    },
-                );
+                table.insert(profile.slug.clone(), ModelPricing {
+                    input_per_m: input,
+                    output_per_m: output,
+                    cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
+                    cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                });
             }
         }
 
@@ -782,15 +779,12 @@ mod tests {
 
     fn runner(agent: SequenceAgent) -> TaskRunner {
         let mut cost_table = CostTable::default();
-        cost_table.insert(
-            "glm-5.1",
-            ModelPricing {
-                input_per_m: 1.0,
-                output_per_m: 2.0,
-                cache_read_per_m: 0.0,
-                cache_write_per_m: 0.0,
-            },
-        );
+        cost_table.insert("glm-5.1", ModelPricing {
+            input_per_m: 1.0,
+            output_per_m: 2.0,
+            cache_read_per_m: 0.0,
+            cache_write_per_m: 0.0,
+        });
 
         TaskRunner {
             agent: Box::new(agent),
@@ -815,16 +809,12 @@ mod tests {
 
     #[tokio::test]
     async fn task_runner_pipeline_success_publishes_events_and_returns_result() {
-        let agent = SequenceAgent::new(vec![agent_result(
-            "done",
-            true,
-            Usage {
-                input_tokens: 1_000,
-                output_tokens: 500,
-                wall_ms: 900,
-                ..Usage::default()
-            },
-        )]);
+        let agent = SequenceAgent::new(vec![agent_result("done", true, Usage {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            wall_ms: 900,
+            ..Usage::default()
+        })]);
         let mut runner = runner(agent);
         let mut rx = runner.event_bus.subscribe();
         let task = prompt("ship it");
@@ -888,16 +878,12 @@ mod tests {
 
     #[tokio::test]
     async fn task_runner_pipeline_aborts_when_conductor_requests_it() {
-        let agent = SequenceAgent::new(vec![agent_result(
-            "compile failed",
-            false,
-            Usage {
-                input_tokens: 200,
-                output_tokens: 50,
-                wall_ms: 100,
-                ..Usage::default()
-            },
-        )]);
+        let agent = SequenceAgent::new(vec![agent_result("compile failed", false, Usage {
+            input_tokens: 200,
+            output_tokens: 50,
+            wall_ms: 100,
+            ..Usage::default()
+        })]);
         let mut runner = runner(agent);
         runner.conductor = ConductorBandit::with_default_action(ConductorAction::Abort);
 
@@ -914,15 +900,11 @@ mod tests {
 
     #[tokio::test]
     async fn task_runner_pipeline_returns_model_escalation_when_requested() {
-        let agent = SequenceAgent::new(vec![agent_result(
-            "still broken",
-            false,
-            Usage {
-                input_tokens: 100,
-                output_tokens: 20,
-                ..Usage::default()
-            },
-        )]);
+        let agent = SequenceAgent::new(vec![agent_result("still broken", false, Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            ..Usage::default()
+        })]);
         let mut runner = runner(agent);
         runner.conductor = ConductorBandit::with_default_action(ConductorAction::SwitchModel);
 
@@ -961,12 +943,9 @@ mod tests {
             err,
             TaskRunnerError::Anomaly(Anomaly::PromptLoop { repeated_count: 5 })
         );
-        assert_eq!(
-            events,
-            vec![AgentEvent::AnomalyDetected {
-                anomaly: Anomaly::PromptLoop { repeated_count: 5 }
-            }]
-        );
+        assert_eq!(events, vec![AgentEvent::AnomalyDetected {
+            anomaly: Anomaly::PromptLoop { repeated_count: 5 }
+        }]);
     }
 
     #[tokio::test]
@@ -992,26 +971,18 @@ mod tests {
     #[tokio::test]
     async fn task_runner_pipeline_continues_until_max_iterations() {
         let agent = SequenceAgent::new(vec![
-            agent_result(
-                "test failed",
-                false,
-                Usage {
-                    input_tokens: 100,
-                    output_tokens: 25,
-                    wall_ms: 40,
-                    ..Usage::default()
-                },
-            ),
-            agent_result(
-                "test failed again",
-                false,
-                Usage {
-                    input_tokens: 120,
-                    output_tokens: 30,
-                    wall_ms: 50,
-                    ..Usage::default()
-                },
-            ),
+            agent_result("test failed", false, Usage {
+                input_tokens: 100,
+                output_tokens: 25,
+                wall_ms: 40,
+                ..Usage::default()
+            }),
+            agent_result("test failed again", false, Usage {
+                input_tokens: 120,
+                output_tokens: 30,
+                wall_ms: 50,
+                ..Usage::default()
+            }),
         ]);
         let mut runner = runner(agent);
         runner.max_iterations = 2;
@@ -1028,10 +999,10 @@ mod tests {
 
         assert!(!result.gate_passed);
         assert_eq!(result.iterations, 2);
-        assert_eq!(
-            result.conductor_actions,
-            vec![ConductorAction::Continue, ConductorAction::Continue]
-        );
+        assert_eq!(result.conductor_actions, vec![
+            ConductorAction::Continue,
+            ConductorAction::Continue
+        ]);
         assert_eq!(result.total_usage.input_tokens, 220);
         assert_eq!(result.total_usage.output_tokens, 55);
         assert_eq!(result.total_usage.wall_ms, 90);

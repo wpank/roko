@@ -552,12 +552,14 @@ pub(crate) async fn cmd_provider_test(
                         .1
                 },
             ),
-            ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => {
-                runtime_selection
-                    .as_ref()
-                    .filter(|selection| selection.provider_key == provider_name.as_str())
-                    .map(|selection| model_profile_for_effective_selection(&config, selection))
-            }
+            ProviderKind::ClaudeCli
+            | ProviderKind::CursorAcp
+            | ProviderKind::CursorCli
+            | ProviderKind::Hermes
+            | ProviderKind::OpenClaw => runtime_selection
+                .as_ref()
+                .filter(|selection| selection.provider_key == provider_name.as_str())
+                .map(|selection| model_profile_for_effective_selection(&config, selection)),
         };
         (provider_name, provider, model, None)
     };
@@ -618,6 +620,17 @@ pub(crate) async fn cmd_provider_test(
                 )
             })?;
             run_openai_compat_provider_test(&provider_name, provider, model, json).await?
+        }
+        ProviderKind::Hermes | ProviderKind::OpenClaw => {
+            // Harness adapters use their own probe mechanism for health testing.
+            // Fall through to the OpenAI-compat test path if a model is configured.
+            if let Some(model) = model.as_ref() {
+                run_openai_compat_provider_test(&provider_name, provider, model, json).await?
+            } else {
+                anyhow::bail!(
+                    "harness provider '{provider_name}' requires a model profile for testing"
+                );
+            }
         }
     };
 

@@ -1141,28 +1141,22 @@ fn matches_any_exact<'a>(
 }
 
 fn signal_repo_candidates(signal: &Engram) -> Vec<&str> {
-    json_string_fields(
-        &signal.body,
-        &[
-            &["repository", "full_name"],
-            &["repository", "name"],
-            &["repo", "full_name"],
-            &["repo", "name"],
-        ],
-    )
+    json_string_fields(&signal.body, &[
+        &["repository", "full_name"],
+        &["repository", "name"],
+        &["repo", "full_name"],
+        &["repo", "name"],
+    ])
 }
 
 fn signal_branch_candidates(signal: &Engram) -> Vec<&str> {
-    let mut values = json_string_fields(
-        &signal.body,
-        &[
-            &["ref"],
-            &["branch"],
-            &["repository", "default_branch"],
-            &["pull_request", "base", "ref"],
-            &["pull_request", "head", "ref"],
-        ],
-    );
+    let mut values = json_string_fields(&signal.body, &[
+        &["ref"],
+        &["branch"],
+        &["repository", "default_branch"],
+        &["pull_request", "base", "ref"],
+        &["pull_request", "head", "ref"],
+    ]);
 
     let mut normalized = Vec::new();
     for value in &values {
@@ -1179,54 +1173,41 @@ fn signal_branch_candidates(signal: &Engram) -> Vec<&str> {
 
 fn signal_path_candidates(signal: &Engram) -> Vec<&str> {
     let mut values = Vec::new();
-    values.extend(json_string_array_fields(
-        &signal.body,
-        &[
-            &["paths"],
-            &["files"],
-            &["changed_files"],
-            &["head_commit", "added"],
-            &["head_commit", "modified"],
-            &["head_commit", "removed"],
-        ],
-    ));
-    values.extend(json_string_array_fields(
-        &signal.body,
-        &[
-            &["commits", "*", "added"],
-            &["commits", "*", "modified"],
-            &["commits", "*", "removed"],
-        ],
-    ));
+    values.extend(json_string_array_fields(&signal.body, &[
+        &["paths"],
+        &["files"],
+        &["changed_files"],
+        &["head_commit", "added"],
+        &["head_commit", "modified"],
+        &["head_commit", "removed"],
+    ]));
+    values.extend(json_string_array_fields(&signal.body, &[
+        &["commits", "*", "added"],
+        &["commits", "*", "modified"],
+        &["commits", "*", "removed"],
+    ]));
     values
 }
 
 fn signal_label_candidates(signal: &Engram) -> Vec<&str> {
-    json_stringish_array_fields(
-        &signal.body,
-        &[
-            &["labels"],
-            &["issue", "labels"],
-            &["pull_request", "labels"],
-        ],
-    )
+    json_stringish_array_fields(&signal.body, &[&["labels"], &["issue", "labels"], &[
+        "pull_request",
+        "labels",
+    ]])
 }
 
 fn signal_author_candidates(signal: &Engram) -> Vec<&str> {
-    json_loginish_fields(
-        &signal.body,
-        &[
-            &["sender"],
-            &["user"],
-            &["issue", "user"],
-            &["pull_request", "user"],
-            &["pull_request_review", "user"],
-            &["review", "user"],
-            &["comment", "user"],
-            &["head_commit", "author"],
-            &["head_commit", "committer"],
-        ],
-    )
+    json_loginish_fields(&signal.body, &[
+        &["sender"],
+        &["user"],
+        &["issue", "user"],
+        &["pull_request", "user"],
+        &["pull_request_review", "user"],
+        &["review", "user"],
+        &["comment", "user"],
+        &["head_commit", "author"],
+        &["head_commit", "committer"],
+    ])
 }
 
 fn json_string_fields<'a>(body: &'a Body, paths: &[&[&str]]) -> Vec<&'a str> {
@@ -1828,27 +1809,23 @@ fn build_agent(
     allowed_tools: &str,
     mcp_config: Option<&PathBuf>,
 ) -> Result<Box<dyn Agent>> {
-    create_agent_for_model(
-        roko_config,
-        &template.model,
-        AgentOptions {
-            command: roko_config.agent.command.clone(),
-            timeout_ms: None,
-            system_prompt: Some(system_prompt.to_string()),
-            cached_content: None,
-            tools: Some(allowed_tools.to_string()),
-            mcp_config: mcp_config.cloned(),
-            working_dir: None,
-            provider_semaphores: None,
-            env: Vec::new(),
-            extra_args: Vec::new(),
-            effort: None,
-            bare_mode: roko_config.agent.bare_mode,
-            dangerously_skip_permissions: true,
-            name: String::new(),
-            pre_discovered_mcp_tools: None,
-        },
-    )
+    create_agent_for_model(roko_config, &template.model, AgentOptions {
+        command: roko_config.agent.command.clone(),
+        timeout_ms: None,
+        system_prompt: Some(system_prompt.to_string()),
+        cached_content: None,
+        tools: Some(allowed_tools.to_string()),
+        mcp_config: mcp_config.cloned(),
+        working_dir: None,
+        provider_semaphores: None,
+        env: Vec::new(),
+        extra_args: Vec::new(),
+        effort: None,
+        bare_mode: roko_config.agent.bare_mode,
+        dangerously_skip_permissions: true,
+        name: String::new(),
+        pre_discovered_mcp_tools: None,
+    })
     .with_context(|| format!("create agent for template '{}'", template.name))
 }
 
@@ -3022,9 +2999,9 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "template-model".to_string();
-        config.providers.insert(
-            "template-cli".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("template-cli".to_string(), ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -3035,16 +3012,14 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "template-model".to_string(),
-            ModelProfile {
+            });
+        config
+            .models
+            .insert("template-model".to_string(), ModelProfile {
                 provider: "template-cli".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
                 ..Default::default()
-            },
-        );
+            });
 
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));

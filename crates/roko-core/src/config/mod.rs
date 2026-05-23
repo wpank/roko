@@ -133,15 +133,12 @@ pub fn load_config(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
 )]
 pub fn load_config_strict(workdir: &Path) -> Result<ValidatedConfig, LoadConfigError> {
     tracing::debug!(workdir = %workdir.display(), "deprecated load_config_strict -> unified loader");
-    loader::load_config_validated_with_options(
-        workdir,
-        &loader::LoadOptions {
-            merge_global: true,
-            apply_env_overrides: true,
-            apply_hierarchical_env: true,
-            strict_validation: true,
-        },
-    )
+    loader::load_config_validated_with_options(workdir, &loader::LoadOptions {
+        merge_global: true,
+        apply_env_overrides: true,
+        apply_hierarchical_env: true,
+        strict_validation: true,
+    })
 }
 
 /// Trust level for workspace config loading.
@@ -322,9 +319,9 @@ mod load_config_tests {
     #[test]
     fn toml_serialize_roundtrip_with_providers() {
         let mut config = RokoConfig::default();
-        config.providers.insert(
-            "test-provider".to_string(),
-            schema::ProviderConfig {
+        config
+            .providers
+            .insert("test-provider".to_string(), schema::ProviderConfig {
                 kind: crate::agent::ProviderKind::OpenAiCompat,
                 base_url: Some("https://api.example.com/v1".to_string()),
                 api_key_env: Some("TEST_API_KEY".to_string()),
@@ -335,19 +332,17 @@ mod load_config_tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: Some(8),
-            },
-        );
-        config.models.insert(
-            "test-model".to_string(),
-            schema::ModelProfile {
+            });
+        config
+            .models
+            .insert("test-model".to_string(), schema::ModelProfile {
                 provider: "test-provider".to_string(),
                 slug: "test-model-v1".to_string(),
                 context_window: 128_000,
                 supports_tools: true,
                 tool_format: "openai_json".to_string(),
                 ..Default::default()
-            },
-        );
+            });
         config.runner.dangerously_skip_permissions = true;
         let serialized = toml::to_string_pretty(&config).expect("serialize config with providers");
         let deserialized: RokoConfig =

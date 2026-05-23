@@ -467,18 +467,15 @@ fn fork_from_template_and_cow(template: &ForkState, cow: &CowState) -> ForkState
                 storage.insert(*slot, value);
             }
         }
-        dirty.accounts.insert(
-            *address,
-            DirtyAccount {
-                balance: account.balance,
-                nonce: account.nonce,
-                code: account.code.clone(),
-                code_hash: account.code_hash,
-                erc20_balance_slot: account.erc20_balance_slot,
-                erc20_balances: account.erc20_balances.clone(),
-                storage,
-            },
-        );
+        dirty.accounts.insert(*address, DirtyAccount {
+            balance: account.balance,
+            nonce: account.nonce,
+            code: account.code.clone(),
+            code_hash: account.code_hash,
+            erc20_balance_slot: account.erc20_balance_slot,
+            erc20_balances: account.erc20_balances.clone(),
+            storage,
+        });
     }
     dirty.watch_list = template.db.dirty.watch_list.clone();
     dirty.unwatch_list = template.db.dirty.unwatch_list.clone();

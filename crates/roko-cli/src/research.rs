@@ -859,10 +859,10 @@ mod tests {
             search_entry_point: None,
         };
 
-        assert_eq!(
-            grounding_to_citations(&metadata),
-            vec![("Tokio".to_string(), "https://tokio.rs".to_string())]
-        );
+        assert_eq!(grounding_to_citations(&metadata), vec![(
+            "Tokio".to_string(),
+            "https://tokio.rs".to_string()
+        )]);
     }
 
     #[test]
@@ -995,21 +995,15 @@ mod tests {
         let file = PathBuf::from("/test/research.md");
 
         // Three entries with 2D mock embeddings.
-        index.add(
-            file.clone(),
-            "chunk about agents".to_string(),
-            vec![1.0, 0.0],
-        );
-        index.add(
-            file.clone(),
-            "chunk about models".to_string(),
-            vec![0.0, 1.0],
-        );
-        index.add(
-            file.clone(),
-            "chunk about orchestration".to_string(),
-            vec![0.9, 0.1_f32],
-        );
+        index.add(file.clone(), "chunk about agents".to_string(), vec![
+            1.0, 0.0,
+        ]);
+        index.add(file.clone(), "chunk about models".to_string(), vec![
+            0.0, 1.0,
+        ]);
+        index.add(file.clone(), "chunk about orchestration".to_string(), vec![
+            0.9, 0.1_f32,
+        ]);
 
         // Query pointing along [1.0, 0.0] — should rank "agents" first,
         // "orchestration" second.

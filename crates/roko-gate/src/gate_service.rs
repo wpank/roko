@@ -480,12 +480,9 @@ mod tests {
             shell_gates: Vec::new(),
             max_rung: None,
         };
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec![
-                "compile", "clippy", "test", "diff", "fmt", "custom", "judge"
-            ]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile", "clippy", "test", "diff", "fmt", "custom", "judge"
+        ]);
     }
 
     #[test]
@@ -504,10 +501,9 @@ mod tests {
             shell_gates: Vec::new(),
             max_rung: Some(3),
         };
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec!["compile", "clippy", "test", "diff"]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile", "clippy", "test", "diff"
+        ]);
     }
 
     #[test]
@@ -556,14 +552,11 @@ mod tests {
             max_rung: None,
         };
 
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec![
-                "compile".to_string(),
-                "clippy".to_string(),
-                "test".to_string()
-            ]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile".to_string(),
+            "clippy".to_string(),
+            "test".to_string()
+        ]);
     }
 
     #[test]
@@ -575,10 +568,10 @@ mod tests {
             max_rung: Some(1),
         };
 
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec!["compile".to_string(), "clippy".to_string()]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile".to_string(),
+            "clippy".to_string()
+        ]);
     }
 
     #[test]
@@ -599,10 +592,10 @@ mod tests {
         };
 
         assert!(svc.adaptive.is_some());
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec!["compile".to_string(), "clippy".to_string()]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile".to_string(),
+            "clippy".to_string()
+        ]);
         assert!(
             svc.should_skip_rung_adaptively(Some(1))
                 .expect("adaptive lock should not be poisoned")
@@ -669,11 +662,8 @@ mod tests {
         };
 
         assert!(svc.adaptive.is_none());
-        assert_eq!(
-            GateService::ordered_gate_names(&config),
-            vec![
-                "compile", "clippy", "test", "diff", "fmt", "custom", "judge"
-            ]
-        );
+        assert_eq!(GateService::ordered_gate_names(&config), vec![
+            "compile", "clippy", "test", "diff", "fmt", "custom", "judge"
+        ]);
     }
 }

@@ -1831,12 +1831,9 @@ mod tests {
         let mut p = KoraiPassport::default();
         p.activate().unwrap();
         assert!(p.suspend("policy violation").is_ok());
-        assert_eq!(
-            p.state,
-            PassportState::Suspended {
-                reason: "policy violation".to_string()
-            }
-        );
+        assert_eq!(p.state, PassportState::Suspended {
+            reason: "policy violation".to_string()
+        });
         assert!(!p.is_active());
     }
 
@@ -1860,12 +1857,9 @@ mod tests {
         let mut p = KoraiPassport::default();
         p.activate().unwrap();
         assert!(p.revoke("fraud").is_ok());
-        assert_eq!(
-            p.state,
-            PassportState::Revoked {
-                reason: "fraud".to_string()
-            }
-        );
+        assert_eq!(p.state, PassportState::Revoked {
+            reason: "fraud".to_string()
+        });
         // Cannot revoke again.
         assert!(p.revoke("double revoke").is_err());
     }
@@ -2112,13 +2106,10 @@ mod tests {
             ..Default::default()
         };
         let result = client.pay(&challenge, 50);
-        assert!(matches!(
-            result,
-            X402PaymentResult::InsufficientBalance {
-                required: 500,
-                available: 100,
-            }
-        ));
+        assert!(matches!(result, X402PaymentResult::InsufficientBalance {
+            required: 500,
+            available: 100,
+        }));
     }
 
     #[test]

@@ -827,11 +827,9 @@ mod tests {
     fn import_creates_edge() {
         let files = vec![
             make_file("a.rs", vec![sym("Config", SymbolKind::Struct)], vec![]),
-            make_file(
-                "b.rs",
-                vec![sym("main", SymbolKind::Function)],
-                vec![imp("a::Config")],
-            ),
+            make_file("b.rs", vec![sym("main", SymbolKind::Function)], vec![imp(
+                "a::Config",
+            )]),
         ];
         let graph = build_graph(&files);
         assert_eq!(graph.node_count(), 2);
@@ -1065,11 +1063,9 @@ mod tests {
     fn reverse_neighbors() {
         let files = vec![
             make_file("a.rs", vec![sym("Server", SymbolKind::Struct)], vec![]),
-            make_file(
-                "b.rs",
-                vec![sym("handler", SymbolKind::Function)],
-                vec![imp("crate::Server")],
-            ),
+            make_file("b.rs", vec![sym("handler", SymbolKind::Function)], vec![
+                imp("crate::Server"),
+            ]),
         ];
         let graph = build_graph(&files);
         let server_id = SymbolId::new("a.rs", "Server", SymbolKind::Struct);
@@ -1083,16 +1079,12 @@ mod tests {
         // a -> b -> c
         let files = vec![
             make_file("c.rs", vec![sym("Core", SymbolKind::Struct)], vec![]),
-            make_file(
-                "b.rs",
-                vec![sym("Mid", SymbolKind::Struct)],
-                vec![imp("c::Core")],
-            ),
-            make_file(
-                "a.rs",
-                vec![sym("Top", SymbolKind::Function)],
-                vec![imp("b::Mid")],
-            ),
+            make_file("b.rs", vec![sym("Mid", SymbolKind::Struct)], vec![imp(
+                "c::Core",
+            )]),
+            make_file("a.rs", vec![sym("Top", SymbolKind::Function)], vec![imp(
+                "b::Mid",
+            )]),
         ];
         let graph = build_graph(&files);
         let top_id = SymbolId::new("a.rs", "Top", SymbolKind::Function);
@@ -1119,21 +1111,15 @@ mod tests {
         // Three files all import Hub from hub.rs.
         let files = vec![
             make_file("hub.rs", vec![sym("Hub", SymbolKind::Struct)], vec![]),
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
         ];
         let graph = build_graph(&files);
         let ranks = pagerank(&graph, 30, 0.85);
@@ -1156,21 +1142,15 @@ mod tests {
         // Same star topology as the unweighted test.
         let files = vec![
             make_file("hub.rs", vec![sym("Hub", SymbolKind::Struct)], vec![]),
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
         ];
         let graph = build_graph(&files);
         let ranks = weighted_pagerank(&graph, 0.85, 30);
@@ -1192,21 +1172,15 @@ mod tests {
         // A cycle with all the same edge kind should converge to roughly equal
         // values, matching the unweighted result.
         let files = vec![
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("b::B")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("c::C")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("a::A")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "b::B",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "c::C",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "a::A",
+            )]),
         ];
         let graph = build_graph(&files);
         let ranks = weighted_pagerank(&graph, 0.85, 50);
@@ -1224,21 +1198,15 @@ mod tests {
     fn pagerank_cycle_roughly_equal() {
         // a -> b -> c -> a
         let files = vec![
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("b::B")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("c::C")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("a::A")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "b::B",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "c::C",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "a::A",
+            )]),
         ];
         let graph = build_graph(&files);
         let ranks = pagerank(&graph, 50, 0.85);
@@ -1268,21 +1236,15 @@ mod tests {
         // PPR seeded on A should give A higher rank than B or C.
         let files = vec![
             make_file("hub.rs", vec![sym("Hub", SymbolKind::Struct)], vec![]),
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
         ];
         let graph = build_graph(&files);
         let seed = SymbolId::new("a.rs", "A", SymbolKind::Function);
@@ -1310,21 +1272,15 @@ mod tests {
         // rank highly because it receives rank from all nodes.
         let files = vec![
             make_file("hub.rs", vec![sym("Hub", SymbolKind::Struct)], vec![]),
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
         ];
         let graph = build_graph(&files);
         let seed = SymbolId::new("a.rs", "A", SymbolKind::Function);
@@ -1347,21 +1303,15 @@ mod tests {
         // Seeds A and B should both rank higher than non-seed C.
         let files = vec![
             make_file("hub.rs", vec![sym("Hub", SymbolKind::Struct)], vec![]),
-            make_file(
-                "a.rs",
-                vec![sym("A", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "b.rs",
-                vec![sym("B", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
-            make_file(
-                "c.rs",
-                vec![sym("C", SymbolKind::Function)],
-                vec![imp("hub::Hub")],
-            ),
+            make_file("a.rs", vec![sym("A", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("b.rs", vec![sym("B", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
+            make_file("c.rs", vec![sym("C", SymbolKind::Function)], vec![imp(
+                "hub::Hub",
+            )]),
         ];
         let graph = build_graph(&files);
         let seed_a = SymbolId::new("a.rs", "A", SymbolKind::Function);

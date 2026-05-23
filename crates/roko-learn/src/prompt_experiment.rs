@@ -734,18 +734,14 @@ mod tests {
     #[test]
     fn concluded_winners_only_return_high_confidence_results() {
         let mut store = ExperimentStore::new();
-        let mut exp = PromptExperiment::new(
-            "exp-role",
-            "model-routing",
-            vec![PromptVariant {
-                id: "winner".into(),
-                name: "Winner".into(),
-                section_name: "model-routing".into(),
-                content: "claude-sonnet-4-6".into(),
-                slug: Some("claude-sonnet-4-6".into()),
-                active: true,
-            }],
-        );
+        let mut exp = PromptExperiment::new("exp-role", "model-routing", vec![PromptVariant {
+            id: "winner".into(),
+            name: "Winner".into(),
+            section_name: "model-routing".into(),
+            content: "claude-sonnet-4-6".into(),
+            slug: Some("claude-sonnet-4-6".into()),
+            active: true,
+        }]);
         exp.role = Some("implementer".into());
         exp.status = ExperimentStatus::Concluded;
         exp.winner_id = Some("winner".into());
@@ -765,38 +761,26 @@ mod tests {
         let mut exp_b = PromptExperiment::new("exp-b", "constraints", make_variants("constraints"));
         exp_b.status = ExperimentStatus::Concluded;
         exp_b.winner_id = Some("b".into());
-        exp_b.stats.insert(
-            "a".into(),
-            VariantStats {
-                trials: 80,
-                successes: 8,
-            },
-        );
-        exp_b.stats.insert(
-            "b".into(),
-            VariantStats {
-                trials: 80,
-                successes: 76,
-            },
-        );
+        exp_b.stats.insert("a".into(), VariantStats {
+            trials: 80,
+            successes: 8,
+        });
+        exp_b.stats.insert("b".into(), VariantStats {
+            trials: 80,
+            successes: 76,
+        });
 
         let mut exp_a = PromptExperiment::new("exp-a", "constraints", make_variants("constraints"));
         exp_a.status = ExperimentStatus::Concluded;
         exp_a.winner_id = Some("a".into());
-        exp_a.stats.insert(
-            "a".into(),
-            VariantStats {
-                trials: 96,
-                successes: 92,
-            },
-        );
-        exp_a.stats.insert(
-            "b".into(),
-            VariantStats {
-                trials: 96,
-                successes: 12,
-            },
-        );
+        exp_a.stats.insert("a".into(), VariantStats {
+            trials: 96,
+            successes: 92,
+        });
+        exp_a.stats.insert("b".into(), VariantStats {
+            trials: 96,
+            successes: 12,
+        });
 
         store.register(exp_b);
         store.register(exp_a);

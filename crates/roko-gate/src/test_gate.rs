@@ -586,10 +586,10 @@ mod tests {
     fn test_selector_patterns_go_joins_with_pipe() {
         let sel = TestSelector::Patterns(vec!["TestFoo".into(), "TestBar".into()]);
         let args = sel.extra_args(BuildSystem::Go);
-        assert_eq!(
-            args,
-            vec!["-run".to_string(), "TestFoo|TestBar".to_string()]
-        );
+        assert_eq!(args, vec![
+            "-run".to_string(),
+            "TestFoo|TestBar".to_string()
+        ]);
     }
 
     // ── npm / Jest / Vitest parser tests ──────────────────────────────────

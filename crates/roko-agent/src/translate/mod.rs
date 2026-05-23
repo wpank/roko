@@ -663,15 +663,12 @@ mod tests {
                 }
             }
         }));
-        assert_eq!(
-            r.extract_usage(),
-            Usage {
-                input_tokens: 12,
-                output_tokens: 5,
-                cache_read_tokens: 3,
-                ..Default::default()
-            }
-        );
+        assert_eq!(r.extract_usage(), Usage {
+            input_tokens: 12,
+            output_tokens: 5,
+            cache_read_tokens: 3,
+            ..Default::default()
+        });
     }
 
     #[test]

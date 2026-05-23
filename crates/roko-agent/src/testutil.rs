@@ -971,7 +971,7 @@ fn append_stream_value(
                     cached_tokens: usage.cache_read_tokens,
                 });
             }
-            StreamChunk::Done(_) | StreamChunk::Error(_) => {}
+            StreamChunk::Done(_) | StreamChunk::Error(_) | StreamChunk::ToolProgress { .. } => {}
         }
     }
 
@@ -1000,7 +1000,7 @@ fn normalize_chunks(chunks: &[StreamChunk]) -> Vec<ExpectedChunk> {
                 output_tokens: usage.output_tokens,
                 cached_tokens: usage.cache_read_tokens,
             }),
-            StreamChunk::Done(_) | StreamChunk::Error(_) => {}
+            StreamChunk::Done(_) | StreamChunk::Error(_) | StreamChunk::ToolProgress { .. } => {}
         }
     }
     out

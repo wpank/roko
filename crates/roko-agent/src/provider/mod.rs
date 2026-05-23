@@ -68,7 +68,9 @@ pub mod cerebras;
 pub mod claude_cli;
 pub mod cursor_acp;
 pub mod cursor_cli;
+pub mod hermes;
 pub mod openai_compat;
+pub mod openclaw;
 pub mod openrouter_meta;
 pub mod pre_flight;
 
@@ -77,7 +79,9 @@ pub use cerebras::CerebrasAdapter;
 pub use claude_cli::ClaudeCliAdapter;
 pub use cursor_acp::CursorAcpAdapter;
 pub use cursor_cli::CursorCliAdapter;
+pub use hermes::HermesProviderAdapter;
 pub use openai_compat::OpenAiCompatAdapter;
+pub use openclaw::OpenClawProviderAdapter;
 pub use openrouter_meta::fetch_model_metadata;
 pub use pre_flight::{ProviderReadinessIssue, check_provider_readiness, report_readiness_issues};
 
@@ -88,7 +92,9 @@ static CEREBRAS_ADAPTER: CerebrasAdapter = CerebrasAdapter;
 static CLAUDE_CLI_ADAPTER: ClaudeCliAdapter = ClaudeCliAdapter;
 static CURSOR_ACP_ADAPTER: CursorAcpAdapter = CursorAcpAdapter;
 static CURSOR_CLI_ADAPTER: CursorCliAdapter = CursorCliAdapter;
+static HERMES_ADAPTER: HermesProviderAdapter = HermesProviderAdapter;
 static OPENAI_COMPAT_ADAPTER: OpenAiCompatAdapter = OpenAiCompatAdapter;
+static OPENCLAW_ADAPTER: OpenClawProviderAdapter = OpenClawProviderAdapter;
 static PERPLEXITY_ADAPTER: PerplexityAdapter = PerplexityAdapter;
 static GEMINI_ADAPTER: GeminiAdapter = GeminiAdapter;
 const DEFAULT_PROVIDER_MAX_CONCURRENT: usize = roko_core::defaults::DEFAULT_PROVIDER_MAX_CONCURRENT;
@@ -164,6 +170,8 @@ pub fn adapter_for_kind(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::PerplexityApi => &PERPLEXITY_ADAPTER,
         ProviderKind::GeminiApi => &GEMINI_ADAPTER,
         ProviderKind::CerebrasApi => &CEREBRAS_ADAPTER,
+        ProviderKind::Hermes => &HERMES_ADAPTER,
+        ProviderKind::OpenClaw => &OPENCLAW_ADAPTER,
     }
 }
 
@@ -870,51 +878,45 @@ mod tests {
 
     fn test_config(base_url: String) -> RokoConfig {
         let mut config = RokoConfig::default();
-        config.providers.insert(
-            "zai".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: Some(base_url),
-                api_key_env: Some("PATH".to_string()),
-                command: None,
-                args: None,
-                timeout_ms: Some(1_500),
-                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
-                connect_timeout_ms: Some(5_000),
-                extra_headers: None,
-                max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "glm-5-1".to_string(),
-            ModelProfile {
-                provider: "zai".to_string(),
-                slug: "glm-5.1".to_string(),
-                context_window: 200_000,
-                max_output: Some(1_024),
-                supports_tools: true,
-                supports_thinking: true,
-                supports_vision: false,
-                supports_web_search: false,
-                supports_mcp_tools: false,
-                supports_partial: false,
-                supports_grounding: false,
-                supports_code_execution: false,
-                supports_caching: false,
-                provider_routing: None,
-                tool_format: "openai_json".to_string(),
-                cost_input_per_m: None,
-                cost_output_per_m: None,
-                cost_input_per_m_high: None,
-                cost_output_per_m_high: None,
-                cost_cache_read_per_m: None,
-                cost_cache_write_per_m: None,
-                thinking_level: None,
-                max_tools: None,
-                tokenizer_ratio: None,
-                ..Default::default()
-            },
-        );
+        config.providers.insert("zai".to_string(), ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(base_url),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(1_500),
+            ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+            connect_timeout_ms: Some(5_000),
+            extra_headers: None,
+            max_concurrent: None,
+        });
+        config.models.insert("glm-5-1".to_string(), ModelProfile {
+            provider: "zai".to_string(),
+            slug: "glm-5.1".to_string(),
+            context_window: 200_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            supports_thinking: true,
+            supports_vision: false,
+            supports_web_search: false,
+            supports_mcp_tools: false,
+            supports_partial: false,
+            supports_grounding: false,
+            supports_code_execution: false,
+            supports_caching: false,
+            provider_routing: None,
+            tool_format: "openai_json".to_string(),
+            cost_input_per_m: None,
+            cost_output_per_m: None,
+            cost_input_per_m_high: None,
+            cost_output_per_m_high: None,
+            cost_cache_read_per_m: None,
+            cost_cache_write_per_m: None,
+            thinking_level: None,
+            max_tools: None,
+            tokenizer_ratio: None,
+            ..Default::default()
+        });
         config
     }
 
@@ -924,9 +926,9 @@ mod tests {
         supports_async: bool,
     ) -> RokoConfig {
         let mut config = RokoConfig::default();
-        config.providers.insert(
-            "perplexity".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("perplexity".to_string(), ProviderConfig {
                 kind: ProviderKind::PerplexityApi,
                 base_url,
                 api_key_env: Some("PATH".to_string()),
@@ -937,46 +939,42 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            model_slug.to_string(),
-            ModelProfile {
-                provider: "perplexity".to_string(),
-                slug: model_slug.to_string(),
-                context_window: 127_072,
-                max_output: Some(8_192),
-                supports_tools: false,
-                supports_thinking: false,
-                supports_vision: false,
-                supports_web_search: true,
-                supports_mcp_tools: false,
-                supports_partial: false,
-                supports_grounding: false,
-                supports_code_execution: false,
-                supports_caching: false,
-                provider_routing: None,
-                tool_format: "openai_json".to_string(),
-                cost_input_per_m: None,
-                cost_output_per_m: None,
-                cost_input_per_m_high: None,
-                cost_output_per_m_high: None,
-                cost_cache_read_per_m: None,
-                cost_cache_write_per_m: None,
-                thinking_level: None,
-                max_tools: None,
-                max_tool_iterations: None,
-                tokenizer_ratio: None,
-                supports_search: true,
-                supports_citations: true,
-                supports_async,
-                is_embedding_model: false,
-                search_context_size: Some("medium".to_string()),
-                cost_per_request: None,
-                use_max_completion_tokens: false,
-                tier: None,
-            },
-        );
+            });
+        config.models.insert(model_slug.to_string(), ModelProfile {
+            provider: "perplexity".to_string(),
+            slug: model_slug.to_string(),
+            context_window: 127_072,
+            max_output: Some(8_192),
+            supports_tools: false,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_web_search: true,
+            supports_mcp_tools: false,
+            supports_partial: false,
+            supports_grounding: false,
+            supports_code_execution: false,
+            supports_caching: false,
+            provider_routing: None,
+            tool_format: "openai_json".to_string(),
+            cost_input_per_m: None,
+            cost_output_per_m: None,
+            cost_input_per_m_high: None,
+            cost_output_per_m_high: None,
+            cost_cache_read_per_m: None,
+            cost_cache_write_per_m: None,
+            thinking_level: None,
+            max_tools: None,
+            max_tool_iterations: None,
+            tokenizer_ratio: None,
+            supports_search: true,
+            supports_citations: true,
+            supports_async,
+            is_embedding_model: false,
+            search_context_size: Some("medium".to_string()),
+            cost_per_request: None,
+            use_max_completion_tokens: false,
+            tier: None,
+        });
         config
     }
 
@@ -1229,14 +1227,10 @@ mod tests {
     #[test]
     fn create_agent_for_model_routes_perplexity_async_models_to_deep_research() {
         let config = perplexity_config(None, "sonar-deep-research", true);
-        let agent = create_agent_for_model(
-            &config,
-            "sonar-deep-research",
-            AgentOptions {
-                name: "deep-research-agent".to_string(),
-                ..Default::default()
-            },
-        )
+        let agent = create_agent_for_model(&config, "sonar-deep-research", AgentOptions {
+            name: "deep-research-agent".to_string(),
+            ..Default::default()
+        })
         .expect("create deep research agent");
         assert_eq!(agent.name(), "deep-research-agent");
     }
@@ -1283,15 +1277,11 @@ mod tests {
         let mut config = RokoConfig::default();
         config.agent.command = Some("cat".to_string());
 
-        let agent = create_agent_for_model(
-            &config,
-            "mystery-model",
-            AgentOptions {
-                timeout_ms: Some(250),
-                name: "fallback-agent".to_string(),
-                ..Default::default()
-            },
-        )
+        let agent = create_agent_for_model(&config, "mystery-model", AgentOptions {
+            timeout_ms: Some(250),
+            name: "fallback-agent".to_string(),
+            ..Default::default()
+        })
         .expect("fallback exec agent");
 
         assert_eq!(agent.name(), "fallback-agent");
@@ -1306,16 +1296,12 @@ mod tests {
         let mut config = RokoConfig::default();
         config.agent.command = Some("sh".to_string());
 
-        let agent = create_agent_for_model(
-            &config,
-            "mystery-model",
-            AgentOptions {
-                timeout_ms: Some(250),
-                name: "fallback-agent".to_string(),
-                extra_args: vec!["-c".to_string(), "rm -rf /".to_string()],
-                ..Default::default()
-            },
-        )
+        let agent = create_agent_for_model(&config, "mystery-model", AgentOptions {
+            timeout_ms: Some(250),
+            name: "fallback-agent".to_string(),
+            extra_args: vec!["-c".to_string(), "rm -rf /".to_string()],
+            ..Default::default()
+        })
         .expect("fallback exec agent");
         assert_eq!(agent.name(), "fallback-agent");
 
@@ -1338,16 +1324,12 @@ mod tests {
         config.agent.command = Some("sh".to_string());
 
         let agent = with_safety_layer(Some(SafetyLayer::with_defaults()), || {
-            create_agent_for_model(
-                &config,
-                "mystery-model",
-                AgentOptions {
-                    timeout_ms: Some(250),
-                    name: "fallback-agent".to_string(),
-                    extra_args: vec!["-c".to_string(), "rm -rf /".to_string()],
-                    ..Default::default()
-                },
-            )
+            create_agent_for_model(&config, "mystery-model", AgentOptions {
+                timeout_ms: Some(250),
+                name: "fallback-agent".to_string(),
+                extra_args: vec!["-c".to_string(), "rm -rf /".to_string()],
+                ..Default::default()
+            })
         })
         .expect("fallback exec agent");
         assert_eq!(agent.name(), "fallback-agent");
@@ -1390,9 +1372,9 @@ mod tests {
         config.agent.command = Some(script.display().to_string());
         // The protocol-command guard requires explicit provider+model config
         // when the command binary is a known protocol (e.g. "claude").
-        config.providers.insert(
-            "test-claude".to_string(),
-            ProviderConfig {
+        config
+            .providers
+            .insert("test-claude".to_string(), ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -1403,11 +1385,10 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
-            },
-        );
-        config.models.insert(
-            "claude-sonnet-4-6".to_string(),
-            ModelProfile {
+            });
+        config
+            .models
+            .insert("claude-sonnet-4-6".to_string(), ModelProfile {
                 provider: "test-claude".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
                 context_window: 200_000,
@@ -1415,18 +1396,13 @@ mod tests {
                 supports_tools: true,
                 supports_thinking: true,
                 ..Default::default()
-            },
-        );
+            });
 
-        let agent = create_agent_for_model(
-            &config,
-            "claude-sonnet-4-6",
-            AgentOptions {
-                timeout_ms: Some(5_000),
-                name: "factory-claude".to_string(),
-                ..Default::default()
-            },
-        )
+        let agent = create_agent_for_model(&config, "claude-sonnet-4-6", AgentOptions {
+            timeout_ms: Some(5_000),
+            name: "factory-claude".to_string(),
+            ..Default::default()
+        })
         .expect("create configured claude agent");
 
         assert_eq!(agent.name(), "factory-claude");
@@ -1445,16 +1421,12 @@ mod tests {
 
     #[test]
     fn create_agent_for_model_rejects_protocol_command_without_model_config() {
-        let result = create_agent_for_model(
-            &RokoConfig::default(),
-            "claude",
-            AgentOptions {
-                command: Some("claude".to_string()),
-                timeout_ms: Some(5_000),
-                name: "factory-claude".to_string(),
-                ..Default::default()
-            },
-        );
+        let result = create_agent_for_model(&RokoConfig::default(), "claude", AgentOptions {
+            command: Some("claude".to_string()),
+            timeout_ms: Some(5_000),
+            name: "factory-claude".to_string(),
+            ..Default::default()
+        });
 
         let Err(error) = result else {
             panic!("expected missing config error");
@@ -1471,14 +1443,13 @@ mod tests {
         let mut config = RokoConfig::default();
         config.providers.clear();
         config.models.clear();
-        config.models.insert(
-            "custom-model".to_string(),
-            ModelProfile {
+        config
+            .models
+            .insert("custom-model".to_string(), ModelProfile {
                 provider: "missing-provider".to_string(),
                 slug: "custom-slug".to_string(),
                 ..Default::default()
-            },
-        );
+            });
 
         let result = create_agent_for_model(&config, "custom-model", AgentOptions::default());
 
@@ -1495,21 +1466,18 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn provider_semaphore_blocks_fourth_request_when_limit_is_three() {
         let mut configs = indexmap::IndexMap::new();
-        configs.insert(
-            "zai".to_string(),
-            ProviderConfig {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: Some("https://api.z.ai/api/paas/v4".to_string()),
-                api_key_env: Some("ZAI_API_KEY".to_string()),
-                command: None,
-                args: None,
-                timeout_ms: Some(1_500),
-                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
-                connect_timeout_ms: Some(5_000),
-                extra_headers: None,
-                max_concurrent: Some(3),
-            },
-        );
+        configs.insert("zai".to_string(), ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some("https://api.z.ai/api/paas/v4".to_string()),
+            api_key_env: Some("ZAI_API_KEY".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(1_500),
+            ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+            connect_timeout_ms: Some(5_000),
+            extra_headers: None,
+            max_concurrent: Some(3),
+        });
 
         let semaphores = Arc::new(ProviderSemaphores::new(&configs));
         let permit_one = semaphores.acquire("zai").await;

@@ -42,14 +42,11 @@ pub async fn cmd_unified_chat(
 
     // 3. Bootstrap: workspace auto-create (not required) + config load.
     //    Chat does not require a workspace — it auto-creates .roko/ if missing.
-    let boot = RokoBootstrap::new(
-        &workdir,
-        BootOpts {
-            require_workspace: false,
-            require_provider: false,
-            acquire_lock: false,
-        },
-    )
+    let boot = RokoBootstrap::new(&workdir, BootOpts {
+        require_workspace: false,
+        require_provider: false,
+        acquire_lock: false,
+    })
     .unwrap_or_else(|_| {
         // Best-effort: fall back to defaults if bootstrap fails (e.g. workdir unreadable).
         crate::bootstrap::RokoBootstrap {

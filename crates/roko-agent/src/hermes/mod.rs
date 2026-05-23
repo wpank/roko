@@ -22,7 +22,7 @@ pub use config::{CrashRecoveryConfig, HermesConfig};
 pub use gateway_service::HermesGatewayService;
 pub use http_adapter::HermesHttpAgent;
 pub use probe::probe_hermes;
-pub use tool_progress_inspector::ToolProgressInspector;
+pub use tool_progress_inspector::{HERMES_TOOL_PROGRESS_EVENT, ToolProgressInspector};
 
 // PR-5 re-exports
 pub use acp_agent::{HermesAcpAgent, HermesAcpConfig};

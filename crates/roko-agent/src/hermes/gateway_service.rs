@@ -326,4 +326,112 @@ mod tests {
         let status = svc.status().await;
         assert_eq!(status, ServiceStatus::Stopped);
     }
+
+    #[tokio::test]
+    async fn start_with_nonexistent_binary_returns_error() {
+        let config = HermesConfig {
+            binary: "/nonexistent/path/to/hermes-binary-that-does-not-exist".to_string(),
+            // Use an endpoint on a port unlikely to be open so the
+            // "already running" check fails quickly.
+            endpoint: "http://127.0.0.1:19876".to_string(),
+            ..Default::default()
+        };
+        let svc = HermesGatewayService::new(config);
+        let result = svc.start().await;
+        assert!(
+            result.is_err(),
+            "start() should fail when binary doesn't exist"
+        );
+        // Should be an Io error from spawn failure.
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed to spawn hermes gateway"),
+            "error should mention spawn failure, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_when_already_stopped_is_idempotent() {
+        let config = HermesConfig::default();
+        let svc = HermesGatewayService::new(config);
+        // PID is 0 (not started), so stop() should return Ok immediately.
+        let result = svc.stop().await;
+        assert!(result.is_ok(), "stop() should succeed when no managed PID");
+        assert!(svc.pid().is_none(), "PID should remain None after stop");
+    }
+
+    #[tokio::test]
+    async fn stop_idempotent_called_twice() {
+        let config = HermesConfig::default();
+        let svc = HermesGatewayService::new(config);
+        // Call stop twice -- both should succeed.
+        let r1 = svc.stop().await;
+        let r2 = svc.stop().await;
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn healthcheck_fails_when_not_started() {
+        let config = HermesConfig {
+            // Use a port that is almost certainly not open.
+            endpoint: "http://127.0.0.1:19877".to_string(),
+            ..Default::default()
+        };
+        let svc = HermesGatewayService::new(config);
+        let result = svc.healthcheck().await;
+        assert!(
+            result.is_err(),
+            "healthcheck should fail when nothing is listening"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("health request failed"),
+            "error should mention health request failure, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_stopped_transitions() {
+        // When no PID is set and no service is running on the endpoint,
+        // status should be Stopped.
+        let config = HermesConfig {
+            endpoint: "http://127.0.0.1:19878".to_string(),
+            ..Default::default()
+        };
+        let svc = HermesGatewayService::new(config);
+
+        // Initial state: Stopped.
+        assert_eq!(svc.status().await, ServiceStatus::Stopped);
+        assert!(!svc.is_managed());
+        assert!(svc.pid().is_none());
+
+        // Simulate setting a PID for a process that doesn't exist.
+        // On Unix, is_pid_alive will return false for PID 0 and for
+        // very high PIDs that don't correspond to real processes.
+        // Use a PID that is very unlikely to exist (max u32 - 1).
+        svc.managed_pid.store(u32::MAX - 1, Ordering::Relaxed);
+
+        // The PID is set but the process is not alive (on Unix),
+        // so status() should detect the dead PID and reset to Stopped.
+        let status = svc.status().await;
+        assert_eq!(status, ServiceStatus::Stopped);
+        // After detecting the dead PID, managed_pid should be reset to 0.
+        assert_eq!(svc.managed_pid.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn is_managed_reflects_pid_state() {
+        let config = HermesConfig::default();
+        let svc = HermesGatewayService::new(config);
+        assert!(!svc.is_managed());
+
+        // Simulate a managed PID being set.
+        svc.managed_pid.store(12345, Ordering::Relaxed);
+        assert!(svc.is_managed());
+
+        // Reset it.
+        svc.managed_pid.store(0, Ordering::Relaxed);
+        assert!(!svc.is_managed());
+    }
 }

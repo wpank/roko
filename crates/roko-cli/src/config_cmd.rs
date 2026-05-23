@@ -1248,6 +1248,75 @@ async fn semantic_validate_config(
         }
     }
 
+    // -- Harness-aware provider-kind checks (Hermes / OpenClaw) --
+    for (provider_name, provider) in &config.providers {
+        let has_base_url = provider
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| !u.is_empty());
+        let has_command = provider
+            .command
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|c| !c.is_empty());
+        let args_contain_acp = provider
+            .args
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|a| a.trim() == "acp");
+
+        match provider.kind {
+            ProviderKind::Hermes => {
+                if !has_base_url && !has_command {
+                    report.field_warnings.push(format!(
+                        "Provider '{provider_name}' (Hermes): no base_url or command set; \
+                         will use default \"hermes\" binary on PATH"
+                    ));
+                }
+                if has_command {
+                    let cmd = provider.command.as_deref().unwrap_or_default().trim();
+                    if !cmd.is_empty() && !command_exists_on_path(cmd) {
+                        report.field_warnings.push(format!(
+                            "Provider '{provider_name}' (Hermes): command \"{cmd}\" \
+                             not found on PATH"
+                        ));
+                    }
+                }
+                if args_contain_acp && has_base_url {
+                    report.field_warnings.push(format!(
+                        "Provider '{provider_name}' (Hermes): args contain \"acp\" but \
+                         base_url is also set; base_url takes precedence for HTTP transport"
+                    ));
+                }
+            }
+            ProviderKind::OpenClaw => {
+                if !has_command {
+                    report.field_warnings.push(format!(
+                        "Provider '{provider_name}' (OpenClaw): no command set; \
+                         will use default \"openclaw\" binary on PATH"
+                    ));
+                } else {
+                    let cmd = provider.command.as_deref().unwrap_or_default().trim();
+                    if !cmd.is_empty() && !command_exists_on_path(cmd) {
+                        report.field_warnings.push(format!(
+                            "Provider '{provider_name}' (OpenClaw): command \"{cmd}\" \
+                             not found on PATH"
+                        ));
+                    }
+                }
+                if args_contain_acp && has_base_url {
+                    report.field_warnings.push(format!(
+                        "Provider '{provider_name}' (OpenClaw): args contain \"acp\" but \
+                         base_url is also set; transport tier may be ambiguous"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
     report
 }
 
@@ -1269,6 +1338,20 @@ async fn probe_validation_base_url(
             "Provider '{provider_name}' base_url unreachable ({err})"
         )),
     }
+}
+
+/// Check whether `cmd` is resolvable on `PATH` using the system `which`.
+///
+/// Non-blocking in the async sense (spawns a short-lived process). Returns
+/// `false` if the command is not found or if `which` itself cannot run.
+fn command_exists_on_path(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

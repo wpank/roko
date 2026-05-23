@@ -761,6 +761,152 @@ mod tests {
     }
 
     #[test]
+    fn parse_notification_tool_call_update() {
+        let notif = AcpNotification {
+            method: "session/tool_call_update".into(),
+            params: Some(serde_json::json!({
+                "id": "call-1",
+                "progress": "reading file..."
+            })),
+            server_request_id: None,
+        };
+        let event = parse_notification(&notif).unwrap();
+        match event {
+            AcpEvent::ToolCallUpdate { id, progress } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(progress, "reading file...");
+            }
+            other => panic!("expected ToolCallUpdate, got: {other:?}"),
+        }
+
+        // Also test the short form "tool_call_update"
+        let notif2 = AcpNotification {
+            method: "tool_call_update".into(),
+            params: Some(serde_json::json!({
+                "id": "call-2",
+                "rawOutput": "raw output data"
+            })),
+            server_request_id: None,
+        };
+        let event2 = parse_notification(&notif2).unwrap();
+        match event2 {
+            AcpEvent::ToolCallUpdate { id, progress } => {
+                assert_eq!(id, "call-2");
+                assert_eq!(progress, "raw output data");
+            }
+            other => panic!("expected ToolCallUpdate, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_notification_none_params() {
+        let notif = AcpNotification {
+            method: "session/update".into(),
+            params: None,
+            server_request_id: None,
+        };
+        assert!(
+            parse_notification(&notif).is_none(),
+            "None params should yield None event"
+        );
+    }
+
+    #[test]
+    fn parse_notification_output_no_recognized_field() {
+        // session/update with params that have no text/delta/content field
+        let notif = AcpNotification {
+            method: "session/update".into(),
+            params: Some(serde_json::json!({"status": "thinking"})),
+            server_request_id: None,
+        };
+        assert!(
+            parse_notification(&notif).is_none(),
+            "session/update without text/delta/content should return None"
+        );
+    }
+
+    #[test]
+    fn parse_notification_tool_call_missing_fields() {
+        // Tool call with missing id and name should default to empty strings
+        let notif = AcpNotification {
+            method: "session/tool_call".into(),
+            params: Some(serde_json::json!({})),
+            server_request_id: None,
+        };
+        let event = parse_notification(&notif).unwrap();
+        match event {
+            AcpEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "");
+                assert_eq!(name, "");
+                assert_eq!(arguments, serde_json::Value::Null);
+            }
+            other => panic!("expected ToolCall with defaults, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_notification_usage_missing_tokens() {
+        // Usage notification with no token fields should default to 0
+        let notif = AcpNotification {
+            method: "session/usage".into(),
+            params: Some(serde_json::json!({})),
+            server_request_id: None,
+        };
+        let event = parse_notification(&notif).unwrap();
+        assert!(matches!(
+            event,
+            AcpEvent::Usage {
+                input_tokens: 0,
+                output_tokens: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_notification_tool_call_update_missing_progress() {
+        // Tool call update with no progress or rawOutput should default to empty
+        let notif = AcpNotification {
+            method: "session/tool_call_update".into(),
+            params: Some(serde_json::json!({"id": "call-x"})),
+            server_request_id: None,
+        };
+        let event = parse_notification(&notif).unwrap();
+        match event {
+            AcpEvent::ToolCallUpdate { id, progress } => {
+                assert_eq!(id, "call-x");
+                assert_eq!(progress, "");
+            }
+            other => panic!("expected ToolCallUpdate, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_notification_permission_request_missing_fields() {
+        let notif = AcpNotification {
+            method: "session/request_permission".into(),
+            params: Some(serde_json::json!({})),
+            server_request_id: None,
+        };
+        let event = parse_notification(&notif).unwrap();
+        match event {
+            AcpEvent::PermissionRequest {
+                id,
+                tool,
+                arguments,
+            } => {
+                assert_eq!(id, "");
+                assert_eq!(tool, "");
+                assert_eq!(arguments, serde_json::Value::Null);
+            }
+            other => panic!("expected PermissionRequest with defaults, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_notification_unknown() {
         let notif = AcpNotification {
             method: "some/unknown/method".into(),

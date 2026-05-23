@@ -1,6 +1,7 @@
 //! Agent / model configuration, including per-role overrides.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +85,12 @@ pub struct AgentConfig {
     /// Extensions loaded for all agents (can be overridden per-role).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<String>,
+
+    /// Optional path to an MCP config file (e.g. `.mcp.json`). When set,
+    /// this is passed to Claude via `--mcp-config`. If unset, the agent
+    /// auto-discovers by walking up from the working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config: Option<PathBuf>,
 }
 
 /// Agent execution mode controlling lifecycle.
@@ -137,6 +144,7 @@ impl Default for AgentConfig {
             data_llm: None,
             mode: AgentMode::default(),
             extensions: Vec::new(),
+            mcp_config: None,
         }
     }
 }

@@ -130,8 +130,8 @@ pub use harness::{
     harness_events_to_agent_result, validate_for_task,
 };
 pub use hermes::{
-    CrashRecoveryConfig, HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesFlavor,
-    HermesGatewayService, HermesHttpAgent, HermesOneShotAgent, HermesOneShotConfig,
+    CrashRecoveryConfig, HERMES_TOOL_PROGRESS_EVENT, HermesAcpAgent, HermesAcpConfig, HermesConfig,
+    HermesFlavor, HermesGatewayService, HermesHttpAgent, HermesOneShotAgent, HermesOneShotConfig,
     ToolProgressInspector, probe_hermes,
 };
 pub use http::{HttpPoster, ReqwestPoster, shared_http_client, shared_http_client_from};

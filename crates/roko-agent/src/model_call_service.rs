@@ -366,11 +366,7 @@ impl ModelCallService {
     }
 
     fn config_agent_mcp_config(&self) -> Option<PathBuf> {
-        // TODO(converge): Replace this with `self.config.agent.mcp_config.clone()`
-        // once the roko-core `AgentConfig` in this worktree exposes that field.
-        // This batch's write scope forbids adding the missing schema field here.
-        let _ = &self.config;
-        None
+        self.config.agent.mcp_config.clone()
     }
 
     fn emit(&self, event: RuntimeEvent) {

@@ -894,18 +894,21 @@ mod tests {
     #[tokio::test]
     async fn semaphore_wired_blocks_second_openai_compat_request() {
         let mut configs = indexmap::IndexMap::new();
-        configs.insert("zai".to_string(), ProviderConfig {
-            kind: ProviderKind::OpenAiCompat,
-            base_url: Some("https://api.z.ai/api/paas/v4".to_string()),
-            api_key_env: Some("ZAI_API_KEY".to_string()),
-            command: None,
-            args: None,
-            timeout_ms: Some(1_500),
-            ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
-            connect_timeout_ms: Some(5_000),
-            extra_headers: None,
-            max_concurrent: Some(1),
-        });
+        configs.insert(
+            "zai".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("https://api.z.ai/api/paas/v4".to_string()),
+                api_key_env: Some("ZAI_API_KEY".to_string()),
+                command: None,
+                args: None,
+                timeout_ms: Some(1_500),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: Some(1),
+            },
+        );
 
         let semaphores = Arc::new(ProviderSemaphores::new(&configs));
         let poster = BlockingPoster::new(canned_ok("ok", 1, 1));

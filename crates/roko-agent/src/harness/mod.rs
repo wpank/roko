@@ -23,7 +23,8 @@
 //!    `TransportFlavor`.
 //! 3. Optionally implement `HarnessService` for daemon lifecycle.
 //! 4. Add a variant to [`roko_core::agent::ProviderKind`].
-//! 5. Register the constructor in [`HarnessRegistry::from_config`].
+//! 5. Register gateway services in [`HarnessRegistry::from_config`]
+//!    and add a `ProviderAdapter` impl for dispatch-time agent creation.
 
 // PR-1: subprocess extraction
 pub mod child_process_runner;

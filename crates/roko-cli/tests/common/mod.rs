@@ -41,7 +41,7 @@ mcp_servers = []
 depends_on = []
 depends_on_plan = []
 acceptance = ["cargo check"]
-verify = []
+verify = [{ command = "cargo check", phase = "compile" }]
 timeout_secs = 60
 max_retries = 1
 
@@ -143,12 +143,10 @@ edition = "2024"
 pub fn seed_git_repo(workdir: &Path) {
     run_process(workdir, &["git", "init"]);
     run_process(workdir, &["git", "config", "user.name", "UX44 Smoke"]);
-    run_process(workdir, &[
-        "git",
-        "config",
-        "user.email",
-        "ux44-smoke@example.com",
-    ]);
+    run_process(
+        workdir,
+        &["git", "config", "user.email", "ux44-smoke@example.com"],
+    );
     run_process(workdir, &["git", "add", "."]);
     run_process(workdir, &["git", "commit", "-m", "seed"]);
 }

@@ -93,11 +93,14 @@ impl CalibrationPolicy {
                 // probability since the actual routing confidence is not
                 // carried on TurnStarted. The calibration tracker only
                 // needs the residual (predicted - actual).
-                self.pending.insert(task_id.clone(), PendingPrediction {
-                    model: model.clone(),
-                    category: String::new(),     // filled on completion
-                    predicted_success_prob: 0.7, // prior
-                });
+                self.pending.insert(
+                    task_id.clone(),
+                    PendingPrediction {
+                        model: model.clone(),
+                        category: String::new(),     // filled on completion
+                        predicted_success_prob: 0.7, // prior
+                    },
+                );
                 None
             }
             AgentEvent::ModelSelected { model, score, .. } => {

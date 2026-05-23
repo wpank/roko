@@ -357,10 +357,13 @@ impl CrossEpisodeConsolidator {
         }
 
         let cluster_count = self.target_clusters.min(vectors.len()).max(1);
-        let result = k_medoids(&vectors, &KMedoidsConfig {
-            k: cluster_count,
-            max_iterations: self.max_iterations,
-        });
+        let result = k_medoids(
+            &vectors,
+            &KMedoidsConfig {
+                k: cluster_count,
+                max_iterations: self.max_iterations,
+            },
+        );
 
         let mut meta_patterns = Vec::new();
         for cluster in result.clusters {

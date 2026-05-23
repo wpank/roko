@@ -1079,12 +1079,15 @@ mod tests {
         assert!(res.is_ok(), "expected successful tool call, got {res:?}");
 
         let phases = status_phases(&audit_sink.snapshot());
-        assert_eq!(phases, vec![
-            ("validation".to_string(), "passed".to_string()),
-            ("permission".to_string(), "granted".to_string()),
-            ("handler".to_string(), "started".to_string()),
-            ("completion".to_string(), "succeeded".to_string()),
-        ]);
+        assert_eq!(
+            phases,
+            vec![
+                ("validation".to_string(), "passed".to_string()),
+                ("permission".to_string(), "granted".to_string()),
+                ("handler".to_string(), "started".to_string()),
+                ("completion".to_string(), "succeeded".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1116,11 +1119,14 @@ mod tests {
         ));
 
         let phases = status_phases(&audit_sink.snapshot());
-        assert_eq!(phases, vec![
-            ("validation".to_string(), "passed".to_string()),
-            ("permission".to_string(), "denied".to_string()),
-            ("completion".to_string(), "failed".to_string()),
-        ]);
+        assert_eq!(
+            phases,
+            vec![
+                ("validation".to_string(), "passed".to_string()),
+                ("permission".to_string(), "denied".to_string()),
+                ("completion".to_string(), "failed".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]

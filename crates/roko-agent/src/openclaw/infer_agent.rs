@@ -284,10 +284,13 @@ mod tests {
     fn capabilities_are_correct() {
         let agent = OpenClawInferAgent::new(OpenClawInferConfig::default()).unwrap();
         let caps = agent.capabilities();
-        assert!(matches!(caps.one_shot, OneShotMode::CliCommand {
-            subcommand: "infer model run",
-            output: CliOutput::JsonEnvelope,
-        }));
+        assert!(matches!(
+            caps.one_shot,
+            OneShotMode::CliCommand {
+                subcommand: "infer model run",
+                output: CliOutput::JsonEnvelope,
+            }
+        ));
         assert!(matches!(caps.streaming, StreamingMode::None));
         assert!(matches!(caps.session_resume, SessionResumeMode::None));
         assert!(matches!(caps.mcp_passthrough, McpMode::None));

@@ -466,10 +466,13 @@ impl LearningContextBidder {
     /// Create a disabled bidder that only records fallback reasons.
     #[must_use]
     pub fn disabled(registry: SectionEffectivenessRegistry) -> Self {
-        Self::new(registry, LearningAttentionConfig {
-            enabled: false,
-            ..LearningAttentionConfig::default()
-        })
+        Self::new(
+            registry,
+            LearningAttentionConfig {
+                enabled: false,
+                ..LearningAttentionConfig::default()
+            },
+        )
     }
 
     /// Apply learned, bounded attention controls to candidate relevance and priority.
@@ -2698,10 +2701,13 @@ mod tests {
         let mut provider = ContextProvider::new(workdir);
         provider.context_average_tracker.averages.insert(
             "integrative".to_string(),
-            HashMap::from([("task_brief".to_string(), ContextAverageStats {
-                ema_reference_rate: 0.05,
-                total_observations: 12,
-            })]),
+            HashMap::from([(
+                "task_brief".to_string(),
+                ContextAverageStats {
+                    ema_reference_rate: 0.05,
+                    total_observations: 12,
+                },
+            )]),
         );
 
         let mut sections = vec![
@@ -2897,9 +2903,10 @@ mod tests {
                 .rejected_sections
                 .iter()
                 .any(|rejection| rejection.section_name == "large_low"
-                    && matches!(rejection.reason, ContextRejectionReason::BudgetExceeded {
-                        budget_tokens: 80
-                    }))
+                    && matches!(
+                        rejection.reason,
+                        ContextRejectionReason::BudgetExceeded { budget_tokens: 80 }
+                    ))
         );
     }
 

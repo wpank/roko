@@ -300,9 +300,12 @@ mod tests {
         let id = trace_id(0x11);
 
         for i in 0..5 {
-            sink.append(id, ToolTraceEvent::StreamCoerced {
-                at_ms: 1_700_000_000_000 + i,
-            });
+            sink.append(
+                id,
+                ToolTraceEvent::StreamCoerced {
+                    at_ms: 1_700_000_000_000 + i,
+                },
+            );
         }
         sink.finish(make_trace(id, 1_700_000_000_000));
 
@@ -371,10 +374,13 @@ mod tests {
         // Interleave appends between the two traces.
         sink.append(id_a, ToolTraceEvent::StreamCoerced { at_ms: 1 });
         sink.append(id_b, ToolTraceEvent::StreamCoerced { at_ms: 2 });
-        sink.append(id_a, ToolTraceEvent::Cancellation {
-            source: CancelSource::UserAbort,
-            at_ms: 3,
-        });
+        sink.append(
+            id_a,
+            ToolTraceEvent::Cancellation {
+                source: CancelSource::UserAbort,
+                at_ms: 3,
+            },
+        );
         sink.append(id_b, ToolTraceEvent::StreamCoerced { at_ms: 4 });
         sink.finish(make_trace(id_a, 1));
         sink.finish(make_trace(id_b, 2));

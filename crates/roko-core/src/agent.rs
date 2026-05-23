@@ -1359,45 +1359,51 @@ mod tests {
     #[test]
     fn resolve_model_uses_config_lookup() {
         let mut config = RokoConfig::default();
-        config.providers.insert("zai".to_owned(), ProviderConfig {
-            kind: ProviderKind::OpenAiCompat,
-            base_url: Some("https://api.z.ai/api/paas/v4".to_owned()),
-            api_key_env: Some("ZAI_API_KEY".to_owned()),
-            command: None,
-            args: None,
-            timeout_ms: Some(120_000),
-            ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
-            connect_timeout_ms: Some(5_000),
-            extra_headers: None,
-            max_concurrent: Some(8),
-        });
-        config.models.insert("glm-5-1".to_owned(), ModelProfile {
-            provider: "zai".to_owned(),
-            slug: "glm-5.1".to_owned(),
-            context_window: 200_000,
-            max_output: Some(131_072),
-            supports_tools: true,
-            supports_thinking: true,
-            supports_vision: false,
-            supports_web_search: false,
-            supports_mcp_tools: true,
-            supports_partial: false,
-            supports_grounding: false,
-            supports_code_execution: false,
-            supports_caching: false,
-            provider_routing: None,
-            tool_format: "openai_json".to_owned(),
-            cost_input_per_m: Some(1.4),
-            cost_output_per_m: Some(4.4),
-            cost_input_per_m_high: None,
-            cost_output_per_m_high: None,
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            thinking_level: None,
-            max_tools: None,
-            tokenizer_ratio: None,
-            ..Default::default()
-        });
+        config.providers.insert(
+            "zai".to_owned(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("https://api.z.ai/api/paas/v4".to_owned()),
+                api_key_env: Some("ZAI_API_KEY".to_owned()),
+                command: None,
+                args: None,
+                timeout_ms: Some(120_000),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: Some(8),
+            },
+        );
+        config.models.insert(
+            "glm-5-1".to_owned(),
+            ModelProfile {
+                provider: "zai".to_owned(),
+                slug: "glm-5.1".to_owned(),
+                context_window: 200_000,
+                max_output: Some(131_072),
+                supports_tools: true,
+                supports_thinking: true,
+                supports_vision: false,
+                supports_web_search: false,
+                supports_mcp_tools: true,
+                supports_partial: false,
+                supports_grounding: false,
+                supports_code_execution: false,
+                supports_caching: false,
+                provider_routing: None,
+                tool_format: "openai_json".to_owned(),
+                cost_input_per_m: Some(1.4),
+                cost_output_per_m: Some(4.4),
+                cost_input_per_m_high: None,
+                cost_output_per_m_high: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                thinking_level: None,
+                max_tools: None,
+                tokenizer_ratio: None,
+                ..Default::default()
+            },
+        );
 
         let resolved = resolve_model(&config, "glm-5-1");
         assert_eq!(resolved.model_key, "glm-5-1");
@@ -1467,72 +1473,78 @@ mod tests {
     #[test]
     fn select_model_for_task_prefers_matching_capabilities_and_cost() {
         let mut config = RokoConfig::default();
-        config.models.insert("cheap".to_owned(), ModelProfile {
-            provider: "openai".to_owned(),
-            slug: "gpt-5-mini".to_owned(),
-            context_window: 128_000,
-            max_output: Some(8_192),
-            supports_tools: true,
-            supports_thinking: false,
-            supports_vision: false,
-            supports_web_search: false,
-            supports_mcp_tools: false,
-            supports_partial: false,
-            supports_grounding: false,
-            supports_code_execution: false,
-            supports_caching: false,
-            provider_routing: None,
-            tool_format: "openai_json".to_owned(),
-            cost_input_per_m: None,
-            cost_output_per_m: Some(2.0),
-            cost_input_per_m_high: None,
-            cost_output_per_m_high: None,
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            thinking_level: None,
-            max_tools: None,
-            tokenizer_ratio: None,
-            supports_search: false,
-            supports_citations: false,
-            supports_async: false,
-            is_embedding_model: false,
-            search_context_size: None,
-            cost_per_request: None,
-            ..Default::default()
-        });
-        config.models.insert("capable".to_owned(), ModelProfile {
-            provider: "gemini".to_owned(),
-            slug: "gemini-2.5-pro".to_owned(),
-            context_window: 1_048_576,
-            max_output: Some(65_536),
-            supports_tools: true,
-            supports_thinking: true,
-            supports_vision: true,
-            supports_web_search: true,
-            supports_mcp_tools: true,
-            supports_partial: true,
-            supports_grounding: true,
-            supports_code_execution: true,
-            supports_caching: true,
-            provider_routing: None,
-            tool_format: "openai_json".to_owned(),
-            cost_input_per_m: None,
-            cost_output_per_m: Some(8.0),
-            cost_input_per_m_high: None,
-            cost_output_per_m_high: None,
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            thinking_level: None,
-            max_tools: None,
-            tokenizer_ratio: None,
-            supports_search: true,
-            supports_citations: false,
-            supports_async: false,
-            is_embedding_model: false,
-            search_context_size: None,
-            cost_per_request: None,
-            ..Default::default()
-        });
+        config.models.insert(
+            "cheap".to_owned(),
+            ModelProfile {
+                provider: "openai".to_owned(),
+                slug: "gpt-5-mini".to_owned(),
+                context_window: 128_000,
+                max_output: Some(8_192),
+                supports_tools: true,
+                supports_thinking: false,
+                supports_vision: false,
+                supports_web_search: false,
+                supports_mcp_tools: false,
+                supports_partial: false,
+                supports_grounding: false,
+                supports_code_execution: false,
+                supports_caching: false,
+                provider_routing: None,
+                tool_format: "openai_json".to_owned(),
+                cost_input_per_m: None,
+                cost_output_per_m: Some(2.0),
+                cost_input_per_m_high: None,
+                cost_output_per_m_high: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                thinking_level: None,
+                max_tools: None,
+                tokenizer_ratio: None,
+                supports_search: false,
+                supports_citations: false,
+                supports_async: false,
+                is_embedding_model: false,
+                search_context_size: None,
+                cost_per_request: None,
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "capable".to_owned(),
+            ModelProfile {
+                provider: "gemini".to_owned(),
+                slug: "gemini-2.5-pro".to_owned(),
+                context_window: 1_048_576,
+                max_output: Some(65_536),
+                supports_tools: true,
+                supports_thinking: true,
+                supports_vision: true,
+                supports_web_search: true,
+                supports_mcp_tools: true,
+                supports_partial: true,
+                supports_grounding: true,
+                supports_code_execution: true,
+                supports_caching: true,
+                provider_routing: None,
+                tool_format: "openai_json".to_owned(),
+                cost_input_per_m: None,
+                cost_output_per_m: Some(8.0),
+                cost_input_per_m_high: None,
+                cost_output_per_m_high: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                thinking_level: None,
+                max_tools: None,
+                tokenizer_ratio: None,
+                supports_search: true,
+                supports_citations: false,
+                supports_async: false,
+                is_embedding_model: false,
+                search_context_size: None,
+                cost_per_request: None,
+                ..Default::default()
+            },
+        );
         let requirements = TaskRequirements {
             needs_web_search: true,
             needs_code_execution: true,
@@ -1549,11 +1561,14 @@ mod tests {
     #[test]
     fn resolve_model_prefix_matches_slug() {
         let mut config = RokoConfig::default();
-        config.models.insert("opus".to_owned(), ModelProfile {
-            provider: "anthropic".to_owned(),
-            slug: "claude-opus-4-6".to_owned(),
-            ..Default::default()
-        });
+        config.models.insert(
+            "opus".to_owned(),
+            ModelProfile {
+                provider: "anthropic".to_owned(),
+                slug: "claude-opus-4-6".to_owned(),
+                ..Default::default()
+            },
+        );
 
         // "claude-opus-4" is a prefix of slug "claude-opus-4-6" separated by '-'
         let resolved = resolve_model(&config, "claude-opus-4");
@@ -1565,16 +1580,22 @@ mod tests {
     #[test]
     fn resolve_model_prefix_requires_separator() {
         let mut config = RokoConfig::default();
-        config.models.insert("o3".to_owned(), ModelProfile {
-            provider: "openai".to_owned(),
-            slug: "o3".to_owned(),
-            ..Default::default()
-        });
-        config.models.insert("o3-mini".to_owned(), ModelProfile {
-            provider: "openai".to_owned(),
-            slug: "o3-mini".to_owned(),
-            ..Default::default()
-        });
+        config.models.insert(
+            "o3".to_owned(),
+            ModelProfile {
+                provider: "openai".to_owned(),
+                slug: "o3".to_owned(),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "o3-mini".to_owned(),
+            ModelProfile {
+                provider: "openai".to_owned(),
+                slug: "o3-mini".to_owned(),
+                ..Default::default()
+            },
+        );
 
         // "o3" should match exactly, not prefix-match "o3-mini"
         let resolved = resolve_model(&config, "o3");

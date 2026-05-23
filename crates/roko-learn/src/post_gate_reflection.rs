@@ -575,9 +575,10 @@ mod tests {
 
         assert_eq!(observed.record.trigger_gate, "compile");
         assert_eq!(observed.record.outcome, ReflectionGateOutcome::Failed);
-        assert_eq!(observed.record.failure_pattern_ids, vec![
-            "E0308:type_mismatch"
-        ]);
+        assert_eq!(
+            observed.record.failure_pattern_ids,
+            vec!["E0308:type_mismatch"]
+        );
         assert_eq!(
             observed.record.admission_status,
             ReflectionAdmissionStatus::Candidate

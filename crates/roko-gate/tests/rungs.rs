@@ -286,14 +286,18 @@ async fn compile_rung_passes_and_fails_on_invalid_rust() {
 #[tokio::test]
 async fn test_rung_passes_and_fails_on_a_real_test_failure() {
     let tmp = tempdir();
-    scaffold_cargo_project(tmp.path(), "", &[(
-        "tests/test_harness.rs",
-        r#"#[test]
+    scaffold_cargo_project(
+        tmp.path(),
+        "",
+        &[(
+            "tests/test_harness.rs",
+            r#"#[test]
 fn smoke() {
     assert_eq!(1, 1);
 }
 "#,
-    )]);
+        )],
+    );
 
     let gate = TestGate::cargo().with_timeout_ms(60_000);
     let signal = cargo_signal(tmp.path());
@@ -407,12 +411,16 @@ async fn symbol_rung_passes_and_reports_missing_symbols() {
 #[tokio::test]
 async fn generated_test_rung_passes_and_fails_with_explicit_artifacts() {
     let tmp = tempdir();
-    scaffold_cargo_project(tmp.path(), "", &[(
-        "tests/generated_harness.rs",
-        r#"#[path = "__roko_generated__/gen_fixture.rs"]
+    scaffold_cargo_project(
+        tmp.path(),
+        "",
+        &[(
+            "tests/generated_harness.rs",
+            r#"#[path = "__roko_generated__/gen_fixture.rs"]
 mod gen_fixture;
 "#,
-    )]);
+        )],
+    );
 
     let pass_store: Arc<dyn ArtifactStore> = Arc::new(
         InMemoryArtifactStore::new().with(
@@ -454,14 +462,18 @@ fn gen_fixture_fails() {
 #[tokio::test]
 async fn property_test_rung_passes_and_fails_on_prefix_matched_tests() {
     let tmp = tempdir();
-    scaffold_cargo_project(tmp.path(), "", &[(
-        "tests/prop_harness.rs",
-        r#"#[test]
+    scaffold_cargo_project(
+        tmp.path(),
+        "",
+        &[(
+            "tests/prop_harness.rs",
+            r#"#[test]
 fn prop_fixture_passes() {
     assert_eq!(2 + 2, 4);
 }
 "#,
-    )]);
+        )],
+    );
 
     let gate = PropertyTestGate::cargo().with_timeout_ms(60_000);
     let signal = cargo_signal(tmp.path());

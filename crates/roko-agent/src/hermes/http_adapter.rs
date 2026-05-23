@@ -643,9 +643,12 @@ mod tests {
         let agent = HermesHttpAgent::new(config);
         let caps = agent.capabilities();
         assert!(matches!(caps.streaming, StreamingMode::SseChatCompletions));
-        assert!(matches!(caps.one_shot, OneShotMode::HttpJson {
-            endpoint: "/v1/chat/completions"
-        }));
+        assert!(matches!(
+            caps.one_shot,
+            OneShotMode::HttpJson {
+                endpoint: "/v1/chat/completions"
+            }
+        ));
         assert!(matches!(caps.tool_injection, ToolInjection::PerCallTools));
         assert!(caps.model_override);
         assert!(caps.multiplex_safe);

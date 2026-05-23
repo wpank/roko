@@ -208,12 +208,15 @@ mod tests {
         });
         let events = parse_chunk(StreamChunk::Usage(value));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AgentEvent::Usage {
-            input_tokens: 1000,
-            output_tokens: 500,
-            cache_read_tokens: 200,
-            ..
-        }));
+        assert!(matches!(
+            &events[0],
+            AgentEvent::Usage {
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_read_tokens: 200,
+                ..
+            }
+        ));
     }
 
     #[test]

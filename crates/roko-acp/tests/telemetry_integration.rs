@@ -28,11 +28,14 @@ async fn single_dispatch_produces_episode() {
     let session = create_test_session(tmp.path());
 
     let result = session
-        .mock_dispatch("Fix the bug", MockResponse {
-            text: "Done. Fixed the null check.".to_string(),
-            input_tokens: 1_500,
-            output_tokens: 200,
-        })
+        .mock_dispatch(
+            "Fix the bug",
+            MockResponse {
+                text: "Done. Fixed the null check.".to_string(),
+                input_tokens: 1_500,
+                output_tokens: 200,
+            },
+        )
         .await
         .expect("dispatch should succeed");
 
@@ -70,11 +73,14 @@ async fn single_dispatch_feeds_cascade_router() {
     let session = create_test_session(tmp.path());
 
     session
-        .mock_dispatch("Add error handling", MockResponse {
-            text: "Added try-catch blocks.".to_string(),
-            input_tokens: 2_000,
-            output_tokens: 500,
-        })
+        .mock_dispatch(
+            "Add error handling",
+            MockResponse {
+                text: "Added try-catch blocks.".to_string(),
+                input_tokens: 2_000,
+                output_tokens: 500,
+            },
+        )
         .await
         .expect("dispatch should succeed");
 
@@ -96,11 +102,14 @@ async fn single_dispatch_reports_usage() {
     let session = create_test_session(tmp.path());
 
     let result = session
-        .mock_dispatch("Refactor function", MockResponse {
-            text: "Refactored.".to_string(),
-            input_tokens: 3_000,
-            output_tokens: 800,
-        })
+        .mock_dispatch(
+            "Refactor function",
+            MockResponse {
+                text: "Refactored.".to_string(),
+                input_tokens: 3_000,
+                output_tokens: 800,
+            },
+        )
         .await
         .expect("dispatch should succeed");
 
@@ -117,11 +126,14 @@ async fn pipeline_produces_combined_telemetry() {
     let session = create_test_session_with_workflow(tmp.path(), "standard");
 
     let result = session
-        .mock_pipeline_dispatch("Add retry logic", vec![
-            MockPhaseResponse::Implement("Added retry with backoff.".into(), 2_000, 600),
-            MockPhaseResponse::GatePass,
-            MockPhaseResponse::ReviewApprove("LGTM".into(), 1_000, 100),
-        ])
+        .mock_pipeline_dispatch(
+            "Add retry logic",
+            vec![
+                MockPhaseResponse::Implement("Added retry with backoff.".into(), 2_000, 600),
+                MockPhaseResponse::GatePass,
+                MockPhaseResponse::ReviewApprove("LGTM".into(), 1_000, 100),
+            ],
+        )
         .await
         .expect("pipeline dispatch should succeed");
 

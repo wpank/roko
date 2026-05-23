@@ -30,31 +30,34 @@ turn_budget_usd = 5.5
         .roles
         .get("implementer")
         .expect("implementer role");
-    assert_eq!(role, &RoleOverride {
-        role: Some("code_implementer".to_string()),
-        model: Some("claude-opus-4-6".to_string()),
-        backend: Some("claude".to_string()),
-        effort: Some("high".to_string()),
-        context_limit_k: Some(300),
-        tools: Some(vec![
-            "read_file".to_string(),
-            "edit_file".to_string(),
-            "git-*".to_string(),
-        ]),
-        budget: Some(roko_core::config::AgentBudget {
-            max_tokens_per_turn: Some(12_000),
-            max_cost_usd_cents_per_turn: Some(550),
-        }),
-        thresholds: Some(roko_core::config::AgentThresholds {
-            gate_pass_rate_floor: Some(0.72),
-        }),
-        routing_overrides: Some(roko_core::config::RoutingOverrides {
-            force_backend: Some("claude".to_string()),
-            force_tier: Some("focused".to_string()),
-        }),
-        turn_budget_usd: Some(5.5),
-        temperament: None,
-    });
+    assert_eq!(
+        role,
+        &RoleOverride {
+            role: Some("code_implementer".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            backend: Some("claude".to_string()),
+            effort: Some("high".to_string()),
+            context_limit_k: Some(300),
+            tools: Some(vec![
+                "read_file".to_string(),
+                "edit_file".to_string(),
+                "git-*".to_string(),
+            ]),
+            budget: Some(roko_core::config::AgentBudget {
+                max_tokens_per_turn: Some(12_000),
+                max_cost_usd_cents_per_turn: Some(550),
+            }),
+            thresholds: Some(roko_core::config::AgentThresholds {
+                gate_pass_rate_floor: Some(0.72),
+            }),
+            routing_overrides: Some(roko_core::config::RoutingOverrides {
+                force_backend: Some("claude".to_string()),
+                force_tier: Some("focused".to_string()),
+            }),
+            turn_budget_usd: Some(5.5),
+            temperament: None,
+        }
+    );
 }
 
 #[test]

@@ -194,27 +194,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let lines = vec![
-            event_line(0, RuntimeEvent::WorkflowStarted {
-                run_id: "r1".into(),
-                template: "express".into(),
-                prompt: "fix".into(),
-            }),
-            event_line(1, RuntimeEvent::PhaseTransition {
-                run_id: "r1".into(),
-                from: "plan".into(),
-                to: "implement".into(),
-            }),
-            event_line(2, RuntimeEvent::AgentSpawned {
-                run_id: "r1".into(),
-                agent_id: "a1".into(),
-                role: "implementer".into(),
-                model: "m".into(),
-            }),
-            event_line(3, RuntimeEvent::GatePassed {
-                run_id: "r1".into(),
-                gate_name: "compile".into(),
-                duration_ms: 100,
-            }),
+            event_line(
+                0,
+                RuntimeEvent::WorkflowStarted {
+                    run_id: "r1".into(),
+                    template: "express".into(),
+                    prompt: "fix".into(),
+                },
+            ),
+            event_line(
+                1,
+                RuntimeEvent::PhaseTransition {
+                    run_id: "r1".into(),
+                    from: "plan".into(),
+                    to: "implement".into(),
+                },
+            ),
+            event_line(
+                2,
+                RuntimeEvent::AgentSpawned {
+                    run_id: "r1".into(),
+                    agent_id: "a1".into(),
+                    role: "implementer".into(),
+                    model: "m".into(),
+                },
+            ),
+            event_line(
+                3,
+                RuntimeEvent::GatePassed {
+                    run_id: "r1".into(),
+                    gate_name: "compile".into(),
+                    duration_ms: 100,
+                },
+            ),
         ]
         .join("\n");
         std::fs::write(&path, lines).unwrap();
@@ -232,24 +244,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let lines = vec![
-            event_line(0, RuntimeEvent::WorkflowStarted {
-                run_id: "r2".into(),
-                template: "express".into(),
-                prompt: "test".into(),
-            }),
-            event_line(1, RuntimeEvent::AgentSpawned {
-                run_id: "r2".into(),
-                agent_id: "a1".into(),
-                role: "implementer".into(),
-                model: "m".into(),
-            }),
-            event_line(2, RuntimeEvent::AgentCompleted {
-                run_id: "r2".into(),
-                agent_id: "a1".into(),
-                output: "done".into(),
-                tokens_used: 500,
-                cost_usd: 0.01,
-            }),
+            event_line(
+                0,
+                RuntimeEvent::WorkflowStarted {
+                    run_id: "r2".into(),
+                    template: "express".into(),
+                    prompt: "test".into(),
+                },
+            ),
+            event_line(
+                1,
+                RuntimeEvent::AgentSpawned {
+                    run_id: "r2".into(),
+                    agent_id: "a1".into(),
+                    role: "implementer".into(),
+                    model: "m".into(),
+                },
+            ),
+            event_line(
+                2,
+                RuntimeEvent::AgentCompleted {
+                    run_id: "r2".into(),
+                    agent_id: "a1".into(),
+                    output: "done".into(),
+                    tokens_used: 500,
+                    cost_usd: 0.01,
+                },
+            ),
         ]
         .join("\n");
         std::fs::write(&path, lines).unwrap();
@@ -266,30 +287,45 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let lines = vec![
-            event_line(0, RuntimeEvent::AgentOutput {
-                run_id: "r3".into(),
-                agent_id: "a1".into(),
-                chunk: "partial".into(),
-            }),
-            event_line(1, RuntimeEvent::AgentFailed {
-                run_id: "r3".into(),
-                agent_id: "a1".into(),
-                error: "compile failed".into(),
-            }),
-            event_line(2, RuntimeEvent::GateStarted {
-                run_id: "r3".into(),
-                gate_name: "compile".into(),
-                rung: 1,
-            }),
-            event_line(3, RuntimeEvent::FeedbackRecorded {
-                run_id: "r3".into(),
-                kind: "gate".into(),
-                summary: "compile failed".into(),
-            }),
-            event_line(4, RuntimeEvent::StateCheckpointed {
-                run_id: "r3".into(),
-                path: "/tmp/state.json".into(),
-            }),
+            event_line(
+                0,
+                RuntimeEvent::AgentOutput {
+                    run_id: "r3".into(),
+                    agent_id: "a1".into(),
+                    chunk: "partial".into(),
+                },
+            ),
+            event_line(
+                1,
+                RuntimeEvent::AgentFailed {
+                    run_id: "r3".into(),
+                    agent_id: "a1".into(),
+                    error: "compile failed".into(),
+                },
+            ),
+            event_line(
+                2,
+                RuntimeEvent::GateStarted {
+                    run_id: "r3".into(),
+                    gate_name: "compile".into(),
+                    rung: 1,
+                },
+            ),
+            event_line(
+                3,
+                RuntimeEvent::FeedbackRecorded {
+                    run_id: "r3".into(),
+                    kind: "gate".into(),
+                    summary: "compile failed".into(),
+                },
+            ),
+            event_line(
+                4,
+                RuntimeEvent::StateCheckpointed {
+                    run_id: "r3".into(),
+                    path: "/tmp/state.json".into(),
+                },
+            ),
         ]
         .join("\n");
         std::fs::write(&path, lines).unwrap();

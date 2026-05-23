@@ -584,12 +584,15 @@ impl SessionManager {
             .take_writer()
             .map_err(|e| anyhow::anyhow!("take writer: {e}"))?;
 
-        self.session_info.lock().insert(id.clone(), SessionInfo {
-            id: id.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            cols,
-            rows,
-        });
+        self.session_info.lock().insert(
+            id.clone(),
+            SessionInfo {
+                id: id.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                cols,
+                rows,
+            },
+        );
 
         let sess_gen = self.sess_generation.fetch_add(1, Ordering::Relaxed);
 
@@ -602,19 +605,22 @@ impl SessionManager {
         let (tx, rx) = mpsc::channel(256);
         subscribers.lock().push(tx);
 
-        self.sessions.lock().insert(id.clone(), PtySession {
-            writer,
-            master: pair.master,
-            child,
-            sess_generation: sess_gen,
-            zdotdir: zdotdir_path,
-            disconnected_at: None,
-            scrollback: scrollback.clone(),
-            subscribers: subscribers.clone(),
-            spawn_workdir: wd.clone(),
-            spawn_cols: cols,
-            spawn_rows: rows,
-        });
+        self.sessions.lock().insert(
+            id.clone(),
+            PtySession {
+                writer,
+                master: pair.master,
+                child,
+                sess_generation: sess_gen,
+                zdotdir: zdotdir_path,
+                disconnected_at: None,
+                scrollback: scrollback.clone(),
+                subscribers: subscribers.clone(),
+                spawn_workdir: wd.clone(),
+                spawn_cols: cols,
+                spawn_rows: rows,
+            },
+        );
 
         self.command_event_emitter.emit(CommandEvent::Started {
             command_id: id.clone(),
@@ -802,28 +808,34 @@ impl SessionManager {
             .take_writer()
             .map_err(|e| anyhow::anyhow!("take writer: {e}"))?;
 
-        self.session_info.lock().insert(id.clone(), SessionInfo {
-            id: id.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            cols,
-            rows,
-        });
+        self.session_info.lock().insert(
+            id.clone(),
+            SessionInfo {
+                id: id.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                cols,
+                rows,
+            },
+        );
 
         let sess_gen = self.sess_generation.fetch_add(1, Ordering::Relaxed);
 
-        self.sessions.lock().insert(id.clone(), PtySession {
-            writer,
-            master: pair.master,
-            child,
-            sess_generation: sess_gen,
-            zdotdir: zdotdir_path,
-            disconnected_at: None,
-            scrollback: Arc::new(Mutex::new(VecDeque::new())),
-            subscribers: Arc::new(Mutex::new(Vec::new())),
-            spawn_workdir: wd.clone(),
-            spawn_cols: cols,
-            spawn_rows: rows,
-        });
+        self.sessions.lock().insert(
+            id.clone(),
+            PtySession {
+                writer,
+                master: pair.master,
+                child,
+                sess_generation: sess_gen,
+                zdotdir: zdotdir_path,
+                disconnected_at: None,
+                scrollback: Arc::new(Mutex::new(VecDeque::new())),
+                subscribers: Arc::new(Mutex::new(Vec::new())),
+                spawn_workdir: wd.clone(),
+                spawn_cols: cols,
+                spawn_rows: rows,
+            },
+        );
 
         self.command_event_emitter.emit(CommandEvent::Started {
             command_id: id.clone(),
@@ -1400,10 +1412,9 @@ mod tests {
             let child = pair.slave.spawn_command(cmd).expect("spawn sleep");
             let writer = pair.master.take_writer().expect("take writer");
 
-            manager
-                .sessions
-                .lock()
-                .insert(fake_id.to_string(), PtySession {
+            manager.sessions.lock().insert(
+                fake_id.to_string(),
+                PtySession {
                     writer,
                     master: pair.master,
                     child,
@@ -1415,16 +1426,17 @@ mod tests {
                     spawn_workdir: tempdir.path().to_path_buf(),
                     spawn_cols: 80,
                     spawn_rows: 24,
-                });
-            manager
-                .session_info
-                .lock()
-                .insert(fake_id.to_string(), SessionInfo {
+                },
+            );
+            manager.session_info.lock().insert(
+                fake_id.to_string(),
+                SessionInfo {
                     id: fake_id.to_string(),
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     cols: 80,
                     rows: 24,
-                });
+                },
+            );
 
             // Verify session exists before reap
             assert!(

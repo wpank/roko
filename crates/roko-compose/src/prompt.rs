@@ -1278,66 +1278,87 @@ fn bidder_affect_multiplier(section: &PromptSection, affect: Option<&AuctionAffe
         section.name.to_ascii_lowercase(),
         section.content.to_ascii_lowercase()
     );
-    let warningish = keyword_weight(&text, &[
-        "warning",
-        "caution",
-        "avoid",
-        "risk",
-        "failure",
-        "regression",
-        "blocker",
-    ]);
-    let exploratory = keyword_weight(&text, &[
-        "explore",
-        "novel",
-        "research",
-        "investigate",
-        "hypothesis",
-        "experiment",
-    ]);
-    let proven = keyword_weight(&text, &[
-        "playbook",
-        "proven",
-        "stable",
-        "known good",
-        "best practice",
-        "repeatable",
-    ]);
-    let conservative = keyword_weight(&text, &[
-        "conservative",
-        "safe",
-        "warning",
-        "avoid",
-        "guardrail",
-        "rollback",
-    ]);
-    let deadline = keyword_weight(&text, &[
-        "deadline",
-        "blocking",
-        "critical",
-        "must",
-        "acceptance",
-        "verify",
-        "required",
-    ]);
-    let failure = keyword_weight(&text, &[
-        "failure",
-        "failed",
-        "error",
-        "retry",
-        "regression",
-        "incident",
-        "blocker",
-    ]);
-    let prediction = keyword_weight(&text, &[
-        "prediction",
-        "forecast",
-        "uncertain",
-        "error",
-        "warning",
-        "confidence",
-        "probe",
-    ]);
+    let warningish = keyword_weight(
+        &text,
+        &[
+            "warning",
+            "caution",
+            "avoid",
+            "risk",
+            "failure",
+            "regression",
+            "blocker",
+        ],
+    );
+    let exploratory = keyword_weight(
+        &text,
+        &[
+            "explore",
+            "novel",
+            "research",
+            "investigate",
+            "hypothesis",
+            "experiment",
+        ],
+    );
+    let proven = keyword_weight(
+        &text,
+        &[
+            "playbook",
+            "proven",
+            "stable",
+            "known good",
+            "best practice",
+            "repeatable",
+        ],
+    );
+    let conservative = keyword_weight(
+        &text,
+        &[
+            "conservative",
+            "safe",
+            "warning",
+            "avoid",
+            "guardrail",
+            "rollback",
+        ],
+    );
+    let deadline = keyword_weight(
+        &text,
+        &[
+            "deadline",
+            "blocking",
+            "critical",
+            "must",
+            "acceptance",
+            "verify",
+            "required",
+        ],
+    );
+    let failure = keyword_weight(
+        &text,
+        &[
+            "failure",
+            "failed",
+            "error",
+            "retry",
+            "regression",
+            "incident",
+            "blocker",
+        ],
+    );
+    let prediction = keyword_weight(
+        &text,
+        &[
+            "prediction",
+            "forecast",
+            "uncertain",
+            "error",
+            "warning",
+            "confidence",
+            "probe",
+        ],
+    );
 
     let subsystem_bias = match section.bidder {
         AttentionBidder::Neuro => {
@@ -1385,23 +1406,29 @@ fn section_valence(section: &PromptSection) -> f64 {
         section.name.to_ascii_lowercase(),
         section.content.to_ascii_lowercase()
     );
-    let positive = keyword_weight(&text, &[
-        "success",
-        "passed",
-        "proven",
-        "stable",
-        "known good",
-        "opportunity",
-    ]);
-    let negative = keyword_weight(&text, &[
-        "failure",
-        "failed",
-        "error",
-        "warning",
-        "risk",
-        "regression",
-        "threat",
-    ]);
+    let positive = keyword_weight(
+        &text,
+        &[
+            "success",
+            "passed",
+            "proven",
+            "stable",
+            "known good",
+            "opportunity",
+        ],
+    );
+    let negative = keyword_weight(
+        &text,
+        &[
+            "failure",
+            "failed",
+            "error",
+            "warning",
+            "risk",
+            "regression",
+            "threat",
+        ],
+    );
     (positive as f64 - negative as f64).clamp(-1.0, 1.0)
 }
 

@@ -270,16 +270,22 @@ impl ForensicReplay {
 
     /// Mark a step as partially reconstructed.
     pub fn mark_partial(&mut self, step: ReconstructionStep, missing: impl Into<String>) {
-        self.step_status.insert(step, StepStatus::Partial {
-            missing: missing.into(),
-        });
+        self.step_status.insert(
+            step,
+            StepStatus::Partial {
+                missing: missing.into(),
+            },
+        );
     }
 
     /// Mark a step as failed to reconstruct.
     pub fn mark_failed(&mut self, step: ReconstructionStep, reason: impl Into<String>) {
-        self.step_status.insert(step, StepStatus::Failed {
-            reason: reason.into(),
-        });
+        self.step_status.insert(
+            step,
+            StepStatus::Failed {
+                reason: reason.into(),
+            },
+        );
     }
 
     /// Finalize the replay by computing its content hash.

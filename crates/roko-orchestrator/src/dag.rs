@@ -2108,18 +2108,14 @@ mod tests {
     #[test]
     fn cross_plan_dep_resolves() {
         let mut plans = BTreeMap::new();
-        plans.insert("09-foo".to_string(), vec![mk_task(
-            "t1",
-            &[],
-            &[],
-            Some(10),
-        )]);
-        plans.insert("10-bar".to_string(), vec![mk_task(
-            "t2",
-            &["09-foo:t1"],
-            &[],
-            Some(5),
-        )]);
+        plans.insert(
+            "09-foo".to_string(),
+            vec![mk_task("t1", &[], &[], Some(10))],
+        );
+        plans.insert(
+            "10-bar".to_string(),
+            vec![mk_task("t2", &["09-foo:t1"], &[], Some(5))],
+        );
         let dag = UnifiedTaskDag::build(&plans, &HashMap::new(), DagConfig::default()).unwrap();
         let waves = dag.waves().unwrap();
         assert_eq!(waves.len(), 2);
@@ -2131,10 +2127,10 @@ mod tests {
     fn plan_level_deps_propagate_to_all_tasks() {
         let mut plans = BTreeMap::new();
         plans.insert("a".to_string(), vec![mk_task("t1", &[], &[], None)]);
-        plans.insert("b".to_string(), vec![
-            mk_task("t1", &[], &[], None),
-            mk_task("t2", &[], &[], None),
-        ]);
+        plans.insert(
+            "b".to_string(),
+            vec![mk_task("t1", &[], &[], None), mk_task("t2", &[], &[], None)],
+        );
         let mut deps = HashMap::new();
         deps.insert("b".to_string(), HashSet::from(["a".to_string()]));
         let dag = UnifiedTaskDag::build(&plans, &deps, DagConfig::default()).unwrap();
@@ -2170,10 +2166,13 @@ mod tests {
     #[test]
     fn file_overlap_can_be_disabled() {
         let mut plans = BTreeMap::new();
-        plans.insert("p".to_string(), vec![
-            mk_task("t1", &[], &["src/lib.rs"], None),
-            mk_task("t2", &[], &["src/lib.rs"], None),
-        ]);
+        plans.insert(
+            "p".to_string(),
+            vec![
+                mk_task("t1", &[], &["src/lib.rs"], None),
+                mk_task("t2", &[], &["src/lib.rs"], None),
+            ],
+        );
         let cfg = DagConfig {
             infer_file_overlap: false,
             max_wave_width: 0,

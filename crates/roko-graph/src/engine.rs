@@ -312,28 +312,30 @@ pub fn default_registry() -> CellRegistry {
     let mut registry = CellRegistry::new();
 
     registry.register("gate.compile", |_config| {
-        Box::new(ShellCell::new("gate.compile", "CompileGate", "cargo", &[
-            "check",
-            "--workspace",
-        ]))
+        Box::new(ShellCell::new(
+            "gate.compile",
+            "CompileGate",
+            "cargo",
+            &["check", "--workspace"],
+        ))
     });
 
     registry.register("gate.test", |_config| {
-        Box::new(ShellCell::new("gate.test", "TestGate", "cargo", &[
-            "test",
-            "--workspace",
-        ]))
+        Box::new(ShellCell::new(
+            "gate.test",
+            "TestGate",
+            "cargo",
+            &["test", "--workspace"],
+        ))
     });
 
     registry.register("gate.clippy", |_config| {
-        Box::new(ShellCell::new("gate.clippy", "ClippyGate", "cargo", &[
-            "clippy",
-            "--workspace",
-            "--no-deps",
-            "--",
-            "-D",
-            "warnings",
-        ]))
+        Box::new(ShellCell::new(
+            "gate.clippy",
+            "ClippyGate",
+            "cargo",
+            &["clippy", "--workspace", "--no-deps", "--", "-D", "warnings"],
+        ))
     });
 
     registry.register("noop", |_config| Box::new(NoopCell::default()));

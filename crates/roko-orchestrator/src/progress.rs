@@ -354,9 +354,13 @@ mod tests {
         let plan = "plan-5";
 
         // Fast-track to Failed
-        pt.try_transition(plan, &PlanPhase::Queued, PlanPhase::Failed {
-            reason: FailureKind::Deadlock,
-        })
+        pt.try_transition(
+            plan,
+            &PlanPhase::Queued,
+            PlanPhase::Failed {
+                reason: FailureKind::Deadlock,
+            },
+        )
         .unwrap();
 
         // Cannot transition from Failed to anything

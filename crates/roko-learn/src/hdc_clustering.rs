@@ -266,10 +266,13 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty() {
-        let result = k_medoids(&[], &KMedoidsConfig {
-            k: 3,
-            max_iterations: 10,
-        });
+        let result = k_medoids(
+            &[],
+            &KMedoidsConfig {
+                k: 3,
+                max_iterations: 10,
+            },
+        );
         assert!(result.clusters.is_empty());
         assert_eq!(result.iterations, 0);
         assert!(result.converged);
@@ -278,10 +281,13 @@ mod tests {
     #[test]
     fn k_zero_returns_empty() {
         let vecs = vec![HdcVector::from_seed(b"a")];
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 0,
-            max_iterations: 10,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 0,
+                max_iterations: 10,
+            },
+        );
         assert!(result.clusters.is_empty());
         assert!(result.converged);
     }
@@ -289,10 +295,13 @@ mod tests {
     #[test]
     fn single_vector_single_cluster() {
         let vecs = vec![HdcVector::from_seed(b"only")];
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 1,
-            max_iterations: 10,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 1,
+                max_iterations: 10,
+            },
+        );
         assert_eq!(result.clusters.len(), 1);
         assert_eq!(result.clusters[0].members.len(), 1);
         assert_eq!(result.clusters[0].members[0], 0);
@@ -304,10 +313,13 @@ mod tests {
         let vecs: Vec<HdcVector> = (0..4)
             .map(|i| HdcVector::from_seed(format!("pt-{i}").as_bytes()))
             .collect();
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 100,
-            max_iterations: 50,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 100,
+                max_iterations: 50,
+            },
+        );
         // Should have exactly 4 clusters (one per point).
         assert_eq!(result.clusters.len(), 4);
         for c in &result.clusters {
@@ -320,10 +332,13 @@ mod tests {
         // 10 copies of the same vector should all end up in 1 cluster when k=1.
         let v = HdcVector::from_seed(b"same");
         let vecs = vec![v; 10];
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 1,
-            max_iterations: 10,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 1,
+                max_iterations: 10,
+            },
+        );
         assert_eq!(result.clusters.len(), 1);
         assert_eq!(result.clusters[0].members.len(), 10);
         assert!(result.converged);
@@ -366,10 +381,13 @@ mod tests {
             "intra-group similarity ({intra_sim}) should exceed inter-group ({inter_sim})"
         );
 
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 3,
-            max_iterations: 50,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 3,
+                max_iterations: 50,
+            },
+        );
 
         assert_eq!(result.clusters.len(), 3);
 
@@ -410,10 +428,13 @@ mod tests {
             "expected similar vectors to exceed the 0.7 threshold, got {similarity}"
         );
 
-        let result = k_medoids(&[base, similar], &KMedoidsConfig {
-            k: 1,
-            max_iterations: 10,
-        });
+        let result = k_medoids(
+            &[base, similar],
+            &KMedoidsConfig {
+                k: 1,
+                max_iterations: 10,
+            },
+        );
 
         assert_eq!(result.clusters.len(), 1);
         assert_eq!(result.clusters[0].members, vec![0, 1]);
@@ -424,10 +445,13 @@ mod tests {
         // With identical vectors, should converge in 1 iteration.
         let v = HdcVector::from_seed(b"converge");
         let vecs = vec![v; 5];
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 2,
-            max_iterations: 100,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 2,
+                max_iterations: 100,
+            },
+        );
         assert!(result.converged);
         assert!(result.iterations <= 2);
     }
@@ -455,10 +479,13 @@ mod tests {
         let vecs: Vec<HdcVector> = (0..15)
             .map(|i| HdcVector::from_seed(format!("assign-{i}").as_bytes()))
             .collect();
-        let result = k_medoids(&vecs, &KMedoidsConfig {
-            k: 3,
-            max_iterations: 50,
-        });
+        let result = k_medoids(
+            &vecs,
+            &KMedoidsConfig {
+                k: 3,
+                max_iterations: 50,
+            },
+        );
         let mut all_members: Vec<usize> = result
             .clusters
             .iter()

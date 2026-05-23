@@ -1966,12 +1966,15 @@ impl ModelCaller for ModelCallService {
             .record(&convergence_key, output.content.clone());
 
         self.budget.record_cost(usage.cost_usd);
-        self.cache.store(cache_key, CachedResponse {
-            content: output.content.clone(),
-            model: output.model_used.clone(),
-            usage: usage.clone(),
-            stop_reason: Some("end_turn".to_string()),
-        });
+        self.cache.store(
+            cache_key,
+            CachedResponse {
+                content: output.content.clone(),
+                model: output.model_used.clone(),
+                usage: usage.clone(),
+                stop_reason: Some("end_turn".to_string()),
+            },
+        );
 
         let agent_id = format!("model-call:{}", output.model_used);
         // ToolLoopAgent attaches per-turn state as trace metadata; emit it
@@ -2128,18 +2131,21 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(events, vec![
-            ModelStreamEvent::Started {
-                model: "model-a".to_string()
-            },
-            ModelStreamEvent::ContentDelta {
-                text: "ok".to_string()
-            },
-            ModelStreamEvent::Usage { usage },
-            ModelStreamEvent::Completed {
-                stop_reason: Some("end_turn".to_string())
-            }
-        ]);
+        assert_eq!(
+            events,
+            vec![
+                ModelStreamEvent::Started {
+                    model: "model-a".to_string()
+                },
+                ModelStreamEvent::ContentDelta {
+                    text: "ok".to_string()
+                },
+                ModelStreamEvent::Usage { usage },
+                ModelStreamEvent::Completed {
+                    stop_reason: Some("end_turn".to_string())
+                }
+            ]
+        );
     }
 
     #[tokio::test]
@@ -2148,9 +2154,12 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(events, vec![ModelStreamEvent::Failed {
-            error: "provider failed".to_string()
-        }]);
+        assert_eq!(
+            events,
+            vec![ModelStreamEvent::Failed {
+                error: "provider failed".to_string()
+            }]
+        );
     }
 
     #[tokio::test]
@@ -2421,12 +2430,15 @@ mod tests {
     #[test]
     fn cost_predict_estimates_cost_for_known_model() {
         let mut cost_table = CostTable::default();
-        cost_table.insert("known-model", ModelPricing {
-            input_per_m: 3.0,
-            output_per_m: 15.0,
-            cache_read_per_m: 0.0,
-            cache_write_per_m: 0.0,
-        });
+        cost_table.insert(
+            "known-model",
+            ModelPricing {
+                input_per_m: 3.0,
+                output_per_m: 15.0,
+                cache_read_per_m: 0.0,
+                cache_write_per_m: 0.0,
+            },
+        );
         let svc = ModelCallService::new("default".into()).with_cost_table(cost_table);
         let req = ModelCallRequest {
             model: "known-model".into(),
@@ -2636,9 +2648,10 @@ mod tests {
         let err = convergence
             .check("run:role", "same output")
             .expect_err("third identical output should trigger");
-        assert!(matches!(err, GatewayError::ConvergenceDetected {
-            consecutive: 3
-        }));
+        assert!(matches!(
+            err,
+            GatewayError::ConvergenceDetected { consecutive: 3 }
+        ));
     }
 
     #[test]

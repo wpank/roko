@@ -274,16 +274,19 @@ mod tests {
         assert_eq!(sections.len(), 8);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, &[
-            "agents_instructions",
-            "plan_spec",
-            "workspace_map",
-            "prd2_extract",
-            "brief",
-            "reviewer_criteria",
-            "files_changed",
-            "prior_findings",
-        ]);
+        assert_eq!(
+            names,
+            &[
+                "agents_instructions",
+                "plan_spec",
+                "workspace_map",
+                "prd2_extract",
+                "brief",
+                "reviewer_criteria",
+                "files_changed",
+                "prior_findings",
+            ]
+        );
 
         // Cache layers match spec
         assert_eq!(sections[0].cache_layer, CacheLayer::Role); // agents_instructions

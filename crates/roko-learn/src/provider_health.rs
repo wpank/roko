@@ -1040,10 +1040,10 @@ mod tests {
         registry.record_failure("bad", ErrorClass::Timeout);
 
         let candidates = vec!["good".to_owned(), "bad".to_owned(), "unknown".to_owned()];
-        assert_eq!(registry.available_providers(&candidates), vec![
-            "good".to_owned(),
-            "unknown".to_owned()
-        ]);
+        assert_eq!(
+            registry.available_providers(&candidates),
+            vec!["good".to_owned(), "unknown".to_owned()]
+        );
     }
 
     /// Registry snapshots persist to disk and load back intact.

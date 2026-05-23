@@ -157,6 +157,9 @@ pub struct RokoConfig {
     pub agents: Vec<AgentDefinition>,
     #[serde(default)]
     pub validation: ValidationConfig,
+    /// Cold-storage archival settings.
+    #[serde(default)]
+    pub cold_storage: ColdStorageConfig,
 }
 
 /// Validation behavior configuration.
@@ -215,6 +218,7 @@ impl Default for RokoConfig {
             runner: CoreRunnerConfig::default(),
             agents: Vec::new(),
             validation: ValidationConfig::default(),
+            cold_storage: ColdStorageConfig::default(),
         }
     }
 }
@@ -271,18 +275,21 @@ fn synthesize_standard_providers_with_env(
     let mut providers = HashMap::new();
     for &(name, env_var, kind, base_url) in specs {
         if env_fn(env_var).filter(|value| !value.is_empty()).is_some() {
-            providers.insert(name.to_string(), ProviderConfig {
-                kind,
-                base_url: base_url.map(String::from),
-                api_key_env: Some(env_var.to_string()),
-                command: None,
-                args: None,
-                timeout_ms: default_provider_timeout_ms(),
-                ttft_timeout_ms: default_provider_ttft_timeout_ms(),
-                connect_timeout_ms: default_provider_connect_timeout_ms(),
-                extra_headers: None,
-                max_concurrent: None,
-            });
+            providers.insert(
+                name.to_string(),
+                ProviderConfig {
+                    kind,
+                    base_url: base_url.map(String::from),
+                    api_key_env: Some(env_var.to_string()),
+                    command: None,
+                    args: None,
+                    timeout_ms: default_provider_timeout_ms(),
+                    ttft_timeout_ms: default_provider_ttft_timeout_ms(),
+                    connect_timeout_ms: default_provider_connect_timeout_ms(),
+                    extra_headers: None,
+                    max_concurrent: None,
+                },
+            );
         }
     }
     providers
@@ -1550,6 +1557,64 @@ fn run_resolve_api_key_child(test_name: &str, api_key_env: &str, expected: Optio
 
 // ---- tests ---------------------------------------------------------------
 
+// ---- ColdStorageConfig ---------------------------------------------------
+
+/// Cold-storage archival settings.
+///
+/// Controls the automatic migration of aged-out engrams from the hot
+/// `FileSubstrate` to the cold `ArchiveColdSubstrate` (`$ROKO_DIR/cold/`).
+///
+/// Configurable via `[cold_storage]` in `roko.toml`:
+///
+/// ```toml
+/// [cold_storage]
+/// enabled = true
+/// max_age_days = 7
+/// batch_size = 500
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColdStorageConfig {
+    /// Whether cold archival is enabled.
+    #[serde(default = "ColdStorageConfig::default_enabled")]
+    pub enabled: bool,
+    /// Maximum age in days before engrams are archived to cold storage.
+    #[serde(default = "ColdStorageConfig::default_max_age_days")]
+    pub max_age_days: u32,
+    /// Maximum number of engrams to archive per batch.
+    #[serde(default = "ColdStorageConfig::default_batch_size")]
+    pub batch_size: usize,
+}
+
+impl ColdStorageConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+
+    const fn default_max_age_days() -> u32 {
+        7
+    }
+
+    const fn default_batch_size() -> usize {
+        500
+    }
+
+    /// Convert `max_age_days` to milliseconds for query cutoff calculation.
+    #[must_use]
+    pub fn max_age_ms(&self) -> i64 {
+        i64::from(self.max_age_days) * 24 * 3600 * 1000
+    }
+}
+
+impl Default for ColdStorageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_age_days: Self::default_max_age_days(),
+            batch_size: Self::default_batch_size(),
+        }
+    }
+}
+
 // ---- CoreRunnerConfig ----------------------------------------------------
 
 /// Plan-level runner configuration shared between `roko-core` and
@@ -2033,8 +2098,9 @@ default_model = "claude-sonnet-4-6"
     fn validate_references_warns_on_unknown_provider_with_suggestion() {
         let mut cfg = RokoConfig::default();
         cfg.agent.default_model = "glm-5-1".to_string();
-        cfg.providers
-            .insert("openrouter".to_string(), ProviderConfig {
+        cfg.providers.insert(
+            "openrouter".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://openrouter.ai/api/v1".to_string()),
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
@@ -2045,20 +2111,27 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
-        cfg.models.insert("glm-5-1".to_string(), ModelProfile {
-            provider: "openruoter".to_string(),
-            slug: "z-ai/glm-5.1".to_string(),
-            context_window: 200_000,
-            supports_tools: true,
-            ..Default::default()
-        });
+            },
+        );
+        cfg.models.insert(
+            "glm-5-1".to_string(),
+            ModelProfile {
+                provider: "openruoter".to_string(),
+                slug: "z-ai/glm-5.1".to_string(),
+                context_window: 200_000,
+                supports_tools: true,
+                ..Default::default()
+            },
+        );
         let warnings = validate_references(&cfg);
-        assert_eq!(warnings, vec![ValidationWarning::UnknownProvider {
-            model: "glm-5-1".to_string(),
-            provider: "openruoter".to_string(),
-            similar: Some("openrouter".to_string())
-        }]);
+        assert_eq!(
+            warnings,
+            vec![ValidationWarning::UnknownProvider {
+                model: "glm-5-1".to_string(),
+                provider: "openruoter".to_string(),
+                similar: Some("openrouter".to_string())
+            }]
+        );
     }
 
     #[test]
@@ -2113,18 +2186,21 @@ default_model = "claude-sonnet-4-6"
             "authorization_file".to_string(),
             secret_path.display().to_string(),
         );
-        config.providers.insert("test".to_string(), ProviderConfig {
-            kind: ProviderKind::OpenAiCompat,
-            base_url: None,
-            api_key_env: None,
-            command: None,
-            args: None,
-            timeout_ms: None,
-            ttft_timeout_ms: None,
-            connect_timeout_ms: None,
-            extra_headers: Some(headers),
-            max_concurrent: None,
-        });
+        config.providers.insert(
+            "test".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: Some(headers),
+                max_concurrent: None,
+            },
+        );
         config.resolve_file_secrets();
         let resolved = config.providers["test"]
             .extra_headers
@@ -2182,8 +2258,9 @@ default_model = "claude-sonnet-4-6"
         cfg.providers.clear();
         cfg.models.clear();
 
-        cfg.providers
-            .insert("missing-key-provider".into(), ProviderConfig {
+        cfg.providers.insert(
+            "missing-key-provider".into(),
+            ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: Some("https://example.invalid/v1".into()),
                 api_key_env: Some("ROKO_TEST_CASCADE_MISSING_API_KEY_NEVER_SET".into()),
@@ -2194,23 +2271,29 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
-        cfg.models.insert("configured-model".into(), ModelProfile {
-            provider: "missing-key-provider".into(),
-            slug: "configured-wire-slug".into(),
-            context_window: 4096,
-            ..Default::default()
-        });
+            },
+        );
+        cfg.models.insert(
+            "configured-model".into(),
+            ModelProfile {
+                provider: "missing-key-provider".into(),
+                slug: "configured-wire-slug".into(),
+                context_window: 4096,
+                ..Default::default()
+            },
+        );
 
         assert!(!cfg.provider_available_for_model_key("configured-model"));
         assert!(cfg.available_model_keys_for_cascade().is_empty());
         assert!(cfg.available_model_slugs_for_cascade().is_empty());
-        assert_eq!(cfg.model_keys_for_cascade(), vec![
-            "configured-model".to_string()
-        ]);
-        assert_eq!(cfg.model_slugs_for_cascade(), vec![
-            "configured-wire-slug".to_string()
-        ]);
+        assert_eq!(
+            cfg.model_keys_for_cascade(),
+            vec!["configured-model".to_string()]
+        );
+        assert_eq!(
+            cfg.model_slugs_for_cascade(),
+            vec!["configured-wire-slug".to_string()]
+        );
     }
 
     #[test]

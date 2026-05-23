@@ -855,11 +855,14 @@ fn build_signal_index(entries: &[Value]) -> HashMap<String, SignalNode> {
             })
             .unwrap_or_default();
 
-        index.insert(id, SignalNode {
-            kind,
-            created_at_ms,
-            lineage,
-        });
+        index.insert(
+            id,
+            SignalNode {
+                kind,
+                created_at_ms,
+                lineage,
+            },
+        );
     }
 
     index

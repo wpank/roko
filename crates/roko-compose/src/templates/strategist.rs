@@ -287,18 +287,21 @@ mod tests {
         assert_eq!(sections.len(), 10);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, &[
-            "agents_instructions",
-            "plan_spec",
-            "workspace_map",
-            "prd2_extract",
-            "cross_plan_context",
-            "decomposition",
-            "preflight",
-            "ignored_tests",
-            "prior_reviews",
-            "output_paths",
-        ]);
+        assert_eq!(
+            names,
+            &[
+                "agents_instructions",
+                "plan_spec",
+                "workspace_map",
+                "prd2_extract",
+                "cross_plan_context",
+                "decomposition",
+                "preflight",
+                "ignored_tests",
+                "prior_reviews",
+                "output_paths",
+            ]
+        );
 
         // Critical sections
         assert_eq!(sections[0].priority, SectionPriority::Critical);

@@ -5613,9 +5613,12 @@ async fn seed_playbooks_if_empty(layout: &RokoLayout) {
                     "edit_file",
                     vec!["file_modified".into()],
                 ),
-                PlaybookStep::new(3, "Verify the change compiles", "run_command", vec![
-                    "compile_success".into(),
-                ]),
+                PlaybookStep::new(
+                    3,
+                    "Verify the change compiles",
+                    "run_command",
+                    vec!["compile_success".into()],
+                ),
             ];
             pb
         },
@@ -5728,9 +5731,12 @@ async fn seed_playbooks_if_empty(layout: &RokoLayout) {
             );
             pb.name = "Compile Check Loop".to_string();
             pb.steps = vec![
-                PlaybookStep::new(0, "Make a single logical change", "edit_file", vec![
-                    "change_made".into(),
-                ]),
+                PlaybookStep::new(
+                    0,
+                    "Make a single logical change",
+                    "edit_file",
+                    vec!["change_made".into()],
+                ),
                 PlaybookStep::new(
                     1,
                     "Run cargo check to verify compilation",
@@ -6317,9 +6323,11 @@ depends_on = []
         );
         persist::save_state_snapshot(&paths, &unified).unwrap();
 
-        let resume = load_executor(&paths, &ExecutorConfig::default(), &[
-            "self-dev-ux".to_string()
-        ]);
+        let resume = load_executor(
+            &paths,
+            &ExecutorConfig::default(),
+            &["self-dev-ux".to_string()],
+        );
 
         assert_eq!(resume.marker.outcome, ResumeOutcome::Resumed);
         assert_eq!(
@@ -6401,11 +6409,10 @@ depends_on = []
 
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init"]);
-        git(dir.path(), &[
-            "config",
-            "user.email",
-            "roko@example.invalid",
-        ]);
+        git(
+            dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
         git(dir.path(), &["config", "user.name", "Roko Test"]);
 
         std::fs::write(dir.path().join("declared.txt"), "before\n").unwrap();

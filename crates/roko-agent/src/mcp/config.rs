@@ -166,10 +166,10 @@ mod tests {
         assert_eq!(config.servers[0].name, "filesystem");
         assert_eq!(config.servers[0].transport, McpTransportConfig::Stdio);
         assert_eq!(config.servers[0].command, "npx");
-        assert_eq!(config.servers[0].args, vec![
-            "-y",
-            "@modelcontextprotocol/server-filesystem"
-        ]);
+        assert_eq!(
+            config.servers[0].args,
+            vec!["-y", "@modelcontextprotocol/server-filesystem"]
+        );
         assert_eq!(config.servers[0].env.get("HOME").unwrap(), "/tmp");
         assert_eq!(config.servers[1].name, "git");
         assert!(config.servers[1].env.is_empty());

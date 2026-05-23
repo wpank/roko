@@ -194,12 +194,14 @@ impl AgentRegistry {
             return Err(RegistryError::NotOwner);
         }
 
-        self.pending_updates
-            .insert(passport_id, PendingPromptUpdate {
+        self.pending_updates.insert(
+            passport_id,
+            PendingPromptUpdate {
                 new_hash,
                 submitted_at: now,
                 executable_after: now + PROMPT_UPDATE_TIMELOCK_SECS,
-            });
+            },
+        );
 
         Ok(())
     }

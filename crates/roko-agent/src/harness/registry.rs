@@ -1,10 +1,16 @@
-//! Central registry for harness adapters and services.
+//! Central registry for harness services (and optionally adapters).
 //!
-//! The registry maps `(harness_id, TransportFlavor)` tuples to
-//! concrete adapter instances, and `harness_id` to service instances.
-//! It also maintains a TTL-bounded probe cache so that repeated
-//! `roko doctor` or dispatch-time checks do not hammer the harness
-//! binaries.
+//! The registry's primary job is **service lifecycle**: it maps
+//! `harness_id` to gateway service instances so they can be
+//! started/stopped/probed collectively.
+//!
+//! It also supports an adapter map keyed by `(harness_id,
+//! TransportFlavor)` for diagnostics/probing, but agent creation
+//! for dispatch is handled by the provider adapters
+//! (`HermesProviderAdapter`, `OpenClawProviderAdapter`), not here.
+//!
+//! A TTL-bounded probe cache prevents repeated `roko doctor` or
+//! diagnostic checks from hammering harness binaries.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -42,10 +48,18 @@ impl Default for RegistryConfig {
 
 /// Central lookup table for harness adapters and services.
 ///
-/// Adapters are keyed by `(harness_id, TransportFlavor)` -- a single
-/// harness (e.g. Hermes) may have multiple adapters, one per transport
-/// tier. Services are keyed by `harness_id` alone because a harness
-/// runs at most one daemon regardless of how many transports it exposes.
+/// The registry's primary responsibility is **service lifecycle**:
+/// registering gateway services so they can be started/stopped/probed
+/// collectively (e.g. via [`start_services`](Self::start_services) or
+/// [`probe_all`](Self::probe_all)).
+///
+/// The adapter map is available for ad-hoc queries (doctor, diagnostics)
+/// but is **not** the dispatch path -- agent creation for dispatch is
+/// handled by the provider adapters (`HermesProviderAdapter`,
+/// `OpenClawProviderAdapter`), which own the tier-selection logic.
+///
+/// Services are keyed by `harness_id` alone because a harness runs at
+/// most one daemon regardless of how many transports it exposes.
 pub struct HarnessRegistry {
     /// Registered adapters, keyed by `(harness_id, transport)`.
     adapters: HashMap<(String, TransportFlavor), Arc<dyn HarnessAdapter>>,
@@ -79,8 +93,13 @@ impl HarnessRegistry {
     /// Construct the registry from a parsed roko config.
     ///
     /// Reads `[providers.*]` blocks, identifies harness-type providers
-    /// (`Hermes`, `OpenClaw`), and instantiates concrete adapters for
-    /// each configured transport tier.
+    /// (`Hermes`, `OpenClaw`), and registers their **gateway services**
+    /// for lifecycle management (start/stop/probe).
+    ///
+    /// Note: agent/adapter *instances* are NOT created here -- that is
+    /// the responsibility of the provider adapters (`HermesProviderAdapter`,
+    /// `OpenClawProviderAdapter`) which handle tier selection at dispatch
+    /// time. This avoids duplicating the tier-selection logic.
     pub fn from_config(cfg: &RokoConfig) -> Result<Self, RegistryError> {
         let mut registry = Self::new();
 
@@ -93,7 +112,7 @@ impl HarnessRegistry {
                         base_url = ?provider.base_url,
                         "discovered harness provider: hermes"
                     );
-                    Self::register_hermes_adapters(&mut registry, provider);
+                    Self::register_hermes_services(&mut registry, provider);
                 }
                 roko_core::agent::ProviderKind::OpenClaw => {
                     tracing::info!(
@@ -101,7 +120,7 @@ impl HarnessRegistry {
                         command = ?provider.command,
                         "discovered harness provider: openclaw"
                     );
-                    Self::register_openclaw_adapters(&mut registry, provider);
+                    Self::register_openclaw_services(&mut registry, provider);
                 }
                 _ => {
                     // Not a harness provider -- skip.
@@ -112,119 +131,46 @@ impl HarnessRegistry {
         Ok(registry)
     }
 
-    /// Instantiate and register Hermes adapters based on provider config.
-    fn register_hermes_adapters(
+    /// Register Hermes gateway service for lifecycle management.
+    ///
+    /// Only registers the [`HermesGatewayService`] when `base_url` is
+    /// configured (indicating an HTTP gateway is expected). Agent
+    /// instances are created by [`HermesProviderAdapter`] at dispatch
+    /// time, not here.
+    fn register_hermes_services(
         registry: &mut Self,
         provider: &roko_core::config::schema::ProviderConfig,
     ) {
-        use crate::hermes::{
-            HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesFlavor, HermesGatewayService,
-            HermesHttpAgent, HermesOneShotAgent, HermesOneShotConfig,
-        };
-        use std::path::PathBuf;
-        use std::time::Duration;
+        use crate::hermes::{HermesConfig, HermesGatewayService};
 
-        let timeout = Duration::from_millis(provider.timeout_ms.unwrap_or(90_000));
-        let binary = provider
-            .command
-            .as_deref()
-            .unwrap_or("hermes")
-            .to_string();
-        let cwd =
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-        // Tier 1: HTTP adapter if base_url is present.
+        // Only register the gateway service when an HTTP endpoint is configured.
         if provider.base_url.is_some() {
             let mut config = HermesConfig::from_provider_config(provider);
+            let timeout = std::time::Duration::from_millis(provider.timeout_ms.unwrap_or(90_000));
             config.timeout = timeout;
-            let agent = HermesHttpAgent::new(config.clone());
-            if let Err(e) = registry.register(Arc::new(agent)) {
-                tracing::warn!(error = %e, "failed to register hermes HTTP adapter");
-            }
-            // Also register the gateway service for lifecycle management.
             let svc = HermesGatewayService::new(config);
             if let Err(e) = registry.register_service(Arc::new(svc)) {
                 tracing::warn!(error = %e, "failed to register hermes gateway service");
             }
         }
-
-        // Tier 2: One-shot adapter.
-        let oneshot_config = HermesOneShotConfig {
-            binary: binary.clone(),
-            flavor: HermesFlavor::ChatQuiet,
-            timeout,
-            ..Default::default()
-        };
-        let oneshot_agent = HermesOneShotAgent::new(oneshot_config);
-        if let Err(e) = registry.register(Arc::new(oneshot_agent)) {
-            tracing::warn!(error = %e, "failed to register hermes oneshot adapter");
-        }
-
-        // Tier 3: ACP adapter.
-        let acp_config = HermesAcpConfig {
-            binary,
-            cwd,
-            timeout,
-            ..Default::default()
-        };
-        let acp_agent = HermesAcpAgent::new(acp_config);
-        if let Err(e) = registry.register(Arc::new(acp_agent)) {
-            tracing::warn!(error = %e, "failed to register hermes ACP adapter");
-        }
     }
 
-    /// Instantiate and register OpenClaw adapters based on provider config.
-    fn register_openclaw_adapters(
+    /// Register OpenClaw gateway service for lifecycle management.
+    ///
+    /// Agent instances are created by [`OpenClawProviderAdapter`] at
+    /// dispatch time, not here.
+    fn register_openclaw_services(
         registry: &mut Self,
         provider: &roko_core::config::schema::ProviderConfig,
     ) {
-        use crate::openclaw::{
-            OpenClawAcpAgent, OpenClawAcpConfig, OpenClawGatewayService, OpenClawInferAgent,
-            OpenClawInferConfig,
-        };
-        use std::path::PathBuf;
-        use std::time::Duration;
+        use crate::openclaw::OpenClawGatewayService;
 
-        let timeout = Duration::from_millis(provider.timeout_ms.unwrap_or(90_000));
         let binary = provider
             .command
             .as_deref()
             .unwrap_or("openclaw")
             .to_string();
-        let cwd =
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-        // Tier 2: CLI infer adapter.
-        let infer_config = OpenClawInferConfig {
-            binary: binary.clone().into(),
-            timeout,
-            ..Default::default()
-        };
-        match OpenClawInferAgent::new(infer_config) {
-            Ok(agent) => {
-                if let Err(e) = registry.register(Arc::new(agent)) {
-                    tracing::warn!(error = %e, "failed to register openclaw infer adapter");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to create openclaw infer agent");
-            }
-        }
-
-        // Tier 3: ACP adapter.
-        let acp_config = OpenClawAcpConfig {
-            binary: binary.clone(),
-            cwd,
-            gateway_url: provider.base_url.clone(),
-            timeout,
-            ..Default::default()
-        };
-        let acp_agent = OpenClawAcpAgent::new(acp_config);
-        if let Err(e) = registry.register(Arc::new(acp_agent)) {
-            tracing::warn!(error = %e, "failed to register openclaw ACP adapter");
-        }
-
-        // Register gateway service for lifecycle management.
         let svc = OpenClawGatewayService::new(binary);
         if let Err(e) = registry.register_service(Arc::new(svc)) {
             tracing::warn!(error = %e, "failed to register openclaw gateway service");
@@ -260,6 +206,9 @@ impl HarnessRegistry {
     }
 
     /// Look up an adapter by `(harness_id, transport)`.
+    ///
+    /// Used for diagnostics and probing -- NOT for dispatch. Agent
+    /// creation for dispatch goes through the provider adapters.
     pub fn adapter(
         &self,
         id: &str,
@@ -275,12 +224,12 @@ impl HarnessRegistry {
             })
     }
 
-    /// Return all registered adapters.
+    /// Return all registered adapters (for diagnostics, not dispatch).
     pub fn all_adapters(&self) -> Vec<Arc<dyn HarnessAdapter>> {
         self.adapters.values().cloned().collect()
     }
 
-    /// Return all adapters for a given provider/harness id.
+    /// Return all adapters for a given provider/harness id (for diagnostics, not dispatch).
     pub fn adapters_for_provider(&self, harness_id: &str) -> Vec<Arc<dyn HarnessAdapter>> {
         self.adapters
             .iter()

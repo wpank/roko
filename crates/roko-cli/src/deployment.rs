@@ -97,15 +97,18 @@ mod tests {
             Path::new("roko.tar.gz.sigstore.json"),
         );
 
-        assert_eq!(args, vec![
-            OsString::from("verify-blob"),
-            OsString::from("roko.tar.gz"),
-            OsString::from("--bundle"),
-            OsString::from("roko.tar.gz.sigstore.json"),
-            OsString::from("--certificate-identity"),
-            OsString::from(verifier.certificate_identity),
-            OsString::from("--certificate-oidc-issuer"),
-            OsString::from(verifier.certificate_issuer),
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("verify-blob"),
+                OsString::from("roko.tar.gz"),
+                OsString::from("--bundle"),
+                OsString::from("roko.tar.gz.sigstore.json"),
+                OsString::from("--certificate-identity"),
+                OsString::from(verifier.certificate_identity),
+                OsString::from("--certificate-oidc-issuer"),
+                OsString::from(verifier.certificate_issuer),
+            ]
+        );
     }
 }

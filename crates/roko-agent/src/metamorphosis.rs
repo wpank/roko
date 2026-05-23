@@ -227,10 +227,10 @@ mod tests {
     #[test]
     fn morph_rejects_disallowed_transition() {
         let identity = AgentIdentity::new(AgentRole::Implementer, Temperament::Balanced);
-        let mut agent = MorphableAgent::new(Box::new(MockAgent::reply("ok")), identity)
-            .with_transitions(HashMap::from([(AgentRole::Implementer, vec![
-                AgentRole::Auditor,
-            ])]));
+        let mut agent =
+            MorphableAgent::new(Box::new(MockAgent::reply("ok")), identity).with_transitions(
+                HashMap::from([(AgentRole::Implementer, vec![AgentRole::Auditor])]),
+            );
         let err = agent.morph(AgentRole::Strategist).unwrap_err();
         assert!(matches!(err, MorphError::TransitionDenied { .. }));
     }

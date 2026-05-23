@@ -417,17 +417,17 @@ impl ClaudeCliAgent {
                 );
                 Self::update_stream_usage_field(
                     &mut usage.cache_creation_tokens,
-                    Self::stream_usage_u64(result_usage, &[
-                        "cache_creation_input_tokens",
-                        "cache_creation_tokens",
-                    ]),
+                    Self::stream_usage_u64(
+                        result_usage,
+                        &["cache_creation_input_tokens", "cache_creation_tokens"],
+                    ),
                 );
                 Self::update_stream_usage_field(
                     &mut usage.cache_read_tokens,
-                    Self::stream_usage_u64(result_usage, &[
-                        "cache_read_input_tokens",
-                        "cache_read_tokens",
-                    ]),
+                    Self::stream_usage_u64(
+                        result_usage,
+                        &["cache_read_input_tokens", "cache_read_tokens"],
+                    ),
                 );
             }
         }

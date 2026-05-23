@@ -1600,22 +1600,28 @@ mod tests {
     #[test]
     fn post_insight_then_search_returns_match() {
         let c = ctx();
-        let res = handle_post_insight(&c, PostInsightParams {
-            author: "alice".into(),
-            kind: "insight".into(),
-            content: "uniswap v3 STF revert means insufficient allowance".into(),
-            enabled_by: Vec::new(),
-            stake_wei: None,
-        })
+        let res = handle_post_insight(
+            &c,
+            PostInsightParams {
+                author: "alice".into(),
+                kind: "insight".into(),
+                content: "uniswap v3 STF revert means insufficient allowance".into(),
+                enabled_by: Vec::new(),
+                stake_wei: None,
+            },
+        )
         .unwrap();
         assert_eq!(res.outcome, "accepted");
 
-        let search = handle_search_insights(&c, SearchInsightsParams {
-            query: Some("uniswap v3 STF revert means insufficient allowance".into()),
-            query_vector: None,
-            k: 5,
-            kind: None,
-        })
+        let search = handle_search_insights(
+            &c,
+            SearchInsightsParams {
+                query: Some("uniswap v3 STF revert means insufficient allowance".into()),
+                query_vector: None,
+                k: 5,
+                kind: None,
+            },
+        )
         .unwrap();
         let results = search.get("results").and_then(|r| r.as_array()).unwrap();
         assert!(!results.is_empty());
@@ -1628,13 +1634,16 @@ mod tests {
     #[test]
     fn disabled_toggle_returns_error() {
         let c = Arc::new(RwLock::new(ChainContext::new(ChainToggles::default())));
-        let err = handle_post_insight(&c, PostInsightParams {
-            author: "a".into(),
-            kind: "insight".into(),
-            content: "x".into(),
-            enabled_by: Vec::new(),
-            stake_wei: None,
-        })
+        let err = handle_post_insight(
+            &c,
+            PostInsightParams {
+                author: "a".into(),
+                kind: "insight".into(),
+                content: "x".into(),
+                enabled_by: Vec::new(),
+                stake_wei: None,
+            },
+        )
         .unwrap_err();
         assert_eq!(err.code(), err_code::DISABLED);
     }
@@ -1642,19 +1651,25 @@ mod tests {
     #[test]
     fn confirm_and_get_insight_roundtrip() {
         let c = ctx();
-        let posted = handle_post_insight(&c, PostInsightParams {
-            author: "a".into(),
-            kind: "heuristic".into(),
-            content: "set arbitrum gas 3x estimate".into(),
-            enabled_by: Vec::new(),
-            stake_wei: None,
-        })
+        let posted = handle_post_insight(
+            &c,
+            PostInsightParams {
+                author: "a".into(),
+                kind: "heuristic".into(),
+                content: "set arbitrum gas 3x estimate".into(),
+                enabled_by: Vec::new(),
+                stake_wei: None,
+            },
+        )
         .unwrap();
         let id_str = format!("insight:{}", posted.id);
-        let confirm_result = handle_confirm_insight(&c, ConfirmInsightParams {
-            id: id_str.clone(),
-            confirmer: "bob".into(),
-        })
+        let confirm_result = handle_confirm_insight(
+            &c,
+            ConfirmInsightParams {
+                id: id_str.clone(),
+                confirmer: "bob".into(),
+            },
+        )
         .unwrap();
         assert_eq!(confirm_result, json!({ "ok": true }));
         let fetched = handle_get_insight(&c, json!({ "id": id_str })).unwrap();
@@ -1664,12 +1679,15 @@ mod tests {
     #[test]
     fn deposit_and_query_pheromone() {
         let c = ctx();
-        let dep = handle_deposit_pheromone(&c, DepositPheromoneParams {
-            kind: "threat".into(),
-            content: "rug in pool X".into(),
-            intensity: 1.0,
-            half_life_seconds: None,
-        })
+        let dep = handle_deposit_pheromone(
+            &c,
+            DepositPheromoneParams {
+                kind: "threat".into(),
+                content: "rug in pool X".into(),
+                intensity: 1.0,
+                half_life_seconds: None,
+            },
+        )
         .unwrap();
         assert!(dep.get("id").is_some());
 
@@ -1691,12 +1709,15 @@ mod tests {
     #[test]
     fn stats_reports_counts_and_toggles() {
         let c = ctx();
-        handle_deposit_pheromone(&c, DepositPheromoneParams {
-            kind: "opportunity".into(),
-            content: "arb window".into(),
-            intensity: 1.0,
-            half_life_seconds: None,
-        })
+        handle_deposit_pheromone(
+            &c,
+            DepositPheromoneParams {
+                kind: "opportunity".into(),
+                content: "arb window".into(),
+                intensity: 1.0,
+                half_life_seconds: None,
+            },
+        )
         .unwrap();
         let s = handle_stats(&c);
         assert_eq!(s["pheromones"], 1);
@@ -1826,12 +1847,15 @@ mod tests {
             let bus = c.read().pheromone_bus.clone().expect("bus present");
             bus.register(sink.clone(), BackpressurePolicy::DropOldest);
 
-            handle_deposit_pheromone(&c, DepositPheromoneParams {
-                kind: "threat".into(),
-                content: "rug in pool X".into(),
-                intensity: 0.8,
-                half_life_seconds: None,
-            })
+            handle_deposit_pheromone(
+                &c,
+                DepositPheromoneParams {
+                    kind: "threat".into(),
+                    content: "rug in pool X".into(),
+                    intensity: 0.8,
+                    half_life_seconds: None,
+                },
+            )
             .unwrap();
 
             let events = sink.events();
@@ -1847,13 +1871,16 @@ mod tests {
             let bus = c.read().insight_bus.clone().expect("bus present");
             bus.register(sink.clone(), BackpressurePolicy::DropOldest);
 
-            handle_post_insight(&c, PostInsightParams {
-                author: "alice".into(),
-                kind: "insight".into(),
-                content: "rebalance before 18:00 UTC".into(),
-                enabled_by: Vec::new(),
-                stake_wei: None,
-            })
+            handle_post_insight(
+                &c,
+                PostInsightParams {
+                    author: "alice".into(),
+                    kind: "insight".into(),
+                    content: "rebalance before 18:00 UTC".into(),
+                    enabled_by: Vec::new(),
+                    stake_wei: None,
+                },
+            )
             .unwrap();
 
             let events = sink.events();
@@ -1876,23 +1903,29 @@ mod tests {
         #[test]
         fn confirm_insight_broadcasts_confirmed_event() {
             let c = ctx_with_subs();
-            let posted = handle_post_insight(&c, PostInsightParams {
-                author: "alice".into(),
-                kind: "heuristic".into(),
-                content: "use 3x gas on arbitrum".into(),
-                enabled_by: Vec::new(),
-                stake_wei: None,
-            })
+            let posted = handle_post_insight(
+                &c,
+                PostInsightParams {
+                    author: "alice".into(),
+                    kind: "heuristic".into(),
+                    content: "use 3x gas on arbitrum".into(),
+                    enabled_by: Vec::new(),
+                    stake_wei: None,
+                },
+            )
             .unwrap();
 
             let sink: Arc<VecSink<InsightEvent>> = Arc::new(VecSink::new());
             let bus = c.read().insight_bus.clone().expect("bus present");
             bus.register(sink.clone(), BackpressurePolicy::DropOldest);
 
-            handle_confirm_insight(&c, ConfirmInsightParams {
-                id: format!("insight:{}", posted.id),
-                confirmer: "bob".into(),
-            })
+            handle_confirm_insight(
+                &c,
+                ConfirmInsightParams {
+                    id: format!("insight:{}", posted.id),
+                    confirmer: "bob".into(),
+                },
+            )
             .unwrap();
 
             let events = sink.events();
@@ -1906,23 +1939,29 @@ mod tests {
         #[test]
         fn challenge_insight_broadcasts_challenged_event() {
             let c = ctx_with_subs();
-            let posted = handle_post_insight(&c, PostInsightParams {
-                author: "alice".into(),
-                kind: "warning".into(),
-                content: "watch for oracle manipulation".into(),
-                enabled_by: Vec::new(),
-                stake_wei: None,
-            })
+            let posted = handle_post_insight(
+                &c,
+                PostInsightParams {
+                    author: "alice".into(),
+                    kind: "warning".into(),
+                    content: "watch for oracle manipulation".into(),
+                    enabled_by: Vec::new(),
+                    stake_wei: None,
+                },
+            )
             .unwrap();
 
             let sink: Arc<VecSink<InsightEvent>> = Arc::new(VecSink::new());
             let bus = c.read().insight_bus.clone().expect("bus present");
             bus.register(sink.clone(), BackpressurePolicy::DropOldest);
 
-            handle_challenge_insight(&c, ChallengeInsightParams {
-                id: format!("insight:{}", posted.id),
-                challenger: "eve".into(),
-            })
+            handle_challenge_insight(
+                &c,
+                ChallengeInsightParams {
+                    id: format!("insight:{}", posted.id),
+                    challenger: "eve".into(),
+                },
+            )
             .unwrap();
 
             let events = sink.events();
@@ -1936,21 +1975,27 @@ mod tests {
         #[test]
         fn apply_decay_broadcasts_decayed_events() {
             let c = ctx_with_subs();
-            handle_post_insight(&c, PostInsightParams {
-                author: "a".into(),
-                kind: "insight".into(),
-                content: "alpha 1".into(),
-                enabled_by: Vec::new(),
-                stake_wei: None,
-            })
+            handle_post_insight(
+                &c,
+                PostInsightParams {
+                    author: "a".into(),
+                    kind: "insight".into(),
+                    content: "alpha 1".into(),
+                    enabled_by: Vec::new(),
+                    stake_wei: None,
+                },
+            )
             .unwrap();
-            handle_post_insight(&c, PostInsightParams {
-                author: "b".into(),
-                kind: "insight".into(),
-                content: "alpha 2".into(),
-                enabled_by: Vec::new(),
-                stake_wei: None,
-            })
+            handle_post_insight(
+                &c,
+                PostInsightParams {
+                    author: "b".into(),
+                    kind: "insight".into(),
+                    content: "alpha 2".into(),
+                    enabled_by: Vec::new(),
+                    stake_wei: None,
+                },
+            )
             .unwrap();
 
             let sink: Arc<VecSink<InsightEvent>> = Arc::new(VecSink::new());
@@ -2094,12 +2139,15 @@ mod tests {
         fn deposit_without_bus_does_not_panic() {
             let c = Arc::new(RwLock::new(ChainContext::new(ChainToggles::all())));
             // No buses attached — should still succeed.
-            handle_deposit_pheromone(&c, DepositPheromoneParams {
-                kind: "wisdom".into(),
-                content: "z".into(),
-                intensity: 1.0,
-                half_life_seconds: None,
-            })
+            handle_deposit_pheromone(
+                &c,
+                DepositPheromoneParams {
+                    kind: "wisdom".into(),
+                    content: "z".into(),
+                    intensity: 1.0,
+                    half_life_seconds: None,
+                },
+            )
             .unwrap();
         }
     }

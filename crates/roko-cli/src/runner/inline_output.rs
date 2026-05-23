@@ -125,10 +125,13 @@ impl RunnerInlineTerminal {
     }
 
     pub(crate) fn tool_call_started(&mut self, id: &str, name: &str) {
-        self.pending_tools.insert(id.to_string(), PendingToolCall {
-            name: name.to_string(),
-            started_at: Instant::now(),
-        });
+        self.pending_tools.insert(
+            id.to_string(),
+            PendingToolCall {
+                name: name.to_string(),
+                started_at: Instant::now(),
+            },
+        );
         let block = ToolCallBlock::from_start(name, &Value::Null);
         self.push_lines(&block.to_lines(&self.theme));
     }

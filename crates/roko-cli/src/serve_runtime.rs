@@ -351,10 +351,13 @@ fn collect_plan_artifact_snapshots(
             continue;
         }
         let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        out.insert(rel, PlanArtifactSnapshot {
-            modified: meta.modified().ok(),
-            len: meta.len(),
-        });
+        out.insert(
+            rel,
+            PlanArtifactSnapshot {
+                modified: meta.modified().ok(),
+                len: meta.len(),
+            },
+        );
     }
 }
 
@@ -868,25 +871,28 @@ fn collect_runner_gate_results(
                 rung,
                 &gate_name,
             );
-            final_results.insert(key, RuntimeGateResult {
-                gate: gate_evidence_label(
-                    &attempt.plan_id,
-                    &attempt.task_id,
-                    kind_label,
-                    rung,
-                    &gate_name,
-                ),
-                passed,
-                detail: gate_detail(
-                    kind_label,
-                    attempt.attempt,
-                    rung,
-                    duration_ms,
-                    None,
-                    None,
-                    &output,
-                ),
-            });
+            final_results.insert(
+                key,
+                RuntimeGateResult {
+                    gate: gate_evidence_label(
+                        &attempt.plan_id,
+                        &attempt.task_id,
+                        kind_label,
+                        rung,
+                        &gate_name,
+                    ),
+                    passed,
+                    detail: gate_detail(
+                        kind_label,
+                        attempt.attempt,
+                        rung,
+                        duration_ms,
+                        None,
+                        None,
+                        &output,
+                    ),
+                },
+            );
             continue;
         }
 
@@ -898,25 +904,28 @@ fn collect_runner_gate_results(
                 rung,
                 &verdict.gate_name,
             );
-            final_results.insert(key, RuntimeGateResult {
-                gate: gate_evidence_label(
-                    &attempt.plan_id,
-                    &attempt.task_id,
-                    kind_label,
-                    rung,
-                    &verdict.gate_name,
-                ),
-                passed: verdict.passed,
-                detail: gate_detail(
-                    kind_label,
-                    attempt.attempt,
-                    rung,
-                    duration_ms,
-                    Some(verdict.summary.as_str()),
-                    verdict.error_digest.as_deref(),
-                    &output,
-                ),
-            });
+            final_results.insert(
+                key,
+                RuntimeGateResult {
+                    gate: gate_evidence_label(
+                        &attempt.plan_id,
+                        &attempt.task_id,
+                        kind_label,
+                        rung,
+                        &verdict.gate_name,
+                    ),
+                    passed: verdict.passed,
+                    detail: gate_detail(
+                        kind_label,
+                        attempt.attempt,
+                        rung,
+                        duration_ms,
+                        Some(verdict.summary.as_str()),
+                        verdict.error_digest.as_deref(),
+                        &output,
+                    ),
+                },
+            );
         }
     }
 

@@ -174,14 +174,13 @@ async fn start_bench_run(
         started_at,
     ));
 
-    state
-        .active_bench_runs
-        .write()
-        .await
-        .insert(run_id.clone(), BenchRunHandle {
+    state.active_bench_runs.write().await.insert(
+        run_id.clone(),
+        BenchRunHandle {
             id: run_id.clone(),
             handle,
-        });
+        },
+    );
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
@@ -301,12 +300,14 @@ async fn execute_bench_run(
                     .map(|u| (u.input_tokens, u.output_tokens))
                     .unwrap_or((0, 0));
 
-                let cost_usd =
-                    cost_table.calculate(overrides.model.as_deref().unwrap_or(""), &CoreUsage {
+                let cost_usd = cost_table.calculate(
+                    overrides.model.as_deref().unwrap_or(""),
+                    &CoreUsage {
                         input_tokens: input_tokens as u32,
                         output_tokens: output_tokens as u32,
                         ..CoreUsage::default()
-                    });
+                    },
+                );
                 let output_preview = run_result
                     .output_text
                     .as_ref()
@@ -474,7 +475,7 @@ async fn execute_bench_run(
         Ok(Some(mut run)) => {
             run.status = BenchRunStatus::Completed;
             run.finished_at = Some(finished_at);
-            run.results = results;
+            run.results = results.clone();
             run.summary = Some(summary.clone());
             run.current_task_index = total_tasks;
             if let Err(err) = bench::save_bench_run(&state.workdir, &run).await {
@@ -498,7 +499,7 @@ async fn execute_bench_run(
         started_at,
         finished_at: Some(finished_at),
         label,
-        model: overrides.model,
+        model: overrides.model.clone(),
         pass_rate: Some(summary.pass_rate),
         total_cost_usd: Some(summary.total_cost_usd),
     };
@@ -516,8 +517,7 @@ async fn execute_bench_run(
     //
     // Convert current bench results into TaskMetric records and compare
     // against a baseline computed from prior completed bench runs.
-    // TODO: re-enable after fixing roko_learn::baseline/regression imports
-    // run_bench_regression(&state, &run_id, &suite.id, &results, &overrides);
+    run_bench_regression(&state, &run_id, &suite.id, &results, &overrides);
 
     // Clean up handle.
     state.active_bench_runs.write().await.remove(&run_id);
@@ -869,6 +869,147 @@ async fn current_learning_totals(
         playbooks_total,
         anti_patterns_total,
     })
+}
+
+/// Convert bench results to `TaskMetric` records and compare against a baseline
+/// built from prior completed runs of the same suite.
+fn run_bench_regression(
+    state: &AppState,
+    run_id: &str,
+    suite_id: &str,
+    results: &[BenchTaskResult],
+    overrides: &BenchConfigOverrides,
+) {
+    use roko_core::metric::{ConfigHash, TaskMetric};
+    use roko_learn::baseline::compute_baseline;
+    use roko_learn::regression::{RegressionThresholds, detect_regressions};
+
+    let model = overrides.model.as_deref().unwrap_or("unknown");
+    let config_hash = ConfigHash(format!("bench-{suite_id}"));
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Convert current results to TaskMetric records.
+    let current: Vec<TaskMetric> = results
+        .iter()
+        .map(|r| TaskMetric {
+            timestamp: now.clone(),
+            run_id: run_id.to_string(),
+            config_hash: config_hash.clone(),
+            plan_id: suite_id.to_string(),
+            task_id: r.task_id.clone(),
+            iteration: 1,
+            role: "bench".to_string(),
+            backend: "bench".to_string(),
+            model: model.to_string(),
+            complexity_band: "standard".to_string(),
+            gate: "bench".to_string(),
+            gate_passed: r.passed(),
+            wall_time_ms: r.duration_ms,
+            input_tokens: r.tokens_in,
+            output_tokens: r.tokens_out,
+            cached_tokens: 0,
+            cost_usd: r.cost_usd,
+            sections_included: 0,
+            sections_dropped: 0,
+            context_tokens: 0,
+            cache_hit_rate: 0.0,
+        })
+        .collect();
+
+    if current.len() < 5 {
+        // Not enough data for regression detection.
+        return;
+    }
+
+    // Load prior runs for the same suite as baseline.
+    let bench_dir = state.workdir.join(".roko").join("bench");
+    let mut baseline_metrics = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&bench_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            // Skip the current run.
+            if path
+                .file_stem()
+                .is_some_and(|s| s.to_string_lossy().contains(run_id))
+            {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let run: BenchRun = match serde_json::from_str(&content) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if run.suite_id != suite_id
+                || run.status != BenchRunStatus::Completed
+                || run.results.is_empty()
+            {
+                continue;
+            }
+            let run_model = run.overrides.model.as_deref().unwrap_or("unknown");
+            for r in &run.results {
+                baseline_metrics.push(TaskMetric {
+                    timestamp: String::new(),
+                    run_id: run.id.clone(),
+                    config_hash: config_hash.clone(),
+                    plan_id: suite_id.to_string(),
+                    task_id: r.task_id.clone(),
+                    iteration: 1,
+                    role: "bench".to_string(),
+                    backend: "bench".to_string(),
+                    model: run_model.to_string(),
+                    complexity_band: "standard".to_string(),
+                    gate: "bench".to_string(),
+                    gate_passed: r.passed(),
+                    wall_time_ms: r.duration_ms,
+                    input_tokens: r.tokens_in,
+                    output_tokens: r.tokens_out,
+                    cached_tokens: 0,
+                    cost_usd: r.cost_usd,
+                    sections_included: 0,
+                    sections_dropped: 0,
+                    context_tokens: 0,
+                    cache_hit_rate: 0.0,
+                });
+            }
+        }
+    }
+
+    let thresholds = RegressionThresholds::default();
+
+    if baseline_metrics.len() < thresholds.min_records {
+        tracing::debug!(
+            run_id,
+            baseline_count = baseline_metrics.len(),
+            "not enough baseline data for bench regression detection"
+        );
+        return;
+    }
+
+    let baseline = compute_baseline(&baseline_metrics, thresholds.min_records);
+    let report = detect_regressions(&baseline, &current, &thresholds);
+
+    if report.has_regressions {
+        tracing::warn!(
+            run_id,
+            alerts = report.alerts.len(),
+            "bench regression detected"
+        );
+    } else {
+        tracing::info!(run_id, "no bench regression detected");
+    }
+
+    state.event_bus.publish(ServerEvent::BenchRegressionReport {
+        bench_id: run_id.to_string(),
+        has_regressions: report.has_regressions,
+        report: serde_json::to_value(&report).unwrap_or_default(),
+    });
 }
 
 struct BenchWorkdirCleanup {

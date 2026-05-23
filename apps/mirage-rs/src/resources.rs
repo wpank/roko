@@ -412,12 +412,15 @@ mod tests {
         // Throttle handling must only shrink the read cache; [`DirtyStore`] is untouched.
         let upstream = Arc::new(UpstreamRpc::mock(1));
         let addr = address!("0x51000000000000000000000000000000000000aa");
-        upstream.set_mock_account(addr, AccountInfo {
-            balance: U256::from(1_u64),
-            nonce: 0,
-            code_hash: Bytecode::default().hash_slow(),
-            code: Some(Bytecode::default()),
-        });
+        upstream.set_mock_account(
+            addr,
+            AccountInfo {
+                balance: U256::from(1_u64),
+                nonce: 0,
+                code_hash: Bytecode::default().hash_slow(),
+                code: Some(Bytecode::default()),
+            },
+        );
         upstream.set_mock_storage(addr, U256::from(1_u64), U256::from(42_u64));
         let bytecode_cap = NonZeroUsize::new(64).expect("nonzero");
         let mut db = HybridDB::new(upstream, 32, Duration::from_secs(60), bytecode_cap, 1);

@@ -2522,13 +2522,15 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     .into_arc();
 
             // Bootstrap: consistent workspace check + unified config load.
-            let boot =
-                roko_cli::bootstrap::RokoBootstrap::new(&wd, roko_cli::bootstrap::BootOpts {
+            let boot = roko_cli::bootstrap::RokoBootstrap::new(
+                &wd,
+                roko_cli::bootstrap::BootOpts {
                     require_workspace: false, // serve auto-creates .roko/ via bootstrap_observability_dirs
                     require_provider: false,
                     acquire_lock: false, // workspace lock acquired above
-                })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             let mut roko_config = boot.config;
             if let Some(bind) = bind.as_ref() {
                 roko_config.server.bind = bind.clone();
@@ -4388,30 +4390,33 @@ mod tests {
     fn select_provider_test_model_prefers_default_model() {
         let mut config = RokoConfig::default();
         config.agent.default_model = "glm-5-1".to_string();
-        config.models.insert("glm-5-1".to_string(), ModelProfile {
-            provider: "zai".to_string(),
-            slug: "glm-5.1".to_string(),
-            context_window: 200_000,
-            max_output: Some(131_072),
-            supports_tools: true,
-            supports_thinking: true,
-            supports_vision: false,
-            supports_web_search: false,
-            supports_mcp_tools: false,
-            supports_partial: false,
-            provider_routing: None,
-            tool_format: "openai_json".to_string(),
-            cost_input_per_m: Some(1.40),
-            cost_output_per_m: Some(4.40),
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            max_tools: None,
-            tokenizer_ratio: None,
-            ..Default::default()
-        });
-        config
-            .models
-            .insert("glm-5-1-alt".to_string(), ModelProfile {
+        config.models.insert(
+            "glm-5-1".to_string(),
+            ModelProfile {
+                provider: "zai".to_string(),
+                slug: "glm-5.1".to_string(),
+                context_window: 200_000,
+                max_output: Some(131_072),
+                supports_tools: true,
+                supports_thinking: true,
+                supports_vision: false,
+                supports_web_search: false,
+                supports_mcp_tools: false,
+                supports_partial: false,
+                provider_routing: None,
+                tool_format: "openai_json".to_string(),
+                cost_input_per_m: Some(1.40),
+                cost_output_per_m: Some(4.40),
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                max_tools: None,
+                tokenizer_ratio: None,
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "glm-5-1-alt".to_string(),
+            ModelProfile {
                 provider: "zai".to_string(),
                 slug: "glm-5.1-air".to_string(),
                 context_window: 128_000,
@@ -4431,7 +4436,8 @@ mod tests {
                 max_tools: None,
                 tokenizer_ratio: None,
                 ..Default::default()
-            });
+            },
+        );
 
         let selected = select_provider_test_model(&config, "zai").expect("selected model");
         assert_eq!(selected.0, "glm-5-1");
@@ -4474,27 +4480,30 @@ mod tests {
 
     #[test]
     fn build_model_list_row_formats_capabilities_and_costs() {
-        let row = build_model_list_row("kimi-k2-5", &ModelProfile {
-            provider: "moonshot".to_string(),
-            slug: "kimi-k2.5".to_string(),
-            context_window: 256_000,
-            max_output: Some(128_000),
-            supports_tools: true,
-            supports_thinking: true,
-            supports_vision: true,
-            supports_web_search: false,
-            supports_mcp_tools: false,
-            supports_partial: false,
-            provider_routing: None,
-            tool_format: "openai_json".to_string(),
-            cost_input_per_m: Some(0.60),
-            cost_output_per_m: Some(3.00),
-            cost_cache_read_per_m: None,
-            cost_cache_write_per_m: None,
-            max_tools: None,
-            tokenizer_ratio: None,
-            ..Default::default()
-        });
+        let row = build_model_list_row(
+            "kimi-k2-5",
+            &ModelProfile {
+                provider: "moonshot".to_string(),
+                slug: "kimi-k2.5".to_string(),
+                context_window: 256_000,
+                max_output: Some(128_000),
+                supports_tools: true,
+                supports_thinking: true,
+                supports_vision: true,
+                supports_web_search: false,
+                supports_mcp_tools: false,
+                supports_partial: false,
+                provider_routing: None,
+                tool_format: "openai_json".to_string(),
+                cost_input_per_m: Some(0.60),
+                cost_output_per_m: Some(3.00),
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                max_tools: None,
+                tokenizer_ratio: None,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(row.model, "kimi-k2-5");
         assert_eq!(row.provider, "moonshot");

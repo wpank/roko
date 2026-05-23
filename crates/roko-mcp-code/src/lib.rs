@@ -1666,18 +1666,21 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
-        assert_eq!(names, vec![
-            "search_code",
-            "get_symbol_context",
-            "get_file_ast",
-            "find_similar_patterns",
-            "get_index_stats",
-            "find_references",
-            "find_implementations",
-            "get_callers",
-            "workspace_map",
-            "get_context",
-        ]);
+        assert_eq!(
+            names,
+            vec![
+                "search_code",
+                "get_symbol_context",
+                "get_file_ast",
+                "find_similar_patterns",
+                "get_index_stats",
+                "find_references",
+                "find_implementations",
+                "get_callers",
+                "workspace_map",
+                "get_context",
+            ]
+        );
     }
 
     #[test]

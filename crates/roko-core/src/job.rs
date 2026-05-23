@@ -565,11 +565,14 @@ mod tests {
     fn job_status_transitions() {
         let open = JobStatus::Open;
         assert!(!open.is_terminal());
-        assert_eq!(open.valid_transitions(), &[
-            JobStatus::Assigned,
-            JobStatus::InProgress,
-            JobStatus::Cancelled
-        ]);
+        assert_eq!(
+            open.valid_transitions(),
+            &[
+                JobStatus::Assigned,
+                JobStatus::InProgress,
+                JobStatus::Cancelled
+            ]
+        );
 
         let completed = JobStatus::Completed;
         assert!(completed.is_terminal());

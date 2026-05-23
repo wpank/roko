@@ -110,11 +110,14 @@ impl TaskOutputCursors {
                         changed = true;
                     }
                     None => {
-                        self.cursors.insert(task_id, TaskOutputCursor {
-                            path: path.clone(),
-                            tail: RingBuffer::new(TASK_OUTPUT_TAIL_CAP),
-                            cursor: JsonlCursor::new(&path),
-                        });
+                        self.cursors.insert(
+                            task_id,
+                            TaskOutputCursor {
+                                path: path.clone(),
+                                tail: RingBuffer::new(TASK_OUTPUT_TAIL_CAP),
+                                cursor: JsonlCursor::new(&path),
+                            },
+                        );
                         changed = true;
                     }
                 }

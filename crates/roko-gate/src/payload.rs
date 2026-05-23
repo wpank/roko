@@ -421,13 +421,16 @@ mod tests {
         let args =
             BuildSystem::Cargo.scoped_test_args(&["roko-acp".to_string(), "roko-gate".to_string()]);
 
-        assert_eq!(args, vec![
-            "test".to_string(),
-            "-p".to_string(),
-            "roko-acp".to_string(),
-            "-p".to_string(),
-            "roko-gate".to_string(),
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "test".to_string(),
+                "-p".to_string(),
+                "roko-acp".to_string(),
+                "-p".to_string(),
+                "roko-gate".to_string(),
+            ]
+        );
     }
 
     #[test]

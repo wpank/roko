@@ -1134,9 +1134,10 @@ mod tests {
     #[test]
     fn noop_trace_sink_drops_events_silently() {
         let sink = NoopTraceSink;
-        sink.append(sample_trace_id(), ToolTraceEvent::StreamCoerced {
-            at_ms: 1,
-        });
+        sink.append(
+            sample_trace_id(),
+            ToolTraceEvent::StreamCoerced { at_ms: 1 },
+        );
         // No panic, no state change.
     }
 

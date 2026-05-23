@@ -1158,12 +1158,16 @@ mod tests {
         sink.flush_agent_text("plan-1", "task-1");
         sink.tool_call("plan-1", "task-1", "tc-1", "Read");
         sink.tool_output("plan-1", "task-1", "tc-1", "file contents...");
-        sink.token_usage("plan-1", "task-1", TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 10,
-            cache_write_tokens: 5,
-        });
+        sink.token_usage(
+            "plan-1",
+            "task-1",
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 10,
+                cache_write_tokens: 5,
+            },
+        );
         sink.agent_turn_completed(
             "plan-1",
             "task-1",
@@ -1173,13 +1177,17 @@ mod tests {
             100,
             50,
         );
-        sink.gate_result("plan-1", "task-1", &GateResultSummary {
-            rung: 0,
-            passed: true,
-            gate_name: "compile".to_string(),
-            summary: "ok".to_string(),
-            duration_ms: 1200,
-        });
+        sink.gate_result(
+            "plan-1",
+            "task-1",
+            &GateResultSummary {
+                rung: 0,
+                passed: true,
+                gate_name: "compile".to_string(),
+                summary: "ok".to_string(),
+                duration_ms: 1200,
+            },
+        );
         sink.gate_retry("plan-1", "task-1", 2, 5000);
         sink.warm_cache_started();
         sink.warm_cache_completed(1500);
@@ -1214,28 +1222,40 @@ mod tests {
         sink.flush_agent_text("plan-1", "task-1");
         sink.tool_call("plan-1", "task-1", "tc-1", "Read");
         sink.tool_output("plan-1", "task-1", "tc-1", "file contents...");
-        sink.token_usage("plan-1", "task-1", TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 10,
-            cache_write_tokens: 5,
-        });
+        sink.token_usage(
+            "plan-1",
+            "task-1",
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 10,
+                cache_write_tokens: 5,
+            },
+        );
         sink.agent_turn_completed("plan-1", "task-1", Some(0.01), false, "sonnet", 100, 50);
         sink.agent_error("plan-1", "task-1", "test error");
-        sink.gate_result("plan-1", "task-1", &GateResultSummary {
-            rung: 0,
-            passed: true,
-            gate_name: "compile".to_string(),
-            summary: "ok".to_string(),
-            duration_ms: 1200,
-        });
-        sink.gate_result("plan-1", "task-1", &GateResultSummary {
-            rung: 1,
-            passed: false,
-            gate_name: "test".to_string(),
-            summary: "2 test failures".to_string(),
-            duration_ms: 3400,
-        });
+        sink.gate_result(
+            "plan-1",
+            "task-1",
+            &GateResultSummary {
+                rung: 0,
+                passed: true,
+                gate_name: "compile".to_string(),
+                summary: "ok".to_string(),
+                duration_ms: 1200,
+            },
+        );
+        sink.gate_result(
+            "plan-1",
+            "task-1",
+            &GateResultSummary {
+                rung: 1,
+                passed: false,
+                gate_name: "test".to_string(),
+                summary: "2 test failures".to_string(),
+                duration_ms: 3400,
+            },
+        );
         sink.gate_retry("plan-1", "task-1", 2, 5000);
         sink.warm_cache_started();
         sink.warm_cache_completed(1500);

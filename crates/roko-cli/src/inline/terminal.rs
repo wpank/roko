@@ -92,9 +92,12 @@ impl InlineTerminal {
 
         let raw_guard = RawModeGuard::enable()?;
         let backend = CrosstermBackend::new(io::stdout());
-        let terminal = Terminal::with_options(backend, TerminalOptions {
-            viewport: Viewport::Inline(height),
-        })?;
+        let terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(height),
+            },
+        )?;
 
         Ok(Self {
             terminal,

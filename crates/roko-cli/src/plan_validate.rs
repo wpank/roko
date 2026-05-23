@@ -1275,19 +1275,22 @@ write_files = ["docs/guide.md", "packages/app-one/package.json"]
         .unwrap();
 
         let refs = collect_task_file_paths(&parsed);
-        assert_eq!(refs, vec![
-            ("T1".to_string(), "src/lib.rs".to_string()),
-            ("T1".to_string(), "docs/guide.md".to_string()),
-            (
-                "T1".to_string(),
-                "crates/roko-cli/src/plan_validate.rs".to_string()
-            ),
-            ("T2".to_string(), "docs/guide.md".to_string()),
-            (
-                "T2".to_string(),
-                "packages/app-one/package.json".to_string()
-            ),
-        ]);
+        assert_eq!(
+            refs,
+            vec![
+                ("T1".to_string(), "src/lib.rs".to_string()),
+                ("T1".to_string(), "docs/guide.md".to_string()),
+                (
+                    "T1".to_string(),
+                    "crates/roko-cli/src/plan_validate.rs".to_string()
+                ),
+                ("T2".to_string(), "docs/guide.md".to_string()),
+                (
+                    "T2".to_string(),
+                    "packages/app-one/package.json".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

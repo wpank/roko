@@ -161,12 +161,10 @@ impl MergeBackend for GitMergeBackend {
         use std::time::Instant;
 
         let started = Instant::now();
-        let branch_exists = git_success(&config.workdir, &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &request.branch_name,
-        ])
+        let branch_exists = git_success(
+            &config.workdir,
+            &["rev-parse", "--verify", "--quiet", &request.branch_name],
+        )
         .await;
         if !branch_exists {
             let dirty = git_output(&config.workdir, &["status", "--porcelain"]).await;

@@ -560,12 +560,15 @@ fn run_git(workdir: &Path, args: &[&str]) -> Option<String> {
 /// Collect branch list with ahead/behind info.
 fn collect_branches(workdir: &Path, current_branch: &str) -> Vec<GitBranchNode> {
     // git branch --format with ahead/behind
-    let output = run_git(workdir, &[
-        "for-each-ref",
-        "--sort=-committerdate",
-        "--format=%(refname:short)\t%(upstream:short)\t%(upstream:track)",
-        "refs/heads/",
-    ]);
+    let output = run_git(
+        workdir,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)\t%(upstream:short)\t%(upstream:track)",
+            "refs/heads/",
+        ],
+    );
 
     let Some(output) = output else {
         return Vec::new();
@@ -681,13 +684,16 @@ fn collect_worktrees(workdir: &Path) -> Vec<WorktreeEntry> {
 
 /// Collect recent commits with graph.
 fn collect_commits(workdir: &Path) -> Vec<CommitEntry> {
-    let output = run_git(workdir, &[
-        "log",
-        "--graph",
-        "--decorate=short",
-        "-30",
-        "--format=%H%x00%h%x00%an%x00%cr%x00%s%x1e",
-    ]);
+    let output = run_git(
+        workdir,
+        &[
+            "log",
+            "--graph",
+            "--decorate=short",
+            "-30",
+            "--format=%H%x00%h%x00%an%x00%cr%x00%s%x1e",
+        ],
+    );
     let Some(output) = output else {
         return Vec::new();
     };

@@ -317,10 +317,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn high_gas_used_over_buffer_fails_gate() {
         // 10% buffer → allowed = 100_000 * 0.9 = 90_000. gas_used 95_000 fails.
-        let gate = sim_gate(SimulationOutcome::ok(95_000), TxSimGateConfig {
-            require_success: true,
-            gas_buffer_pct: 10,
-        });
+        let gate = sim_gate(
+            SimulationOutcome::ok(95_000),
+            TxSimGateConfig {
+                require_success: true,
+                gas_buffer_pct: 10,
+            },
+        );
         let signal = tx_signal_json(serde_json::json!({
             "value": 1,
             "gas_limit": 100_000,
@@ -335,10 +338,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn gas_used_under_buffer_passes_gate() {
         // 10% buffer, gas_limit 100_000 → allowed 90_000. gas_used 80_000 passes.
-        let gate = sim_gate(SimulationOutcome::ok(80_000), TxSimGateConfig {
-            require_success: true,
-            gas_buffer_pct: 10,
-        });
+        let gate = sim_gate(
+            SimulationOutcome::ok(80_000),
+            TxSimGateConfig {
+                require_success: true,
+                gas_buffer_pct: 10,
+            },
+        );
         let signal = tx_signal_json(serde_json::json!({
             "value": 1,
             "gas_limit": 100_000,
@@ -350,10 +356,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn gas_buffer_skipped_without_gas_limit() {
         // No gas_limit on tx → buffer check is skipped even if gas_used is huge.
-        let gate = sim_gate(SimulationOutcome::ok(9_999_999), TxSimGateConfig {
-            require_success: true,
-            gas_buffer_pct: 10,
-        });
+        let gate = sim_gate(
+            SimulationOutcome::ok(9_999_999),
+            TxSimGateConfig {
+                require_success: true,
+                gas_buffer_pct: 10,
+            },
+        );
         let signal = tx_signal_json(serde_json::json!({"value": 1}));
         let verdict = gate.verify(&signal, &Context::now()).await;
         assert!(verdict.passed, "verdict: {verdict:?}");

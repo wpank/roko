@@ -1422,9 +1422,9 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         config.providers.clear();
         config.models.clear();
         config.agent.default_model = "dispatch-model".to_string();
-        config
-            .providers
-            .insert("dispatch-cli".to_string(), ProviderConfig {
+        config.providers.insert(
+            "dispatch-cli".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -1435,14 +1435,16 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
-            });
-        config
-            .models
-            .insert("dispatch-model".to_string(), ModelProfile {
+            },
+        );
+        config.models.insert(
+            "dispatch-model".to_string(),
+            ModelProfile {
                 provider: "dispatch-cli".to_string(),
                 slug: "claude-sonnet-4-6".to_string(),
                 ..Default::default()
-            });
+            },
+        );
 
         let request = AgentDispatchRequest {
             model_key: "dispatch-model".to_string(),

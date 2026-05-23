@@ -164,10 +164,13 @@ fn phase0_cascade_router_observation_roundtrip() {
     router.save(&router_path).expect("save router");
     assert!(router_path.exists(), "router file should exist after save");
 
-    let reloaded = CascadeRouter::load_or_new(&router_path, vec![
-        "claude-sonnet-4-6".to_string(),
-        "claude-haiku-4-5".to_string(),
-    ]);
+    let reloaded = CascadeRouter::load_or_new(
+        &router_path,
+        vec![
+            "claude-sonnet-4-6".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ],
+    );
     assert_eq!(
         reloaded.total_observations(),
         1,

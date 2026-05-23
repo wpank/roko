@@ -1835,17 +1835,23 @@ mod tests {
     #[test]
     fn parse_ipc_json_pause_subscription() {
         let cmd = parse_ipc_request(r#"{"cmd":"pause_subscription","id":"config-0"}"#).unwrap();
-        assert_eq!(cmd, DaemonCmd::PauseSubscription {
-            id: "config-0".into()
-        });
+        assert_eq!(
+            cmd,
+            DaemonCmd::PauseSubscription {
+                id: "config-0".into()
+            }
+        );
     }
 
     #[test]
     fn parse_ipc_json_resume_subscription() {
         let cmd = parse_ipc_request(r#"{"cmd":"resume_subscription","id":"config-1"}"#).unwrap();
-        assert_eq!(cmd, DaemonCmd::ResumeSubscription {
-            id: "config-1".into()
-        });
+        assert_eq!(
+            cmd,
+            DaemonCmd::ResumeSubscription {
+                id: "config-1".into()
+            }
+        );
     }
 
     #[test]

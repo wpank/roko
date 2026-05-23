@@ -256,13 +256,14 @@ mod tests {
     fn readiness_missing_provider_definition() {
         let mut config = RokoConfig::default();
         config.agent.default_model = "test-model".to_string();
-        config
-            .models
-            .insert("test-model".to_string(), ModelProfile {
+        config.models.insert(
+            "test-model".to_string(),
+            ModelProfile {
                 provider: "nonexistent".to_string(),
                 slug: "test-slug".to_string(),
                 ..Default::default()
-            });
+            },
+        );
         let issues = check_provider_readiness(&config);
         assert!(!issues.is_empty());
         assert!(issues[0].message.contains("not defined"));
@@ -272,9 +273,9 @@ mod tests {
     fn readiness_missing_api_key_env_variable() {
         let mut config = RokoConfig::default();
         config.agent.default_model = "test-model".to_string();
-        config
-            .providers
-            .insert("test-api".to_string(), ProviderConfig {
+        config.providers.insert(
+            "test-api".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::AnthropicApi,
                 base_url: Some("https://api.anthropic.com/v1".to_string()),
                 api_key_env: Some("ROKO_TEST_NONEXISTENT_KEY_XYZ_090".to_string()),
@@ -285,14 +286,16 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
-        config
-            .models
-            .insert("test-model".to_string(), ModelProfile {
+            },
+        );
+        config.models.insert(
+            "test-model".to_string(),
+            ModelProfile {
                 provider: "test-api".to_string(),
                 slug: "claude-sonnet-4-20250514".to_string(),
                 ..Default::default()
-            });
+            },
+        );
         // Ensure the env var is NOT set.
         // SAFETY: test is single-threaded; no other thread reads this env var.
         unsafe { std::env::remove_var("ROKO_TEST_NONEXISTENT_KEY_XYZ_090") };
@@ -310,9 +313,9 @@ mod tests {
     fn readiness_claude_cli_nonexistent_command() {
         let mut config = RokoConfig::default();
         config.agent.default_model = "test-model".to_string();
-        config
-            .providers
-            .insert("claude-local".to_string(), ProviderConfig {
+        config.providers.insert(
+            "claude-local".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::ClaudeCli,
                 base_url: None,
                 api_key_env: None,
@@ -323,14 +326,16 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
-        config
-            .models
-            .insert("test-model".to_string(), ModelProfile {
+            },
+        );
+        config.models.insert(
+            "test-model".to_string(),
+            ModelProfile {
                 provider: "claude-local".to_string(),
                 slug: "claude-sonnet-4-20250514".to_string(),
                 ..Default::default()
-            });
+            },
+        );
         let issues = check_provider_readiness(&config);
         assert!(!issues.is_empty());
         assert!(issues[0].message.contains("claude CLI not found on PATH"));
@@ -340,9 +345,9 @@ mod tests {
     fn readiness_unreferenced_provider_ignored() {
         let mut config = RokoConfig::default();
         // Provider configured but no model references it.
-        config
-            .providers
-            .insert("unused-provider".to_string(), ProviderConfig {
+        config.providers.insert(
+            "unused-provider".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::AnthropicApi,
                 base_url: None,
                 api_key_env: Some("ROKO_NONEXISTENT_UNUSED_KEY_090".to_string()),
@@ -353,7 +358,8 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
+            },
+        );
         // SAFETY: test is single-threaded; no other thread reads this env var.
         unsafe { std::env::remove_var("ROKO_NONEXISTENT_UNUSED_KEY_090") };
         let issues = check_provider_readiness(&config);
@@ -366,11 +372,14 @@ mod tests {
     #[test]
     fn report_readiness_all_blocked() {
         let mut config = RokoConfig::default();
-        config.models.insert("m1".to_string(), ModelProfile {
-            provider: "p1".to_string(),
-            slug: "s1".to_string(),
-            ..Default::default()
-        });
+        config.models.insert(
+            "m1".to_string(),
+            ModelProfile {
+                provider: "p1".to_string(),
+                slug: "s1".to_string(),
+                ..Default::default()
+            },
+        );
         let issues = vec![ProviderReadinessIssue {
             provider_name: "p1".to_string(),
             message: "test issue".to_string(),
@@ -381,16 +390,22 @@ mod tests {
     #[test]
     fn report_readiness_partial_blocked() {
         let mut config = RokoConfig::default();
-        config.models.insert("m1".to_string(), ModelProfile {
-            provider: "p1".to_string(),
-            slug: "s1".to_string(),
-            ..Default::default()
-        });
-        config.models.insert("m2".to_string(), ModelProfile {
-            provider: "p2".to_string(),
-            slug: "s2".to_string(),
-            ..Default::default()
-        });
+        config.models.insert(
+            "m1".to_string(),
+            ModelProfile {
+                provider: "p1".to_string(),
+                slug: "s1".to_string(),
+                ..Default::default()
+            },
+        );
+        config.models.insert(
+            "m2".to_string(),
+            ModelProfile {
+                provider: "p2".to_string(),
+                slug: "s2".to_string(),
+                ..Default::default()
+            },
+        );
         // Only p1 is blocked, p2 is fine.
         let issues = vec![ProviderReadinessIssue {
             provider_name: "p1".to_string(),

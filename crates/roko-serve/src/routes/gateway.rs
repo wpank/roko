@@ -463,17 +463,20 @@ async fn gateway_stats(
     let model_stats = model_aggregates
         .into_iter()
         .map(|(model, stats)| {
-            (model, ModelStats {
-                requests: stats.count,
-                tokens_in: stats.total_input_tokens,
-                tokens_out: stats.total_output_tokens,
-                cost_usd: stats.total_cost_usd,
-                average_latency_ms: if stats.count > 0 {
-                    stats.total_latency_ms as f64 / stats.count as f64
-                } else {
-                    0.0
+            (
+                model,
+                ModelStats {
+                    requests: stats.count,
+                    tokens_in: stats.total_input_tokens,
+                    tokens_out: stats.total_output_tokens,
+                    cost_usd: stats.total_cost_usd,
+                    average_latency_ms: if stats.count > 0 {
+                        stats.total_latency_ms as f64 / stats.count as f64
+                    } else {
+                        0.0
+                    },
                 },
-            })
+            )
         })
         .collect();
 
@@ -1044,9 +1047,9 @@ mod tests {
         let mut config = roko_core::config::schema::RokoConfig::default();
         config.models.clear();
         config.providers.clear();
-        config
-            .providers
-            .insert("openai_compat".to_string(), ProviderConfig {
+        config.providers.insert(
+            "openai_compat".to_string(),
+            ProviderConfig {
                 kind: ProviderKind::OpenAiCompat,
                 base_url: None,
                 api_key_env: Some("OPENAI_API_KEY".to_string()),
@@ -1057,7 +1060,8 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
-            });
+            },
+        );
 
         assert_eq!(provider_id_for_model(&config, "gpt-new-unconfigured"), None);
     }
@@ -1194,8 +1198,9 @@ mod tests {
 
     #[test]
     fn completion_response_uses_model_call_usage_and_cost() {
-        let response =
-            completion_response_from_model_call("request-1".into(), CoreModelCallResponse {
+        let response = completion_response_from_model_call(
+            "request-1".into(),
+            CoreModelCallResponse {
                 content: "done".into(),
                 model: "served-model".into(),
                 usage: roko_core::foundation::TokenUsage {
@@ -1206,7 +1211,8 @@ mod tests {
                 },
                 stop_reason: Some("max_tokens".into()),
                 request_id: None,
-            });
+            },
+        );
 
         assert_eq!(response.id, "request-1");
         assert_eq!(response.model, "served-model");
@@ -1262,16 +1268,15 @@ mod tests {
         assert_eq!(ops_count, 0);
 
         // Insert a dummy operation.
-        state
-            .operations
-            .write()
-            .await
-            .insert("test-op".to_string(), OperationHandle {
+        state.operations.write().await.insert(
+            "test-op".to_string(),
+            OperationHandle {
                 id: "test-op".to_string(),
                 kind: "test".to_string(),
                 status: OperationStatus::Running,
                 handle: tokio::spawn(async {}),
-            });
+            },
+        );
 
         let ops_count = state.operations.read().await.len() as u32;
         assert_eq!(
@@ -1330,13 +1335,16 @@ mod tests {
             provider.to_string(),
             test_cli_provider(script.display().to_string()),
         );
-        config.models.insert(model.to_string(), ModelProfile {
-            provider: provider.to_string(),
-            slug: model.to_string(),
-            cost_input_per_m: Some(1.0),
-            cost_output_per_m: Some(2.0),
-            ..Default::default()
-        });
+        config.models.insert(
+            model.to_string(),
+            ModelProfile {
+                provider: provider.to_string(),
+                slug: model.to_string(),
+                cost_input_per_m: Some(1.0),
+                cost_output_per_m: Some(2.0),
+                ..Default::default()
+            },
+        );
 
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
@@ -1345,12 +1353,15 @@ mod tests {
         ));
         let feedback_sink: Arc<dyn roko_core::foundation::FeedbackSink> = feedback.clone();
         let mut cost_table = CostTable::default();
-        cost_table.insert(model, ModelPricing {
-            input_per_m: 1.0,
-            output_per_m: 2.0,
-            cache_read_per_m: 0.0,
-            cache_write_per_m: 0.0,
-        });
+        cost_table.insert(
+            model,
+            ModelPricing {
+                input_per_m: 1.0,
+                output_per_m: 2.0,
+                cache_read_per_m: 0.0,
+                cache_write_per_m: 0.0,
+            },
+        );
 
         let mut state = AppState::new(
             workdir.clone(),
@@ -1368,10 +1379,14 @@ mod tests {
                 .with_run_id("gateway-durable-test"),
         );
         let state = Arc::new(state);
-        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig {
-            enabled: false,
-            ..ServeAuthConfig::default()
-        });
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
 
         let response = app
             .oneshot(
@@ -1486,11 +1501,14 @@ mod tests {
             provider.to_string(),
             test_cli_provider(script.display().to_string()),
         );
-        config.models.insert(model.to_string(), ModelProfile {
-            provider: provider.to_string(),
-            slug: model.to_string(),
-            ..Default::default()
-        });
+        config.models.insert(
+            model.to_string(),
+            ModelProfile {
+                provider: provider.to_string(),
+                slug: model.to_string(),
+                ..Default::default()
+            },
+        );
         let deploy_backend =
             Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
         let mut state = AppState::new(
@@ -1570,10 +1588,14 @@ mod tests {
     #[tokio::test]
     async fn complete_route_rejects_empty_body() {
         let (_dir, state) = test_state();
-        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig {
-            enabled: false,
-            ..ServeAuthConfig::default()
-        });
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
 
         let response = app
             .oneshot(
@@ -1612,10 +1634,14 @@ mod tests {
             AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
                 .expect("AppState::new"),
         );
-        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig {
-            enabled: false,
-            ..ServeAuthConfig::default()
-        });
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
 
         let response = app
             .oneshot(

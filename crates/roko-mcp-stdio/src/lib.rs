@@ -122,12 +122,15 @@ where
         let parsed: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(err) => {
-                write_response(&mut writer, &JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    result: None,
-                    error: Some(JsonRpcError::parse_error(err.to_string())),
-                    id: Value::Null,
-                })?;
+                write_response(
+                    &mut writer,
+                    &JsonRpcResponse {
+                        jsonrpc: "2.0",
+                        result: None,
+                        error: Some(JsonRpcError::parse_error(err.to_string())),
+                        id: Value::Null,
+                    },
+                )?;
                 continue;
             }
         };
@@ -137,25 +140,31 @@ where
         let request: JsonRpcRequest = match serde_json::from_value(parsed) {
             Ok(request) => request,
             Err(err) => {
-                write_response(&mut writer, &JsonRpcResponse {
-                    jsonrpc: "2.0",
-                    result: None,
-                    error: Some(JsonRpcError::invalid_request(err.to_string())),
-                    id: request_id,
-                })?;
+                write_response(
+                    &mut writer,
+                    &JsonRpcResponse {
+                        jsonrpc: "2.0",
+                        result: None,
+                        error: Some(JsonRpcError::invalid_request(err.to_string())),
+                        id: request_id,
+                    },
+                )?;
                 continue;
             }
         };
 
         if request.jsonrpc != "2.0" {
-            write_response(&mut writer, &JsonRpcResponse {
-                jsonrpc: "2.0",
-                result: None,
-                error: Some(JsonRpcError::invalid_request(
-                    "jsonrpc field must be \"2.0\"",
-                )),
-                id: request.id,
-            })?;
+            write_response(
+                &mut writer,
+                &JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    result: None,
+                    error: Some(JsonRpcError::invalid_request(
+                        "jsonrpc field must be \"2.0\"",
+                    )),
+                    id: request.id,
+                },
+            )?;
             continue;
         }
 

@@ -29,7 +29,7 @@ fn force_failing_verify_step(workdir: &Path) {
     let mut saw_max_retries = false;
 
     for line in tasks.lines() {
-        if line.trim() == "verify = []" {
+        if line.trim().starts_with("verify = ") {
             continue;
         }
 

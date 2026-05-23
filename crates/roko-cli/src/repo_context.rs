@@ -1019,10 +1019,10 @@ mod repo_context_tests {
 
         let (members, do_not_create) =
             collect_workspace_members(temp.path(), &ProjectKind::TypeScript);
-        assert_eq!(members, vec![
-            String::from("app-one"),
-            String::from("app-two")
-        ]);
+        assert_eq!(
+            members,
+            vec![String::from("app-one"), String::from("app-two")]
+        );
         assert_eq!(members, do_not_create);
     }
 
@@ -1068,11 +1068,14 @@ use ./module-c
         fs::create_dir_all(temp.path().join("module-c")).expect("create module-c");
 
         let (members, do_not_create) = collect_workspace_members(temp.path(), &ProjectKind::Go);
-        assert_eq!(members, vec![
-            String::from("module-a"),
-            String::from("module-b"),
-            String::from("module-c"),
-        ]);
+        assert_eq!(
+            members,
+            vec![
+                String::from("module-a"),
+                String::from("module-b"),
+                String::from("module-c"),
+            ]
+        );
         assert_eq!(members, do_not_create);
     }
 
@@ -1359,11 +1362,14 @@ version = "0.1.0"
                 .ends_with("crates/roko-compose/src/lib.rs")
         }));
         assert!(pack.context_root_verified);
-        assert_eq!(pack.do_not_create, vec![
-            String::from("extra"),
-            String::from("roko-compose"),
-            String::from("sidecar"),
-        ]);
+        assert_eq!(
+            pack.do_not_create,
+            vec![
+                String::from("extra"),
+                String::from("roko-compose"),
+                String::from("sidecar"),
+            ]
+        );
     }
 
     #[test]
@@ -1505,10 +1511,10 @@ version = "0.1.0"
         expected.sort_unstable();
 
         assert_eq!(pack.project_kind, ProjectKind::Rust);
-        assert_eq!(pack.keywords, vec![
-            String::from("compose"),
-            String::from("prompt")
-        ]);
+        assert_eq!(
+            pack.keywords,
+            vec![String::from("compose"), String::from("prompt")]
+        );
         assert_eq!(pack.workspace_members, expected);
         assert!(pack.key_files.iter().any(|path| {
             path.to_string_lossy()

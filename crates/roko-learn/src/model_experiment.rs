@@ -547,17 +547,20 @@ mod tests {
                     provider: "moonshot".into(),
                 },
             ],
-            stats: HashMap::from([("glm".into(), ModelVariantStats {
-                trials: 12,
-                successes: 9,
-                total_cost_usd: 2.4,
-                total_tokens: 18_000,
-                total_duration_ms: 54_000,
-                pass_rate: 0.75,
-                avg_cost_usd: 0.2,
-                cost_per_success: 0.266_666_666_7,
-                avg_duration_ms: 4_500.0,
-            })]),
+            stats: HashMap::from([(
+                "glm".into(),
+                ModelVariantStats {
+                    trials: 12,
+                    successes: 9,
+                    total_cost_usd: 2.4,
+                    total_tokens: 18_000,
+                    total_duration_ms: 54_000,
+                    pass_rate: 0.75,
+                    avg_cost_usd: 0.2,
+                    cost_per_success: 0.266_666_666_7,
+                    avg_duration_ms: 4_500.0,
+                },
+            )]),
             status: ExperimentStatus::Running,
             winner_id: None,
             min_trials_per_variant: 20,
@@ -744,12 +747,15 @@ mod tests {
         store.record_outcome("glm-vs-kimi", "b", false, 2.50, 240, 1_800);
         store.save(&store_path).unwrap();
 
-        let reloaded = CascadeRouter::load_or_new(&router_path, vec![
-            "claude-haiku-4-5".to_string(),
-            "claude-sonnet-4-5".to_string(),
-            "model-a".to_string(),
-            "model-b".to_string(),
-        ]);
+        let reloaded = CascadeRouter::load_or_new(
+            &router_path,
+            vec![
+                "claude-haiku-4-5".to_string(),
+                "claude-sonnet-4-5".to_string(),
+                "model-a".to_string(),
+                "model-b".to_string(),
+            ],
+        );
         let routed = reloaded.route(&RoutingContext {
             task_category: TaskCategory::Implementation,
             complexity: TaskComplexityBand::Standard,

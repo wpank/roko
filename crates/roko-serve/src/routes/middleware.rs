@@ -265,11 +265,14 @@ pub async fn require_api_key(
 
     let (auth_method, ctx) = match api_credential(req.headers()) {
         ApiCredential::XApiKey(supplied) => match authenticate_api_key(supplied, &auth, true) {
-            Some((method, scope, user_id)) => (method, AuthContext {
+            Some((method, scope, user_id)) => (
                 method,
-                scope,
-                user_id,
-            }),
+                AuthContext {
+                    method,
+                    scope,
+                    user_id,
+                },
+            ),
             None => {
                 return Err(ApiError::unauthorized(
                     "invalid or missing X-Api-Key header",
@@ -279,25 +282,34 @@ pub async fn require_api_key(
         ApiCredential::Bearer(supplied) => {
             // Try API key (sync) → agent token (async) → Privy JWT (async).
             if let Some((method, scope, user_id)) = authenticate_api_key(supplied, &auth, false) {
-                (method, AuthContext {
+                (
                     method,
-                    scope,
-                    user_id,
-                })
+                    AuthContext {
+                        method,
+                        scope,
+                        user_id,
+                    },
+                )
             } else if let Some((method, scope, user_id)) = try_agent_token(supplied, &state).await {
-                (method, AuthContext {
+                (
                     method,
-                    scope,
-                    user_id,
-                })
+                    AuthContext {
+                        method,
+                        scope,
+                        user_id,
+                    },
+                )
             } else if let Some((method, scope, user_id)) =
                 try_privy_jwt(supplied, &auth, &state).await
             {
-                (method, AuthContext {
+                (
                     method,
-                    scope,
-                    user_id,
-                })
+                    AuthContext {
+                        method,
+                        scope,
+                        user_id,
+                    },
+                )
             } else {
                 return Err(ApiError::unauthorized(
                     "invalid or missing Authorization bearer token",

@@ -186,6 +186,7 @@ fn convert_agent(m: &MoriConfig) -> AgentConfig {
         mode: Default::default(),
         extensions: Vec::new(),
         defaults: Default::default(),
+        mcp_config: None,
     }
 }
 

@@ -1091,6 +1091,22 @@ mod tests {
     }
 
     #[test]
+    fn adapter_for_kind_hermes() {
+        assert_eq!(
+            adapter_for_kind(ProviderKind::Hermes).kind(),
+            ProviderKind::Hermes
+        );
+    }
+
+    #[test]
+    fn adapter_for_kind_openclaw() {
+        assert_eq!(
+            adapter_for_kind(ProviderKind::OpenClaw).kind(),
+            ProviderKind::OpenClaw
+        );
+    }
+
+    #[test]
     fn build_tool_dispatcher_attaches_scoped_safety_layer() {
         fn no_handler(_: &str) -> Option<Arc<dyn roko_core::tool::ToolHandler>> {
             None

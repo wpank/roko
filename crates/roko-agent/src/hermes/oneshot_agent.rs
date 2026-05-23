@@ -440,6 +440,59 @@ mod tests {
         assert!(!argv.contains(&"--ignore-user-config".to_string()));
     }
 
+    #[test]
+    fn build_argv_z_ignores_model_override() {
+        // Z flavor does not support --model; even if model_override is set
+        // in the config, the argv must NOT contain it.
+        let config = HermesOneShotConfig {
+            flavor: HermesFlavor::Z,
+            model_override: Some("claude-opus-4-20250514".to_string()),
+            ..Default::default()
+        };
+        let agent = HermesOneShotAgent::new(config);
+        let argv = agent.build_argv("test");
+
+        assert_eq!(argv, vec!["-z", "test"]);
+        assert!(!argv.contains(&"--model".to_string()));
+        assert!(!argv.contains(&"claude-opus-4-20250514".to_string()));
+    }
+
+    #[test]
+    fn build_argv_chat_quiet_custom_extra_args() {
+        let config = HermesOneShotConfig {
+            extra_args: vec!["--verbose".to_string(), "--no-cache".to_string()],
+            model_override: None,
+            ..Default::default()
+        };
+        let agent = HermesOneShotAgent::new(config);
+        let argv = agent.build_argv("prompt");
+        assert_eq!(
+            argv,
+            vec!["chat", "-q", "prompt", "-Q", "--verbose", "--no-cache"]
+        );
+    }
+
+    #[test]
+    fn build_argv_chat_quiet_empty_extra_args() {
+        let config = HermesOneShotConfig {
+            extra_args: vec![],
+            model_override: None,
+            ..Default::default()
+        };
+        let agent = HermesOneShotAgent::new(config);
+        let argv = agent.build_argv("hello");
+        assert_eq!(argv, vec!["chat", "-q", "hello", "-Q"]);
+    }
+
+    #[test]
+    fn build_argv_chat_quiet_empty_prompt() {
+        let config = HermesOneShotConfig::default();
+        let agent = HermesOneShotAgent::new(config);
+        let argv = agent.build_argv("");
+        // Empty prompt is still passed as the argument
+        assert_eq!(argv[2], "");
+    }
+
     // ---- Parser tests ------------------------------------------------------
 
     #[test]
@@ -521,6 +574,70 @@ mod tests {
         match &events[2] {
             HarnessEvent::StopReason(reason) => assert_eq!(reason, "stop"),
             other => panic!("expected StopReason, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn z_parser_single_line() {
+        let mut parser = HermesZParser::new();
+        assert!(parser.parse_stdout_line("only one line").is_empty());
+        let events = parser.finalize();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::Output(text) => assert_eq!(text, "only one line"),
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn z_parser_multiline_preserves_order() {
+        let mut parser = HermesZParser::new();
+        for i in 0..5 {
+            assert!(parser.parse_stdout_line(&format!("line {i}")).is_empty());
+        }
+        let events = parser.finalize();
+        match &events[0] {
+            HarnessEvent::Output(text) => {
+                assert_eq!(text, "line 0\nline 1\nline 2\nline 3\nline 4");
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_quiet_parser_empty() {
+        let mut parser = HermesChatQuietParser::new();
+        let events = parser.finalize();
+        // No stderr => Output + StopReason only
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            HarnessEvent::Output(text) => assert_eq!(text, ""),
+            other => panic!("expected empty Output, got {other:?}"),
+        }
+        match &events[1] {
+            HarnessEvent::StopReason(reason) => assert_eq!(reason, "stop"),
+            other => panic!("expected StopReason, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_quiet_parser_only_stderr() {
+        let mut parser = HermesChatQuietParser::new();
+        assert!(
+            parser
+                .parse_stderr_line("error: something broke")
+                .is_empty()
+        );
+        let events = parser.finalize();
+        // Empty stdout output + error + stop reason
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            HarnessEvent::Output(text) => assert_eq!(text, ""),
+            other => panic!("expected empty Output, got {other:?}"),
+        }
+        match &events[1] {
+            HarnessEvent::Error(text) => assert_eq!(text, "error: something broke"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

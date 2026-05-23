@@ -1719,4 +1719,689 @@ done
 
         let _ = client.shutdown().await;
     }
+
+    // -- AcpEvent construction and coverage ----------------------------------
+
+    #[test]
+    fn acp_event_output_variant() {
+        let event = AcpEvent::Output {
+            text: "hello world".into(),
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("Output"));
+        assert!(debug.contains("hello world"));
+
+        let cloned = event.clone();
+        assert!(format!("{cloned:?}").contains("hello world"));
+    }
+
+    #[test]
+    fn acp_event_tool_call_variant() {
+        let event = AcpEvent::ToolCall {
+            id: "tc-001".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "/tmp/foo.txt"}),
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("ToolCall"));
+        assert!(debug.contains("tc-001"));
+        assert!(debug.contains("read_file"));
+    }
+
+    #[test]
+    fn acp_event_tool_call_update_variant() {
+        let event = AcpEvent::ToolCallUpdate {
+            id: "tc-002".into(),
+            progress: "50%".into(),
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("ToolCallUpdate"));
+        assert!(debug.contains("50%"));
+    }
+
+    #[test]
+    fn acp_event_permission_request_variant() {
+        let event = AcpEvent::PermissionRequest {
+            id: "pr-001".into(),
+            tool: "bash".into(),
+            arguments: serde_json::json!({"command": "rm -rf /"}),
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("PermissionRequest"));
+        assert!(debug.contains("bash"));
+    }
+
+    #[test]
+    fn acp_event_usage_variant() {
+        let event = AcpEvent::Usage {
+            input_tokens: 1000,
+            output_tokens: 500,
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("Usage"));
+        assert!(debug.contains("1000"));
+        assert!(debug.contains("500"));
+    }
+
+    #[test]
+    fn acp_event_stop_reason_variant() {
+        let event = AcpEvent::StopReason("end_turn".into());
+        let debug = format!("{event:?}");
+        assert!(debug.contains("StopReason"));
+        assert!(debug.contains("end_turn"));
+
+        // Clone preserves value.
+        let cloned = event.clone();
+        assert!(format!("{cloned:?}").contains("end_turn"));
+    }
+
+    // -- AcpNotification construction ----------------------------------------
+
+    #[test]
+    fn acp_notification_construction_and_clone() {
+        let notif = AcpNotification {
+            method: "session/update".into(),
+            params: Some(serde_json::json!({"update": {"text": "hi"}})),
+            server_request_id: None,
+        };
+        assert_eq!(notif.method, "session/update");
+        assert!(notif.params.is_some());
+        assert!(notif.server_request_id.is_none());
+
+        let cloned = notif.clone();
+        assert_eq!(cloned.method, notif.method);
+    }
+
+    #[test]
+    fn acp_notification_with_server_request_id() {
+        let notif = AcpNotification {
+            method: "session/request_permission".into(),
+            params: Some(serde_json::json!({"tool": "bash"})),
+            server_request_id: Some(42),
+        };
+        assert_eq!(notif.server_request_id, Some(42));
+    }
+
+    #[test]
+    fn acp_notification_without_params() {
+        let notif = AcpNotification {
+            method: "session/heartbeat".into(),
+            params: None,
+            server_request_id: None,
+        };
+        assert!(notif.params.is_none());
+        let debug = format!("{notif:?}");
+        assert!(debug.contains("heartbeat"));
+    }
+
+    // -- AcpNotification deserialization from sample JSON ---------------------
+
+    #[test]
+    fn acp_notification_from_raw_server_message_notification() {
+        let json = r#"{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"hello"}}}}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.is_notification());
+        assert!(!msg.is_response());
+        assert!(!msg.is_server_request());
+        assert_eq!(msg.method.as_deref(), Some("session/update"));
+        assert!(msg.params.is_some());
+        let binding = msg.params.unwrap();
+        let text = binding["update"]["content"]["text"].as_str().unwrap();
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn acp_notification_from_raw_server_message_server_request() {
+        let json = r#"{"id":77,"method":"session/request_permission","params":{"tool":"write_file","arguments":{"path":"/tmp/out.txt"}}}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.is_server_request());
+        assert!(!msg.is_notification());
+        assert_eq!(msg.numeric_id(), Some(77));
+        assert_eq!(msg.method.as_deref(), Some("session/request_permission"));
+    }
+
+    // -- AcpPromptPayload serialization --------------------------------------
+
+    #[test]
+    fn acp_prompt_payload_basic() {
+        let payload = AcpPromptPayload {
+            text: "Explain this code".into(),
+            extra_params: None,
+        };
+        assert_eq!(payload.text, "Explain this code");
+        assert!(payload.extra_params.is_none());
+
+        // Debug is derived.
+        let debug = format!("{payload:?}");
+        assert!(debug.contains("Explain this code"));
+    }
+
+    #[test]
+    fn acp_prompt_payload_with_extra_params() {
+        let payload = AcpPromptPayload {
+            text: "Fix this bug".into(),
+            extra_params: Some(serde_json::json!({
+                "model": "claude-opus-4",
+                "temperature": 0.7
+            })),
+        };
+        assert_eq!(payload.text, "Fix this bug");
+        let extra = payload.extra_params.as_ref().unwrap();
+        assert_eq!(extra["model"], "claude-opus-4");
+        assert_eq!(extra["temperature"], 0.7);
+    }
+
+    #[test]
+    fn acp_prompt_payload_clone() {
+        let payload = AcpPromptPayload {
+            text: "test".into(),
+            extra_params: Some(serde_json::json!({"key": "value"})),
+        };
+        let cloned = payload.clone();
+        assert_eq!(cloned.text, payload.text);
+        assert_eq!(cloned.extra_params, payload.extra_params);
+    }
+
+    #[test]
+    fn acp_prompt_payload_serializes_into_session_prompt_params() {
+        // Verify that a payload builds the correct JSON-RPC params structure
+        // that send_prompt would produce.
+        let payload = AcpPromptPayload {
+            text: "hello agent".into(),
+            extra_params: Some(serde_json::json!({"maxTokens": 4096})),
+        };
+        let session = SessionId("sess-abc".into());
+
+        let mut params = serde_json::json!({
+            "sessionId": session.0,
+            "prompt": [{
+                "type": "text",
+                "text": payload.text,
+            }],
+        });
+
+        if let Some(extra) = payload.extra_params {
+            if let (Some(base), Some(ext)) = (params.as_object_mut(), extra.as_object()) {
+                for (k, v) in ext {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        assert_eq!(params["sessionId"], "sess-abc");
+        assert_eq!(params["prompt"][0]["type"], "text");
+        assert_eq!(params["prompt"][0]["text"], "hello agent");
+        assert_eq!(params["maxTokens"], 4096);
+    }
+
+    // -- AcpInitResponse construction ----------------------------------------
+
+    #[test]
+    fn acp_init_response_from_json() {
+        let raw = serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {
+                "name": "test-server",
+                "version": "1.0.0"
+            },
+            "capabilities": {
+                "streaming": true
+            }
+        });
+
+        let init = AcpInitResponse {
+            protocol_version: raw
+                .get("protocolVersion")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            server_info: raw
+                .get("serverInfo")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            raw: raw.clone(),
+        };
+
+        assert_eq!(init.protocol_version, "2024-11-05");
+        assert_eq!(init.server_info["name"], "test-server");
+        assert_eq!(init.server_info["version"], "1.0.0");
+        // raw preserves all fields including capabilities
+        assert_eq!(init.raw["capabilities"]["streaming"], true);
+    }
+
+    #[test]
+    fn acp_init_response_with_integer_protocol_version() {
+        // Cursor uses integer protocol version.
+        let raw = serde_json::json!({
+            "protocolVersion": 1,
+            "serverInfo": {"name": "cursor"}
+        });
+
+        let init = AcpInitResponse {
+            protocol_version: raw
+                .get("protocolVersion")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            server_info: raw
+                .get("serverInfo")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            raw,
+        };
+
+        assert_eq!(init.protocol_version, serde_json::json!(1));
+    }
+
+    #[test]
+    fn acp_init_response_missing_fields_default_to_null() {
+        let raw = serde_json::json!({});
+
+        let init = AcpInitResponse {
+            protocol_version: raw
+                .get("protocolVersion")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            server_info: raw
+                .get("serverInfo")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            raw,
+        };
+
+        assert!(init.protocol_version.is_null());
+        assert!(init.server_info.is_null());
+    }
+
+    #[test]
+    fn acp_init_response_clone() {
+        let init = AcpInitResponse {
+            protocol_version: serde_json::json!("2024-11-05"),
+            server_info: serde_json::json!({"name": "test"}),
+            raw: serde_json::json!({}),
+        };
+        let cloned = init.clone();
+        assert_eq!(cloned.protocol_version, init.protocol_version);
+        assert_eq!(cloned.server_info, init.server_info);
+    }
+
+    // -- AcpPromptResult construction ----------------------------------------
+
+    #[test]
+    fn acp_prompt_result_with_stop_reason() {
+        let raw = serde_json::json!({
+            "stopReason": "end_turn",
+            "text": "Done processing.",
+            "usage": {"inputTokens": 100, "outputTokens": 50}
+        });
+
+        let result = AcpPromptResult {
+            raw: raw.clone(),
+            stop_reason: raw
+                .get("stopReason")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+        };
+
+        assert_eq!(result.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(result.raw["text"], "Done processing.");
+        assert_eq!(result.raw["usage"]["inputTokens"], 100);
+    }
+
+    #[test]
+    fn acp_prompt_result_without_stop_reason() {
+        let raw = serde_json::json!({"partial": true});
+
+        let result = AcpPromptResult {
+            raw: raw.clone(),
+            stop_reason: raw
+                .get("stopReason")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+        };
+
+        assert!(result.stop_reason.is_none());
+    }
+
+    #[test]
+    fn acp_prompt_result_clone() {
+        let result = AcpPromptResult {
+            raw: serde_json::json!({"stopReason": "max_tokens"}),
+            stop_reason: Some("max_tokens".into()),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.stop_reason, result.stop_reason);
+        assert_eq!(cloned.raw, result.raw);
+    }
+
+    #[test]
+    fn acp_prompt_result_debug() {
+        let result = AcpPromptResult {
+            raw: serde_json::json!({}),
+            stop_reason: Some("tool_use".into()),
+        };
+        let debug = format!("{result:?}");
+        assert!(debug.contains("tool_use"));
+    }
+
+    // -- NewSessionOpts serialization ----------------------------------------
+
+    #[test]
+    fn new_session_opts_serialization_skips_none_fields() {
+        let opts = NewSessionOpts::default();
+        let json = serde_json::to_value(&opts).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // Only `reset` should be present (it has #[serde(default)] but no skip).
+        // session_key, cwd, mcp_servers, extra_params should be absent.
+        assert!(
+            !obj.contains_key("session_key"),
+            "session_key should be skipped when None"
+        );
+        assert!(!obj.contains_key("cwd"), "cwd should be skipped when None");
+        assert!(
+            !obj.contains_key("mcp_servers"),
+            "mcp_servers should be skipped when None"
+        );
+        assert!(
+            !obj.contains_key("extra_params"),
+            "extra_params should be skipped when None"
+        );
+    }
+
+    #[test]
+    fn new_session_opts_serialization_with_all_fields() {
+        let opts = NewSessionOpts {
+            session_key: Some("my-session".into()),
+            cwd: Some(PathBuf::from("/workspace")),
+            mcp_servers: Some(serde_json::json!([{"name": "git"}])),
+            reset: true,
+            extra_params: Some(serde_json::json!({"model": "opus"})),
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["session_key"], "my-session");
+        assert_eq!(json["cwd"], "/workspace");
+        assert_eq!(json["mcp_servers"][0]["name"], "git");
+        assert_eq!(json["reset"], true);
+        assert_eq!(json["extra_params"]["model"], "opus");
+    }
+
+    #[test]
+    fn new_session_opts_reset_defaults_false() {
+        let opts = NewSessionOpts::default();
+        assert!(!opts.reset);
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["reset"], false);
+    }
+
+    // -- AcpError coverage ---------------------------------------------------
+
+    #[test]
+    fn acp_error_spawn_display() {
+        let err = AcpError::Spawn("binary not found: /usr/bin/cursor".into());
+        let msg = format!("{err}");
+        assert_eq!(msg, "spawn failed: binary not found: /usr/bin/cursor");
+    }
+
+    #[test]
+    fn acp_error_protocol_display() {
+        let err = AcpError::Protocol("unexpected field type".into());
+        let msg = format!("{err}");
+        assert_eq!(msg, "acp protocol error: unexpected field type");
+    }
+
+    #[test]
+    fn acp_error_io_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe closed");
+        let err = AcpError::Io(io_err);
+        let msg = format!("{err}");
+        assert!(msg.contains("pipe closed"));
+    }
+
+    #[test]
+    fn acp_error_timeout_display() {
+        let err = AcpError::Timeout {
+            method: "initialize".into(),
+            elapsed: std::time::Duration::from_secs(90),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("initialize"));
+        assert!(msg.contains("timed out"));
+        assert!(msg.contains("90"));
+    }
+
+    #[test]
+    fn acp_error_method_failed_display() {
+        let err = AcpError::MethodFailed {
+            method: "session/new".into(),
+            message: "quota exceeded".into(),
+        };
+        let msg = format!("{err}");
+        assert_eq!(msg, "acp `session/new` failed: quota exceeded");
+    }
+
+    #[test]
+    fn acp_error_disconnected_display() {
+        let err = AcpError::Disconnected;
+        let msg = format!("{err}");
+        assert_eq!(msg, "acp connection lost: server exited or pipe closed");
+    }
+
+    #[test]
+    fn acp_error_debug_all_variants() {
+        // Ensure Debug is implemented for all variants.
+        let variants: Vec<AcpError> = vec![
+            AcpError::MethodFailed {
+                method: "m".into(),
+                message: "msg".into(),
+            },
+            AcpError::Disconnected,
+            AcpError::Timeout {
+                method: "m".into(),
+                elapsed: std::time::Duration::from_millis(100),
+            },
+            AcpError::Protocol("p".into()),
+            AcpError::Spawn("s".into()),
+            AcpError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+        ];
+        for err in &variants {
+            let debug = format!("{err:?}");
+            assert!(!debug.is_empty(), "Debug should produce non-empty output");
+        }
+    }
+
+    #[test]
+    fn acp_error_io_from_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let acp_err: AcpError = io_err.into();
+        assert!(matches!(acp_err, AcpError::Io(_)));
+        let msg = format!("{acp_err}");
+        assert!(msg.contains("file not found"));
+    }
+
+    // -- SessionId -----------------------------------------------------------
+
+    #[test]
+    fn session_id_equality() {
+        let a = SessionId("sess-001".into());
+        let b = SessionId("sess-001".into());
+        let c = SessionId("sess-002".into());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn session_id_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(SessionId("a".into()));
+        set.insert(SessionId("b".into()));
+        set.insert(SessionId("a".into())); // duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn session_id_display_and_debug() {
+        let sid = SessionId("my-session-42".into());
+        assert_eq!(format!("{sid}"), "my-session-42");
+        let debug = format!("{sid:?}");
+        assert!(debug.contains("my-session-42"));
+    }
+
+    // -- AcpStdioConfig serialization ----------------------------------------
+
+    #[test]
+    fn acp_stdio_config_serialization_roundtrip() {
+        let config = AcpStdioConfig {
+            command: "cursor".into(),
+            args: vec!["--force".into(), "acp".into()],
+            cwd: Some(PathBuf::from("/workspace")),
+            env: {
+                let mut m = HashMap::new();
+                m.insert("KEY".into(), "VALUE".into());
+                m
+            },
+            protocol_version: "2024-11-05".into(),
+            timeout: Duration::from_secs(30),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: AcpStdioConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.command, "cursor");
+        assert_eq!(deserialized.args, vec!["--force", "acp"]);
+        assert_eq!(deserialized.cwd, Some(PathBuf::from("/workspace")));
+        assert_eq!(
+            deserialized.env.get("KEY").map(|s| s.as_str()),
+            Some("VALUE")
+        );
+        assert_eq!(deserialized.protocol_version, "2024-11-05");
+        assert_eq!(deserialized.timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn acp_stdio_config_clone() {
+        let config = test_config();
+        let cloned = config.clone();
+        assert_eq!(cloned.command, config.command);
+        assert_eq!(cloned.protocol_version, config.protocol_version);
+    }
+
+    // -- RawServerMessage edge cases -----------------------------------------
+
+    #[test]
+    fn raw_server_message_with_string_id() {
+        // Some servers might send string IDs; numeric_id should return None.
+        let json = r#"{"id":"abc","result":{"ok":true}}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.is_response());
+        assert_eq!(msg.numeric_id(), None);
+    }
+
+    #[test]
+    fn raw_server_message_empty_object() {
+        let json = r#"{}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        assert!(!msg.is_response());
+        assert!(!msg.is_notification());
+        assert!(!msg.is_server_request());
+        assert_eq!(msg.numeric_id(), None);
+    }
+
+    #[test]
+    fn raw_server_message_error_with_data() {
+        let json = r#"{"id":5,"error":{"code":-32603,"message":"internal","data":{"message":"disk full","trace":"..."}}}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.is_response());
+        let err = msg.error.unwrap();
+        assert_eq!(err.code, -32603);
+        assert_eq!(err.message, "internal");
+        assert!(err.data.is_some());
+        assert_eq!(err.data.unwrap()["message"].as_str(), Some("disk full"));
+    }
+
+    #[test]
+    fn raw_server_message_error_without_data() {
+        let json = r#"{"id":1,"error":{"code":-32600,"message":"bad request"}}"#;
+        let msg: RawServerMessage = serde_json::from_str(json).unwrap();
+        let err = msg.error.unwrap();
+        assert_eq!(err.code, -32600);
+        assert_eq!(err.message, "bad request");
+        assert!(err.data.is_none());
+    }
+
+    // -- JsonRpcRequest edge cases -------------------------------------------
+
+    #[test]
+    fn json_rpc_request_with_complex_params() {
+        let params = serde_json::json!({
+            "sessionId": "sess-123",
+            "prompt": [{"type": "text", "text": "hello"}],
+            "nested": {"a": {"b": [1, 2, 3]}}
+        });
+        let req = JsonRpcRequest::new(100, "session/prompt", Some(params));
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["id"], 100);
+        assert_eq!(parsed["params"]["sessionId"], "sess-123");
+        assert_eq!(parsed["params"]["nested"]["a"]["b"][1], 2);
+    }
+
+    #[test]
+    fn json_rpc_request_method_preserved_exactly() {
+        let req = JsonRpcRequest::new(1, "custom/method-name", None);
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["method"], "custom/method-name");
+    }
+
+    #[test]
+    fn json_rpc_request_id_zero() {
+        let req = JsonRpcRequest::new(0, "test", None);
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["id"], 0);
+    }
+
+    #[test]
+    fn json_rpc_request_id_large() {
+        let req = JsonRpcRequest::new(u64::MAX, "test", None);
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["id"], u64::MAX);
+    }
+
+    // -- Protocol version parsing (used in connect) --------------------------
+
+    #[test]
+    fn protocol_version_numeric_string_parses_to_integer_json() {
+        let version_str = "1";
+        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
+            serde_json::json!(n)
+        } else {
+            serde_json::json!(version_str)
+        };
+        assert_eq!(protocol_version, serde_json::json!(1));
+    }
+
+    #[test]
+    fn protocol_version_date_string_stays_string() {
+        let version_str = "2024-11-05";
+        let protocol_version: serde_json::Value = if let Ok(n) = version_str.parse::<u64>() {
+            serde_json::json!(n)
+        } else {
+            serde_json::json!(version_str)
+        };
+        assert_eq!(protocol_version, serde_json::json!("2024-11-05"));
+    }
+
+    // -- AtomicU64 ID generation ---------------------------------------------
+
+    #[test]
+    fn next_id_increments_atomically() {
+        let counter = AtomicU64::new(1);
+        let id1 = counter.fetch_add(1, Ordering::SeqCst);
+        let id2 = counter.fetch_add(1, Ordering::SeqCst);
+        let id3 = counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
+    }
 }

@@ -397,4 +397,101 @@ mod tests {
         let result = svc.healthcheck().await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn start_with_nonexistent_binary_returns_error() {
+        let svc =
+            OpenClawGatewayService::new("/nonexistent/path/to/openclaw-binary-that-does-not-exist")
+                .with_port(59996)
+                .with_pid_file("/tmp/roko-test-nonexistent-gw-start.pid");
+        let result = svc.start().await;
+        assert!(
+            result.is_err(),
+            "start() should fail when the binary doesn't exist"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed to start openclaw gateway"),
+            "error should mention start failure, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_idempotent_called_twice() {
+        let svc = OpenClawGatewayService::new("openclaw")
+            .with_port(59995)
+            .with_pid_file("/tmp/roko-test-nonexistent-gw-stop2.pid");
+        // Both calls should succeed when nothing is running.
+        let r1 = svc.stop().await;
+        let r2 = svc.stop().await;
+        assert!(r1.is_ok(), "first stop() should succeed");
+        assert!(r2.is_ok(), "second stop() should succeed");
+    }
+
+    #[tokio::test]
+    async fn healthcheck_error_message_contains_port() {
+        let svc = OpenClawGatewayService::new("openclaw").with_port(59994);
+        let result = svc.healthcheck().await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("59994"),
+            "healthcheck error should mention the port, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pid_file_reading_with_nonexistent_file() {
+        let svc = OpenClawGatewayService::new("openclaw")
+            .with_pid_file("/tmp/roko-test-absolutely-nonexistent-pid-file-99999.pid");
+        // read_pid_file should return None for a missing file.
+        assert!(svc.read_pid_file().is_none());
+        // pid() should also return None (falls back to read_pid_file).
+        assert!(svc.pid().is_none());
+    }
+
+    #[tokio::test]
+    async fn pid_file_reading_with_invalid_contents() {
+        // Write a PID file with garbage contents.
+        let pid_path = "/tmp/roko-test-invalid-pid-contents.pid";
+        std::fs::write(pid_path, "not-a-number\n").expect("write test pid file");
+        let svc = OpenClawGatewayService::new("openclaw").with_pid_file(pid_path);
+        // Should return None because the contents can't be parsed as u32.
+        assert!(svc.read_pid_file().is_none());
+        // Clean up.
+        let _ = std::fs::remove_file(pid_path);
+    }
+
+    #[tokio::test]
+    async fn pid_file_reading_with_dead_pid() {
+        // Write a PID file with a very high PID that almost certainly
+        // doesn't correspond to a running process.
+        let pid_path = "/tmp/roko-test-dead-pid.pid";
+        std::fs::write(pid_path, format!("{}", u32::MAX - 1)).expect("write test pid file");
+        let svc = OpenClawGatewayService::new("openclaw").with_pid_file(pid_path);
+        // On Unix, kill(pid, 0) should return non-zero for a
+        // non-existent process, so read_pid_file returns None.
+        assert!(
+            svc.read_pid_file().is_none(),
+            "read_pid_file should return None for a dead PID"
+        );
+        // Clean up.
+        let _ = std::fs::remove_file(pid_path);
+    }
+
+    #[tokio::test]
+    async fn status_stopped_when_pid_file_missing_and_port_closed() {
+        let svc = OpenClawGatewayService::new("openclaw")
+            .with_port(59993)
+            .with_pid_file("/tmp/roko-test-status-missing-pid.pid");
+        let status = svc.status().await;
+        assert_eq!(status, ServiceStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn cached_pid_starts_at_zero() {
+        let svc = OpenClawGatewayService::new("openclaw");
+        assert_eq!(svc.cached_pid.load(Ordering::Relaxed), 0);
+        assert!(svc.pid().is_none());
+    }
 }

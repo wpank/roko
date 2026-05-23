@@ -827,6 +827,194 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_providers_includes_hermes_provider() {
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.providers.insert(
+            "hermes-local".into(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::Hermes,
+                base_url: Some("http://localhost:8080".into()),
+                api_key_env: Some("ROKO_TEST_HERMES_API_KEY_NEVER_SET".into()),
+                command: None,
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+            },
+        );
+        config.models.insert(
+            "hermes-3-405b".into(),
+            roko_core::config::schema::ModelProfile {
+                provider: "hermes-local".into(),
+                slug: "hermes-3-llama-3.1-405b".into(),
+                context_window: 128_000,
+                max_output: None,
+                supports_tools: true,
+                supports_thinking: false,
+                supports_vision: false,
+                supports_web_search: false,
+                supports_mcp_tools: false,
+                supports_partial: false,
+                supports_grounding: false,
+                supports_code_execution: false,
+                supports_caching: false,
+                provider_routing: None,
+                tool_format: "openai_json".into(),
+                cost_input_per_m: Some(2.0),
+                cost_output_per_m: Some(6.0),
+                cost_input_per_m_high: None,
+                cost_output_per_m_high: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                thinking_level: None,
+                use_max_completion_tokens: false,
+                max_tools: None,
+                max_tool_iterations: None,
+                tokenizer_ratio: None,
+                supports_search: false,
+                supports_citations: false,
+                supports_async: false,
+                is_embedding_model: false,
+                search_context_size: None,
+                cost_per_request: None,
+                tier: None,
+            },
+        );
+
+        let state = Arc::new(
+            AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
+                .expect("AppState::new"),
+        );
+
+        let app = routes().with_state(Arc::clone(&state));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/providers")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let response: ProvidersResponse = serde_json::from_slice(&body).expect("parse response");
+
+        let provider = response
+            .providers
+            .iter()
+            .find(|provider| provider.id == "hermes-local")
+            .expect("hermes provider should be present");
+        assert_eq!(provider.kind, "hermes");
+        assert_eq!(provider.model_count, 1);
+        assert!(!provider.has_api_key);
+    }
+
+    #[tokio::test]
+    async fn list_providers_includes_openclaw_provider() {
+        let dir = tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.providers.insert(
+            "openclaw-gpu".into(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::OpenClaw,
+                base_url: Some("http://localhost:9090".into()),
+                api_key_env: Some("ROKO_TEST_OPENCLAW_API_KEY_NEVER_SET".into()),
+                command: None,
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+            },
+        );
+        config.models.insert(
+            "openclaw-7b".into(),
+            roko_core::config::schema::ModelProfile {
+                provider: "openclaw-gpu".into(),
+                slug: "openclaw-7b-instruct".into(),
+                context_window: 32_000,
+                max_output: None,
+                supports_tools: true,
+                supports_thinking: false,
+                supports_vision: false,
+                supports_web_search: false,
+                supports_mcp_tools: false,
+                supports_partial: false,
+                supports_grounding: false,
+                supports_code_execution: false,
+                supports_caching: false,
+                provider_routing: None,
+                tool_format: "openai_json".into(),
+                cost_input_per_m: None,
+                cost_output_per_m: None,
+                cost_input_per_m_high: None,
+                cost_output_per_m_high: None,
+                cost_cache_read_per_m: None,
+                cost_cache_write_per_m: None,
+                thinking_level: None,
+                use_max_completion_tokens: false,
+                max_tools: None,
+                max_tool_iterations: None,
+                tokenizer_ratio: None,
+                supports_search: false,
+                supports_citations: false,
+                supports_async: false,
+                is_embedding_model: false,
+                search_context_size: None,
+                cost_per_request: None,
+                tier: None,
+            },
+        );
+
+        let state = Arc::new(
+            AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
+                .expect("AppState::new"),
+        );
+
+        let app = routes().with_state(Arc::clone(&state));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/providers")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let response: ProvidersResponse = serde_json::from_slice(&body).expect("parse response");
+
+        let provider = response
+            .providers
+            .iter()
+            .find(|provider| provider.id == "openclaw-gpu")
+            .expect("openclaw provider should be present");
+        assert_eq!(provider.kind, "openclaw");
+        assert_eq!(provider.model_count, 1);
+        assert!(!provider.has_api_key);
+    }
+
+    #[tokio::test]
     async fn list_models_returns_configured_models_with_capabilities_and_costs() {
         let dir = tempdir().expect("tempdir");
         let workdir = dir.path().to_path_buf();

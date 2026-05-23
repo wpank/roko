@@ -343,10 +343,10 @@ async fn cascade_prefers_the_cheap_backend_after_confidence_learning() {
         Some(2)
     );
 
-    let reloaded = CascadeRouter::load_or_new(&path, vec![
-        CHEAP_SLUG.to_string(),
-        EXPENSIVE_SLUG.to_string(),
-    ]);
+    let reloaded = CascadeRouter::load_or_new(
+        &path,
+        vec![CHEAP_SLUG.to_string(), EXPENSIVE_SLUG.to_string()],
+    );
     assert_eq!(reloaded.current_stage(), CascadeStage::Confidence);
     assert_eq!(reloaded.total_observations(), TURN_COUNT as u64);
     assert_eq!(reloaded.route(&ctx).primary.slug, CHEAP_SLUG);

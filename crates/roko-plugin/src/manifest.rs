@@ -446,15 +446,14 @@ version = "0.1.0"
         // Profiles
         assert_eq!(manifest.profiles.len(), 2);
         assert_eq!(manifest.profiles[0].name, "read-only");
-        assert_eq!(manifest.profiles[0].allowed_tools, vec![
-            "read_file",
-            "grep",
-            "glob"
-        ]);
-        assert_eq!(manifest.profiles[0].denied_tools, vec![
-            "bash",
-            "write_file"
-        ]);
+        assert_eq!(
+            manifest.profiles[0].allowed_tools,
+            vec!["read_file", "grep", "glob"]
+        );
+        assert_eq!(
+            manifest.profiles[0].denied_tools,
+            vec!["bash", "write_file"]
+        );
 
         // Tools
         assert_eq!(manifest.tools.len(), 2);

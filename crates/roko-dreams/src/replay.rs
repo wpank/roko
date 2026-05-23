@@ -569,16 +569,39 @@ mod tests {
     #[test]
     fn consequence_mode_prefers_higher_utility_and_reports_score() {
         let episodes = vec![
-            episode("a", "task-1", "haiku", true, None, 10, 1_000, vec![
-                GateVerdict::new("compile", true),
-                GateVerdict::new("test", true),
-            ]),
-            episode("b", "task-2", "haiku", true, None, 10, 100, vec![
-                GateVerdict::new("compile", true),
-            ]),
-            episode("c", "task-2", "haiku", true, None, 10, 100, vec![
-                GateVerdict::new("compile", true),
-            ]),
+            episode(
+                "a",
+                "task-1",
+                "haiku",
+                true,
+                None,
+                10,
+                1_000,
+                vec![
+                    GateVerdict::new("compile", true),
+                    GateVerdict::new("test", true),
+                ],
+            ),
+            episode(
+                "b",
+                "task-2",
+                "haiku",
+                true,
+                None,
+                10,
+                100,
+                vec![GateVerdict::new("compile", true)],
+            ),
+            episode(
+                "c",
+                "task-2",
+                "haiku",
+                true,
+                None,
+                10,
+                100,
+                vec![GateVerdict::new("compile", true)],
+            ),
         ];
         let policy = DreamReplayPolicy {
             mode: DreamReplayMode::Consequence,
@@ -614,9 +637,16 @@ mod tests {
     #[test]
     fn causal_mode_returns_failure_chain_roots() {
         let episodes = vec![
-            episode("a", "task-1", "haiku", true, None, 30, 10, vec![
-                GateVerdict::new("compile", true),
-            ]),
+            episode(
+                "a",
+                "task-1",
+                "haiku",
+                true,
+                None,
+                30,
+                10,
+                vec![GateVerdict::new("compile", true)],
+            ),
             episode(
                 "b",
                 "task-1",
@@ -637,9 +667,16 @@ mod tests {
                 10,
                 vec![GateVerdict::new("compile", false)],
             ),
-            episode("d", "task-2", "haiku", true, None, 5, 10, vec![
-                GateVerdict::new("compile", true),
-            ]),
+            episode(
+                "d",
+                "task-2",
+                "haiku",
+                true,
+                None,
+                5,
+                10,
+                vec![GateVerdict::new("compile", true)],
+            ),
         ];
         let policy = DreamReplayPolicy {
             mode: DreamReplayMode::Causal,
@@ -678,15 +715,36 @@ mod tests {
     #[test]
     fn random_mode_is_deterministic_and_respects_max_episodes() {
         let episodes = vec![
-            episode("a", "task-1", "haiku", true, None, 10, 1_000, vec![
-                GateVerdict::new("compile", true),
-            ]),
-            episode("b", "task-2", "haiku", true, None, 10, 100, vec![
-                GateVerdict::new("compile", true),
-            ]),
-            episode("c", "task-3", "haiku", true, None, 10, 100, vec![
-                GateVerdict::new("compile", true),
-            ]),
+            episode(
+                "a",
+                "task-1",
+                "haiku",
+                true,
+                None,
+                10,
+                1_000,
+                vec![GateVerdict::new("compile", true)],
+            ),
+            episode(
+                "b",
+                "task-2",
+                "haiku",
+                true,
+                None,
+                10,
+                100,
+                vec![GateVerdict::new("compile", true)],
+            ),
+            episode(
+                "c",
+                "task-3",
+                "haiku",
+                true,
+                None,
+                10,
+                100,
+                vec![GateVerdict::new("compile", true)],
+            ),
         ];
         let policy = DreamReplayPolicy {
             mode: DreamReplayMode::Random,
@@ -714,9 +772,16 @@ mod tests {
 
     #[test]
     fn emotional_context_none_delegates_to_base() {
-        let episodes = vec![episode("a", "task-1", "haiku", true, None, 10, 100, vec![
-            GateVerdict::new("compile", true),
-        ])];
+        let episodes = vec![episode(
+            "a",
+            "task-1",
+            "haiku",
+            true,
+            None,
+            10,
+            100,
+            vec![GateVerdict::new("compile", true)],
+        )];
         let policy = DreamReplayPolicy::default();
         let now = Utc::now();
         let base = select_replay_episodes(&episodes, &policy, now);
@@ -756,9 +821,16 @@ mod tests {
     #[test]
     fn negative_pleasure_biases_toward_failures() {
         let episodes = vec![
-            episode("success", "task-1", "haiku", true, None, 5, 100, vec![
-                GateVerdict::new("compile", true),
-            ]),
+            episode(
+                "success",
+                "task-1",
+                "haiku",
+                true,
+                None,
+                5,
+                100,
+                vec![GateVerdict::new("compile", true)],
+            ),
             episode(
                 "failure",
                 "task-2",
@@ -785,9 +857,16 @@ mod tests {
 
     #[test]
     fn mattar_daw_utility_prefers_failed_episodes() {
-        let success = episode("s", "task-1", "haiku", true, None, 10, 100, vec![
-            GateVerdict::new("compile", true),
-        ]);
+        let success = episode(
+            "s",
+            "task-1",
+            "haiku",
+            true,
+            None,
+            10,
+            100,
+            vec![GateVerdict::new("compile", true)],
+        );
         let failure = episode(
             "f",
             "task-2",
@@ -810,9 +889,16 @@ mod tests {
 
     #[test]
     fn mattar_daw_configurable_weights() {
-        let ep = episode("a", "task-1", "haiku", false, Some("err"), 10, 100, vec![
-            GateVerdict::new("compile", false),
-        ]);
+        let ep = episode(
+            "a",
+            "task-1",
+            "haiku",
+            false,
+            Some("err"),
+            10,
+            100,
+            vec![GateVerdict::new("compile", false)],
+        );
         let default_config = MattarDawConfig::default();
         let boosted = MattarDawConfig {
             gain_weight: 2.0,
@@ -825,9 +911,16 @@ mod tests {
 
     #[test]
     fn compute_replay_utility_standalone() {
-        let ep = episode("a", "task-1", "haiku", true, None, 30, 100, vec![
-            GateVerdict::new("compile", true),
-        ]);
+        let ep = episode(
+            "a",
+            "task-1",
+            "haiku",
+            true,
+            None,
+            30,
+            100,
+            vec![GateVerdict::new("compile", true)],
+        );
         let policy = DreamReplayPolicy::default();
         let u = compute_replay_utility(&ep, &policy, Utc::now());
         assert!(u.utility > 0.0);

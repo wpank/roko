@@ -22,14 +22,17 @@ fn agent_create_and_list() {
     roko(dir.path(), &["init"]).success();
 
     // Create agent.
-    roko(dir.path(), &[
-        "agent",
-        "create",
-        "--name",
-        "test-agent",
-        "--domain",
-        "coding",
-    ])
+    roko(
+        dir.path(),
+        &[
+            "agent",
+            "create",
+            "--name",
+            "test-agent",
+            "--domain",
+            "coding",
+        ],
+    )
     .success();
 
     // List agents — should show test-agent with "created" status.
@@ -53,9 +56,12 @@ fn agent_create_and_list() {
 fn agent_status_shows_created() {
     let dir = TempDir::new().unwrap();
     roko(dir.path(), &["init"]).success();
-    roko(dir.path(), &[
-        "agent", "create", "--name", "my-agent", "--domain", "research",
-    ])
+    roko(
+        dir.path(),
+        &[
+            "agent", "create", "--name", "my-agent", "--domain", "research",
+        ],
+    )
     .success();
 
     let out = roko(dir.path(), &["agent", "status", "--name", "my-agent"]).success();
@@ -117,18 +123,22 @@ fn agent_list_skips_deleted() {
     roko(dir.path(), &["init"]).success();
 
     // Create two agents.
-    roko(dir.path(), &[
-        "agent", "create", "--name", "keep-me", "--domain", "coding",
-    ])
+    roko(
+        dir.path(),
+        &["agent", "create", "--name", "keep-me", "--domain", "coding"],
+    )
     .success();
-    roko(dir.path(), &[
-        "agent",
-        "create",
-        "--name",
-        "delete-me",
-        "--domain",
-        "general",
-    ])
+    roko(
+        dir.path(),
+        &[
+            "agent",
+            "create",
+            "--name",
+            "delete-me",
+            "--domain",
+            "general",
+        ],
+    )
     .success();
 
     // Delete one (non-force leaves DELETED marker).

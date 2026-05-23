@@ -56,11 +56,14 @@ mod plan_validation {
         fn known_models() -> IndexMap<String, ModelProfile> {
             let mut models = IndexMap::new();
             for slug in ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"] {
-                models.insert(slug.to_string(), ModelProfile {
-                    provider: "claude_cli".to_string(),
-                    slug: slug.to_string(),
-                    ..Default::default()
-                });
+                models.insert(
+                    slug.to_string(),
+                    ModelProfile {
+                        provider: "claude_cli".to_string(),
+                        slug: slug.to_string(),
+                        ..Default::default()
+                    },
+                );
             }
             models
         }

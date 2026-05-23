@@ -1349,10 +1349,13 @@ done
         let mut client = AcpStdioClient::new(test_config());
         let session = SessionId("fake".into());
         let result = client
-            .send_prompt(&session, AcpPromptPayload {
-                text: "hello".into(),
-                extra_params: None,
-            })
+            .send_prompt(
+                &session,
+                AcpPromptPayload {
+                    text: "hello".into(),
+                    extra_params: None,
+                },
+            )
             .await;
         assert!(matches!(result, Err(AcpError::Disconnected)));
     }
@@ -1520,10 +1523,13 @@ done
 
         // Send prompt.
         let prompt_id = client
-            .send_prompt(&session, AcpPromptPayload {
-                text: "test prompt".into(),
-                extra_params: None,
-            })
+            .send_prompt(
+                &session,
+                AcpPromptPayload {
+                    text: "test prompt".into(),
+                    extra_params: None,
+                },
+            )
             .await;
         assert!(prompt_id.is_ok());
         let prompt_id = prompt_id.unwrap();
@@ -1639,10 +1645,13 @@ done
         let mut turn_done_rx = client.take_turn_done_rx().unwrap();
 
         let _prompt_id = client
-            .send_prompt(&session, AcpPromptPayload {
-                text: "read a file".into(),
-                extra_params: None,
-            })
+            .send_prompt(
+                &session,
+                AcpPromptPayload {
+                    text: "read a file".into(),
+                    extra_params: None,
+                },
+            )
             .await
             .unwrap();
 

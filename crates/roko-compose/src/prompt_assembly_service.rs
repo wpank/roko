@@ -951,9 +951,10 @@ mod tests {
         assert!(prompt.contains("## Domain Context"));
         assert!(prompt.contains("## Relevant Knowledge"));
         assert!(prompt.contains("The rate limiter uses token buckets for burst control."));
-        assert_eq!(svc.last_knowledge_ids(), vec![
-            "k-rate-limit-fact".to_string()
-        ]);
+        assert_eq!(
+            svc.last_knowledge_ids(),
+            vec!["k-rate-limit-fact".to_string()]
+        );
         assert!(
             svc.last_prompt_section_ids()
                 .contains(&"domain_context".to_string())

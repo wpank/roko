@@ -3006,11 +3006,14 @@ mod tests {
         let artifact =
             ArtifactOutcome::from_generation_outcome("prd-plan", Some(path.clone()), &outcome);
 
-        assert_eq!(artifact, ArtifactOutcome::Valid {
-            artifact_type: "prd-plan".to_string(),
-            path,
-            report: serde_json::json!({"totals": {"errors": 0}}),
-        });
+        assert_eq!(
+            artifact,
+            ArtifactOutcome::Valid {
+                artifact_type: "prd-plan".to_string(),
+                path,
+                report: serde_json::json!({"totals": {"errors": 0}}),
+            }
+        );
         assert!(artifact.is_valid());
     }
 
@@ -3026,11 +3029,14 @@ mod tests {
         let artifact =
             ArtifactOutcome::from_generation_outcome("prd-plan", Some(path.clone()), &outcome);
 
-        assert_eq!(artifact, ArtifactOutcome::Invalid {
-            artifact_type: "prd-plan".to_string(),
-            path: Some(path),
-            report: Some(serde_json::json!({"totals": {"errors": 2}})),
-        });
+        assert_eq!(
+            artifact,
+            ArtifactOutcome::Invalid {
+                artifact_type: "prd-plan".to_string(),
+                path: Some(path),
+                report: Some(serde_json::json!({"totals": {"errors": 2}})),
+            }
+        );
         assert!(!artifact.is_valid());
     }
 
@@ -3048,10 +3054,13 @@ mod tests {
             &outcome,
         );
 
-        assert_eq!(artifact, ArtifactOutcome::NotProduced {
-            artifact_type: "prd-plan".to_string(),
-            reason: "generation process failed".to_string(),
-        });
+        assert_eq!(
+            artifact,
+            ArtifactOutcome::NotProduced {
+                artifact_type: "prd-plan".to_string(),
+                reason: "generation process failed".to_string(),
+            }
+        );
         assert!(!artifact.is_valid());
     }
 
@@ -3067,11 +3076,14 @@ mod tests {
         let artifact =
             ArtifactOutcome::from_generation_outcome("prd-plan", Some(path.clone()), &outcome);
 
-        assert_eq!(artifact, ArtifactOutcome::ValidationUnavailable {
-            artifact_type: "prd-plan".to_string(),
-            path: Some(path),
-            reason: "artifact validation report was not available".to_string(),
-        });
+        assert_eq!(
+            artifact,
+            ArtifactOutcome::ValidationUnavailable {
+                artifact_type: "prd-plan".to_string(),
+                path: Some(path),
+                reason: "artifact validation report was not available".to_string(),
+            }
+        );
         assert!(!artifact.is_valid());
     }
 

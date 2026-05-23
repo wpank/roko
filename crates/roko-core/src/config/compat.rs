@@ -10,8 +10,8 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 
 use super::schema::{
-    AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ConductorConfig,
-    CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
+    AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig,
+    ConductorConfig, CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
     GithubWebhookConfig, ISFRSection, LearningConfig, PerplexityConfig, PipelineConfig, PrdConfig,
     ProjectConfig, RelayConfig, RokoConfig, RoleOverride, RoutingConfig, SchedulerConfig,
     ServeConfig, ServerConfig, ToolsConfig, TuiConfig, ValidationConfig, WatcherConfig,
@@ -124,6 +124,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         agents: Vec::new(),
         validation: ValidationConfig::default(),
         graduation: crate::config::graduation::GraduationConfig::default(),
+        cold_storage: ColdStorageConfig::default(),
     }
 }
 
@@ -252,6 +253,7 @@ fn convert_learning(m: &MoriConfig) -> LearningConfig {
         dream_on_completion: d.dream_on_completion,
         use_lookahead_router: d.use_lookahead_router,
         lookahead_threshold: d.lookahead_threshold,
+        override_learning_dampening: d.override_learning_dampening,
     }
 }
 

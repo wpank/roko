@@ -116,13 +116,16 @@ impl CostTable {
             if let (Some(input), Some(output)) =
                 (profile.cost_input_per_m, profile.cost_output_per_m)
             {
-                table.insert(profile.slug.clone(), ModelPricing {
-                    input_per_m: input,
-                    output_per_m: output,
-                    cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
-                    cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
-                    tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
-                });
+                table.insert(
+                    profile.slug.clone(),
+                    ModelPricing {
+                        input_per_m: input,
+                        output_per_m: output,
+                        cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(input * 0.5),
+                        cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(input * 1.25),
+                        tokenizer_ratio: profile.tokenizer_ratio.unwrap_or(1.0),
+                    },
+                );
             }
         }
 
@@ -189,13 +192,16 @@ mod tests {
     #[test]
     fn cost_table_calculate() {
         let mut models = HashMap::new();
-        models.insert("glm-5.1".into(), ModelPricing {
-            input_per_m: 1.40,
-            output_per_m: 4.40,
-            cache_read_per_m: 0.26,
-            cache_write_per_m: 1.75,
-            tokenizer_ratio: 1.05,
-        });
+        models.insert(
+            "glm-5.1".into(),
+            ModelPricing {
+                input_per_m: 1.40,
+                output_per_m: 4.40,
+                cache_read_per_m: 0.26,
+                cache_write_per_m: 1.75,
+                tokenizer_ratio: 1.05,
+            },
+        );
 
         let table = CostTable { models };
         let usage = Usage {
@@ -213,13 +219,16 @@ mod tests {
     #[test]
     fn token_normalization_uses_tokenizer_ratio() {
         let mut models = HashMap::new();
-        models.insert("glm-5.1".into(), ModelPricing {
-            input_per_m: 1.40,
-            output_per_m: 4.40,
-            cache_read_per_m: 0.26,
-            cache_write_per_m: 1.75,
-            tokenizer_ratio: 1.05,
-        });
+        models.insert(
+            "glm-5.1".into(),
+            ModelPricing {
+                input_per_m: 1.40,
+                output_per_m: 4.40,
+                cache_read_per_m: 0.26,
+                cache_write_per_m: 1.75,
+                tokenizer_ratio: 1.05,
+            },
+        );
 
         let table = CostTable { models };
         assert_eq!(table.normalize_tokens("glm-5.1", 1_000), 1_050);
@@ -228,13 +237,16 @@ mod tests {
     #[test]
     fn blended_cost_uses_tokenizer_ratio() {
         let mut models = HashMap::new();
-        models.insert("glm-5.1".into(), ModelPricing {
-            input_per_m: 1.40,
-            output_per_m: 4.40,
-            cache_read_per_m: 0.26,
-            cache_write_per_m: 1.75,
-            tokenizer_ratio: 1.05,
-        });
+        models.insert(
+            "glm-5.1".into(),
+            ModelPricing {
+                input_per_m: 1.40,
+                output_per_m: 4.40,
+                cache_read_per_m: 0.26,
+                cache_write_per_m: 1.75,
+                tokenizer_ratio: 1.05,
+            },
+        );
 
         let table = CostTable { models };
         let blended = table.blended_cost_per_m("glm-5.1");
@@ -260,13 +272,16 @@ mod tests {
     #[test]
     fn cost_defaults() {
         let mut models = HashMap::new();
-        models.insert("custom-model".into(), ModelPricing {
-            input_per_m: 9.99,
-            output_per_m: 8.88,
-            cache_read_per_m: 7.77,
-            cache_write_per_m: 6.66,
-            tokenizer_ratio: 1.23,
-        });
+        models.insert(
+            "custom-model".into(),
+            ModelPricing {
+                input_per_m: 9.99,
+                output_per_m: 8.88,
+                cache_read_per_m: 7.77,
+                cache_write_per_m: 6.66,
+                tokenizer_ratio: 1.23,
+            },
+        );
 
         let table = CostTable { models }.with_defaults();
 
@@ -306,13 +321,16 @@ mod tests {
     #[test]
     fn lookup_no_partial_word_match() {
         let mut models = HashMap::new();
-        models.insert("glm".into(), ModelPricing {
-            input_per_m: 1.0,
-            output_per_m: 1.0,
-            cache_read_per_m: 0.5,
-            cache_write_per_m: 0.5,
-            tokenizer_ratio: 1.0,
-        });
+        models.insert(
+            "glm".into(),
+            ModelPricing {
+                input_per_m: 1.0,
+                output_per_m: 1.0,
+                cache_read_per_m: 0.5,
+                cache_write_per_m: 0.5,
+                tokenizer_ratio: 1.0,
+            },
+        );
         let table = CostTable { models };
         assert!(table.lookup("glm-5.1").is_some());
         assert!(table.lookup("glmx").is_none());

@@ -237,9 +237,10 @@ async fn kimi_thinking_with_tools() {
     assert_eq!(result.final_text, "I read the file and can answer now.");
 
     let captured_reasoning = reasoning.lock().expect("reasoning lock").clone();
-    assert_eq!(captured_reasoning, vec![
-        "I should inspect the file before answering."
-    ]);
+    assert_eq!(
+        captured_reasoning,
+        vec!["I should inspect the file before answering."]
+    );
 
     let requests = poster.requests();
     assert_eq!(requests.len(), 2);

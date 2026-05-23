@@ -242,10 +242,13 @@ impl MergeQueue {
     pub fn enqueue(&self, request: MergeRequest) {
         let mut guard = self.inner.lock();
         let plan_id = request.plan_id.clone();
-        guard.entries.insert(plan_id, QueueEntry {
-            request,
-            status: MergeStatus::Queued,
-        });
+        guard.entries.insert(
+            plan_id,
+            QueueEntry {
+                request,
+                status: MergeStatus::Queued,
+            },
+        );
         guard.rebuild_order();
     }
 
@@ -584,10 +587,13 @@ impl MergeQueue {
 
         for entry in snapshot.entries {
             let plan_id = entry.request.plan_id.clone();
-            inner.entries.insert(plan_id.clone(), QueueEntry {
-                request: entry.request,
-                status: entry.status,
-            });
+            inner.entries.insert(
+                plan_id.clone(),
+                QueueEntry {
+                    request: entry.request,
+                    status: entry.status,
+                },
+            );
             if entry.status == MergeStatus::Merging {
                 if let Some(stored) = inner.entries.get(&plan_id) {
                     for file in &stored.request.files_changed {

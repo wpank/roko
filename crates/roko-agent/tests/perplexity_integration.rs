@@ -536,9 +536,12 @@ async fn perplexity_embedding_single_text_uses_embeddings_api() {
 #[test]
 fn perplexity_error_classification_maps_429_401_and_404() {
     let rate_limit = PerplexityAdapter.classify_error(429, &json!({ "retry_after": 15 }));
-    assert!(matches!(rate_limit, ProviderError::RateLimit {
-        retry_after_ms: Some(15_000)
-    }));
+    assert!(matches!(
+        rate_limit,
+        ProviderError::RateLimit {
+            retry_after_ms: Some(15_000)
+        }
+    ));
 
     let auth = PerplexityAdapter.classify_error(401, &Value::Null);
     assert!(matches!(auth, ProviderError::AuthFailure));

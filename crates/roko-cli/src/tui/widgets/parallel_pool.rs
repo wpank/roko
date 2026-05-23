@@ -87,14 +87,17 @@ pub(crate) fn render_parallel_pool(
         })
         .collect();
 
-    let table = Table::new(rows, [
-        Constraint::Length(12),
-        Constraint::Length(10),
-        Constraint::Length(12),
-        Constraint::Min(10),
-        Constraint::Length(8),
-        Constraint::Min(14),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Min(14),
+        ],
+    )
     .header(
         Row::new(vec![
             Cell::from("agent id"),

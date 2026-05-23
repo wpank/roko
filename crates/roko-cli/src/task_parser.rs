@@ -1987,12 +1987,10 @@ depends_on = []
 "#;
         let issues = validate_modern_fields_content(content).unwrap();
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].missing_fields, vec![
-            "tier",
-            "model_hint",
-            "read_files",
-            "verify"
-        ]);
+        assert_eq!(
+            issues[0].missing_fields,
+            vec!["tier", "model_hint", "read_files", "verify"]
+        );
     }
 
     #[test]

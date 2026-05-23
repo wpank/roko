@@ -355,19 +355,23 @@ mod tests {
         /// Adapter with fully-capable defaults: per-call tools, SSE streaming,
         /// MCP per-call, session resume via CLI flag, and KillChild cancel.
         fn capable(id: &'static str) -> Self {
-            Self::new(id, TransportFlavor::HttpOpenAi, HarnessCapabilities {
-                one_shot: OneShotMode::HttpJson {
-                    endpoint: "/v1/chat/completions",
+            Self::new(
+                id,
+                TransportFlavor::HttpOpenAi,
+                HarnessCapabilities {
+                    one_shot: OneShotMode::HttpJson {
+                        endpoint: "/v1/chat/completions",
+                    },
+                    streaming: StreamingMode::SseChatCompletions,
+                    session_resume: SessionResumeMode::CliFlag("--resume"),
+                    mcp_passthrough: McpMode::PerCall,
+                    tool_injection: ToolInjection::PerCallTools,
+                    model_override: true,
+                    multiplex_safe: true,
+                    cancel: CancelMode::KillChild,
+                    overhead_p50_ms: 10,
                 },
-                streaming: StreamingMode::SseChatCompletions,
-                session_resume: SessionResumeMode::CliFlag("--resume"),
-                mcp_passthrough: McpMode::PerCall,
-                tool_injection: ToolInjection::PerCallTools,
-                model_override: true,
-                multiplex_safe: true,
-                cancel: CancelMode::KillChild,
-                overhead_p50_ms: 10,
-            })
+            )
         }
 
         /// Adapter with the conservative default capabilities.

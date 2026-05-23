@@ -244,14 +244,17 @@ mod tests {
         assert_eq!(sections.len(), 6);
 
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, &[
-            "agents_instructions",
-            "plan_spec",
-            "workspace_map",
-            "brief",
-            "prior_review",
-            "verdict_instructions",
-        ]);
+        assert_eq!(
+            names,
+            &[
+                "agents_instructions",
+                "plan_spec",
+                "workspace_map",
+                "brief",
+                "prior_review",
+                "verdict_instructions",
+            ]
+        );
 
         // Critical sections
         assert_eq!(sections[0].priority, SectionPriority::Critical);

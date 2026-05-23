@@ -1611,13 +1611,16 @@ mod tests {
             EventCategory::Plan
         );
 
-        let event = RunnerEvent::resume_marker("run-1", ResumeMarker {
-            outcome: ResumeOutcome::Fresh,
-            snapshot_path: String::new(),
-            snapshot_plan_ids: Vec::new(),
-            current_plan_ids: Vec::new(),
-            message: None,
-        });
+        let event = RunnerEvent::resume_marker(
+            "run-1",
+            ResumeMarker {
+                outcome: ResumeOutcome::Fresh,
+                snapshot_path: String::new(),
+                snapshot_plan_ids: Vec::new(),
+                current_plan_ids: Vec::new(),
+                message: None,
+            },
+        );
         assert_eq!(
             EventCategory::from_runner_event(&event),
             EventCategory::Resume

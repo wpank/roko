@@ -500,9 +500,12 @@ mod tests {
             output: "error".into(),
         });
         assert!(matches!(action, PipelineAction::Halt { .. }));
-        assert_eq!(state.phase, PipelinePhase::Halted {
-            reason: "Gate failed after 1 attempt(s)".into()
-        });
+        assert_eq!(
+            state.phase,
+            PipelinePhase::Halted {
+                reason: "Gate failed after 1 attempt(s)".into()
+            }
+        );
     }
 
     #[test]

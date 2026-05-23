@@ -267,29 +267,38 @@ mod tests {
     fn pareto_frontier_keeps_non_dominated_models_4d() {
         let mut stats = HashMap::new();
         // model-a: best quality but worst latency and cost.
-        stats.insert("model-a".to_string(), ModelObservation {
-            pass_rate: 0.95,
-            cost_per_success: 15.0,
-            avg_latency_ms: 2000.0,
-            reliability: 0.90,
-            observations: 20,
-        });
+        stats.insert(
+            "model-a".to_string(),
+            ModelObservation {
+                pass_rate: 0.95,
+                cost_per_success: 15.0,
+                avg_latency_ms: 2000.0,
+                reliability: 0.90,
+                observations: 20,
+            },
+        );
         // model-b: worst on everything.
-        stats.insert("model-b".to_string(), ModelObservation {
-            pass_rate: 0.60,
-            cost_per_success: 20.0,
-            avg_latency_ms: 3000.0,
-            reliability: 0.70,
-            observations: 20,
-        });
+        stats.insert(
+            "model-b".to_string(),
+            ModelObservation {
+                pass_rate: 0.60,
+                cost_per_success: 20.0,
+                avg_latency_ms: 3000.0,
+                reliability: 0.70,
+                observations: 20,
+            },
+        );
         // model-c: best cost and latency but lower quality.
-        stats.insert("model-c".to_string(), ModelObservation {
-            pass_rate: 0.80,
-            cost_per_success: 5.0,
-            avg_latency_ms: 500.0,
-            reliability: 0.95,
-            observations: 20,
-        });
+        stats.insert(
+            "model-c".to_string(),
+            ModelObservation {
+                pass_rate: 0.80,
+                cost_per_success: 5.0,
+                avg_latency_ms: 500.0,
+                reliability: 0.95,
+                observations: 20,
+            },
+        );
 
         let frontier = compute_pareto_frontier(&stats);
 
@@ -303,20 +312,26 @@ mod tests {
     #[test]
     fn pareto_frontier_all_on_frontier_when_no_dominance() {
         let mut stats = HashMap::new();
-        stats.insert("model-a".to_string(), ModelObservation {
-            pass_rate: 0.90,
-            cost_per_success: 10.0,
-            avg_latency_ms: 1000.0,
-            reliability: 0.80,
-            observations: 20,
-        });
-        stats.insert("model-b".to_string(), ModelObservation {
-            pass_rate: 0.70,
-            cost_per_success: 12.0,
-            avg_latency_ms: 900.0,
-            reliability: 0.95,
-            observations: 20,
-        });
+        stats.insert(
+            "model-a".to_string(),
+            ModelObservation {
+                pass_rate: 0.90,
+                cost_per_success: 10.0,
+                avg_latency_ms: 1000.0,
+                reliability: 0.80,
+                observations: 20,
+            },
+        );
+        stats.insert(
+            "model-b".to_string(),
+            ModelObservation {
+                pass_rate: 0.70,
+                cost_per_success: 12.0,
+                avg_latency_ms: 900.0,
+                reliability: 0.95,
+                observations: 20,
+            },
+        );
 
         let frontier = compute_pareto_frontier(&stats);
         // Neither dominates the other (model-a better quality, model-b better latency + reliability).

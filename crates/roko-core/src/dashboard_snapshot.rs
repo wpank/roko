@@ -902,12 +902,15 @@ impl DashboardSnapshot {
         match event {
             DashboardEvent::PlanStarted { plan_id } => {
                 self.stats.plans_active += 1;
-                self.plans.insert(plan_id.clone(), PlanState {
-                    plan_id: plan_id.clone(),
-                    phase: "started".into(),
-                    active: true,
-                    ..Default::default()
-                });
+                self.plans.insert(
+                    plan_id.clone(),
+                    PlanState {
+                        plan_id: plan_id.clone(),
+                        phase: "started".into(),
+                        active: true,
+                        ..Default::default()
+                    },
+                );
             }
             DashboardEvent::PlanCompleted { plan_id, success } => {
                 if let Some(plan) = self.plans.get_mut(plan_id) {
@@ -933,13 +936,16 @@ impl DashboardSnapshot {
             } => {
                 self.stats.tasks_active += 1;
                 let key = format!("{plan_id}/{task_id}");
-                self.tasks.insert(key, TaskState {
-                    task_id: task_id.clone(),
-                    title: title.clone(),
-                    plan_id: plan_id.clone(),
-                    phase: phase.clone(),
-                    outcome: None,
-                });
+                self.tasks.insert(
+                    key,
+                    TaskState {
+                        task_id: task_id.clone(),
+                        title: title.clone(),
+                        plan_id: plan_id.clone(),
+                        phase: phase.clone(),
+                        outcome: None,
+                    },
+                );
                 if let Some(plan) = self.plans.get_mut(plan_id) {
                     plan.tasks_total += 1;
                 }
@@ -1065,14 +1071,17 @@ impl DashboardSnapshot {
                 });
                 record_gate_trend(self, gate, diagnosis_timestamp_from_ms(ts), *passed);
                 if !passed {
-                    push_gate_failure(self, FailureEntry {
-                        ts: diagnosis_timestamp_from_ms(ts),
-                        plan_id: plan_id.clone(),
-                        task_id: task_id.clone(),
-                        gate: gate.clone(),
-                        summary: String::new(),
-                        artifacts: None,
-                    });
+                    push_gate_failure(
+                        self,
+                        FailureEntry {
+                            ts: diagnosis_timestamp_from_ms(ts),
+                            plan_id: plan_id.clone(),
+                            task_id: task_id.clone(),
+                            gate: gate.clone(),
+                            summary: String::new(),
+                            artifacts: None,
+                        },
+                    );
                 }
             }
             DashboardEvent::PhaseTransition { plan_id, to, .. } => {
@@ -1719,15 +1728,16 @@ fn bootstrap_plan_state(
         }
         tasks_done += 1;
         snapshot.stats.tasks_completed += 1;
-        snapshot
-            .tasks
-            .insert(format!("{plan_id}/{task_id}"), TaskState {
+        snapshot.tasks.insert(
+            format!("{plan_id}/{task_id}"),
+            TaskState {
                 task_id,
                 title: String::new(),
                 plan_id: plan_id.to_string(),
                 phase: String::from("completed"),
                 outcome: Some(String::from("success")),
-            });
+            },
+        );
     }
 
     for task_id in failed_tasks {
@@ -1736,30 +1746,32 @@ fn bootstrap_plan_state(
         }
         tasks_failed += 1;
         snapshot.stats.tasks_failed += 1;
-        snapshot
-            .tasks
-            .insert(format!("{plan_id}/{task_id}"), TaskState {
+        snapshot.tasks.insert(
+            format!("{plan_id}/{task_id}"),
+            TaskState {
                 task_id,
                 title: String::new(),
                 plan_id: plan_id.to_string(),
                 phase: String::from("completed"),
                 outcome: Some(String::from("failed")),
-            });
+            },
+        );
     }
 
     if active {
         if let Some(task_id) = active_task_id {
             if seen_task_ids.insert(task_id.to_string()) {
                 snapshot.stats.tasks_active += 1;
-                snapshot
-                    .tasks
-                    .insert(format!("{plan_id}/{task_id}"), TaskState {
+                snapshot.tasks.insert(
+                    format!("{plan_id}/{task_id}"),
+                    TaskState {
                         task_id: task_id.to_string(),
                         title: String::new(),
                         plan_id: plan_id.to_string(),
                         phase: phase.clone(),
                         outcome: None,
-                    });
+                    },
+                );
             }
         }
     } else if terminal {
@@ -1774,9 +1786,9 @@ fn bootstrap_plan_state(
                     tasks_done += 1;
                     snapshot.stats.tasks_completed += 1;
                 }
-                snapshot
-                    .tasks
-                    .insert(format!("{plan_id}/{task_id}"), TaskState {
+                snapshot.tasks.insert(
+                    format!("{plan_id}/{task_id}"),
+                    TaskState {
                         task_id: task_id.to_string(),
                         title: String::new(),
                         plan_id: plan_id.to_string(),
@@ -1786,19 +1798,23 @@ fn bootstrap_plan_state(
                         } else {
                             String::from("success")
                         }),
-                    });
+                    },
+                );
             }
         }
     }
 
-    snapshot.plans.insert(plan_id.to_string(), PlanState {
-        plan_id: plan_id.to_string(),
-        phase: phase.clone(),
-        tasks_total: seen_task_ids.len(),
-        tasks_done,
-        tasks_failed,
-        active,
-    });
+    snapshot.plans.insert(
+        plan_id.to_string(),
+        PlanState {
+            plan_id: plan_id.to_string(),
+            phase: phase.clone(),
+            tasks_total: seen_task_ids.len(),
+            tasks_done,
+            tasks_failed,
+            active,
+        },
+    );
 
     if active {
         snapshot.stats.plans_active += 1;
@@ -1851,29 +1867,32 @@ fn bootstrap_plan_state(
     {
         for result in results {
             *plan_gate_results += 1;
-            push_gate(snapshot, GateVerdict {
-                plan_id: plan_id.to_string(),
-                task_id: result
-                    .get("task_id")
-                    .and_then(serde_json::Value::as_str)
-                    .or(active_task_id)
-                    .unwrap_or(plan_id)
-                    .to_string(),
-                gate: result
-                    .get("gate_name")
-                    .and_then(serde_json::Value::as_str)
-                    .or_else(|| result.get("gate").and_then(serde_json::Value::as_str))
-                    .unwrap_or("unknown")
-                    .to_string(),
-                passed: result
-                    .get("passed")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-                ts_millis: result
-                    .get("timestamp_ms")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
-            });
+            push_gate(
+                snapshot,
+                GateVerdict {
+                    plan_id: plan_id.to_string(),
+                    task_id: result
+                        .get("task_id")
+                        .and_then(serde_json::Value::as_str)
+                        .or(active_task_id)
+                        .unwrap_or(plan_id)
+                        .to_string(),
+                    gate: result
+                        .get("gate_name")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| result.get("gate").and_then(serde_json::Value::as_str))
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    passed: result
+                        .get("passed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                    ts_millis: result
+                        .get("timestamp_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default(),
+                },
+            );
         }
     }
 
@@ -1888,13 +1907,16 @@ fn bootstrap_plan_state(
         .or_else(|| plan_state.get("error").and_then(serde_json::Value::as_str))
         .filter(|message| !message.trim().is_empty())
     {
-        push_error(snapshot, ErrorEntry {
-            message: message.to_string(),
-            ts_millis: plan_state
-                .get("timestamp_ms")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default(),
-        });
+        push_error(
+            snapshot,
+            ErrorEntry {
+                message: message.to_string(),
+                ts_millis: plan_state
+                    .get("timestamp_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+            },
+        );
     }
 }
 
@@ -1967,10 +1989,10 @@ fn read_task_trackers(path: &Path) -> Result<HashMap<String, TaskTrackerSnapshot
             .and_then(serde_json::Value::as_array)
             .map(|values| string_array(values))
             .unwrap_or_default();
-        trackers.insert(plan_id.to_string(), TaskTrackerSnapshot {
-            completed,
-            failed,
-        });
+        trackers.insert(
+            plan_id.to_string(),
+            TaskTrackerSnapshot { completed, failed },
+        );
     }
 
     Ok(trackers)
@@ -2138,10 +2160,13 @@ fn append_event_errors(snapshot: &mut DashboardSnapshot, event_entries: &[serde_
             .and_then(serde_json::Value::as_str)
             .filter(|message| !message.trim().is_empty());
         if let Some(message) = message {
-            push_error(snapshot, ErrorEntry {
-                message: message.to_string(),
-                ts_millis: event_timestamp_ms(entry),
-            });
+            push_error(
+                snapshot,
+                ErrorEntry {
+                    message: message.to_string(),
+                    ts_millis: event_timestamp_ms(entry),
+                },
+            );
         }
     }
 }
@@ -2223,14 +2248,17 @@ fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVer
         let ts = timestamp_from_millis(i64::try_from(gate.ts_millis).unwrap_or_default());
         record_gate_trend(snapshot, &gate.gate, ts, gate.passed);
         if !gate.passed {
-            push_gate_failure(snapshot, FailureEntry {
-                ts,
-                plan_id: gate.plan_id.clone(),
-                task_id: gate.task_id.clone(),
-                gate: gate.gate.clone(),
-                summary: String::new(),
-                artifacts: None,
-            });
+            push_gate_failure(
+                snapshot,
+                FailureEntry {
+                    ts,
+                    plan_id: gate.plan_id.clone(),
+                    task_id: gate.task_id.clone(),
+                    gate: gate.gate.clone(),
+                    summary: String::new(),
+                    artifacts: None,
+                },
+            );
         }
     }
 

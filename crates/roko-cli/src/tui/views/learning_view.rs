@@ -164,13 +164,16 @@ fn render_model_table(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
         ]));
     }
 
-    let table = Table::new(rows, [
-        Constraint::Percentage(30),
-        Constraint::Percentage(12),
-        Constraint::Percentage(14),
-        Constraint::Percentage(14),
-        Constraint::Percentage(30),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(30),
+            Constraint::Percentage(12),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(30),
+        ],
+    )
     .header(header)
     .block(
         Block::default()
@@ -497,14 +500,17 @@ fn render_efficiency(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, th
         })
         .collect();
 
-    let table = Table::new(rows, [
-        Constraint::Percentage(25),
-        Constraint::Percentage(12),
-        Constraint::Percentage(12),
-        Constraint::Percentage(13),
-        Constraint::Percentage(18),
-        Constraint::Percentage(20),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(25),
+            Constraint::Percentage(12),
+            Constraint::Percentage(12),
+            Constraint::Percentage(13),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+        ],
+    )
     .header(header)
     .block(
         Block::default()

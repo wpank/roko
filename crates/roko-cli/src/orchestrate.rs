@@ -53,7 +53,8 @@ use roko_core::React;
 use roko_core::agent::{ProviderKind, resolve_model};
 use roko_core::attestation::{self, SigningKey};
 use roko_core::config::schema::{
-    GatesConfig, LearningConfig as RuntimeLearningConfig, RokoConfig, RoleOverride,
+    ColdStorageConfig, GatesConfig, LearningConfig as RuntimeLearningConfig, RokoConfig,
+    RoleOverride,
 };
 use roko_core::extension::ExtensionChain;
 use roko_core::foundation::ShellGateCommand as CoreShellGateCommand;
@@ -792,11 +793,14 @@ fn persisted_circuit_breaker_state(state: CircuitBreakerState) -> PersistedCircu
             .records
             .into_iter()
             .map(|(plan_id, record)| {
-                (plan_id, PersistedCircuitBreakerFailureRecord {
-                    count: record.count,
-                    last_failure_ms: record.last_failure_ms,
-                    reasons: record.reasons,
-                })
+                (
+                    plan_id,
+                    PersistedCircuitBreakerFailureRecord {
+                        count: record.count,
+                        last_failure_ms: record.last_failure_ms,
+                        reasons: record.reasons,
+                    },
+                )
             })
             .collect(),
     }
@@ -809,11 +813,14 @@ fn restored_circuit_breaker_state(state: PersistedCircuitBreakerState) -> Circui
             .records
             .into_iter()
             .map(|(plan_id, record)| {
-                (plan_id, FailureRecord {
-                    count: record.count,
-                    last_failure_ms: record.last_failure_ms,
-                    reasons: record.reasons,
-                })
+                (
+                    plan_id,
+                    FailureRecord {
+                        count: record.count,
+                        last_failure_ms: record.last_failure_ms,
+                        reasons: record.reasons,
+                    },
+                )
             })
             .collect(),
     }
@@ -888,12 +895,15 @@ fn task_runner_cost_table(resolved: &roko_core::agent::ResolvedModel) -> RunnerC
     let mut cost_table = RunnerCostTable::default();
 
     if let Some(profile) = resolved.profile.as_ref() {
-        cost_table.insert(resolved.slug.clone(), RunnerModelPricing {
-            input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
-            output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
-            cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
-            cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
-        });
+        cost_table.insert(
+            resolved.slug.clone(),
+            RunnerModelPricing {
+                input_per_m: profile.cost_input_per_m.unwrap_or(0.0),
+                output_per_m: profile.cost_output_per_m.unwrap_or(0.0),
+                cache_read_per_m: profile.cost_cache_read_per_m.unwrap_or(0.0),
+                cache_write_per_m: profile.cost_cache_write_per_m.unwrap_or(0.0),
+            },
+        );
     }
 
     cost_table
@@ -3853,26 +3863,34 @@ fn merge_completed_tasks(tracker: &mut TaskTracker, completed_tasks: &[String]) 
 /// plan run completes.
 ///
 /// This is the non-interactive equivalent of `roko knowledge archive --older-than 7d`.
-/// It queries the hot `FileSubstrate` for engrams older than 7 days and
-/// batch-archives them into `.roko/cold/` using `ArchiveColdSubstrate`.
+/// It queries the hot `FileSubstrate` for engrams older than the configured
+/// `max_age_days` and batch-archives them into `.roko/cold/` using
+/// `ArchiveColdSubstrate`.
+///
+/// Settings are read from `[cold_storage]` in `roko.toml` (defaults:
+/// enabled=true, max_age_days=7, batch_size=500).
 ///
 /// Errors are propagated to the caller, which logs and continues (non-fatal).
-async fn post_plan_cold_archival(workdir: &Path) -> Result<()> {
+async fn post_plan_cold_archival(workdir: &Path, cold_cfg: &ColdStorageConfig) -> Result<()> {
     use roko_core::{ColdStore, Context, Query, Store};
+
+    if !cold_cfg.enabled {
+        tracing::debug!("[orchestrate] post-plan cold archival: disabled via config");
+        return Ok(());
+    }
 
     let roko_dir = workdir.join(".roko");
     if !roko_dir.exists() {
         return Ok(());
     }
 
-    // Archive engrams older than 7 days, up to 500 per run.
-    const MAX_AGE_MS: i64 = 7 * 24 * 3600 * 1000;
-    const BATCH_SIZE: usize = 500;
+    let max_age_ms = cold_cfg.max_age_ms();
+    let batch_size = cold_cfg.batch_size;
 
     let hot = roko_fs::FileSubstrate::open(&roko_dir).await?;
     let ctx = Context::now();
-    let cutoff_ms = chrono::Utc::now().timestamp_millis() - MAX_AGE_MS;
-    let query = Query::all().until(cutoff_ms).limit(BATCH_SIZE);
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age_ms;
+    let query = Query::all().until(cutoff_ms).limit(batch_size);
     let candidates = hot.query(&query, &ctx).await?;
 
     if candidates.is_empty() {
@@ -3884,8 +3902,11 @@ async fn post_plan_cold_archival(workdir: &Path) -> Result<()> {
     let cold = roko_fs::ArchiveColdSubstrate::open(&cold_dir).await?;
     let archived = cold.archive_batch(candidates).await?;
     tracing::info!(
-        "[orchestrate] post-plan cold archival: archived {archived} engram(s) to {}",
-        cold_dir.display()
+        "[orchestrate] post-plan cold archival: archived {archived} engram(s) to {} \
+         (max_age_days={}, batch_size={})",
+        cold_dir.display(),
+        cold_cfg.max_age_days,
+        cold_cfg.batch_size,
     );
 
     Ok(())
@@ -4319,12 +4340,15 @@ impl PlanRunner {
                 .to_string_lossy()
                 .to_string();
             let parent = plans_dir.parent().unwrap_or(plans_dir);
-            (parent, vec![roko_orchestrator::plan_discovery::PlanInfo {
-                base,
-                num: String::new(),
-                path: md_path,
-                frontmatter: None,
-            }])
+            (
+                parent,
+                vec![roko_orchestrator::plan_discovery::PlanInfo {
+                    base,
+                    num: String::new(),
+                    path: md_path,
+                    frontmatter: None,
+                }],
+            )
         } else {
             (
                 plans_dir.as_ref(),
@@ -6529,10 +6553,14 @@ impl PlanRunner {
             return Ok(None);
         }
 
-        UnifiedTaskDag::build(&plan_tasks, &plan_deps, DagConfig {
-            infer_file_overlap: false,
-            max_wave_width: 0,
-        })
+        UnifiedTaskDag::build(
+            &plan_tasks,
+            &plan_deps,
+            DagConfig {
+                infer_file_overlap: false,
+                max_wave_width: 0,
+            },
+        )
         .map(Some)
     }
 
@@ -7577,11 +7605,13 @@ impl PlanRunner {
                     "[orchestrate] created Gemini context cache for {plan_id} using {}",
                     model.slug
                 );
-                self.gemini_plan_caches
-                    .insert(plan_id.to_string(), GeminiPlanCache {
+                self.gemini_plan_caches.insert(
+                    plan_id.to_string(),
+                    GeminiPlanCache {
                         model_slug: model.slug,
                         cache_id: cache_id.clone(),
-                    });
+                    },
+                );
                 Ok(Some(cache_id))
             }
             Err(error) => {
@@ -8561,9 +8591,13 @@ impl PlanRunner {
 
         // Post-plan cold archival: migrate aged-out engrams to `.roko/cold/`.
         // This runs non-interactively after every plan execution, archiving
-        // engrams older than 7 days (same defaults as the `roko knowledge archive`
-        // CLI command).  Errors are logged but never fail the plan run.
-        if let Err(e) = post_plan_cold_archival(&self.workdir).await {
+        // engrams older than the configured max_age_days (default: 7 days).
+        // Settings come from `[cold_storage]` in roko.toml.
+        // Errors are logged but never fail the plan run.
+        let cold_cfg = load_roko_config(&self.workdir)
+            .map(|c| c.cold_storage)
+            .unwrap_or_default();
+        if let Err(e) = post_plan_cold_archival(&self.workdir, &cold_cfg).await {
             tracing::warn!(error = %e, "post-plan cold archival failed (non-fatal)");
         }
 
@@ -11524,17 +11558,22 @@ impl PlanRunner {
                     AgentRole::Implementer,
                     task_def.as_ref(),
                 );
+                let dampening = load_roko_config(&self.workdir)
+                    .ok()
+                    .and_then(|c| c.learning.override_learning_dampening);
                 self.learning.cascade_router().record_override_outcome(
                     &model,
                     &ctx,
                     result.success,
+                    dampening,
                 );
                 tracing::debug!(
                     plan_id = %plan_id,
                     task_id = %task_id,
                     model = %model,
                     success = result.success,
-                    "UX34: persisted force_backend override outcome to cascade router (dampened)"
+                    dampening = ?dampening,
+                    "UX34: persisted force_backend override outcome to cascade router (multi-objective, dampened)"
                 );
             }
         }
@@ -13718,14 +13757,18 @@ impl PlanRunner {
                         AgentRole::Implementer,
                         task_def.as_ref(),
                     );
+                    let dampening = load_roko_config(&self.workdir)
+                        .ok()
+                        .and_then(|c| c.learning.override_learning_dampening);
                     self.learning
                         .cascade_router()
-                        .record_override_outcome(model, &ctx, false);
+                        .record_override_outcome(model, &ctx, false, dampening);
                     tracing::debug!(
                         plan_id = %plan_id,
                         task_id = %task_id,
                         model = %model,
-                        "UX34: persisted force_backend failure to cascade router (dampened)"
+                        dampening = ?dampening,
+                        "UX34: persisted force_backend failure to cascade router (multi-objective, dampened)"
                     );
                 }
             }
@@ -14554,15 +14597,17 @@ impl PlanRunner {
                 let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let output_text = result.output.body.as_text().unwrap_or_default().to_string();
 
-                let parsed_review =
-                    parse_structured_review_verdict(&output_text, ReviewVerdictContext {
+                let parsed_review = parse_structured_review_verdict(
+                    &output_text,
+                    ReviewVerdictContext {
                         verdict_id: format!("review:{plan_id}:{}", result.output.id),
                         batch_id: plan_id.to_string(),
                         task_id: plan_id.to_string(),
                         reviewer_role_id: AgentRole::Auditor.label().to_string(),
                         raw_output_ref: result.output.id.to_string(),
                         created_at: chrono::Utc::now().to_rfc3339(),
-                    });
+                    },
+                );
                 let mut approved = parsed_review.passed();
                 let drift_report = self
                     .task_trackers
@@ -15502,31 +15547,40 @@ impl PlanRunner {
                     routing_reason = reason;
                     routing_stage = "static".to_string();
                 } else {
-                    routing_explanation =
-                        Some(cascade_router.explain_route(&routing_ctx, Some(&healthy_models)));
-
-                    // Apply knowledge-informed routing advice to the explanation.
-                    // This adjusts candidate scores based on past model/task
-                    // performance stored in the neuro knowledge store.
-                    if let Some(ref mut explanation) = routing_explanation {
-                        let knowledge_advice = build_knowledge_routing_advice(
-                            &self.knowledge_store,
+                    // ── Build knowledge routing advice BEFORE selection ───
+                    //
+                    // Item 13: Knowledge-informed agent routing.  Build advice
+                    // from the neuro knowledge store so it can influence the
+                    // actual model selection (via
+                    // `select_for_frequency_among_with_knowledge`) rather than
+                    // only enriching the post-hoc explanation.
+                    let knowledge_advice = build_knowledge_routing_advice(
+                        &self.knowledge_store,
+                        &healthy_models,
+                        role,
+                        routing_ctx.task_category.label(),
+                    );
+                    if knowledge_advice.has_signal {
+                        routing_knowledge_ids = self.knowledge_routing_entry_ids(
                             &healthy_models,
                             role,
                             routing_ctx.task_category.label(),
                         );
-                        if knowledge_advice.has_signal {
-                            routing_knowledge_ids = self.knowledge_routing_entry_ids(
-                                &healthy_models,
-                                role,
-                                routing_ctx.task_category.label(),
-                            );
-                            tracing::info!(
-                                hints = knowledge_advice.hints.len(),
-                                "[orchestrate] applying knowledge routing advice to cascade explanation"
-                            );
-                        }
-                        cascade_router.apply_knowledge_advice(explanation, knowledge_advice);
+                        tracing::info!(
+                            hints = knowledge_advice.hints.len(),
+                            "[orchestrate] knowledge routing advice built for model selection"
+                        );
+                    }
+
+                    routing_explanation =
+                        Some(cascade_router.explain_route(&routing_ctx, Some(&healthy_models)));
+
+                    // Apply knowledge advice to the explanation for diagnostics
+                    // and logging — the advice also flows into the actual
+                    // selection below via `select_for_frequency_among_with_knowledge`.
+                    if let Some(ref mut explanation) = routing_explanation {
+                        cascade_router
+                            .apply_knowledge_advice(explanation, knowledge_advice.clone());
                     }
 
                     if let Some(explanation) = routing_explanation.as_ref() {
@@ -15582,19 +15636,29 @@ impl PlanRunner {
                         selected_model = variant.slug;
                         routing_reason = "experiment_override".to_string();
                     } else {
-                        match cascade_router.select_for_frequency_among(
+                        // Item 13: Use knowledge-aware frequency selection so
+                        // neuro knowledge hints bias the cascade router's
+                        // model pick at selection time, not just post-hoc.
+                        let knowledge_ref = if knowledge_advice.has_signal {
+                            Some(&knowledge_advice)
+                        } else {
+                            None
+                        };
+                        match cascade_router.select_for_frequency_among_with_knowledge(
                             frequency,
                             Some(&routing_ctx),
                             cfactor_snapshot.as_ref(),
                             Some(agent_id.as_str()),
                             &healthy_models,
+                            knowledge_ref,
                         ) {
                             Some(model) => {
                                 tracing::info!(
-                                    "[orchestrate] frequency={} model={} healthy_candidates={} (selected via cascade)",
+                                    "[orchestrate] frequency={} model={} healthy_candidates={} knowledge_hints={} (selected via knowledge-aware cascade)",
                                     frequency_label(frequency),
                                     model.slug,
-                                    healthy_models.len()
+                                    healthy_models.len(),
+                                    knowledge_ref.map_or(0, |a| a.hints.len()),
                                 );
                                 selected_model = model.slug;
                             }
@@ -16552,13 +16616,16 @@ impl PlanRunner {
 
             let mut usage = task_result.total_usage;
             usage.cost_usd = task_result.total_cost_usd as f32;
-            (backend_id, AgentResult {
-                output: task_result.output,
-                trace: Vec::new(),
-                usage,
-                usage_obs: Some(usage.into()),
-                success: task_result.gate_passed,
-            })
+            (
+                backend_id,
+                AgentResult {
+                    output: task_result.output,
+                    trace: Vec::new(),
+                    usage,
+                    usage_obs: Some(usage.into()),
+                    success: task_result.gate_passed,
+                },
+            )
         } else if self.config.agent.command == "ollama" {
             use parking_lot::RwLock;
             use roko_agent::OllamaLlmBackend;
@@ -16689,13 +16756,16 @@ impl PlanRunner {
                 .tag("tool_calls", output.tool_calls.len().to_string())
                 .tag("iterations", output.iterations.to_string())
                 .build();
-            ("ollama_tool_loop".to_string(), AgentResult {
-                output: output_signal,
-                trace: Vec::new(),
-                usage: output.total_usage,
-                usage_obs: Some(output.total_usage.into()),
-                success,
-            })
+            (
+                "ollama_tool_loop".to_string(),
+                AgentResult {
+                    output: output_signal,
+                    trace: Vec::new(),
+                    usage: output.total_usage,
+                    usage_obs: Some(output.total_usage.into()),
+                    success,
+                },
+            )
         } else {
             let task_role = task_def
                 .as_ref()
@@ -16810,13 +16880,16 @@ impl PlanRunner {
 
             let mut usage = task_result.total_usage;
             usage.cost_usd = task_result.total_cost_usd as f32;
-            (backend_id, AgentResult {
-                output: task_result.output,
-                trace: Vec::new(),
-                usage,
-                usage_obs: Some(usage.into()),
-                success: task_result.gate_passed,
-            })
+            (
+                backend_id,
+                AgentResult {
+                    output: task_result.output,
+                    trace: Vec::new(),
+                    usage,
+                    usage_obs: Some(usage.into()),
+                    success: task_result.gate_passed,
+                },
+            )
         };
         let result = scrub_agent_result(&result, &self.safety_layer.scrub_policy);
         invocation_record.backend_id = backend_id.clone();
@@ -19594,12 +19667,15 @@ async fn git_merge_branch_into(
     // SAFE-01: Enforce safety layer on git merge subprocess.
     if let Some(layer) = safety {
         layer
-            .check_exec_command("git", &[
-                "merge".into(),
-                "--no-ff".into(),
-                "--no-edit".into(),
-                branch.to_string(),
-            ])
+            .check_exec_command(
+                "git",
+                &[
+                    "merge".into(),
+                    "--no-ff".into(),
+                    "--no-edit".into(),
+                    branch.to_string(),
+                ],
+            )
             .map_err(|e| anyhow!("safety layer blocked git merge: {e}"))?;
     }
     let output = tokio::process::Command::new("git")
@@ -21163,10 +21239,13 @@ title = "Test task"
         let initial = TasksFile::parse(&tasks_path).expect("parse initial tasks");
         let mut tracker = TaskTracker::new(initial, plan_dir.clone());
 
-        write_tasks_fixture(&tasks_path, &[
-            ("T1", "Initial task", "focused"),
-            ("T2", "Generated follow-up", "fast"),
-        ]);
+        write_tasks_fixture(
+            &tasks_path,
+            &[
+                ("T1", "Initial task", "focused"),
+                ("T2", "Generated follow-up", "fast"),
+            ],
+        );
         let updated = TasksFile::parse(&tasks_path).expect("parse updated tasks");
         tracker.refresh_tasks(updated);
 
@@ -21290,9 +21369,10 @@ title = "Test task"
         assert!(ledger_json.contains("\"plan-1\": 2"));
         let ledger: ReplanLedger = serde_json::from_str(&ledger_json).expect("parse replan ledger");
         assert_eq!(ledger.revision_requests.len(), 2);
-        assert_eq!(ledger.revision_requests[0].failure_pattern_ids, vec![
-            "compile::E0425 first failure".to_string()
-        ]);
+        assert_eq!(
+            ledger.revision_requests[0].failure_pattern_ids,
+            vec!["compile::E0425 first failure".to_string()]
+        );
         assert_eq!(
             ledger.revision_requests[0].disposition.to_string(),
             "needs_replan"
@@ -22239,15 +22319,17 @@ acceptance = []
 
     #[test]
     fn review_verdict_free_text_fails_closed() {
-        let parsed =
-            parse_structured_review_verdict("The code looks good, LGTM!", ReviewVerdictContext {
+        let parsed = parse_structured_review_verdict(
+            "The code looks good, LGTM!",
+            ReviewVerdictContext {
                 verdict_id: "v1".into(),
                 batch_id: "p1".into(),
                 task_id: "p1".into(),
                 reviewer_role_id: "auditor".into(),
                 raw_output_ref: "signal:raw".into(),
                 created_at: "2026-04-25T12:43:56Z".into(),
-            });
+            },
+        );
 
         assert!(!parsed.passed());
         assert!(structured_review_feedback(&parsed).contains("required_next_action=Human"));
@@ -22349,10 +22431,10 @@ depends_on = []
 
         let gate_errors = gate_failure_errors(Some(&tracker));
 
-        assert_eq!(gate_errors, vec![
-            "gate_rung=2".to_string(),
-            "compile failed".to_string()
-        ]);
+        assert_eq!(
+            gate_errors,
+            vec!["gate_rung=2".to_string(), "compile failed".to_string()]
+        );
     }
 
     #[test]
@@ -22755,12 +22837,15 @@ read_files = [
         )
         .unwrap();
 
-        assert_eq!(task_read_cli_args(&task), vec![
-            "--read".to_string(),
-            "src/lib.rs".to_string(),
-            "--read".to_string(),
-            "src/mod.rs".to_string(),
-        ]);
+        assert_eq!(
+            task_read_cli_args(&task),
+            vec![
+                "--read".to_string(),
+                "src/lib.rs".to_string(),
+                "--read".to_string(),
+                "src/mod.rs".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -22781,19 +22866,22 @@ read_files = [
             },
         ];
 
-        assert_eq!(workflow_enabled_gate_names(&gates), vec![
-            "shell".to_string(),
-            "compile".to_string()
-        ]);
+        assert_eq!(
+            workflow_enabled_gate_names(&gates),
+            vec!["shell".to_string(), "compile".to_string()]
+        );
 
         let shell_gates = workflow_shell_gate_commands(&gates);
         assert_eq!(shell_gates.len(), 1);
         assert_eq!(shell_gates[0].program, "python");
-        assert_eq!(shell_gates[0].args, vec![
-            "-m".to_string(),
-            "pytest".to_string(),
-            "--maxfail=1".to_string()
-        ]);
+        assert_eq!(
+            shell_gates[0].args,
+            vec![
+                "-m".to_string(),
+                "pytest".to_string(),
+                "--maxfail=1".to_string()
+            ]
+        );
         assert_eq!(shell_gates[0].timeout_ms, 42);
     }
 
@@ -22816,21 +22904,27 @@ read_files = [
 
     #[test]
     fn pre_agent_remediation_builds_scoped_cargo_commands() {
-        assert_eq!(cargo_fix_args(Some("roko-gate")), vec![
-            "fix",
-            "-p",
-            "roko-gate",
-            "--all-targets",
-            "--allow-dirty",
-            "--allow-staged"
-        ]);
-        assert_eq!(cargo_check_json_args(Some("roko-cli")), vec![
-            "check",
-            "-p",
-            "roko-cli",
-            "--all-targets",
-            "--message-format=json"
-        ]);
+        assert_eq!(
+            cargo_fix_args(Some("roko-gate")),
+            vec![
+                "fix",
+                "-p",
+                "roko-gate",
+                "--all-targets",
+                "--allow-dirty",
+                "--allow-staged"
+            ]
+        );
+        assert_eq!(
+            cargo_check_json_args(Some("roko-cli")),
+            vec![
+                "check",
+                "-p",
+                "roko-cli",
+                "--all-targets",
+                "--message-format=json"
+            ]
+        );
         assert!(cargo_fix_args(None).contains(&"--workspace".to_string()));
     }
 
@@ -22845,9 +22939,10 @@ read_files = [
             "crates/roko-cli/src/run.rs".to_string(),
             "plans/p1/brief.md".to_string(),
         ];
-        assert_eq!(remediation_new_changed_files(&before, &after), vec![
-            "crates/roko-cli/src/run.rs".to_string()
-        ]);
+        assert_eq!(
+            remediation_new_changed_files(&before, &after),
+            vec!["crates/roko-cli/src/run.rs".to_string()]
+        );
 
         let allowed = vec!["crates/roko-cli/src/orchestrate.rs".to_string()];
         assert!(remediation_scope_ok(
@@ -22991,9 +23086,10 @@ verify = []
             Some("error[E0308]: mismatched types\nexpected `String`, found `&str`"),
         );
 
-        assert_eq!(ctx.files, vec![
-            "crates/roko-cli/src/orchestrate.rs".to_string()
-        ]);
+        assert_eq!(
+            ctx.files,
+            vec!["crates/roko-cli/src/orchestrate.rs".to_string()]
+        );
         assert_eq!(ctx.match_category.as_deref(), Some("implementation"));
         assert_eq!(ctx.error_signature.as_deref(), Some("E0308"));
         assert_eq!(ctx.role, "implementer");

@@ -103,11 +103,14 @@ fn model_slugs_with_availability_marks_configured_and_successful_models() {
     let configured = vec!["claude-sonnet-4-5".to_string()];
     let availability = cascade.model_slugs_with_availability(&configured);
 
-    assert_eq!(availability, vec![
-        ("claude-haiku-4-5".to_string(), true),
-        ("claude-sonnet-4-5".to_string(), true),
-        ("claude-opus-4-6".to_string(), false),
-    ]);
+    assert_eq!(
+        availability,
+        vec![
+            ("claude-haiku-4-5".to_string(), true),
+            ("claude-sonnet-4-5".to_string(), true),
+            ("claude-opus-4-6".to_string(), false),
+        ]
+    );
 }
 
 // ── Test 2: static stage uses role table ────────────────────────────
@@ -268,12 +271,15 @@ fn stage_transition_logging() {
 
     let transitions = cascade.stage_transitions();
     assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0], StageTransition {
-        from: CascadeStage::Static,
-        to: CascadeStage::Confidence,
-        observations: 50,
-        timestamp: transitions[0].timestamp,
-    });
+    assert_eq!(
+        transitions[0],
+        StageTransition {
+            from: CascadeStage::Static,
+            to: CascadeStage::Confidence,
+            observations: 50,
+            timestamp: transitions[0].timestamp,
+        }
+    );
     assert!(transitions[0].timestamp >= before);
 
     for _ in 0..150 {
@@ -282,12 +288,15 @@ fn stage_transition_logging() {
 
     let transitions = cascade.stage_transitions();
     assert_eq!(transitions.len(), 2);
-    assert_eq!(transitions[1], StageTransition {
-        from: CascadeStage::Confidence,
-        to: CascadeStage::Ucb,
-        observations: 200,
-        timestamp: transitions[1].timestamp,
-    });
+    assert_eq!(
+        transitions[1],
+        StageTransition {
+            from: CascadeStage::Confidence,
+            to: CascadeStage::Ucb,
+            observations: 200,
+            timestamp: transitions[1].timestamp,
+        }
+    );
     assert!(transitions[1].timestamp >= transitions[0].timestamp);
 
     let dir = tempdir().unwrap();
@@ -799,11 +808,14 @@ fn version_change_detection_transfers_weighted_stats_on_load() {
     let path = dir.path().join("cascade-router.json");
     let snapshot = CascadeSnapshot {
         model_slugs: vec!["glm-5".to_string()],
-        confidence_stats: HashMap::from([("glm-5".to_string(), PersistedModelStats {
-            trials: 10,
-            successes: 6,
-            ..Default::default()
-        })]),
+        confidence_stats: HashMap::from([(
+            "glm-5".to_string(),
+            PersistedModelStats {
+                trials: 10,
+                successes: 6,
+                ..Default::default()
+            },
+        )]),
         total_observations: 10,
         role_table: HashMap::new(),
         stage_transitions: vec![],
@@ -1247,10 +1259,13 @@ fn gemini_observations_persist_across_save_and_load() {
     let path = dir.path().join("cascade-router.json");
     cascade.save(&path).expect("save cascade router");
 
-    let reloaded = CascadeRouter::load_or_new(&path, vec![
-        "gemini-2.5-flash".to_string(),
-        "claude-sonnet-4-5".to_string(),
-    ]);
+    let reloaded = CascadeRouter::load_or_new(
+        &path,
+        vec![
+            "gemini-2.5-flash".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        ],
+    );
     let stats = reloaded.observation_snapshot();
     let gemini = stats.get("gemini-2.5-flash").expect("gemini stats");
 
@@ -1302,7 +1317,7 @@ fn record_confidence_outcome_updates_model_statistics_without_linucb_observation
 }
 
 #[test]
-fn override_without_context_records_confidence_only() {
+fn override_without_context_records_multi_objective() {
     let cascade = CascadeRouter::new(test_slugs());
 
     assert!(
@@ -1313,7 +1328,12 @@ fn override_without_context_records_confidence_only() {
         )
     );
 
-    assert_eq!(cascade.total_observations(), 0);
+    // The trait impl now delegates to the full multi-objective path with a
+    // default RoutingContext, so LinUCB observations should be recorded.
+    assert!(
+        cascade.total_observations() >= 1,
+        "override via trait should update LinUCB observations"
+    );
     assert_eq!(
         cascade.confidence_snapshot().get("claude-sonnet-4-5"),
         Some(&(1, 1))
@@ -1381,10 +1401,10 @@ fn perplexity_observations_persist_across_save_and_load() {
     let path = dir.path().join("cascade-router.json");
     cascade.save(&path).expect("save cascade router");
 
-    let reloaded = CascadeRouter::load_or_new(&path, vec![
-        "sonar".to_string(),
-        "claude-sonnet-4-5".to_string(),
-    ]);
+    let reloaded = CascadeRouter::load_or_new(
+        &path,
+        vec!["sonar".to_string(), "claude-sonnet-4-5".to_string()],
+    );
     let stats = reloaded.observation_snapshot();
     let sonar = stats.get("sonar").expect("sonar stats");
 

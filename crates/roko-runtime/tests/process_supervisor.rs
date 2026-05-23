@@ -53,19 +53,25 @@ fn session_config(path: std::path::PathBuf, suffix: &str) -> ProcessSessionConfi
 
 #[cfg(unix)]
 fn long_running_command() -> (String, Vec<String>) {
-    ("bash".to_string(), vec![
-        "-c".to_string(),
-        "trap '' TERM; while :; do :; done".to_string(),
-    ])
+    (
+        "bash".to_string(),
+        vec![
+            "-c".to_string(),
+            "trap '' TERM; while :; do :; done".to_string(),
+        ],
+    )
 }
 
 #[cfg(windows)]
 fn long_running_command() -> (String, Vec<String>) {
-    ("powershell".to_string(), vec![
-        "-NoProfile".to_string(),
-        "-Command".to_string(),
-        "while ($true) { Start-Sleep -Milliseconds 100 }".to_string(),
-    ])
+    (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            "while ($true) { Start-Sleep -Milliseconds 100 }".to_string(),
+        ],
+    )
 }
 
 async fn wait_until_process_stops(pid: u32) {

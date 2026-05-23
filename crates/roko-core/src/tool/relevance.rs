@@ -152,13 +152,19 @@ const TASK_EXPANSIONS: &[(&[&str], &[&str])] = &[
         ],
     ),
     // Fixing / debugging → search + edit + execute
-    (&["fix", "debug", "repair", "resolve", "diagnose"], &[
-        "read", "file", "edit", "replace", "search", "contents", "string", "execute", "command",
-    ]),
+    (
+        &["fix", "debug", "repair", "resolve", "diagnose"],
+        &[
+            "read", "file", "edit", "replace", "search", "contents", "string", "execute", "command",
+        ],
+    ),
     // Testing → run + execute
-    (&["test", "verify", "validate"], &[
-        "run", "test", "execute", "shell", "command", "file", "read", "suite",
-    ]),
+    (
+        &["test", "verify", "validate"],
+        &[
+            "run", "test", "execute", "shell", "command", "file", "read", "suite",
+        ],
+    ),
     // Refactoring → read + edit + search
     (
         &["refactor", "rename", "restructure", "reorganize", "extract"],
@@ -167,15 +173,18 @@ const TASK_EXPANSIONS: &[(&[&str], &[&str])] = &[
         ],
     ),
     // Searching / investigating → search tools
-    (&["locate", "investigate", "analyze", "explore"], &[
-        "search",
-        "file",
-        "contents",
-        "read",
-        "pattern",
-        "matching",
-        "directory",
-    ]),
+    (
+        &["locate", "investigate", "analyze", "explore"],
+        &[
+            "search",
+            "file",
+            "contents",
+            "read",
+            "pattern",
+            "matching",
+            "directory",
+        ],
+    ),
     // Common CS/software nouns that imply file I/O
     (
         &[

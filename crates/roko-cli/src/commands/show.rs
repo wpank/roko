@@ -647,18 +647,21 @@ fn collect_work_items(
 
     for plan in &data.plans {
         let plan_path = roko_cli::plan::plans_dir(workdir).join(&plan.id);
-        items.insert(plan.id.clone(), WorkItemSummary {
-            id: plan.id.clone(),
-            kind: String::from("plan"),
-            status: plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
-            prompt: plan.title.clone(),
-            tasks_done: Some(plan.tasks_done),
-            tasks_total: Some(plan.task_count),
-            cost_usd: plan_costs.get(&plan.id).copied(),
-            created: None,
-            source: plan_path.clone(),
-            modified_ms: path_modified_ms(&plan_path),
-        });
+        items.insert(
+            plan.id.clone(),
+            WorkItemSummary {
+                id: plan.id.clone(),
+                kind: String::from("plan"),
+                status: plan_status(plan.completed, plan.tasks_done, plan.tasks_failed),
+                prompt: plan.title.clone(),
+                tasks_done: Some(plan.tasks_done),
+                tasks_total: Some(plan.task_count),
+                cost_usd: plan_costs.get(&plan.id).copied(),
+                created: None,
+                source: plan_path.clone(),
+                modified_ms: path_modified_ms(&plan_path),
+            },
+        );
     }
 
     for path in read_json_paths(&layout.root().join("jobs")) {
@@ -675,18 +678,21 @@ fn collect_work_items(
 
     if let Some(current) = &data.current_plan_execution {
         if !current.plan_id.is_empty() {
-            items.insert(current.plan_id.clone(), WorkItemSummary {
-                id: current.plan_id.clone(),
-                kind: String::from("current-plan"),
-                status: String::from("running"),
-                prompt: current.plan_title.clone(),
-                tasks_done: Some(current.tasks_done),
-                tasks_total: Some(current.tasks_total),
-                cost_usd: plan_costs.get(&current.plan_id).copied(),
-                created: None,
-                source: layout.executor_snapshot(),
-                modified_ms: path_modified_ms(&layout.executor_snapshot()),
-            });
+            items.insert(
+                current.plan_id.clone(),
+                WorkItemSummary {
+                    id: current.plan_id.clone(),
+                    kind: String::from("current-plan"),
+                    status: String::from("running"),
+                    prompt: current.plan_title.clone(),
+                    tasks_done: Some(current.tasks_done),
+                    tasks_total: Some(current.tasks_total),
+                    cost_usd: plan_costs.get(&current.plan_id).copied(),
+                    created: None,
+                    source: layout.executor_snapshot(),
+                    modified_ms: path_modified_ms(&layout.executor_snapshot()),
+                },
+            );
         }
     }
 
@@ -710,32 +716,39 @@ fn work_item_from_json_path(path: &Path, kind: &str) -> Option<WorkItemSummary> 
         value_string(&value, &["status", "state"]).unwrap_or_else(|| String::from("recorded"));
     let prompt =
         value_string(&value, &["prompt", "intent", "title", "description"]).unwrap_or_default();
-    let tasks_done = value_usize_path(&value, &[
-        &["tasks_completed"][..],
-        &["tasks_done"][..],
-        &["progress", "done"][..],
-        &["cost", "tasks_completed"][..],
-    ]);
-    let tasks_total = value_usize_path(&value, &[
-        &["tasks_total"][..],
-        &["task_count"][..],
-        &["progress", "total"][..],
-        &["cost", "tasks_total"][..],
-    ]);
-    let cost_usd = value_f64_path(&value, &[
-        &["cost_usd"][..],
-        &["total_cost_usd"][..],
-        &["cost", "total_usd"][..],
-        &["cost", "usd"][..],
-        &["cost", "total"][..],
-        &["cost_summary", "total_usd"][..],
-    ]);
-    let created = value_string(&value, &[
-        "created",
-        "created_at",
-        "started_at",
-        "updated_at",
-    ]);
+    let tasks_done = value_usize_path(
+        &value,
+        &[
+            &["tasks_completed"][..],
+            &["tasks_done"][..],
+            &["progress", "done"][..],
+            &["cost", "tasks_completed"][..],
+        ],
+    );
+    let tasks_total = value_usize_path(
+        &value,
+        &[
+            &["tasks_total"][..],
+            &["task_count"][..],
+            &["progress", "total"][..],
+            &["cost", "tasks_total"][..],
+        ],
+    );
+    let cost_usd = value_f64_path(
+        &value,
+        &[
+            &["cost_usd"][..],
+            &["total_cost_usd"][..],
+            &["cost", "total_usd"][..],
+            &["cost", "usd"][..],
+            &["cost", "total"][..],
+            &["cost_summary", "total_usd"][..],
+        ],
+    );
+    let created = value_string(
+        &value,
+        &["created", "created_at", "started_at", "updated_at"],
+    );
     Some(WorkItemSummary {
         id,
         kind: String::from(kind),
@@ -838,10 +851,13 @@ fn agent_rows(state: &ShowState) -> Vec<AgentRow> {
     let mut by_agent = BTreeMap::<String, AgentRow>::new();
     for agent in &state.data.agents {
         let scope = agent.plan_id.as_deref().unwrap_or("workspace");
-        by_agent.insert(agent.id.clone(), AgentRow {
-            id: agent.id.clone(),
-            summary: format!("{} | {} | {}", agent.label, agent.status, scope),
-        });
+        by_agent.insert(
+            agent.id.clone(),
+            AgentRow {
+                id: agent.id.clone(),
+                summary: format!("{} | {} | {}", agent.label, agent.status, scope),
+            },
+        );
     }
 
     for event in &state.data.efficiency_events {

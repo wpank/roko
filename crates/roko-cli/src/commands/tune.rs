@@ -10,30 +10,39 @@ pub(crate) async fn cmd_tune(cli: &Cli, cmd: TuneCmd) -> Result<i32> {
     ensure_project_config(&workdir)?;
 
     let (label, edits): (&str, Vec<(&str, String)>) = match cmd {
-        TuneCmd::Routing { .. } => ("routing", vec![
-            ("routing.mode", "auto_override".to_string()),
-            ("routing.algorithm", "linucb".to_string()),
-            ("routing.fast_task_model", "claude-haiku-4-5".to_string()),
-            (
-                "routing.standard_task_model",
-                "claude-sonnet-4-6".to_string(),
-            ),
-            ("routing.complex_task_model", "claude-opus-4-6".to_string()),
-            ("routing.context_strategy", "hybrid".to_string()),
-            ("routing.weights.quality", "0.55".to_string()),
-            ("routing.weights.cost", "0.30".to_string()),
-            ("routing.weights.latency", "0.15".to_string()),
-        ]),
-        TuneCmd::Gates { .. } => ("gates", vec![
-            ("gates.clippy_enabled", "true".to_string()),
-            ("gates.skip_tests", "false".to_string()),
-            ("gates.max_iterations", "2".to_string()),
-        ]),
-        TuneCmd::Budget { .. } => ("budget", vec![
-            ("budget.max_plan_usd", "10.0".to_string()),
-            ("budget.max_turn_usd", "1.0".to_string()),
-            ("budget.prompt_token_budget", "20000".to_string()),
-        ]),
+        TuneCmd::Routing { .. } => (
+            "routing",
+            vec![
+                ("routing.mode", "auto_override".to_string()),
+                ("routing.algorithm", "linucb".to_string()),
+                ("routing.fast_task_model", "claude-haiku-4-5".to_string()),
+                (
+                    "routing.standard_task_model",
+                    "claude-sonnet-4-6".to_string(),
+                ),
+                ("routing.complex_task_model", "claude-opus-4-6".to_string()),
+                ("routing.context_strategy", "hybrid".to_string()),
+                ("routing.weights.quality", "0.55".to_string()),
+                ("routing.weights.cost", "0.30".to_string()),
+                ("routing.weights.latency", "0.15".to_string()),
+            ],
+        ),
+        TuneCmd::Gates { .. } => (
+            "gates",
+            vec![
+                ("gates.clippy_enabled", "true".to_string()),
+                ("gates.skip_tests", "false".to_string()),
+                ("gates.max_iterations", "2".to_string()),
+            ],
+        ),
+        TuneCmd::Budget { .. } => (
+            "budget",
+            vec![
+                ("budget.max_plan_usd", "10.0".to_string()),
+                ("budget.max_turn_usd", "1.0".to_string()),
+                ("budget.prompt_token_budget", "20000".to_string()),
+            ],
+        ),
         TuneCmd::Model { name, .. } => {
             let model = resolve_model_key(&workdir, &name)?;
             ("model", vec![("agent.default_model", model)])

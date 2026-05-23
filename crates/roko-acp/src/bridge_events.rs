@@ -1842,10 +1842,13 @@ async fn run_anthropic_builtin_tool_loop(
     let usage = usage_info_from_tool_loop_usage(&output.total_usage);
     match output.stop_reason {
         ToolLoopStopReason::Stop => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::EndTurn,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::MaxIterations => {
@@ -1857,17 +1860,23 @@ async fn run_anthropic_builtin_tool_loop(
                 )),
             )
             .await;
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::MaxTokens,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::MaxTokens,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::Cancelled => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::Cancelled,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::BudgetExhausted => {
@@ -2040,10 +2049,13 @@ where
         }
     }
 
-    send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-        stop_reason: StopReason::EndTurn,
-        usage: state.usage,
-    })
+    send_cognitive_event(
+        &event_sender,
+        CognitiveEvent::Complete {
+            stop_reason: StopReason::EndTurn,
+            usage: state.usage,
+        },
+    )
     .await;
     Ok(())
 }
@@ -2070,10 +2082,13 @@ async fn forward_model_stream_event(
             Ok(ModelStreamForward::Continue)
         }
         ModelStreamEvent::Completed { stop_reason } => {
-            send_cognitive_event(event_sender, CognitiveEvent::Complete {
-                stop_reason: acp_stop_reason_from_model(stop_reason.as_deref()),
-                usage: state.usage.clone(),
-            })
+            send_cognitive_event(
+                event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: acp_stop_reason_from_model(stop_reason.as_deref()),
+                    usage: state.usage.clone(),
+                },
+            )
             .await;
             Ok(ModelStreamForward::Completed)
         }
@@ -2083,10 +2098,13 @@ async fn forward_model_stream_event(
             Err(anyhow::anyhow!("model stream failed: {error}").into())
         }
         ModelStreamEvent::Cancelled => {
-            send_cognitive_event(event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::Cancelled,
-                usage: state.usage.clone(),
-            })
+            send_cognitive_event(
+                event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage: state.usage.clone(),
+                },
+            )
             .await;
             Ok(ModelStreamForward::Completed)
         }
@@ -2294,9 +2312,12 @@ async fn run_openai_compat_mcp_tool_loop(
     let (mcp_state, mcp_statuses) =
         setup_session_mcp_tools(session_id, mcp_servers, event_sender.clone()).await;
     if !mcp_statuses.is_empty() {
-        send_cognitive_event(&event_sender, CognitiveEvent::McpStatus {
-            statuses: mcp_statuses,
-        })
+        send_cognitive_event(
+            &event_sender,
+            CognitiveEvent::McpStatus {
+                statuses: mcp_statuses,
+            },
+        )
         .await;
     }
     if mcp_state.tools.is_empty() {
@@ -2357,10 +2378,13 @@ async fn run_openai_compat_mcp_tool_loop(
     let usage = usage_info_from_tool_loop_usage(&output.total_usage);
     match output.stop_reason {
         ToolLoopStopReason::Stop => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::EndTurn,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::MaxIterations => {
@@ -2372,17 +2396,23 @@ async fn run_openai_compat_mcp_tool_loop(
                 )),
             )
             .await;
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::MaxTokens,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::MaxTokens,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::Cancelled => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::Cancelled,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::BudgetExhausted => {
@@ -2497,10 +2527,13 @@ async fn run_openai_compat_builtin_tool_loop(
     let usage = usage_info_from_tool_loop_usage(&output.total_usage);
     match output.stop_reason {
         ToolLoopStopReason::Stop => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::EndTurn,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::MaxIterations => {
@@ -2512,17 +2545,23 @@ async fn run_openai_compat_builtin_tool_loop(
                 )),
             )
             .await;
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::MaxTokens,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::MaxTokens,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::Cancelled => {
-            send_cognitive_event(&event_sender, CognitiveEvent::Complete {
-                stop_reason: StopReason::Cancelled,
-                usage,
-            })
+            send_cognitive_event(
+                &event_sender,
+                CognitiveEvent::Complete {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                },
+            )
             .await;
         }
         ToolLoopStopReason::BudgetExhausted => {
@@ -2816,12 +2855,15 @@ impl ToolHandler for AcpMcpToolHandler {
         } else {
             call.id.clone()
         };
-        send_cognitive_event(&self.event_sender, CognitiveEvent::ToolCallStart {
-            tool_call_id: tool_call_id.clone(),
-            title: self.exposed_name.clone(),
-            kind: ToolCallKind::Other,
-            locations: None,
-        })
+        send_cognitive_event(
+            &self.event_sender,
+            CognitiveEvent::ToolCallStart {
+                tool_call_id: tool_call_id.clone(),
+                title: self.exposed_name.clone(),
+                kind: ToolCallKind::Other,
+                locations: None,
+            },
+        )
         .await;
 
         let result = match tokio::time::timeout(
@@ -2841,11 +2883,14 @@ impl ToolHandler for AcpMcpToolHandler {
         };
 
         let (status, text) = tool_result_for_editor(&result);
-        send_cognitive_event(&self.event_sender, CognitiveEvent::ToolCallComplete {
-            tool_call_id,
-            status,
-            content: vec![ContentBlock::Text { text }],
-        })
+        send_cognitive_event(
+            &self.event_sender,
+            CognitiveEvent::ToolCallComplete {
+                tool_call_id,
+                status,
+                content: vec![ContentBlock::Text { text }],
+            },
+        )
         .await;
 
         result

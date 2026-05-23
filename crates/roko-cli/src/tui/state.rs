@@ -4384,51 +4384,63 @@ tier = "focused"
 
         let snap = DashboardSnapshot {
             plans: [
-                ("plan-a".to_string(), PlanState {
-                    plan_id: "plan-a".into(),
-                    phase: "started".into(),
-                    tasks_total: 4,
-                    tasks_done: 1,
-                    tasks_failed: 0,
-                    active: true,
-                }),
-                ("plan-b".to_string(), PlanState {
-                    plan_id: "plan-b".into(),
-                    phase: "failed".into(),
-                    tasks_total: 2,
-                    tasks_done: 1,
-                    tasks_failed: 1,
-                    active: false,
-                }),
+                (
+                    "plan-a".to_string(),
+                    PlanState {
+                        plan_id: "plan-a".into(),
+                        phase: "started".into(),
+                        tasks_total: 4,
+                        tasks_done: 1,
+                        tasks_failed: 0,
+                        active: true,
+                    },
+                ),
+                (
+                    "plan-b".to_string(),
+                    PlanState {
+                        plan_id: "plan-b".into(),
+                        phase: "failed".into(),
+                        tasks_total: 2,
+                        tasks_done: 1,
+                        tasks_failed: 1,
+                        active: false,
+                    },
+                ),
             ]
             .into_iter()
             .collect(),
             tasks: Default::default(),
             agents: [
-                ("agent-a".to_string(), SnapshotAgentState {
-                    agent_id: "agent-a".into(),
-                    role: "implementer".into(),
-                    active: true,
-                    output_bytes: 128,
-                    model: String::new(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cost_usd: 0.0,
-                    current_task: String::new(),
-                    current_plan: String::new(),
-                }),
-                ("agent-b".to_string(), SnapshotAgentState {
-                    agent_id: "agent-b".into(),
-                    role: "reviewer".into(),
-                    active: false,
-                    output_bytes: 0,
-                    model: String::new(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cost_usd: 0.0,
-                    current_task: String::new(),
-                    current_plan: String::new(),
-                }),
+                (
+                    "agent-a".to_string(),
+                    SnapshotAgentState {
+                        agent_id: "agent-a".into(),
+                        role: "implementer".into(),
+                        active: true,
+                        output_bytes: 128,
+                        model: String::new(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0,
+                        current_task: String::new(),
+                        current_plan: String::new(),
+                    },
+                ),
+                (
+                    "agent-b".to_string(),
+                    SnapshotAgentState {
+                        agent_id: "agent-b".into(),
+                        role: "reviewer".into(),
+                        active: false,
+                        output_bytes: 0,
+                        model: String::new(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0,
+                        current_task: String::new(),
+                        current_plan: String::new(),
+                    },
+                ),
             ]
             .into_iter()
             .collect(),
@@ -4543,14 +4555,17 @@ tier = "focused"
         ];
 
         let snap = DashboardSnapshot {
-            plans: [("plan-b".to_string(), PlanState {
-                plan_id: "plan-b".into(),
-                phase: "completed".into(),
-                tasks_total: 1,
-                tasks_done: 1,
-                tasks_failed: 0,
-                active: false,
-            })]
+            plans: [(
+                "plan-b".to_string(),
+                PlanState {
+                    plan_id: "plan-b".into(),
+                    phase: "completed".into(),
+                    tasks_total: 1,
+                    tasks_done: 1,
+                    tasks_failed: 0,
+                    active: false,
+                },
+            )]
             .into_iter()
             .collect(),
             ..Default::default()
@@ -4687,15 +4702,17 @@ tier = "focused"
     #[test]
     fn update_from_dashboard_snapshot_maps_streaming_fields() {
         let mut snap = roko_core::DashboardSnapshot::default();
-        snap.plans
-            .insert("plan-a".into(), roko_core::dashboard_snapshot::PlanState {
+        snap.plans.insert(
+            "plan-a".into(),
+            roko_core::dashboard_snapshot::PlanState {
                 plan_id: "plan-a".into(),
                 phase: "implementer".into(),
                 tasks_total: 2,
                 tasks_done: 1,
                 tasks_failed: 0,
                 active: true,
-            });
+            },
+        );
         snap.tasks.insert(
             "plan-a/task-1".into(),
             roko_core::dashboard_snapshot::TaskState {
@@ -4858,24 +4875,28 @@ tier = "focused"
         }];
 
         let mut snap = roko_core::DashboardSnapshot::default();
-        snap.plans
-            .insert("plan-b".into(), roko_core::dashboard_snapshot::PlanState {
+        snap.plans.insert(
+            "plan-b".into(),
+            roko_core::dashboard_snapshot::PlanState {
                 plan_id: "plan-b".into(),
                 phase: "implementer".into(),
                 tasks_total: 1,
                 tasks_done: 0,
                 tasks_failed: 0,
                 active: true,
-            });
-        snap.plans
-            .insert("plan-a".into(), roko_core::dashboard_snapshot::PlanState {
+            },
+        );
+        snap.plans.insert(
+            "plan-a".into(),
+            roko_core::dashboard_snapshot::PlanState {
                 plan_id: "plan-a".into(),
                 phase: "pending".into(),
                 tasks_total: 0,
                 tasks_done: 0,
                 tasks_failed: 0,
                 active: false,
-            });
+            },
+        );
         snap.tasks.insert(
             "plan-b/task-2".into(),
             roko_core::dashboard_snapshot::TaskState {

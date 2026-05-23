@@ -848,39 +848,46 @@ fn workflow_plan_entries(template: &str, phase: &str) -> Vec<PlanEntry> {
     entries.push(PlanEntry {
         content: "Run gates".to_string(),
         priority: Priority::Medium,
-        status: plan_status(phase, &["gating"], &[
-            "pending",
-            "strategizing",
-            "implementing",
-            "auto_fixing",
-        ]),
+        status: plan_status(
+            phase,
+            &["gating"],
+            &["pending", "strategizing", "implementing", "auto_fixing"],
+        ),
     });
 
     if has_review {
         entries.push(PlanEntry {
             content: "Code review".to_string(),
             priority: Priority::Medium,
-            status: plan_status(phase, &["reviewing"], &[
-                "pending",
-                "strategizing",
-                "implementing",
-                "auto_fixing",
-                "gating",
-            ]),
+            status: plan_status(
+                phase,
+                &["reviewing"],
+                &[
+                    "pending",
+                    "strategizing",
+                    "implementing",
+                    "auto_fixing",
+                    "gating",
+                ],
+            ),
         });
     }
 
     entries.push(PlanEntry {
         content: "Commit changes".to_string(),
         priority: Priority::Low,
-        status: plan_status(phase, &["committing"], &[
-            "pending",
-            "strategizing",
-            "implementing",
-            "auto_fixing",
-            "gating",
-            "reviewing",
-        ]),
+        status: plan_status(
+            phase,
+            &["committing"],
+            &[
+                "pending",
+                "strategizing",
+                "implementing",
+                "auto_fixing",
+                "gating",
+                "reviewing",
+            ],
+        ),
     });
 
     entries

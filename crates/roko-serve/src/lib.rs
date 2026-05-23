@@ -2945,9 +2945,10 @@ mod tests {
 
         state.shutdown().await;
 
-        let reloaded = CascadeRouter::load_or_new(&state.layout.cascade_router_path(), vec![
-            "claude-sonnet-4-6".to_string(),
-        ]);
+        let reloaded = CascadeRouter::load_or_new(
+            &state.layout.cascade_router_path(),
+            vec!["claude-sonnet-4-6".to_string()],
+        );
         assert_eq!(reloaded.total_observations(), 1);
     }
 

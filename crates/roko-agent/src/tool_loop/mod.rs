@@ -2174,9 +2174,12 @@ mod tests {
 
     #[tokio::test]
     async fn retry_with_jitter_retries_rate_limits_until_success() {
-        let backend = Arc::new(RetryingBackend::new(2, ProviderError::RateLimit {
-            retry_after_ms: None,
-        }));
+        let backend = Arc::new(RetryingBackend::new(
+            2,
+            ProviderError::RateLimit {
+                retry_after_ms: None,
+            },
+        ));
         let tl = make_tool_loop(backend.clone(), 25).with_retry_policy(test_retry_policy());
         let ctx = ToolContext::testing("/tmp");
 
@@ -2441,11 +2444,10 @@ mod tests {
             .filter(|message| message["role"] == "assistant")
             .filter_map(|message| message["reasoning_content"].as_str())
             .collect();
-        assert_eq!(reasoning_values, vec![
-            "reasoning turn 1",
-            "reasoning turn 2",
-            "reasoning turn 3"
-        ]);
+        assert_eq!(
+            reasoning_values,
+            vec!["reasoning turn 1", "reasoning turn 2", "reasoning turn 3"]
+        );
     }
 
     #[tokio::test]

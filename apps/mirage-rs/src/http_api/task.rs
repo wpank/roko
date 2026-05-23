@@ -336,12 +336,13 @@ pub async fn complete_task(
         .unwrap_or_default();
 
     if !assignee.is_empty() {
-        chain
-            .agent_registry
-            .add_stats_delta(&assignee, &AgentStats {
+        chain.agent_registry.add_stats_delta(
+            &assignee,
+            &AgentStats {
                 tasks_completed: 1,
                 ..AgentStats::default()
-            });
+            },
+        );
     }
 
     let _ = chain.task_bus.send(crate::chain::TaskEvent::Completed {
@@ -488,12 +489,13 @@ pub async fn fail_task(
         .map_err(task_error_to_api)?;
 
     if !assignee.is_empty() {
-        chain
-            .agent_registry
-            .add_stats_delta(&assignee, &AgentStats {
+        chain.agent_registry.add_stats_delta(
+            &assignee,
+            &AgentStats {
                 tasks_failed: 1,
                 ..AgentStats::default()
-            });
+            },
+        );
     }
 
     let new_state = chain

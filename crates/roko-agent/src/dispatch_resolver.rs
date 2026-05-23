@@ -484,10 +484,13 @@ mod dispatch_resolver_tests {
             .resolve_existing(request)
             .expect("dispatch plan");
 
-        assert_eq!(plan.requirements, vec![
-            DispatchRequirement::Streaming,
-            DispatchRequirement::McpTools,
-        ]);
+        assert_eq!(
+            plan.requirements,
+            vec![
+                DispatchRequirement::Streaming,
+                DispatchRequirement::McpTools,
+            ]
+        );
         assert!(
             plan.diagnostics
                 .iter()

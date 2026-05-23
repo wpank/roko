@@ -109,6 +109,7 @@ fn minimal() -> RokoConfig {
             dream_on_completion: true,
             use_lookahead_router: false,
             lookahead_threshold: 0.7,
+            override_learning_dampening: None,
         },
         ..RokoConfig::default()
     }
@@ -173,6 +174,7 @@ fn thorough() -> RokoConfig {
             dream_on_completion: true,
             use_lookahead_router: true,
             lookahead_threshold: 0.7,
+            override_learning_dampening: None,
         },
         ..RokoConfig::default()
     }

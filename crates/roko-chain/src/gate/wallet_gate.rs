@@ -344,44 +344,61 @@ mod tests {
     async fn check_passes_with_sufficient_balance() {
         let (gate, _w, _c) = make_gate(1_000);
         let result = gate.check(500).await;
-        assert!(matches!(result, WalletCheck::BalanceOk {
-            have: 1_000,
-            need: 500
-        }));
+        assert!(matches!(
+            result,
+            WalletCheck::BalanceOk {
+                have: 1_000,
+                need: 500
+            }
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn check_fails_with_insufficient_balance() {
         let (gate, _w, _c) = make_gate(100);
         let result = gate.check(500).await;
-        assert!(matches!(result, WalletCheck::InsufficientBalance {
-            have: 100,
-            need: 500
-        }));
+        assert!(matches!(
+            result,
+            WalletCheck::InsufficientBalance {
+                have: 100,
+                need: 500
+            }
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn check_respects_min_balance_floor() {
         let (client, wallet) = paired_mocks(1_000);
-        let gate = WalletGate::new(Arc::new(wallet), Arc::new(client), WalletGateConfig {
-            min_balance_wei: 400,
-            ..WalletGateConfig::default()
-        });
+        let gate = WalletGate::new(
+            Arc::new(wallet),
+            Arc::new(client),
+            WalletGateConfig {
+                min_balance_wei: 400,
+                ..WalletGateConfig::default()
+            },
+        );
         // Need 700, balance 1000 → after tx = 300 which is < 400 floor.
         let result = gate.check(700).await;
-        assert!(matches!(result, WalletCheck::InsufficientBalance {
-            have: 1_000,
-            need: 1_100
-        }));
+        assert!(matches!(
+            result,
+            WalletCheck::InsufficientBalance {
+                have: 1_000,
+                need: 1_100
+            }
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn check_reports_unsupported_when_allowance_is_requested() {
         let (client, wallet) = paired_mocks(1_000);
-        let gate = WalletGate::new(Arc::new(wallet), Arc::new(client), WalletGateConfig {
-            require_allowance_for: Some([0x11; 20]),
-            ..WalletGateConfig::default()
-        });
+        let gate = WalletGate::new(
+            Arc::new(wallet),
+            Arc::new(client),
+            WalletGateConfig {
+                require_allowance_for: Some([0x11; 20]),
+                ..WalletGateConfig::default()
+            },
+        );
 
         let result = gate.check(100).await;
         assert!(matches!(
@@ -502,10 +519,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn verify_strict_nonce_off_ignores_pinned_nonce() {
         let (client, wallet) = paired_mocks(1_000);
-        let gate = WalletGate::new(Arc::new(wallet), Arc::new(client), WalletGateConfig {
-            strict_nonce: false,
-            ..WalletGateConfig::default()
-        });
+        let gate = WalletGate::new(
+            Arc::new(wallet),
+            Arc::new(client),
+            WalletGateConfig {
+                strict_nonce: false,
+                ..WalletGateConfig::default()
+            },
+        );
         let signal = tx_signal_json(serde_json::json!({
             "value": 100,
             "nonce": 99,
@@ -517,10 +538,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn verify_fails_closed_when_allowance_is_requested() {
         let (client, wallet) = paired_mocks(1_000);
-        let gate = WalletGate::new(Arc::new(wallet), Arc::new(client), WalletGateConfig {
-            require_allowance_for: Some([0x22; 20]),
-            ..WalletGateConfig::default()
-        });
+        let gate = WalletGate::new(
+            Arc::new(wallet),
+            Arc::new(client),
+            WalletGateConfig {
+                require_allowance_for: Some([0x22; 20]),
+                ..WalletGateConfig::default()
+            },
+        );
         let signal = tx_signal_json(serde_json::json!({
             "value": 100,
         }));

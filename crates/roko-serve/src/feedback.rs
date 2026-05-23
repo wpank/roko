@@ -1007,10 +1007,13 @@ mod tests {
         .expect("record positive feedback");
         assert!(updated);
 
-        let reloaded = CascadeRouter::load_or_new(&path, vec![
-            "claude-haiku-4-5".to_string(),
-            "claude-sonnet-4-5".to_string(),
-        ]);
+        let reloaded = CascadeRouter::load_or_new(
+            &path,
+            vec![
+                "claude-haiku-4-5".to_string(),
+                "claude-sonnet-4-5".to_string(),
+            ],
+        );
         assert_eq!(
             reloaded.confidence_snapshot().get("claude-sonnet-4-5"),
             Some(&(1, 1))

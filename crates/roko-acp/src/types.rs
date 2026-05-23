@@ -1088,9 +1088,12 @@ mod tests {
         }))
         .expect("deserialize legacy content block alias");
 
-        assert_eq!(block, ContentBlock::Text {
-            text: "hello".to_string()
-        });
+        assert_eq!(
+            block,
+            ContentBlock::Text {
+                text: "hello".to_string()
+            }
+        );
     }
 
     #[test]

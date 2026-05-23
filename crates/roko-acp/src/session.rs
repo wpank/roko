@@ -1970,16 +1970,18 @@ context_window = 8192
         let session = AcpSession::new_with_config(session_params("missing-key-provider"), &config);
         let options = session.config_options();
 
-        assert_eq!(option_values(&options, "provider"), vec![
-            "missing-key-provider".to_owned()
-        ]);
+        assert_eq!(
+            option_values(&options, "provider"),
+            vec!["missing-key-provider".to_owned()]
+        );
         assert_eq!(
             option_description(&options, "provider", "missing-key-provider").as_deref(),
             Some("API key env ROKO_ACP_TEST_UNSET_PROVIDER_KEY is not set")
         );
-        assert_eq!(option_values(&options, "model"), vec![
-            "missing-key-model".to_owned()
-        ]);
+        assert_eq!(
+            option_values(&options, "model"),
+            vec!["missing-key-model".to_owned()]
+        );
     }
 
     #[test]
@@ -2047,12 +2049,14 @@ context_window = 8192
 
         assert_eq!(loaded.config_state.provider, "current-provider");
         assert_eq!(loaded.config_state.model, "current-model");
-        assert_eq!(option_values(&loaded.config_options(), "provider"), vec![
-            "current-provider".to_owned()
-        ]);
-        assert_eq!(option_values(&loaded.config_options(), "model"), vec![
-            "current-model".to_owned()
-        ]);
+        assert_eq!(
+            option_values(&loaded.config_options(), "provider"),
+            vec!["current-provider".to_owned()]
+        );
+        assert_eq!(
+            option_values(&loaded.config_options(), "model"),
+            vec!["current-model".to_owned()]
+        );
     }
 
     #[test]

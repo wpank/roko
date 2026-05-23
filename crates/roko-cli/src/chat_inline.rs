@@ -2667,9 +2667,12 @@ fn handle_slash_command(
             ])?;
         }
         "/history" => {
-            let is_claude_cli = matches!(&session.dispatch, DispatchMode::Direct {
-                auth: AuthMethod::ClaudeCli
-            });
+            let is_claude_cli = matches!(
+                &session.dispatch,
+                DispatchMode::Direct {
+                    auth: AuthMethod::ClaudeCli
+                }
+            );
 
             if session.conversation.is_empty() {
                 let mut lines = vec![styled::section_start(
@@ -3322,14 +3325,17 @@ fn handle_slash_command(
         }
         _ if cmd.starts_with("/search ") => {
             let pattern = cmd.strip_prefix("/search ").unwrap().trim();
-            let output = shell_output("grep", &[
-                "-rn",
-                "--include=*.rs",
-                "--include=*.toml",
-                "--include=*.md",
-                pattern,
-                ".",
-            ]);
+            let output = shell_output(
+                "grep",
+                &[
+                    "-rn",
+                    "--include=*.rs",
+                    "--include=*.toml",
+                    "--include=*.md",
+                    pattern,
+                    ".",
+                ],
+            );
             if output.trim().is_empty() {
                 term.push_lines(&[styled::continuation(
                     theme,
@@ -3343,17 +3349,20 @@ fn handle_slash_command(
         }
         _ if cmd.starts_with("/find ") => {
             let pattern = cmd.strip_prefix("/find ").unwrap().trim();
-            let output = shell_output("find", &[
-                ".",
-                "-name",
-                pattern,
-                "-not",
-                "-path",
-                "*/target/*",
-                "-not",
-                "-path",
-                "*/.git/*",
-            ]);
+            let output = shell_output(
+                "find",
+                &[
+                    ".",
+                    "-name",
+                    pattern,
+                    "-not",
+                    "-path",
+                    "*/target/*",
+                    "-not",
+                    "-path",
+                    "*/.git/*",
+                ],
+            );
             if output.trim().is_empty() {
                 term.push_lines(&[styled::continuation(
                     theme,
@@ -3368,17 +3377,20 @@ fn handle_slash_command(
         _ if cmd.starts_with("/tree") => {
             let arg = cmd.strip_prefix("/tree").unwrap().trim();
             let path = if arg.is_empty() { "." } else { arg };
-            let output = shell_output("find", &[
-                path,
-                "-maxdepth",
-                "3",
-                "-not",
-                "-path",
-                "*/target/*",
-                "-not",
-                "-path",
-                "*/.git/*",
-            ]);
+            let output = shell_output(
+                "find",
+                &[
+                    path,
+                    "-maxdepth",
+                    "3",
+                    "-not",
+                    "-path",
+                    "*/target/*",
+                    "-not",
+                    "-path",
+                    "*/.git/*",
+                ],
+            );
             push_shell_output(term, theme, &format!("tree: {path}"), &output, 30)?;
         }
 
@@ -3435,14 +3447,17 @@ fn handle_slash_command(
             ])?;
         }
         "/plan list" => {
-            let output = shell_output("find", &[
-                ".roko/plans",
-                "-name",
-                "*.toml",
-                "-not",
-                "-path",
-                "*/target/*",
-            ]);
+            let output = shell_output(
+                "find",
+                &[
+                    ".roko/plans",
+                    "-name",
+                    "*.toml",
+                    "-not",
+                    "-path",
+                    "*/target/*",
+                ],
+            );
             if output.trim().is_empty() {
                 let output2 = shell_output("find", &["plans", "-name", "*.toml"]);
                 if output2.trim().is_empty() {
@@ -4307,11 +4322,14 @@ fn naive_opus_cost(input_tokens: u64, output_tokens: u64) -> f64 {
 
 /// Calculate cost from a dispatch result using the cost table.
 fn cost_from_result(table: &CostTable, result: &DispatchResult) -> f64 {
-    table.calculate(&result.model, &roko_agent::Usage {
-        input_tokens: result.input_tokens as u32,
-        output_tokens: result.output_tokens as u32,
-        ..Default::default()
-    })
+    table.calculate(
+        &result.model,
+        &roko_agent::Usage {
+            input_tokens: result.input_tokens as u32,
+            output_tokens: result.output_tokens as u32,
+            ..Default::default()
+        },
+    )
 }
 
 /// HTTP response wrapper that can convert into [`DispatchResult`].

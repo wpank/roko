@@ -212,9 +212,12 @@ mod tests {
 
     #[test]
     fn gate_verdict_constant_halves_after_one_day() {
-        assert_eq!(Decay::GATE_VERDICT, Decay::HalfLife {
-            half_life_ms: 86_400_000
-        });
+        assert_eq!(
+            Decay::GATE_VERDICT,
+            Decay::HalfLife {
+                half_life_ms: 86_400_000
+            }
+        );
         assert!((Decay::GATE_VERDICT.apply(86_400_000) - 0.5).abs() < 1e-6);
     }
 

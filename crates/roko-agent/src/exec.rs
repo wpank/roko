@@ -570,10 +570,10 @@ mod tests {
     #[tokio::test]
     async fn stderr_becomes_trace_signals() {
         // Use `sh -c` to emit both stdout and stderr.
-        let agent = exec_agent("sh", vec![
-            "-c".into(),
-            "echo hello; echo 'warning: x' 1>&2".into(),
-        ]);
+        let agent = exec_agent(
+            "sh",
+            vec!["-c".into(), "echo hello; echo 'warning: x' 1>&2".into()],
+        );
         let result = agent.run(&prompt(""), &Context::now()).await;
         assert!(result.success);
         assert!(result.output.body.as_text().unwrap().contains("hello"));
@@ -631,12 +631,15 @@ mod tests {
 
     #[tokio::test]
     async fn safety_blocks_direct_git_force_push_before_spawn() {
-        let agent = exec_agent("git", vec![
-            "push".into(),
-            "--force".into(),
-            "origin".into(),
-            "main".into(),
-        ])
+        let agent = exec_agent(
+            "git",
+            vec![
+                "push".into(),
+                "--force".into(),
+                "origin".into(),
+                "main".into(),
+            ],
+        )
         .with_safety_layer(SafetyLayer::with_defaults());
         let result = agent.run(&prompt(""), &Context::now()).await;
         assert!(!result.success);
@@ -652,10 +655,13 @@ mod tests {
 
     #[tokio::test]
     async fn benign_stderr_is_suppressed_from_trace() {
-        let agent = exec_agent("sh", vec![
-            "-c".into(),
-            "echo ok; echo 'Claude CLI is starting up...' 1>&2".into(),
-        ]);
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".into(),
+                "echo ok; echo 'Claude CLI is starting up...' 1>&2".into(),
+            ],
+        );
         let result = agent.run(&prompt(""), &Context::now()).await;
         assert!(result.success);
         assert!(result.trace.is_empty());

@@ -146,12 +146,15 @@ async fn start_vision_loop(
     // Register the handle.
     {
         let mut loops = VISION_LOOPS.write().await;
-        loops.insert(run_id.clone(), VisionLoopHandle {
-            run_id: run_id.clone(),
-            status: VisionLoopStatus::Running,
-            child: Some(child),
-            result: None,
-        });
+        loops.insert(
+            run_id.clone(),
+            VisionLoopHandle {
+                run_id: run_id.clone(),
+                status: VisionLoopStatus::Running,
+                child: Some(child),
+                result: None,
+            },
+        );
     }
 
     // Monitor the subprocess in the background.

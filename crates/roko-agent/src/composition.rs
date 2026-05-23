@@ -552,10 +552,13 @@ mod tests {
         let selector = SkillSelector::new(0).with_category(TaskCategory::Docs, 1);
         let agent = CompositeAgent::new(
             "conditional",
-            AgentComposition::conditional(selector, vec![
-                Box::new(MockAgent::reply("default")),
-                Box::new(MockAgent::reply("docs")),
-            ]),
+            AgentComposition::conditional(
+                selector,
+                vec![
+                    Box::new(MockAgent::reply("default")),
+                    Box::new(MockAgent::reply("docs")),
+                ],
+            ),
         );
 
         let task = Task {

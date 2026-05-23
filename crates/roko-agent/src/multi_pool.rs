@@ -170,11 +170,14 @@ impl MultiAgentPool {
 
         let entry = self.warm.remove(&key)?;
         let id = AgentInstanceId::new(role, key.1);
-        self.active.insert(id.clone(), ActiveEntry {
-            agent: entry.agent,
-            status: InstanceStatus::Active,
-            last_result: None,
-        });
+        self.active.insert(
+            id.clone(),
+            ActiveEntry {
+                agent: entry.agent,
+                status: InstanceStatus::Active,
+                last_result: None,
+            },
+        );
         Some(id)
     }
 
@@ -187,11 +190,14 @@ impl MultiAgentPool {
         let key = (role, instance.to_string());
         let entry = self.warm.remove(&key)?;
         let id = AgentInstanceId::new(role, instance);
-        self.active.insert(id.clone(), ActiveEntry {
-            agent: entry.agent,
-            status: InstanceStatus::Active,
-            last_result: None,
-        });
+        self.active.insert(
+            id.clone(),
+            ActiveEntry {
+                agent: entry.agent,
+                status: InstanceStatus::Active,
+                last_result: None,
+            },
+        );
         Some(id)
     }
 
@@ -216,11 +222,14 @@ impl MultiAgentPool {
 
         let entry = self.warm.remove(&key)?;
         let id = AgentInstanceId::new(role, key.1);
-        self.active.insert(id.clone(), ActiveEntry {
-            agent: entry.agent,
-            status: InstanceStatus::Active,
-            last_result: None,
-        });
+        self.active.insert(
+            id.clone(),
+            ActiveEntry {
+                agent: entry.agent,
+                status: InstanceStatus::Active,
+                last_result: None,
+            },
+        );
         Some(id)
     }
 
@@ -356,11 +365,14 @@ impl MultiAgentPool {
         if current >= self.concurrency_limit(id.role) {
             return false;
         }
-        self.active.insert(id, ActiveEntry {
-            agent,
-            status: InstanceStatus::Active,
-            last_result: None,
-        });
+        self.active.insert(
+            id,
+            ActiveEntry {
+                agent,
+                status: InstanceStatus::Active,
+                last_result: None,
+            },
+        );
         true
     }
 
@@ -486,11 +498,14 @@ impl MultiAgentPool {
         let Some(entry) = self.active.remove(id) else {
             return false;
         };
-        self.warm.insert((id.role, id.instance.clone()), WarmEntry {
-            agent: entry.agent,
-            spawned_at: Instant::now(),
-            reuse_policy: WarmReusePolicy::disabled(),
-        });
+        self.warm.insert(
+            (id.role, id.instance.clone()),
+            WarmEntry {
+                agent: entry.agent,
+                spawned_at: Instant::now(),
+                reuse_policy: WarmReusePolicy::disabled(),
+            },
+        );
         true
     }
 

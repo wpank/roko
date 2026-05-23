@@ -90,11 +90,14 @@ impl ToolHandler for Handler {
         }
 
         match tokio::fs::read_to_string(&absolute).await {
-            Ok(content) => ToolResult::with_artifacts(content, vec![Artifact::new(
-                absolute.display().to_string(),
-                "text/plain",
-                roko_core::Body::text(String::new()),
-            )]),
+            Ok(content) => ToolResult::with_artifacts(
+                content,
+                vec![Artifact::new(
+                    absolute.display().to_string(),
+                    "text/plain",
+                    roko_core::Body::text(String::new()),
+                )],
+            ),
             Err(e) => ToolResult::Err(ToolError::Other(format!(
                 "read_file failed ({}): {e}",
                 absolute.display()

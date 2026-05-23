@@ -755,15 +755,17 @@ mod tests {
         fs::write(&path, "one\ntwo\n").expect("seed file");
 
         let mut cursor = JsonlCursor::new(&path);
-        assert_eq!(cursor.read_new_lines().expect("initial read"), vec![
-            "one", "two"
-        ]);
+        assert_eq!(
+            cursor.read_new_lines().expect("initial read"),
+            vec!["one", "two"]
+        );
         assert_eq!(cursor.last_line_number(), 2);
 
         fs::write(&path, "reset\n").expect("truncate file");
-        assert_eq!(cursor.read_new_lines().expect("after truncation"), vec![
-            "reset"
-        ]);
+        assert_eq!(
+            cursor.read_new_lines().expect("after truncation"),
+            vec!["reset"]
+        );
         assert_eq!(cursor.last_line_number(), 1);
 
         fs::remove_file(&path).expect("remove file");

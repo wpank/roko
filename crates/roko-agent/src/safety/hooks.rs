@@ -215,10 +215,10 @@ mod tests {
     #[test]
     fn tainted_string_applies_sink_specific_rules() {
         let owner_secret = TaintedString::new("api-key", [TaintLabel::OwnerSecret]);
-        let strategy = TaintedString::new("alpha", [
-            TaintLabel::StrategyConfidential,
-            TaintLabel::UserPII,
-        ]);
+        let strategy = TaintedString::new(
+            "alpha",
+            [TaintLabel::StrategyConfidential, TaintLabel::UserPII],
+        );
 
         assert!(!owner_secret.can_flow_to(DataSink::LlmContext));
         assert!(owner_secret.can_flow_to(DataSink::EventBus));

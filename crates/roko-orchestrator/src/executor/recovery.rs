@@ -300,13 +300,16 @@ impl RecoveryEngine {
                 .last()
                 .map(|g| format!("{}: {}", g.gate_name, g.summary));
 
-            plan_states.insert(id.clone(), PlanPhaseInfo {
-                plan_id: id.clone(),
-                phase: ps.current_phase.clone(),
-                iteration: ps.iteration,
-                last_gate_result: last_gate,
-                files_changed: ps.files_changed.clone(),
-            });
+            plan_states.insert(
+                id.clone(),
+                PlanPhaseInfo {
+                    plan_id: id.clone(),
+                    phase: ps.current_phase.clone(),
+                    iteration: ps.iteration,
+                    last_gate_result: last_gate,
+                    files_changed: ps.files_changed.clone(),
+                },
+            );
         }
 
         RecoveredState {
@@ -915,13 +918,16 @@ mod tests {
         let snap_state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("p1".into(), PlanPhaseInfo {
-                    plan_id: "p1".into(),
-                    phase: PlanPhase::Implementing,
-                    iteration: 1,
-                    last_gate_result: None,
-                    files_changed: vec!["old.rs".into()],
-                });
+                m.insert(
+                    "p1".into(),
+                    PlanPhaseInfo {
+                        plan_id: "p1".into(),
+                        phase: PlanPhase::Implementing,
+                        iteration: 1,
+                        last_gate_result: None,
+                        files_changed: vec!["old.rs".into()],
+                    },
+                );
                 m
             },
             queue_order: vec!["p1".into()],
@@ -932,13 +938,16 @@ mod tests {
         let log_state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("p1".into(), PlanPhaseInfo {
-                    plan_id: "p1".into(),
-                    phase: PlanPhase::Gating,
-                    iteration: 2,
-                    last_gate_result: Some("compile: passed".into()),
-                    files_changed: vec!["new.rs".into()],
-                });
+                m.insert(
+                    "p1".into(),
+                    PlanPhaseInfo {
+                        plan_id: "p1".into(),
+                        phase: PlanPhase::Gating,
+                        iteration: 2,
+                        last_gate_result: Some("compile: passed".into()),
+                        files_changed: vec!["new.rs".into()],
+                    },
+                );
                 m
             },
             queue_order: vec!["p1".into()],
@@ -962,13 +971,16 @@ mod tests {
         let snap_state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("snap-only".into(), PlanPhaseInfo {
-                    plan_id: "snap-only".into(),
-                    phase: PlanPhase::Implementing,
-                    iteration: 1,
-                    last_gate_result: None,
-                    files_changed: vec![],
-                });
+                m.insert(
+                    "snap-only".into(),
+                    PlanPhaseInfo {
+                        plan_id: "snap-only".into(),
+                        phase: PlanPhase::Implementing,
+                        iteration: 1,
+                        last_gate_result: None,
+                        files_changed: vec![],
+                    },
+                );
                 m
             },
             queue_order: vec!["snap-only".into()],
@@ -979,13 +991,16 @@ mod tests {
         let log_state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("log-only".into(), PlanPhaseInfo {
-                    plan_id: "log-only".into(),
-                    phase: PlanPhase::Complete,
-                    iteration: 3,
-                    last_gate_result: Some("test: passed".into()),
-                    files_changed: vec!["main.rs".into()],
-                });
+                m.insert(
+                    "log-only".into(),
+                    PlanPhaseInfo {
+                        plan_id: "log-only".into(),
+                        phase: PlanPhase::Complete,
+                        iteration: 3,
+                        last_gate_result: Some("test: passed".into()),
+                        files_changed: vec!["main.rs".into()],
+                    },
+                );
                 m
             },
             queue_order: vec!["log-only".into()],
@@ -1027,13 +1042,16 @@ mod tests {
         let state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("orphan".into(), PlanPhaseInfo {
-                    plan_id: "orphan".into(),
-                    phase: PlanPhase::Implementing,
-                    iteration: 1,
-                    last_gate_result: None,
-                    files_changed: vec![],
-                });
+                m.insert(
+                    "orphan".into(),
+                    PlanPhaseInfo {
+                        plan_id: "orphan".into(),
+                        phase: PlanPhase::Implementing,
+                        iteration: 1,
+                        last_gate_result: None,
+                        files_changed: vec![],
+                    },
+                );
                 m
             },
             queue_order: vec![],
@@ -1054,13 +1072,16 @@ mod tests {
         let state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("good".into(), PlanPhaseInfo {
-                    plan_id: "good".into(),
-                    phase: PlanPhase::Implementing,
-                    iteration: 1,
-                    last_gate_result: None,
-                    files_changed: vec!["lib.rs".into()],
-                });
+                m.insert(
+                    "good".into(),
+                    PlanPhaseInfo {
+                        plan_id: "good".into(),
+                        phase: PlanPhase::Implementing,
+                        iteration: 1,
+                        last_gate_result: None,
+                        files_changed: vec!["lib.rs".into()],
+                    },
+                );
                 m
             },
             queue_order: vec!["good".into()],
@@ -1233,13 +1254,16 @@ mod tests {
         let state = RecoveredState {
             plan_states: {
                 let mut m = HashMap::new();
-                m.insert("dup".into(), PlanPhaseInfo {
-                    plan_id: "dup".into(),
-                    phase: PlanPhase::Queued,
-                    iteration: 1,
-                    last_gate_result: None,
-                    files_changed: vec![],
-                });
+                m.insert(
+                    "dup".into(),
+                    PlanPhaseInfo {
+                        plan_id: "dup".into(),
+                        phase: PlanPhase::Queued,
+                        iteration: 1,
+                        last_gate_result: None,
+                        files_changed: vec![],
+                    },
+                );
                 m
             },
             queue_order: vec!["dup".into(), "dup".into()],

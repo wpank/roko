@@ -179,13 +179,16 @@ pub async fn pheromone_summary(State(state): State<ApiState>) -> impl IntoRespon
         .into_iter()
         .map(|(k, (count, total, min, max))| {
             let avg = if count > 0 { total / count as f64 } else { 0.0 };
-            (k.to_owned(), KindSummary {
-                count,
-                total_intensity: total,
-                avg_intensity: avg,
-                min_intensity: if count > 0 { min } else { 0.0 },
-                max_intensity: if count > 0 { max } else { 0.0 },
-            })
+            (
+                k.to_owned(),
+                KindSummary {
+                    count,
+                    total_intensity: total,
+                    avg_intensity: avg,
+                    min_intensity: if count > 0 { min } else { 0.0 },
+                    max_intensity: if count > 0 { max } else { 0.0 },
+                },
+            )
         })
         .collect();
 

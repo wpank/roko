@@ -58,6 +58,15 @@ pub struct LearningConfig {
     /// Defaults to 0.7.
     #[serde(default = "default_lookahead_threshold")]
     pub lookahead_threshold: f64,
+    /// Dampening factor for force_backend override learning (UX34).
+    ///
+    /// When a user manually overrides the model via `force_backend`, the
+    /// outcome reward is multiplied by this factor before being fed into
+    /// the cascade router's multi-objective bandit. This prevents a single
+    /// override from dominating the learned policy. Range: 0.0--1.0.
+    /// Defaults to 0.5 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_learning_dampening: Option<f64>,
 }
 
 fn default_lookahead_threshold() -> f64 {
@@ -101,6 +110,7 @@ impl Default for LearningConfig {
             dream_on_completion: default_true(),
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
+            override_learning_dampening: None,
         }
     }
 }

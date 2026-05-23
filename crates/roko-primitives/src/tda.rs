@@ -477,9 +477,12 @@ mod tests {
     #[test]
     fn vietoris_rips_with_h1() {
         // Square: should have a 1-cycle.
-        let points = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 1.0], vec![
-            0.0, 1.0,
-        ]];
+        let points = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+            vec![0.0, 1.0],
+        ];
 
         let diagram = vietoris_rips(&points, 1);
         // H0 features.

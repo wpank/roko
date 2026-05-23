@@ -496,18 +496,21 @@ impl DashboardData {
             backfill_agent_output_tail(current_plan_execution, &task_output_cursors);
 
         let (git_diff, git_diff_is_staged) = load_dashboard_git_diff(&root);
-        let generation = next_dashboard_data_generation(&root, DashboardDataStamps {
-            executor_state: state_stamp,
-            efficiency: efficiency_stamp,
-            experiments: experiments_stamp,
-            gate_thresholds: gate_thresholds_stamp,
-            signals: signals_stamp,
-            episodes: episodes_stamp,
-            cfactor: cfactor_stamp,
-            cascade_router: cascade_router_stamp,
-            task_outputs: task_output_cursors.revision(),
-            event_log: event_log_stamp,
-        });
+        let generation = next_dashboard_data_generation(
+            &root,
+            DashboardDataStamps {
+                executor_state: state_stamp,
+                efficiency: efficiency_stamp,
+                experiments: experiments_stamp,
+                gate_thresholds: gate_thresholds_stamp,
+                signals: signals_stamp,
+                episodes: episodes_stamp,
+                cfactor: cfactor_stamp,
+                cascade_router: cascade_router_stamp,
+                task_outputs: task_output_cursors.revision(),
+                event_log: event_log_stamp,
+            },
+        );
 
         let (atelier_prds, atelier_tasks_by_slug) = scan_atelier_prds(&roko_dir);
         let knowledge_entries = load_knowledge_browse_entries(&root);
@@ -4029,11 +4032,14 @@ impl DashboardSnapshot {
                 subsystem: "CascadeRouter",
                 updates: observations.to_string(),
                 last: format_file_age(self.cascade_snapshot_stamp),
-                health: format!("● {}", match stage {
-                    CascadeStage::Static => "warming",
-                    CascadeStage::Confidence => "calibrating",
-                    CascadeStage::Ucb => "learning",
-                }),
+                health: format!(
+                    "● {}",
+                    match stage {
+                        CascadeStage::Static => "warming",
+                        CascadeStage::Confidence => "calibrating",
+                        CascadeStage::Ucb => "learning",
+                    }
+                ),
             },
             LearningSubsystemRow {
                 subsystem: "GateThresholds",
@@ -5482,32 +5488,38 @@ mod tests {
         let episodes_path = memory_dir.join(EPISODES_FILE);
         let metrics_path = memory_dir.join(TASK_METRICS_FILE);
 
-        write_jsonl(&episodes_path, &[
-            serde_json::to_string(&sample_episode("agent-a", "task-a", true, 1.50, 1_000))
-                .expect("episode json"),
-            serde_json::to_string(&sample_episode("agent-b", "task-b", false, 0.50, 3_000))
-                .expect("episode json"),
-        ]);
-        write_jsonl(&metrics_path, &[
-            sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10)
+        write_jsonl(
+            &episodes_path,
+            &[
+                serde_json::to_string(&sample_episode("agent-a", "task-a", true, 1.50, 1_000))
+                    .expect("episode json"),
+                serde_json::to_string(&sample_episode("agent-b", "task-b", false, 0.50, 3_000))
+                    .expect("episode json"),
+            ],
+        );
+        write_jsonl(
+            &metrics_path,
+            &[
+                sample_metric("plan-a", "t1", 1, true, "claude-haiku-4-5", 100, 0.20, 0.10)
+                    .to_jsonl()
+                    .expect("metric json"),
+                sample_metric(
+                    "plan-a",
+                    "t1",
+                    2,
+                    false,
+                    "claude-sonnet-4-5",
+                    300,
+                    0.50,
+                    0.20,
+                )
                 .to_jsonl()
                 .expect("metric json"),
-            sample_metric(
-                "plan-a",
-                "t1",
-                2,
-                false,
-                "claude-sonnet-4-5",
-                300,
-                0.50,
-                0.20,
-            )
-            .to_jsonl()
-            .expect("metric json"),
-            sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30)
-                .to_jsonl()
-                .expect("metric json"),
-        ]);
+                sample_metric("plan-b", "t2", 1, true, "claude-haiku-4-5", 200, 0.25, 0.30)
+                    .to_jsonl()
+                    .expect("metric json"),
+            ],
+        );
 
         let dashboard = DashboardScaffold::new_in(tempdir.path());
         let health = dashboard.render_health_page_text();
@@ -5799,41 +5811,44 @@ mod tests {
                 .expect("json"),
         ];
         write_jsonl(&episodes_path, &episodes);
-        write_jsonl(&efficiency_path, &[
-            serde_json::to_string(&sample_efficiency_event(
-                "agent-a",
-                "task-1",
-                "Implementer",
-                "claude-haiku-4-5",
-                120,
-                40,
-                0.10,
-                "2026-04-08T10:00:00Z",
-            ))
-            .expect("event json"),
-            serde_json::to_string(&sample_efficiency_event(
-                "agent-a",
-                "task-2",
-                "Implementer",
-                "claude-sonnet-4-5",
-                300,
-                90,
-                0.30,
-                "2026-04-08T10:05:00Z",
-            ))
-            .expect("event json"),
-            serde_json::to_string(&sample_efficiency_event(
-                "agent-b",
-                "task-3",
-                "Reviewer",
-                "claude-opus-4-6",
-                500,
-                100,
-                1.25,
-                "2026-04-08T10:10:00Z",
-            ))
-            .expect("event json"),
-        ]);
+        write_jsonl(
+            &efficiency_path,
+            &[
+                serde_json::to_string(&sample_efficiency_event(
+                    "agent-a",
+                    "task-1",
+                    "Implementer",
+                    "claude-haiku-4-5",
+                    120,
+                    40,
+                    0.10,
+                    "2026-04-08T10:00:00Z",
+                ))
+                .expect("event json"),
+                serde_json::to_string(&sample_efficiency_event(
+                    "agent-a",
+                    "task-2",
+                    "Implementer",
+                    "claude-sonnet-4-5",
+                    300,
+                    90,
+                    0.30,
+                    "2026-04-08T10:05:00Z",
+                ))
+                .expect("event json"),
+                serde_json::to_string(&sample_efficiency_event(
+                    "agent-b",
+                    "task-3",
+                    "Reviewer",
+                    "claude-opus-4-6",
+                    500,
+                    100,
+                    1.25,
+                    "2026-04-08T10:10:00Z",
+                ))
+                .expect("event json"),
+            ],
+        );
 
         let dashboard = DashboardScaffold::new_in(tmpdir.path());
         let rendered = dashboard
@@ -5961,10 +5976,10 @@ files = ["src/dashboard.rs"]
                     .join("\n")
             ),
         );
-        write_jsonl(&ep_dir.join(EPISODES_FILE), &[serde_json::to_string(
-            &episode,
-        )
-        .expect("episode json")]);
+        write_jsonl(
+            &ep_dir.join(EPISODES_FILE),
+            &[serde_json::to_string(&episode).expect("episode json")],
+        );
 
         let data = DashboardData::load_best_effort(root);
         let execution = data
@@ -6187,23 +6202,32 @@ tier = "focused"
         fs::create_dir_all(&state_dir).expect("state dir");
         fs::create_dir_all(&memory_dir).expect("memory dir");
 
-        write_json(&state_dir.join("events.json"), &vec![serde_json::json!({
-            "timestamp_ms": 1_u64,
-            "event_type": "started",
-            "plan_id": "plan-a",
-            "task_id": "task-a",
-            "message": "boot"
-        })]);
-        write_jsonl(&roko_dir.join("engrams.jsonl"), &[serde_json::json!({
-            "id": "sig-1",
-            "kind": "conductor:alert:warning",
-            "created_at_ms": 1_i64,
-        })
-        .to_string()]);
-        write_jsonl(&memory_dir.join(EPISODES_FILE), &[serde_json::to_string(
-            &sample_episode("agent-a", "task-a", true, 0.5, 100),
-        )
-        .expect("episode json")]);
+        write_json(
+            &state_dir.join("events.json"),
+            &vec![serde_json::json!({
+                "timestamp_ms": 1_u64,
+                "event_type": "started",
+                "plan_id": "plan-a",
+                "task_id": "task-a",
+                "message": "boot"
+            })],
+        );
+        write_jsonl(
+            &roko_dir.join("engrams.jsonl"),
+            &[serde_json::json!({
+                "id": "sig-1",
+                "kind": "conductor:alert:warning",
+                "created_at_ms": 1_i64,
+            })
+            .to_string()],
+        );
+        write_jsonl(
+            &memory_dir.join(EPISODES_FILE),
+            &[
+                serde_json::to_string(&sample_episode("agent-a", "task-a", true, 0.5, 100))
+                    .expect("episode json"),
+            ],
+        );
 
         let mut data = DashboardData::load_best_effort(root);
         assert_eq!(data.recent_signals.len(), 1);
@@ -6235,22 +6259,25 @@ tier = "focused"
 
         append_raw(&roko_dir.join("engrams.jsonl"), "\n");
         append_raw(&memory_dir.join(EPISODES_FILE), "\n");
-        write_json(&state_dir.join("events.json"), &vec![
-            serde_json::json!({
-                "timestamp_ms": 1_u64,
-                "event_type": "started",
-                "plan_id": "plan-a",
-                "task_id": "task-a",
-                "message": "boot"
-            }),
-            serde_json::json!({
-                "timestamp_ms": 2_u64,
-                "event_type": "finished",
-                "plan_id": "plan-a",
-                "task_id": "task-a",
-                "message": "done"
-            }),
-        ]);
+        write_json(
+            &state_dir.join("events.json"),
+            &vec![
+                serde_json::json!({
+                    "timestamp_ms": 1_u64,
+                    "event_type": "started",
+                    "plan_id": "plan-a",
+                    "task_id": "task-a",
+                    "message": "boot"
+                }),
+                serde_json::json!({
+                    "timestamp_ms": 2_u64,
+                    "event_type": "finished",
+                    "plan_id": "plan-a",
+                    "task_id": "task-a",
+                    "message": "done"
+                }),
+            ],
+        );
 
         data.tick().expect("append tick should succeed");
         assert_eq!(data.recent_signals.len(), 2);
@@ -6267,41 +6294,53 @@ tier = "focused"
         let memory_dir = root.join(MEMORY_DIR);
         fs::create_dir_all(&memory_dir).expect("memory dir");
 
-        write_jsonl(&roko_dir.join("engrams.jsonl"), &[
-            serde_json::json!({
-                "id": "sig-1",
-                "kind": "gate:compile",
-                "created_at_ms": 1_i64,
-            })
-            .to_string(),
-            serde_json::json!({
-                "id": "sig-2",
-                "kind": "conductor:alert:warning",
-                "created_at_ms": 2_i64,
-            })
-            .to_string(),
-        ]);
-        write_jsonl(&memory_dir.join(EPISODES_FILE), &[
-            serde_json::to_string(&sample_episode("agent-a", "task-a", true, 0.5, 100))
-                .expect("episode json"),
-            serde_json::to_string(&sample_episode("agent-b", "task-b", false, 0.8, 240))
-                .expect("episode json"),
-        ]);
+        write_jsonl(
+            &roko_dir.join("engrams.jsonl"),
+            &[
+                serde_json::json!({
+                    "id": "sig-1",
+                    "kind": "gate:compile",
+                    "created_at_ms": 1_i64,
+                })
+                .to_string(),
+                serde_json::json!({
+                    "id": "sig-2",
+                    "kind": "conductor:alert:warning",
+                    "created_at_ms": 2_i64,
+                })
+                .to_string(),
+            ],
+        );
+        write_jsonl(
+            &memory_dir.join(EPISODES_FILE),
+            &[
+                serde_json::to_string(&sample_episode("agent-a", "task-a", true, 0.5, 100))
+                    .expect("episode json"),
+                serde_json::to_string(&sample_episode("agent-b", "task-b", false, 0.8, 240))
+                    .expect("episode json"),
+            ],
+        );
 
         let mut data = DashboardData::load_best_effort(root);
         assert_eq!(data.recent_signals.len(), 2);
         assert_eq!(data.episodes().len(), 2);
 
-        write_jsonl(&roko_dir.join("engrams.jsonl"), &[serde_json::json!({
-            "id": "sig-reset",
-            "kind": "conductor:alert:error",
-            "created_at_ms": 3_i64,
-        })
-        .to_string()]);
-        write_jsonl(&memory_dir.join(EPISODES_FILE), &[serde_json::to_string(
-            &sample_episode("agent-c", "task-c", true, 0.2, 90),
-        )
-        .expect("episode json")]);
+        write_jsonl(
+            &roko_dir.join("engrams.jsonl"),
+            &[serde_json::json!({
+                "id": "sig-reset",
+                "kind": "conductor:alert:error",
+                "created_at_ms": 3_i64,
+            })
+            .to_string()],
+        );
+        write_jsonl(
+            &memory_dir.join(EPISODES_FILE),
+            &[
+                serde_json::to_string(&sample_episode("agent-c", "task-c", true, 0.2, 90))
+                    .expect("episode json"),
+            ],
+        );
 
         data.tick().expect("truncation tick should succeed");
         assert_eq!(data.recent_signals.len(), 1);

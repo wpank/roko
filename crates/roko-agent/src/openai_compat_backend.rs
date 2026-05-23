@@ -1138,10 +1138,13 @@ mod tests {
         let first = backend.headers();
         let second = backend.headers();
 
-        assert_eq!(first, vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Authorization".to_string(), "Bearer test-key".to_string()),
-        ]);
+        assert_eq!(
+            first,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), "Bearer test-key".to_string()),
+            ]
+        );
         assert_eq!(first, second);
 
         let updated = backend
@@ -1151,12 +1154,15 @@ mod tests {
             ]))
             .headers();
 
-        assert_eq!(updated, vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Authorization".to_string(), "Bearer test-key".to_string()),
-            ("X-A".to_string(), "1".to_string()),
-            ("X-B".to_string(), "2".to_string()),
-        ]);
+        assert_eq!(
+            updated,
+            vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), "Bearer test-key".to_string()),
+                ("X-A".to_string(), "1".to_string()),
+                ("X-B".to_string(), "2".to_string()),
+            ]
+        );
     }
 
     struct HeaderPointerPoster {

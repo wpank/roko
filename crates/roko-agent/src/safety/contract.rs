@@ -146,19 +146,45 @@ impl AgentContract {
 
     /// Build a deny-everything restricted contract for `role`.
     ///
-    /// The contract sets `allowed_tools = Some(vec![])` and an empty
-    /// `ForbiddenTools` rule (the allowlist intersection is the binding
-    /// constraint). Used as the [`ContractLoadMode::RestrictedFallback`]
-    /// substitute when no bundled YAML exists for a role.
+    /// The contract sets `allowed_tools = Some(vec![])` and meaningful
+    /// governance guardrails so an unknown role is genuinely sandboxed, not
+    /// just denied tool-by-tool. Used as the
+    /// [`ContractLoadMode::RestrictedFallback`] substitute when no bundled
+    /// YAML exists for a role.
     #[must_use]
     pub fn restricted(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
-            invariants: vec![Invariant::NoNetworkAccess],
-            governance: Vec::new(),
-            recovery: Vec::new(),
+            invariants: vec![
+                Invariant::NoNetworkAccess,
+                Invariant::MaxTokensPerTurn(4_000),
+            ],
+            governance: vec![
+                GovernanceRule::MaxToolCallsPerTurn(10),
+                GovernanceRule::MaxConsecutiveFailures(3),
+                GovernanceRule::MaxCostPerTurn(0.50),
+            ],
+            recovery: vec![RecoveryAction {
+                trigger: "contract_violation".into(),
+                action: RecoveryKind::Abort,
+            }],
             allowed_tools: Some(Vec::new()),
         }
+    }
+
+    /// Build a hardened default contract for `role`.
+    ///
+    /// Like [`restricted`](Self::restricted), this applies meaningful
+    /// invariant and governance guardrails, but sets `allowed_tools = None`
+    /// so tool access is governed by the TOML role-tools whitelist (or is
+    /// unrestricted if no whitelist is configured). This is the appropriate
+    /// fallback for [`SafetyLayer::with_defaults`] where we want
+    /// defense-in-depth guardrails without outright denying every tool.
+    #[must_use]
+    pub fn hardened_default(role: impl Into<String>) -> Self {
+        let mut contract = Self::restricted(role);
+        contract.allowed_tools = None;
+        contract
     }
 
     /// Load the bundled contract asset for `role`.
@@ -231,7 +257,9 @@ impl AgentContract {
                     tracing::warn!(
                         role = %role_ref,
                         %err,
-                        "no contract for role; using restricted (deny-all) fallback"
+                        "contract YAML missing for role; falling back to restricted \
+                         contract (deny-all tools, no network, max 4K tokens/turn, \
+                         max 10 tool calls, max 3 consecutive failures, max $0.50/turn)"
                     );
                     Ok(Self::restricted(role_ref))
                 }

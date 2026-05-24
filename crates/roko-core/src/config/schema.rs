@@ -1571,6 +1571,7 @@ fn run_resolve_api_key_child(test_name: &str, api_key_env: &str, expected: Optio
 /// enabled = true
 /// max_age_days = 7
 /// batch_size = 500
+/// interval_secs = 21600
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColdStorageConfig {
@@ -1583,6 +1584,9 @@ pub struct ColdStorageConfig {
     /// Maximum number of engrams to archive per batch.
     #[serde(default = "ColdStorageConfig::default_batch_size")]
     pub batch_size: usize,
+    /// Interval in seconds between scheduled cold archival runs (default: 6 hours).
+    #[serde(default = "ColdStorageConfig::default_interval_secs")]
+    pub interval_secs: u64,
 }
 
 impl ColdStorageConfig {
@@ -1598,6 +1602,11 @@ impl ColdStorageConfig {
         500
     }
 
+    /// Default interval: 6 hours (21600 seconds).
+    const fn default_interval_secs() -> u64 {
+        6 * 3600
+    }
+
     /// Convert `max_age_days` to milliseconds for query cutoff calculation.
     #[must_use]
     pub fn max_age_ms(&self) -> i64 {
@@ -1611,6 +1620,7 @@ impl Default for ColdStorageConfig {
             enabled: Self::default_enabled(),
             max_age_days: Self::default_max_age_days(),
             batch_size: Self::default_batch_size(),
+            interval_secs: Self::default_interval_secs(),
         }
     }
 }

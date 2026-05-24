@@ -1643,4 +1643,86 @@ mod tests {
         assert!(msg.contains("some unknown error happened"), "got: {msg}");
         assert!(msg.contains("gemini"), "got: {msg}");
     }
+
+    // ─── Cross-PR harness adapter pipeline integration tests ─────────
+
+    #[test]
+    fn hermes_adapter_pipeline_end_to_end() {
+        // 1. adapter_for_kind returns a HermesAdapter
+        let adapter = adapter_for_kind(ProviderKind::Hermes);
+        assert_eq!(adapter.kind(), ProviderKind::Hermes);
+
+        // 2. create_agent with minimal config produces a Box<dyn Agent>
+        let provider = ProviderConfig {
+            kind: ProviderKind::Hermes,
+            base_url: None,
+            api_key_env: None,
+            command: Some("hermes".to_string()),
+            args: None,
+            timeout_ms: Some(5_000),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        let model = ModelProfile {
+            provider: "hermes".to_string(),
+            slug: "hermes-3-llama-70b".to_string(),
+            ..Default::default()
+        };
+        let options = AgentOptions {
+            name: "hermes-pipeline-test".to_string(),
+            ..Default::default()
+        };
+        let agent = adapter
+            .create_agent(&provider, &model, &options)
+            .expect("hermes adapter pipeline: create_agent must not panic");
+
+        // 3. backend_id contains "hermes"
+        assert!(
+            agent.backend_id().contains("hermes"),
+            "expected backend_id to contain 'hermes', got '{}'",
+            agent.backend_id()
+        );
+    }
+
+    #[test]
+    fn openclaw_adapter_pipeline_end_to_end() {
+        // 1. adapter_for_kind returns an OpenClawAdapter
+        let adapter = adapter_for_kind(ProviderKind::OpenClaw);
+        assert_eq!(adapter.kind(), ProviderKind::OpenClaw);
+
+        // 2. create_agent with minimal config produces a Box<dyn Agent>
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenClaw,
+            base_url: None,
+            api_key_env: None,
+            command: Some("openclaw".to_string()),
+            args: None,
+            timeout_ms: Some(5_000),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+        };
+        let model = ModelProfile {
+            provider: "openclaw".to_string(),
+            slug: "openai/gpt-5.5".to_string(),
+            ..Default::default()
+        };
+        let options = AgentOptions {
+            name: "openclaw-pipeline-test".to_string(),
+            ..Default::default()
+        };
+        let agent = adapter
+            .create_agent(&provider, &model, &options)
+            .expect("openclaw adapter pipeline: create_agent must not panic");
+
+        // 3. backend_id contains "openclaw"
+        assert!(
+            agent.backend_id().contains("openclaw"),
+            "expected backend_id to contain 'openclaw', got '{}'",
+            agent.backend_id()
+        );
+    }
 }

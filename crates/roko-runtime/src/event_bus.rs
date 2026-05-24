@@ -204,12 +204,14 @@ struct Shared<E> {
 }
 
 impl<E: Clone + Send + Sync + 'static> Shared<E> {
-    fn emit_inner(&self, event: E) {
+    fn emit_inner(&self, event: E) -> u64 {
         let envelope = Envelope {
             seq: self.seq.fetch_add(1, Ordering::Relaxed),
             ts_millis: current_ts_millis(),
             payload: event,
         };
+
+        let seq = envelope.seq;
 
         // Append to replay ring (short lock).
         {
@@ -220,8 +222,9 @@ impl<E: Clone + Send + Sync + 'static> Shared<E> {
             ring.push_back(envelope.clone());
         }
 
-        trace!(seq = envelope.seq, "event emitted");
+        trace!(seq = seq, "event emitted");
         let _ = self.tx.send(envelope);
+        seq
     }
 }
 
@@ -261,8 +264,9 @@ impl<E: Clone + Send + Sync + 'static> EventBus<E> {
     ///
     /// This never blocks. If the ring is full, the oldest event is evicted.
     /// If all subscribers have dropped, the event is still recorded in the ring.
-    pub fn emit(&self, event: E) {
-        self.shared.emit_inner(event);
+    /// Returns the sequence number assigned to the emitted event.
+    pub fn emit(&self, event: E) -> u64 {
+        self.shared.emit_inner(event)
     }
 
     /// Subscribes to live events. Returns a broadcast receiver.
@@ -321,8 +325,9 @@ pub struct BusSender<E: Clone + Send + Sync + 'static> {
 
 impl<E: Clone + Send + Sync + 'static> BusSender<E> {
     /// Emit an event. Same semantics as [`EventBus::emit`].
-    pub fn emit(&self, event: E) {
-        self.shared.emit_inner(event);
+    /// Returns the sequence number assigned to the emitted event.
+    pub fn emit(&self, event: E) -> u64 {
+        self.shared.emit_inner(event)
     }
 }
 
@@ -372,9 +377,7 @@ where
     RuntimeEvent: Clone + Send + Sync + 'static,
 {
     let bus = runtime_event_bus::<RuntimeEvent>();
-    let seq = bus.total_emitted();
-    bus.emit(event);
-    seq
+    bus.emit(event)
 }
 
 #[allow(clippy::cast_possible_truncation)]

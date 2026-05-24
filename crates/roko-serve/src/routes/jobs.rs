@@ -815,12 +815,16 @@ fn publish_job_event(
     let payload = serde_json::to_value(job)
         .map_err(|e| ApiError::internal(format!("serialize job event: {e}")))?;
     match kind {
-        ServerEventKind::Created => state
-            .event_bus
-            .publish(ServerEvent::JobCreated { job: payload }),
-        ServerEventKind::Updated => state
-            .event_bus
-            .publish(ServerEvent::JobUpdated { job: payload }),
+        ServerEventKind::Created => {
+            state
+                .event_bus
+                .publish(ServerEvent::JobCreated { job: payload });
+        }
+        ServerEventKind::Updated => {
+            state
+                .event_bus
+                .publish(ServerEvent::JobUpdated { job: payload });
+        }
     }
     // Push refreshed job list to StateHub so TUI sees the change immediately.
     state.refresh_jobs_in_state_hub();

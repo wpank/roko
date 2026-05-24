@@ -35,8 +35,9 @@ impl<E: Clone + Send + Sync + 'static> EventBus<E> {
     }
 
     /// Publish an event to all live subscribers and record it for replay.
-    pub fn publish(&self, event: E) {
-        self.inner.emit(event);
+    /// Returns the sequence number assigned to the event.
+    pub fn publish(&self, event: E) -> u64 {
+        self.inner.emit(event)
     }
 
     /// Subscribe to live events.

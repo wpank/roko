@@ -659,7 +659,6 @@ fn truncate_chars(text: &str, max: usize) -> String {
 
 // NOTE: The `unique_tmp_path` helper that lived here has been replaced by
 // `roko_fs::atomic_write_json`.
-// TODO: migrate remaining atomic write sites to roko_fs::atomic_write_json
 
 #[cfg(test)]
 mod tests {

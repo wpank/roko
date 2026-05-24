@@ -35,6 +35,8 @@ rkyv = { version = "0.8", optional = true }
 
 [features]
 default = []
+# Dormant: guarded in language.rs (SymbolKind, Visibility) but never enabled
+# by any workspace member. Kept for roko-index/rkyv which forwards here.
 rkyv = ["dep:rkyv"]
 
 [dev-dependencies]

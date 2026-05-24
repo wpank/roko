@@ -412,7 +412,6 @@ impl ExperimentStore {
             .unwrap_or_default()
     }
 
-    // TODO: migrate remaining atomic write sites to roko_fs::atomic_write_json
     /// Save to a JSON file (atomic write).
     ///
     /// # Errors
@@ -420,15 +419,7 @@ impl ExperimentStore {
     /// Returns an error if the store cannot be serialized or if the output
     /// file cannot be created, written, or renamed.
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        roko_fs::atomic_write_json(path, self)
     }
 
     /// Register a new experiment. No-op if `experiment_id` already exists.

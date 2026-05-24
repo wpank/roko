@@ -1101,4 +1101,673 @@ mod tests {
             assert_eq!(beta.state, CircuitState::Open);
         }
     }
+
+    // ── Health snapshot recording ────────────────────────────────────────
+
+    /// `record_success` increments total_requests and total_successes.
+    #[test]
+    fn snapshot_record_success_updates_counters() {
+        let mut h = new_provider_health("test");
+        h.record_success();
+        assert_eq!(h.total_requests, 1);
+        assert_eq!(h.total_failures, 0);
+        assert_eq!(h.consecutive_failures, 0);
+        assert_eq!(h.state, CircuitState::Closed);
+
+        h.record_success();
+        assert_eq!(h.total_requests, 2);
+    }
+
+    /// `record_failure` increments total_requests, total_failures, and
+    /// consecutive_failures, and appends to the failure window.
+    #[test]
+    fn snapshot_record_failure_updates_counters() {
+        let mut h = new_provider_health("test");
+        h.record_failure(ErrorClass::Timeout, 1000);
+        assert_eq!(h.total_requests, 1);
+        assert_eq!(h.total_failures, 1);
+        assert_eq!(h.consecutive_failures, 1);
+        assert_eq!(h.last_failure_at, Some(1000));
+        assert_eq!(h.failure_window.len(), 1);
+        assert_eq!(h.failure_window[0].error_class, ErrorClass::Timeout);
+        assert_eq!(h.failure_window[0].timestamp_ms, 1000);
+    }
+
+    /// The failure window is capped at 20 entries.
+    #[test]
+    fn snapshot_failure_window_caps_at_20() {
+        let mut h = new_provider_health("test");
+        for i in 0..25 {
+            h.record_failure(ErrorClass::ServerError, i * 100);
+        }
+        assert_eq!(h.failure_window.len(), 20);
+        // The oldest entries should have been evicted: first remaining
+        // should be from i=5 (timestamp 500).
+        assert_eq!(h.failure_window.front().unwrap().timestamp_ms, 500);
+        assert_eq!(h.failure_window.back().unwrap().timestamp_ms, 2400);
+    }
+
+    /// `record_success` clears consecutive_failures and cooldown.
+    #[test]
+    fn snapshot_success_clears_failure_state() {
+        let mut h = new_provider_health("test");
+        h.record_failure(ErrorClass::Timeout, 100);
+        h.record_failure(ErrorClass::Timeout, 200);
+        assert_eq!(h.consecutive_failures, 2);
+        h.record_success();
+        assert_eq!(h.consecutive_failures, 0);
+        assert_eq!(h.cooldown_until, None);
+        assert_eq!(h.total_requests, 3);
+        assert_eq!(h.total_failures, 2);
+    }
+
+    // ── Degradation detection thresholds ────────────────────────────────
+
+    /// Exactly 2 failures do not trip the circuit (threshold is 3).
+    #[test]
+    fn two_failures_below_threshold() {
+        let mut h = new_provider_health("test");
+        h.record_failure(ErrorClass::RateLimit, 10);
+        h.record_failure(ErrorClass::RateLimit, 20);
+        assert_eq!(h.state, CircuitState::Closed);
+        assert!(h.is_available(30));
+    }
+
+    /// Exactly 3 failures trip the circuit to Open.
+    #[test]
+    fn three_failures_trip_circuit() {
+        let mut h = new_provider_health("test");
+        h.record_failure(ErrorClass::RateLimit, 10);
+        h.record_failure(ErrorClass::RateLimit, 20);
+        h.record_failure(ErrorClass::RateLimit, 30);
+        assert_eq!(h.state, CircuitState::Open);
+        assert!(h.cooldown_until.is_some());
+    }
+
+    /// More than 3 consecutive failures keep the circuit Open and update
+    /// the cooldown based on the most recent error class.
+    #[test]
+    fn additional_failures_extend_cooldown() {
+        let mut h = new_provider_health("test");
+        // First 3 with RateLimit (5s cooldown)
+        h.record_failure(ErrorClass::RateLimit, 100);
+        h.record_failure(ErrorClass::RateLimit, 200);
+        h.record_failure(ErrorClass::RateLimit, 300);
+        assert_eq!(h.cooldown_until, Some(5_300));
+
+        // 4th failure with ServerError (30s cooldown) should extend
+        h.record_failure(ErrorClass::ServerError, 400);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(h.cooldown_until, Some(30_400));
+        assert_eq!(h.consecutive_failures, 4);
+    }
+
+    /// Each error class produces a distinct cooldown duration.
+    #[test]
+    fn error_class_cooldown_values() {
+        let h = new_provider_health("test");
+        assert_eq!(h.cooldown_ms(ErrorClass::RateLimit), 5_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::Timeout), 10_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::ServerError), 30_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::AuthFailure), 300_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::ContentPolicy), 5_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::ContextOverflow), 5_000);
+        assert_eq!(h.cooldown_ms(ErrorClass::Unknown), 5_000);
+    }
+
+    // ── Health status transitions ────────────────────────────────────────
+
+    /// Full lifecycle: Closed -> Open -> HalfOpen -> Closed via success.
+    #[test]
+    fn full_transition_closed_open_halfopen_closed() {
+        let mut h = new_provider_health("test");
+        assert_eq!(h.state, CircuitState::Closed);
+
+        // Trip to Open
+        h.record_failure(ErrorClass::RateLimit, 100);
+        h.record_failure(ErrorClass::RateLimit, 200);
+        h.record_failure(ErrorClass::RateLimit, 300);
+        assert_eq!(h.state, CircuitState::Open);
+        // cooldown_until = 300 + 5000 = 5300
+
+        // Before cooldown expires -> unavailable
+        assert!(!h.is_available(5299));
+        assert_eq!(h.state, CircuitState::Open);
+
+        // After cooldown expires -> HalfOpen
+        assert!(h.is_available(5300));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+
+        // Success from HalfOpen -> Closed
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+        assert_eq!(h.consecutive_failures, 0);
+    }
+
+    /// Full lifecycle: Closed -> Open -> HalfOpen -> Open via failure.
+    #[test]
+    fn transition_halfopen_failure_retrips() {
+        let mut h = new_provider_health("test");
+
+        // Trip to Open
+        h.record_failure(ErrorClass::Timeout, 100);
+        h.record_failure(ErrorClass::Timeout, 200);
+        h.record_failure(ErrorClass::Timeout, 300);
+        assert_eq!(h.state, CircuitState::Open);
+        // cooldown_until = 300 + 10000 = 10300
+
+        // Advance past cooldown -> HalfOpen
+        assert!(h.is_available(10300));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+
+        // Failure from HalfOpen should re-trip to Open
+        h.record_failure(ErrorClass::Timeout, 10400);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(h.cooldown_until, Some(10400 + 10_000));
+    }
+
+    /// Success from Open state (e.g. after reload) transitions to Closed.
+    #[test]
+    fn success_from_open_transitions_to_closed() {
+        let mut h = new_provider_health("test");
+        h.state = CircuitState::Open;
+        h.consecutive_failures = 5;
+        h.cooldown_until = Some(999_999);
+
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+        assert_eq!(h.consecutive_failures, 0);
+        assert_eq!(h.cooldown_until, None);
+    }
+
+    /// Success from Closed stays Closed.
+    #[test]
+    fn success_from_closed_stays_closed() {
+        let mut h = new_provider_health("test");
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+    }
+
+    // ── Recovery detection ──────────────────────────────────────────────
+
+    /// is_available returns false for Open circuit before cooldown.
+    #[test]
+    fn is_available_false_during_cooldown() {
+        let mut h = new_provider_health("test");
+        h.state = CircuitState::Open;
+        h.cooldown_until = Some(10_000);
+        assert!(!h.is_available(9_999));
+    }
+
+    /// is_available returns true and transitions to HalfOpen at
+    /// exactly the cooldown boundary.
+    #[test]
+    fn is_available_transitions_at_cooldown_boundary() {
+        let mut h = new_provider_health("test");
+        h.state = CircuitState::Open;
+        h.cooldown_until = Some(10_000);
+        assert!(h.is_available(10_000));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+    }
+
+    /// is_available returns true for HalfOpen (probe allowed).
+    #[test]
+    fn is_available_true_for_halfopen() {
+        let mut h = new_provider_health("test");
+        h.state = CircuitState::HalfOpen;
+        assert!(h.is_available(0));
+    }
+
+    /// Recovery cycle: trip -> wait -> probe succeeds -> healthy again.
+    #[test]
+    fn recovery_cycle_via_probe_success() {
+        let mut h = new_provider_health("test");
+
+        // Trip
+        h.record_failure(ErrorClass::ServerError, 100);
+        h.record_failure(ErrorClass::ServerError, 200);
+        h.record_failure(ErrorClass::ServerError, 300);
+        assert_eq!(h.state, CircuitState::Open);
+        let cooldown = h.cooldown_until.unwrap(); // 300 + 30_000 = 30_300
+
+        // Still blocked
+        assert!(!h.is_available(cooldown - 1));
+
+        // Probe allowed
+        assert!(h.is_available(cooldown));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+
+        // Probe succeeds
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+        assert!(h.is_available(cooldown + 100));
+    }
+
+    /// Recovery cycle: trip -> wait -> probe fails -> re-tripped with
+    /// new cooldown.
+    #[test]
+    fn recovery_cycle_probe_failure_retrips() {
+        let mut h = new_provider_health("test");
+
+        // Trip
+        h.record_failure(ErrorClass::RateLimit, 100);
+        h.record_failure(ErrorClass::RateLimit, 200);
+        h.record_failure(ErrorClass::RateLimit, 300);
+        let first_cooldown = h.cooldown_until.unwrap();
+
+        // Probe
+        assert!(h.is_available(first_cooldown));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+
+        // Probe fails
+        h.record_failure(ErrorClass::RateLimit, first_cooldown + 100);
+        assert_eq!(h.state, CircuitState::Open);
+        let second_cooldown = h.cooldown_until.unwrap();
+        assert!(
+            second_cooldown > first_cooldown,
+            "new cooldown should be later"
+        );
+    }
+
+    // ── Serialization / persistence roundtrip ───────────────────────────
+
+    /// Full ProviderHealth struct serializes and deserializes faithfully.
+    #[test]
+    fn provider_health_serde_roundtrip_full() {
+        let mut window = VecDeque::new();
+        window.push_back(FailureRecord {
+            timestamp_ms: 1_000,
+            error_class: ErrorClass::RateLimit,
+        });
+        window.push_back(FailureRecord {
+            timestamp_ms: 2_000,
+            error_class: ErrorClass::ServerError,
+        });
+        window.push_back(FailureRecord {
+            timestamp_ms: 3_000,
+            error_class: ErrorClass::AuthFailure,
+        });
+
+        let health = ProviderHealth {
+            provider_id: "test-provider".to_owned(),
+            state: CircuitState::Open,
+            consecutive_failures: 5,
+            total_requests: 100,
+            total_failures: 20,
+            last_failure_at: Some(3_000),
+            cooldown_until: Some(33_000),
+            failure_window: window,
+        };
+
+        let json = serde_json::to_string_pretty(&health).unwrap();
+        let decoded: ProviderHealth = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, health);
+        assert_eq!(decoded.failure_window.len(), 3);
+        assert_eq!(
+            decoded.failure_window[2].error_class,
+            ErrorClass::AuthFailure
+        );
+    }
+
+    /// All CircuitState variants roundtrip through JSON.
+    #[test]
+    fn circuit_state_serde_all_variants() {
+        for state in [
+            CircuitState::Closed,
+            CircuitState::Open,
+            CircuitState::HalfOpen,
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            let decoded: CircuitState = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, state, "roundtrip failed for {state:?}");
+        }
+    }
+
+    /// All ErrorClass variants roundtrip through JSON.
+    #[test]
+    fn error_class_serde_all_variants() {
+        let classes = [
+            ErrorClass::RateLimit,
+            ErrorClass::AuthFailure,
+            ErrorClass::Timeout,
+            ErrorClass::ServerError,
+            ErrorClass::ContentPolicy,
+            ErrorClass::ContextOverflow,
+            ErrorClass::Unknown,
+        ];
+        for class in classes {
+            let json = serde_json::to_string(&class).unwrap();
+            let decoded: ErrorClass = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, class, "roundtrip failed for {class:?}");
+        }
+    }
+
+    /// ProviderHealth with empty optional fields and empty window.
+    #[test]
+    fn provider_health_serde_minimal() {
+        let health = new_provider_health("minimal");
+        let json = serde_json::to_string(&health).unwrap();
+        let decoded: ProviderHealth = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, health);
+        assert_eq!(decoded.last_failure_at, None);
+        assert_eq!(decoded.cooldown_until, None);
+        assert!(decoded.failure_window.is_empty());
+    }
+
+    /// Registry save/load roundtrip preserves multiple providers
+    /// including their failure windows and circuit states.
+    #[test]
+    fn registry_persistence_preserves_failure_windows() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("health.json");
+
+        let registry = ProviderHealthRegistry::new();
+        // Build up some state
+        registry.record_success("healthy");
+        registry.record_failure("failing", ErrorClass::RateLimit);
+        registry.record_failure("failing", ErrorClass::Timeout);
+        registry.record_failure("failing", ErrorClass::ServerError);
+        registry.save(&path).unwrap();
+
+        let loaded = ProviderHealthRegistry::load_or_new(&path);
+        let snap = loaded.snapshot();
+
+        let healthy = snap.get("healthy").expect("healthy provider");
+        assert_eq!(healthy.total_requests, 1);
+        assert_eq!(healthy.state, CircuitState::Closed);
+
+        let failing = snap.get("failing").expect("failing provider");
+        assert_eq!(failing.total_failures, 3);
+        assert_eq!(failing.consecutive_failures, 3);
+        assert_eq!(failing.state, CircuitState::Open);
+        assert_eq!(failing.failure_window.len(), 3);
+        assert_eq!(failing.failure_window[0].error_class, ErrorClass::RateLimit);
+        assert_eq!(failing.failure_window[1].error_class, ErrorClass::Timeout);
+        assert_eq!(
+            failing.failure_window[2].error_class,
+            ErrorClass::ServerError
+        );
+    }
+
+    /// Loading from a nonexistent path returns an empty registry.
+    #[test]
+    fn registry_load_nonexistent_returns_empty() {
+        let registry = ProviderHealthRegistry::load_or_new(Path::new("/nonexistent/path.json"));
+        assert!(registry.snapshot().is_empty());
+    }
+
+    /// Loading from a file with invalid JSON returns an empty registry.
+    #[test]
+    fn registry_load_invalid_json_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("corrupt.json");
+        std::fs::write(&path, "not valid json{{{").unwrap();
+
+        let registry = ProviderHealthRegistry::load_or_new(&path);
+        assert!(registry.snapshot().is_empty());
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────────
+
+    /// First observation: a brand-new provider starts Closed with zero
+    /// counters.
+    #[test]
+    fn first_observation_starts_healthy() {
+        let h = new_provider_health("brand-new");
+        assert_eq!(h.state, CircuitState::Closed);
+        assert_eq!(h.consecutive_failures, 0);
+        assert_eq!(h.total_requests, 0);
+        assert_eq!(h.total_failures, 0);
+        assert_eq!(h.last_failure_at, None);
+        assert_eq!(h.cooldown_until, None);
+        assert!(h.failure_window.is_empty());
+    }
+
+    /// Tracker `get` for an unknown provider returns a healthy default.
+    #[test]
+    fn tracker_get_unknown_returns_healthy_default() {
+        let tracker = ProviderHealthTracker::new();
+        let status = tracker.get("never-seen-before");
+        assert_eq!(status.provider, "never-seen-before");
+        assert_eq!(status.state, HealthState::Healthy);
+        assert_eq!(status.consecutive_failures, 0);
+        assert_eq!(status.total_attempts, 0);
+    }
+
+    /// Registry `get` for an unknown provider returns a healthy default.
+    #[test]
+    fn registry_get_unknown_returns_healthy_default() {
+        let registry = ProviderHealthRegistry::new();
+        let health = registry.get("unknown-provider");
+        assert_eq!(health.provider_id, "unknown-provider");
+        assert_eq!(health.state, CircuitState::Closed);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    /// Rapid transitions: trip -> immediate recovery -> re-trip in quick
+    /// succession.
+    #[test]
+    fn rapid_transitions_trip_recover_retrip() {
+        let mut h = new_provider_health("rapid");
+
+        // First trip
+        h.record_failure(ErrorClass::RateLimit, 100);
+        h.record_failure(ErrorClass::RateLimit, 101);
+        h.record_failure(ErrorClass::RateLimit, 102);
+        assert_eq!(h.state, CircuitState::Open);
+        let cd1 = h.cooldown_until.unwrap();
+
+        // Immediately recover
+        assert!(h.is_available(cd1));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+
+        // Immediately re-trip
+        h.record_failure(ErrorClass::Timeout, cd1 + 1);
+        h.record_failure(ErrorClass::Timeout, cd1 + 2);
+        h.record_failure(ErrorClass::Timeout, cd1 + 3);
+        assert_eq!(h.state, CircuitState::Open);
+        let cd2 = h.cooldown_until.unwrap();
+        assert!(cd2 > cd1, "second cooldown should be after first");
+
+        // Recover again
+        assert!(h.is_available(cd2));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+        h.record_success();
+        assert_eq!(h.state, CircuitState::Closed);
+    }
+
+    /// A success immediately after a single failure keeps the provider
+    /// Closed (no intermediate trip).
+    #[test]
+    fn interleaved_success_failure_no_trip() {
+        let mut h = new_provider_health("interleaved");
+        for _ in 0..10 {
+            h.record_failure(ErrorClass::Timeout, 100);
+            h.record_success();
+        }
+        assert_eq!(h.state, CircuitState::Closed);
+        assert_eq!(h.consecutive_failures, 0);
+        assert_eq!(h.total_requests, 20);
+        assert_eq!(h.total_failures, 10);
+    }
+
+    /// Open circuit with no cooldown_until set: is_available returns
+    /// false (guards against missing cooldown).
+    #[test]
+    fn open_without_cooldown_stays_unavailable() {
+        let mut h = new_provider_health("test");
+        h.state = CircuitState::Open;
+        h.cooldown_until = None;
+        assert!(!h.is_available(999_999_999));
+    }
+
+    /// ProviderStatus::error_rate is correct with zero and nonzero
+    /// attempts.
+    #[test]
+    fn error_rate_calculation() {
+        let status = ProviderStatus::new("test".to_owned());
+        assert_eq!(status.error_rate(), 0.0);
+
+        let tracker = ProviderHealthTracker::new();
+        tracker.record_success("er");
+        tracker.record_success("er");
+        tracker.record_failure("er");
+        let snap = tracker.get("er");
+        // 3 attempts, 2 successes => error rate = 1/3
+        let expected = 1.0 / 3.0;
+        assert!((snap.error_rate() - expected).abs() < 1e-10);
+    }
+
+    /// Tracker with custom config: threshold=5 means 4 failures stay
+    /// healthy, 5th trips.
+    #[test]
+    fn custom_threshold_respected() {
+        let tracker = ProviderHealthTracker::with_config(5, Duration::from_secs(60));
+        for _ in 0..4 {
+            tracker.record_failure("p");
+        }
+        assert!(tracker.is_healthy("p"));
+        tracker.record_failure("p");
+        assert!(!tracker.is_healthy("p"));
+    }
+
+    /// `filter_arms_or_best` returns healthy arms when available, falls
+    /// back to least unhealthy when all are down.
+    #[test]
+    fn filter_arms_or_best_fallback() {
+        let tracker = ProviderHealthTracker::with_config(1, Duration::from_secs(600));
+
+        // Make all providers unhealthy
+        tracker.record_failure("p1");
+        tracker.record_failure("p2");
+        // p2 has more total failures -> worse
+        tracker.record_failure("p2");
+
+        let arms = vec!["a".to_owned(), "b".to_owned()];
+        let result = tracker.filter_arms_or_best(&arms, |arm| {
+            if arm == "a" {
+                "p1".to_owned()
+            } else {
+                "p2".to_owned()
+            }
+        });
+        // All unhealthy so fallback should return exactly one arm
+        assert_eq!(result.len(), 1);
+    }
+
+    /// `filter_arms_or_best` returns all healthy arms when some are
+    /// available.
+    #[test]
+    fn filter_arms_or_best_prefers_healthy() {
+        let tracker = ProviderHealthTracker::with_config(1, Duration::from_secs(600));
+        tracker.record_failure("bad");
+        tracker.record_success("good");
+
+        let arms = vec!["a".to_owned(), "b".to_owned()];
+        let result = tracker.filter_arms_or_best(&arms, |arm| {
+            if arm == "a" {
+                "good".to_owned()
+            } else {
+                "bad".to_owned()
+            }
+        });
+        assert_eq!(result, vec!["a"]);
+    }
+
+    /// Registry `is_healthy` (non-mutating) for unknown provider returns
+    /// true.
+    #[test]
+    fn registry_is_healthy_unknown_true() {
+        let registry = ProviderHealthRegistry::new();
+        assert!(registry.is_healthy("ghost"));
+    }
+
+    /// Registry `is_healthy` for a Closed provider returns true.
+    #[test]
+    fn registry_is_healthy_closed_true() {
+        let registry = ProviderHealthRegistry::new();
+        registry.record_success("ok");
+        assert!(registry.is_healthy("ok"));
+    }
+
+    /// Registry `is_healthy` for an Open provider before cooldown returns
+    /// false.
+    #[test]
+    fn registry_is_healthy_open_false() {
+        let registry = ProviderHealthRegistry::new();
+        registry.record_failure("bad", ErrorClass::AuthFailure);
+        registry.record_failure("bad", ErrorClass::AuthFailure);
+        registry.record_failure("bad", ErrorClass::AuthFailure);
+        // AuthFailure has 300s cooldown, so definitely still Open
+        assert!(!registry.is_healthy("bad"));
+    }
+
+    /// Tracker Probing state: a failure during Probing re-trips even
+    /// if consecutive_failures is below threshold.
+    #[test]
+    fn probing_failure_retrips_regardless_of_threshold() {
+        let tracker = ProviderHealthTracker::with_config(5, Duration::from_millis(0));
+        // Need 5 failures to trip
+        for _ in 0..5 {
+            tracker.record_failure("p");
+        }
+        // With 0ms recovery, first is_healthy call transitions to Probing
+        assert!(tracker.is_healthy("p")); // -> Probing
+        // One failure during Probing should re-trip
+        tracker.record_failure("p");
+        let snap = tracker.get("p");
+        assert!(
+            matches!(snap.state, HealthState::Unhealthy { .. }),
+            "single failure during Probing should re-trip"
+        );
+    }
+
+    /// Saturating arithmetic: consecutive_failures and total counters
+    /// don't overflow.
+    #[test]
+    fn saturating_counters() {
+        let mut h = new_provider_health("sat");
+        h.consecutive_failures = u32::MAX;
+        h.total_requests = u64::MAX;
+        h.total_failures = u64::MAX;
+        // Should not panic
+        h.record_failure(ErrorClass::Unknown, 1);
+        assert_eq!(h.consecutive_failures, u32::MAX);
+        assert_eq!(h.total_requests, u64::MAX);
+        assert_eq!(h.total_failures, u64::MAX);
+    }
+
+    /// Multiple providers are tracked independently in the tracker.
+    #[test]
+    fn independent_provider_tracking() {
+        let tracker = ProviderHealthTracker::with_config(2, Duration::from_secs(600));
+        tracker.record_failure("a");
+        tracker.record_failure("a");
+        tracker.record_failure("b");
+
+        assert!(
+            !tracker.is_healthy("a"),
+            "a should be tripped after 2 failures"
+        );
+        assert!(
+            tracker.is_healthy("b"),
+            "b should still be healthy after 1 failure"
+        );
+        assert!(tracker.is_healthy("c"), "c (unknown) should be healthy");
+    }
+
+    /// Multiple providers are tracked independently in the registry.
+    #[test]
+    fn registry_independent_providers() {
+        let registry = ProviderHealthRegistry::new();
+        registry.record_failure("x", ErrorClass::Timeout);
+        registry.record_failure("x", ErrorClass::Timeout);
+        registry.record_failure("x", ErrorClass::Timeout);
+        registry.record_success("y");
+
+        assert!(!registry.is_available("x"));
+        assert!(registry.is_available("y"));
+    }
 }

@@ -341,3 +341,223 @@ pub enum ResumeValidationError {
 pub fn fingerprint_text(text: &str) -> String {
     ContentHash::of(text.as_bytes()).to_hex()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // ── WarmReusePolicy::stateless() constructor ────────────────────────
+
+    #[test]
+    fn stateless_policy_has_session_scope() {
+        let p = WarmReusePolicy::stateless("test-policy");
+        assert_eq!(p.scope, ReuseScope::Session);
+    }
+
+    #[test]
+    fn stateless_policy_stores_policy_id() {
+        let p = WarmReusePolicy::stateless("my-id");
+        assert_eq!(p.policy_id, "my-id");
+    }
+
+    #[test]
+    fn stateless_policy_has_no_bindings() {
+        let p = WarmReusePolicy::stateless("clean");
+        assert!(p.plan_id.is_none());
+        assert!(p.task_id.is_none());
+        assert!(p.session_id.is_none());
+        assert!(p.max_idle_ms.is_none());
+        assert!(p.prompt_policy_fingerprint.is_none());
+        assert!(p.context_fingerprint.is_none());
+        assert!(!p.allow_context_carryover);
+    }
+
+    // ── WarmReusePolicy::for_plan() builder chain ───────────────────────
+
+    #[test]
+    fn for_plan_binds_plan_id() {
+        let p = WarmReusePolicy::stateless("p1").for_plan("plan-42");
+        assert_eq!(p.plan_id.as_deref(), Some("plan-42"));
+    }
+
+    #[test]
+    fn for_plan_preserves_other_fields() {
+        let p = WarmReusePolicy::stateless("p2")
+            .for_plan("plan-7")
+            .for_task("task-3");
+        assert_eq!(p.policy_id, "p2");
+        assert_eq!(p.plan_id.as_deref(), Some("plan-7"));
+        assert_eq!(p.task_id.as_deref(), Some("task-3"));
+        assert_eq!(p.scope, ReuseScope::Session);
+    }
+
+    #[test]
+    fn for_plan_chain_replaces_plan_id() {
+        let p = WarmReusePolicy::stateless("p3")
+            .for_plan("old-plan")
+            .for_plan("new-plan");
+        assert_eq!(p.plan_id.as_deref(), Some("new-plan"));
+    }
+
+    #[test]
+    fn for_session_binds_session_id() {
+        let p = WarmReusePolicy::stateless("s1").for_session("sess-abc");
+        assert_eq!(p.session_id.as_deref(), Some("sess-abc"));
+    }
+
+    #[test]
+    fn full_builder_chain() {
+        let p = WarmReusePolicy::stateless("full")
+            .for_plan("p1")
+            .for_task("t1")
+            .for_session("s1")
+            .with_max_idle(Duration::from_secs(60))
+            .allow_context_carryover(true)
+            .with_fingerprints(Some("fp-prompt".into()), Some("fp-ctx".into()));
+        assert_eq!(p.plan_id.as_deref(), Some("p1"));
+        assert_eq!(p.task_id.as_deref(), Some("t1"));
+        assert_eq!(p.session_id.as_deref(), Some("s1"));
+        assert_eq!(p.max_idle_ms, Some(60_000));
+        assert!(p.allow_context_carryover);
+        assert_eq!(p.prompt_policy_fingerprint.as_deref(), Some("fp-prompt"));
+        assert_eq!(p.context_fingerprint.as_deref(), Some("fp-ctx"));
+    }
+
+    // ── WarmReusePolicy::allows() reuse permission logic ────────────────
+
+    fn now_pair() -> (Instant, Instant) {
+        let t = Instant::now();
+        (t, t)
+    }
+
+    #[test]
+    fn disabled_policy_always_denies() {
+        let p = WarmReusePolicy::disabled();
+        let req = WarmReuseRequest::default();
+        let (warmed, now) = now_pair();
+        assert!(!p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn session_scope_matches_same_session() {
+        let p = WarmReusePolicy::stateless("s").for_session("sess-1");
+        let req = WarmReuseRequest::session("sess-1");
+        let (warmed, now) = now_pair();
+        assert!(p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn session_scope_rejects_different_session() {
+        let p = WarmReusePolicy::stateless("s").for_session("sess-1");
+        let req = WarmReuseRequest::session("sess-2");
+        let (warmed, now) = now_pair();
+        assert!(!p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn plan_scope_matches_same_plan() {
+        let mut p = WarmReusePolicy::stateless("pl");
+        p.scope = ReuseScope::Plan;
+        p.plan_id = Some("plan-42".into());
+        let req = WarmReuseRequest {
+            plan_id: Some("plan-42".into()),
+            ..Default::default()
+        };
+        let (warmed, now) = now_pair();
+        assert!(p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn plan_scope_rejects_different_plan() {
+        let mut p = WarmReusePolicy::stateless("pl");
+        p.scope = ReuseScope::Plan;
+        p.plan_id = Some("plan-42".into());
+        let req = WarmReuseRequest {
+            plan_id: Some("plan-99".into()),
+            ..Default::default()
+        };
+        let (warmed, now) = now_pair();
+        assert!(!p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn task_scope_requires_both_plan_and_task_match() {
+        let mut p = WarmReusePolicy::stateless("tk");
+        p.scope = ReuseScope::Task;
+        p.plan_id = Some("p1".into());
+        p.task_id = Some("t1".into());
+
+        // Both match -> allowed
+        let req_ok = WarmReuseRequest::task("p1", "t1");
+        let (warmed, now) = now_pair();
+        assert!(p.allows(&req_ok, warmed, now));
+
+        // Task mismatch -> denied
+        let req_bad_task = WarmReuseRequest::task("p1", "t2");
+        assert!(!p.allows(&req_bad_task, warmed, now));
+
+        // Plan mismatch -> denied
+        let req_bad_plan = WarmReuseRequest::task("p2", "t1");
+        assert!(!p.allows(&req_bad_plan, warmed, now));
+    }
+
+    #[test]
+    fn expired_idle_denies_reuse() {
+        let p = WarmReusePolicy::stateless("exp")
+            .for_session("s")
+            .with_max_idle(Duration::from_millis(100));
+        let req = WarmReuseRequest::session("s");
+        let warmed = Instant::now();
+        let now = warmed + Duration::from_millis(200);
+        assert!(!p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn within_idle_allows_reuse() {
+        let p = WarmReusePolicy::stateless("fresh")
+            .for_session("s")
+            .with_max_idle(Duration::from_secs(60));
+        let req = WarmReuseRequest::session("s");
+        let warmed = Instant::now();
+        let now = warmed + Duration::from_millis(10);
+        assert!(p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn prompt_fingerprint_mismatch_denies() {
+        let p = WarmReusePolicy::stateless("fp")
+            .for_session("s")
+            .with_fingerprints(Some("abc".into()), None);
+        let req = WarmReuseRequest::session("s").with_fingerprints(Some("xyz".into()), None);
+        let (warmed, now) = now_pair();
+        assert!(!p.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn context_fingerprint_requires_carryover_flag() {
+        // Policy has context fingerprint but carryover disabled
+        let p = WarmReusePolicy::stateless("ctx")
+            .for_session("s")
+            .with_fingerprints(None, Some("ctx-fp".into()))
+            .allow_context_carryover(false);
+        let req = WarmReuseRequest::session("s").with_fingerprints(None, Some("ctx-fp".into()));
+        let (warmed, now) = now_pair();
+        assert!(!p.allows(&req, warmed, now));
+
+        // Same but with carryover enabled -> allowed
+        let p2 = WarmReusePolicy::stateless("ctx")
+            .for_session("s")
+            .with_fingerprints(None, Some("ctx-fp".into()))
+            .allow_context_carryover(true);
+        assert!(p2.allows(&req, warmed, now));
+    }
+
+    #[test]
+    fn no_fingerprints_match_none_to_none() {
+        let p = WarmReusePolicy::stateless("none").for_session("s");
+        let req = WarmReuseRequest::session("s");
+        let (warmed, now) = now_pair();
+        assert!(p.allows(&req, warmed, now));
+    }
+}

@@ -11,12 +11,17 @@ use super::agent::default_true;
 /// A single custom gate rung definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateRungConfig {
+    /// Human-readable rung identifier (e.g. `"compile"`, `"lint"`, `"test"`).
     pub name: String,
+    /// Shell command executed by the gate runner. Runs under `sh -c`.
     pub command: String,
+    /// Maximum seconds the command may run before it is killed. Defaults to 120.
     #[serde(default = "default_gate_rung_timeout")]
     pub timeout_secs: u64,
+    /// When `true`, a failure on this rung aborts the entire gate pipeline.
     #[serde(default = "default_true")]
     pub required: bool,
+    /// Names of other rungs that may execute concurrently with this one.
     #[serde(default)]
     pub parallel_with: Vec<String>,
 }

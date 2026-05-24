@@ -11,12 +11,13 @@
 //! 5. Cognitive diversity    (HDC distance across cohort Engrams)
 
 use crate::{Body, Context, Engram, Kind, Provenance, React, Score};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The five Woolley process variables measured per cohort.
 ///
 /// This is the spec-aligned struct from `docs/00-architecture/14-c-factor-collective-intelligence.md`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CohortMetrics {
     /// Authorship entropy across Bus messages (0=monopoly, 1=perfectly equal).
     pub turn_taking_entropy: f64,
@@ -46,7 +47,7 @@ impl CohortMetrics {
 /// Learnable per-variable weights for the C-Factor composite score.
 ///
 /// These can be fit online via gradient descent on cohort performance outcomes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CohortWeights {
     /// Weight for turn-taking equality.
     pub turn_taking: f64,
@@ -98,7 +99,7 @@ impl CohortWeights {
 /// Compact collective-intelligence summary for policy evaluation.
 ///
 /// Extends the Woolley variables with operational metrics for richer policy decisions.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CFactorSummary {
     /// Overall composite score in `[0, 1]`.
     pub overall: f64,
@@ -376,5 +377,472 @@ mod tests {
         assert!((metrics.citation_reciprocity - 0.5).abs() < f64::EPSILON);
         assert!((metrics.delivery_rate - 0.8).abs() < f64::EPSILON);
         assert!((metrics.hdc_diversity - 0.4).abs() < f64::EPSILON);
+    }
+
+    // --- Serialization roundtrip tests ---
+
+    #[test]
+    fn cfactor_summary_json_roundtrip() {
+        let summary = CFactorSummary {
+            overall: 0.72,
+            trend: -0.03,
+            regression_drop: 0.05,
+            gate_pass_rate: 0.88,
+            turn_taking_equality: 0.65,
+            social_perceptiveness: 0.71,
+            citation_reciprocity: 0.59,
+            delivery_rate: 0.93,
+            hdc_diversity: 0.44,
+            episode_count: 42,
+            top_positive_contributors: vec!["agent-a".into(), "agent-b".into()],
+            top_negative_contributors: vec!["agent-c".into()],
+        };
+        let json = serde_json::to_string(&summary).expect("serialize CFactorSummary");
+        let deserialized: CFactorSummary =
+            serde_json::from_str(&json).expect("deserialize CFactorSummary");
+        assert_eq!(summary, deserialized);
+    }
+
+    #[test]
+    fn cfactor_summary_json_roundtrip_pretty() {
+        let summary = CFactorSummary {
+            overall: 0.5,
+            trend: 0.0,
+            regression_drop: 0.0,
+            gate_pass_rate: 1.0,
+            turn_taking_equality: 0.5,
+            social_perceptiveness: 0.5,
+            citation_reciprocity: 0.5,
+            delivery_rate: 0.5,
+            hdc_diversity: 0.5,
+            episode_count: 1,
+            top_positive_contributors: vec![],
+            top_negative_contributors: vec![],
+        };
+        let json = serde_json::to_string_pretty(&summary).expect("serialize pretty");
+        let deserialized: CFactorSummary =
+            serde_json::from_str(&json).expect("deserialize from pretty JSON");
+        assert_eq!(summary, deserialized);
+    }
+
+    #[test]
+    fn cfactor_summary_default_roundtrip() {
+        let summary = CFactorSummary::default();
+        let json = serde_json::to_string(&summary).expect("serialize default CFactorSummary");
+        let deserialized: CFactorSummary =
+            serde_json::from_str(&json).expect("deserialize default CFactorSummary");
+        assert_eq!(summary, deserialized);
+    }
+
+    #[test]
+    fn cohort_metrics_json_roundtrip() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.82,
+            peer_prediction_accuracy: 0.73,
+            citation_reciprocity: 0.61,
+            delivery_rate: 0.95,
+            hdc_diversity: 0.47,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize CohortMetrics");
+        let deserialized: CohortMetrics =
+            serde_json::from_str(&json).expect("deserialize CohortMetrics");
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn cohort_metrics_default_is_all_zeros() {
+        let metrics = CohortMetrics::default();
+        assert_eq!(metrics.turn_taking_entropy, 0.0);
+        assert_eq!(metrics.peer_prediction_accuracy, 0.0);
+        assert_eq!(metrics.citation_reciprocity, 0.0);
+        assert_eq!(metrics.delivery_rate, 0.0);
+        assert_eq!(metrics.hdc_diversity, 0.0);
+    }
+
+    #[test]
+    fn cohort_weights_json_roundtrip() {
+        let weights = CohortWeights {
+            turn_taking: 0.3,
+            social_perceptiveness: 0.25,
+            trust_calibration: 0.15,
+            channel_openness: 0.1,
+            cognitive_diversity: 0.2,
+            bias: -0.05,
+        };
+        let json = serde_json::to_string(&weights).expect("serialize CohortWeights");
+        let deserialized: CohortWeights =
+            serde_json::from_str(&json).expect("deserialize CohortWeights");
+        assert_eq!(weights, deserialized);
+    }
+
+    #[test]
+    fn cohort_weights_default_values() {
+        let weights = CohortWeights::default();
+        assert_eq!(weights.turn_taking, 0.2);
+        assert_eq!(weights.social_perceptiveness, 0.2);
+        assert_eq!(weights.trust_calibration, 0.2);
+        assert_eq!(weights.channel_openness, 0.2);
+        assert_eq!(weights.cognitive_diversity, 0.2);
+        assert_eq!(weights.bias, 0.0);
+        // Weights (excluding bias) should sum to 1.0
+        let sum = weights.turn_taking
+            + weights.social_perceptiveness
+            + weights.trust_calibration
+            + weights.channel_openness
+            + weights.cognitive_diversity;
+        assert!((sum - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cohort_weights_default_roundtrip() {
+        let weights = CohortWeights::default();
+        let json = serde_json::to_string(&weights).expect("serialize default CohortWeights");
+        let deserialized: CohortWeights =
+            serde_json::from_str(&json).expect("deserialize default CohortWeights");
+        assert_eq!(weights, deserialized);
+    }
+
+    #[test]
+    fn cfactor_summary_default_values() {
+        let summary = CFactorSummary::default();
+        assert_eq!(summary.overall, 0.0);
+        assert_eq!(summary.trend, 0.0);
+        assert_eq!(summary.regression_drop, 0.0);
+        assert_eq!(summary.gate_pass_rate, 0.0);
+        assert_eq!(summary.turn_taking_equality, 0.0);
+        assert_eq!(summary.social_perceptiveness, 0.0);
+        assert_eq!(summary.citation_reciprocity, 0.0);
+        assert_eq!(summary.delivery_rate, 0.0);
+        assert_eq!(summary.hdc_diversity, 0.0);
+        assert_eq!(summary.episode_count, 0);
+        assert!(summary.top_positive_contributors.is_empty());
+        assert!(summary.top_negative_contributors.is_empty());
+    }
+
+    // --- Edge case: zero values ---
+
+    #[test]
+    fn cohort_metrics_zero_values_composite() {
+        let metrics = CohortMetrics::default(); // all zeros
+        let weights = CohortWeights::default();
+        let composite = metrics.composite(&weights);
+        // 0.2*(0+0+0+0+0) + 0.0 = 0.0
+        assert_eq!(composite, 0.0);
+    }
+
+    #[test]
+    fn cohort_metrics_zero_values_roundtrip() {
+        let metrics = CohortMetrics::default();
+        let json = serde_json::to_string(&metrics).expect("serialize zero metrics");
+        let deserialized: CohortMetrics =
+            serde_json::from_str(&json).expect("deserialize zero metrics");
+        assert_eq!(metrics, deserialized);
+    }
+
+    // --- Edge case: max values (all 1.0) ---
+
+    #[test]
+    fn cohort_metrics_max_values_composite() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 1.0,
+            peer_prediction_accuracy: 1.0,
+            citation_reciprocity: 1.0,
+            delivery_rate: 1.0,
+            hdc_diversity: 1.0,
+        };
+        let weights = CohortWeights::default();
+        let composite = metrics.composite(&weights);
+        // 0.2*(1+1+1+1+1) + 0.0 = 1.0
+        assert!((composite - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cohort_metrics_max_values_roundtrip() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 1.0,
+            peer_prediction_accuracy: 1.0,
+            citation_reciprocity: 1.0,
+            delivery_rate: 1.0,
+            hdc_diversity: 1.0,
+        };
+        let json = serde_json::to_string(&metrics).expect("serialize max metrics");
+        let deserialized: CohortMetrics =
+            serde_json::from_str(&json).expect("deserialize max metrics");
+        assert_eq!(metrics, deserialized);
+    }
+
+    // --- Edge case: composite clamp behavior ---
+
+    #[test]
+    fn composite_clamps_above_one() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 1.0,
+            peer_prediction_accuracy: 1.0,
+            citation_reciprocity: 1.0,
+            delivery_rate: 1.0,
+            hdc_diversity: 1.0,
+        };
+        // Large weights + large bias should exceed 1.0 raw but clamp to 1.0
+        let weights = CohortWeights {
+            turn_taking: 0.5,
+            social_perceptiveness: 0.5,
+            trust_calibration: 0.5,
+            channel_openness: 0.5,
+            cognitive_diversity: 0.5,
+            bias: 0.5,
+        };
+        let composite = metrics.composite(&weights);
+        assert_eq!(composite, 1.0);
+    }
+
+    #[test]
+    fn composite_clamps_below_zero() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.1,
+            peer_prediction_accuracy: 0.1,
+            citation_reciprocity: 0.1,
+            delivery_rate: 0.1,
+            hdc_diversity: 0.1,
+        };
+        // Large negative bias should push raw below 0.0 but clamp to 0.0
+        let weights = CohortWeights {
+            turn_taking: 0.1,
+            social_perceptiveness: 0.1,
+            trust_calibration: 0.1,
+            channel_openness: 0.1,
+            cognitive_diversity: 0.1,
+            bias: -1.0,
+        };
+        let composite = metrics.composite(&weights);
+        assert_eq!(composite, 0.0);
+    }
+
+    // --- CohortWeights::update behavior ---
+
+    #[test]
+    fn cohort_weights_update_direction_positive_error() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.5,
+            peer_prediction_accuracy: 0.5,
+            citation_reciprocity: 0.5,
+            delivery_rate: 0.5,
+            hdc_diversity: 0.5,
+        };
+        let mut weights = CohortWeights::default();
+        let initial_turn_taking = weights.turn_taking;
+
+        // Target above predicted => positive error => weights should increase
+        weights.update(&metrics, 0.9, 0.1);
+
+        assert!(
+            weights.turn_taking > initial_turn_taking,
+            "turn_taking should increase when actual > predicted"
+        );
+        assert!(
+            weights.bias > 0.0,
+            "bias should increase when actual > predicted"
+        );
+    }
+
+    #[test]
+    fn cohort_weights_update_direction_negative_error() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.5,
+            peer_prediction_accuracy: 0.5,
+            citation_reciprocity: 0.5,
+            delivery_rate: 0.5,
+            hdc_diversity: 0.5,
+        };
+        let mut weights = CohortWeights::default();
+        let initial_turn_taking = weights.turn_taking;
+
+        // Target below predicted => negative error => weights should decrease
+        weights.update(&metrics, 0.1, 0.1);
+
+        assert!(
+            weights.turn_taking < initial_turn_taking,
+            "turn_taking should decrease when actual < predicted"
+        );
+        assert!(
+            weights.bias < 0.0,
+            "bias should decrease when actual < predicted"
+        );
+    }
+
+    #[test]
+    fn cohort_weights_update_zero_learning_rate_is_noop() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.8,
+            peer_prediction_accuracy: 0.7,
+            citation_reciprocity: 0.6,
+            delivery_rate: 0.9,
+            hdc_diversity: 0.5,
+        };
+        let mut weights = CohortWeights::default();
+        let original = weights.clone();
+
+        weights.update(&metrics, 0.99, 0.0); // learning_rate = 0
+
+        assert_eq!(
+            weights, original,
+            "zero learning rate should not change weights"
+        );
+    }
+
+    #[test]
+    fn cohort_weights_update_converges_over_many_iterations() {
+        let metrics = CohortMetrics {
+            turn_taking_entropy: 0.8,
+            peer_prediction_accuracy: 0.7,
+            citation_reciprocity: 0.6,
+            delivery_rate: 0.9,
+            hdc_diversity: 0.5,
+        };
+        let mut weights = CohortWeights::default();
+        let target = 0.85;
+
+        for _ in 0..200 {
+            weights.update(&metrics, target, 0.05);
+        }
+
+        let final_prediction = metrics.composite(&weights);
+        assert!(
+            (final_prediction - target).abs() < 0.01,
+            "should converge close to target after many iterations: predicted={final_prediction}, target={target}"
+        );
+    }
+
+    #[test]
+    fn cohort_weights_update_with_zero_metrics() {
+        let metrics = CohortMetrics::default(); // all zeros
+        let mut weights = CohortWeights::default();
+
+        // With zero features, only bias should update
+        weights.update(&metrics, 0.5, 0.1);
+
+        // Predicted = 0.0, error = 0.5
+        // Only bias gets: 0.0 + 0.1 * 0.5 = 0.05
+        assert_eq!(
+            weights.turn_taking, 0.2,
+            "turn_taking unchanged (feature=0)"
+        );
+        assert_eq!(
+            weights.social_perceptiveness, 0.2,
+            "social_perceptiveness unchanged"
+        );
+        assert!(
+            (weights.bias - 0.05).abs() < f64::EPSILON,
+            "only bias should change"
+        );
+    }
+
+    // --- CFactorSummary with large contributor lists ---
+
+    #[test]
+    fn cfactor_summary_many_contributors_roundtrip() {
+        let summary = CFactorSummary {
+            overall: 0.65,
+            trend: 0.02,
+            regression_drop: 0.01,
+            gate_pass_rate: 0.9,
+            turn_taking_equality: 0.7,
+            social_perceptiveness: 0.6,
+            citation_reciprocity: 0.55,
+            delivery_rate: 0.85,
+            hdc_diversity: 0.45,
+            episode_count: 100,
+            top_positive_contributors: (0..20).map(|i| format!("pos-agent-{i}")).collect(),
+            top_negative_contributors: (0..15).map(|i| format!("neg-agent-{i}")).collect(),
+        };
+        let json = serde_json::to_string(&summary).expect("serialize many contributors");
+        let deserialized: CFactorSummary =
+            serde_json::from_str(&json).expect("deserialize many contributors");
+        assert_eq!(summary, deserialized);
+        assert_eq!(deserialized.top_positive_contributors.len(), 20);
+        assert_eq!(deserialized.top_negative_contributors.len(), 15);
+    }
+
+    // --- CFactorSummary max episode_count ---
+
+    #[test]
+    fn cfactor_summary_max_episode_count_roundtrip() {
+        let summary = CFactorSummary {
+            episode_count: usize::MAX,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&summary).expect("serialize max episode_count");
+        let deserialized: CFactorSummary =
+            serde_json::from_str(&json).expect("deserialize max episode_count");
+        assert_eq!(summary.episode_count, deserialized.episode_count);
+    }
+
+    // --- CohortWeights with negative weights ---
+
+    #[test]
+    fn cohort_weights_negative_values_roundtrip() {
+        let weights = CohortWeights {
+            turn_taking: -0.3,
+            social_perceptiveness: -0.1,
+            trust_calibration: 0.0,
+            channel_openness: 0.5,
+            cognitive_diversity: -0.2,
+            bias: -0.5,
+        };
+        let json = serde_json::to_string(&weights).expect("serialize negative weights");
+        let deserialized: CohortWeights =
+            serde_json::from_str(&json).expect("deserialize negative weights");
+        assert_eq!(weights, deserialized);
+    }
+
+    // --- Deserialize from known JSON ---
+
+    #[test]
+    fn cfactor_summary_from_known_json() {
+        let json = r#"{
+            "overall": 0.55,
+            "trend": -0.02,
+            "regression_drop": 0.03,
+            "gate_pass_rate": 0.75,
+            "turn_taking_equality": 0.6,
+            "social_perceptiveness": 0.5,
+            "citation_reciprocity": 0.4,
+            "delivery_rate": 0.8,
+            "hdc_diversity": 0.35,
+            "episode_count": 10,
+            "top_positive_contributors": ["alice"],
+            "top_negative_contributors": ["bob", "charlie"]
+        }"#;
+        let summary: CFactorSummary =
+            serde_json::from_str(json).expect("deserialize from known JSON");
+        assert!((summary.overall - 0.55).abs() < f64::EPSILON);
+        assert!((summary.trend - (-0.02)).abs() < f64::EPSILON);
+        assert!((summary.regression_drop - 0.03).abs() < f64::EPSILON);
+        assert!((summary.gate_pass_rate - 0.75).abs() < f64::EPSILON);
+        assert!((summary.turn_taking_equality - 0.6).abs() < f64::EPSILON);
+        assert!((summary.social_perceptiveness - 0.5).abs() < f64::EPSILON);
+        assert!((summary.citation_reciprocity - 0.4).abs() < f64::EPSILON);
+        assert!((summary.delivery_rate - 0.8).abs() < f64::EPSILON);
+        assert!((summary.hdc_diversity - 0.35).abs() < f64::EPSILON);
+        assert_eq!(summary.episode_count, 10);
+        assert_eq!(summary.top_positive_contributors, vec!["alice"]);
+        assert_eq!(summary.top_negative_contributors, vec!["bob", "charlie"]);
+    }
+
+    #[test]
+    fn cohort_metrics_from_known_json() {
+        let json = r#"{
+            "turn_taking_entropy": 0.9,
+            "peer_prediction_accuracy": 0.85,
+            "citation_reciprocity": 0.7,
+            "delivery_rate": 0.95,
+            "hdc_diversity": 0.6
+        }"#;
+        let metrics: CohortMetrics =
+            serde_json::from_str(json).expect("deserialize CohortMetrics from known JSON");
+        assert!((metrics.turn_taking_entropy - 0.9).abs() < f64::EPSILON);
+        assert!((metrics.peer_prediction_accuracy - 0.85).abs() < f64::EPSILON);
+        assert!((metrics.citation_reciprocity - 0.7).abs() < f64::EPSILON);
+        assert!((metrics.delivery_rate - 0.95).abs() < f64::EPSILON);
+        assert!((metrics.hdc_diversity - 0.6).abs() < f64::EPSILON);
     }
 }

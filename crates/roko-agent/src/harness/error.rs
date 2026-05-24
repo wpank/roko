@@ -10,19 +10,32 @@ use std::time::Duration;
 pub enum HarnessError {
     // ---- Subprocess lifecycle (PR-1) ----
     /// Harness process exited with an error code.
-    ProcessExit { code: Option<i32>, stderr: String },
+    ProcessExit {
+        /// Exit code returned by the process, or `None` if it was killed by a signal.
+        code: Option<i32>,
+        /// Captured stderr output from the process.
+        stderr: String,
+    },
     /// Harness operation timed out.
     Timeout {
+        /// How long the operation actually ran before being killed.
         elapsed: Duration,
+        /// The configured timeout limit that was exceeded.
         configured: Duration,
     },
     /// Lost connection to the harness mid-operation.
     Disconnected {
+        /// Identifier of the harness that disconnected.
         harness_id: String,
+        /// Transport layer in use at disconnection (e.g. `"stdio"`, `"http"`).
         transport: String,
+        /// Whether the disconnect occurred in the middle of a tool-loop turn.
         mid_turn: bool,
+        /// Wall-clock time elapsed before the disconnect was detected.
         elapsed: Duration,
+        /// Total bytes received from the harness before disconnection.
         bytes_received: u64,
+        /// Human-readable description of the disconnection cause.
         reason: String,
     },
     /// I/O error during harness operation.
@@ -36,7 +49,9 @@ pub enum HarnessError {
     // ---- Service lifecycle (PR-3) ----
     /// Service start timed out.
     ServiceStartTimeout {
+        /// How long the startup probe ran before giving up.
         elapsed: Duration,
+        /// The configured startup-timeout limit that was exceeded.
         configured: Duration,
     },
     /// Healthcheck failed.

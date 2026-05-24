@@ -1563,4 +1563,1026 @@ mod tests {
             "confidence should be updated"
         );
     }
+
+    // ── Test 23: Rule::new defaults ────────────────────────────────────
+
+    #[test]
+    fn rule_new_sets_sane_defaults() {
+        let t = role_trigger("tester");
+        let rule = Rule::new("test-id", "Test Title", "Test body", t.clone());
+
+        assert_eq!(rule.rule_id, "test-id");
+        assert_eq!(rule.title, "Test Title");
+        assert_eq!(rule.body, "Test body");
+        assert_eq!(rule.triggers, t);
+        assert!((rule.confidence - 0.5).abs() < f64::EPSILON);
+        assert_eq!(rule.validations, 0);
+        assert_eq!(rule.contradictions, 0);
+        assert!(rule.last_applied.is_none());
+        assert!(rule.source_episodes.is_empty());
+        assert!((rule.balance - 1.0).abs() < f64::EPSILON);
+        assert!((rule.demurrage_rate - 0.01).abs() < f64::EPSILON);
+        assert!(rule.last_decay_at_ms > 0);
+    }
+
+    // ── Test 24: Triggers::is_empty ────────────────────────────────────
+
+    #[test]
+    fn triggers_is_empty_when_all_fields_empty() {
+        let t = Triggers::default();
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn triggers_is_not_empty_with_any_field_set() {
+        // Each trigger kind alone is enough.
+        assert!(
+            !Triggers {
+                file_globs: vec!["*.rs".into()],
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Triggers {
+                tags: vec!["x".into()],
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Triggers {
+                categories: vec!["c".into()],
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Triggers {
+                error_signatures: vec!["e".into()],
+                ..Default::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !Triggers {
+                roles: vec!["r".into()],
+                ..Default::default()
+            }
+            .is_empty()
+        );
+    }
+
+    // ── Test 25: Triggers serde roundtrip ──────────────────────────────
+
+    #[test]
+    fn triggers_serde_roundtrip() {
+        let t = Triggers {
+            file_globs: vec!["**/*.rs".to_string(), "src/*.toml".to_string()],
+            tags: vec!["async".to_string(), "unsafe".to_string()],
+            categories: vec!["Refactor".to_string()],
+            error_signatures: vec!["E0277".to_string()],
+            roles: vec!["implementer".to_string(), "reviewer".to_string()],
+        };
+        let json = serde_json::to_string(&t).expect("serialize triggers");
+        let back: Triggers = serde_json::from_str(&json).expect("deserialize triggers");
+        assert_eq!(t, back);
+    }
+
+    // ── Test 26: Rule serde roundtrip (JSON) ───────────────────────────
+
+    #[test]
+    fn rule_serde_json_roundtrip() {
+        let mut rule = make_rule("serde-test", 0.75, role_trigger("implementer"));
+        rule.validations = 5;
+        rule.contradictions = 2;
+        rule.last_applied = Some(Utc::now());
+        rule.source_episodes = vec!["ep1".into(), "ep2".into()];
+        rule.balance = 0.8;
+        rule.demurrage_rate = 0.02;
+
+        let json = serde_json::to_string(&rule).expect("serialize rule");
+        let back: Rule = serde_json::from_str(&json).expect("deserialize rule");
+
+        assert_eq!(back.rule_id, rule.rule_id);
+        assert_eq!(back.title, rule.title);
+        assert_eq!(back.body, rule.body);
+        assert_eq!(back.triggers, rule.triggers);
+        assert!((back.confidence - rule.confidence).abs() < f64::EPSILON);
+        assert_eq!(back.validations, rule.validations);
+        assert_eq!(back.contradictions, rule.contradictions);
+        assert_eq!(back.source_episodes, rule.source_episodes);
+        assert!((back.balance - 0.8).abs() < f64::EPSILON);
+        assert!((back.demurrage_rate - 0.02).abs() < f64::EPSILON);
+    }
+
+    // ── Test 27: Rule serde defaults for demurrage fields ──────────────
+
+    #[test]
+    fn rule_serde_defaults_for_demurrage_fields() {
+        // Simulate a legacy TOML without balance/demurrage_rate/last_decay_at_ms.
+        let toml_text = r#"
+rule_id = "legacy"
+title = "Legacy rule"
+body = "old body"
+confidence = 0.6
+validations = 1
+contradictions = 0
+created_at = "2025-01-01T00:00:00Z"
+source_episodes = []
+
+[triggers]
+roles = ["implementer"]
+file_globs = []
+tags = []
+categories = []
+error_signatures = []
+"#;
+        let rule: Rule = toml::from_str(toml_text).expect("deserialize legacy TOML");
+        assert!(
+            (rule.balance - 1.0).abs() < f64::EPSILON,
+            "default balance should be 1.0"
+        );
+        assert!(
+            (rule.demurrage_rate - 0.01).abs() < f64::EPSILON,
+            "default demurrage_rate should be 0.01"
+        );
+        assert_eq!(
+            rule.last_decay_at_ms, 0,
+            "default last_decay_at_ms should be 0"
+        );
+    }
+
+    // ── Test 28: Multiple rules TOML roundtrip via store ───────────────
+
+    #[test]
+    fn multiple_rules_toml_roundtrip() {
+        let dir = TempDir::new().expect("create tempdir");
+        let path = tmp_path(&dir, "multi.toml");
+
+        let store = PlaybookRules::open(&path).expect("open");
+        store
+            .upsert(make_rule("r1", 0.5, role_trigger("impl")))
+            .expect("upsert r1");
+        store
+            .upsert(make_rule("r2", 0.7, tag_trigger("async")))
+            .expect("upsert r2");
+        store
+            .upsert(make_rule("r3", 0.9, glob_trigger("*.rs")))
+            .expect("upsert r3");
+        store.save().expect("save");
+
+        let store2 = PlaybookRules::open(&path).expect("reopen");
+        assert_eq!(store2.count(), 3);
+
+        let snap = store2.snapshot();
+        assert!(snap.iter().any(|r| r.rule_id == "r1"));
+        assert!(snap.iter().any(|r| r.rule_id == "r2"));
+        assert!(snap.iter().any(|r| r.rule_id == "r3"));
+    }
+
+    // ── Test 29: select returns empty when no rules match ──────────────
+
+    #[test]
+    fn select_returns_empty_when_no_rules_match() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // Add rules that will NOT match the context.
+        store
+            .upsert(make_rule("ts-rule", 0.8, glob_trigger("**/*.ts")))
+            .expect("upsert");
+        store
+            .upsert(make_rule("python-role", 0.8, role_trigger("python_dev")))
+            .expect("upsert");
+
+        let ctx = MatchContext {
+            files: vec!["src/main.rs".into()],
+            tags: vec!["rust".into()],
+            category: Some("RustDev".into()),
+            error_signature: None,
+            role: "implementer".into(),
+        };
+        let results = store.select(&ctx, 10);
+        assert!(results.is_empty(), "no rules should match");
+    }
+
+    // ── Test 30: select returns empty from empty store ─────────────────
+
+    #[test]
+    fn select_returns_empty_from_empty_store() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        let ctx = default_ctx();
+        let results = store.select(&ctx, 10);
+        assert!(results.is_empty());
+    }
+
+    // ── Test 31: multiple rules all match (OR semantics) ───────────────
+
+    #[test]
+    fn select_returns_multiple_matching_rules() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // All three rules should match default_ctx via different trigger kinds.
+        store
+            .upsert(make_rule("by-role", 0.7, role_trigger("implementer")))
+            .expect("upsert");
+        store
+            .upsert(make_rule("by-tag", 0.6, tag_trigger("async")))
+            .expect("upsert");
+        store
+            .upsert(make_rule("by-cat", 0.5, cat_trigger("ConcurrencyRefactor")))
+            .expect("upsert");
+
+        let ctx = default_ctx();
+        let results = store.select(&ctx, 10);
+        assert_eq!(results.len(), 3, "all three rules should match");
+        // Verify sorted by confidence desc.
+        assert_eq!(results[0].rule_id, "by-role");
+        assert_eq!(results[1].rule_id, "by-tag");
+        assert_eq!(results[2].rule_id, "by-cat");
+    }
+
+    // ── Test 32: OR semantics — rule with multiple trigger kinds ───────
+
+    #[test]
+    fn rule_with_multiple_trigger_kinds_matches_on_any() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // Rule has both file_globs and tags triggers.
+        let multi_trigger = Triggers {
+            file_globs: vec!["**/*.py".into()], // won't match
+            tags: vec!["async".into()],         // will match
+            ..Default::default()
+        };
+        store
+            .upsert(make_rule("multi", 0.5, multi_trigger))
+            .expect("upsert");
+
+        let ctx = MatchContext {
+            files: vec!["src/main.rs".into()], // no .py files
+            tags: vec!["async".into()],        // tag matches
+            category: None,
+            error_signature: None,
+            role: "other".into(),
+        };
+        let results = store.select(&ctx, 10);
+        assert_eq!(results.len(), 1, "OR semantics: tag match is sufficient");
+        assert_eq!(results[0].rule_id, "multi");
+    }
+
+    // ── Test 33: tag matching is case-insensitive ──────────────────────
+
+    #[test]
+    fn tag_matching_case_insensitive_both_directions() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // Trigger has uppercase tag.
+        store
+            .upsert(make_rule("upper", 0.5, tag_trigger("ASYNC")))
+            .expect("upsert");
+        // Trigger has mixed case tag.
+        store
+            .upsert(make_rule("mixed", 0.5, tag_trigger("Unsafe")))
+            .expect("upsert");
+
+        // Context has lowercase tags.
+        let ctx = MatchContext {
+            files: Vec::new(),
+            tags: vec!["async".into(), "unsafe".into()],
+            category: None,
+            error_signature: None,
+            role: "other".into(),
+        };
+        let results = store.select(&ctx, 10);
+        assert_eq!(
+            results.len(),
+            2,
+            "case-insensitive tag matching should find both"
+        );
+    }
+
+    // ── Test 34: file glob matching with various patterns ──────────────
+
+    #[test]
+    fn file_glob_matching_various_patterns() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // Exact filename pattern.
+        store
+            .upsert(make_rule("exact", 0.5, glob_trigger("Cargo.toml")))
+            .expect("upsert");
+        // Directory wildcard.
+        store
+            .upsert(make_rule(
+                "dir-wild",
+                0.5,
+                glob_trigger("crates/*/src/*.rs"),
+            ))
+            .expect("upsert");
+
+        let ctx1 = MatchContext {
+            files: vec!["Cargo.toml".into()],
+            tags: Vec::new(),
+            category: None,
+            error_signature: None,
+            role: "other".into(),
+        };
+        let r1 = store.select(&ctx1, 10);
+        assert_eq!(r1.len(), 1);
+        assert_eq!(r1[0].rule_id, "exact");
+
+        let ctx2 = MatchContext {
+            files: vec!["crates/foo/src/lib.rs".into()],
+            tags: Vec::new(),
+            category: None,
+            error_signature: None,
+            role: "other".into(),
+        };
+        let r2 = store.select(&ctx2, 10);
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].rule_id, "dir-wild");
+    }
+
+    // ── Test 35: invalid glob pattern is silently skipped ──────────────
+
+    #[test]
+    fn invalid_glob_pattern_does_not_crash() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // "[invalid" is an unclosed character class — Glob::new will fail.
+        store
+            .upsert(make_rule("bad-glob", 0.5, glob_trigger("[invalid")))
+            .expect("upsert");
+        // Add a valid rule to confirm the store still works.
+        store
+            .upsert(make_rule("good-role", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+
+        let ctx = MatchContext {
+            files: vec!["anything".into()],
+            tags: Vec::new(),
+            category: None,
+            error_signature: None,
+            role: "implementer".into(),
+        };
+        let results = store.select(&ctx, 10);
+        // Only the valid role-trigger rule should match.
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule_id, "good-role");
+    }
+
+    // ── Test 36: record_outcome on nonexistent rule is a no-op ─────────
+
+    #[test]
+    fn record_outcome_on_nonexistent_rule_is_noop() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        store
+            .upsert(make_rule("r1", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+
+        // Recording outcome for a rule that doesn't exist should not panic.
+        store.record_outcome("nonexistent", true);
+        store.record_outcome("nonexistent", false);
+
+        // Existing rule should be unaffected.
+        let snap = store.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!((snap[0].confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    // ── Test 37: validate and contradict convenience methods ───────────
+
+    #[test]
+    fn validate_and_contradict_convenience_methods() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        store
+            .upsert(make_rule("r1", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+
+        store.validate("r1");
+        let snap = store.snapshot();
+        assert!((snap[0].confidence - 0.55).abs() < f64::EPSILON);
+        assert_eq!(snap[0].validations, 1);
+
+        store.contradict("r1");
+        let snap = store.snapshot();
+        assert!((snap[0].confidence - 0.45).abs() < f64::EPSILON);
+        assert_eq!(snap[0].contradictions, 1);
+    }
+
+    // ── Test 38: upsert rejects null bytes in body ─────────────────────
+
+    #[test]
+    fn upsert_rejects_null_bytes_in_body() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let mut rule = make_rule("null-body", 0.5, role_trigger("implementer"));
+        rule.body = "before\0after".to_string();
+
+        let result = store.upsert(rule);
+        assert!(result.is_err());
+        assert_eq!(
+            result.expect_err("must fail").kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(store.count(), 0);
+    }
+
+    // ── Test 39: select with limit=0 returns empty ─────────────────────
+
+    #[test]
+    fn select_with_limit_zero_returns_empty() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        store
+            .upsert(make_rule("r1", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+
+        let ctx = MatchContext {
+            files: Vec::new(),
+            tags: Vec::new(),
+            category: None,
+            error_signature: None,
+            role: "implementer".into(),
+        };
+        let results = store.select(&ctx, 0);
+        assert!(results.is_empty(), "limit=0 should return empty");
+    }
+
+    // ── Test 40: balance deprioritization in select ordering ───────────
+
+    #[test]
+    fn low_balance_rules_deprioritized_in_select() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        let t = role_trigger("implementer");
+
+        // High confidence, low balance (depleted).
+        let mut depleted = make_rule("depleted", 0.9, t.clone());
+        depleted.balance = 0.05; // below 0.1 threshold
+        store.upsert(depleted).expect("upsert");
+
+        // Low confidence, healthy balance.
+        let healthy = make_rule("healthy", 0.3, t.clone());
+        store.upsert(healthy).expect("upsert");
+
+        let ctx = MatchContext {
+            files: Vec::new(),
+            tags: Vec::new(),
+            category: None,
+            error_signature: None,
+            role: "implementer".into(),
+        };
+        let results = store.select(&ctx, 10);
+        assert_eq!(results.len(), 2);
+        // Healthy-balance rule should come first despite lower confidence.
+        assert_eq!(
+            results[0].rule_id, "healthy",
+            "healthy balance should be prioritized"
+        );
+        assert_eq!(
+            results[1].rule_id, "depleted",
+            "depleted balance should be deprioritized"
+        );
+    }
+
+    // ── Test 41: demurrage tick decays balance ─────────────────────────
+
+    #[test]
+    fn demurrage_tick_decays_balance() {
+        let mut rule = make_rule("decay-test", 0.5, role_trigger("implementer"));
+        let start_ms = rule.last_decay_at_ms;
+        let initial_balance = rule.balance;
+
+        // Advance by 1 hour.
+        let one_hour_later = start_ms + 3_600_000;
+        rule.tick_demurrage(one_hour_later);
+
+        // balance *= (1 - 0.01)^1 = 0.99
+        let expected = initial_balance * 0.99;
+        assert!(
+            (rule.balance - expected).abs() < 1e-10,
+            "expected {expected}, got {}",
+            rule.balance
+        );
+        assert_eq!(rule.last_decay_at_ms, one_hour_later);
+    }
+
+    // ── Test 42: demurrage tick with zero elapsed is no-op ─────────────
+
+    #[test]
+    fn demurrage_tick_zero_elapsed_is_noop() {
+        let mut rule = make_rule("no-decay", 0.5, role_trigger("implementer"));
+        let balance_before = rule.balance;
+        let ts = rule.last_decay_at_ms;
+
+        rule.tick_demurrage(ts); // same timestamp
+        assert!((rule.balance - balance_before).abs() < f64::EPSILON);
+    }
+
+    // ── Test 43: replenish caps at 1.0 ─────────────────────────────────
+
+    #[test]
+    fn replenish_caps_at_one() {
+        let mut rule = make_rule("replenish-test", 0.5, role_trigger("implementer"));
+        rule.balance = 0.9;
+
+        rule.replenish(0.2);
+        assert!(
+            (rule.balance - 1.0).abs() < f64::EPSILON,
+            "balance should cap at 1.0"
+        );
+
+        rule.replenish(0.5);
+        assert!(
+            (rule.balance - 1.0).abs() < f64::EPSILON,
+            "balance should stay at 1.0"
+        );
+    }
+
+    // ── Test 44: tick_demurrage_all decays all rules ───────────────────
+
+    #[test]
+    fn tick_demurrage_all_decays_all_rules() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        store
+            .upsert(make_rule("r1", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+        store
+            .upsert(make_rule("r2", 0.6, role_trigger("reviewer")))
+            .expect("upsert");
+
+        let snap_before = store.snapshot();
+        let now_ms = snap_before[0].last_decay_at_ms + 3_600_000; // 1 hour later
+
+        store.tick_demurrage_all(now_ms);
+
+        let snap = store.snapshot();
+        for rule in &snap {
+            assert!(
+                rule.balance < 1.0,
+                "balance should have decayed for {}",
+                rule.rule_id
+            );
+            let expected = 1.0 * 0.99; // (1 - 0.01)^1
+            assert!(
+                (rule.balance - expected).abs() < 1e-10,
+                "rule {} balance {}, expected ~{}",
+                rule.rule_id,
+                rule.balance,
+                expected
+            );
+        }
+    }
+
+    // ── Test 45: Demurrage trait implementation ────────────────────────
+
+    #[test]
+    fn demurrage_trait_tick_and_replenish() {
+        use roko_core::Demurrage;
+
+        let mut rule = make_rule("trait-test", 0.5, role_trigger("implementer"));
+        assert!((rule.balance() - 1.0).abs() < f64::EPSILON);
+        assert!((rule.demurrage_rate() - 0.01).abs() < f64::EPSILON);
+
+        // Tick via trait method (1 hour).
+        Demurrage::tick(&mut rule, 1.0);
+        let expected = 0.99;
+        assert!(
+            (rule.balance() - expected).abs() < 1e-10,
+            "trait tick: expected {expected}, got {}",
+            rule.balance()
+        );
+
+        // Replenish via trait method.
+        Demurrage::replenish(&mut rule, 0.05);
+        // 0.99 + 0.05 = 1.04, capped at 1.0.
+        assert!(
+            (rule.balance() - 1.0).abs() < 1e-10,
+            "trait replenish should cap at 1.0, got {}",
+            rule.balance()
+        );
+    }
+
+    // ── Test 46: reflection candidate admission — success ──────────────
+
+    #[test]
+    fn admit_reflection_candidate_success() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let candidate = ReflectionPlaybookCandidate {
+            candidate_id: "cand-1".into(),
+            rule_id: "admitted-rule".into(),
+            title: "Admitted Rule".into(),
+            body: "Do this when X happens".into(),
+            triggers: role_trigger("implementer"),
+            confidence: 0.7,
+            evidence_count: 5,
+            admission_status: ReflectionAdmissionStatus::Admissible,
+            source_reflection_ids: vec!["ref1".into(), "ref2".into()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let config = CandidateAdmissionConfig::default(); // min_evidence=3, min_confidence=0.65
+        let decision = store
+            .admit_reflection_candidate(&candidate, config)
+            .expect("admit");
+
+        match decision {
+            CandidateAdmissionDecision::Admitted { rule_id } => {
+                assert_eq!(rule_id, "admitted-rule");
+            }
+            other => panic!("expected Admitted, got {other:?}"),
+        }
+
+        assert_eq!(store.count(), 1);
+        let snap = store.snapshot();
+        assert_eq!(snap[0].rule_id, "admitted-rule");
+        assert!((snap[0].confidence - 0.7).abs() < f64::EPSILON);
+        assert_eq!(snap[0].validations, 5);
+        assert_eq!(snap[0].source_episodes, vec!["ref1", "ref2"]);
+    }
+
+    // ── Test 47: reflection candidate rejected — low evidence ──────────
+
+    #[test]
+    fn admit_reflection_candidate_rejected_low_evidence() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let candidate = ReflectionPlaybookCandidate {
+            candidate_id: "cand-2".into(),
+            rule_id: "low-ev-rule".into(),
+            title: "Low Evidence".into(),
+            body: "Some lesson".into(),
+            triggers: role_trigger("implementer"),
+            confidence: 0.4,   // below default 0.65
+            evidence_count: 2, // below default 3
+            admission_status: ReflectionAdmissionStatus::Candidate,
+            source_reflection_ids: vec!["ref1".into()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let config = CandidateAdmissionConfig::default();
+        let decision = store
+            .admit_reflection_candidate(&candidate, config)
+            .expect("admit");
+
+        match decision {
+            CandidateAdmissionDecision::RejectedLowEvidence {
+                required_evidence_count,
+                observed_evidence_count,
+                required_confidence,
+                observed_confidence,
+            } => {
+                assert_eq!(required_evidence_count, 3);
+                assert_eq!(observed_evidence_count, 2);
+                assert!((required_confidence - 0.65).abs() < f64::EPSILON);
+                assert!((observed_confidence - 0.4).abs() < f64::EPSILON);
+            }
+            other => panic!("expected RejectedLowEvidence, got {other:?}"),
+        }
+
+        assert_eq!(store.count(), 0, "rejected candidate should not be added");
+    }
+
+    // ── Test 48: reflection candidate rejected — no triggers ───────────
+
+    #[test]
+    fn admit_reflection_candidate_rejected_no_triggers() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let candidate = ReflectionPlaybookCandidate {
+            candidate_id: "cand-3".into(),
+            rule_id: "no-trig-rule".into(),
+            title: "No Triggers".into(),
+            body: "Some lesson".into(),
+            triggers: Triggers::default(), // empty
+            confidence: 0.8,
+            evidence_count: 10,
+            admission_status: ReflectionAdmissionStatus::Admissible,
+            source_reflection_ids: vec!["ref1".into()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let config = CandidateAdmissionConfig::default();
+        let decision = store
+            .admit_reflection_candidate(&candidate, config)
+            .expect("admit");
+        assert_eq!(decision, CandidateAdmissionDecision::RejectedNoTriggers);
+        assert_eq!(store.count(), 0);
+    }
+
+    // ── Test 49: reflection candidate rejected — no lesson body ────────
+
+    #[test]
+    fn admit_reflection_candidate_rejected_no_lesson() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let candidate = ReflectionPlaybookCandidate {
+            candidate_id: "cand-4".into(),
+            rule_id: "no-body-rule".into(),
+            title: "No Body".into(),
+            body: "   ".into(), // whitespace-only
+            triggers: role_trigger("implementer"),
+            confidence: 0.8,
+            evidence_count: 10,
+            admission_status: ReflectionAdmissionStatus::Admissible,
+            source_reflection_ids: vec!["ref1".into()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let config = CandidateAdmissionConfig::default();
+        let decision = store
+            .admit_reflection_candidate(&candidate, config)
+            .expect("admit");
+        assert_eq!(decision, CandidateAdmissionDecision::RejectedNoLesson);
+        assert_eq!(store.count(), 0);
+    }
+
+    // ── Test 50: candidate admission config with custom thresholds ─────
+
+    #[test]
+    fn admit_reflection_candidate_with_custom_config() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let candidate = ReflectionPlaybookCandidate {
+            candidate_id: "cand-5".into(),
+            rule_id: "custom-config".into(),
+            title: "Custom Config".into(),
+            body: "Do this".into(),
+            triggers: role_trigger("implementer"),
+            confidence: 0.5,
+            evidence_count: 2,
+            admission_status: ReflectionAdmissionStatus::Candidate,
+            source_reflection_ids: vec!["ref1".into()],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Relaxed thresholds — should admit.
+        let relaxed = CandidateAdmissionConfig {
+            min_evidence_count: 1,
+            min_confidence: 0.3,
+        };
+        let decision = store
+            .admit_reflection_candidate(&candidate, relaxed)
+            .expect("admit");
+        match decision {
+            CandidateAdmissionDecision::Admitted { rule_id } => {
+                assert_eq!(rule_id, "custom-config");
+            }
+            other => panic!("expected Admitted with relaxed config, got {other:?}"),
+        }
+    }
+
+    // ── Test 51: synthesize_rule_id deterministic ──────────────────────
+
+    #[test]
+    fn synthesize_rule_id_deterministic_and_clean() {
+        let id1 = synthesize_rule_id("Refactor", "E0277:Send+Sync");
+        let id2 = synthesize_rule_id("Refactor", "E0277:Send+Sync");
+        assert_eq!(id1, id2, "same inputs must produce same id");
+
+        // Non-alphanumeric chars (except - and _) should be stripped.
+        assert!(!id1.contains(':'), "colons should be stripped");
+        assert!(!id1.contains('+'), "plus signs should be stripped");
+
+        // Empty category.
+        let id3 = synthesize_rule_id("", "E0277");
+        assert!(id3.starts_with("rule-"), "should start with rule-");
+        assert!(
+            !id3.contains("--"),
+            "should not have double dash for empty category"
+        );
+
+        // Empty signature.
+        let id4 = synthesize_rule_id("Refactor", "");
+        assert!(id4.starts_with("rule-"), "should start with rule-");
+    }
+
+    // ── Test 52: synthesize_rule_id truncates long inputs ──────────────
+
+    #[test]
+    fn synthesize_rule_id_truncates_at_80_chars() {
+        let long_cat = "a".repeat(100);
+        let long_sig = "b".repeat(100);
+        let id = synthesize_rule_id(&long_cat, &long_sig);
+        assert!(
+            id.len() <= 80,
+            "rule_id should be truncated to 80 chars, got {}",
+            id.len()
+        );
+    }
+
+    // ── Test 53: prune with no rules below threshold ───────────────────
+
+    #[test]
+    fn prune_removes_nothing_when_all_above_threshold() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        let t = role_trigger("implementer");
+
+        store
+            .upsert(make_rule("r1", 0.5, t.clone()))
+            .expect("upsert");
+        store
+            .upsert(make_rule("r2", 0.6, t.clone()))
+            .expect("upsert");
+
+        let removed = store.prune(0.1);
+        assert_eq!(removed, 0, "no rules below 0.1");
+        assert_eq!(store.count(), 2);
+    }
+
+    // ── Test 54: prune removes all when threshold is very high ─────────
+
+    #[test]
+    fn prune_removes_all_below_high_threshold() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        let t = role_trigger("implementer");
+
+        store
+            .upsert(make_rule("r1", 0.5, t.clone()))
+            .expect("upsert");
+        store
+            .upsert(make_rule("r2", 0.6, t.clone()))
+            .expect("upsert");
+        store
+            .upsert(make_rule("r3", 0.9, t.clone()))
+            .expect("upsert");
+
+        let removed = store.prune(1.0);
+        assert_eq!(removed, 3, "all rules below 1.0");
+        assert_eq!(store.count(), 0);
+    }
+
+    // ── Test 55: context with no category and no error sig ─────────────
+
+    #[test]
+    fn select_matches_with_none_category_and_none_error_sig() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        // Rule triggers on a category that won't be present.
+        store
+            .upsert(make_rule("cat-rule", 0.5, cat_trigger("SomeCategory")))
+            .expect("upsert");
+        // Rule triggers on a role that will be present.
+        store
+            .upsert(make_rule("role-rule", 0.5, role_trigger("implementer")))
+            .expect("upsert");
+
+        let ctx = MatchContext {
+            files: Vec::new(),
+            tags: Vec::new(),
+            category: None,        // no category
+            error_signature: None, // no error sig
+            role: "implementer".into(),
+        };
+        let results = store.select(&ctx, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule_id, "role-rule");
+    }
+
+    // ── Test 56: validation replenishes balance ────────────────────────
+
+    #[test]
+    fn validation_replenishes_balance() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let mut rule = make_rule("r1", 0.5, role_trigger("implementer"));
+        rule.balance = 0.8;
+        store.upsert(rule).expect("upsert");
+
+        store.validate("r1");
+        let snap = store.snapshot();
+        assert!(
+            (snap[0].balance - 0.85).abs() < f64::EPSILON,
+            "validation should replenish by 0.05, got {}",
+            snap[0].balance
+        );
+    }
+
+    // ── Test 57: contradiction does NOT replenish balance ──────────────
+
+    #[test]
+    fn contradiction_does_not_replenish_balance() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let mut rule = make_rule("r1", 0.5, role_trigger("implementer"));
+        rule.balance = 0.8;
+        store.upsert(rule).expect("upsert");
+
+        store.contradict("r1");
+        let snap = store.snapshot();
+        // Balance should be unchanged (contradiction doesn't replenish).
+        assert!(
+            (snap[0].balance - 0.8).abs() < f64::EPSILON,
+            "contradiction should not change balance, got {}",
+            snap[0].balance
+        );
+    }
+
+    // ── Test 58: open with invalid TOML returns error ──────────────────
+
+    #[test]
+    fn open_with_invalid_toml_returns_error() {
+        let dir = TempDir::new().expect("create tempdir");
+        let path = tmp_path(&dir, "bad.toml");
+        std::fs::write(&path, "this is not valid [[[ toml").expect("write");
+
+        let result = PlaybookRules::open(&path);
+        assert!(result.is_err(), "invalid TOML should produce an error");
+        let err = result.err().expect("must be an error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    // ── Test 59: upsert replaces existing rule by rule_id ──────────────
+
+    #[test]
+    fn upsert_replaces_existing_rule_preserving_count() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+
+        let rule1 = make_rule("same-id", 0.5, role_trigger("implementer"));
+        store.upsert(rule1).expect("upsert 1");
+        assert_eq!(store.count(), 1);
+
+        // Upsert with same rule_id but different content.
+        let mut rule2 = make_rule("same-id", 0.9, tag_trigger("updated"));
+        rule2.body = "new body text".into();
+        store.upsert(rule2).expect("upsert 2");
+
+        assert_eq!(store.count(), 1, "upsert should replace, not add");
+        let snap = store.snapshot();
+        assert!((snap[0].confidence - 0.9).abs() < f64::EPSILON);
+        assert_eq!(snap[0].body, "new body text");
+        assert_eq!(snap[0].triggers.tags, vec!["updated"]);
+    }
+
+    // ── Test 60: extract merges when rerun with new episodes ───────────
+
+    #[test]
+    fn extract_merges_source_episodes_on_rerun() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = PlaybookRules::open(tmp_path(&dir, "r.toml")).expect("open");
+        let config = ExtractionConfig::default();
+
+        // First batch: 5 episodes.
+        let batch1: Vec<Episode> = (0..5)
+            .map(|i| failed_ep(&format!("batch1-ep{i}"), "E0001", "Cat1", "reason"))
+            .collect();
+        store.extract_rules(batch1, &config);
+        assert_eq!(store.count(), 1);
+
+        let snap1 = store.snapshot();
+        assert_eq!(snap1[0].source_episodes.len(), 5);
+
+        // Second batch: 5 more episodes with same cluster key.
+        let batch2: Vec<Episode> = (0..5)
+            .map(|i| failed_ep(&format!("batch2-ep{i}"), "E0001", "Cat1", "reason2"))
+            .collect();
+        store.extract_rules(batch2, &config);
+        assert_eq!(store.count(), 1, "should still be 1 rule");
+
+        let snap2 = store.snapshot();
+        assert_eq!(
+            snap2[0].source_episodes.len(),
+            10,
+            "source_episodes should be the union of both batches"
+        );
+    }
+
+    // ── Test 61: CandidateAdmissionConfig default values ───────────────
+
+    #[test]
+    fn candidate_admission_config_defaults() {
+        let config = CandidateAdmissionConfig::default();
+        assert_eq!(config.min_evidence_count, 3);
+        assert!((config.min_confidence - 0.65).abs() < f64::EPSILON);
+    }
 }

@@ -280,4 +280,339 @@ mod tests {
         assert_eq!(Body::text("12345").byte_size(), 5);
         assert_eq!(Body::bytes(vec![0, 1, 2]).byte_size(), 3);
     }
+
+    // ---- from_json serialization roundtrip ----
+
+    #[test]
+    fn from_json_serde_roundtrip() {
+        // Body::from_json → serialize to JSON string → deserialize back → still equal
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Payload {
+            id: u64,
+            tags: Vec<String>,
+        }
+        let orig = Payload {
+            id: 42,
+            tags: vec!["a".into(), "b".into()],
+        };
+        let body = Body::from_json(&orig).unwrap();
+        let json_str = serde_json::to_string(&body).unwrap();
+        let restored: Body = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(body, restored);
+        // And the typed decode still works after the roundtrip
+        let decoded: Payload = restored.as_json().unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    #[test]
+    fn from_json_primitive_types() {
+        // Primitives: number, bool, string, null
+        let num = Body::from_json(&123_i64).unwrap();
+        assert_eq!(num.as_json::<i64>().unwrap(), 123);
+
+        let b = Body::from_json(&true).unwrap();
+        assert_eq!(b.as_json::<bool>().unwrap(), true);
+
+        let s = Body::from_json(&"hello").unwrap();
+        assert_eq!(s.as_json::<String>().unwrap(), "hello");
+
+        let n = Body::from_json(&()).unwrap();
+        assert_eq!(n.kind_hint(), "json");
+    }
+
+    // ---- as_json accessor ----
+
+    #[test]
+    fn as_json_on_text_body_errors() {
+        let b = Body::text("not json");
+        let err = b.as_json::<serde_json::Value>().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("text"),
+            "error should mention 'text', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn as_json_on_bytes_body_errors() {
+        let b = Body::bytes(vec![1, 2, 3]);
+        assert!(b.as_json::<serde_json::Value>().is_err());
+    }
+
+    #[test]
+    fn as_json_on_empty_body_errors() {
+        let b = Body::empty();
+        assert!(b.as_json::<serde_json::Value>().is_err());
+    }
+
+    #[test]
+    fn as_json_type_mismatch_errors() {
+        // JSON body exists but shape doesn't match target type
+        let body = Body::from_json(&serde_json::json!({"x": 1})).unwrap();
+        let result = body.as_json::<Vec<String>>();
+        assert!(result.is_err());
+    }
+
+    // ---- as_text accessor ----
+
+    #[test]
+    fn as_text_on_json_body_errors() {
+        let b = Body::from_json(&42).unwrap();
+        let err = b.as_text().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("json"),
+            "error should mention 'json', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn as_text_on_bytes_body_errors() {
+        let b = Body::bytes(vec![0xff]);
+        assert!(b.as_text().is_err());
+    }
+
+    #[test]
+    fn as_text_on_empty_body_errors() {
+        let b = Body::empty();
+        assert!(b.as_text().is_err());
+    }
+
+    // ---- as_bytes accessor ----
+
+    #[test]
+    fn as_bytes_on_json_body_errors() {
+        let b = Body::from_json(&"nope").unwrap();
+        assert!(b.as_bytes().is_err());
+    }
+
+    #[test]
+    fn as_bytes_on_text_body_errors() {
+        let b = Body::text("nope");
+        assert!(b.as_bytes().is_err());
+    }
+
+    #[test]
+    fn as_bytes_on_empty_body_errors() {
+        let b = Body::empty();
+        assert!(b.as_bytes().is_err());
+    }
+
+    // ---- canonical_bytes stability across all variants ----
+
+    #[test]
+    fn canonical_bytes_empty_stable() {
+        let a = Body::empty();
+        let b = Body::empty();
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+        assert!(
+            !a.canonical_bytes().is_empty(),
+            "canonical_bytes should produce non-empty output even for Empty"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_json_stable() {
+        let a = Body::from_json(&serde_json::json!({"k": "v"})).unwrap();
+        let b = Body::from_json(&serde_json::json!({"k": "v"})).unwrap();
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn canonical_bytes_bytes_stable() {
+        let a = Body::bytes(vec![10, 20, 30]);
+        let b = Body::bytes(vec![10, 20, 30]);
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn canonical_bytes_differ_across_variants() {
+        // Different variants with "same-ish" content should produce different hashes
+        let text = Body::text("hello");
+        let json = Body::from_json(&"hello").unwrap();
+        let bytes = Body::bytes(b"hello".to_vec());
+        let empty = Body::empty();
+
+        // All four should be distinct
+        let ctext = text.canonical_bytes();
+        let cjson = json.canonical_bytes();
+        let cbytes = bytes.canonical_bytes();
+        let cempty = empty.canonical_bytes();
+
+        assert_ne!(ctext, cjson);
+        assert_ne!(ctext, cbytes);
+        assert_ne!(ctext, cempty);
+        assert_ne!(cjson, cbytes);
+        assert_ne!(cjson, cempty);
+        assert_ne!(cbytes, cempty);
+    }
+
+    // ---- All 4 variants: construction + kind_hint ----
+
+    #[test]
+    fn kind_hint_empty() {
+        assert_eq!(Body::empty().kind_hint(), "empty");
+    }
+
+    #[test]
+    fn kind_hint_text() {
+        assert_eq!(Body::text("x").kind_hint(), "text");
+    }
+
+    #[test]
+    fn kind_hint_json() {
+        assert_eq!(Body::from_json(&1).unwrap().kind_hint(), "json");
+    }
+
+    #[test]
+    fn kind_hint_bytes() {
+        assert_eq!(Body::bytes(vec![]).kind_hint(), "bytes");
+    }
+
+    // ---- Serde roundtrip for every variant ----
+
+    #[test]
+    fn serde_roundtrip_empty() {
+        let body = Body::empty();
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_text() {
+        let body = Body::text("round we go");
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_json() {
+        let body = Body::from_json(&serde_json::json!({"nested": [1, 2, 3]})).unwrap();
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_bytes() {
+        let body = Body::bytes(vec![0, 127, 255]);
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn empty_string_text() {
+        let body = Body::text("");
+        assert_eq!(body.as_text().unwrap(), "");
+        assert_eq!(body.byte_size(), 0);
+        assert_eq!(body.kind_hint(), "text");
+        // Roundtrip
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn empty_bytes() {
+        let body = Body::bytes(vec![]);
+        assert_eq!(body.as_bytes().unwrap(), &[] as &[u8]);
+        assert_eq!(body.byte_size(), 0);
+        assert_eq!(body.kind_hint(), "bytes");
+        // Roundtrip
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn empty_text_differs_from_empty_variant() {
+        let text = Body::text("");
+        let empty = Body::empty();
+        assert_ne!(text, empty);
+        assert_ne!(text.canonical_bytes(), empty.canonical_bytes());
+    }
+
+    #[test]
+    fn empty_bytes_differs_from_empty_variant() {
+        let bytes = Body::bytes(vec![]);
+        let empty = Body::empty();
+        assert_ne!(bytes, empty);
+        assert_ne!(bytes.canonical_bytes(), empty.canonical_bytes());
+    }
+
+    #[test]
+    fn nested_json_roundtrip() {
+        let nested = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": [1, "two", null, true, {"level4": []}]
+                }
+            },
+            "siblings": [{"a": 1}, {"b": 2}]
+        });
+        let body = Body::from_json(&nested).unwrap();
+        let decoded: serde_json::Value = body.as_json().unwrap();
+        assert_eq!(decoded, nested);
+        // Serde roundtrip
+        let json_str = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(body, back);
+    }
+
+    #[test]
+    fn json_null_body() {
+        let body = Body::from_json(&serde_json::Value::Null).unwrap();
+        let decoded: serde_json::Value = body.as_json().unwrap();
+        assert_eq!(decoded, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn json_empty_object() {
+        let body = Body::from_json(&serde_json::json!({})).unwrap();
+        let decoded: serde_json::Value = body.as_json().unwrap();
+        assert_eq!(decoded, serde_json::json!({}));
+    }
+
+    #[test]
+    fn json_empty_array() {
+        let body = Body::from_json(&serde_json::json!([])).unwrap();
+        let decoded: serde_json::Value = body.as_json().unwrap();
+        assert_eq!(decoded, serde_json::json!([]));
+    }
+
+    #[test]
+    fn large_bytes_roundtrip() {
+        // 1024 bytes — exercises multi-chunk base64 encoding
+        let data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
+        let body = Body::bytes(data.clone());
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.as_bytes().unwrap(), data.as_slice());
+    }
+
+    #[test]
+    fn text_with_unicode() {
+        let text = "hello \u{1F600} world \u{00E9}\u{4E16}\u{754C}";
+        let body = Body::text(text);
+        assert_eq!(body.as_text().unwrap(), text);
+        // Serde roundtrip preserves unicode
+        let json = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.as_text().unwrap(), text);
+    }
+
+    #[test]
+    fn canonical_bytes_deterministic_across_calls() {
+        let body = Body::from_json(&serde_json::json!({"a": 1, "b": [2, 3]})).unwrap();
+        let first = body.canonical_bytes();
+        let second = body.canonical_bytes();
+        let third = body.canonical_bytes();
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
 }

@@ -618,4 +618,920 @@ mod tests {
 
         assert_eq!(history.len(), 10);
     }
+
+    // ─── Additional VerdictAwareScorer tests ─────────────────────────
+
+    #[test]
+    fn all_gates_passed_yields_low_severity_scores() {
+        let scorer = VerdictAwareScorer::new();
+        let ctx = ctx_at_now();
+
+        let gates = ["compile", "test", "clippy_lint", "diff_check"];
+        for gate in &gates {
+            let signal = verdict_engram(gate, true, 100);
+            let score = scorer.score(&signal, &ctx);
+            // Passing verdicts always have severity 0.1, so severity contribution
+            // is 0.1 * 0.40 = 0.04. Maximum possible salience for a pass is
+            // 1.0*0.35 + 0.1*0.40 + 1.0*0.25 = 0.64. With neutral relevance
+            // (0.5) and recent signal: 0.35+0.04+0.125 = 0.515.
+            assert!(
+                score.salience < 0.65,
+                "gate={gate} salience={} should be < 0.65 for a pass",
+                score.salience,
+            );
+            // Novelty should be zero for passing verdicts (severity 0.1 <= 0.5).
+            assert_eq!(
+                score.novelty, 0.0,
+                "gate={gate} novelty={} should be 0 for a pass",
+                score.novelty,
+            );
+            // Coherence should be 0.5 for low-severity signals.
+            assert_eq!(
+                score.coherence, 0.5,
+                "gate={gate} coherence={} should be 0.5 for a pass",
+                score.coherence,
+            );
+        }
+    }
+
+    #[test]
+    fn some_gates_failed_mixed_scoring() {
+        let scorer = VerdictAwareScorer::new();
+        let ctx = ctx_at_now();
+
+        let compile_pass = verdict_engram("compile", true, 100);
+        let test_fail = verdict_engram("test", false, 100);
+        let lint_pass = verdict_engram("clippy_lint", true, 100);
+        let diff_fail = verdict_engram("diff_check", false, 100);
+
+        let pass_score = scorer.score(&compile_pass, &ctx);
+        let test_score = scorer.score(&test_fail, &ctx);
+        let lint_score = scorer.score(&lint_pass, &ctx);
+        let diff_score = scorer.score(&diff_fail, &ctx);
+
+        // Failed gates should score higher than passed gates (same age).
+        assert!(
+            test_score.salience > pass_score.salience,
+            "test_fail={} > compile_pass={}",
+            test_score.salience,
+            pass_score.salience,
+        );
+        assert!(
+            diff_score.salience > lint_score.salience,
+            "diff_fail={} > lint_pass={}",
+            diff_score.salience,
+            lint_score.salience,
+        );
+
+        // Test failure (0.8 severity) should score higher than diff failure (0.3 severity).
+        assert!(
+            test_score.salience > diff_score.salience,
+            "test_fail={} > diff_fail={}",
+            test_score.salience,
+            diff_score.salience,
+        );
+    }
+
+    #[test]
+    fn score_computation_exact_values() {
+        // Use a fixed time so we can compute exact values.
+        let now_ms: i64 = 1_000_000_000;
+        let signal_age_ms: i64 = 0; // Created at now_ms, age = 0.
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms - signal_age_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let config = VerdictScorerConfig::default();
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // recency: age=0 → decay = exp(0) = 1.0
+        let expected_recency: f32 = 1.0;
+        // severity: compile fail → 1.0
+        let _expected_severity: f32 = 1.0;
+        // relevance: no context attrs → 0.5
+        let expected_relevance: f32 = 0.5;
+
+        // salience = recency * 0.35 + severity * 0.40 + relevance * 0.25
+        //          = 1.0 * 0.35 + 1.0 * 0.40 + 0.5 * 0.25
+        //          = 0.35 + 0.40 + 0.125 = 0.875
+        let expected_salience: f32 = 0.875;
+
+        assert!(
+            (score.salience - expected_salience).abs() < 1e-5,
+            "salience: got={}, expected={}",
+            score.salience,
+            expected_salience,
+        );
+        assert!(
+            (score.confidence - expected_recency).abs() < 1e-5,
+            "confidence: got={}, expected={}",
+            score.confidence,
+            expected_recency,
+        );
+        assert!(
+            (score.utility - expected_salience).abs() < 1e-5,
+            "utility: got={}, expected={}",
+            score.utility,
+            expected_salience,
+        );
+        assert_eq!(
+            score.reputation, 1.0,
+            "verdicts are trusted, reputation=1.0"
+        );
+        assert!(
+            (score.precision - expected_relevance).abs() < 1e-5,
+            "precision: got={}, expected={}",
+            score.precision,
+            expected_relevance,
+        );
+        // severity > 0.5 → novelty = severity * 0.5 = 0.5
+        assert!(
+            (score.novelty - 0.5).abs() < 1e-5,
+            "novelty: got={}, expected=0.5",
+            score.novelty,
+        );
+        // severity > 0.5 → coherence = 0.8
+        assert_eq!(score.coherence, 0.8);
+    }
+
+    #[test]
+    fn score_computation_with_decay() {
+        // Verify that age exactly equal to half-life produces 0.5 recency.
+        let half_life_ms: i64 = 600_000; // default 10 minutes
+        let now_ms: i64 = 2_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms - half_life_ms; // exactly one half-life old
+        signal.tags.insert("gate".to_string(), "test".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let scorer = VerdictAwareScorer::new();
+        let score = scorer.score(&signal, &ctx);
+
+        // recency should be ~0.5 at exactly one half-life
+        assert!(
+            (score.confidence - 0.5).abs() < 1e-4,
+            "recency at half-life: got={}, expected~0.5",
+            score.confidence,
+        );
+    }
+
+    #[test]
+    fn score_computation_passing_verdict_exact() {
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms; // age = 0
+        signal.tags.insert("gate".to_string(), "test".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "true".to_string());
+
+        let scorer = VerdictAwareScorer::new();
+        let score = scorer.score(&signal, &ctx);
+
+        // recency=1.0, severity=0.1 (pass), relevance=0.5 (no context)
+        // salience = 1.0*0.35 + 0.1*0.40 + 0.5*0.25 = 0.35 + 0.04 + 0.125 = 0.515
+        let expected_salience: f32 = 0.515;
+        assert!(
+            (score.salience - expected_salience).abs() < 1e-5,
+            "salience: got={}, expected={}",
+            score.salience,
+            expected_salience,
+        );
+        // severity 0.1 <= 0.5 → novelty = 0.0
+        assert_eq!(score.novelty, 0.0);
+        // severity 0.1 <= 0.5 → coherence = 0.5
+        assert_eq!(score.coherence, 0.5);
+    }
+
+    #[test]
+    fn all_gates_failed_high_severity_scores() {
+        let scorer = VerdictAwareScorer::new();
+        let ctx = ctx_at_now();
+
+        let gates_and_severities = [
+            ("compile", 1.0_f32),
+            ("test", 0.8),
+            ("clippy_lint", 0.5),
+            ("diff_check", 0.3),
+            ("unknown_gate", 0.6),
+        ];
+
+        for (gate, expected_severity) in &gates_and_severities {
+            let signal = verdict_engram(gate, false, 100);
+            let score = scorer.score(&signal, &ctx);
+
+            // All failed verdicts should produce non-trivial scores.
+            assert!(
+                score.salience > 0.0,
+                "gate={gate} should have non-zero salience, got={}",
+                score.salience,
+            );
+
+            // Verify severity ordering is reflected: higher severity → higher novelty.
+            if *expected_severity > 0.5 {
+                assert!(
+                    score.novelty > 0.0,
+                    "gate={gate} severity={expected_severity} should yield positive novelty",
+                );
+                assert_eq!(
+                    score.coherence, 0.8,
+                    "gate={gate} severity > 0.5 should yield coherence=0.8",
+                );
+            } else {
+                assert_eq!(
+                    score.novelty, 0.0,
+                    "gate={gate} severity={expected_severity} should yield zero novelty",
+                );
+                assert_eq!(
+                    score.coherence, 0.5,
+                    "gate={gate} severity <= 0.5 should yield coherence=0.5",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn custom_config_weights_change_scoring() {
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms; // age = 0
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        // Severity-heavy config: 0.0 recency, 1.0 severity, 0.0 relevance.
+        let severity_config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 1.0,
+            relevance_weight: 0.0,
+        };
+        let severity_scorer = VerdictAwareScorer::with_config(severity_config);
+        let severity_score = severity_scorer.score(&signal, &ctx);
+
+        // salience should be purely severity: 1.0 * 1.0 = 1.0
+        assert!(
+            (severity_score.salience - 1.0).abs() < 1e-5,
+            "severity-only salience: got={}, expected=1.0",
+            severity_score.salience,
+        );
+
+        // Recency-heavy config: 1.0 recency, 0.0 severity, 0.0 relevance.
+        let recency_config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 1.0,
+            severity_weight: 0.0,
+            relevance_weight: 0.0,
+        };
+        let recency_scorer = VerdictAwareScorer::with_config(recency_config);
+        let recency_score = recency_scorer.score(&signal, &ctx);
+
+        // salience should be purely recency: 1.0 * 1.0 = 1.0 (age = 0)
+        assert!(
+            (recency_score.salience - 1.0).abs() < 1e-5,
+            "recency-only salience: got={}, expected=1.0",
+            recency_score.salience,
+        );
+    }
+
+    #[test]
+    fn custom_half_life_changes_decay() {
+        let now_ms: i64 = 1_000_000_000;
+        let age_ms: i64 = 60_000; // 1 minute old
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms - age_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        // Short half-life: 30 seconds → signal is ~2 half-lives old → recency ~0.25.
+        let short_config = VerdictScorerConfig {
+            recency_half_life_ms: 30_000.0,
+            recency_weight: 1.0,
+            severity_weight: 0.0,
+            relevance_weight: 0.0,
+        };
+        let short_scorer = VerdictAwareScorer::with_config(short_config);
+        let short_score = short_scorer.score(&signal, &ctx);
+
+        // Long half-life: 10 minutes → signal is 0.1 half-lives old → recency ~0.93.
+        let long_config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 1.0,
+            severity_weight: 0.0,
+            relevance_weight: 0.0,
+        };
+        let long_scorer = VerdictAwareScorer::with_config(long_config);
+        let long_score = long_scorer.score(&signal, &ctx);
+
+        assert!(
+            long_score.salience > short_score.salience,
+            "longer half-life should yield higher recency for same age: long={} > short={}",
+            long_score.salience,
+            short_score.salience,
+        );
+
+        // Verify short half-life recency is ~0.25 (2 half-lives → 0.5^2).
+        assert!(
+            (short_score.confidence - 0.25).abs() < 0.02,
+            "short half-life recency: got={}, expected~0.25",
+            short_score.confidence,
+        );
+    }
+
+    #[test]
+    fn relevance_factor_with_matching_context() {
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms)
+            .with_attr("roko.task_type", "implement")
+            .with_attr("roko.crate", "roko-core")
+            .with_attr("roko.task_category", "feature");
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+        signal
+            .tags
+            .insert("task_type".to_string(), "implement".to_string());
+        signal
+            .tags
+            .insert("crate".to_string(), "roko-core".to_string());
+        signal
+            .tags
+            .insert("task_category".to_string(), "feature".to_string());
+
+        // Use relevance-only config to isolate the relevance dimension.
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 0.0,
+            relevance_weight: 1.0,
+        };
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // All 3 context attrs match → relevance = 3/3 = 1.0.
+        assert!(
+            (score.salience - 1.0).abs() < 1e-5,
+            "full relevance salience: got={}, expected=1.0",
+            score.salience,
+        );
+        assert!(
+            (score.precision - 1.0).abs() < 1e-5,
+            "full relevance precision: got={}, expected=1.0",
+            score.precision,
+        );
+    }
+
+    #[test]
+    fn relevance_factor_with_partial_context_match() {
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms)
+            .with_attr("roko.task_type", "implement")
+            .with_attr("roko.crate", "roko-core")
+            .with_attr("roko.task_category", "feature");
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+        // Only task_type matches, crate and category do not.
+        signal
+            .tags
+            .insert("task_type".to_string(), "implement".to_string());
+        signal
+            .tags
+            .insert("crate".to_string(), "roko-gate".to_string());
+        signal
+            .tags
+            .insert("task_category".to_string(), "bugfix".to_string());
+
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 0.0,
+            relevance_weight: 1.0,
+        };
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // 1 of 3 attrs match → relevance = 1/3 ≈ 0.333.
+        let expected_relevance = 1.0_f32 / 3.0;
+        assert!(
+            (score.salience - expected_relevance).abs() < 1e-5,
+            "partial relevance salience: got={}, expected={}",
+            score.salience,
+            expected_relevance,
+        );
+    }
+
+    #[test]
+    fn relevance_factor_with_no_context_attrs() {
+        let now_ms: i64 = 1_000_000_000;
+        // Context with no roko.* attrs.
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 0.0,
+            relevance_weight: 1.0,
+        };
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // No context attrs → neutral relevance = 0.5.
+        assert!(
+            (score.salience - 0.5).abs() < 1e-5,
+            "neutral relevance salience: got={}, expected=0.5",
+            score.salience,
+        );
+    }
+
+    #[test]
+    fn severity_factor_all_gate_types() {
+        let scorer = VerdictAwareScorer::new();
+        // Test severity for every recognized gate type by isolating severity.
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 1.0,
+            relevance_weight: 0.0,
+        };
+        let severity_scorer = VerdictAwareScorer::with_config(config);
+
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let cases: Vec<(&str, bool, f32)> = vec![
+            ("compile", false, 1.0),
+            ("test", false, 0.8),
+            ("lint", false, 0.5),
+            ("clippy", false, 0.5),
+            ("diff", false, 0.3),
+            ("something_unknown", false, 0.6),
+            ("compile", true, 0.1),
+            ("test", true, 0.1),
+        ];
+
+        // Suppress the unused-variable warning on `scorer`.
+        let _ = scorer;
+
+        for (gate, passed, expected_severity) in &cases {
+            let mut signal = Signal::builder(Kind::GateVerdict)
+                .body(Body::empty())
+                .build();
+            signal.created_at_ms = now_ms;
+            signal.tags.insert("gate".to_string(), gate.to_string());
+            signal
+                .tags
+                .insert("verdict_passed".to_string(), passed.to_string());
+
+            let score = severity_scorer.score(&signal, &ctx);
+            assert!(
+                (score.salience - expected_severity).abs() < 1e-5,
+                "gate={gate} passed={passed}: severity salience got={}, expected={}",
+                score.salience,
+                expected_severity,
+            );
+        }
+    }
+
+    #[test]
+    fn very_old_signal_has_near_zero_recency() {
+        let scorer = VerdictAwareScorer::new();
+        let ctx = ctx_at_now();
+
+        // Signal from ~24 hours ago. With 10-min half-life, that is
+        // 144 half-lives → recency ≈ 0.
+        let signal = verdict_engram("compile", false, 86_400_000);
+        let score = scorer.score(&signal, &ctx);
+
+        assert!(
+            score.confidence < 1e-10,
+            "very old signal recency should be near zero, got={}",
+            score.confidence,
+        );
+    }
+
+    #[test]
+    fn future_signal_gets_recency_one() {
+        // A signal with a timestamp in the future (clock skew) should
+        // be clamped: age = max(0, now - ts) = 0 → recency = 1.0.
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms + 10_000; // 10 seconds in the future
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let scorer = VerdictAwareScorer::new();
+        let score = scorer.score(&signal, &ctx);
+
+        assert!(
+            (score.confidence - 1.0).abs() < 1e-5,
+            "future signal should have recency=1.0, got={}",
+            score.confidence,
+        );
+    }
+
+    #[test]
+    fn default_config_weights_sum_to_one() {
+        let config = VerdictScorerConfig::default();
+        let sum = config.recency_weight + config.severity_weight + config.relevance_weight;
+        assert!(
+            (sum - 1.0).abs() < 1e-5,
+            "default weights should sum to 1.0, got={}",
+            sum,
+        );
+    }
+
+    #[test]
+    fn default_scorer_equals_new() {
+        let default_scorer = VerdictAwareScorer::default();
+        let new_scorer = VerdictAwareScorer::new();
+        // Both should produce identical results on the same signal.
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let score1 = default_scorer.score(&signal, &ctx);
+        let score2 = new_scorer.score(&signal, &ctx);
+        assert_eq!(
+            score1, score2,
+            "default() and new() should produce identical scores"
+        );
+    }
+
+    #[test]
+    fn missing_verdict_passed_tag_defaults_to_pass() {
+        // When verdict_passed tag is absent, severity_factor defaults to
+        // passed=true → severity=0.1.
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        signal
+            .tags
+            .insert("gate".to_string(), "compile".to_string());
+        // No verdict_passed tag.
+
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 1.0,
+            relevance_weight: 0.0,
+        };
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // Should default to passed=true → severity=0.1.
+        assert!(
+            (score.salience - 0.1).abs() < 1e-5,
+            "missing verdict_passed should default to pass (severity=0.1), got={}",
+            score.salience,
+        );
+    }
+
+    #[test]
+    fn missing_gate_tag_uses_default_severity() {
+        // When gate tag is absent and verdict is failed, should use
+        // default severity (0.6 for unknown gate).
+        let now_ms: i64 = 1_000_000_000;
+        let ctx = Context::at(now_ms);
+
+        let mut signal = Signal::builder(Kind::GateVerdict)
+            .body(Body::empty())
+            .build();
+        signal.created_at_ms = now_ms;
+        // No gate tag.
+        signal
+            .tags
+            .insert("verdict_passed".to_string(), "false".to_string());
+
+        let config = VerdictScorerConfig {
+            recency_half_life_ms: 600_000.0,
+            recency_weight: 0.0,
+            severity_weight: 1.0,
+            relevance_weight: 0.0,
+        };
+        let scorer = VerdictAwareScorer::with_config(config);
+        let score = scorer.score(&signal, &ctx);
+
+        // Empty gate → doesn't match compile/test/lint/diff → falls to default 0.6.
+        assert!(
+            (score.salience - 0.6).abs() < 1e-5,
+            "missing gate tag should use default severity 0.6, got={}",
+            score.salience,
+        );
+    }
+
+    // ─── Additional VerdictHistory tests ─────────────────────────────
+
+    #[test]
+    fn empty_history_has_zero_failure_rate() {
+        let history = VerdictHistory::new();
+        assert_eq!(history.model_failure_rate("any-model"), 0.0);
+    }
+
+    #[test]
+    fn empty_history_returns_empty_recent_verdicts() {
+        let history = VerdictHistory::new();
+        let recent = history.recent_verdicts("implement", "roko-core", 10);
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn all_failed_history_gives_full_failure_rate() {
+        let mut history = VerdictHistory::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for i in 0..5 {
+            history.record(VerdictRecord {
+                model_slug: "model-x".to_string(),
+                task_type: "implement".to_string(),
+                target_crate: "roko-core".to_string(),
+                gate: "compile".to_string(),
+                passed: false,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+
+        assert!((history.model_failure_rate("model-x") - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn non_compile_failures_dont_count_in_streak() {
+        let mut history = VerdictHistory::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // 5 test failures (not compile) should not create a compile streak.
+        for i in 0..5 {
+            history.record(VerdictRecord {
+                model_slug: "model-y".to_string(),
+                task_type: "implement".to_string(),
+                target_crate: "roko-core".to_string(),
+                gate: "test".to_string(),
+                passed: false,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+
+        assert_eq!(
+            history.compile_failure_streak("model-y", "implement", "roko-core"),
+            0,
+            "test failures should not count as compile failures",
+        );
+        // But penalty should still be 1.0 (no compile streak).
+        assert_eq!(
+            history.reward_penalty("model-y", "implement", "roko-core"),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn with_capacity_minimum_is_ten() {
+        let history = VerdictHistory::with_capacity(3);
+        // Internal max_records should be clamped to at least 10.
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut h = history;
+        for i in 0..15 {
+            h.record(VerdictRecord {
+                model_slug: "m".to_string(),
+                task_type: "t".to_string(),
+                target_crate: "c".to_string(),
+                gate: "compile".to_string(),
+                passed: true,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+        // Capacity clamped to 10, so only 10 records should survive.
+        assert_eq!(h.len(), 10);
+    }
+
+    #[test]
+    fn streak_skips_interleaved_different_context() {
+        let mut history = VerdictHistory::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // model-a compile fail on roko-core
+        history.record(VerdictRecord {
+            model_slug: "model-a".to_string(),
+            task_type: "implement".to_string(),
+            target_crate: "roko-core".to_string(),
+            gate: "compile".to_string(),
+            passed: false,
+            timestamp_ms: now,
+        });
+        // model-a compile fail on roko-gate (different crate — should be skipped)
+        history.record(VerdictRecord {
+            model_slug: "model-a".to_string(),
+            task_type: "implement".to_string(),
+            target_crate: "roko-gate".to_string(),
+            gate: "compile".to_string(),
+            passed: false,
+            timestamp_ms: now + 1000,
+        });
+        // model-a compile fail on roko-core again
+        history.record(VerdictRecord {
+            model_slug: "model-a".to_string(),
+            task_type: "implement".to_string(),
+            target_crate: "roko-core".to_string(),
+            gate: "compile".to_string(),
+            passed: false,
+            timestamp_ms: now + 2000,
+        });
+
+        // The interleaved roko-gate record is for a different context,
+        // so it's skipped. The streak should be 2 (both roko-core failures
+        // are consecutive when filtering to matching context).
+        assert_eq!(
+            history.compile_failure_streak("model-a", "implement", "roko-core"),
+            2,
+        );
+    }
+
+    #[test]
+    fn recent_verdicts_filters_by_context() {
+        let mut history = VerdictHistory::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for i in 0..5 {
+            history.record(VerdictRecord {
+                model_slug: "m".to_string(),
+                task_type: "implement".to_string(),
+                target_crate: "roko-core".to_string(),
+                gate: "compile".to_string(),
+                passed: true,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+        for i in 0..3 {
+            history.record(VerdictRecord {
+                model_slug: "m".to_string(),
+                task_type: "fix".to_string(),
+                target_crate: "roko-gate".to_string(),
+                gate: "test".to_string(),
+                passed: false,
+                timestamp_ms: now + (5 + i) * 1000,
+            });
+        }
+
+        let core_verdicts = history.recent_verdicts("implement", "roko-core", 100);
+        assert_eq!(core_verdicts.len(), 5);
+
+        let gate_verdicts = history.recent_verdicts("fix", "roko-gate", 100);
+        assert_eq!(gate_verdicts.len(), 3);
+
+        let no_verdicts = history.recent_verdicts("refactor", "roko-cli", 100);
+        assert!(no_verdicts.is_empty());
+    }
+
+    #[test]
+    fn reward_penalty_boundary_values() {
+        let mut history = VerdictHistory::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Exactly 2 failures → no penalty (boundary).
+        for i in 0..2 {
+            history.record(VerdictRecord {
+                model_slug: "m".to_string(),
+                task_type: "t".to_string(),
+                target_crate: "c".to_string(),
+                gate: "compile".to_string(),
+                passed: false,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+        assert_eq!(
+            history.reward_penalty("m", "t", "c"),
+            1.0,
+            "streak=2 → no penalty"
+        );
+
+        // Add 1 more → streak=3 → 0.5 penalty.
+        history.record(VerdictRecord {
+            model_slug: "m".to_string(),
+            task_type: "t".to_string(),
+            target_crate: "c".to_string(),
+            gate: "compile".to_string(),
+            passed: false,
+            timestamp_ms: now + 2000,
+        });
+        assert_eq!(
+            history.reward_penalty("m", "t", "c"),
+            0.5,
+            "streak=3 → 0.5 penalty"
+        );
+
+        // Add 2 more → streak=5 → still 0.5.
+        for i in 3..5 {
+            history.record(VerdictRecord {
+                model_slug: "m".to_string(),
+                task_type: "t".to_string(),
+                target_crate: "c".to_string(),
+                gate: "compile".to_string(),
+                passed: false,
+                timestamp_ms: now + i * 1000,
+            });
+        }
+        assert_eq!(
+            history.reward_penalty("m", "t", "c"),
+            0.5,
+            "streak=5 → 0.5 penalty"
+        );
+
+        // Add 1 more → streak=6 → 0.25 penalty.
+        history.record(VerdictRecord {
+            model_slug: "m".to_string(),
+            task_type: "t".to_string(),
+            target_crate: "c".to_string(),
+            gate: "compile".to_string(),
+            passed: false,
+            timestamp_ms: now + 5000,
+        });
+        assert_eq!(
+            history.reward_penalty("m", "t", "c"),
+            0.25,
+            "streak=6 → 0.25 penalty"
+        );
+    }
 }

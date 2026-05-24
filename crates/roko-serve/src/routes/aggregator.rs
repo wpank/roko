@@ -826,8 +826,8 @@ async fn route_client_stream_message(
         }
     }
 
-    if delivered == 0 {
-        let _ = send_mux_event(
+    if delivered == 0
+        && !send_mux_event(
             sink,
             "roko-serve",
             &json!({
@@ -835,7 +835,9 @@ async fn route_client_stream_message(
                 "message": "no connected agent stream accepted the outbound message",
             }),
         )
-        .await;
+        .await
+    {
+        tracing::debug!("mux event send failed — receiver may have disconnected");
     }
 }
 
@@ -902,13 +904,15 @@ async fn forward_agent_stream(
 
         match connect_async(request).await {
             Ok((stream, _)) => {
-                let _ = mux_tx.try_send(MuxEnvelope {
+                if let Err(e) = mux_tx.try_send(MuxEnvelope {
                     source: agent.agent_id.clone(),
                     event: json!({
                         "type": "stream_status",
                         "state": "connected",
                     }),
-                });
+                }) {
+                    tracing::debug!(error = %e, "mux channel send failed — receiver may have disconnected");
+                }
 
                 let (mut write, mut read) = stream.split();
 
@@ -927,10 +931,12 @@ async fn forward_agent_stream(
                         inbound = read.next() => {
                             match inbound {
                                 Some(Ok(WsMessage::Text(text))) => {
-                                    let _ = mux_tx.try_send(MuxEnvelope {
+                                    if let Err(e) = mux_tx.try_send(MuxEnvelope {
                                         source: agent.agent_id.clone(),
                                         event: parse_stream_event(&text),
-                                    });
+                                    }) {
+                                        tracing::debug!(error = %e, "mux channel send failed — receiver may have disconnected");
+                                    }
                                 }
                                 Some(Ok(WsMessage::Binary(bytes))) => {
                                     let text = String::from_utf8(bytes.to_vec()).ok();
@@ -940,10 +946,12 @@ async fn forward_agent_stream(
                                         .unwrap_or_else(|| json!({
                                             "binary_base64": base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes),
                                         }));
-                                    let _ = mux_tx.try_send(MuxEnvelope {
+                                    if let Err(e) = mux_tx.try_send(MuxEnvelope {
                                         source: agent.agent_id.clone(),
                                         event,
-                                    });
+                                    }) {
+                                        tracing::debug!(error = %e, "mux channel send failed — receiver may have disconnected");
+                                    }
                                 }
                                 Some(Ok(WsMessage::Ping(payload))) => {
                                     if write.send(WsMessage::Pong(payload)).await.is_err() {
@@ -970,13 +978,18 @@ async fn forward_agent_stream(
             return;
         }
 
-        let _ = mux_tx.send(MuxEnvelope {
-            source: agent.agent_id.clone(),
-            event: json!({
-                "type": "stream_status",
-                "state": "reconnecting",
-            }),
-        });
+        if let Err(e) = mux_tx
+            .send(MuxEnvelope {
+                source: agent.agent_id.clone(),
+                event: json!({
+                    "type": "stream_status",
+                    "state": "reconnecting",
+                }),
+            })
+            .await
+        {
+            tracing::debug!(error = %e, "mux channel send failed — receiver may have disconnected");
+        }
         tokio::time::sleep(STREAM_RECONNECT_DELAY).await;
     }
 }

@@ -23,9 +23,10 @@ use roko_agent::provider::is_known_protocol_command;
 use roko_agent::safety::provenance::{Custody, CustodyLogger};
 use roko_agent::safety::scrub::{ScrubPolicy, scrub_secrets};
 use roko_agent::task_runner::{
-    AnomalyDetector as RunnerAnomalyDetector, BudgetGuardrail as RunnerBudgetGuardrail,
-    ConductorBandit as RunnerConductorBandit, CostTable as RunnerCostTable,
-    EventBus as RunnerEventBus, ModelPricing as RunnerModelPricing, TaskRunner, TaskRunnerError,
+    AnomalyDetector as RunnerAnomalyDetector, BudgetAction as RunnerBudgetAction,
+    BudgetGuardrail as RunnerBudgetGuardrail, ConductorBandit as RunnerConductorBandit,
+    CostTable as RunnerCostTable, EventBus as RunnerEventBus, ModelPricing as RunnerModelPricing,
+    TaskRunner, TaskRunnerError,
 };
 use roko_agent::{
     Agent, AgentInvocationSession, AgentResult, InvocationState, MultiAgentPool, ReuseScope,
@@ -6253,7 +6254,12 @@ impl PlanRunner {
     /// intervention signals.
     fn handle_tripped_circuit_breaker(&mut self, plan_id: &str) {
         tracing::error!("[conductor] pausing {plan_id}: circuit breaker tripped");
-        let _ = self.executor.pause_plan(plan_id);
+        if !self.executor.pause_plan(plan_id) {
+            tracing::warn!(
+                plan_id,
+                "failed to pause plan after circuit breaker trip — plan may not exist or already paused"
+            );
+        }
         let error_output = self
             .conductor
             .circuit_breaker()
@@ -13579,7 +13585,12 @@ impl PlanRunner {
                     GateFailureSource::GateClassification,
                 )
                 .with_suggestion(record.suggestion);
-                let _ = store.observe_gate_failure(observation);
+                let update = store.observe_gate_failure(observation);
+                tracing::debug!(
+                    inserted = update.inserted,
+                    occurrences = update.occurrences,
+                    "gate failure pattern observed"
+                );
                 observed += 1;
             }
         }
@@ -16587,8 +16598,71 @@ impl PlanRunner {
                 f64::from(self.config.budget.warn_at_percent) / 100.0,
             );
             let task_spend = self.task_spent(plan_id, task);
-            let _ = runner_budget.record_cost(task_spend, "task");
-            let _ = runner_budget.record_cost(self.plan_costs.values().sum::<f64>(), "session");
+            match runner_budget.record_cost(task_spend, "task") {
+                RunnerBudgetAction::Ok => {}
+                RunnerBudgetAction::Warn {
+                    percent_used,
+                    level,
+                } => {
+                    tracing::warn!(
+                        percent_used,
+                        level,
+                        task_spend,
+                        "task budget warning before dispatch (claude)"
+                    );
+                }
+                RunnerBudgetAction::RouteToCheaper => {
+                    tracing::warn!(
+                        task_spend,
+                        "task budget pressure: should route to cheaper model (claude)"
+                    );
+                }
+                RunnerBudgetAction::BlockNewSessions => {
+                    tracing::error!(
+                        task_spend,
+                        "task budget critical: new sessions should be blocked (claude)"
+                    );
+                }
+                RunnerBudgetAction::Block => {
+                    return Err(anyhow!(
+                        "task {plan_id}/{task} budget exhausted before dispatch (claude): task spent ${task_spend:.2} >= max ${:.2}",
+                        self.config.budget.max_task_usd
+                    ));
+                }
+            }
+            let session_spend: f64 = self.plan_costs.values().sum();
+            match runner_budget.record_cost(session_spend, "session") {
+                RunnerBudgetAction::Ok => {}
+                RunnerBudgetAction::Warn {
+                    percent_used,
+                    level,
+                } => {
+                    tracing::warn!(
+                        percent_used,
+                        level,
+                        session_spend,
+                        "session budget warning before dispatch (claude)"
+                    );
+                }
+                RunnerBudgetAction::RouteToCheaper => {
+                    tracing::warn!(
+                        session_spend,
+                        "session budget pressure: should route to cheaper model (claude)"
+                    );
+                }
+                RunnerBudgetAction::BlockNewSessions => {
+                    tracing::error!(
+                        session_spend,
+                        "session budget critical: new sessions should be blocked (claude)"
+                    );
+                }
+                RunnerBudgetAction::Block => {
+                    return Err(anyhow!(
+                        "task {plan_id}/{task} session budget exhausted before dispatch (claude): session spent ${session_spend:.2} >= max ${:.2}",
+                        self.config.budget.max_session_usd
+                    ));
+                }
+            }
 
             let mut runner = TaskRunner {
                 agent,
@@ -16630,7 +16704,7 @@ impl PlanRunner {
             use parking_lot::RwLock;
             use roko_agent::OllamaLlmBackend;
             use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
-            use roko_agent::task_runner::BudgetAction as RunnerBudgetAction;
+
             use roko_agent::tool_loop::{StopReason, ToolLoop};
             use roko_agent::translate::{OllamaTranslator, Translator};
             use roko_core::tool::{ToolContext, ToolHandler, ToolRegistry, VecToolRegistry};
@@ -16722,7 +16796,38 @@ impl PlanRunner {
                     self.config.budget.max_task_usd
                 ));
             }
-            let _ = runner_budget.record_cost(session_spend_pre, "session");
+            match runner_budget.record_cost(session_spend_pre, "session") {
+                RunnerBudgetAction::Ok => {}
+                RunnerBudgetAction::Warn {
+                    percent_used,
+                    level,
+                } => {
+                    tracing::warn!(
+                        percent_used,
+                        level,
+                        session_spend_pre,
+                        "session budget warning before dispatch (ollama)"
+                    );
+                }
+                RunnerBudgetAction::RouteToCheaper => {
+                    tracing::warn!(
+                        session_spend_pre,
+                        "session budget pressure: should route to cheaper model (ollama)"
+                    );
+                }
+                RunnerBudgetAction::BlockNewSessions => {
+                    tracing::error!(
+                        session_spend_pre,
+                        "session budget critical: new sessions should be blocked (ollama)"
+                    );
+                }
+                RunnerBudgetAction::Block => {
+                    return Err(anyhow!(
+                        "task {plan_id}/{task} session budget exhausted before dispatch (ollama): session spent ${session_spend_pre:.2} >= max ${:.2}",
+                        self.config.budget.max_session_usd
+                    ));
+                }
+            }
 
             let output = tool_loop
                 .run(&role_instruction, &task_text, &tools, &tool_ctx)
@@ -16845,8 +16950,71 @@ impl PlanRunner {
                 f64::from(self.config.budget.warn_at_percent) / 100.0,
             );
             let task_spend = self.task_spent(plan_id, task);
-            let _ = runner_budget.record_cost(task_spend, "task");
-            let _ = runner_budget.record_cost(self.plan_costs.values().sum::<f64>(), "session");
+            match runner_budget.record_cost(task_spend, "task") {
+                RunnerBudgetAction::Ok => {}
+                RunnerBudgetAction::Warn {
+                    percent_used,
+                    level,
+                } => {
+                    tracing::warn!(
+                        percent_used,
+                        level,
+                        task_spend,
+                        "task budget warning before dispatch (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::RouteToCheaper => {
+                    tracing::warn!(
+                        task_spend,
+                        "task budget pressure: should route to cheaper model (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::BlockNewSessions => {
+                    tracing::error!(
+                        task_spend,
+                        "task budget critical: new sessions should be blocked (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::Block => {
+                    return Err(anyhow!(
+                        "task {plan_id}/{task} budget exhausted before dispatch (subprocess): task spent ${task_spend:.2} >= max ${:.2}",
+                        self.config.budget.max_task_usd
+                    ));
+                }
+            }
+            let session_spend: f64 = self.plan_costs.values().sum();
+            match runner_budget.record_cost(session_spend, "session") {
+                RunnerBudgetAction::Ok => {}
+                RunnerBudgetAction::Warn {
+                    percent_used,
+                    level,
+                } => {
+                    tracing::warn!(
+                        percent_used,
+                        level,
+                        session_spend,
+                        "session budget warning before dispatch (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::RouteToCheaper => {
+                    tracing::warn!(
+                        session_spend,
+                        "session budget pressure: should route to cheaper model (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::BlockNewSessions => {
+                    tracing::error!(
+                        session_spend,
+                        "session budget critical: new sessions should be blocked (subprocess)"
+                    );
+                }
+                RunnerBudgetAction::Block => {
+                    return Err(anyhow!(
+                        "task {plan_id}/{task} session budget exhausted before dispatch (subprocess): session spent ${session_spend:.2} >= max ${:.2}",
+                        self.config.budget.max_session_usd
+                    ));
+                }
+            }
 
             let mut runner = TaskRunner {
                 agent,

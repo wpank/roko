@@ -367,7 +367,9 @@ pub fn start_workspace_registration(
                         "version": env!("CARGO_PKG_VERSION"),
                         "agents_count": agent_count.load(std::sync::atomic::Ordering::Relaxed),
                     });
-                    let _ = client.post(&register_url).json(&body).send().await;
+                    if let Err(e) = client.post(&register_url).json(&body).send().await {
+                        tracing::warn!(error = %e, url = %register_url, "relay heartbeat registration failed");
+                    }
                 }
                 Err(e) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);

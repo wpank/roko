@@ -1,0 +1,12 @@
+2026-04-26T08:32:22+02:00	M001	1	spawn_started	codex exec started
+2026-04-26T08:32:23+02:00	M001	1	spawn_failed	codex exited with 1
+2026-04-26T08:32:23+02:00	M001	2	spawn_started	codex exec started
+2026-04-26T08:32:23+02:00	M001	2	spawn_failed	codex exited with 1
+2026-04-26T08:32:24+02:00	M076	1	spawn_started	codex exec started
+2026-04-26T08:32:24+02:00	M076	1	spawn_failed	codex exited with 1
+2026-04-26T08:32:24+02:00	M076	2	spawn_started	codex exec started
+2026-04-26T08:32:24+02:00	M076	2	spawn_failed	codex exited with 1
+2026-04-26T08:32:25+02:00	M082	1	spawn_started	codex exec started
+2026-04-26T08:32:25+02:00	M082	1	spawn_failed	codex exited with 1
+2026-04-26T08:32:25+02:00	M082	2	spawn_started	codex exec started
+2026-04-26T08:32:25+02:00	M082	2	spawn_failed	codex exited with 1

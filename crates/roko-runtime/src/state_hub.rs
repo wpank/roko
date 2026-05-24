@@ -140,14 +140,16 @@ impl StateHub {
 
     /// Publish an event: broadcast, record in ring, apply to snapshot, and
     /// optionally persist to the on-disk event log.
-    pub fn publish(&self, event: DashboardEvent) {
-        self.event_bus.emit(event.clone());
+    /// Returns the sequence number assigned on the internal event bus.
+    pub fn publish(&self, event: DashboardEvent) -> u64 {
+        let seq = self.event_bus.emit(event.clone());
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
         if let Some(log) = &self.event_log {
             if let Ok(mut writer) = log.lock() {
                 writer.append(&event);
             }
         }
+        seq
     }
 
     /// Publish a batch of events atomically (snapshot updates are visible
@@ -290,14 +292,16 @@ pub struct StateHubSender {
 
 impl StateHubSender {
     /// Publish an event through the hub.
-    pub fn publish(&self, event: DashboardEvent) {
-        self.bus_sender.emit(event.clone());
+    /// Returns the sequence number assigned on the internal event bus.
+    pub fn publish(&self, event: DashboardEvent) -> u64 {
+        let seq = self.bus_sender.emit(event.clone());
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
         if let Some(log) = &self.event_log {
             if let Ok(mut writer) = log.lock() {
                 writer.append(&event);
             }
         }
+        seq
     }
 }
 

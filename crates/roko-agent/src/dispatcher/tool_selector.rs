@@ -184,8 +184,12 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
             tools.extend(exec_tools());
         }
 
-        // Test roles: read + exec.
-        AgentRole::IntegrationTester => {
+        // Test roles: read + exec (need to run tests, not write code).
+        AgentRole::IntegrationTester
+        | AgentRole::TerminalValidator
+        | AgentRole::GolemLifecycleTester
+        | AgentRole::CrossSystemTester
+        | AgentRole::FullLoopValidator => {
             tools.extend(exec_tools());
         }
 
@@ -201,9 +205,33 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
             tools.extend(git_tools());
         }
 
-        // Catch-all for unknown future roles: allow all tools.
+        // Read-only analysis roles: detect drift, regressions, patterns.
+        // These roles only observe and report — no writes, no exec.
+        AgentRole::SpecDriftDetector
+        | AgentRole::RegressionDetector
+        | AgentRole::PerformanceSentinel
+        | AgentRole::CoverageTracker
+        | AgentRole::PatternExtractor
+        | AgentRole::SnapshotComparator => {
+            // read_only_tools only
+        }
+
+        // Plan lifecycle manager: read + exec for plan state transitions.
+        AgentRole::PlanLifecycleManager => {
+            tools.extend(exec_tools());
+        }
+
+        // Diagnostic roles: read + limited exec for investigation.
+        AgentRole::ErrorDiagnoser | AgentRole::DependencyValidator => {
+            tools.extend(exec_tools());
+        }
+
+        // Future roles: read-only by default (deny-by-default, NOT allow-all).
+        // AgentRole is #[non_exhaustive], so this arm is required.
+        // If a new AgentRole variant needs more than read-only access,
+        // add an explicit arm above.
         _ => {
-            return HashSet::new();
+            // read_only_tools already in `tools` — no escalation.
         }
     }
 
@@ -295,12 +323,147 @@ mod tests {
             AgentRole::Auditor,
             AgentRole::Scribe,
             AgentRole::Refactorer,
+            AgentRole::AutoFixer,
+            AgentRole::PrePlanner,
+            AgentRole::DocVerifier,
+            AgentRole::IntegrationTester,
+            AgentRole::MergeResolver,
+            AgentRole::QuickReviewer,
+            AgentRole::Critic,
+            AgentRole::TerminalValidator,
+            AgentRole::GolemLifecycleTester,
+            AgentRole::SpecDriftDetector,
+            AgentRole::RegressionDetector,
+            AgentRole::PerformanceSentinel,
+            AgentRole::CoverageTracker,
+            AgentRole::PlanLifecycleManager,
+            AgentRole::CrossSystemTester,
+            AgentRole::ErrorDiagnoser,
+            AgentRole::DependencyValidator,
+            AgentRole::PatternExtractor,
+            AgentRole::SnapshotComparator,
+            AgentRole::FullLoopValidator,
         ];
         for role in roles {
             let selector = ToolSelector::for_role(role);
             assert!(
                 selector.is_allowed("read_file"),
                 "{role:?} should have read_file access"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_roles_cannot_write_or_exec() {
+        let read_only_roles = [
+            AgentRole::SpecDriftDetector,
+            AgentRole::RegressionDetector,
+            AgentRole::PerformanceSentinel,
+            AgentRole::CoverageTracker,
+            AgentRole::PatternExtractor,
+            AgentRole::SnapshotComparator,
+        ];
+        for role in read_only_roles {
+            let selector = ToolSelector::for_role(role);
+            assert!(
+                selector.is_allowed("read_file"),
+                "{role:?} should have read_file access"
+            );
+            assert!(
+                !selector.is_allowed("write_file"),
+                "{role:?} should NOT have write_file access"
+            );
+            assert!(
+                !selector.is_allowed("bash"),
+                "{role:?} should NOT have bash access"
+            );
+        }
+    }
+
+    #[test]
+    fn test_roles_have_exec_but_not_write() {
+        let test_roles = [
+            AgentRole::TerminalValidator,
+            AgentRole::GolemLifecycleTester,
+            AgentRole::CrossSystemTester,
+            AgentRole::FullLoopValidator,
+        ];
+        for role in test_roles {
+            let selector = ToolSelector::for_role(role);
+            assert!(
+                selector.is_allowed("read_file"),
+                "{role:?} should have read_file access"
+            );
+            assert!(
+                selector.is_allowed("bash"),
+                "{role:?} should have bash access"
+            );
+            assert!(
+                !selector.is_allowed("write_file"),
+                "{role:?} should NOT have write_file access"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_roles_have_exec_but_not_write() {
+        let diag_roles = [AgentRole::ErrorDiagnoser, AgentRole::DependencyValidator];
+        for role in diag_roles {
+            let selector = ToolSelector::for_role(role);
+            assert!(
+                selector.is_allowed("read_file"),
+                "{role:?} should have read_file access"
+            );
+            assert!(
+                selector.is_allowed("bash"),
+                "{role:?} should have bash access"
+            );
+            assert!(
+                !selector.is_allowed("write_file"),
+                "{role:?} should NOT have write_file access"
+            );
+        }
+    }
+
+    #[test]
+    fn no_role_returns_empty_set() {
+        // Verify that no role falls through to an allow-all empty set.
+        // Every variant of AgentRole must return a non-empty base tool set.
+        let all_roles = [
+            AgentRole::Conductor,
+            AgentRole::Strategist,
+            AgentRole::Implementer,
+            AgentRole::Architect,
+            AgentRole::Researcher,
+            AgentRole::Auditor,
+            AgentRole::QuickReviewer,
+            AgentRole::Scribe,
+            AgentRole::Critic,
+            AgentRole::AutoFixer,
+            AgentRole::Refactorer,
+            AgentRole::PrePlanner,
+            AgentRole::DocVerifier,
+            AgentRole::IntegrationTester,
+            AgentRole::MergeResolver,
+            AgentRole::TerminalValidator,
+            AgentRole::GolemLifecycleTester,
+            AgentRole::SpecDriftDetector,
+            AgentRole::RegressionDetector,
+            AgentRole::PerformanceSentinel,
+            AgentRole::CoverageTracker,
+            AgentRole::PlanLifecycleManager,
+            AgentRole::CrossSystemTester,
+            AgentRole::ErrorDiagnoser,
+            AgentRole::DependencyValidator,
+            AgentRole::PatternExtractor,
+            AgentRole::SnapshotComparator,
+            AgentRole::FullLoopValidator,
+        ];
+        for role in all_roles {
+            let selector = ToolSelector::for_role(role);
+            assert!(
+                selector.base_tool_count() > 0,
+                "{role:?} must have a non-empty base tool set (empty = allow-all = security hole)"
             );
         }
     }

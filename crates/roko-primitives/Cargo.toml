@@ -14,6 +14,7 @@ workspace = true
 
 [features]
 default = []
+# Dormant: guarded in hdc.rs but never enabled by any workspace member.
 rkyv = ["dep:rkyv"]
 
 [dependencies]

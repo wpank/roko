@@ -11,6 +11,9 @@ description = "Agent trait and backends for Roko: spawn LLMs (Claude, exec'd CLI
 workspace = true
 
 [features]
+# Gates the `live` integration-test module in tests/provider_integration.rs.
+# Run with: cargo test -p roko-agent --features integration
+# Requires real API keys (e.g. ZAI_API_KEY) to be set.
 integration = []
 
 [dependencies]

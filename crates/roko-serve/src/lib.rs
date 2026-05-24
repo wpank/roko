@@ -100,9 +100,10 @@ pub mod truth_map;
 pub use crate::routes::reload_config_from_disk;
 pub use crate::sanitize::sanitize_agent_content;
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as AnyhowContext, Result};
@@ -334,7 +335,10 @@ impl ServerBuilder {
         let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
         let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
         let _feedback_loop = feedback::start_feedback_loop(Arc::clone(&state));
-        let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state));
+        let bridge_dedup = BridgeDedup::new();
+        let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
+        let _orchestrator_bridge =
+            start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
         let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
         let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
         let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
@@ -785,9 +789,12 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     let roko_config = roko_config.as_ref().clone();
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
     let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
-    let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state));
-    // NOTE: start_orchestrator_event_bridge is intentionally NOT started here.
-    // It creates a feedback loop: EventBus → StateHub → EventBus → ∞.
+    // Both bridges share a BridgeDedup so they can run simultaneously without
+    // creating a feedback loop (EventBus -> StateHub -> EventBus -> ...).
+    let bridge_dedup = BridgeDedup::new();
+    let _state_hub_bridge = start_state_hub_bridge(Arc::clone(&state), bridge_dedup.clone());
+    let _orchestrator_bridge =
+        start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
     let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
     let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
     let router = build_server_router(
@@ -1230,15 +1237,100 @@ fn scan_knowledge_entries(
         .collect()
 }
 
-fn start_state_hub_bridge(state: Arc<AppState>) -> JoinHandle<()> {
+// ---------------------------------------------------------------------------
+// Bridge deduplication
+// ---------------------------------------------------------------------------
+
+/// Shared dedup state for the bidirectional EventBus <-> StateHub bridges.
+///
+/// When both `start_state_hub_bridge` (EventBus -> StateHub) and
+/// `start_orchestrator_event_bridge` (StateHub -> EventBus) run simultaneously,
+/// a naive setup creates an infinite loop:
+///
+/// ```text
+/// REST handler -> EventBus -> Bridge A -> StateHub -> Bridge B -> EventBus -> ...
+/// ```
+///
+/// `BridgeDedup` breaks the cycle by tracking which sequence numbers on each
+/// bus were produced by a bridge. The other bridge skips those seqs.
+///
+/// The sets are bounded: once an entry is consumed (checked + removed) or the
+/// set exceeds `MAX_TRACKED`, the oldest entries are drained.
+#[derive(Clone)]
+struct BridgeDedup {
+    /// StateHub seqs produced by Bridge A (state_hub_bridge).
+    /// Bridge B checks this before converting Dashboard -> Server.
+    dashboard_seqs: Arc<StdMutex<HashSet<u64>>>,
+    /// EventBus seqs produced by Bridge B (orchestrator_event_bridge).
+    /// Bridge A checks this before converting Server -> Dashboard.
+    server_seqs: Arc<StdMutex<HashSet<u64>>>,
+}
+
+impl BridgeDedup {
+    /// Maximum tracked seqs per direction before we drain.
+    const MAX_TRACKED: usize = 4096;
+
+    fn new() -> Self {
+        Self {
+            dashboard_seqs: Arc::new(StdMutex::new(HashSet::new())),
+            server_seqs: Arc::new(StdMutex::new(HashSet::new())),
+        }
+    }
+
+    /// Record a StateHub seq as bridge-produced. Called by Bridge A.
+    fn mark_dashboard_seq(&self, seq: u64) {
+        let mut set = self
+            .dashboard_seqs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if set.len() >= Self::MAX_TRACKED {
+            set.clear();
+        }
+        set.insert(seq);
+    }
+
+    /// Check if a StateHub seq was bridge-produced. Called by Bridge B.
+    /// Returns true if the seq was bridged (and should be skipped).
+    fn is_bridged_dashboard_seq(&self, seq: u64) -> bool {
+        let mut set = self
+            .dashboard_seqs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(&seq)
+    }
+
+    /// Record an EventBus seq as bridge-produced. Called by Bridge B.
+    fn mark_server_seq(&self, seq: u64) {
+        let mut set = self.server_seqs.lock().unwrap_or_else(|e| e.into_inner());
+        if set.len() >= Self::MAX_TRACKED {
+            set.clear();
+        }
+        set.insert(seq);
+    }
+
+    /// Check if an EventBus seq was bridge-produced. Called by Bridge A.
+    /// Returns true if the seq was bridged (and should be skipped).
+    fn is_bridged_server_seq(&self, seq: u64) -> bool {
+        let mut set = self.server_seqs.lock().unwrap_or_else(|e| e.into_inner());
+        set.remove(&seq)
+    }
+}
+
+fn start_state_hub_bridge(state: Arc<AppState>, dedup: BridgeDedup) -> JoinHandle<()> {
     let mut rx = state.event_bus.subscribe();
     let sender = state.state_hub.sender();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(envelope) => {
+                    // Skip events that were placed on the EventBus by the
+                    // orchestrator bridge (Bridge B) to break the cycle.
+                    if dedup.is_bridged_server_seq(envelope.seq) {
+                        continue;
+                    }
                     if let Some(event) = server_event_to_dashboard(&envelope.payload) {
-                        sender.publish(event);
+                        let dashboard_seq = sender.publish(event);
+                        dedup.mark_dashboard_seq(dashboard_seq);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -1550,25 +1642,41 @@ fn dashboard_model_label(model: &str, fallback: &str) -> String {
 /// This is the reverse direction of [`start_state_hub_bridge`] which pushes
 /// REST-triggered `ServerEvent`s into the `StateHub` for the TUI.
 ///
-/// # Bridge-loop risk
+/// # Deduplication
 ///
-/// This bridge is intentionally **not** started from `run_server_with_state`
-/// to avoid a feedback loop: REST handler publishes `ServerEvent` ->
-/// `start_state_hub_bridge` converts it to `DashboardEvent` on `StateHub` ->
-/// this bridge converts it back to `ServerEvent` on `EventBus` -> infinite
-/// loop. It is only safe to start when the server knows that StateHub events
-/// originate exclusively from orchestrator/CLI callers (not from REST
-/// handlers that already publish to the EventBus).
+/// When both bridges run simultaneously, a naive setup creates an infinite
+/// loop: REST -> EventBus -> Bridge A -> StateHub -> Bridge B -> EventBus -> ...
+///
+/// The `dedup` parameter carries shared seq tracking: each bridge marks the
+/// seqs it produces on the destination bus, and the other bridge skips those
+/// seqs. Pass the same [`BridgeDedup`] instance to both bridges.
+///
+/// For backward compatibility with callers that only run this bridge (no
+/// `start_state_hub_bridge`), a default no-dedup overload is provided.
 #[doc(hidden)]
 pub fn start_orchestrator_event_bridge(state: Arc<AppState>) -> JoinHandle<()> {
+    start_orchestrator_event_bridge_dedup(state, BridgeDedup::new())
+}
+
+/// Like [`start_orchestrator_event_bridge`] but with shared dedup state.
+fn start_orchestrator_event_bridge_dedup(
+    state: Arc<AppState>,
+    dedup: BridgeDedup,
+) -> JoinHandle<()> {
     let mut rx = state.state_hub.subscribe_events();
     let bus = state.event_bus.clone();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(envelope) => {
+                    // Skip events that were placed on the StateHub by the
+                    // state-hub bridge (Bridge A) to break the cycle.
+                    if dedup.is_bridged_dashboard_seq(envelope.seq) {
+                        continue;
+                    }
                     if let Some(server_event) = dashboard_event_to_server(&envelope.payload) {
-                        bus.publish(server_event);
+                        let server_seq = bus.publish(server_event);
+                        dedup.mark_server_seq(server_seq);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -1698,8 +1806,6 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         }),
         // Unmapped variants (Diagnosis, ExperimentWinnersUpdated, CFactorTrendUpdated,
         // CascadeRouterUpdated, GateThresholdsUpdated, etc.) are dropped.
-        // FIXME: bridge loop — REST-originated events appear twice on EventBus
-        // (once from REST, once via StateHub→EventBus). Accepted for now.
         _ => None,
     }
 }

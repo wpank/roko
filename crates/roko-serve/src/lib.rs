@@ -797,6 +797,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
         start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
     let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
     let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
+    let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
     let router = build_server_router(
         Arc::clone(&state),
         &roko_config.server.cors_origins,
@@ -2093,16 +2094,26 @@ fn start_demurrage_timer(state: Arc<AppState>) -> JoinHandle<()> {
 ///
 /// Failures are logged but never crash the server.
 fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
-    // Default: run every hour.
-    const DEFAULT_INTERVAL_SECS: u64 = 3600;
-    // Default: archive engrams older than 7 days.
-    const DEFAULT_MAX_AGE_MS: i64 = 7 * 24 * 3600 * 1000;
-    // Default: archive up to 500 engrams per tick.
-    const DEFAULT_BATCH_SIZE: usize = 500;
+    let cold_cfg = state.load_roko_config().cold_storage.clone();
+
+    if !cold_cfg.enabled {
+        info!("cold archival timer: disabled via config");
+        return tokio::spawn(async {});
+    }
+
+    let interval_secs = cold_cfg.interval_secs;
+    let max_age_ms = cold_cfg.max_age_ms();
+    let batch_size = cold_cfg.batch_size;
+
+    info!(
+        interval_secs,
+        max_age_days = cold_cfg.max_age_days,
+        batch_size,
+        "cold archival timer: starting scheduled background task"
+    );
 
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(DEFAULT_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
 
         // Skip the first immediate tick — let the server warm up.
         interval.tick().await;
@@ -2120,7 +2131,7 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
             }
 
             // -- Phase 1: cold-archive aged-out engrams ----------------------
-            match run_cold_archival_tick(&roko_dir, DEFAULT_MAX_AGE_MS, DEFAULT_BATCH_SIZE).await {
+            match run_cold_archival_tick(&roko_dir, max_age_ms, batch_size).await {
                 Ok(0) => {
                     debug!("cold archival tick: no engrams to archive");
                 }

@@ -242,6 +242,13 @@ impl SafetyLayer {
     /// (a compile-time bug, not a runtime condition).
     #[must_use]
     pub fn with_defaults() -> Self {
+        // Use a hardened default contract rather than a permissive one.
+        // The `default` role has no bundled YAML, so without this the
+        // contract would have zero restrictions.  We apply the same
+        // invariants/governance as `AgentContract::restricted` but leave
+        // `allowed_tools = None` so the TOML role-tools whitelist (or lack
+        // thereof) remains the binding tool-access constraint.
+        let contract = AgentContract::hardened_default("default");
         Self {
             bash_policy: BashPolicy::with_defaults(),
             git_policy: GitPolicy::default(),
@@ -251,7 +258,7 @@ impl SafetyLayer {
             rate_limiter: Some(Arc::new(RateLimiter::with_defaults())),
             safety_budget: None,
             role: "default".into(),
-            contract: AgentContract::permissive("default"),
+            contract,
             warrant: None,
             role_tools: HashMap::new(),
             role_overrides: HashMap::new(),

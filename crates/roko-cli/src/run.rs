@@ -1996,7 +1996,10 @@ async fn dispatch_agent(
     ctx: &Context,
     strategy: Option<BenchStrategy>,
 ) -> Result<DispatchOutcome> {
-    // TODO(gateway): migrate to ModelCallService.
+    // NOTE: The non-legacy `run_once` (cfg(not(legacy-orchestrate))) already
+    // uses `ModelCallService` via `dispatch_bench_prompt`. This legacy path is
+    // only compiled behind `--features legacy-orchestrate` and will be removed
+    // once the feature flag is dropped entirely.
     let routing_config = roko_core::config::loader::load_config_unified(workdir)
         .with_context(|| format!("load routing config from {}", workdir.display()))?;
     let has_routing = !routing_config.providers.is_empty() || !routing_config.models.is_empty();

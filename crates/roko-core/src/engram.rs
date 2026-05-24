@@ -772,4 +772,235 @@ mod tests {
         s.touch();
         assert!((s.balance - 1.0).abs() < f64::EPSILON);
     }
+
+    // ─── Additional coverage ────────────────────────────────────────────────
+
+    #[test]
+    fn builder_sets_all_fields() {
+        let fp = HdcFingerprint::new(HdcVector::from_seed(b"test"), 5);
+        let att = Attestation {
+            signature: crate::attestation::Ed25519Signature([1; 64]),
+            public_key: crate::attestation::PublicKey([2; 32]),
+            chain_attestation: None,
+        };
+        let emo = EmotionalTag::new(
+            crate::PadVector::new(0.3, -0.5, 0.1),
+            0.8,
+            "curiosity",
+            crate::PadVector::new(0.3, -0.5, 0.1),
+        );
+        let prov = Provenance::agent("builder-test");
+        let score = Score::new(0.9, 0.4, 2.0, 1.5);
+        let parent_hash = ContentHash([42; 32]);
+
+        let e = Engram::builder(Kind::Episode)
+            .body(Body::text("payload"))
+            .decay(Decay::Ttl { ttl_ms: 5000 })
+            .provenance(prov.clone())
+            .score(score)
+            .created_at_ms(12345)
+            .lineage([parent_hash])
+            .tag("env", "test")
+            .tag("run_id", "7")
+            .fingerprint(fp)
+            .attestation(att.clone())
+            .emotional_tag(emo.clone())
+            .balance(0.75)
+            .build();
+
+        assert_eq!(e.kind, Kind::Episode);
+        assert_eq!(e.body, Body::text("payload"));
+        assert_eq!(e.decay, Decay::Ttl { ttl_ms: 5000 });
+        assert_eq!(e.provenance.author, "builder-test");
+        assert_eq!(e.score, score);
+        assert_eq!(e.created_at_ms, 12345);
+        assert_eq!(e.lineage, vec![parent_hash]);
+        assert_eq!(e.tag("env"), Some("test"));
+        assert_eq!(e.tag("run_id"), Some("7"));
+        assert_eq!(e.fingerprint, Some(fp));
+        assert_eq!(e.attestation, Some(att));
+        assert_eq!(e.emotional_tag, Some(emo));
+        assert!((e.balance - 0.75).abs() < f64::EPSILON);
+        // id should be the computed content hash, not the placeholder
+        assert_ne!(e.id, ContentHash([0; 32]));
+        assert_eq!(e.id, e.content_hash());
+    }
+
+    #[test]
+    fn content_hash_deterministic_complex() {
+        // Two engrams with identical identity fields (kind, body, provenance,
+        // lineage, tags) but different non-identity fields (score, decay,
+        // timestamp, attestation, emotional_tag, fingerprint, balance) must
+        // produce the same content hash.
+        let parent = ContentHash([99; 32]);
+        let build = |score, decay, ts, balance| {
+            Engram::builder(Kind::Prompt)
+                .body(Body::text("complex payload"))
+                .provenance(Provenance::agent("author-x"))
+                .lineage([parent])
+                .tag("k1", "v1")
+                .tag("k2", "v2")
+                .score(score)
+                .decay(decay)
+                .created_at_ms(ts)
+                .balance(balance)
+                .build()
+        };
+
+        let a = build(Score::new(0.1, 0.0, 0.0, 1.0), Decay::None, 100, 1.0);
+        let b = build(
+            Score::new(0.9, 1.0, 5.0, 3.0),
+            Decay::HalfLife { half_life_ms: 999 },
+            200,
+            0.5,
+        );
+        assert_eq!(a.id, b.id);
+    }
+
+    #[test]
+    fn content_hash_differs_on_kind() {
+        let a = Engram::builder(Kind::Task)
+            .body(Body::text("same"))
+            .created_at_ms(0)
+            .build();
+        let b = Engram::builder(Kind::Prompt)
+            .body(Body::text("same"))
+            .created_at_ms(0)
+            .build();
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn content_hash_differs_on_provenance_author() {
+        let a = Engram::builder(Kind::Task)
+            .body(Body::text("same"))
+            .provenance(Provenance::agent("alice"))
+            .created_at_ms(0)
+            .build();
+        let b = Engram::builder(Kind::Task)
+            .body(Body::text("same"))
+            .provenance(Provenance::agent("bob"))
+            .created_at_ms(0)
+            .build();
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn content_hash_differs_on_lineage() {
+        let a = Engram::builder(Kind::Task)
+            .body(Body::text("same"))
+            .lineage([ContentHash([1; 32])])
+            .created_at_ms(0)
+            .build();
+        let b = Engram::builder(Kind::Task)
+            .body(Body::text("same"))
+            .lineage([ContentHash([2; 32])])
+            .created_at_ms(0)
+            .build();
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn weight_at_creation_time_equals_effective_score() {
+        let score = Score::new(0.8, 0.2, 1.0, 1.5);
+        let e = Engram::builder(Kind::Task)
+            .score(score)
+            .decay(Decay::HalfLife { half_life_ms: 1000 })
+            .created_at_ms(1000)
+            .build();
+        // At creation time (age = 0), decay multiplier = 1.0
+        let w = e.weight_at(1000);
+        assert!((w - score.effective()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weight_at_with_no_decay() {
+        let score = Score::new(0.6, 0.0, 0.0, 1.0);
+        let e = Engram::builder(Kind::Task)
+            .score(score)
+            .decay(Decay::None)
+            .created_at_ms(0)
+            .build();
+        // Decay::None always returns 1.0, so weight = score.effective() at any time.
+        assert!((e.weight_at(0) - score.effective()).abs() < 1e-6);
+        assert!((e.weight_at(1_000_000) - score.effective()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weight_at_decays_over_two_half_lives() {
+        let score = Score::new(1.0, 0.0, 0.0, 1.0); // effective = 1.0
+        let e = Engram::builder(Kind::Task)
+            .score(score)
+            .decay(Decay::HalfLife { half_life_ms: 500 })
+            .created_at_ms(0)
+            .build();
+        // After 2 half-lives (1000ms), weight = 1.0 * 0.25 = 0.25
+        assert!((e.weight_at(1000) - 0.25).abs() < 1e-6);
+        // After 3 half-lives (1500ms), weight = 1.0 * 0.125 = 0.125
+        assert!((e.weight_at(1500) - 0.125).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weight_at_with_ttl_decay() {
+        let score = Score::new(0.8, 0.0, 0.0, 1.0); // effective = 0.8
+        let e = Engram::builder(Kind::Task)
+            .score(score)
+            .decay(Decay::Ttl { ttl_ms: 2000 })
+            .created_at_ms(100)
+            .build();
+        // Before TTL expires: weight = score.effective() * 1.0
+        assert!((e.weight_at(100) - score.effective()).abs() < 1e-6);
+        assert!((e.weight_at(1500) - score.effective()).abs() < 1e-6);
+        // After TTL expires: weight = score.effective() * 0.0 = 0.0
+        assert!((e.weight_at(2200)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn serde_roundtrip_all_optional_fields() {
+        let fp = HdcFingerprint::new(HdcVector::from_seed(b"rt"), 2);
+        let att = Attestation {
+            signature: crate::attestation::Ed25519Signature([11; 64]),
+            public_key: crate::attestation::PublicKey([22; 32]),
+            chain_attestation: Some(crate::attestation::ChainAttestation {
+                chain_id: 1,
+                tx_hash: [33; 32],
+                block_number: 42,
+            }),
+        };
+        let emo = EmotionalTag::new(
+            crate::PadVector::new(-0.5, 0.8, 0.0),
+            0.95,
+            "frustration",
+            crate::PadVector::new(-0.5, 0.8, 0.0),
+        );
+        let e = Engram::builder(Kind::GateVerdict)
+            .body(Body::text("all fields"))
+            .decay(Decay::Ebbinghaus {
+                strength: 2.5,
+                scale_ms: 10_000,
+            })
+            .score(Score::new(0.7, 0.3, 1.2, 0.9))
+            .provenance(Provenance::agent("roundtrip-agent"))
+            .created_at_ms(999_999)
+            .lineage([ContentHash([77; 32]), ContentHash([88; 32])])
+            .tag("gate", "compile")
+            .tag("passed", "true")
+            .fingerprint(fp)
+            .attestation(att)
+            .emotional_tag(emo)
+            .balance(0.42)
+            .build();
+
+        let json = serde_json::to_string_pretty(&e).unwrap();
+        let parsed: Engram = serde_json::from_str(&json).unwrap();
+        assert_eq!(e, parsed);
+        // Verify specific fields survived the roundtrip.
+        assert_eq!(parsed.kind, Kind::GateVerdict);
+        assert_eq!(parsed.created_at_ms, 999_999);
+        assert_eq!(parsed.lineage.len(), 2);
+        assert!(parsed.fingerprint.is_some());
+        assert!(parsed.attestation.is_some());
+        assert!(parsed.emotional_tag.is_some());
+        assert!((parsed.balance - 0.42).abs() < f64::EPSILON);
+    }
 }

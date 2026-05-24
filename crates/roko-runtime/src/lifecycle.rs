@@ -618,4 +618,214 @@ mod tests {
         assert!(agent.state().routing_configured);
         assert!(agent.state().mesh_registered);
     }
+
+    // --- AgentLifecycleState serde roundtrips ---
+
+    #[test]
+    fn lifecycle_state_initiated_serde_roundtrip() {
+        let state = AgentLifecycleState::Initiated;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+        assert!(json.contains("\"state\":\"initiated\""));
+    }
+
+    #[test]
+    fn lifecycle_state_provisioning_serde_roundtrip() {
+        let state = AgentLifecycleState::Provisioning;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_active_serde_roundtrip() {
+        let state = AgentLifecycleState::Active;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_suspended_serde_roundtrip() {
+        let state = AgentLifecycleState::Suspended;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_waiting_serde_roundtrip() {
+        let state = AgentLifecycleState::Waiting;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_hibernated_serde_roundtrip() {
+        let state = AgentLifecycleState::Hibernated;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_metamorphosing_serde_roundtrip() {
+        let state = AgentLifecycleState::Metamorphosing;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn lifecycle_state_degraded_all_stages_serde_roundtrip() {
+        for stage in [
+            DegradationStage::ModelDowngrade,
+            DegradationStage::T0Emphasis,
+            DegradationStage::ReducedFrequency,
+            DegradationStage::MonitoringOnly,
+            DegradationStage::BudgetPaused,
+        ] {
+            let state = AgentLifecycleState::Degraded { stage };
+            let json = serde_json::to_string(&state).unwrap();
+            let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+            assert_eq!(state, back, "roundtrip failed for stage {stage:?}");
+        }
+    }
+
+    #[test]
+    fn lifecycle_state_deleted_serde_roundtrip() {
+        let state = AgentLifecycleState::Deleted;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentLifecycleState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    // --- AgentLifecycleState transition sequences ---
+
+    #[test]
+    fn lifecycle_state_standard_transition_sequence() {
+        // Verify the expected progression through states compiles and
+        // the variants are distinct at each step.
+        let states = vec![
+            AgentLifecycleState::Initiated,
+            AgentLifecycleState::Provisioning,
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Suspended,
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Waiting,
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Deleted,
+        ];
+        for window in states.windows(2) {
+            assert_ne!(
+                window[0], window[1],
+                "consecutive states should differ: {:?} -> {:?}",
+                window[0], window[1]
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_state_degradation_transition() {
+        let before = AgentLifecycleState::Active;
+        let after = AgentLifecycleState::Degraded {
+            stage: DegradationStage::ModelDowngrade,
+        };
+        assert_ne!(before, after);
+
+        // Degraded states with different stages are not equal
+        let other = AgentLifecycleState::Degraded {
+            stage: DegradationStage::BudgetPaused,
+        };
+        assert_ne!(after, other);
+    }
+
+    #[test]
+    fn lifecycle_state_metamorphosis_transition() {
+        let active = AgentLifecycleState::Active;
+        let metamorphosing = AgentLifecycleState::Metamorphosing;
+        let back_to_active = AgentLifecycleState::Active;
+        assert_ne!(active, metamorphosing);
+        assert_eq!(active, back_to_active);
+    }
+
+    // --- LifecycleTransition ---
+
+    #[test]
+    fn lifecycle_transition_new_captures_fields() {
+        let t = LifecycleTransition::new(
+            "agent-007",
+            AgentLifecycleState::Initiated,
+            AgentLifecycleState::Provisioning,
+            LifecycleTransitionReason::ManifestValidated,
+        );
+        assert_eq!(t.agent_id, "agent-007");
+        assert_eq!(t.from, AgentLifecycleState::Initiated);
+        assert_eq!(t.to, AgentLifecycleState::Provisioning);
+        assert_eq!(t.reason, LifecycleTransitionReason::ManifestValidated);
+    }
+
+    #[test]
+    fn lifecycle_transition_new_sets_timestamp() {
+        let before = chrono::Utc::now();
+        let t = LifecycleTransition::new(
+            "agent-1",
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Suspended,
+            LifecycleTransitionReason::OperatorPause,
+        );
+        let after = chrono::Utc::now();
+        assert!(t.occurred_at >= before && t.occurred_at <= after);
+    }
+
+    #[test]
+    fn lifecycle_transition_accepts_string_types_for_agent_id() {
+        // &str
+        let t1 = LifecycleTransition::new(
+            "a",
+            AgentLifecycleState::Initiated,
+            AgentLifecycleState::Active,
+            LifecycleTransitionReason::RuntimeReady,
+        );
+        assert_eq!(t1.agent_id, "a");
+
+        // String
+        let t2 = LifecycleTransition::new(
+            String::from("b"),
+            AgentLifecycleState::Initiated,
+            AgentLifecycleState::Active,
+            LifecycleTransitionReason::RuntimeReady,
+        );
+        assert_eq!(t2.agent_id, "b");
+    }
+
+    #[test]
+    fn lifecycle_transition_serde_roundtrip() {
+        let t = LifecycleTransition::new(
+            "agent-42",
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Degraded {
+                stage: DegradationStage::ReducedFrequency,
+            },
+            LifecycleTransitionReason::BudgetConstrained,
+        );
+        let json = serde_json::to_string(&t).unwrap();
+        let back: LifecycleTransition = serde_json::from_str(&json).unwrap();
+        assert_eq!(t, back);
+    }
+
+    #[test]
+    fn lifecycle_transition_reason_custom_serde_roundtrip() {
+        let t = LifecycleTransition::new(
+            "agent-x",
+            AgentLifecycleState::Active,
+            AgentLifecycleState::Waiting,
+            LifecycleTransitionReason::Custom("manual-override".into()),
+        );
+        let json = serde_json::to_string(&t).unwrap();
+        let back: LifecycleTransition = serde_json::from_str(&json).unwrap();
+        assert_eq!(t.reason, back.reason);
+    }
 }

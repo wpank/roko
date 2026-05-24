@@ -818,4 +818,419 @@ mod tests {
         );
         assert_eq!(PlanStatus::Complete.as_str(), "complete");
     }
+
+    // ── PlanStatus::as_str exhaustive ────────────────────────────────
+
+    #[test]
+    fn plan_status_as_str_all_variants() {
+        let cases: &[(PlanStatus, &str)] = &[
+            (PlanStatus::Pending, "pending"),
+            (PlanStatus::Implementing, "implementing"),
+            (PlanStatus::Gating, "gating"),
+            (PlanStatus::Verifying, "verifying"),
+            (PlanStatus::Reviewing, "reviewing"),
+            (PlanStatus::Ready, "ready"),
+            (PlanStatus::Merging, "merging"),
+            (PlanStatus::Complete, "complete"),
+            (PlanStatus::Failed, "failed"),
+        ];
+        for &(status, expected) in cases {
+            assert_eq!(
+                status.as_str(),
+                expected,
+                "PlanStatus::{status:?}.as_str() should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_status_default_is_pending() {
+        assert_eq!(PlanStatus::default(), PlanStatus::Pending);
+    }
+
+    #[test]
+    fn plan_status_serde_roundtrip_all_variants() {
+        let variants = [
+            PlanStatus::Pending,
+            PlanStatus::Implementing,
+            PlanStatus::Gating,
+            PlanStatus::Verifying,
+            PlanStatus::Reviewing,
+            PlanStatus::Ready,
+            PlanStatus::Merging,
+            PlanStatus::Complete,
+            PlanStatus::Failed,
+        ];
+        for v in variants {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: PlanStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v, "roundtrip failed for {v:?}");
+            // JSON string must match as_str
+            assert_eq!(json, format!("\"{}\"", v.as_str()));
+        }
+    }
+
+    // ── TaskStatus serde roundtrip ───────────────────────────────────
+
+    #[test]
+    fn task_status_serde_roundtrip_all_variants() {
+        let variants = [
+            TaskStatus::Pending,
+            TaskStatus::Active,
+            TaskStatus::Done,
+            TaskStatus::Blocked,
+        ];
+        for v in variants {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v, "roundtrip failed for {v:?}");
+        }
+    }
+
+    #[test]
+    fn task_status_serde_labels() {
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Active).unwrap(),
+            "\"active\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Done).unwrap(),
+            "\"done\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Blocked).unwrap(),
+            "\"blocked\""
+        );
+    }
+
+    // ── TaskComplexityBand escalation chain ──────────────────────────
+
+    #[test]
+    fn complexity_band_escalate_full_chain() {
+        let mut band = TaskComplexityBand::Fast;
+        band = band.escalate();
+        assert_eq!(band, TaskComplexityBand::Standard);
+        band = band.escalate();
+        assert_eq!(band, TaskComplexityBand::Complex);
+        // Saturates
+        band = band.escalate();
+        assert_eq!(band, TaskComplexityBand::Complex);
+        band = band.escalate();
+        assert_eq!(band, TaskComplexityBand::Complex);
+    }
+
+    #[test]
+    fn complexity_band_labels() {
+        assert_eq!(TaskComplexityBand::Fast.label(), "fast");
+        assert_eq!(TaskComplexityBand::Standard.label(), "standard");
+        assert_eq!(TaskComplexityBand::Complex.label(), "complex");
+    }
+
+    // ── Ordering for ranked enums ────────────────────────────────────
+
+    #[test]
+    fn reasoning_level_ordering() {
+        assert!(TaskReasoningLevel::Low < TaskReasoningLevel::Medium);
+        assert!(TaskReasoningLevel::Medium < TaskReasoningLevel::High);
+        // Transitivity
+        assert!(TaskReasoningLevel::Low < TaskReasoningLevel::High);
+    }
+
+    #[test]
+    fn speed_priority_ordering() {
+        assert!(TaskSpeedPriority::Latency < TaskSpeedPriority::Balanced);
+        assert!(TaskSpeedPriority::Balanced < TaskSpeedPriority::Accuracy);
+        assert!(TaskSpeedPriority::Latency < TaskSpeedPriority::Accuracy);
+    }
+
+    #[test]
+    fn quality_profile_ordering() {
+        assert!(TaskQualityProfile::Pragmatic < TaskQualityProfile::Balanced);
+        assert!(TaskQualityProfile::Balanced < TaskQualityProfile::Hardened);
+        assert!(TaskQualityProfile::Pragmatic < TaskQualityProfile::Hardened);
+    }
+
+    #[test]
+    fn context_weight_ordering() {
+        assert!(TaskContextWeight::Slim < TaskContextWeight::Standard);
+        assert!(TaskContextWeight::Standard < TaskContextWeight::Deep);
+        assert!(TaskContextWeight::Slim < TaskContextWeight::Deep);
+    }
+
+    // ── Label methods for all enums ──────────────────────────────────
+
+    #[test]
+    fn task_category_labels() {
+        let cases: &[(TaskCategory, &str)] = &[
+            (TaskCategory::Scaffolding, "scaffolding"),
+            (TaskCategory::Implementation, "implementation"),
+            (TaskCategory::Integration, "integration"),
+            (TaskCategory::Verification, "verification"),
+            (TaskCategory::Research, "research"),
+            (TaskCategory::Refactor, "refactor"),
+            (TaskCategory::Infra, "infra"),
+            (TaskCategory::Docs, "docs"),
+        ];
+        for (cat, expected) in cases {
+            assert_eq!(cat.label(), *expected);
+        }
+    }
+
+    #[test]
+    fn reasoning_level_labels() {
+        assert_eq!(TaskReasoningLevel::Low.label(), "low");
+        assert_eq!(TaskReasoningLevel::Medium.label(), "medium");
+        assert_eq!(TaskReasoningLevel::High.label(), "high");
+    }
+
+    #[test]
+    fn speed_priority_labels() {
+        assert_eq!(TaskSpeedPriority::Latency.label(), "latency");
+        assert_eq!(TaskSpeedPriority::Balanced.label(), "balanced");
+        assert_eq!(TaskSpeedPriority::Accuracy.label(), "accuracy");
+    }
+
+    #[test]
+    fn quality_profile_labels() {
+        assert_eq!(TaskQualityProfile::Pragmatic.label(), "pragmatic");
+        assert_eq!(TaskQualityProfile::Balanced.label(), "balanced");
+        assert_eq!(TaskQualityProfile::Hardened.label(), "hardened");
+    }
+
+    #[test]
+    fn context_weight_labels() {
+        assert_eq!(TaskContextWeight::Slim.label(), "slim");
+        assert_eq!(TaskContextWeight::Standard.label(), "standard");
+        assert_eq!(TaskContextWeight::Deep.label(), "deep");
+    }
+
+    // ── TaskDomain ───────────────────────────────────────────────────
+
+    #[test]
+    fn task_domain_from_label_known_variants() {
+        assert_eq!(TaskDomain::from_label("code"), Some(TaskDomain::Code));
+        assert_eq!(TaskDomain::from_label("coding"), Some(TaskDomain::Code));
+        assert_eq!(TaskDomain::from_label("chain"), Some(TaskDomain::Chain));
+        assert_eq!(
+            TaskDomain::from_label("research"),
+            Some(TaskDomain::Research)
+        );
+        assert_eq!(TaskDomain::from_label("docs"), Some(TaskDomain::Docs));
+        assert_eq!(
+            TaskDomain::from_label("documentation"),
+            Some(TaskDomain::Docs)
+        );
+    }
+
+    #[test]
+    fn task_domain_from_label_custom() {
+        let d = TaskDomain::from_label("defi").unwrap();
+        assert_eq!(d.label(), "defi");
+        assert!(matches!(d, TaskDomain::Custom(s) if s == "defi"));
+    }
+
+    #[test]
+    fn task_domain_from_label_rejects_empty() {
+        assert!(TaskDomain::from_label("").is_none());
+        assert!(TaskDomain::from_label("   ").is_none());
+    }
+
+    #[test]
+    fn task_domain_default_gates() {
+        assert_eq!(
+            TaskDomain::Code.default_gates(),
+            vec!["compile", "test", "clippy", "diff"]
+        );
+        assert!(
+            TaskDomain::Chain
+                .default_gates()
+                .contains(&"invariant-check")
+        );
+        assert_eq!(
+            TaskDomain::Research.default_gates(),
+            vec!["citation-check", "quality"]
+        );
+        assert_eq!(
+            TaskDomain::Docs.default_gates(),
+            vec!["lint", "spell", "link-check"]
+        );
+        assert_eq!(
+            TaskDomain::Custom("mydom".into()).default_gates(),
+            vec!["compile", "test"]
+        );
+    }
+
+    #[test]
+    fn task_domain_serde_roundtrip() {
+        let domains = [
+            TaskDomain::Code,
+            TaskDomain::Chain,
+            TaskDomain::Research,
+            TaskDomain::Docs,
+            TaskDomain::Custom("defi".into()),
+        ];
+        for d in &domains {
+            let json = serde_json::to_string(d).unwrap();
+            let back: TaskDomain = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, d, "roundtrip failed for {d:?}");
+        }
+    }
+
+    // ── Default values ───────────────────────────────────────────────
+
+    #[test]
+    fn task_new_defaults() {
+        let t = Task::new("t99", "some title");
+        assert_eq!(t.id, "t99");
+        assert_eq!(t.title, "some title");
+        assert_eq!(t.status, TaskStatus::Pending);
+        assert!(t.exclusive_files);
+        assert!(t.files.is_empty());
+        assert!(t.depends_on.is_empty());
+        assert!(t.acceptance.is_empty());
+        assert!(t.role.is_none());
+        assert!(t.parallel_group.is_none());
+        assert!(t.estimated_minutes.is_none());
+        assert!(t.category.is_none());
+        assert!(t.complexity_band.is_none());
+        assert!(t.reasoning_level.is_none());
+        assert!(t.speed_priority.is_none());
+        assert!(t.quality_profile.is_none());
+        assert!(t.context_weight.is_none());
+        assert!(t.research_before_edit.is_none());
+        assert!(t.domain.is_none());
+        assert!(t.preferred_model.is_none());
+        assert!(t.preferred_provider.is_none());
+        assert!(t.escalate_on_retry.is_none());
+    }
+
+    #[test]
+    fn task_meta_default_values() {
+        let m = TaskMeta::default();
+        assert_eq!(m.plan, "");
+        assert_eq!(m.total, 0);
+        assert_eq!(m.done, 0);
+        assert_eq!(m.status, PlanStatus::Pending);
+        assert!(m.verify_passed.is_none());
+        assert!(m.last_gate.is_none());
+        assert!(m.completed_at.is_none());
+        assert!(m.max_parallel.is_none());
+        assert!(m.estimated_total_minutes.is_none());
+    }
+
+    #[test]
+    fn task_meta_serde_iteration_default() {
+        // derive(Default) gives iteration=0, but serde default gives 1
+        let from_derive = TaskMeta::default();
+        assert_eq!(from_derive.iteration, 0);
+
+        let from_json: TaskMeta = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_json.iteration, 1);
+
+        // Explicit value preserved
+        let explicit: TaskMeta = serde_json::from_str(r#"{"iteration": 5}"#).unwrap();
+        assert_eq!(explicit.iteration, 5);
+    }
+
+    // ── Serde roundtrips for remaining enums ─────────────────────────
+
+    #[test]
+    fn task_category_serde_roundtrip() {
+        let variants = [
+            TaskCategory::Scaffolding,
+            TaskCategory::Implementation,
+            TaskCategory::Integration,
+            TaskCategory::Verification,
+            TaskCategory::Research,
+            TaskCategory::Refactor,
+            TaskCategory::Infra,
+            TaskCategory::Docs,
+        ];
+        for v in variants {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskCategory = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v, "roundtrip failed for {v:?}");
+        }
+    }
+
+    #[test]
+    fn reasoning_level_serde_roundtrip() {
+        for v in [
+            TaskReasoningLevel::Low,
+            TaskReasoningLevel::Medium,
+            TaskReasoningLevel::High,
+        ] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskReasoningLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn speed_priority_serde_roundtrip() {
+        for v in [
+            TaskSpeedPriority::Latency,
+            TaskSpeedPriority::Balanced,
+            TaskSpeedPriority::Accuracy,
+        ] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskSpeedPriority = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn quality_profile_serde_roundtrip() {
+        for v in [
+            TaskQualityProfile::Pragmatic,
+            TaskQualityProfile::Balanced,
+            TaskQualityProfile::Hardened,
+        ] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskQualityProfile = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn context_weight_serde_roundtrip() {
+        for v in [
+            TaskContextWeight::Slim,
+            TaskContextWeight::Standard,
+            TaskContextWeight::Deep,
+        ] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskContextWeight = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn complexity_band_serde_roundtrip() {
+        for v in [
+            TaskComplexityBand::Fast,
+            TaskComplexityBand::Standard,
+            TaskComplexityBand::Complex,
+        ] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: TaskComplexityBand = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    // ── GlobalTaskId ordering ────────────────────────────────────────
+
+    #[test]
+    fn global_task_id_ord() {
+        let a = GlobalTaskId::new("alpha", "t1");
+        let b = GlobalTaskId::new("alpha", "t2");
+        let c = GlobalTaskId::new("beta", "t1");
+        assert!(a < b, "same plan, task ordering");
+        assert!(b < c, "plan ordering takes priority");
+        assert!(a < c, "transitivity");
+    }
 }

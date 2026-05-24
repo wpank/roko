@@ -1197,4 +1197,450 @@ mod tests {
         // P95 index for 20 elements: 20 * 95 / 100 = 19 → costs[19] = 0.20
         assert!((profiles[0].p95_cost_usd - 0.20).abs() < 1e-9);
     }
+
+    // ── Score construction and field access ─────────────────────────
+
+    #[test]
+    fn efficiency_score_new_stores_fields() {
+        let s = PromptEfficiencyScore::new(0.8, 0.6, 0.4, true);
+        assert!((s.signal_ratio - 0.8).abs() < 1e-9);
+        assert!((s.budget_utilization - 0.6).abs() < 1e-9);
+        assert!((s.cache_efficiency - 0.4).abs() < 1e-9);
+        assert!(s.gate_passed);
+    }
+
+    #[test]
+    fn efficiency_score_new_gate_failed() {
+        let s = PromptEfficiencyScore::new(0.5, 0.5, 0.5, false);
+        assert!(!s.gate_passed);
+    }
+
+    #[test]
+    fn efficiency_score_all_zeros() {
+        let s = PromptEfficiencyScore::new(0.0, 0.0, 0.0, false);
+        assert!((s.signal_ratio).abs() < 1e-9);
+        assert!((s.budget_utilization).abs() < 1e-9);
+        assert!((s.cache_efficiency).abs() < 1e-9);
+        // composite: 0*0.4 + (1-0)*0.2 + 0*0.2 + 0*0.2 = 0.2
+        assert!((s.composite() - 0.2).abs() < 1e-9);
+        assert_eq!(s.grade(), Grade::D);
+    }
+
+    #[test]
+    fn efficiency_score_all_ones_gate_passed() {
+        let s = PromptEfficiencyScore::new(1.0, 1.0, 1.0, true);
+        // composite: 1.0*0.4 + (1-1)*0.2 + 1.0*0.2 + 1.0*0.2 = 0.8
+        assert!((s.composite() - 0.8).abs() < 1e-9);
+        assert_eq!(s.grade(), Grade::A);
+    }
+
+    // ── Grade boundary tests ────────────────────────────────────────
+
+    #[test]
+    fn efficiency_grade_boundary_exactly_0_75() {
+        // Construct score whose composite is exactly 0.75.
+        // 0.4*s + 0.2*(1-b) + 0.2*c + 0.2*g = 0.75
+        // With gate_passed=true (g=1.0): 0.4*s + 0.2*(1-b) + 0.2*c + 0.2 = 0.75
+        // Let b=0, c=0: 0.4*s + 0.2 + 0.2 = 0.75 → 0.4*s = 0.35 → s = 0.875
+        let s = PromptEfficiencyScore::new(0.875, 0.0, 0.0, true);
+        assert!((s.composite() - 0.75).abs() < 1e-9);
+        assert_eq!(s.grade(), Grade::A);
+    }
+
+    #[test]
+    fn efficiency_grade_boundary_just_below_0_75() {
+        // composite = 0.7499... → Grade::B
+        // 0.4*s + 0.2 + 0 + 0.2 = 0.4*s + 0.4
+        // Want 0.7499: 0.4*s = 0.3499 → s = 0.87475
+        let s = PromptEfficiencyScore::new(0.87475, 0.0, 0.0, true);
+        assert!(s.composite() < 0.75);
+        assert_eq!(s.grade(), Grade::B);
+    }
+
+    #[test]
+    fn efficiency_grade_boundary_exactly_0_50() {
+        // 0.4*s + 0.2*(1-b) + 0.2*c + 0.2*g = 0.50
+        // gate_passed=false (g=0), b=0, c=0: 0.4*s + 0.2 = 0.50 → s = 0.75
+        let s = PromptEfficiencyScore::new(0.75, 0.0, 0.0, false);
+        assert!((s.composite() - 0.50).abs() < 1e-9);
+        assert_eq!(s.grade(), Grade::B);
+    }
+
+    #[test]
+    fn efficiency_grade_boundary_just_below_0_50() {
+        let s = PromptEfficiencyScore::new(0.7499, 0.0, 0.0, false);
+        assert!(s.composite() < 0.50);
+        assert_eq!(s.grade(), Grade::C);
+    }
+
+    #[test]
+    fn efficiency_grade_boundary_exactly_0_25() {
+        // 0.4*s + 0.2*(1-b) + 0.2*c + 0 = 0.25
+        // b=1, c=0: 0.4*s = 0.25 → s = 0.625
+        let s = PromptEfficiencyScore::new(0.625, 1.0, 0.0, false);
+        assert!((s.composite() - 0.25).abs() < 1e-9);
+        assert_eq!(s.grade(), Grade::C);
+    }
+
+    #[test]
+    fn efficiency_grade_boundary_just_below_0_25() {
+        let s = PromptEfficiencyScore::new(0.624, 1.0, 0.0, false);
+        assert!(s.composite() < 0.25);
+        assert_eq!(s.grade(), Grade::D);
+    }
+
+    // ── Grade comparison/ordering ───────────────────────────────────
+
+    #[test]
+    fn efficiency_grade_derive_ord_matches_enum_declaration_order() {
+        // Enum variants: A, B, C, D → A < B < C < D (derive Ord uses discriminant order)
+        let mut grades = vec![Grade::D, Grade::A, Grade::C, Grade::B];
+        grades.sort();
+        assert_eq!(grades, vec![Grade::A, Grade::B, Grade::C, Grade::D]);
+    }
+
+    #[test]
+    fn efficiency_grade_numeric_is_inverse_of_ord() {
+        // Grade::A is "best" (numeric 4) but smallest in Ord.
+        assert!(Grade::A < Grade::D);
+        assert!(Grade::A.numeric() > Grade::D.numeric());
+    }
+
+    #[test]
+    fn efficiency_grade_equality() {
+        assert_eq!(Grade::A, Grade::A);
+        assert_ne!(Grade::A, Grade::B);
+    }
+
+    #[test]
+    fn efficiency_grade_hash_consistent() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Grade::A);
+        set.insert(Grade::A);
+        set.insert(Grade::B);
+        assert_eq!(set.len(), 2);
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn efficiency_event_zero_everything() {
+        let e = AgentEfficiencyEvent::default();
+        assert_eq!(e.total_tokens(), 0);
+        assert!((e.cache_hit_rate()).abs() < 1e-9);
+        assert!((e.tool_utilization()).abs() < 1e-9);
+        assert!((e.cache_savings_usd()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_event_max_tokens() {
+        let mut e = AgentEfficiencyEvent::default();
+        e.input_tokens = u64::MAX / 2;
+        e.output_tokens = u64::MAX / 2;
+        // Verify large token counts don't overflow (both halves of MAX)
+        assert_eq!(e.total_tokens(), u64::MAX - 1);
+    }
+
+    #[test]
+    fn efficiency_event_max_cost() {
+        let mut e = AgentEfficiencyEvent::default();
+        e.cost_usd = f64::MAX;
+        e.cost_usd_without_cache = f64::MAX;
+        assert!((e.cache_savings_usd()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_event_cache_hit_rate_full_cache() {
+        let e = make_test_event("Impl", 0.10, 1000, 200, 1000, 5000, 10, 5, false, true);
+        assert!((e.cache_hit_rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_event_tool_utilization_full() {
+        let e = make_test_event("Impl", 0.10, 1000, 200, 0, 5000, 10, 10, false, true);
+        assert!((e.tool_utilization() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_score_clamping_negative_values() {
+        let s = PromptEfficiencyScore::new(-1.0, -1.0, -1.0, false);
+        assert!((s.signal_ratio).abs() < 1e-9);
+        assert!((s.budget_utilization).abs() < 1e-9);
+        assert!((s.cache_efficiency).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_score_clamping_large_values() {
+        let s = PromptEfficiencyScore::new(100.0, 100.0, 100.0, true);
+        assert!((s.signal_ratio - 1.0).abs() < 1e-9);
+        assert!((s.budget_utilization - 1.0).abs() < 1e-9);
+        assert!((s.cache_efficiency - 1.0).abs() < 1e-9);
+    }
+
+    // ── Serialization ───────────────────────────────────────────────
+
+    #[test]
+    fn efficiency_score_serialization_roundtrip() {
+        let s = PromptEfficiencyScore::new(0.85, 0.45, 0.72, true);
+        let json = serde_json::to_string(&s).expect("serialize");
+        let s2: PromptEfficiencyScore = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn efficiency_grade_serialization_roundtrip() {
+        for grade in [Grade::A, Grade::B, Grade::C, Grade::D] {
+            let json = serde_json::to_string(&grade).expect("serialize");
+            let g2: Grade = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(grade, g2);
+        }
+    }
+
+    #[test]
+    fn efficiency_grade_serializes_as_string() {
+        let json = serde_json::to_string(&Grade::A).expect("serialize");
+        assert_eq!(json, r#""A""#);
+        let json = serde_json::to_string(&Grade::D).expect("serialize");
+        assert_eq!(json, r#""D""#);
+    }
+
+    #[test]
+    fn efficiency_role_cost_profile_serialization_roundtrip() {
+        let profile = RoleCostProfile {
+            role: "Implementer".into(),
+            observations: 42,
+            avg_input_tokens: 1500.5,
+            avg_output_tokens: 300.2,
+            avg_cache_hit_rate: 0.35,
+            avg_cost_usd: 0.55,
+            p95_cost_usd: 1.20,
+            cost_per_pass: 0.75,
+            avg_tool_utilization: 0.6,
+            avg_wall_time_ms: 12000.0,
+            warm_start_pct: 0.4,
+            pass_rate: 0.8,
+        };
+        let json = serde_json::to_string(&profile).expect("serialize");
+        let p2: RoleCostProfile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(profile, p2);
+    }
+
+    #[test]
+    fn efficiency_fleet_cfactor_serialization_roundtrip() {
+        let fleet = FleetCFactor {
+            overall: 0.72,
+            components: FleetCFactorComponents {
+                multi_agent_coverage: 0.5,
+                pass_rate: 0.8,
+                cost_efficiency: 0.6,
+                speed: 0.7,
+                turn_taking_equality: 0.9,
+            },
+            plan_count: 3,
+            agent_count: 5,
+            observation_count: 12,
+        };
+        let json = serde_json::to_string(&fleet).expect("serialize");
+        let f2: FleetCFactor = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(fleet, f2);
+    }
+
+    #[test]
+    fn efficiency_frequency_cost_profile_serialization_roundtrip() {
+        let profile = FrequencyCostProfile {
+            frequency: OperatingFrequency::Gamma,
+            observations: 10,
+            avg_cost_usd: 0.42,
+            total_cost_usd: 4.20,
+            pass_rate: 0.7,
+            cost_per_pass: 0.60,
+        };
+        let json = serde_json::to_string(&profile).expect("serialize");
+        let p2: FrequencyCostProfile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(profile, p2);
+    }
+
+    // ── Composite score arithmetic ──────────────────────────────────
+
+    #[test]
+    fn efficiency_composite_gate_passed_adds_0_2() {
+        let failed = PromptEfficiencyScore::new(0.5, 0.5, 0.5, false);
+        let passed = PromptEfficiencyScore::new(0.5, 0.5, 0.5, true);
+        assert!((passed.composite() - failed.composite() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_composite_high_budget_penalized() {
+        // Higher budget_utilization → lower composite (budget headroom = 1 - utilization)
+        let low_budget = PromptEfficiencyScore::new(0.5, 0.2, 0.5, true);
+        let high_budget = PromptEfficiencyScore::new(0.5, 0.8, 0.5, true);
+        assert!(low_budget.composite() > high_budget.composite());
+    }
+
+    // ── Role cost profile edge cases ────────────────────────────────
+
+    #[test]
+    fn efficiency_role_cost_per_successful_task_zero_pass_rate() {
+        let profile = RoleCostProfile {
+            role: "Broken".into(),
+            observations: 5,
+            avg_input_tokens: 1000.0,
+            avg_output_tokens: 200.0,
+            avg_cache_hit_rate: 0.0,
+            avg_cost_usd: 1.0,
+            p95_cost_usd: 1.5,
+            cost_per_pass: 0.0,
+            avg_tool_utilization: 0.5,
+            avg_wall_time_ms: 10000.0,
+            warm_start_pct: 0.0,
+            pass_rate: 0.0,
+        };
+        assert_eq!(profile.cost_per_successful_task(), f64::INFINITY);
+    }
+
+    #[test]
+    fn efficiency_role_cost_per_successful_task_negative_pass_rate() {
+        // Shouldn't happen in practice but the code handles it
+        let profile = RoleCostProfile {
+            role: "Weird".into(),
+            observations: 1,
+            avg_input_tokens: 0.0,
+            avg_output_tokens: 0.0,
+            avg_cache_hit_rate: 0.0,
+            avg_cost_usd: 1.0,
+            p95_cost_usd: 0.0,
+            cost_per_pass: 0.0,
+            avg_tool_utilization: 0.0,
+            avg_wall_time_ms: 0.0,
+            warm_start_pct: 0.0,
+            pass_rate: -0.1,
+        };
+        assert_eq!(profile.cost_per_successful_task(), f64::INFINITY);
+    }
+
+    // ── Fleet C-Factor edge cases ───────────────────────────────────
+
+    #[test]
+    fn efficiency_fleet_cfactor_empty_events() {
+        let fleet = compute_fleet_cfactor(&[]);
+        assert_eq!(fleet.plan_count, 0);
+        assert_eq!(fleet.agent_count, 0);
+        assert_eq!(fleet.observation_count, 0);
+        assert!((fleet.overall).abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_fleet_cfactor_empty_plan_ids_skipped() {
+        let mut e = make_test_event("Impl", 0.10, 100, 20, 0, 1000, 5, 2, false, true);
+        e.plan_id = String::new();
+        let fleet = compute_fleet_cfactor(&[e]);
+        assert_eq!(fleet.plan_count, 0);
+    }
+
+    #[test]
+    fn efficiency_fleet_cfactor_single_agent_single_plan() {
+        let e = make_test_event("Impl", 0.50, 1000, 200, 0, 5000, 10, 5, false, true);
+        let fleet = compute_fleet_cfactor(&[e]);
+        assert_eq!(fleet.plan_count, 1);
+        assert_eq!(fleet.agent_count, 1);
+        assert_eq!(fleet.observation_count, 1);
+        // Single agent → multi_agent_coverage = 0, turn_taking_equality = 0
+        assert!((fleet.components.multi_agent_coverage).abs() < 1e-9);
+        assert!((fleet.components.turn_taking_equality).abs() < 1e-9);
+        assert!((fleet.components.pass_rate - 1.0).abs() < 1e-9);
+    }
+
+    // ── Compute helpers ─────────────────────────────────────────────
+
+    #[test]
+    fn efficiency_role_profiles_empty_input() {
+        let profiles = compute_role_profiles(&[]);
+        assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn efficiency_frequency_profiles_empty_input() {
+        let profiles = compute_frequency_profiles(&[]);
+        assert!(profiles.is_empty());
+    }
+
+    #[test]
+    fn efficiency_role_profile_single_event() {
+        let events = vec![make_test_event(
+            "Solo", 0.42, 900, 180, 450, 7500, 8, 3, true, true,
+        )];
+        let profiles = compute_role_profiles(&events);
+        assert_eq!(profiles.len(), 1);
+        let p = &profiles[0];
+        assert_eq!(p.role, "Solo");
+        assert_eq!(p.observations, 1);
+        assert!((p.avg_cost_usd - 0.42).abs() < 1e-9);
+        assert!((p.avg_input_tokens - 900.0).abs() < 1e-9);
+        assert!((p.avg_output_tokens - 180.0).abs() < 1e-9);
+        assert!((p.avg_cache_hit_rate - 0.5).abs() < 1e-9); // 450/900
+        assert!((p.pass_rate - 1.0).abs() < 1e-9);
+        assert!((p.warm_start_pct - 1.0).abs() < 1e-9);
+        assert!((p.cost_per_pass - 0.42).abs() < 1e-9);
+    }
+
+    // ── Default event helper ────────────────────────────────────────
+
+    #[test]
+    fn efficiency_default_event_is_zeroed() {
+        let e = AgentEfficiencyEvent::default_event();
+        assert!(e.agent_id.is_empty());
+        assert_eq!(e.input_tokens, 0);
+        assert_eq!(e.output_tokens, 0);
+        assert!(!e.gate_passed);
+        assert!(!e.was_warm_start);
+        assert!(e.prompt_sections.is_empty());
+        assert!(e.tool_calls.is_empty());
+    }
+
+    // ── Gini coefficient internals ──────────────────────────────────
+
+    #[test]
+    fn efficiency_gini_perfect_equality() {
+        // All agents have equal turns → Gini = 0
+        let g = gini_coefficient(&[10, 10, 10, 10]);
+        assert!(g.abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_gini_maximum_inequality() {
+        // One agent does everything → Gini close to 1
+        let g = gini_coefficient(&[0, 0, 0, 100]);
+        assert!(g > 0.7); // approaches 0.75 for n=4
+    }
+
+    #[test]
+    fn efficiency_gini_single_element() {
+        let g = gini_coefficient(&[42]);
+        assert!(g.abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_gini_empty() {
+        let g = gini_coefficient(&[]);
+        assert!(g.abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_gini_all_zeros() {
+        let g = gini_coefficient(&[0, 0, 0]);
+        assert!(g.abs() < 1e-9);
+    }
+
+    #[test]
+    fn efficiency_turn_taking_equality_single_agent() {
+        let eq = turn_taking_equality_for_counts(vec![10]);
+        assert!(eq.abs() < 1e-9); // < 2 agents → 0
+    }
+
+    #[test]
+    fn efficiency_turn_taking_equality_even_split() {
+        let eq = turn_taking_equality_for_counts(vec![5, 5, 5]);
+        assert!((eq - 1.0).abs() < 1e-9);
+    }
 }

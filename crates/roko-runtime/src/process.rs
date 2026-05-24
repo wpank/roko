@@ -1351,4 +1351,128 @@ mod tests {
         let b = ProcessId::next();
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn process_id_next_is_monotonic() {
+        let ids: Vec<ProcessId> = (0..100).map(|_| ProcessId::next()).collect();
+        for window in ids.windows(2) {
+            assert!(
+                window[1].0 > window[0].0,
+                "expected {:?} > {:?}",
+                window[1],
+                window[0]
+            );
+        }
+    }
+
+    #[test]
+    fn process_id_display_format() {
+        let id = ProcessId(42);
+        assert_eq!(format!("{id}"), "pid:42");
+    }
+
+    #[test]
+    fn process_id_serde_roundtrip() {
+        let id = ProcessId(99);
+        let json = serde_json::to_string(&id).unwrap();
+        let back: ProcessId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn supervision_strategy_one_for_one_serde_roundtrip() {
+        let strategy = SupervisionStrategy::OneForOne {
+            max_restarts: 5,
+            within_ms: 60_000,
+            fallback_tier: "premium".into(),
+        };
+        let json = serde_json::to_string(&strategy).unwrap();
+        let back: SupervisionStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(strategy, back);
+        assert!(json.contains("\"kind\":\"one_for_one\""));
+    }
+
+    #[test]
+    fn supervision_strategy_one_for_all_serde_roundtrip() {
+        let strategy = SupervisionStrategy::OneForAll { max_restarts: 3 };
+        let json = serde_json::to_string(&strategy).unwrap();
+        let back: SupervisionStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(strategy, back);
+        assert!(json.contains("\"kind\":\"one_for_all\""));
+    }
+
+    #[test]
+    fn supervision_strategy_rest_for_one_serde_roundtrip() {
+        let strategy = SupervisionStrategy::RestForOne { max_restarts: 7 };
+        let json = serde_json::to_string(&strategy).unwrap();
+        let back: SupervisionStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(strategy, back);
+        assert!(json.contains("\"kind\":\"rest_for_one\""));
+    }
+
+    #[test]
+    fn supervision_strategy_default_is_one_for_one() {
+        let strategy = SupervisionStrategy::default();
+        match &strategy {
+            SupervisionStrategy::OneForOne {
+                max_restarts,
+                within_ms,
+                fallback_tier,
+            } => {
+                assert_eq!(*max_restarts, 0);
+                assert_eq!(*within_ms, 0);
+                assert_eq!(fallback_tier, "standard");
+            }
+            other => panic!("expected OneForOne, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supervision_strategy_accessors() {
+        let ofo = SupervisionStrategy::OneForOne {
+            max_restarts: 5,
+            within_ms: 10_000,
+            fallback_tier: "premium".into(),
+        };
+        assert_eq!(ofo.max_restarts(), 5);
+        assert_eq!(ofo.within_ms(), 10_000);
+        assert_eq!(ofo.fallback_tier(), Some("premium"));
+
+        let ofa = SupervisionStrategy::OneForAll { max_restarts: 3 };
+        assert_eq!(ofa.max_restarts(), 3);
+        assert_eq!(ofa.within_ms(), 0);
+        assert_eq!(ofa.fallback_tier(), None);
+
+        let rfo = SupervisionStrategy::RestForOne { max_restarts: 7 };
+        assert_eq!(rfo.max_restarts(), 7);
+        assert_eq!(rfo.within_ms(), 0);
+        assert_eq!(rfo.fallback_tier(), None);
+    }
+
+    #[test]
+    fn default_process_session_ledger_path_format() {
+        let path = default_process_session_ledger_path(Path::new("/workspace"));
+        assert_eq!(
+            path,
+            PathBuf::from("/workspace/.roko/state/process-sessions.json")
+        );
+    }
+
+    #[test]
+    fn default_process_session_ledger_path_nested() {
+        let path = default_process_session_ledger_path(Path::new("/a/b/c"));
+        assert_eq!(
+            path,
+            PathBuf::from("/a/b/c/.roko/state/process-sessions.json")
+        );
+    }
+
+    #[test]
+    fn default_process_session_ledger_path_relative() {
+        let path = default_process_session_ledger_path(Path::new("my-project"));
+        assert_eq!(
+            path,
+            PathBuf::from("my-project/.roko/state/process-sessions.json")
+        );
+    }
 }

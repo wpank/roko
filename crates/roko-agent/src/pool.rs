@@ -597,4 +597,79 @@ mod tests {
         let pool = AgentPool::new(AgentRole::Auditor, agent);
         assert_eq!(pool.role(), AgentRole::Auditor);
     }
+
+    // ── AgentInstanceId::new() construction ─────────────────────────────
+
+    #[test]
+    fn instance_id_new_stores_role_and_instance() {
+        let id = AgentInstanceId::new(AgentRole::Researcher, "plan5-task1");
+        assert_eq!(id.role, AgentRole::Researcher);
+        assert_eq!(id.instance, "plan5-task1");
+    }
+
+    #[test]
+    fn instance_id_new_accepts_owned_string() {
+        let owned = String::from("dynamic-name");
+        let id = AgentInstanceId::new(AgentRole::Strategist, owned);
+        assert_eq!(id.instance, "dynamic-name");
+    }
+
+    #[test]
+    fn instance_id_default_for_uses_default_instance() {
+        let id = AgentInstanceId::default_for(AgentRole::Critic);
+        assert_eq!(id.role, AgentRole::Critic);
+        assert_eq!(id.instance, "default");
+    }
+
+    #[test]
+    fn instance_id_equality_requires_both_fields() {
+        let a = AgentInstanceId::new(AgentRole::Implementer, "t1");
+        let b = AgentInstanceId::new(AgentRole::Implementer, "t1");
+        let c = AgentInstanceId::new(AgentRole::Auditor, "t1");
+        let d = AgentInstanceId::new(AgentRole::Implementer, "t2");
+        assert_eq!(a, b);
+        assert_ne!(a, c); // different role
+        assert_ne!(a, d); // different instance
+    }
+
+    // ── AgentInstanceId::key() format ───────────────────────────────────
+
+    #[test]
+    fn instance_id_key_format_role_dash_instance() {
+        let id = AgentInstanceId::new(AgentRole::Scribe, "plan10-task5");
+        assert_eq!(id.key(), "scribe-plan10-task5");
+    }
+
+    #[test]
+    fn instance_id_key_for_default_instance() {
+        let id = AgentInstanceId::default_for(AgentRole::Architect);
+        assert_eq!(id.key(), "architect-default");
+    }
+
+    // ── AgentInstanceId::matches() pattern matching ─────────────────────
+
+    #[test]
+    fn instance_id_matches_role_prefix() {
+        let id = AgentInstanceId::new(AgentRole::Implementer, "plan1-task2");
+        assert!(id.matches("implementer"));
+    }
+
+    #[test]
+    fn instance_id_matches_full_key() {
+        let id = AgentInstanceId::new(AgentRole::Auditor, "plan3");
+        assert!(id.matches("auditor-plan3"));
+    }
+
+    #[test]
+    fn instance_id_matches_empty_needle() {
+        let id = AgentInstanceId::new(AgentRole::Implementer, "x");
+        assert!(id.matches(""));
+    }
+
+    #[test]
+    fn instance_id_no_match_wrong_needle() {
+        let id = AgentInstanceId::new(AgentRole::Implementer, "plan1");
+        assert!(!id.matches("plan2"));
+        assert!(!id.matches("auditor"));
+    }
 }

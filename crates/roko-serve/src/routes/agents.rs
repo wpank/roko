@@ -1405,7 +1405,9 @@ fn spawn_sidecar_stream(
     tokio::spawn(async move {
         let result =
             proxy_sidecar_stream(state, agent_id, run_id_for_task, ws_url, token, prompt).await;
-        let _ = tx.send(result);
+        if tx.send(result).is_err() {
+            tracing::debug!("sidecar result channel send failed — receiver may have disconnected");
+        }
     });
 
     (run_id, rx)

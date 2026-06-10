@@ -1,0 +1,1792 @@
+# Task Plan 08: UX & CLI
+
+> Covers: `roko next`, run summaries, `--dry-run` enrichment, Context Packs
+> (5-pass funnel), task TOML validation, task auto-splitting, interactive
+> steering, smart context windowing, progressive context refinement, TUI
+> workflow surfaces, Mori-style task ingestion.
+>
+> Source analysis: `impl/08-UX-CLI.md`, `15-UX-PLAN.md`, `15-UX-ISSUES.md`,
+> `09-UX-WORKFLOW-VISION.md`.
+
+---
+
+## Overview
+
+The CLI has 60+ subcommands across 16 command groups but no workflow guidance,
+no clear run verdicts, no preview mode that inspires confidence, no aggregation
+pipeline, and no way to right-size prompts for different model tiers. Every
+agent gets the same monolithic 9-layer prompt regardless of task complexity.
+Task validation is minimal, there is no auto-splitting for large tasks, and
+the TUI is observation-only with no action affordances.
+
+This plan delivers 8 phases (47 tasks) that progressively transform the CLI
+from a bag of commands into a guided workflow engine:
+
+| Phase | Tasks | Summary | LOC |
+|-------|-------|---------|-----|
+| 0 | T1-T7 | `roko next`, run summaries, `--dry-run`, help text | ~1,200 |
+| 1 | T8-T12 | `TaskSpec`, `ContextBudget`, windowing, section pruning | ~1,800 |
+| 2 | T13-T19 | Validation engine (circular deps, file conflicts, pre-flight) | ~1,000 |
+| 3 | T20-T23 | Task auto-splitting (directory, import chain, acceptance) | ~1,100 |
+| 4 | T24-T31 | Context Packs, 4 funnel passes, pipeline, corpus management | ~2,800 |
+| 5 | T32-T35 | `roko ingest`, per-pass re-run, `--approve-each`, `--cost-cap` | ~900 |
+| 6 | T36-T38 | Mori-style plan ingest, filesystem watcher, `GlobalTaskId` | ~1,000 |
+| 7 | T39-T44 | TUI: task detail, pause/resume, tier indicators, cost, batch | ~1,200 |
+| 8 | T45-T47 | Context slice wiring, prior task outputs, inline progress | ~700 |
+| **Total** | **T1-T47** | | **~11,700** |
+
+**Critical path**: Phase 0 -> Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 8.
+
+**Parallel workstreams**:
+- Phase 7 (TUI) can start after T8 (TaskSpec types).
+- T34-T35 (approve-each, cost-cap) can start after T4 (run summary).
+- Phase 6 (Mori ingestion) can start after T19 (validation wiring).
+
+---
+
+## Anti-Patterns to Remove
+
+### AP-1: No workflow guidance
+
+The CLI has 60+ subcommands but no `roko next` or workspace state inspection.
+Running bare `roko` drops into a REPL with no suggestions. Users cannot
+discover what to do next.
+
+**Where it lives**: `crates/roko-cli/src/unified.rs` (212 LOC) handles bare
+invocation and goes straight to REPL. `main.rs` (4,423 LOC) has a flat
+`after_long_help` text that groups commands without workflow ordering.
+
+**Fixed by**: T1-T3, T7.
+
+### AP-2: No end-of-run verdicts
+
+After `roko plan run` completes, there is no aggregate summary. The user
+must read `.roko/episodes.jsonl` manually to determine what happened.
+`PlanRunSummary` exists in `runner/types.rs` (line 474) but contains only
+`plan_id`, `completed`, `tasks_total`, `tasks_completed`, `tasks_failed` --
+no cost, no duration, no per-failure detail, no resume command.
+
+**Where it lives**: `crates/roko-cli/src/runner/event_loop.rs` (3,136 LOC)
+exits without a summary. `crates/roko-cli/src/runner/types.rs` (1,568 LOC)
+has the skeletal `PlanRunSummary`.
+
+**Fixed by**: T4, T5.
+
+### AP-3: Monolithic prompt assembly ignoring task complexity
+
+`SystemPromptBuilder` (2,081 LOC) produces the same 9-layer prompt for all
+tasks. A trivial rename task gets the same prompt structure as a cross-crate
+architectural refactor. The existing `budget.rs` (269 LOC) in roko-compose
+has `Complexity` (Trivial/Standard/Complex) and `AdjustedBudget` with section
+dropping, but this is NOT wired into the dispatch path -- the prompt assembly
+service (`prompt_assembly_service.rs`, 1,048 LOC) and the event loop
+(`event_loop.rs`) do not consult it.
+
+`ContextBudgets` exists in `context_provider.rs` (line 1260) with
+`surgical`/`focused`/`full` tiers, but these are per-tier token budgets for
+context bidders, not per-section prompt budgets.
+
+`TaskComplexityBand` exists in `roko-core/src/task.rs` (line 96) with
+`Fast`/`Standard`/`Complex` variants. The compose crate mirrors this as a
+local `Complexity` enum.
+
+**Where it lives**: `crates/roko-compose/src/budget.rs` (built but unwired),
+`crates/roko-compose/src/system_prompt_builder.rs` (no budget enforcement),
+`crates/roko-compose/src/context_provider.rs` (ContextBudgets for bidders only).
+
+**Fixed by**: T8-T12.
+
+### AP-4: Task metadata overload for smaller agents
+
+`TaskDef` in `task_parser.rs` (line 49) has 20+ fields including routing
+metadata (`model_hint`, `replan_strategy`, `frequency`) that are dispatcher
+hints, not agent instructions. All fields are serialized into the agent
+prompt. There is no routing/agent separation, no tier-aware filtering.
+
+**Where it lives**: `crates/roko-cli/src/task_parser.rs` (1,898 LOC).
+
+**Fixed by**: T8, T11.
+
+### AP-5: Minimal task validation
+
+`roko plan validate` exists (`plan_validate.rs`, 1,517 LOC) and is called
+from `commands/plan.rs` (line 200), but it performs only structural validation
+(TOML parse, required field presence). No circular dependency detection, no
+file conflict detection, no acceptance criteria format check, no complexity
+tier consistency check. The DAG module (`dag.rs`, 2,557 LOC in
+roko-orchestrator) does cycle detection internally but does not expose it
+as a pre-flight validation step.
+
+**Where it lives**: `crates/roko-cli/src/plan_validate.rs`,
+`crates/roko-cli/src/commands/plan.rs` (line 200).
+
+**Fixed by**: T13-T19.
+
+### AP-6: No aggregation or corpus management
+
+The user's workflow starts with gathering context. Today this is done by
+pasting into external Claude sessions. There is no `roko ingest`, no
+`roko pack`, no corpus management. `RepoContextPack` exists in
+`commands/prd.rs` for PRD generation but is not a general-purpose corpus.
+
+**Where it lives**: Nowhere. Does not exist.
+
+**Fixed by**: T24-T31, T32.
+
+### AP-7: TUI is observation-only
+
+The TUI (state.rs 4,968 LOC + dashboard.rs 6,383 LOC) displays plan
+execution but offers no action affordances. `task_detail.rs` (177 LOC) shows
+gate results only. `batch_review.rs` (164 LOC) exists as a modal but has no
+orchestrator trigger. No pause/resume, no single-task retry, no cost display.
+
+**Where it lives**: `crates/roko-cli/src/tui/modals/task_detail.rs`,
+`crates/roko-cli/src/tui/modals/batch_review.rs`,
+`crates/roko-cli/src/tui/state.rs`,
+`crates/roko-cli/src/tui/dashboard.rs`.
+
+**Fixed by**: T39-T44.
+
+### AP-8: Dry-run exists but is shallow
+
+`cmd_plan_dry_run` exists in `commands/plan.rs` (line 822). It discovers
+plans, prints task counts and IDs, but does not compute execution waves,
+estimate cost/time, or show the DAG structure. It is a listing, not a
+simulation.
+
+**Where it lives**: `crates/roko-cli/src/commands/plan.rs` (line 822).
+
+**Fixed by**: T6.
+
+---
+
+## Phase 0: Workflow Foundation
+
+**Problem**: 60+ subcommands, no guidance, no verdicts, shallow dry-run.
+**Effort**: ~1,200 LOC | **Impact**: Critical
+**Dependencies**: None -- can start immediately.
+
+### Task 8.1: Add `roko next` command -- workspace state inspection
+
+**Files**: new `crates/roko-cli/src/commands/next.rs`,
+  modify `crates/roko-cli/src/commands/mod.rs`
+**Complexity**: standard
+
+**What**: Create a `next.rs` module that inspects workspace state and returns
+a prioritized list of suggested actions. Check for:
+- `.roko/` existence (suggest `roko init` if missing)
+- PRDs in `.roko/prd/drafts/` and `.roko/prd/published/` (suggest `prd plan` if unpublished drafts exist)
+- Plans in discovered plan directories (suggest `plan run` if pending plans exist)
+- Executor snapshots in `.roko/state/executor.json` (suggest `--resume` if failed tasks exist)
+- Episode log `.roko/episodes.jsonl` (compute last-run outcome)
+- Context packs in `.roko/packs/` (suggest next pass if incomplete packs exist)
+
+Each suggestion includes the full CLI command to run and a one-line rationale.
+
+**Steps**:
+1. Create `next.rs` with `pub async fn cmd_next(workdir: &Path) -> Result<i32>`
+2. Implement `WorkspaceState` struct: `has_roko_dir`, `draft_prds: Vec<String>`,
+   `pending_plans: Vec<(String, usize, usize)>` (name, done, total),
+   `failed_tasks: Vec<(String, String, String)>` (plan, task_id, gate),
+   `incomplete_packs: Vec<(String, PackStatus)>`,
+   `last_run: Option<RunSummary>`
+3. Implement `inspect_workspace(workdir) -> WorkspaceState` that reads filesystem state
+4. Implement `format_suggestions(state) -> Vec<Suggestion>` that produces prioritized actions
+5. Print suggestions with styled output (green for ready, yellow for attention, red for failures)
+6. Add `pub mod next;` to `commands/mod.rs`
+
+**Existing code to reuse**:
+- `roko_orchestrator::discover_plans()` for plan discovery (re-exported in `lib.rs` line 84)
+- `PlanRunSummary` from `runner/types.rs` (line 474) for last-run state
+- Executor snapshot loading from `runner/resume.rs`
+
+**Acceptance criteria**:
+- `roko next` in an uninitialized directory suggests `roko init`
+- `roko next` in a workspace with draft PRDs suggests `roko prd plan <slug>`
+- `roko next` after a failed plan run shows the failed tasks and suggests `roko plan run --resume`
+- `roko next` with no pending work says "Nothing pending. Create a new idea with `roko prd idea`."
+
+**Depends on**: --
+
+### Task 8.2: Register `Next` command in CLI and wire dispatch
+
+**Files**: modify `crates/roko-cli/src/main.rs` (~4,423 LOC),
+  modify `crates/roko-cli/src/commands/util.rs`
+**Complexity**: fast
+
+**What**: Add `Next` variant to the `Command` enum in `main.rs`. Wire the
+dispatch to `cmd_next()` in the relevant match arm.
+
+**Steps**:
+1. Add `/// Inspect workspace state and suggest what to do next.` + `Next` to
+   the `Command` enum (place it in the "Core workflow" group, near Init/Run/Status)
+2. Add match arm in the dispatch function:
+   `Command::Next => commands::next::cmd_next(&workdir).await`
+3. Update `after_long_help` text to list `next` in the workflow guidance section
+
+**Acceptance criteria**:
+- `roko next` invokes `cmd_next` and produces output
+- `roko --help` lists `next` in the core workflow group
+- `roko next --help` shows a description
+
+**Depends on**: 8.1
+
+### Task 8.3: Change bare `roko` invocation to show `next` output
+
+**Files**: modify `crates/roko-cli/src/unified.rs` (~212 LOC),
+  modify `crates/roko-cli/src/main.rs`
+**Complexity**: fast
+
+**What**: Currently bare `roko` with no arguments enters the interactive REPL
+via `unified.rs` (`cmd_unified_chat`, line 23). Change it to show `roko next`
+output first, then offer to enter the REPL as an option.
+
+**Steps**:
+1. In `main.rs`, when `Command` parsing results in no subcommand, call `cmd_next()` first
+2. After printing suggestions, prompt: "Enter interactive mode? [y/n/q]"
+3. If yes, proceed to `unified.rs` REPL. If no or quit, exit cleanly.
+4. If `--batch` or non-TTY, skip the prompt and just print suggestions
+
+**Acceptance criteria**:
+- Running bare `roko` shows workspace state and suggestions before the REPL prompt
+- Non-interactive sessions (piped, CI) get suggestions only, no REPL prompt
+- `roko` with a subcommand bypasses the next output (existing behavior preserved)
+
+**Depends on**: 8.1, 8.2
+
+### Task 8.4: Add end-of-run summary to plan runner
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs` (~3,136 LOC),
+  new `crates/roko-cli/src/runner/run_summary.rs`
+**Complexity**: standard
+
+**What**: After all tasks complete (or on cancellation/Ctrl-C), print a
+structured summary showing pass/fail counts, cost, duration, and resume command.
+
+The existing `PlanRunSummary` in `runner/types.rs` (line 474) is skeletal
+(5 fields, no cost/duration/per-failure detail). Replace or extend it.
+
+**Steps**:
+1. Create `run_summary.rs` with `RunSummary` struct:
+   ```
+   plan_name, total_tasks, passed, failed, skipped,
+   failed_details: Vec<(task_id, gate_name, excerpt)>,
+   total_cost_usd: f64, duration: Duration, resume_cmd: Option<String>
+   ```
+2. Implement `RunSummary::from_executor_state(state, plan_name, start_time) -> Self`
+3. Implement `RunSummary::display(&self)` with colored output:
+   - Green header if all passed, red if any failed
+   - Per-failed-task: task ID, gate name, first line of error
+   - Cost and duration
+   - Resume command if failed tasks exist
+4. In `event_loop.rs`, after the main `tokio::select!` loop exits, construct
+   and display the `RunSummary`
+5. Also display on Ctrl-C (in the cancellation handler)
+6. Add `pub mod run_summary;` to `runner/mod.rs`
+
+**Existing code to reuse**:
+- `PlanRunSummary` from `runner/types.rs` (line 474) -- extend or replace
+- Gate result data from `runner/gate_dispatch.rs`
+- Episode data from `runner/agent_events.rs`
+
+**Acceptance criteria**:
+- `roko plan run plans/` ends with a summary block showing pass/fail/cost/duration
+- Failed tasks include gate name and error excerpt
+- Summary includes `roko plan run --resume` when tasks failed
+- Ctrl-C produces a partial summary with "interrupted" status
+
+**Depends on**: --
+
+### Task 8.5: Add `roko status --last-run` flag
+
+**Files**: modify `crates/roko-cli/src/commands/status.rs` (~3 LOC currently, re-exports),
+  modify `crates/roko-cli/src/commands/util.rs`
+**Complexity**: standard
+
+**What**: Read the most recent executor snapshot from `.roko/state/` and
+display a detailed last-run summary. The current `commands/status.rs` is a
+3-line re-export to `util.rs`. The actual `cmd_status` is in `prd.rs` (line
+576) and shows PRD coverage, not run results.
+
+**Steps**:
+1. Add `--last-run` flag to the status command's clap args
+2. When flag is present, load the latest executor snapshot from `.roko/state/executor.json`
+3. Parse task states and gate results from the snapshot
+4. Compute: passed/failed/skipped counts, per-task cost (from episodes.jsonl), duration
+5. Display using `RunSummary` from T4 (reuse the type)
+6. If no snapshot exists, print "No plan runs recorded. Run `roko plan run` first."
+
+**Acceptance criteria**:
+- `roko status --last-run` after a plan run shows the same summary as end-of-run output
+- `roko status --last-run` with no snapshot shows a helpful message
+- Per-task cost is read from episodes.jsonl and displayed
+
+**Depends on**: 8.4
+
+### Task 8.6: Enrich `--dry-run` with execution waves, cost/time estimates
+
+**Files**: modify `crates/roko-cli/src/commands/plan.rs` (~1,317 LOC),
+  modify `crates/roko-cli/src/runner/task_dag.rs` (~554 LOC)
+**Complexity**: standard
+
+**What**: The existing `cmd_plan_dry_run` (plan.rs line 822) discovers plans
+and prints task lists but does not compute execution waves, estimate cost, or
+show the DAG structure. Enrich it to be a proper simulation.
+
+**Steps**:
+1. In `task_dag.rs`, add `pub fn compute_execution_waves(dag) -> Vec<Wave>`
+   that groups tasks by topological layer (each wave = a parallelism boundary)
+2. Define `Wave`: `index`, `tasks: Vec<TaskId>`, `max_estimated_minutes`
+3. In `cmd_plan_dry_run`, after loading plans and building the DAG:
+   - Call `compute_execution_waves(dag)` to get wave ordering
+   - Display each wave: wave number, task IDs, titles, parallel groups, file counts
+   - Estimate cost: sum `estimated_minutes * cost_per_minute` per task (use
+     cascade router historical averages if available, otherwise $0.50/min default)
+   - Estimate time: sum of sequential waves' max task durations
+4. Print total estimates and exit with code 0
+5. Show validation results if validation engine (Phase 2) is available
+
+**Existing code to reuse**:
+- `cmd_plan_dry_run` in `commands/plan.rs` (line 822) -- extend
+- DAG computation from `roko-orchestrator/src/dag.rs`
+- `roko_orchestrator::discover_plans()` already used
+
+**Acceptance criteria**:
+- `roko plan run plans/ --dry-run` shows waves, tasks, and estimates
+- Output includes wave grouping, parallelism information, and cost/time estimates
+- No agents are spawned, no state is modified, no episodes are recorded
+- Exit code is 0
+
+**Depends on**: --
+
+### Task 8.7: Update CLI help text with workflow guidance
+
+**Files**: modify `crates/roko-cli/src/main.rs`
+**Complexity**: trivial
+
+**What**: Replace the flat `after_long_help` command listing with a guided
+workflow section showing the recommended command sequence.
+
+**Steps**:
+1. Add a "Recommended workflow" section to `after_long_help`:
+   ```
+   Recommended workflow:
+     1. roko next              See what to do
+     2. roko prd idea "..."    Capture a work item
+     3. roko prd draft new     Draft a PRD
+     4. roko pack create       Aggregate context
+     5. roko pack pipeline     Funnel into executable plan
+     6. roko plan run          Execute with gates
+     7. roko status --last-run Review results
+   ```
+2. Keep the existing command group listing below the workflow section
+
+**Acceptance criteria**:
+- `roko --help` shows a "Recommended workflow" section before the command groups
+- The workflow lists commands in execution order with brief descriptions
+
+**Depends on**: --
+
+---
+
+## Phase 1: Task Metadata Tiering + Smart Context Windowing
+
+**Problem**: Every task gets the full 20+ field treatment and a monolithic
+9-layer prompt regardless of complexity. Smaller models receive bloated
+prompts that waste tokens and degrade quality.
+
+**Effort**: ~1,800 LOC | **Impact**: Critical for small-model quality
+**Dependencies**: Phase 0 (types shared with summaries)
+
+### Task 8.8: Define `TaskSpec` and `TaskAgentInput` types
+
+**Files**: new `crates/roko-orchestrator/src/task_spec.rs`,
+  modify `crates/roko-orchestrator/src/lib.rs`
+**Complexity**: standard
+
+**What**: Create the two-struct approach for task metadata. `TaskSpec` holds
+all 20+ fields on disk. `TaskAgentInput` holds only agent-visible fields,
+filtered by complexity tier. This REPLACES the existing ad-hoc task parsing
+in `task_parser.rs` (anti-pattern AP-4), not supplements it.
+
+The existing `TaskComplexityBand` in `roko-core/src/task.rs` (line 96) has
+`Fast`/`Standard`/`Complex`. Extend with `Trivial` variant if not present,
+or use `Fast` as the lowest tier.
+
+**Steps**:
+1. Define `ComplexityBand` enum: `Trivial`, `Fast`, `Standard`, `Complex` with
+   `Ord` derive. Reuse or extend `TaskComplexityBand` from roko-core.
+2. Define `TaskSpec` struct with all fields from Mori TOML format:
+   - Agent-visible: `id`, `title`, `description`, `status`, `files`, `depends_on`,
+     `acceptance`, `context_files`, `tags`
+   - Conditional: `parallel_group`, `exclusive_files`, `category`, `estimated_minutes`,
+     `example_pattern`
+   - Routing-only: `preferred_model`, `preferred_provider`, `reasoning_level`,
+     `speed_priority`, `quality_profile`, `context_weight`, `complexity_band`,
+     `escalate_on_retry`
+3. Define `TaskAgentInput` struct with agent-visible + conditional fields
+4. Implement `TaskSpec::to_agent_input(&self) -> TaskAgentInput` that strips
+   routing metadata and omits conditional fields below the task's tier
+5. Implement `TaskSpec::from_toml_value(value: &toml::Value) -> Result<Self>`
+6. Add `pub mod task_spec;` to `lib.rs`, add `pub use` re-exports
+
+**Existing code to check**:
+- `TaskDef` in `crates/roko-cli/src/task_parser.rs` (line 49) -- the existing struct
+  this supersedes. Has `id`, `title`, `description`, `role`, `status`, `tier`,
+  `frequency`, `model_hint`, `replan_strategy`, `max_loc`, `files`, `allowed_tools`,
+  `denied_tools`, `mcp_servers`, `depends_on`, `depends_on_plan`, plus more fields.
+- `TaskComplexityBand` in `roko-core/src/task.rs` (line 96) -- `Fast`/`Standard`/`Complex`
+- `Complexity` in `roko-compose/src/budget.rs` (line 23) -- local mirror enum
+
+**Acceptance criteria**:
+- `ComplexityBand::Fast.to_agent_input()` produces a struct with only 5-6 fields populated
+- `ComplexityBand::Complex.to_agent_input()` includes all conditional fields
+- Routing-only fields (`preferred_model`, `reasoning_level`, etc.) are never in `TaskAgentInput`
+- Round-trip: `TaskSpec` -> TOML -> `TaskSpec` preserves all fields
+- Unit tests for each tier
+
+**Depends on**: --
+
+### Task 8.9: Define `ContextBudget` type for per-section token allocation
+
+**Files**: new `crates/roko-compose/src/context_budget.rs`,
+  modify `crates/roko-compose/src/lib.rs`
+**Complexity**: standard
+
+**What**: Create a `ContextBudget` struct that allocates token budgets per
+prompt section based on `ComplexityBand`. The `SystemPromptBuilder` will use
+this to cap each section.
+
+The existing `AdjustedBudget` in `budget.rs` does complexity-aware section
+dropping (zeroing prd2/context/skills for Trivial, inflating for Complex) but
+operates on `PromptBudget` character caps from `templates/common.rs`, not on
+token-level per-section budgets tied to the 9-layer builder. This new type
+bridges that gap.
+
+**Steps**:
+1. Define `ContextBudget` struct with fields per section: `total_tokens`,
+   `identity_tokens`, `role_tokens`, `task_tokens`, `files_tokens`,
+   `context_tokens`, `tools_tokens`, `constraints_tokens`, `memory_tokens`,
+   `meta_tokens`
+2. Implement `ContextBudget::for_complexity(band: ComplexityBand) -> Self`:
+   - Trivial: 4K total (200/500/2K/1K/0/300/96/0/0)
+   - Fast: 16K total (300/1K/4K/8K/2K/500/384/0/200)
+   - Standard: 32K total (500/2K/4K/16K/6K/1K/768/2K/500)
+   - Complex: 64K+ total (500/2K/4K/32K/16K/2K/1K/4K/4K)
+3. Implement `ContextBudget::section_budget(&self, section: &str) -> usize`
+4. Implement `ContextBudget::should_include_section(&self, section: &str) -> bool`
+   (returns false when section budget is 0)
+5. Add `pub mod context_budget;` to `lib.rs`
+
+**Existing code to check**:
+- `AdjustedBudget` in `budget.rs` (line 38) -- similar concept at character level
+- `ContextBudgets` in `context_provider.rs` (line 1260) -- per-tier budgets for bidders
+- `budget_for(role)` in `templates/common.rs` -- per-role base budgets
+
+**Acceptance criteria**:
+- `ContextBudget::for_complexity(Trivial).should_include_section("memory")` returns false
+- `ContextBudget::for_complexity(Complex).should_include_section("memory")` returns true
+- All budgets sum to within 5% of `total_tokens`
+- Unit tests verify each tier's section allocations
+
+**Depends on**: 8.8 (imports ComplexityBand)
+
+### Task 8.10: Wire `ContextBudget` into `SystemPromptBuilder`
+
+**Files**: modify `crates/roko-compose/src/system_prompt_builder.rs` (~2,081 LOC)
+**Complexity**: standard
+
+**What**: Accept `ContextBudget` in the builder and enforce per-section token
+limits. Sections that exceed their budget are truncated. Sections with zero
+budget are skipped. Backward-compatible: when no budget is set, current
+behavior is preserved.
+
+**Steps**:
+1. Add `context_budget: Option<ContextBudget>` field to `SystemPromptBuilder`
+2. Add `pub fn with_context_budget(mut self, budget: ContextBudget) -> Self`
+3. In each `add_*_section()` method, check `context_budget.should_include_section(name)`
+   before adding. If false, skip the section entirely.
+4. After adding a section's content, check `context_budget.section_budget(name)`
+   and truncate to that token count if exceeded (use existing token estimation
+   from `token_counter.rs`)
+5. Keep backward compatibility: when `context_budget` is None, current behavior
+   is preserved (no truncation, no section skipping)
+
+**Acceptance criteria**:
+- Builder with `ContextBudget::for_complexity(Trivial)` produces a prompt with
+  only identity, role, task, and constraints sections
+- Builder with `ContextBudget::for_complexity(Complex)` includes all sections
+- Builder with no budget set produces the same output as before
+- Section content that exceeds its budget is truncated with "... (truncated)" marker
+- Integration test: build prompts for each tier, verify token counts are within budget
+
+**Depends on**: 8.9
+
+### Task 8.11: Wire `TaskSpec` into plan runner dispatch path
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs` (~3,136 LOC),
+  modify `crates/roko-cli/src/runner/plan_loader.rs`
+**Complexity**: standard
+
+**What**: Parse task TOMLs into `TaskSpec` structs. When dispatching an agent,
+convert to `TaskAgentInput` and use that for prompt assembly (stripping
+routing metadata). Use routing fields for model selection.
+
+**Steps**:
+1. In `plan_loader.rs`, use `TaskSpec::from_toml_value()` instead of the
+   current ad-hoc task parsing. Fall back to constructing `TaskSpec` with
+   `Standard` complexity band for tasks that lack the new fields (backward
+   compatibility).
+2. In `event_loop.rs`, when building the agent prompt for a task, call
+   `task_spec.to_agent_input()` and serialize that into the prompt instead
+   of the full task metadata
+3. Use `task_spec.preferred_model` and `task_spec.complexity_band` for model
+   selection (feed into cascade router if available)
+4. Use `task_spec.context_weight` to construct the `ContextBudget` passed to
+   `SystemPromptBuilder`
+
+**Acceptance criteria**:
+- A task with `complexity_band = "fast"` dispatched to an agent has a prompt
+  containing only 8-10 task metadata fields (no routing metadata)
+- A task with `complexity_band = "complex"` includes all conditional fields
+- Existing plans without `complexity_band` default to "standard" and work unchanged
+- Model selection respects `preferred_model` when set
+
+**Depends on**: 8.8, 8.10
+
+### Task 8.12: Add section pruning for fast tasks in prompt assembly
+
+**Files**: modify `crates/roko-compose/src/prompt_assembly_service.rs` (~1,048 LOC)
+**Complexity**: fast
+
+**What**: When assembling a prompt for a `slim` context weight task, skip
+memory, meta, research context, neuro knowledge, and prior task outputs. Keep:
+identity, role, task description, acceptance criteria, target files, constraints.
+
+**Steps**:
+1. Accept `context_weight: Option<String>` parameter in `assemble()` method
+2. When `context_weight == Some("slim")`:
+   - Skip `with_knowledge_context()` call
+   - Skip `with_episode_context()` call
+   - Skip `with_playbook_context()` call
+   - Keep `with_tool_instructions()` (always needed)
+3. When `context_weight == Some("deep")`:
+   - Include all context with generous token allocations
+4. Default ("standard"): current behavior preserved
+
+**Acceptance criteria**:
+- Assembling a prompt with `context_weight = "slim"` produces a shorter prompt
+  that excludes knowledge, episodes, and playbooks
+- Assembling with `context_weight = "deep"` includes everything with full budgets
+- Assembling with no context_weight works exactly as before
+
+**Depends on**: 8.9, 8.10
+
+---
+
+## Phase 2: Task TOML Validation
+
+**Problem**: `roko plan validate` performs only minimal structural checks.
+Circular dependencies, file conflicts, and malformed acceptance criteria are
+caught at runtime (or not at all).
+
+**Effort**: ~1,000 LOC | **Impact**: High
+**Dependencies**: Phase 1 (T8 for TaskSpec types)
+
+### Task 8.13: Define `ValidationReport` and validation check types
+
+**Files**: new `crates/roko-orchestrator/src/validation.rs`,
+  modify `crates/roko-orchestrator/src/lib.rs`
+**Complexity**: standard
+
+**What**: Create the validation engine types. A `ValidationReport` accumulates
+errors, warnings, and info from a pipeline of checks.
+
+**Steps**:
+1. Define `ValidationSeverity` enum: `Error`, `Warning`, `Info`
+2. Define `ValidationIssue` struct: `severity`, `check`, `task_id: Option<String>`,
+   `message: String`, `suggestion: Option<String>`
+3. Define `ValidationCheck` enum: `CircularDependency`, `FileConflict`,
+   `AcceptanceCriteriaFormat`, `ComplexityTierConsistency`, `MissingRequiredFields`,
+   `FileExistence`, `DependencyReferenceCheck`, `CostEstimateReasonableness`
+4. Define `ValidationReport` struct: `errors: Vec<ValidationIssue>`,
+   `warnings: Vec<ValidationIssue>`, `info: Vec<ValidationIssue>`,
+   `task_count: usize`, `wave_count: usize`, `cost_estimate: Option<f64>`
+5. Implement `ValidationReport::has_errors(&self) -> bool`
+6. Implement `ValidationReport::display(&self)` with colored output per severity
+7. Add `pub mod validation;` to `lib.rs`
+
+**Acceptance criteria**:
+- `ValidationReport` can accumulate issues from multiple checks
+- `has_errors()` returns true only for Error severity, not warnings
+- Display output is color-coded: red for errors, yellow for warnings, blue for info
+
+**Depends on**: --
+
+### Task 8.14: Implement circular dependency detection
+
+**Files**: modify `crates/roko-orchestrator/src/validation.rs`
+**Complexity**: fast
+
+**What**: Build a directed graph from task `depends_on` fields and detect
+cycles using DFS with coloring (white/gray/black).
+
+Note: `dag.rs` in roko-orchestrator already does cycle detection internally
+for execution ordering. This check exposes it as a pre-flight validation
+with user-friendly error messages.
+
+**Steps**:
+1. Implement `check_circular_deps(tasks: &[TaskSpec]) -> Vec<ValidationIssue>`
+2. Build adjacency list from `depends_on` fields
+3. Run DFS cycle detection; when a cycle is found, trace the cycle path
+4. Produce `ValidationIssue` with severity `Error`, message including the
+   cycle path: "Circular dependency: T3 -> T5 -> T8 -> T3"
+5. Also check for self-references (`depends_on` containing own `id`)
+
+**Acceptance criteria**:
+- Tasks with no cycles produce zero issues
+- Tasks with a cycle produce an Error issue with the full cycle path
+- Self-referencing tasks produce an Error issue
+- Test with 3-node cycle and 5-node cycle
+
+**Depends on**: 8.13
+
+### Task 8.15: Implement file conflict detection
+
+**Files**: modify `crates/roko-orchestrator/src/validation.rs`
+**Complexity**: fast
+
+**What**: Detect when two tasks in the same parallel group modify the same
+file without `exclusive_files = true`.
+
+**Steps**:
+1. Implement `check_file_conflicts(tasks: &[TaskSpec]) -> Vec<ValidationIssue>`
+2. Group tasks by `parallel_group`
+3. Within each group, build a map of `file -> Vec<task_id>`
+4. When a file appears in 2+ tasks within the same group:
+   - If any of those tasks has `exclusive_files = false` (or unset): emit Warning
+   - If all have `exclusive_files = true`: emit Info (handled by scheduler)
+5. Message: "T4 and T6 both modify src/auth/login.rs in parallel group B"
+
+**Acceptance criteria**:
+- Two tasks in the same parallel_group touching the same file produce a Warning
+- Tasks in different parallel_groups touching the same file produce no issue
+- Tasks with `exclusive_files = true` in the same group produce Info (not Warning)
+
+**Depends on**: 8.13
+
+### Task 8.16: Implement acceptance criteria format check
+
+**Files**: modify `crates/roko-orchestrator/src/validation.rs`
+**Complexity**: fast
+
+**What**: Check that acceptance criteria strings look like executable shell
+commands. Warn on prose-only criteria that cannot be mechanically verified.
+
+**Steps**:
+1. Implement `check_acceptance_format(tasks: &[TaskSpec]) -> Vec<ValidationIssue>`
+2. For each task's `acceptance` strings, check if they start with a recognized
+   command pattern: `cargo`, `test`, `grep`, `diff`, `[`, `!`, `sh -c`,
+   or contain `&&`/`||`/`|`
+3. Criteria that are pure prose (no command-like patterns) get a Warning:
+   "T3 acceptance[1] is prose, not a shell command"
+4. Tasks with `complexity_band = "complex"` and zero acceptance criteria
+   get an Error: "T7 has no acceptance criteria but is marked complex"
+
+**Acceptance criteria**:
+- `"cargo test -p my-crate"` passes (no issue)
+- `"All tests pass"` produces a Warning
+- Complex task with empty `acceptance` produces an Error
+
+**Depends on**: 8.13
+
+### Task 8.17: Implement complexity tier consistency check
+
+**Files**: modify `crates/roko-orchestrator/src/validation.rs`
+**Complexity**: fast
+
+**What**: Detect inconsistent combinations of complexity metadata.
+
+**Steps**:
+1. Implement `check_tier_consistency(tasks: &[TaskSpec]) -> Vec<ValidationIssue>`
+2. Check for contradictions:
+   - `complexity_band = "fast"` + `reasoning_level = "high"` -> Warning
+   - `complexity_band = "trivial"` + `estimated_minutes > 15` -> Warning
+   - `complexity_band = "complex"` + no `acceptance` -> Error
+   - `complexity_band = "fast"` + 8+ files -> Warning ("consider splitting")
+   - `context_weight = "slim"` + `complexity_band = "complex"` -> Warning
+
+**Acceptance criteria**:
+- Fast task with high reasoning_level produces a Warning
+- Complex task with no acceptance produces an Error
+- Consistent tasks produce zero issues
+
+**Depends on**: 8.13, 8.8
+
+### Task 8.18: Implement dependency reference and file existence checks
+
+**Files**: modify `crates/roko-orchestrator/src/validation.rs`
+**Complexity**: fast
+
+**What**: Verify that all `depends_on` references point to existing task IDs,
+and that `files` and `context_files` reference paths that exist in the workspace.
+
+**Steps**:
+1. Implement `check_references(tasks: &[TaskSpec], workdir: &Path) -> Vec<ValidationIssue>`
+2. Build set of all task IDs. For each task's `depends_on`, verify target exists.
+   Missing reference -> Error: "T5 depends on T99 which does not exist"
+3. For each task's `files`, check `workdir.join(file).exists()` or that the
+   parent directory exists (for files to be created). Missing parent -> Warning.
+4. For each task's `context_files`, check existence. Missing -> Warning
+   (not Error, as context files may be optional)
+
+**Acceptance criteria**:
+- `depends_on = ["T99"]` when T99 is not in the plan produces an Error
+- `files = ["src/nonexistent/foo.rs"]` where `src/nonexistent/` does not exist
+  produces a Warning
+- `context_files = ["docs/missing.md"]` produces a Warning
+
+**Depends on**: 8.13
+
+### Task 8.19: Wire validation into `roko plan validate` and `plan run` pre-flight
+
+**Files**: modify `crates/roko-cli/src/commands/plan.rs` (~1,317 LOC),
+  modify `crates/roko-cli/src/runner/event_loop.rs` (~3,136 LOC)
+**Complexity**: standard
+
+**What**: Call the full validation pipeline from `roko plan validate` and as
+a pre-flight check in `roko plan run`. Errors block execution; warnings are
+displayed but do not block.
+
+The existing `PlanCmd::Validate` handler (plan.rs line 200) calls
+`cmd_plan_validate()` from `plan_validate.rs`. Extend this path to include
+the new semantic checks.
+
+**Steps**:
+1. In `plan.rs`, the `Validate` subcommand handler calls each validation
+   check function on the loaded `TaskSpec` list, collects results into a
+   `ValidationReport`, and displays it
+2. Add `--skip-validation` flag to `PlanRunArgs`
+3. In `event_loop.rs`, before entering the main execution loop, run validation
+   unless `--skip-validation` is set. If `report.has_errors()`, print the
+   report and exit with code 1. If only warnings, print them and continue.
+4. If dry-run is also set, show validation results as part of the dry-run output
+
+**Acceptance criteria**:
+- `roko plan validate plans/` runs all checks and prints a report
+- `roko plan run plans/` runs validation before execution and aborts on errors
+- `roko plan run plans/ --skip-validation` bypasses validation
+- Validation warnings during `plan run` are printed but execution continues
+
+**Depends on**: 8.14, 8.15, 8.16, 8.17, 8.18, 8.6
+
+---
+
+## Phase 3: Task Auto-Splitting
+
+**Problem**: Tasks with 8+ files are too large for smaller models. The user
+must manually decompose them.
+
+**Effort**: ~1,100 LOC | **Impact**: High
+**Dependencies**: Phase 2 (T13 for ValidationReport, T8 for TaskSpec)
+
+### Task 8.20: Define `SplitProposal` type and file grouping logic
+
+**Files**: new `crates/roko-orchestrator/src/task_split.rs`,
+  modify `crates/roko-orchestrator/src/lib.rs`
+**Complexity**: standard
+
+**What**: Implement the core splitting algorithm. Group task files by directory
+and/or import chain to produce subtask proposals.
+
+**Steps**:
+1. Define `SplitProposal` struct: `original_task_id`, `subtasks: Vec<TaskSpec>`,
+   `merge_task: Option<TaskSpec>`, `rationale: String`
+2. Implement `should_split(task: &TaskSpec) -> Option<SplitReason>`:
+   - `SplitReason::TooManyFiles` if `files.len() >= 8`
+   - `SplitReason::ContextOverflow` if estimated context exceeds tier budget
+   - `SplitReason::TierMismatch` if fast/trivial tier with many files
+3. Implement `split_by_directory(task: &TaskSpec) -> SplitProposal`:
+   - Group files by parent directory
+   - Each group becomes a subtask with the group's files
+   - Generate subtask IDs as `{original_id}-sub{N}`
+   - Set `depends_on` for subtasks to match original task's dependencies
+   - Create a merge task `{original_id}-merge` that depends on all subtasks
+   - Merge task inherits the original's `acceptance` criteria
+4. Add `pub mod task_split;` to `lib.rs`
+
+**Acceptance criteria**:
+- A task with 10 files across 3 directories produces 3 subtasks + 1 merge task
+- Each subtask has 2-4 files from one directory
+- Merge task depends on all subtasks and inherits parent acceptance criteria
+- Subtask IDs follow the `{parent}-sub{N}` pattern
+
+**Depends on**: 8.8
+
+### Task 8.21: Implement import-chain-aware file grouping
+
+**Files**: modify `crates/roko-orchestrator/src/task_split.rs`
+**Complexity**: standard
+
+**What**: Extend splitting to consider Rust `use`/`mod` import chains. Files
+that import each other should stay in the same subtask.
+
+**Steps**:
+1. Implement `split_by_imports(task: &TaskSpec, workdir: &Path) -> SplitProposal`
+2. For each file in `task.files`, parse `use` and `mod` statements (simple
+   regex, not full AST -- sufficient for grouping heuristic)
+3. Build an import graph: `file -> Vec<imported_file>` (only among task files)
+4. Find connected components in the undirected import graph
+5. Each connected component becomes a subtask
+6. Files with no import relationships fall back to directory-based grouping
+7. If roko-index is available, use symbol resolution for more accurate grouping
+
+**Acceptance criteria**:
+- Two files that `use` each other stay in the same subtask
+- Files with no import relationship are grouped by directory
+- Connected component algorithm correctly handles transitive imports
+- Test with a 10-file task where 3 files form an import cluster
+
+**Depends on**: 8.20
+
+### Task 8.22: Implement acceptance criteria distribution for subtasks
+
+**Files**: modify `crates/roko-orchestrator/src/task_split.rs`
+**Complexity**: fast
+
+**What**: When splitting, distribute parent acceptance criteria to subtasks
+intelligently and ensure the merge task inherits all criteria.
+
+**Steps**:
+1. Implement `distribute_acceptance(parent: &TaskSpec, subtasks: &mut [TaskSpec])`
+2. For each acceptance criterion, check if it references a specific file or crate:
+   - If it contains a file path from a subtask's files, assign to that subtask
+   - If it contains a crate name matching a subtask's files, assign to that subtask
+   - If it is generic (e.g., "cargo test --workspace"), assign to merge task only
+3. Add `"cargo check"` as default acceptance for subtasks that have no inherited criteria
+4. Merge task always gets the full set of parent acceptance criteria
+
+**Acceptance criteria**:
+- `"cargo test -p my-crate auth"` assigned to the subtask containing auth files
+- `"cargo clippy --workspace"` assigned to merge task only
+- Every subtask has at least `"cargo check"` as acceptance
+
+**Depends on**: 8.20
+
+### Task 8.23: Add `roko task split <plan> <task-id>` CLI command
+
+**Files**: new `crates/roko-cli/src/commands/task.rs`,
+  modify `crates/roko-cli/src/main.rs`,
+  modify `crates/roko-cli/src/commands/mod.rs`
+**Complexity**: standard
+
+**What**: Interactive CLI command that proposes a split and asks for approval
+before writing the updated tasks.toml.
+
+**Steps**:
+1. Create `task.rs` with `TaskCmd` subcommand enum containing
+   `Split { plan_dir: PathBuf, task_id: String }`
+2. Load the plan's tasks.toml, parse into `Vec<TaskSpec>`
+3. Find the target task, call `should_split()`, then `split_by_imports()`
+   (or `split_by_directory()` as fallback)
+4. Display the proposal: original task, proposed subtasks with file lists,
+   merge task
+5. Prompt: "Apply this split? [y/n/e(dit)]"
+6. If yes: replace the original task with subtasks + merge task in the TOML,
+   write to disk
+7. If edit: open `$EDITOR` with the proposed TOML fragment, then apply
+8. Register `Task` command variant in `main.rs`, add `pub mod task;` to
+   `commands/mod.rs`
+
+**Acceptance criteria**:
+- `roko task split plans/sprint-42 T6` proposes a split and shows the preview
+- Accepting the split updates tasks.toml with subtasks replacing the original
+- The updated tasks.toml passes `roko plan validate`
+- Rejecting the split leaves tasks.toml unchanged
+
+**Depends on**: 8.20, 8.21, 8.22
+
+---
+
+## Phase 4: Context Packs & Corpus Management
+
+**Problem**: The user's workflow starts with aggregating context from docs,
+code, and research. Today this is done manually by pasting into external
+Claude sessions. The CLI has no ingest or corpus management command.
+
+**Effort**: ~2,800 LOC | **Impact**: Critical for workflow ownership
+**Dependencies**: Phase 3 (T20 for splitting during decomposition)
+
+### Task 8.24: Define Context Pack data model and storage
+
+**Files**: new `crates/roko-cli/src/pack.rs`
+**Complexity**: standard
+
+**What**: Create the pack manifest, source tracking, and directory layout types.
+Context packs are stored in `.roko/packs/<pack-id>/`.
+
+**Steps**:
+1. Define `PackStatus` enum: `Raw`, `Synthesized`, `Architected`, `Decomposed`,
+   `Scoped`, `Executing`, `Done`
+2. Define `PackManifest` struct: `pack: PackMeta`, `sources: PackSources`,
+   `budget: PackBudget`, `passes: Vec<PassRecord>`, `approval: ApprovalConfig`
+3. Define `PackSources`: `dirs: Vec<PathBuf>`, `files: Vec<PathBuf>`,
+   `urls: Vec<String>`, `prd_slugs: Vec<String>`
+4. Define `PackBudget`: `synthesis_budget`, `arch_budget`, `decompose_budget`
+5. Define `PassRecord`: `name`, `agent_role`, `model`, `input_tokens`,
+   `output_tokens`, `output_file`, `timestamp`, `duration_secs`
+6. Implement `create_pack()`, `load_manifest()`, `save_manifest()`,
+   `list_packs()`, `add_sources()`
+7. Directory layout: `.roko/packs/<id>/manifest.toml`, `raw/`, `scoping/`
+8. Source linking: symlink source dirs/files into `raw/` (copy on symlink failure)
+
+**Acceptance criteria**:
+- `create_pack()` creates the directory structure with manifest
+- `load_manifest()` round-trips through TOML serialization
+- `list_packs()` discovers all packs sorted by creation date
+- `add_sources()` adds new files/dirs to an existing pack
+
+**Depends on**: --
+
+### Task 8.25: Implement raw content collection and token estimation
+
+**Files**: modify `crates/roko-cli/src/pack.rs`
+**Complexity**: fast
+
+**What**: Collect all text content from a pack's `raw/` directory, with token
+counting for budget management.
+
+**Steps**:
+1. Implement `collect_raw_content(pack_dir) -> Result<(String, usize)>` that
+   recursively reads all text files from `raw/`
+2. Implement `is_text_file(path) -> bool` checking extensions: md, txt, rs,
+   toml, yaml, yml, json, ts, tsx, js, py, go, sh, html, css, sql
+3. Implement `estimate_tokens(text: &str) -> usize` using ~4 chars/token
+   heuristic (or reuse `token_counter.rs` from roko-compose if available)
+4. Add file separators: `\n--- {path} ---\n` between files for context
+
+**Existing code to reuse**:
+- `token_counter.rs` in roko-compose for token estimation
+
+**Acceptance criteria**:
+- Collecting a directory with 5 text files and 2 binary files returns content
+  from only the 5 text files
+- Token estimate for 1000-char text is approximately 250
+- File separators appear between each file's content
+
+**Depends on**: 8.24
+
+### Task 8.26: Add `roko pack create/list/status/add` CLI commands
+
+**Files**: new `crates/roko-cli/src/commands/pack.rs`,
+  modify `crates/roko-cli/src/main.rs`,
+  modify `crates/roko-cli/src/commands/mod.rs`
+**Complexity**: standard
+
+**What**: Register the `Pack` command group with CRUD subcommands.
+
+**Steps**:
+1. Define `PackCmd` subcommand enum: `Create`, `List`, `Status`, `Add`,
+   `Synthesize`, `Architect`, `Decompose`, `Scope`, `Execute`, `Pipeline`,
+   `Show`, `Split`, `Rerun`, `Edit`
+2. Implement `cmd_pack(workdir, cmd)` with handlers for `Create`, `List`,
+   `Status`, `Add`
+3. Register `Pack { cmd: PackCmd }` variant in the `Command` enum in `main.rs`
+4. Wire dispatch in the main match arm
+5. Add `pub mod pack;` to `commands/mod.rs`
+
+**Acceptance criteria**:
+- `roko pack create "sprint-42" --from docs/ crates/roko-core/src/` creates a pack
+- `roko pack list` shows all packs with status and pass count
+- `roko pack status sprint-42` shows pack details including sources and passes
+- `roko pack add sprint-42 extra-docs/` adds sources to an existing pack
+- `roko pack --help` shows all subcommands
+
+**Depends on**: 8.24, 8.25
+
+### Task 8.27: Implement synthesis pass (Pass 1)
+
+**Files**: new `crates/roko-cli/src/pack_pipeline.rs`
+**Complexity**: standard
+
+**What**: Compress raw pack material into a ~10K-token design brief using a
+Researcher agent. For large packs, use sliding window map-reduce.
+
+**Steps**:
+1. Implement `run_synthesis(workdir, pack_dir, manifest, model) -> Result<()>`
+2. Collect raw content. If within budget, single-pass: dispatch Researcher agent
+   with full content, output as `pass-01-synthesis.md`
+3. If over budget, implement sliding window:
+   - Split content into chunks of `budget * 0.7` tokens
+   - Dispatch Researcher agent per chunk for a chunk summary
+   - If summaries fit in one window, synthesize into final output
+   - If not, recurse (map-reduce)
+4. System prompt: "You are a research synthesizer. Compress the following material
+   into a structured design brief. Preserve: key requirements, technical
+   constraints, prior art references, and open questions."
+5. Update manifest with `PassRecord` and advance status to `Synthesized`
+6. Wire into `PackCmd::Synthesize` handler in `commands/pack.rs`
+
+**Existing code to reuse**:
+- `ChatAgentSession` from `chat_session.rs` (line 307) for agent dispatch
+- Research agent dispatch from `commands/research.rs`
+
+**Acceptance criteria**:
+- `roko pack synthesize sprint-42` produces `pass-01-synthesis.md`
+- Small packs use single-pass synthesis
+- Large packs use sliding window with chunk summaries
+- Manifest is updated with pass record including token counts
+
+**Depends on**: 8.24, 8.25, 8.26
+
+### Task 8.28: Implement architecture pass (Pass 2)
+
+**Files**: modify `crates/roko-cli/src/pack_pipeline.rs`
+**Complexity**: standard
+
+**What**: Read synthesis output + repo context and produce an architecture
+specification with component boundaries, data flow, file manifest, and
+dependency ordering.
+
+**Steps**:
+1. Implement `run_architecture(workdir, pack_dir, manifest, model) -> Result<()>`
+2. Read `pass-01-synthesis.md` as input
+3. Build repo context using existing `build_repo_context()` from `repo_context.rs`
+4. System prompt: architect role producing component boundaries, data flow,
+   file change manifest, dependency ordering, risk assessment
+5. Dispatch Architect agent, write output to `pass-02-arch.md`
+6. Update manifest, advance status to `Architected`
+7. Wire into `PackCmd::Architect` handler
+
+**Acceptance criteria**:
+- `roko pack architect sprint-42` reads synthesis output and produces arch spec
+- Arch spec references actual file paths and crate names from the workspace
+- Manifest status advances to `Architected`
+
+**Depends on**: 8.27
+
+### Task 8.29: Implement decomposition pass (Pass 3)
+
+**Files**: modify `crates/roko-cli/src/pack_pipeline.rs`
+**Complexity**: standard
+
+**What**: Read the architecture spec and generate a `tasks.toml` with tiered
+metadata. Auto-split any tasks with 8+ files.
+
+**Steps**:
+1. Implement `run_decomposition(workdir, pack_dir, manifest, model) -> Result<()>`
+2. Read `pass-02-arch.md` as input
+3. Dispatch Strategist agent with structured output requirements for TOML tasks
+4. Parse output as TOML into `Vec<TaskSpec>`
+5. Validate the generated tasks using the validation engine from Phase 2
+6. Auto-split any tasks where `should_split()` returns true (from 8.20)
+7. Write to `pass-03-tasks.toml`
+8. Update manifest, advance status to `Decomposed`
+
+**Acceptance criteria**:
+- `roko pack decompose sprint-42` generates valid tasks.toml
+- Generated tasks have proper tiers, dependencies, and shell-command acceptance
+- Tasks with 8+ files are auto-split into subtasks
+- `roko plan validate` passes on the generated tasks.toml
+
+**Depends on**: 8.28, 8.20
+
+### Task 8.30: Implement scoping pass (Pass 4: per-task context slicing)
+
+**Files**: modify `crates/roko-cli/src/pack_pipeline.rs`,
+  new `crates/roko-cli/src/context_slicer.rs`
+**Complexity**: standard
+
+**What**: For each task in the generated tasks.toml, compute a context slice --
+the minimal context needed for that task, bounded by tier budget.
+
+**Steps**:
+1. Create `context_slicer.rs` with `compute_context_slice(task, pack_dir, workdir)`
+2. Define `ContextSlice`: `task_id`, `total_tokens`, `sections: Vec<ContextSection>`
+3. Define `ContextSection`: `source` (task_def, file, dep_output, arch_spec,
+   conventions, knowledge), `tokens`, `content`, `priority`
+4. Implement windowing algorithm:
+   - Layer 1: Task instructions (always, ~500 tokens)
+   - Layer 2: Target file contents (high priority, up to 40% of budget)
+   - Layer 3: Dependency outputs (medium, up to 15%)
+   - Layer 4: Architecture context from pass-02 (medium, up to 20%)
+   - Layer 5: Repo conventions (low, up to 10%)
+   - Layer 6: Knowledge store hits (low, up to 10%)
+5. Write each slice to `scoping/T{id}-context.toml`
+6. Update manifest, advance status to `Scoped`
+
+**Acceptance criteria**:
+- Each task gets a context slice file in `scoping/`
+- Trivial tasks get slices under 4K tokens
+- Complex tasks get slices up to 64K tokens
+- Context provenance is tracked per section (source + token count)
+
+**Depends on**: 8.29, 8.9
+
+### Task 8.31: Implement `roko pack pipeline` (all passes in sequence)
+
+**Files**: modify `crates/roko-cli/src/pack_pipeline.rs`,
+  modify `crates/roko-cli/src/commands/pack.rs`
+**Complexity**: fast
+
+**What**: Run all passes in sequence with optional approval gates between
+passes. Resume from the last completed pass if interrupted.
+
+**Steps**:
+1. Implement `run_pipeline(workdir, pack_dir, manifest, model, approve_before)`
+2. Check `manifest.pack.status` to determine completed passes
+3. Run remaining passes in order: synthesis -> architecture -> decomposition -> scoping
+4. Between each pass, if approval is required, prompt: "Pass N complete. Review
+   output at {path}. Continue? [y/n/e(dit)]"
+5. On "n", save checkpoint and exit. On "e", open `$EDITOR` with pass output.
+6. The "execute" step delegates to `roko plan run` with the generated tasks.toml
+
+**Acceptance criteria**:
+- `roko pack pipeline sprint-42` runs all passes end to end
+- Interrupting mid-pipeline and re-running resumes from the last completed pass
+- `--approve-before execute` pauses before execution for user review
+- Each pass's output is visible as a file in the pack directory
+
+**Depends on**: 8.27, 8.28, 8.29, 8.30
+
+---
+
+## Phase 5: Interactive Steering & Ingestion
+
+**Problem**: The CLI is fire-and-forget. For the funnel workflow, users need
+to steer between passes, edit artifacts, and re-run individual passes.
+
+**Effort**: ~900 LOC | **Impact**: High
+**Dependencies**: Phase 4 (T24-T31 for pack infrastructure)
+
+### Task 8.32: Add `roko ingest` command (simplified pack creation)
+
+**Files**: modify `crates/roko-cli/src/commands/pack.rs`,
+  modify `crates/roko-cli/src/main.rs`
+**Complexity**: fast
+
+**What**: `roko ingest` is a convenience alias that creates a pack and
+immediately starts the pipeline. Accepts file paths, globs, URLs, PRD slugs.
+
+**Steps**:
+1. Add `Ingest` variant to `Command` enum with args: `label: String`,
+   `sources: Vec<String>`, `--from-prd: Option<String>`, `--from-plan: Option<String>`
+2. Implement handler:
+   - If `--from-prd`, read the PRD, extract referenced files/crates
+   - If `--from-plan`, read tasks.toml, extract all `files` and `context_files`
+   - Otherwise, partition sources into dirs, files, and URLs
+3. Call `create_pack()` then `run_pipeline()` if the user confirms
+4. Print: "Ingested N docs + M source files (X tokens). Pack: .roko/packs/{label}"
+
+**Acceptance criteria**:
+- `roko ingest sprint-42 docs/ crates/roko-core/src/` creates a pack with token count
+- `roko ingest sprint-42 --from-prd system-prompt-wiring` extracts PRD references
+- `roko ingest sprint-42 --from-plan plans/sprint-42/` extracts plan file references
+
+**Depends on**: 8.24, 8.26
+
+### Task 8.33: Implement per-pass re-run and editing
+
+**Files**: modify `crates/roko-cli/src/commands/pack.rs`,
+  modify `crates/roko-cli/src/pack_pipeline.rs`
+**Complexity**: standard
+
+**What**: Allow re-running individual passes and editing pass outputs. When a
+pass is re-run, downstream passes are invalidated.
+
+**Steps**:
+1. Add `Rerun { name: String, pass: String, focus: Option<String> }` to `PackCmd`
+2. When re-running a pass:
+   - Delete output files for this pass and all downstream passes
+   - Reset `manifest.pack.status` to the pass before the re-run target
+   - Remove downstream `PassRecord` entries from manifest
+   - Run the target pass (optionally with `--focus` injected into system prompt)
+3. Add `Edit { name: String, pass: String }` subcommand:
+   - Open the pass output file in `$EDITOR`
+   - After editing, prompt: "Re-validate downstream passes? [y/n]"
+4. Add `Show { name: String, pass: Option<String> }` subcommand:
+   - Display the pass output or all pass summaries
+
+**Acceptance criteria**:
+- `roko pack rerun sprint-42 --pass synthesis --focus "security"` re-synthesizes
+- Downstream passes are invalidated when an upstream pass is re-run
+- `roko pack edit sprint-42 --pass decompose` opens tasks.toml in $EDITOR
+- `roko pack show sprint-42 --pass arch` displays the architecture spec
+
+**Depends on**: 8.27, 8.28, 8.29, 8.31
+
+### Task 8.34: Add `--approve-each` flag to `roko plan run`
+
+**Files**: modify `crates/roko-cli/src/commands/plan.rs` (~1,317 LOC),
+  modify `crates/roko-cli/src/runner/event_loop.rs` (~3,136 LOC)
+**Complexity**: standard
+
+**What**: Pause after each task completes for user approval before proceeding.
+Show the task result and prompt continue/retry/skip/abort.
+
+**Steps**:
+1. Add `#[arg(long)] approve_each: bool` to `PlanRunArgs`
+2. In `event_loop.rs`, after a task completes and gate results are known:
+   - If `approve_each`, print task summary: ID, title, gate verdicts, files changed
+   - Prompt: "[c]ontinue / [r]etry / [s]kip / [a]bort"
+   - Continue: proceed to next task
+   - Retry: re-dispatch with gate failure context
+   - Skip: mark task as skipped, unblock dependents
+   - Abort: save state and exit
+3. In non-TTY mode, `--approve-each` is ignored with a warning
+
+**Acceptance criteria**:
+- `roko plan run plans/ --approve-each` pauses after each task
+- User can retry a failed task inline without restarting the run
+- User can skip a task and continue with dependents
+- Aborting saves state for later `--resume`
+
+**Depends on**: 8.4
+
+### Task 8.35: Add `--cost-cap` flag to `roko plan run`
+
+**Files**: modify `crates/roko-cli/src/commands/plan.rs`,
+  modify `crates/roko-cli/src/runner/event_loop.rs`
+**Complexity**: fast
+
+**What**: Stop execution when total accumulated cost exceeds a specified
+dollar amount.
+
+**Steps**:
+1. Add `#[arg(long)] cost_cap: Option<f64>` to `PlanRunArgs`
+2. In `event_loop.rs`, maintain a running `total_cost_usd: f64` counter
+3. After each agent completion, add the task cost (from usage data)
+4. Before dispatching the next task, check `total_cost_usd >= cost_cap`:
+   - If exceeded, print: "Cost cap reached ($X.XX / $Y.YY). Stopping."
+   - Save state and exit with code 2 (distinct from success=0 and error=1)
+5. Show running cost in task completion messages
+
+**Acceptance criteria**:
+- `roko plan run plans/ --cost-cap 10.00` stops at $10
+- Exit code is 2 (distinguishable from normal failure)
+- State is saved for `--resume`
+- Running cost is visible in per-task completion messages
+
+**Depends on**: 8.4
+
+---
+
+## Phase 6: Mori-Style Task Ingestion & DAG Updates
+
+**Problem**: Mori's ingest-and-update loop let users edit tasks.toml mid-run
+and have the DAG update automatically. Roko does not support mid-flight plan
+editing.
+
+**Effort**: ~1,000 LOC | **Impact**: Medium-High
+**Dependencies**: Phase 2 (T19 for validation), Phase 3 (T20 for splitting)
+
+### Task 8.36: Implement `roko plan ingest <dir>` for Mori-style task loading
+
+**Files**: modify `crates/roko-cli/src/commands/plan.rs`,
+  modify `crates/roko-cli/src/runner/plan_loader.rs`
+**Complexity**: standard
+
+**What**: Add an `Ingest` subcommand to `PlanCmd` that reads a directory of
+tasks.toml files, validates them, builds the DAG, and sets up executor state.
+
+**Steps**:
+1. Add `Ingest { dir: PathBuf, auto_split: bool }` to `PlanCmd`
+2. In the handler:
+   - Discover all `tasks.toml` files recursively
+   - Parse each into `Vec<TaskSpec>` via `plan_loader.rs`
+   - Run full validation (Phase 2 validation engine)
+   - Build the per-plan DAG and compute execution waves
+   - Persist initial executor state to `.roko/state/executor.json`
+3. Print summary: N plans, M tasks, K waves, estimated cost/time
+4. If `--auto-split` flag is set, run auto-splitting before persisting
+
+**Acceptance criteria**:
+- `roko plan ingest plans/` reads tasks.toml files, validates, and persists state
+- Invalid TOMLs produce error output and prevent ingestion
+- After ingestion, `roko plan run plans/ --resume` can execute without re-parsing
+- `roko plan ingest plans/ --auto-split` splits large tasks before persisting
+
+**Depends on**: 8.19, 8.8
+
+### Task 8.37: Implement filesystem watcher for mid-run plan editing
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs`,
+  new `crates/roko-cli/src/runner/plan_watcher.rs`
+**Complexity**: standard
+
+**What**: Watch the plan directory for changes to tasks.toml files. When a
+change is detected, pause execution, re-parse, diff against in-memory state,
+update the DAG incrementally, and resume.
+
+The `notify::RecommendedWatcher` is already a dependency, used in
+`tui/fs_watch.rs`.
+
+**Steps**:
+1. Create `plan_watcher.rs` with `PlanWatcher` struct wrapping
+   `notify::RecommendedWatcher`
+2. Watch all `tasks.toml` files in the plan directory
+3. On change event, debounce (500ms), then:
+   - Re-parse the changed tasks.toml into `Vec<TaskSpec>`
+   - Diff against the in-memory task list: find added, removed, modified tasks
+   - For added tasks: insert into DAG, compute new dependencies
+   - For removed tasks: remove from DAG, unblock dependents (if pending)
+   - For modified tasks: update metadata, recompute if status changed
+   - Rebuild execution waves for the affected subgraph
+4. In `event_loop.rs`, add a `plan_change` branch to the `tokio::select!`:
+   - Receive change events from `PlanWatcher` via a channel
+   - Apply the DAG update
+   - Log: "Plan updated: +2 tasks, -1 task, DAG recomputed"
+
+**Acceptance criteria**:
+- Editing tasks.toml during a run updates the in-memory DAG without restarting
+- Adding a new task causes it to appear in the execution queue
+- Removing a pending task removes it from the queue
+- The watcher does not trigger on status-only changes (which the runner writes)
+
+**Depends on**: 8.36
+
+### Task 8.38: Support cross-plan task references (GlobalTaskId)
+
+**Files**: modify `crates/roko-orchestrator/src/dag.rs` (~2,557 LOC),
+  modify `crates/roko-orchestrator/src/task_spec.rs`
+**Complexity**: standard
+
+**What**: Support Mori-style cross-plan dependencies using `"plan_id:task_id"`
+syntax in `depends_on` fields.
+
+**Steps**:
+1. Define `GlobalTaskId` struct: `plan_id: String`, `task_id: String` with
+   `Display` rendering as `"plan_id:task_id"` and `FromStr` parsing
+2. In `depends_on` parsing, detect the `:` separator: if present, parse as
+   cross-plan reference; otherwise, treat as intra-plan reference
+3. Extend `dag.rs` to accept cross-plan edges when building the unified DAG
+4. In the executor, a task with cross-plan dependencies is blocked until the
+   referenced task in the other plan completes
+5. Validation: check that cross-plan references resolve to existing plan:task pairs
+
+**Acceptance criteria**:
+- `depends_on = ["09:T3"]` blocks until plan 09's T3 completes
+- Invalid cross-plan references produce validation errors
+- Cross-plan cycles are detected by the circular dependency checker (8.14)
+
+**Depends on**: 8.14, 8.8
+
+---
+
+## Phase 7: TUI Improvements
+
+**Problem**: The TUI is observation-only. Users cannot act from the dashboard.
+Task details show gate results only, not full metadata.
+
+**Effort**: ~1,200 LOC | **Impact**: Medium
+**Dependencies**: Phase 1 (T8 for TaskSpec), Phase 4 (T24 for pack types)
+
+### Task 8.39: Enrich task detail modal with full metadata
+
+**Files**: modify `crates/roko-cli/src/tui/modals/task_detail.rs` (~177 LOC)
+**Complexity**: standard
+
+**What**: Extend the task detail modal to show all agent-visible fields,
+context breakdown, and verbatim gate failure output.
+
+**Steps**:
+1. Read `TaskSpec` for the selected task (parse from tasks.toml or executor state)
+2. Add sections to the modal:
+   - **Metadata**: complexity band, category, estimated time, cost
+   - **Files**: list of target files and context files
+   - **Dependencies**: which tasks this depends on and which depend on it
+   - **Acceptance**: formatted acceptance criteria with shell command highlighting
+   - **Gate results**: verbatim gate output (compile errors, test failures, clippy)
+   - **Context budget**: bar chart showing token allocation per section
+3. Add keybindings at the bottom: `[c] context` `[g] gate output` `[s] split` `[r] retry`
+4. Increase modal width to accommodate additional content
+
+**Acceptance criteria**:
+- Task detail modal shows complexity band, files, dependencies, and acceptance
+- Gate failure output is shown verbatim (not just pass/fail)
+- Context budget breakdown is displayed as a bar chart if data is available
+- Modal renders correctly for all four complexity tiers
+
+**Depends on**: 8.8
+
+### Task 8.40: Add pause/resume and single-task retry from TUI
+
+**Files**: modify `crates/roko-cli/src/tui/input.rs`,
+  modify `crates/roko-cli/src/tui/state.rs` (~4,968 LOC),
+  modify `crates/roko-cli/src/runner/event_loop.rs`
+**Complexity**: standard
+
+**What**: Add keyboard shortcuts to pause/resume execution and retry a single
+failed task from the TUI dashboard.
+
+**Steps**:
+1. Add `p` key handler in `input.rs` to toggle pause state:
+   - Send a message to the event loop via the existing event channel
+   - Update TUI state to show "PAUSED" in the header bar
+2. In `event_loop.rs`, add a `pause` flag checked before dispatching new tasks:
+   - When paused, do not dispatch new tasks but continue processing running ones
+   - When unpaused, resume normal dispatch
+3. Add `r` key handler on a focused failed task:
+   - Send a retry request for the specific task to the event loop
+   - The event loop resets the task status to pending and re-dispatches
+4. Update header bar to show "PAUSED" state with the `p` toggle
+5. Add `s` key handler to skip a focused pending/failed task
+
+**Acceptance criteria**:
+- Pressing `p` during execution pauses dispatch (running tasks finish)
+- Pressing `p` again resumes
+- Pressing `r` on a failed task retries it with gate failure context
+- Pressing `s` on a pending task skips it and unblocks dependents
+- Header bar shows "PAUSED" when paused
+
+**Depends on**: 8.4
+
+### Task 8.41: Add complexity tier indicators to plan tree widget
+
+**Files**: modify `crates/roko-cli/src/tui/pages/operations.rs`
+  (or relevant plan tree widget in `widgets/plan_tree.rs`)
+**Complexity**: fast
+
+**What**: Show complexity tier and cost in the plan tree's task list.
+
+**Steps**:
+1. Read `complexity_band` from each task's metadata
+2. Add tier indicator after the task title: `[trivial]`, `[fast]`, `[std]`, `[complex]`
+3. Color-code by tier: green for trivial/fast, yellow for standard, red for complex
+4. Add model name and cost when available: `haiku $0.01`, `sonnet $0.23`, `opus $1.47`
+5. Format: `T1 [fast]   Scaffold widget module       done  sonnet $0.23`
+
+**Acceptance criteria**:
+- Plan tree shows `[trivial]`/`[fast]`/`[std]`/`[complex]` per task
+- Tier indicators are color-coded
+- Cost is shown when episode data is available
+
+**Depends on**: 8.8
+
+### Task 8.42: Add pack progress view to dashboard
+
+**Files**: new `crates/roko-cli/src/tui/pages/packs.rs`,
+  modify `crates/roko-cli/src/tui/mod.rs`,
+  modify `crates/roko-cli/src/tui/tabs.rs`
+**Complexity**: standard
+
+**What**: Add a new tab or subtab showing context pack status and funnel progress.
+
+**Steps**:
+1. Create `packs.rs` page that reads pack manifests from `.roko/packs/`
+2. Left panel: list of packs with status indicators (color-coded by PackStatus)
+3. Right panel (when selected): per-pass progress, token counts, agent/model used
+4. Show pass flow: `Synthesis -> Architecture -> Decomposition -> Scoping -> Execution`
+   with checkmarks for completed passes and a spinner for the active pass
+5. Register the page in `tabs.rs` and `mod.rs`
+6. Assign to a subtab or repurpose an existing tab
+
+**Acceptance criteria**:
+- The TUI shows pack list with status
+- Selecting a pack shows per-pass progress
+- Completed passes show checkmarks, active pass shows spinner
+- Token counts and durations are displayed per pass
+
+**Depends on**: 8.24
+
+### Task 8.43: Add cost tracking to TUI header bar
+
+**Files**: modify `crates/roko-cli/src/tui/widgets/header_bar.rs`,
+  modify `crates/roko-cli/src/tui/dashboard.rs` (~6,383 LOC)
+**Complexity**: fast
+
+**What**: Add running cost display to the header bar during plan execution.
+
+**Steps**:
+1. Track cumulative cost from episode/cost events in TUI state
+2. Add cost display to the header bar: `$X.XX` with color: green if under
+   estimate, yellow if near, red if over
+3. Format: `roko  W1/3  sprint-42  8/10  80%  $6.42  ETA:5m  F1-F10`
+4. If `--cost-cap` is set, show as `$6.42/$10.00`
+
+**Acceptance criteria**:
+- Header bar shows running cost during plan execution
+- Cost updates in real-time as tasks complete
+- Cost cap is shown when configured
+
+**Depends on**: 8.35
+
+### Task 8.44: Wire batch review modal to orchestrator
+
+**Files**: modify `crates/roko-cli/src/tui/modals/batch_review.rs` (~164 LOC),
+  modify `crates/roko-cli/src/runner/event_loop.rs`
+**Complexity**: fast
+
+**What**: The batch review modal exists (164 LOC) but has no trigger. Wire it
+to appear when a wave completes, showing wave results before proceeding.
+
+**Steps**:
+1. In `event_loop.rs`, detect when all tasks in a wave have completed
+2. Emit a `WaveCompleted` event with the wave summary (passed/failed/skipped)
+3. In the TUI, when `WaveCompleted` is received:
+   - If `--approve-each` or batch review configured, show `BatchReview` modal
+   - Modal shows per-task results for the wave
+   - User can approve (continue), retry failed tasks, or abort
+4. If not in interactive mode, log the wave summary and continue
+
+**Acceptance criteria**:
+- Batch review modal appears at wave boundaries when configured
+- Modal shows per-task pass/fail for the completed wave
+- User can approve, retry, or abort from the modal
+- Non-interactive mode logs wave summary without modal
+
+**Depends on**: 8.40
+
+---
+
+## Phase 8: Progressive Context Refinement & Polish
+
+**Problem**: Funnel passes produce artifacts but the execution phase does not
+use per-task context slices. Prior task outputs do not feed into subsequent
+task context.
+
+**Effort**: ~700 LOC | **Impact**: Medium
+**Dependencies**: Phase 4 (T30 for context slicing)
+
+### Task 8.45: Wire context slices into agent dispatch
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs`,
+  modify `crates/roko-compose/src/prompt_assembly_service.rs` (~1,048 LOC)
+**Complexity**: standard
+
+**What**: When a pack has scoped context slices, use the per-task slice instead
+of monolithic context assembly. The slice provides exactly the context the
+task needs.
+
+**Steps**:
+1. In `event_loop.rs`, when dispatching a task, check if a context slice exists
+   at `.roko/packs/<pack-id>/scoping/T{id}-context.toml`
+2. If it exists, read the `ContextSlice` and construct the system prompt using
+   only the sections in the slice (respecting their token budgets)
+3. Pass the slice content to `PromptAssemblyService` as a pre-assembled context block
+4. If no slice exists, fall back to the standard prompt assembly path
+5. Log which context source was used: "Using scoped context (34K tokens)" vs
+   "Using standard assembly (estimated 45K tokens)"
+
+**Acceptance criteria**:
+- Tasks with context slices use the slice for prompt assembly
+- Tasks without context slices use standard assembly (backward compatible)
+- Log output shows which context source was used
+- Prompt token count is within the slice's budget
+
+**Depends on**: 8.30, 8.11
+
+### Task 8.46: Feed prior task outputs into subsequent task context
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs`,
+  modify `crates/roko-cli/src/runner/state.rs`
+**Complexity**: standard
+
+**What**: When task B depends on task A, include a summary of task A's output
+in task B's context. This enables chain-of-work reasoning.
+
+**Steps**:
+1. In `state.rs`, add `task_outputs: HashMap<String, String>` to executor state
+2. After a task completes successfully, capture its output (the agent's final
+   response or the git diff if available) and store in `task_outputs`
+3. Truncate stored output to 2K tokens per task
+4. When assembling context for a downstream task:
+   - For each `depends_on` entry, look up the stored output
+   - Include as: "Prior work (T{id}): {truncated output}"
+   - Budget: up to 15% of the task's context budget for dependency outputs
+5. Persist `task_outputs` in the executor snapshot for resume support
+
+**Acceptance criteria**:
+- Task B's prompt includes a summary of task A's output when B depends on A
+- Prior task outputs are truncated to 2K tokens each
+- Total dependency output context respects the 15% budget cap
+- Outputs persist across resume
+
+**Depends on**: 8.4, 8.9
+
+### Task 8.47: Add inline progress output for non-TUI execution
+
+**Files**: modify `crates/roko-cli/src/runner/event_loop.rs`
+**Complexity**: fast
+
+**What**: For headless/SSH sessions without TUI, show inline progress as tasks
+complete. Update a single progress line (or append lines for non-TTY).
+
+**Steps**:
+1. Detect TTY vs non-TTY at run start
+2. For TTY without TUI: use `\r` to overwrite a progress line:
+   `[W1] T3 implementing... (3/10, $2.14, 5:23 elapsed)`
+3. When a task completes, print a completion line:
+   `[OK] T3: Scaffold widget module (sonnet, 23s, $0.23)`
+   or `[FAIL] T6: Wire auth flow (opus, 45s, $1.47, gate: clippy)`
+4. For non-TTY: print each completion as a new line (no `\r`)
+5. At end of run, print the full RunSummary from 8.4
+
+**Acceptance criteria**:
+- TTY mode shows a live-updating progress line
+- Each task completion is printed as a one-line summary
+- Non-TTY mode (piped output, CI) prints one line per event, no control chars
+- End-of-run summary appears in all modes
+
+**Depends on**: 8.4
+
+---
+
+## Dependency Graph
+
+```
+Phase 0 (8.1-8.7): Foundation -- no dependencies
+  |
+  +---> Phase 1 (8.8-8.12): Metadata tiering + context windowing
+  |       |
+  |       +---> Phase 2 (8.13-8.19): Task TOML validation
+  |       |       |
+  |       |       +---> Phase 3 (8.20-8.23): Task auto-splitting
+  |       |       |       |
+  |       |       |       +---> Phase 4 (8.24-8.31): Context packs & corpus
+  |       |       |               |
+  |       |       |               +---> Phase 5 (8.32-8.33): Ingestion + re-run
+  |       |       |               |
+  |       |       |               +---> Phase 8 (8.45-8.47): Progressive refinement
+  |       |       |
+  |       |       +---> Phase 6 (8.36-8.38): Mori-style ingestion
+  |       |
+  |       +---> Phase 7 (8.39, 8.41, 8.42): TUI (TaskSpec-dependent)
+  |
+  +---> 8.34-8.35: approve-each, cost-cap (depends on 8.4 only)
+  +---> 8.40: TUI pause/resume (depends on 8.4 only)
+  +---> 8.43: TUI cost tracking (depends on 8.35)
+  +---> 8.44: TUI batch review (depends on 8.40)
+```
+
+**Critical path**: 8.1-8.4 -> 8.8-8.11 -> 8.13-8.19 -> 8.20-8.23 -> 8.24-8.31 -> 8.45-8.47
+
+---
+
+## File Inventory
+
+### New Files
+
+| File | Phase | Task | Purpose |
+|------|-------|------|---------|
+| `crates/roko-cli/src/commands/next.rs` | 0 | 8.1 | `roko next` command |
+| `crates/roko-cli/src/runner/run_summary.rs` | 0 | 8.4 | End-of-run summary type + display |
+| `crates/roko-orchestrator/src/task_spec.rs` | 1 | 8.8 | TaskSpec + TaskAgentInput types |
+| `crates/roko-compose/src/context_budget.rs` | 1 | 8.9 | ContextBudget per-section token allocation |
+| `crates/roko-orchestrator/src/validation.rs` | 2 | 8.13-8.18 | Validation engine (all checks) |
+| `crates/roko-orchestrator/src/task_split.rs` | 3 | 8.20-8.22 | Task auto-splitting engine |
+| `crates/roko-cli/src/commands/task.rs` | 3 | 8.23 | `roko task split` command |
+| `crates/roko-cli/src/pack.rs` | 4 | 8.24-8.25 | Pack data model + storage |
+| `crates/roko-cli/src/commands/pack.rs` | 4 | 8.26 | `roko pack` command group |
+| `crates/roko-cli/src/pack_pipeline.rs` | 4 | 8.27-8.31 | 4 funnel passes + pipeline |
+| `crates/roko-cli/src/context_slicer.rs` | 4 | 8.30 | Per-task context slicing |
+| `crates/roko-cli/src/runner/plan_watcher.rs` | 6 | 8.37 | Filesystem watcher for mid-run editing |
+| `crates/roko-cli/src/tui/pages/packs.rs` | 7 | 8.42 | Pack progress TUI page |
+
+### Modified Files
+
+| File | LOC | Tasks | Changes |
+|------|-----|-------|---------|
+| `crates/roko-cli/src/main.rs` | 4,423 | 8.2, 8.3, 8.7, 8.23, 8.26, 8.32 | Add Command variants, help text |
+| `crates/roko-cli/src/commands/mod.rs` | 18 | 8.1, 8.23, 8.26 | Re-export new modules |
+| `crates/roko-cli/src/unified.rs` | 212 | 8.3 | Bare invocation -> next output first |
+| `crates/roko-cli/src/runner/event_loop.rs` | 3,136 | 8.4, 8.11, 8.19, 8.34, 8.35, 8.37, 8.40, 8.44, 8.45, 8.46, 8.47 | Summary, validation, approve-each, cost-cap, pause, watcher, slices, prior outputs, inline progress |
+| `crates/roko-cli/src/runner/types.rs` | 1,568 | 8.4 | Extend/replace PlanRunSummary |
+| `crates/roko-cli/src/runner/plan_loader.rs` | -- | 8.11, 8.36 | Parse into TaskSpec |
+| `crates/roko-cli/src/runner/state.rs` | -- | 8.46 | Add task_outputs to state |
+| `crates/roko-cli/src/runner/task_dag.rs` | 554 | 8.6 | compute_execution_waves() |
+| `crates/roko-cli/src/commands/plan.rs` | 1,317 | 8.6, 8.19, 8.34, 8.35, 8.36 | Dry-run enrichment, skip-validation, approve-each, cost-cap, ingest |
+| `crates/roko-cli/src/commands/status.rs` | 3 | 8.5 | --last-run flag |
+| `crates/roko-cli/src/commands/util.rs` | -- | 8.2, 8.5 | Wire cmd_next, extend cmd_status |
+| `crates/roko-orchestrator/src/lib.rs` | -- | 8.8, 8.13, 8.20, 8.38 | pub mod + re-exports |
+| `crates/roko-orchestrator/src/dag.rs` | 2,557 | 8.38 | Cross-plan edges, GlobalTaskId |
+| `crates/roko-compose/src/lib.rs` | -- | 8.9 | pub mod context_budget |
+| `crates/roko-compose/src/system_prompt_builder.rs` | 2,081 | 8.10 | ContextBudget enforcement |
+| `crates/roko-compose/src/prompt_assembly_service.rs` | 1,048 | 8.12, 8.45 | Section pruning, context slices |
+| `crates/roko-cli/src/tui/modals/task_detail.rs` | 177 | 8.39 | Full metadata display |
+| `crates/roko-cli/src/tui/modals/batch_review.rs` | 164 | 8.44 | Wire to orchestrator |
+| `crates/roko-cli/src/tui/input.rs` | -- | 8.40 | Pause/resume/retry keybindings |
+| `crates/roko-cli/src/tui/state.rs` | 4,968 | 8.40 | Pause state, cost tracking |
+| `crates/roko-cli/src/tui/pages/operations.rs` | -- | 8.41 | Tier indicators in plan tree |
+| `crates/roko-cli/src/tui/widgets/header_bar.rs` | -- | 8.43 | Cost display |
+| `crates/roko-cli/src/tui/dashboard.rs` | 6,383 | 8.43 | Cost state propagation |
+| `crates/roko-cli/src/tui/mod.rs` | -- | 8.42 | Register packs page |
+| `crates/roko-cli/src/tui/tabs.rs` | -- | 8.42 | Add packs tab |
+
+---
+
+## Risk Mitigations
+
+### R1: Another parallel universe of types (TaskSpec vs TaskDef)
+
+**Risk**: `TaskSpec` becomes yet another task struct alongside `TaskDef` in
+`task_parser.rs` (1,898 LOC).
+**Mitigation**: `TaskSpec` REPLACES `TaskDef`, not supplements it. Migration:
+update `plan_loader.rs` to parse into `TaskSpec`, deprecate `TaskDef`. Do not
+maintain two parallel type hierarchies. The 08-UX-CLI.md source is explicit:
+"TaskSpec replaces existing task types."
+
+### R2: Funnel workflow cost (5 agent calls per funnel run)
+
+**Risk**: At ~$2 per Opus call, a full funnel costs $10+ before execution.
+**Mitigation**: Default to Sonnet for passes 1-4, Opus only for execution.
+Allow `--model` override per pass. Allow skipping passes the user does
+manually. Total funnel cost target: ~$2-4.
+
+### R3: Context windowing breaks working prompts
+
+**Risk**: Reducing context for fast tasks may break existing prompts.
+**Mitigation**: Default all existing tasks to `Standard` complexity band.
+Only apply slim/deep for tasks that explicitly set `context_weight` or
+`complexity_band`. Backward compatibility preserved by default.
+
+### R4: Validation blocks legitimate runs
+
+**Risk**: Overly strict validation prevents valid-but-unusual plans.
+**Mitigation**: Only `Error` severity blocks execution. `Warning` is shown
+but does not block. `--skip-validation` is always available.
+
+### R5: Filesystem watcher race conditions
+
+**Risk**: Editing tasks.toml while a task is running could cause inconsistency.
+**Mitigation**: Debounce watcher events (500ms). Never modify a running task.
+Only apply changes to pending/blocked tasks. Lock the running task's entry.
+
+### R6: Pack pipeline produces low-quality tasks.toml
+
+**Risk**: Agent-generated tasks.toml from decomposition pass may be weak.
+**Mitigation**: Run full validation automatically on generated TOML. Show
+results to user. Allow editing before execution. The pipeline is a tool,
+not a replacement for judgment.
+
+---
+
+## Sources
+
+**Existing infrastructure this plan builds on**:
+
+| What | Path | LOC |
+|------|------|-----|
+| CLI entry, Command enum | `crates/roko-cli/src/main.rs` | 4,423 |
+| Bare invocation handler | `crates/roko-cli/src/unified.rs` | 212 |
+| Event loop / plan runner | `crates/roko-cli/src/runner/event_loop.rs` | 3,136 |
+| Runner types (PlanRunSummary) | `crates/roko-cli/src/runner/types.rs` | 1,568 |
+| Task DAG computation | `crates/roko-cli/src/runner/task_dag.rs` | 554 |
+| Plan loader | `crates/roko-cli/src/runner/plan_loader.rs` | -- |
+| Task parser (TaskDef) | `crates/roko-cli/src/task_parser.rs` | 1,898 |
+| Plan commands | `crates/roko-cli/src/commands/plan.rs` | 1,317 |
+| Plan validation | `crates/roko-cli/src/plan_validate.rs` | 1,517 |
+| ChatAgentSession | `crates/roko-cli/src/chat_session.rs` | 2,747 |
+| SystemPromptBuilder | `crates/roko-compose/src/system_prompt_builder.rs` | 2,081 |
+| Prompt assembly service | `crates/roko-compose/src/prompt_assembly_service.rs` | 1,048 |
+| Budget (AdjustedBudget) | `crates/roko-compose/src/budget.rs` | 269 |
+| ContextBudgets (bidder tier) | `crates/roko-compose/src/context_provider.rs` | ~30 lines at L1260 |
+| TaskComplexityBand | `crates/roko-core/src/task.rs` | ~10 lines at L96 |
+| DAG engine | `crates/roko-orchestrator/src/dag.rs` | 2,557 |
+| Plan discovery | `crates/roko-orchestrator/src/plan_discovery.rs` | -- |
+| TUI state | `crates/roko-cli/src/tui/state.rs` | 4,968 |
+| TUI dashboard | `crates/roko-cli/src/tui/dashboard.rs` | 6,383 |
+| Task detail modal | `crates/roko-cli/src/tui/modals/task_detail.rs` | 177 |
+| Batch review modal | `crates/roko-cli/src/tui/modals/batch_review.rs` | 164 |
+| File watcher (reference) | `crates/roko-cli/src/tui/fs_watch.rs` | -- |
+| Command registry | `crates/roko-cli/src/commands/mod.rs` | 18 |

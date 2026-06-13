@@ -1,0 +1,599 @@
+# =============================================================================
+# binary-issues batches.toml — 56 entries
+# Source: tmp/binary-issues/MASTER-INDEX.md (verified 2026-05-01)
+# =============================================================================
+
+# =============================================================================
+# BI_SEC: Security defaults (Wave 1, all independent)
+# =============================================================================
+
+[[batch]]
+id = "BI_01"
+title = "Default share to --secret gist with scrubbed payload"
+group = "BI_SEC"
+deps = []
+scope = ["crates/roko-cli/src/share.rs"]
+also_read = ["crates/roko-agent/src/safety/log_scrubber.rs", "crates/roko-core/src/config/serve.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_02"
+title = "Add command allowlist to /api/terminal/sessions"
+group = "BI_SEC"
+deps = []
+scope = ["crates/roko-serve/src/terminal.rs"]
+also_read = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-core/src/config/serve.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_03"
+title = "Cap PTY session count and apply idle TTL"
+group = "BI_SEC"
+deps = []
+scope = ["crates/roko-serve/src/terminal.rs"]
+also_read = ["crates/roko-core/src/config/serve.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_04"
+title = "Default dangerously_skip_permissions to false at every hardcoded site"
+group = "BI_SEC"
+deps = []
+scope = [
+  "crates/roko-cli/src/commands/plan.rs",
+  "crates/roko-cli/src/runner/types.rs",
+  "crates/roko-cli/src/agent_exec.rs",
+  "crates/roko-agent/src/claude_cli_agent.rs",
+]
+also_read = ["crates/roko-cli/src/serve_runtime.rs", "crates/roko-acp/src/runner.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_05"
+title = "Promote secret-leak / forbidden-write violations to Block severity"
+group = "BI_SEC"
+deps = []
+scope = ["crates/roko-agent/src/safety/mod.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_06"
+title = "cfg(test)-gate AgentContract::permissive"
+group = "BI_SEC"
+deps = []
+scope = ["crates/roko-agent/src/safety/contract.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_07"
+title = "Audit and document implementer Python sandbox bypass risk"
+group = "BI_SEC"
+deps = []
+scope = [
+  "crates/roko-agent/src/safety/contracts/implementer.yaml",
+  "crates/roko-agent/src/safety/contract.rs",
+]
+also_read = ["crates/roko-agent/src/safety/mod.rs", "crates/roko-std/src/tool/builtin/shell.rs"]
+verify = "quick"
+
+# =============================================================================
+# BI_PHN: Phantom features (Wave 1-3, mixed)
+# =============================================================================
+
+[[batch]]
+id = "BI_08"
+title = "Auto-trigger EpisodeLogger::compact on session start / N episodes"
+group = "BI_PHN"
+deps = []
+scope = ["crates/roko-learn/src/episode_logger.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs", "crates/roko-cli/src/chat_session.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_09"
+title = "Wire DreamTriggerSink::with_runner and consume dream_triggers.jsonl"
+group = "BI_PHN"
+deps = []
+scope = [
+  "crates/roko-cli/src/commands/plan.rs",
+  "crates/roko-runtime/src/runtime_feedback/dreams.rs",
+]
+also_read = ["crates/roko-dreams/src/runner.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_10"
+title = "Persist LinUCB arm matrices via CascadeSnapshot"
+group = "BI_PHN"
+deps = []
+scope = [
+  "crates/roko-learn/src/cascade/persistence.rs",
+  "crates/roko-learn/src/model_router.rs",
+  "crates/roko-learn/src/cascade_router.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_11"
+title = "Activate VCG strategy when budget pressure crosses threshold"
+group = "BI_PHN"
+deps = []
+scope = ["crates/roko-compose/src/prompt.rs"]
+also_read = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_12"
+title = "Enforce cumulative MaxCostPerTurn across tool calls"
+group = "BI_PHN"
+deps = []
+scope = ["crates/roko-agent/src/safety/contract.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_13"
+title = "Share single SharedStateHub across TUI and serve"
+group = "BI_PHN"
+deps = []
+scope = [
+  "crates/roko-cli/src/main.rs",
+  "crates/roko-cli/src/commands/util.rs",
+  "crates/roko-cli/src/unified.rs",
+]
+also_read = ["crates/roko-serve/src/state.rs", "crates/roko-runtime/src/state_hub.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_14"
+title = "Harden create_share empty-transcript edge cases"
+group = "BI_PHN"
+deps = []
+scope = ["crates/roko-serve/src/routes/shared_runs.rs"]
+also_read = ["crates/roko-runtime/src/jsonl_logger.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_15"
+title = "Fix Share.tsx endpoint mismatch (/api/share -> /api/shared)"
+group = "BI_PHN"
+deps = []
+scope = ["demo/demo-app/src/pages/Share.tsx"]
+also_read = ["crates/roko-serve/src/routes/shared_runs.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_16"
+title = "Query knowledge store and populate knowledge_ids in chat path"
+group = "BI_PHN"
+deps = []
+scope = ["crates/roko-cli/src/chat_session.rs"]
+also_read = [
+  "crates/roko-core/src/foundation.rs",
+  "crates/roko-learn/src/store.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+]
+verify = "quick"
+
+# =============================================================================
+# BI_CMD: Slash commands (Wave 2-3)
+# =============================================================================
+
+[[batch]]
+id = "BI_17"
+title = "/gate <name> on|off toggles runtime config"
+group = "BI_CMD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs", "crates/roko-cli/src/chat_session.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_18"
+title = "/config set writes to runtime overlay (and optionally roko.toml)"
+group = "BI_CMD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs", "crates/roko-cli/src/config_cmd.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_19"
+title = "/run <prompt> executes inline via WorkflowEngine"
+group = "BI_CMD"
+deps = ["BI_24"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/run.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_20"
+title = "/plan run <dir> executes inline"
+group = "BI_CMD"
+deps = ["BI_24"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_21"
+title = "/prd idea <text> writes idea + opens flow"
+group = "BI_CMD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/prd.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_22"
+title = "/research <query> runs research backend inline"
+group = "BI_CMD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/commands/research.rs", "crates/roko-std/src/tool/builtin/web_search.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_23"
+title = "roko learn tune gates --dry-run actually applies (or removes the flag)"
+group = "BI_CMD"
+deps = []
+scope = ["crates/roko-cli/src/commands/learn.rs"]
+also_read = ["crates/roko-learn/src/gate_thresholds.rs", "crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+# =============================================================================
+# BI_STR: Streaming for run / plan execution (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "BI_24"
+title = "Forward WorkflowEngine lifecycle events to terminal during plan run"
+group = "BI_STR"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs", "crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_25"
+title = "Stream incremental output for roko run v2"
+group = "BI_STR"
+deps = ["BI_24"]
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+# =============================================================================
+# BI_SUB: Subprocess discipline (Wave 1-2)
+# =============================================================================
+
+[[batch]]
+id = "BI_26"
+title = "Add 3s timeout to claude --version probe in auth_detect"
+group = "BI_SUB"
+deps = []
+scope = ["crates/roko-cli/src/auth_detect.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_27"
+title = "Capture MCP server stderr to log file (no Stdio::inherit)"
+group = "BI_SUB"
+deps = []
+scope = ["crates/roko-agent/src/mcp/client.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_28"
+title = "Thread CancellationToken into chat dispatch (Ctrl+C cancels)"
+group = "BI_SUB"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-runtime/src/cancel.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_29"
+title = "Store chain-watcher join handle and abort on shutdown"
+group = "BI_SUB"
+deps = []
+scope = ["crates/roko-serve/src/lib.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_30"
+title = "Non-blocking background-serve startup (don't block chat boot)"
+group = "BI_SUB"
+deps = []
+scope = ["crates/roko-cli/src/unified.rs", "crates/roko-serve/src/lib.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_31"
+title = "Replace bare eprintln! in claude_cli_agent.rs and guard main.rs"
+group = "BI_SUB"
+deps = []
+scope = [
+  "crates/roko-agent/src/claude_cli_agent.rs",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# BI_ERR: Silent error swallowing (Wave 1)
+# =============================================================================
+
+[[batch]]
+id = "BI_32"
+title = "Log JSONL write/flush errors at warn instead of let _ ="
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-runtime/src/jsonl_logger.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_33"
+title = "Log AffectPolicy::persist failures (warn + counter)"
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-runtime/src/workflow_engine.rs"]
+also_read = ["crates/roko-runtime/src/affect/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_34"
+title = "Surface background-serve failure to user (not just tracing::warn)"
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-cli/src/unified.rs"]
+also_read = ["crates/roko-serve/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_35"
+title = "Return PTY send_input errors to WS client"
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-serve/src/terminal.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_36"
+title = "Store fswatcher join handle, log spawn failures"
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-serve/src/fswatcher.rs"]
+also_read = ["crates/roko-serve/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_37"
+title = "Fix double REST event delivery FIXME on EventBus"
+group = "BI_ERR"
+deps = []
+scope = ["crates/roko-serve/src/lib.rs"]
+also_read = ["crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+# =============================================================================
+# BI_HRD: Hardcoded values -> config (Wave 1-2)
+# =============================================================================
+
+[[batch]]
+id = "BI_38"
+title = "Consolidate claude-opus-4-6 literals into one preset key"
+group = "BI_HRD"
+deps = []
+scope = [
+  "crates/roko-core/src/config/presets.rs",
+  "crates/roko-cli/src/runtime_feedback/routing.rs",
+]
+also_read = ["crates/roko-cli/src/dispatch/model_routing.rs", "crates/roko-cli/src/model_selection.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_39"
+title = "Anthropic base URL through provider config (no DEFAULT_BASE_URL hard-ref)"
+group = "BI_HRD"
+deps = []
+scope = [
+  "crates/roko-agent/src/claude_agent.rs",
+  "crates/roko-agent/src/provider/mod.rs",
+]
+also_read = ["crates/roko-core/src/config/provider.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_40"
+title = "Anthropic API version through provider config"
+group = "BI_HRD"
+deps = []
+scope = [
+  "crates/roko-agent/src/claude_agent.rs",
+  "crates/roko-core/src/config/provider.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_41"
+title = "Consolidate 8192 max_tokens into per-role / per-provider config"
+group = "BI_HRD"
+deps = []
+scope = [
+  "crates/roko-compose/src/enrichment/pipeline.rs",
+  "crates/roko-agent/src/lifecycle.rs",
+  "crates/roko-core/src/config/provider.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_42"
+title = "Replace naive_opus_cost $15/$75 with CostTable::lookup"
+group = "BI_HRD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-learn/src/cost_table.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_43"
+title = "CostTable loaded from config with hardcoded fallbacks"
+group = "BI_HRD"
+deps = ["BI_42"]
+scope = ["crates/roko-learn/src/cost_table.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs", "crates/roko-core/src/config/presets.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_44"
+title = "Perplexity URL/model through web_search config"
+group = "BI_HRD"
+deps = []
+scope = ["crates/roko-std/src/tool/builtin/web_search.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_45"
+title = "PID file path uses .roko discovery (not current_dir)"
+group = "BI_HRD"
+deps = []
+scope = ["crates/roko-agent/src/process/registry.rs"]
+also_read = ["crates/roko-core/src/paths.rs"]
+verify = "quick"
+
+# =============================================================================
+# BI_COD: Code health & duplication (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "BI_46"
+title = "Extract shared chat event-loop body (HTTP + Session)"
+group = "BI_COD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_47"
+title = "Extract render_session_summary() helper"
+group = "BI_COD"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_48"
+title = "Remove or merge legacy chat.rs into chat_inline.rs"
+group = "BI_COD"
+deps = []
+scope = [
+  "crates/roko-cli/src/chat.rs",
+  "crates/roko-cli/src/chat_inline.rs",
+  "crates/roko-cli/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_49"
+title = "Unify roko init and roko config init"
+group = "BI_COD"
+deps = []
+scope = [
+  "crates/roko-cli/src/commands/util.rs",
+  "crates/roko-cli/src/config_cmd.rs",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# BI_MTX: Mutex / unwrap risks (Wave 1)
+# =============================================================================
+
+[[batch]]
+id = "BI_50"
+title = "Switch dispatcher audit-signals lock to parking_lot::Mutex"
+group = "BI_MTX"
+deps = []
+scope = ["crates/roko-agent/src/dispatcher/mod.rs"]
+also_read = ["crates/roko-agent/Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "BI_51"
+title = "LRU/cache mutexes in model_call_service use parking_lot"
+group = "BI_MTX"
+deps = []
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-agent/Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "BI_52"
+title = "Replace expect(just registered) with ok_or in routes/feeds.rs"
+group = "BI_MTX"
+deps = []
+scope = ["crates/roko-serve/src/routes/feeds.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "BI_53"
+title = "Remove roko-agent crate-level lint suppressions, fix call sites"
+group = "BI_MTX"
+deps = []
+scope = ["crates/roko-agent/src/lib.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# BI_PRT: Complete partial fixes (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "BI_54"
+title = "Add typed tools field to ModelCallRequest"
+group = "BI_PRT"
+deps = []
+scope = [
+  "crates/roko-core/src/foundation.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+  "crates/roko-cli/src/chat_session.rs",
+]
+also_read = ["crates/roko-agent/src/claude_agent.rs", "crates/roko-agent/src/provider/openai_compat_backend.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_55"
+title = "Cache and reuse provider agent in ProviderCallCell::execute"
+group = "BI_PRT"
+deps = []
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-agent/src/provider/mod.rs", "crates/roko-agent/src/claude_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BI_56"
+title = "Stream HTTP DispatchMode::Http deltas (parity with Session mode)"
+group = "BI_PRT"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-agent/src/provider/openai_compat_backend.rs"]
+verify = "quick"

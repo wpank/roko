@@ -1,0 +1,421 @@
+# =============================================================================
+# productionizing batches.toml — 28 entries
+# Source plans: tmp/productionizing/{10,11,12}-*.md
+# Issue tracker:  tmp/runners/productionizing/ISSUES.md
+# =============================================================================
+
+# =============================================================================
+# Group H: Hardening (production blockers from 10-IMPLEMENTATION-PLAN.md)
+# 13 batches: P04, P05, P07–P13, P15–P18
+# Already done in tree (skipped here): P01, P02, P03, P06, P14
+# =============================================================================
+
+[[batch]]
+id = "P04"
+title = "Remove hardcoded claude-sonnet-4-6 fallbacks (use config.agent.default_model)"
+group = "H"
+deps = []
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = [
+  "crates/roko-core/src/config/schema.rs",
+  "crates/roko-core/src/agent.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "P05"
+title = "Cross-process file locking (flock) for .roko/ state writes"
+group = "H"
+deps = []
+scope = [
+  "crates/roko-fs/src/lib.rs",
+  "crates/roko-fs/src/flock.rs",
+  "crates/roko-fs/Cargo.toml",
+  "crates/roko-learn/src/episode_logger.rs",
+  "crates/roko-learn/src/feedback_service.rs",
+  "crates/roko-learn/src/cascade_router.rs",
+]
+also_read = [
+  "crates/roko-fs/src/atomic.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "P07"
+title = "HTTP timeout layer + 503 on degraded /api/health"
+group = "H"
+deps = []
+scope = [
+  "crates/roko-serve/src/routes/mod.rs",
+  "crates/roko-serve/src/routes/status/health.rs",
+  "crates/roko-serve/Cargo.toml",
+]
+also_read = [
+  "crates/roko-serve/src/routes/status/mod.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "P08"
+title = "Log JWKS refresh failures + remaining critical silent swallows"
+group = "H"
+deps = []
+scope = [
+  "crates/roko-serve/src/jwks.rs",
+  "crates/roko-serve/src/lib.rs",
+  "crates/roko-serve/src/terminal.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "P09"
+title = "Pre-dispatch context overflow check + fallback to larger context model"
+group = "H"
+deps = ["P04"]
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = [
+  "crates/roko-core/src/agent.rs",
+  "crates/roko-core/src/config/schema.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "P10"
+title = "Recover from poisoned Mutex in warm_pool, orchestrate, gate_runner"
+group = "H"
+deps = []
+scope = [
+  "crates/roko-cli/src/dispatch/warm_pool.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/gate_runner.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "P11"
+title = "Auto-trigger GcEngine.should_auto_gc() in long-running serve"
+group = "H"
+deps = []
+scope = [
+  "crates/roko-serve/src/lib.rs",
+  "crates/roko-serve/src/state.rs",
+]
+also_read = [
+  "crates/roko-fs/src/gc.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "P12"
+title = "Replace 15 remaining eprintln! in orchestrate.rs with tracing"
+group = "H"
+deps = []
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "P13"
+title = "Add Dockerfile.optimized (cargo-chef + sccache pattern)"
+group = "H"
+deps = []
+scope = [
+  "Dockerfile.optimized",
+  ".dockerignore",
+]
+also_read = [
+  "Dockerfile",
+  "tmp/productionizing/08-FAST-BUILD-DEPLOY.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "P15"
+title = "Create roko.production.toml (anthropic, openai, perplexity, gemini, ollama only)"
+group = "H"
+deps = []
+scope = ["roko.production.toml"]
+also_read = [
+  "roko.toml",
+  "tmp/productionizing/05-ROKO-TOML-PRODUCTION.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "P16"
+title = "Add Dockerfile.runtime (binary-only image for fast deploys)"
+group = "H"
+deps = []
+scope = [
+  "Dockerfile.runtime",
+  ".dockerignore",
+]
+also_read = [
+  "Dockerfile",
+  "tmp/productionizing/08-FAST-BUILD-DEPLOY.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "P17"
+title = "Add deploy.sh convenience script (build SPA + zigbuild + push + deploy)"
+group = "H"
+deps = ["P16"]
+scope = ["deploy.sh"]
+also_read = [
+  "Dockerfile.runtime",
+  "tmp/productionizing/08-FAST-BUILD-DEPLOY.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "P18"
+title = "Add Railway auto-deploy job to docker-publish.yml"
+group = "H"
+deps = []
+scope = [".github/workflows/docker-publish.yml"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Group F: Frontier wiring (from 11-FRONTIER-CAPABILITIES-PLAN.md)
+# 6 batches: F01, F02, F03, F05, F06, F07
+# Already done in tree (skipped here): F04 (daimon phase 2 — FatigueDetector
+# is already wired through DaimonState and behavioral_state in orchestrate.rs)
+# =============================================================================
+
+[[batch]]
+id = "F01"
+title = "Implement crates/roko-learn/src/adas.rs + wire into CurriculumScheduler"
+group = "F"
+deps = []
+scope = [
+  "crates/roko-learn/src/adas.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-learn/src/curriculum.rs",
+]
+also_read = [
+  "crates/roko-learn/src/cascade_router.rs",
+  "crates/roko-learn/src/bandits.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "F02"
+title = "Implement crates/roko-learn/src/research_pipeline.rs + CLI subcommand"
+group = "F"
+deps = []
+scope = [
+  "crates/roko-learn/src/research_pipeline.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-cli/src/commands/learn.rs",
+]
+also_read = [
+  "crates/roko-learn/src/playbook.rs",
+  "crates/roko-learn/src/feedback_service.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "F03"
+title = "Wire tropical attention + sheaf inconsistency into routing log"
+group = "F"
+deps = []
+scope = [
+  "crates/roko-learn/src/cascade_router.rs",
+  "crates/roko-learn/src/routing_log.rs",
+]
+also_read = [
+  "crates/roko-primitives/src/tropical.rs",
+  "crates/roko-primitives/src/sheaf.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "F05"
+title = "Implement NoveltyArchive (HDC fingerprints) + wire into curriculum"
+group = "F"
+deps = ["F01"]
+scope = [
+  "crates/roko-learn/src/novelty_search.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-learn/src/curriculum.rs",
+]
+also_read = [
+  "crates/roko-learn/src/hdc_fingerprint.rs",
+  "crates/roko-primitives/src/hdc.rs",
+  "crates/roko-learn/src/bandits.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "F06"
+title = "Add parallel_subtasks field + wire MultiAgentPool fan-out in DAG node"
+group = "F"
+deps = []
+scope = [
+  "crates/roko-core/src/agent.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = [
+  "crates/roko-agent/src/multi_pool.rs",
+  "crates/roko-agent/src/composition.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "F07"
+title = "Wire CollusionDetector into marketplace assignments (advisory)"
+group = "F"
+deps = []
+scope = [
+  "crates/roko-chain/src/marketplace.rs",
+]
+also_read = [
+  "crates/roko-chain/src/collusion.rs",
+  "crates/roko-chain/src/reputation_registry.rs",
+]
+verify = "quick"
+
+# =============================================================================
+# Group D: Production economics (from 12-PRODUCTION-DEPLOYMENT-PLAN.md)
+# 9 batches: D01–D09
+# =============================================================================
+
+[[batch]]
+id = "D01"
+title = "Add max_cost_per_{plan,task,session}_usd config + enforcement in orchestrate"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-core/src/config/agent.rs",
+  "crates/roko-core/src/config/schema.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = [
+  "crates/roko-learn/src/costs_db.rs",
+  "crates/roko-learn/src/costs_log.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D02"
+title = "Add SemanticCache (HDC fingerprint Hamming similarity) alongside ResponseCache"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-agent/src/cache.rs",
+  "crates/roko-agent/src/lib.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+]
+also_read = [
+  "crates/roko-learn/src/hdc_fingerprint.rs",
+  "crates/roko-primitives/src/hdc.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D03"
+title = "Add plan_cost_summary() + `roko learn costs --plan` CLI"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-learn/src/costs_db.rs",
+  "crates/roko-cli/src/commands/learn.rs",
+]
+also_read = [
+  "crates/roko-learn/src/costs_log.rs",
+  "crates/roko-cli/src/commands/util.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D04"
+title = "Add BenchHistory regression detection (>10% pass-rate / >20% cost / >30% latency)"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-learn/src/bench_history.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-serve/src/bench.rs",
+]
+also_read = [
+  "crates/roko-serve/src/routes/swe_bench.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D05"
+title = "Add ResponseCache atomic stats + expose on /api/health"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-agent/src/cache.rs",
+  "crates/roko-serve/src/routes/status/health.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "D06"
+title = "Add CostsDb::predict_task_cost() (percentile-based) + pre-dispatch logging"
+group = "D"
+deps = ["D01"]
+scope = [
+  "crates/roko-learn/src/costs_db.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = [
+  "crates/roko-learn/src/cost_table.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D07"
+title = "Add compliance_export.rs + `roko learn export` CLI (JSON/CSV audit trail)"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-learn/src/compliance_export.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-cli/src/commands/learn.rs",
+]
+also_read = [
+  "crates/roko-learn/src/costs_log.rs",
+  "crates/roko-learn/src/episode_logger.rs",
+  "crates/roko-core/src/config/provenance.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D08"
+title = "Feature-gated OpenTelemetry export (otel feature in roko-cli)"
+group = "D"
+deps = []
+scope = [
+  "crates/roko-cli/Cargo.toml",
+  "crates/roko-cli/src/main.rs",
+  "crates/roko-cli/src/telemetry.rs",
+]
+also_read = [
+  "crates/roko-serve/src/lib.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "D09"
+title = "Add competitive_bench.rs (LangGraph/CrewAI baselines) + `roko learn costs` integration"
+group = "D"
+deps = ["D04"]
+scope = [
+  "crates/roko-learn/src/competitive_bench.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-cli/src/commands/learn.rs",
+]
+also_read = [
+  "crates/roko-learn/src/costs_db.rs",
+]
+verify = "quick"

@@ -1,0 +1,3557 @@
+# =============================================================================
+# post-parity batches.toml — 161 entries across Runners PA–PAK
+# =============================================================================
+
+# =============================================================================
+# Runner PA: Shared HTTP Client (5 batches)
+# Fixes 7-43s latency regression from throwaway reqwest::Client per request
+# =============================================================================
+
+[[batch]]
+id = "PA_01"
+title = "Create SharedHttpClient factory in roko-agent"
+group = "PA"
+deps = []
+scope = ["crates/roko-agent/src/http.rs"]
+also_read = ["crates/roko-agent/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PA_02"
+title = "Wire SharedHttpClient into ClaudeApiAgent"
+group = "PA"
+deps = ["PA_01"]
+scope = ["crates/roko-agent/src/claude_agent.rs"]
+also_read = ["crates/roko-agent/src/http.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PA_03"
+title = "Wire SharedHttpClient into roko-serve startup"
+group = "PA"
+deps = ["PA_01"]
+scope = ["crates/roko-serve/src/lib.rs", "crates/roko-serve/src/state.rs"]
+also_read = ["crates/roko-agent/src/http.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PA_04"
+title = "Wire SharedHttpClient into roko-agent-server startup"
+group = "PA"
+deps = ["PA_01"]
+scope = ["crates/roko-agent-server/src/lib.rs", "crates/roko-agent-server/src/state.rs"]
+also_read = ["crates/roko-agent/src/http.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PA_05"
+title = "Audit and remove remaining reqwest::Client::new() calls"
+group = "PA"
+deps = ["PA_02", "PA_03", "PA_04"]
+scope = ["crates/roko-agent/src/provider/mod.rs", "crates/roko-agent/src/backends/mod.rs"]
+also_read = ["crates/roko-agent/src/http.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PB: Chat Dispatch Enrichment (8 batches)
+# Wire system prompt, tools, history, model, effort into chat dispatch
+# =============================================================================
+
+[[batch]]
+id = "PB_01"
+title = "Document current chat dispatch data flow"
+group = "PB"
+deps = ["PA_01"]
+scope = []
+also_read = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/dispatch_direct.rs", "crates/roko-cli/src/unified.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_02"
+title = "Add build_dispatch_request() to ChatAgentSession"
+group = "PB"
+deps = ["PB_01"]
+scope = ["crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-agent/src/claude_agent.rs", "crates/roko-agent/src/claude_cli_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_03"
+title = "Wire system_message into dispatch request"
+group = "PB"
+deps = ["PB_02"]
+scope = ["crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-compose/src/system_prompt_builder.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_04"
+title = "Wire tools into dispatch request"
+group = "PB"
+deps = ["PB_02"]
+scope = ["crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-core/src/tool/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_05"
+title = "Wire message history into dispatch request"
+group = "PB"
+deps = ["PB_02"]
+scope = ["crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PB_06"
+title = "Wire model + effort + MCP into dispatch request"
+group = "PB"
+deps = ["PB_02"]
+scope = ["crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_07"
+title = "Replace dispatch_direct with adapter-layer dispatch"
+group = "PB"
+deps = ["PB_03", "PB_04", "PB_05", "PB_06"]
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/dispatch_direct.rs"]
+also_read = ["crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-agent/src/claude_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PB_08"
+title = "Wire one-shot (roko 'prompt') through ChatAgentSession"
+group = "PB"
+deps = ["PB_07"]
+scope = ["crates/roko-cli/src/unified.rs", "crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-cli/src/chat_session.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PC: Streaming (6 batches)
+# Wire StreamingState to live token deltas from LLM
+# =============================================================================
+
+[[batch]]
+id = "PC_01"
+title = "Document current streaming data flow"
+group = "PC"
+deps = ["PB_07"]
+scope = []
+also_read = ["crates/roko-cli/src/inline/primitives/streaming.rs", "crates/roko-cli/src/chat_inline.rs", "crates/roko-agent/src/claude_cli_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PC_02"
+title = "Add StreamingCallback trait for token deltas"
+group = "PC"
+deps = ["PC_01"]
+scope = ["crates/roko-cli/src/inline/primitives/streaming.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PC_03"
+title = "Wire Claude CLI agent stream events to StreamingCallback"
+group = "PC"
+deps = ["PC_02"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-agent/src/claude_cli_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PC_04"
+title = "Wire Claude API SSE events to StreamingCallback"
+group = "PC"
+deps = ["PC_02"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-agent/src/claude_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PC_05"
+title = "Wire StreamingState.append() to StreamingCallback"
+group = "PC"
+deps = ["PC_03", "PC_04"]
+scope = ["crates/roko-cli/src/inline/primitives/streaming.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PC_06"
+title = "Wire TUI streaming view to observe StreamingState"
+group = "PC"
+deps = ["PC_05"]
+scope = ["crates/roko-cli/src/tui/views/chat_view.rs"]
+also_read = ["crates/roko-cli/src/inline/primitives/streaming.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PD: Slash Commands (6 batches)
+# Make /system, /effort, /gate, /config actually apply
+# =============================================================================
+
+[[batch]]
+id = "PD_01"
+title = "Document current slash command handlers and what they miss"
+group = "PD"
+deps = ["PB_07"]
+scope = []
+also_read = ["crates/roko-cli/src/chat_inline.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PD_02"
+title = "Wire /system to pass system_message through dispatch"
+group = "PD"
+deps = ["PD_01"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/chat_session.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PD_03"
+title = "Wire /effort to update session effort and pass through dispatch"
+group = "PD"
+deps = ["PD_01"]
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PD_04"
+title = "Wire /gate to write gate config to roko.toml"
+group = "PD"
+deps = ["PD_01"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PD_05"
+title = "Wire /config set to write config values to roko.toml"
+group = "PD"
+deps = ["PD_01"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PD_06"
+title = "Wire /model to change session model for next dispatch"
+group = "PD"
+deps = ["PD_01"]
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PE: Safety Fail-Closed (5 batches)
+# Flip dangerously_skip_permissions defaults, enforce safe contracts
+# =============================================================================
+
+[[batch]]
+id = "PE_01"
+title = "Audit all dangerously_skip_permissions usage sites"
+group = "PE"
+deps = []
+scope = []
+also_read = ["crates/roko-agent/src/provider/claude_cli.rs", "crates/roko-agent/src/provider/mod.rs", "crates/roko-cli/src/dispatch_direct.rs", "crates/roko-cli/src/commands/plan.rs", "crates/roko-serve/src/routes/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PE_02"
+title = "Flip dangerously_skip_permissions defaults to false"
+group = "PE"
+deps = ["PE_01"]
+scope = ["crates/roko-agent/src/provider/claude_cli.rs", "crates/roko-agent/src/provider/mod.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PE_03"
+title = "Add --dangerously-skip-permissions CLI flag for explicit opt-in"
+group = "PE"
+deps = ["PE_02"]
+scope = ["crates/roko-cli/src/main.rs", "crates/roko-cli/src/unified.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PE_04"
+title = "Ensure AgentContract::permissive() only in #[cfg(test)]"
+group = "PE"
+deps = ["PE_01"]
+scope = ["crates/roko-agent/src/safety/contract.rs", "crates/roko-agent/src/safety/mod.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PE_05"
+title = "Wire contract_for_role restrictive fallback for missing YAML"
+group = "PE"
+deps = ["PE_04"]
+scope = ["crates/roko-agent/src/safety/mod.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PF: orchestrate.rs Freeze (3 batches)
+# Default off, compile warning, no new code in orchestrate.rs
+# =============================================================================
+
+[[batch]]
+id = "PF_01"
+title = "Change legacy-orchestrate default to off"
+group = "PF"
+deps = []
+scope = ["crates/roko-cli/Cargo.toml"]
+also_read = ["crates/roko-cli/src/lib.rs", "crates/roko-cli/src/run.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PF_02"
+title = "Add #[deprecated] warning to orchestrate.rs public API"
+group = "PF"
+deps = ["PF_01"]
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PF_03"
+title = "Ensure all cfg(legacy-orchestrate) guards compile clean without feature"
+group = "PF"
+deps = ["PF_01"]
+scope = ["crates/roko-cli/src/lib.rs", "crates/roko-cli/src/run.rs", "crates/roko-cli/src/unified.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PG: Memory + Bug Fixes (4 batches)
+# Fix efficiency_events leak, model "-" in TUI
+# =============================================================================
+
+[[batch]]
+id = "PG_01"
+title = "Drain efficiency_events Vec periodically to disk"
+group = "PG"
+deps = []
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = ["crates/roko-learn/src/efficiency.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PG_02"
+title = "Fix model '-' display to show 'unknown' in TUI agents view"
+group = "PG"
+deps = []
+scope = ["crates/roko-cli/src/tui/views/agents_view.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PG_03"
+title = "Fix learn all to read from correct efficiency.jsonl path"
+group = "PG"
+deps = ["PG_01"]
+scope = ["crates/roko-cli/src/commands/learn.rs"]
+also_read = ["crates/roko-learn/src/efficiency.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PG_04"
+title = "Add efficiency event count to roko status output"
+group = "PG"
+deps = ["PG_03"]
+scope = ["crates/roko-cli/src/commands/status.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PE Extensions: Deeper Safety Wiring (3 additional batches)
+# ToolDispatcher safety required, dispatch modulation, --share flag
+# =============================================================================
+
+[[batch]]
+id = "PE_06"
+title = "Make safety required (not Option) in ToolDispatcher constructor"
+group = "PE"
+deps = ["PE_05"]
+scope = ["crates/roko-agent/src/dispatcher/mod.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PE_07"
+title = "Wire DaimonState dispatch modulation into ModelCallRequest"
+group = "PE"
+deps = ["PE_01"]
+scope = ["crates/roko-cli/src/dispatch_v2.rs", "crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-daimon/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PE_08"
+title = "Fix --share flag to error when unsupported by current engine"
+group = "PE"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PH: Plan Execution (5 batches)
+# Parallel tasks, cargo semaphore, plan timeout
+# NOTE: Gate timeout, failure classification, retry backoff ALREADY EXIST in v2 runner.
+# =============================================================================
+
+[[batch]]
+id = "PH_01"
+title = "Make max_concurrent_tasks configurable (currently hardcoded to 1)"
+group = "PH"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-cli/src/runner/task_dag.rs", "crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PH_02"
+title = "Wire ready_tasks() parallel dispatch when max_concurrent_tasks > 1"
+group = "PH"
+deps = ["PH_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-cli/src/runner/task_dag.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PH_03"
+title = "Add cargo build semaphore for concurrent gate runs"
+group = "PH"
+deps = ["PH_02"]
+scope = ["crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PH_04"
+title = "Add plan-level wall-clock timeout"
+group = "PH"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PH_05"
+title = "Wire exclusive_files conflict detection for parallel tasks"
+group = "PH"
+deps = ["PH_02"]
+scope = ["crates/roko-cli/src/runner/task_dag.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PI: Learning Loop (5 batches)
+# Episode enrichment, threshold loading, override recording
+# NOTE: CascadeRouter observation and neuro ingestion ALREADY WIRED in v2 runner.
+# =============================================================================
+
+[[batch]]
+id = "PI_01"
+title = "Enrich episode fields: actual model, provider, files_changed"
+group = "PI"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/runtime_feedback.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PI_02"
+title = "Load gate thresholds from disk at runner startup"
+group = "PI"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/adaptive_thresholds.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PI_03"
+title = "Record force_backend overrides as dampened routing observations"
+group = "PI"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PI_04"
+title = "Verify cascade router state persists and reloads across runs"
+group = "PI"
+deps = ["PI_02"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PI_05"
+title = "Wire provider health pass-rate into routing context"
+group = "PI"
+deps = ["PI_04"]
+scope = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/provider_health.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PJ: Persistence & Resume (5 batches)
+# Snapshot completeness, atomic JSONL, resume validation
+# NOTE: Basic executor.json + completed_tasks snapshot ALREADY EXISTS.
+# =============================================================================
+
+[[batch]]
+id = "PJ_01"
+title = "Add cascade router state to run snapshot"
+group = "PJ"
+deps = []
+scope = ["crates/roko-cli/src/runner/persist.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PJ_02"
+title = "Add daimon state to run snapshot"
+group = "PJ"
+deps = []
+scope = ["crates/roko-cli/src/runner/persist.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-daimon/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PJ_03"
+title = "Add cost/efficiency aggregates to run snapshot"
+group = "PJ"
+deps = []
+scope = ["crates/roko-cli/src/runner/persist.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PJ_04"
+title = "Make JSONL append atomic with write-then-rename"
+group = "PJ"
+deps = []
+scope = ["crates/roko-cli/src/runner/persist.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PJ_05"
+title = "Add resume validation against task definition content drift"
+group = "PJ"
+deps = []
+scope = ["crates/roko-cli/src/runner/resume.rs"]
+also_read = ["crates/roko-cli/src/runner/persist.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PK: Knowledge & Routing (6 batches)
+# Neuro store → router, affect → routing, knowledge → prompts, dream worker
+# =============================================================================
+
+[[batch]]
+id = "PK_01"
+title = "Wire neuro store query into CascadeRouter routing context"
+group = "PK"
+deps = []
+scope = ["crates/roko-learn/src/cascade_router.rs"]
+also_read = ["crates/roko-neuro/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PK_02"
+title = "Wire DaimonState affect into CascadeRouter routing bias"
+group = "PK"
+deps = ["PK_01"]
+scope = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-daimon/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PK_03"
+title = "Wire knowledge injection into SystemPromptBuilder Layer 3"
+group = "PK"
+deps = ["PK_01"]
+scope = ["crates/roko-compose/src/system_prompt_builder.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-neuro/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PK_04"
+title = "Wire dream trigger worker to drain after plan completion"
+group = "PK"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-dreams/src/cycle.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PK_05"
+title = "Wire dream routing advice into CascadeRouter context"
+group = "PK"
+deps = ["PK_04"]
+scope = ["crates/roko-learn/src/cascade_router.rs"]
+also_read = ["crates/roko-dreams/src/routing_advice.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PK_06"
+title = "Fix episode_completion.rs to use ModelCallService instead of direct API key"
+group = "PK"
+deps = []
+scope = ["crates/roko-neuro/src/episode_completion.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PL: ACP Integration (4 batches)
+# MCP tool dispatch, API provider fallback, cost/token tracking
+# =============================================================================
+
+[[batch]]
+id = "PL_01"
+title = "Wire MCP tool dispatch in ACP pipeline runner"
+group = "PL"
+deps = []
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-acp/src/session.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PL_02"
+title = "Add API provider fallback for ACP pipeline phases"
+group = "PL"
+deps = ["PL_01"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PL_03"
+title = "Wire cost and token tracking into WorkflowRun"
+group = "PL"
+deps = ["PL_02"]
+scope = ["crates/roko-acp/src/workflow.rs", "crates/roko-acp/src/runner.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PL_04"
+title = "Remove hardcoded dangerously_skip_permissions from ACP phases"
+group = "PL"
+deps = []
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-agent/src/provider/claude_cli.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PM: Merge & Concurrency (3 batches)
+# Merge queue wiring, warm agent pool, conflict detection
+# =============================================================================
+
+[[batch]]
+id = "PM_01"
+title = "Add merge outcome persistence and audit trail"
+group = "PM"
+deps = []
+scope = ["crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-orchestrator/src/merge_queue.rs"]
+verify = "build"
+
+[[batch]]
+id = "PM_02"
+title = "Add merge conflict detection and automatic retry with rebase"
+group = "PM"
+deps = ["PM_01"]
+scope = ["crates/roko-cli/src/runner/merge.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PM_03"
+title = "Wire warm agent pool for pre-spawning during gate execution"
+group = "PM"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-cli/src/dispatch.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PN: Demo-Serve Wiring (7 batches)
+# Missing endpoints, stub routes, SSE event publishing
+# =============================================================================
+
+[[batch]]
+id = "PN_01"
+title = "Implement /api/dream/journal GET endpoint"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/dreams.rs"]
+also_read = ["demo/demo-app/src/components/DreamPhaseViz.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PN_02"
+title = "Implement /api/bench/runs/{id}/cancel POST endpoint"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/bench.rs"]
+also_read = ["demo/demo-app/src/hooks/useBench.ts"]
+verify = "quick"
+
+[[batch]]
+id = "PN_03"
+title = "Wire knowledge edges query to return real graph data"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/knowledge.rs"]
+also_read = ["crates/roko-neuro/src/lib.rs", "demo/demo-app/src/pages/dashboard/KnowledgeGraph.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PN_04"
+title = "Publish cost and token events via SSE to /api/statehub/events"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/status.rs", "crates/roko-core/src/state_hub.rs"]
+also_read = ["demo/demo-app/src/pages/Explorer.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PN_05"
+title = "Wire /api/learn/provider-outcomes to return real provider health"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/learning.rs"]
+also_read = ["crates/roko-learn/src/provider_health.rs", "demo/demo-app/src/pages/dashboard/CostDashboard.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PN_06"
+title = "Add /api/runs/{id}/events SSE endpoint for live run streaming"
+group = "PN"
+deps = ["PN_04"]
+scope = ["crates/roko-serve/src/routes/run.rs"]
+also_read = ["crates/roko-core/src/state_hub.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PN_07"
+title = "Fix /api/bench/runs POST path to match demo app expectations"
+group = "PN"
+deps = []
+scope = ["crates/roko-serve/src/routes/bench.rs"]
+also_read = ["demo/demo-app/src/hooks/useBench.ts"]
+verify = "quick"
+
+# =============================================================================
+# Runner PO: Observability & Events (6 batches)
+# Live cost display, token tracking, progress events, provider health
+# =============================================================================
+
+[[batch]]
+id = "PO_01"
+title = "Publish CostEvent to StateHub after each agent turn"
+group = "PO"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-core/src/state_hub.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PO_02"
+title = "Publish TokenUsageEvent with input/output/total per turn"
+group = "PO"
+deps = ["PO_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-core/src/state_hub.rs"]
+also_read = ["crates/roko-agent/src/provider/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PO_03"
+title = "Publish TaskStatusEvent per task (pending/running/gating/done/failed)"
+group = "PO"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-core/src/state_hub.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PO_04"
+title = "Persist provider health state to provider-health.json"
+group = "PO"
+deps = []
+scope = ["crates/roko-serve/src/state.rs", "crates/roko-learn/src/provider_health.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PO_05"
+title = "Publish ResumeStarted and ResumeCompleted events"
+group = "PO"
+deps = []
+scope = ["crates/roko-cli/src/runner/resume.rs", "crates/roko-core/src/state_hub.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PO_06"
+title = "Publish ModelFallbackEvent when CascadeRouter falls back"
+group = "PO"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PP: CLI End-to-End (6 batches)
+# Full learning loop in roko run, session resume, tool rendering, CostMeter
+# =============================================================================
+
+[[batch]]
+id = "PP_01"
+title = "Wire full learning loop into roko run (efficiency + routing + episodes)"
+group = "PP"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-learn/src/runtime_feedback.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PP_02"
+title = "Wire session_id capture and --resume for roko chat multi-turn"
+group = "PP"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-agent/src/claude_cli_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PP_03"
+title = "Deduplicate chat event loops (merge run_chat_inline and run_unified_inline)"
+group = "PP"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PP_04"
+title = "Wire ToolCallBlock primitive for tool output rendering"
+group = "PP"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/inline/primitives/"]
+verify = "quick"
+
+[[batch]]
+id = "PP_05"
+title = "Wire CostMeter to all dispatch modes (run, chat, plan)"
+group = "PP"
+deps = []
+scope = ["crates/roko-cli/src/run.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PP_06"
+title = "Warn on missing MCP config instead of silent fallback"
+group = "PP"
+deps = []
+scope = ["crates/roko-agent/src/provider/mod.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PQ: Code Intelligence (4 batches)
+# HDC in prompt assembly, PageRank, persistent index, duplicate removal
+# =============================================================================
+
+[[batch]]
+id = "PQ_01"
+title = "Wire HDC similarity into code_context_for_task prompt assembly"
+group = "PQ"
+deps = []
+scope = ["crates/roko-cli/src/prompt_helpers.rs"]
+also_read = ["crates/roko-index/src/workspace.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PQ_02"
+title = "Remove duplicate code_context_for_task from dispatch_helpers.rs"
+group = "PQ"
+deps = ["PQ_01"]
+scope = ["crates/roko-cli/src/dispatch_helpers.rs"]
+also_read = ["crates/roko-cli/src/prompt_helpers.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PQ_03"
+title = "Wire personalized PageRank for task-specific code ranking"
+group = "PQ"
+deps = ["PQ_01"]
+scope = ["crates/roko-cli/src/prompt_helpers.rs"]
+also_read = ["crates/roko-index/src/graph.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PQ_04"
+title = "Enable SQLite persistent index backend (not rebuild every invocation)"
+group = "PQ"
+deps = []
+scope = ["crates/roko-index/src/lib.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PR: Legacy Migration (2 batches)
+# PRD auto-plan and cloud jobs off legacy PlanRunner
+# =============================================================================
+
+[[batch]]
+id = "PR_01"
+title = "Migrate PRD auto-plan trigger from legacy PlanRunner to runner v2"
+group = "PR"
+deps = []
+scope = ["crates/roko-cli/src/prd.rs"]
+also_read = ["crates/roko-cli/src/runner/event_loop.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PR_02"
+title = "Migrate cloud job execution from legacy PlanRunner to runner v2"
+group = "PR"
+deps = []
+scope = ["crates/roko-cli/src/worker/cloud.rs"]
+also_read = ["crates/roko-cli/src/runner/event_loop.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PS: Provider Dispatch Authority (4 batches)
+# Unified dispatch, fallback chain, error classification
+# =============================================================================
+
+[[batch]]
+id = "PS_01"
+title = "Unify 4 serve route dispatch implementations into one service"
+group = "PS"
+deps = []
+scope = ["crates/roko-serve/src/routes/agents.rs", "crates/roko-serve/src/routes/research.rs", "crates/roko-serve/src/routes/plans.rs", "crates/roko-serve/src/routes/run.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PS_02"
+title = "Wire provider fallback chain in runner dispatch"
+group = "PS"
+deps = ["PS_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-agent/src/provider/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PS_03"
+title = "Add provider error classification (rate_limit, auth, network, permanent)"
+group = "PS"
+deps = []
+scope = ["crates/roko-agent/src/provider/mod.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PS_04"
+title = "Wire provider error classification into retry strategy"
+group = "PS"
+deps = ["PS_03"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-agent/src/provider/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PT: ACP Learning Feedback (3 batches)
+# Episode recording, efficiency events, routing observations from ACP
+# =============================================================================
+
+[[batch]]
+id = "PT_01"
+title = "Wire episode recording into ACP pipeline phases"
+group = "PT"
+deps = []
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-learn/src/runtime_feedback.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PT_02"
+title = "Wire efficiency events from ACP pipeline into learning store"
+group = "PT"
+deps = ["PT_01"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-learn/src/events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PT_03"
+title = "Wire CascadeRouter observations from ACP task outcomes"
+group = "PT"
+deps = ["PT_01"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PU: Config Hot-Reload (1 batch)
+# Wire file watcher to apply_hot_reload()
+# =============================================================================
+
+[[batch]]
+id = "PU_01"
+title = "Wire file watcher to trigger apply_hot_reload on roko.toml changes"
+group = "PU"
+deps = []
+scope = ["crates/roko-serve/src/config_watcher.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PV: Runner Event-Loop Data Quality (5 batches)
+# Fix zeroed feedback, hardcoded routing context, timestamp bugs
+# =============================================================================
+
+[[batch]]
+id = "PV_01"
+title = "Fill AgentOutcome in TaskCompleted feedback with real model/tokens/cost"
+group = "PV"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PV_02"
+title = "Fill PlanCompleted feedback with real task counts and cost totals"
+group = "PV"
+deps = ["PV_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PV_03"
+title = "Derive RoutingContext fields from task metadata instead of hardcoded defaults"
+group = "PV"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-orchestrator/src/executor.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PV_04"
+title = "Fix started_at_ms to emit Unix timestamp instead of elapsed duration"
+group = "PV"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PV_05"
+title = "Fix gate threshold write to not overwrite with empty on serialization failure"
+group = "PV"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PW: Demo Bench + Dashboard Endpoints (6 batches)
+# Wire missing bench, dashboard, and c-factor endpoints the demo expects
+# =============================================================================
+
+[[batch]]
+id = "PW_01"
+title = "Wire GET /api/bench/cost-summary endpoint for CostRace component"
+group = "PW"
+deps = []
+scope = ["crates/roko-serve/src/routes/bench.rs"]
+also_read = ["demo/demo-app/src/components/CostRace.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PW_02"
+title = "Wire GET /api/bench/runs/{id} and GET /api/bench/runs list endpoints"
+group = "PW"
+deps = []
+scope = ["crates/roko-serve/src/routes/bench.rs"]
+also_read = ["demo/demo-app/src/hooks/useBench.ts"]
+verify = "quick"
+
+[[batch]]
+id = "PW_03"
+title = "Wire SSE /api/bench/events for live bench run streaming"
+group = "PW"
+deps = ["PW_02"]
+scope = ["crates/roko-serve/src/routes/bench.rs"]
+also_read = ["demo/demo-app/src/hooks/useBenchSSE.ts"]
+verify = "quick"
+
+[[batch]]
+id = "PW_04"
+title = "Wire GET /api/dashboard summary and GET /api/gates/history endpoints"
+group = "PW"
+deps = []
+scope = ["crates/roko-serve/src/routes/dashboard.rs"]
+also_read = ["demo/demo-app/src/hooks/useDashboard.ts", "demo/demo-app/src/pages/dashboard/ChainView.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PW_05"
+title = "Wire GET /api/metrics/c_factor and GET /api/c-factor/trend endpoints"
+group = "PW"
+deps = []
+scope = ["crates/roko-serve/src/routes/dashboard.rs"]
+also_read = ["demo/demo-app/src/pages/dashboard/CostDashboard.tsx"]
+verify = "quick"
+
+[[batch]]
+id = "PW_06"
+title = "Wire GET /api/learn/adaptive-thresholds and GET /api/agents/topology"
+group = "PW"
+deps = []
+scope = ["crates/roko-serve/src/routes/learn.rs", "crates/roko-serve/src/routes/agents.rs"]
+also_read = ["demo/demo-app/src/pages/dashboard/CostDashboard.tsx", "demo/demo-app/src/pages/dashboard/AgentFleet.tsx"]
+verify = "quick"
+
+# =============================================================================
+# Runner PX: Converge Critical Bugs (4 batches)
+# Fix CRIT-05 through CRIT-10 from converge runner open issues
+# =============================================================================
+
+[[batch]]
+id = "PX_01"
+title = "Wire DaimonPolicy as real AffectPolicy implementor"
+group = "PX"
+deps = []
+scope = ["crates/roko-daimon/src/policy.rs", "crates/roko-daimon/src/lib.rs", "crates/roko-runtime/src/effect_driver.rs", "crates/roko-runtime/Cargo.toml"]
+also_read = ["crates/roko-core/src/foundation.rs", "crates/roko-core/src/affect.rs", "crates/roko-daimon/src/"]
+verify = "build"
+
+[[batch]]
+id = "PX_02"
+title = "Wire DispatchModulation into ModelCallRequest (CRIT-06) — apply computed tier_bias"
+group = "PX"
+deps = ["PX_01"]
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PX_03"
+title = "Fix feedback_service flush_async TOCTOU race (CRIT-07)"
+group = "PX"
+deps = []
+scope = ["crates/roko-learn/src/feedback_service.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PX_04"
+title = "Fix WorkflowEngine resume missing PhaseTransition + empty checkpoint path (CRIT-09/10)"
+group = "PX"
+deps = []
+scope = ["crates/roko-runtime/src/workflow_engine.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PY: Workflow Entrypoint Convergence (4 batches)
+# Move PRD/research/plan direct-agent paths through WorkflowEngine
+# =============================================================================
+
+[[batch]]
+id = "PY_01"
+title = "Audit direct agent_exec call sites and document dispatch bypass paths"
+group = "PY"
+deps = []
+scope = ["crates/roko-cli/src/agent_exec.rs"]
+also_read = ["crates/roko-cli/src/commands/prd.rs", "crates/roko-cli/src/commands/research.rs", "crates/roko-cli/src/commands/plan.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PY_02"
+title = "Route PRD draft/plan generation through WorkflowEngine dispatch"
+group = "PY"
+deps = ["PY_01"]
+scope = ["crates/roko-cli/src/commands/prd.rs"]
+also_read = ["crates/roko-cli/src/run.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PY_03"
+title = "Route research commands through WorkflowEngine dispatch"
+group = "PY"
+deps = ["PY_01"]
+scope = ["crates/roko-cli/src/commands/research.rs"]
+also_read = ["crates/roko-cli/src/run.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PY_04"
+title = "Route plan generate/regenerate through WorkflowEngine dispatch"
+group = "PY"
+deps = ["PY_01"]
+scope = ["crates/roko-cli/src/commands/plan.rs"]
+also_read = ["crates/roko-cli/src/run.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PZ: Agent Process Safety (4 batches)
+# Fix process supervisor race, ToolLoop crash safety, contract fail-open
+# =============================================================================
+
+[[batch]]
+id = "PZ_01"
+title = "Fix ProcessSupervisor orphan PID race — persist before spawn returns"
+group = "PZ"
+deps = []
+scope = ["crates/roko-agent/src/process/registry.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PZ_02"
+title = "Fix contract_for_role fail-open to use RestrictedFallback instead of permissive"
+group = "PZ"
+deps = []
+scope = ["crates/roko-agent/src/safety/mod.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PZ_03"
+title = "Wire ToolLoop checkpoint resume into runner prepare_resume flow"
+group = "PZ"
+deps = []
+scope = ["crates/roko-agent/src/tool_loop/checkpoint.rs"]
+also_read = ["crates/roko-cli/src/runner/resume.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PZ_04"
+title = "Fix dangerously_skip_permissions default to false in ClaudeCliAgent"
+group = "PZ"
+deps = []
+scope = ["crates/roko-agent/src/claude_cli_agent.rs"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Runner PAA: Demo Workflow + Terminal Endpoints (3 batches)
+# Wire the workflow projection + PTY endpoints the demo Builder needs
+# =============================================================================
+
+[[batch]]
+id = "PAA_01"
+title = "Wire WebSocket ws/terminal/{id} PTY endpoint for Builder terminal"
+group = "PAA"
+deps = []
+scope = ["crates/roko-serve/src/routes/terminal.rs"]
+also_read = ["demo/demo-app/src/hooks/useTerminal.ts"]
+verify = "quick"
+
+[[batch]]
+id = "PAA_02"
+title = "Wire SSE /api/workflows/latest/stream and WS /api/workflow/ws for PRD pipeline"
+group = "PAA"
+deps = []
+scope = ["crates/roko-serve/src/routes/workflows.rs"]
+also_read = ["demo/demo-app/src/lib/workflow-api.ts"]
+verify = "quick"
+
+[[batch]]
+id = "PAA_03"
+title = "Wire GET /api/share/{token} and GET /api/shared/{token} receipt endpoints"
+group = "PAA"
+deps = []
+scope = ["crates/roko-serve/src/routes/share.rs"]
+also_read = ["demo/demo-app/src/pages/Share.tsx", "demo/demo-app/src/pages/dashboard/ShareView.tsx"]
+verify = "quick"
+
+# =============================================================================
+# Runner PAB: Runner Extension + Config Threading (4 batches)
+# Fix plugin hooks, config threading, extension role pass-through
+# =============================================================================
+
+[[batch]]
+id = "PAB_01"
+title = "Wire plugin extension hooks to execute declarative tool profiles and triggers"
+group = "PAB"
+deps = []
+scope = ["crates/roko-cli/src/runner/extension_loader.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PAB_02"
+title = "Thread max_concurrent_tasks and max_concurrent_plans from RunConfig"
+group = "PAB"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "PAB_03"
+title = "Thread task role into extension pre/post_inference hooks instead of hardcoded implementer"
+group = "PAB"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "PAB_04"
+title = "Make cascade router normalization denominators configurable from RunConfig"
+group = "PAB"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# Runner PAC: Safety Completeness (4 batches)
+# Wire cumulative spend tracking, rate limiter reset, post-checks, task recovery
+# =============================================================================
+
+[[batch]]
+id = "PAC_01"
+title = "Wire cumulative per-turn spend tracking into SafetyBudgetTracker"
+group = "PAC"
+deps = []
+scope = ["crates/roko-agent/src/safety/mod.rs", "crates/roko-agent/src/safety/risk.rs", "crates/roko-agent/src/tool_loop/mod.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs", "crates/roko-agent/src/safety/spending.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAC_02"
+title = "Add rate limiter per-task reset boundary"
+group = "PAC"
+deps = []
+scope = ["crates/roko-agent/src/safety/rate_limit.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAC_03"
+title = "Add post-execution contract verification"
+group = "PAC"
+deps = []
+scope = ["crates/roko-agent/src/safety/contract.rs", "crates/roko-agent/src/safety/mod.rs"]
+also_read = []
+verify = "build"
+
+[[batch]]
+id = "PAC_04"
+title = "Wire task-level recovery actions from contract violations"
+group = "PAC"
+deps = ["PAC_03"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAD: Stream Parser & Dispatch Consolidation (3 batches)
+# Consolidate 4+ stream-json parsers, migrate to ModelCallService
+# =============================================================================
+
+[[batch]]
+id = "PAD_01"
+title = "Consolidate stream-json parsers into single canonical module"
+group = "PAD"
+deps = []
+scope = ["crates/roko-agent/src/provider/claude_cli/stream.rs", "crates/roko-agent/src/claude_cli_agent.rs", "crates/roko-agent/src/translate/claude.rs", "crates/roko-cli/src/dispatch_direct.rs", "crates/roko-cli/src/dispatch_v2.rs"]
+also_read = []
+verify = "build"
+
+[[batch]]
+id = "PAD_02"
+title = "Audit and migrate remaining direct Claude CLI calls to ModelCallService"
+group = "PAD"
+deps = ["PAD_01"]
+scope = ["crates/roko-cli/src/run.rs", "crates/roko-serve/src/routes/gateway.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAD_03"
+title = "Wire CascadeRouter consultation before every ModelCallService call"
+group = "PAD"
+deps = ["PAD_02"]
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/model_router.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAE: Gate Pipeline Completeness (4 batches)
+# Consolidate 3 gate paths, wire rung inputs, post-merge gate, LLM judge
+# =============================================================================
+
+[[batch]]
+id = "PAE_01"
+title = "Consolidate 3 gate dispatch paths into GateService"
+group = "PAE"
+deps = []
+scope = ["crates/roko-gate/src/gate_service.rs", "crates/roko-cli/src/run.rs", "crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-gate/src/rung_dispatch.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAE_02"
+title = "Wire rung 3-6 gate inputs to eliminate stub verdicts"
+group = "PAE"
+deps = ["PAE_01"]
+scope = ["crates/roko-gate/src/rung_dispatch.rs", "crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-index/src/lib.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAE_03"
+title = "Add post-merge regression gate"
+group = "PAE"
+deps = ["PAE_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/merge.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAE_04"
+title = "Wire LLM judge gate through CascadeRouter for model selection"
+group = "PAE"
+deps = ["PAE_02"]
+scope = ["crates/roko-gate/src/llm_judge_gate.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAF: Knowledge Lifecycle (3 batches)
+# Wire admission gate, reinforcement signals, section effectiveness
+# =============================================================================
+
+[[batch]]
+id = "PAF_01"
+title = "Wire knowledge admission gate at all ingestion points"
+group = "PAF"
+deps = []
+scope = ["crates/roko-neuro/src/episode_completion.rs", "crates/roko-dreams/src/cycle.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-neuro/src/admission.rs", "crates/roko-neuro/src/lifecycle.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAF_02"
+title = "Wire knowledge reinforcement signals from gate outcomes"
+group = "PAF"
+deps = ["PAF_01"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/knowledge_helpers.rs"]
+also_read = ["crates/roko-neuro/src/lib.rs", "crates/roko-neuro/src/lifecycle.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAF_03"
+title = "Wire section effectiveness scoring from prompt assembly outcomes"
+group = "PAF"
+deps = ["PAF_02"]
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-learn/src/section_effectiveness.rs"]
+also_read = ["crates/roko-compose/src/system_prompt_builder.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAG: Cognitive Cleanup (3 batches)
+# Delete pheromones, wire neuro queries, deduplicate code_context
+# =============================================================================
+
+[[batch]]
+id = "PAG_01"
+title = "Delete pheromone system"
+group = "PAG"
+deps = []
+scope = ["crates/roko-compose/src/system_prompt_builder.rs", "crates/roko-neuro/src/context.rs", "crates/roko-orchestrator/src/coordination.rs", "crates/roko-cli/src/orchestrate.rs"]
+also_read = []
+verify = "build"
+
+[[batch]]
+id = "PAG_02"
+title = "Wire neuro store queries from all active dispatch paths"
+group = "PAG"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-cli/src/knowledge_helpers.rs", "crates/roko-neuro/src/lib.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAG_03"
+title = "Delete duplicate code_context_for_task from prompt_helpers.rs"
+group = "PAG"
+deps = []
+scope = ["crates/roko-cli/src/prompt_helpers.rs"]
+also_read = ["crates/roko-cli/src/dispatch_helpers.rs", "crates/roko-cli/src/orchestrate.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAH: UX & Data Model (3 batches)
+# Canonical task state, task detail enrichment, shared chat session
+# =============================================================================
+
+[[batch]]
+id = "PAH_01"
+title = "Create canonical TaskSummary shared between TUI/serve/orchestrator"
+group = "PAH"
+deps = []
+scope = ["crates/roko-core/src/task.rs", "crates/roko-cli/src/tui/state.rs", "crates/roko-serve/src/plan_types.rs"]
+also_read = ["crates/roko-cli/src/task_parser.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAH_02"
+title = "Enrich task detail modal with full Mori-parity fields"
+group = "PAH"
+deps = ["PAH_01"]
+scope = ["crates/roko-cli/src/tui/state.rs"]
+also_read = ["crates/roko-cli/src/task_parser.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAH_03"
+title = "Extract shared ChatSessionCore for chat mode unification"
+group = "PAH"
+deps = []
+scope = ["crates/roko-cli/src/chat_session_core.rs", "crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-cli/src/chat.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAI: Config & Infrastructure (4 batches)
+# Config consolidation, conductor config, plugin isolation, event subscriptions
+# =============================================================================
+
+[[batch]]
+id = "PAI_01"
+title = "Consolidate config assembly to single canonical load path"
+group = "PAI"
+deps = []
+scope = ["crates/roko-core/src/config/mod.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAI_02"
+title = "Add conductor per-watcher configuration from roko.toml"
+group = "PAI"
+deps = []
+scope = ["crates/roko-core/src/config/schema.rs", "crates/roko-conductor/src/lib.rs"]
+also_read = ["crates/roko-conductor/src/watchers/"]
+verify = "build"
+
+[[batch]]
+id = "PAI_03"
+title = "Add plugin panic boundary"
+group = "PAI"
+deps = []
+scope = ["crates/roko-plugin/src/lib.rs"]
+also_read = ["crates/roko-agent/src/safety/capabilities.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAI_04"
+title = "Wire event subscription dispatch_loop to StateHub events"
+group = "PAI"
+deps = []
+scope = ["crates/roko-serve/src/", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-core/src/config/subscriptions.rs", "crates/roko-serve/src/dispatch.rs", "crates/roko-serve/src/state.rs"]
+verify = "build"
+
+# =============================================================================
+# Runner PAJ: Projection & Background Tasks (3 batches)
+# Staleness TTL, durable task supervisor, provider health persistence
+# =============================================================================
+
+[[batch]]
+id = "PAJ_01"
+title = "Add projection staleness TTL to DashboardSnapshot"
+group = "PAJ"
+deps = []
+scope = ["crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-cli/src/tui/widgets/status_bar.rs", "crates/roko-serve/src/routes/status/dashboard.rs"]
+also_read = ["crates/roko-cli/src/tui/app.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAJ_02"
+title = "Wire durable BackgroundTaskSupervisor for serve routes"
+group = "PAJ"
+deps = []
+scope = ["crates/roko-serve/src/supervisor.rs", "crates/roko-serve/src/state.rs", "crates/roko-serve/src/routes/run.rs", "crates/roko-serve/src/routes/research.rs", "crates/roko-serve/src/routes/plans.rs"]
+also_read = ["crates/roko-serve/src/lib.rs"]
+verify = "build"
+
+[[batch]]
+id = "PAJ_03"
+title = "Wire provider health persistence to disk"
+group = "PAJ"
+deps = []
+scope = ["crates/roko-learn/src/provider_health.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "build"
+
+# =============================================================================
+# Runner PAK: Testing Gaps & Prompt Hygiene (3 batches)
+# Add tests for 5000+ untested lines, convert audit prompts to concrete tasks
+# =============================================================================
+
+[[batch]]
+id = "PAK_01"
+title = "Add unit tests for CascadeRouter core routing logic"
+group = "PAK"
+deps = []
+scope = ["crates/roko-learn/src/cascade_router.rs"]
+also_read = []
+verify = "test"
+
+[[batch]]
+id = "PAK_02"
+title = "Add unit tests for event_loop core dispatch mechanics"
+group = "PAK"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = []
+verify = "test"
+
+[[batch]]
+id = "PAK_03"
+title = "Convert audit-only prompts to concrete implementation tasks"
+group = "PAK"
+deps = ["PB_01", "PC_01", "PD_01", "PE_01", "PY_01"]
+scope = ["tmp/runners/post-parity/prompts/"]
+also_read = ["tmp/runners/post-parity/batches.toml"]
+verify = "manual"
+
+# =============================================================================
+# Phase 0: Stability & Critical Fixes (25 batches, S0_01-S0_25)
+# P0 panics, security holes, config consistency, learning wiring, env var
+# elimination, ServiceFactory completeness, config validation, feature flags
+# =============================================================================
+
+# ── S0A: P0 Panics & Security (Wave 1, independent) ────────────────────────
+
+[[batch]]
+id = "S0_01"
+title = "Fix roko config mcp unreachable panic"
+group = "S0A"
+deps = []
+scope = ["crates/roko-cli/src/commands/config_cmd.rs", "crates/roko-cli/src/main.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S0_02"
+title = "Verify share route is behind auth middleware"
+group = "S0A"
+deps = []
+scope = ["crates/roko-serve/src/routes/shared_runs.rs"]
+also_read = ["crates/roko-serve/src/routes/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_03"
+title = "Verify secret scrubbing in CLI Gist share path"
+group = "S0A"
+deps = []
+scope = ["crates/roko-cli/src/share.rs"]
+also_read = ["crates/roko-cli/src/run.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_04"
+title = "Fix stub gate verdicts giving false PASS"
+group = "S0A"
+deps = []
+scope = ["crates/roko-gate/src/rung_dispatch.rs", "crates/roko-core/src/verdict.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+# ── S0B: Config Consistency (Wave 1, S0_06 depends on S0_05) ───────────────
+
+[[batch]]
+id = "S0_05"
+title = "Normalize gate config format — accept both [[gate]] and [gates]"
+group = "S0B"
+deps = []
+scope = ["crates/roko-core/src/config/gates.rs", "crates/roko-core/src/config/schema.rs", "crates/roko-core/src/config/mod.rs"]
+also_read = ["crates/roko-cli/src/commands/init.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_06"
+title = "Fix roko init emitting wrong gate format"
+group = "S0B"
+deps = ["S0_05"]
+scope = ["crates/roko-cli/src/commands/init.rs"]
+also_read = ["crates/roko-core/src/config/gates.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_07"
+title = "Wire default_model from config into all dispatch"
+group = "S0B"
+deps = []
+scope = ["crates/roko-cli/src/model_selection.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_08"
+title = "Remove unsafe set_var for --provider override"
+group = "S0B"
+deps = []
+scope = ["crates/roko-cli/src/commands/util.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "quick"
+
+# ── S0C: Learning Wiring (Wave 1, independent) ─────────────────────────────
+
+[[batch]]
+id = "S0_09"
+title = "Wire CascadeRouter to live callers"
+group = "S0C"
+deps = []
+scope = ["crates/roko-cli/src/model_selection.rs", "crates/roko-cli/src/commands/util.rs", "crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_10"
+title = "Wire feedback recording to roko chat"
+group = "S0C"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-learn/src/runtime_feedback.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_11"
+title = "Forward streaming events to chat TUI"
+group = "S0C"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-agent/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_12"
+title = "Wire build_repo_context() into plan generate"
+group = "S0C"
+deps = []
+scope = ["crates/roko-cli/src/commands/plan.rs"]
+also_read = ["crates/roko-cli/src/repo_context.rs", "crates/roko-cli/src/commands/prd.rs"]
+verify = "quick"
+
+# ── S0D: Env Var Elimination (Wave 1, independent) ─────────────────────────
+
+[[batch]]
+id = "S0_13"
+title = "Replace ANTHROPIC_API_KEY read in episode_completion"
+group = "S0D"
+deps = []
+scope = ["crates/roko-neuro/src/episode_completion.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_14"
+title = "Replace PERPLEXITY_API_KEY read in web_search"
+group = "S0D"
+deps = []
+scope = ["crates/roko-std/src/tool/builtin/web_search.rs"]
+also_read = ["crates/roko-core/src/tool/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_15"
+title = "Replace PERPLEXITY_API_KEY reads in research paths"
+group = "S0D"
+deps = []
+scope = ["crates/roko-cli/src/commands/research.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_16"
+title = "Remove unsafe set_var() provider override (full audit)"
+group = "S0D"
+deps = []
+scope = ["crates/roko-cli/src/commands/util.rs"]
+also_read = ["crates/roko-core/src/config/env.rs"]
+verify = "quick"
+
+# ── S0E: ServiceFactory Completeness (Wave 2, sequential) ──────────────────
+
+[[batch]]
+id = "S0_17"
+title = "Route all CLI entry points through ServiceFactory"
+group = "S0E"
+deps = ["S0_07"]
+scope = ["crates/roko-cli/src/run.rs", "crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/commands/prd.rs"]
+also_read = ["crates/roko-orchestrator/src/lib.rs"]
+verify = "build"
+
+[[batch]]
+id = "S0_18"
+title = "Wire CascadeRouter into all live paths"
+group = "S0E"
+deps = ["S0_17"]
+scope = ["crates/roko-cli/src/model_selection.rs", "crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs", "crates/roko-cli/src/commands/prd.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/orchestrate.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_19"
+title = "Add FeedbackService to roko chat path"
+group = "S0E"
+deps = ["S0_17"]
+scope = ["crates/roko-cli/src/chat_session.rs", "crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/run.rs", "crates/roko-learn/src/runtime_feedback.rs"]
+verify = "quick"
+
+# ── S0F: Config Validation & Migration (Wave 1, independent) ───────────────
+
+[[batch]]
+id = "S0_20"
+title = "Add config validation on load"
+group = "S0F"
+deps = []
+scope = ["crates/roko-core/src/config/schema.rs"]
+also_read = ["crates/roko-core/src/config/gates.rs", "crates/roko-core/src/config/agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_21"
+title = "Normalize model aliases at load time"
+group = "S0F"
+deps = []
+scope = ["crates/roko-core/src/agent.rs", "crates/roko-core/src/config/schema.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S0_22"
+title = "Audit legacy-orchestrate feature flag"
+group = "S0F"
+deps = []
+scope = ["crates/roko-cli/src/lib.rs"]
+also_read = ["crates/roko-cli/Cargo.toml", "crates/roko-cli/src/dispatch_direct.rs", "crates/roko-cli/src/dispatch_v2.rs"]
+verify = "manual"
+
+# ── S0G: Feature Flag & Safety (Wave 1, independent) ───────────────────────
+
+[[batch]]
+id = "S0_23"
+title = "Remove/migrate ROKO_ACP_LEGACY env var"
+group = "S0G"
+deps = []
+scope = ["crates/roko-acp/src/bridge_events.rs", "crates/roko-core/src/config/schema.rs"]
+also_read = ["crates/roko-acp/src/runner.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_24"
+title = "Remove dangerously_skip_permissions default"
+group = "S0G"
+deps = []
+scope = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-agent/src/claude_cli_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S0_25"
+title = "Wire AgentContract into runner v2"
+group = "S0G"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/agent_stream.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs", "crates/roko-agent/src/safety/mod.rs", "crates/roko-acp/src/runner.rs"]
+verify = "build"
+# Phase 1 — Architecture Convergence
+#
+# Groups:
+#   O1A  Worktree Integration          (Wave 1, independent)
+#   O1B  Parallel Execution            (Wave 1, deps O1A)
+#   O1C  Context Handoff               (Wave 2, deps O1B)
+#   D1A  CascadeRouter Wiring          (Wave 1, independent)
+#   D1B  Episode Logging               (Wave 1, independent)
+#   D1C  Dispatch Unification          (Wave 2, deps D1B)
+#   D1D  Provider Health               (Wave 2, independent)
+#   D1E  Budget Enforcement            (Wave 2, independent)
+#   G1A  Gate Foundation               (Wave 1, independent)
+#   G1B  Gate Convergence              (Wave 2, deps G1A)
+#   G1C  Adaptive Intelligence         (Wave 2, independent)
+#   CD_A Code Debt                     (Wave 1, independent)
+
+# ──────────────────────────────────────────────────────────────
+# O1A — Worktree Integration
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "O1_01"
+title = "Add WorktreeManager to EffectServices"
+group = "O1A"
+deps = []
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-runtime/Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "O1_02"
+title = "Wire WorktreeManager construction in ServiceFactory"
+group = "O1A"
+deps = ["O1_01"]
+scope = ["crates/roko-orchestrator/src/service_factory.rs"]
+also_read = ["crates/roko-runtime/src/effect_driver.rs"]
+verify = "quick"
+
+[[batch]]
+id = "O1_03"
+title = "Worktree lifecycle management (create/cleanup)"
+group = "O1A"
+deps = ["O1_01", "O1_02"]
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-orchestrator/src/service_factory.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# O1B — Parallel Execution
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "O1_04"
+title = "Add parallel config to WorkflowConfig"
+group = "O1B"
+deps = []
+scope = ["crates/roko-runtime/src/pipeline_state.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "O1_05"
+title = "Concurrent task dispatch in WorkflowEngine"
+group = "O1B"
+deps = ["O1_03", "O1_04"]
+scope = ["crates/roko-runtime/src/workflow_engine.rs"]
+also_read = ["crates/roko-runtime/src/pipeline_state.rs", "crates/roko-runtime/src/effect_driver.rs"]
+verify = "quick"
+
+[[batch]]
+id = "O1_06"
+title = "Wire CLI plan-run to parallel config"
+group = "O1B"
+deps = ["O1_04", "O1_05"]
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-runtime/src/pipeline_state.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# O1C — Context Handoff
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "O1_07"
+title = "CumulativeContext struct and builder"
+group = "O1C"
+deps = []
+scope = ["crates/roko-runtime/src/workflow_engine.rs"]
+also_read = ["crates/roko-runtime/src/pipeline_state.rs"]
+verify = "quick"
+
+[[batch]]
+id = "O1_08"
+title = "Compute git diff summary after task"
+group = "O1C"
+deps = ["O1_07", "O1_03"]
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "O1_09"
+title = "Inject cumulative context into prompts"
+group = "O1C"
+deps = ["O1_07", "O1_08"]
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs", "crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# D1A — CascadeRouter Wiring
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "D1_01"
+title = "Load CascadeRouter at CLI startup"
+group = "D1A"
+deps = []
+scope = ["crates/roko-cli/src/model_selection.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_02"
+title = "Thread CascadeRouter through resolve_effective_model_key"
+group = "D1A"
+deps = ["D1_01"]
+scope = ["crates/roko-cli/src/model_selection.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "D1_03"
+title = "Record Router Observations in ModelCallService"
+group = "D1A"
+deps = []
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_04"
+title = "Wire CascadeRouter into roko run"
+group = "D1A"
+deps = ["D1_01"]
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-cli/src/model_selection.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_05"
+title = "Wire CascadeRouter into roko chat"
+group = "D1A"
+deps = ["D1_01", "D1_03"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/model_selection.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# D1B — Episode Logging
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "D1_06"
+title = "Add Episode Emission to ModelCallService"
+group = "D1B"
+deps = []
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-learn/src/episode_logger.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_07"
+title = "Wire Episode Logger to One-Shot CLI Paths"
+group = "D1B"
+deps = ["D1_06"]
+scope = ["crates/roko-cli/src/run_inline.rs"]
+also_read = ["crates/roko-cli/src/run.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_08"
+title = "Add Entry Point Tag to Episode Records"
+group = "D1B"
+deps = ["D1_06"]
+scope = ["crates/roko-core/src/runtime_event.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# D1C — Dispatch Unification
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "D1_09"
+title = "Migrate chat_inline to ModelCallService"
+group = "D1C"
+deps = ["D1_06"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs", "crates/roko-cli/src/dispatch_v2.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_10"
+title = "Migrate ACP Runner to Provider System"
+group = "D1C"
+deps = []
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-orchestrator/src/service_factory.rs", "crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_11"
+title = "Gate dispatch_direct.rs behind feature flag"
+group = "D1C"
+deps = []
+scope = ["crates/roko-cli/src/dispatch_direct.rs"]
+also_read = ["crates/roko-cli/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_12"
+title = "Remove hardcoded model strings from auth_detect.rs"
+group = "D1C"
+deps = []
+scope = ["crates/roko-cli/src/auth_detect.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# D1D — Provider Health
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "D1_13"
+title = "Implement ProviderHealthTracker"
+group = "D1D"
+deps = []
+scope = ["crates/roko-agent/src/provider/health.rs"]
+also_read = ["crates/roko-agent/src/provider/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_14"
+title = "Wire Health Checks into ModelCallService"
+group = "D1D"
+deps = ["D1_13"]
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-agent/src/provider/health.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_15"
+title = "Add Retry Logic to ModelCallService"
+group = "D1D"
+deps = ["D1_13"]
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-agent/src/provider/health.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# D1E — Budget Enforcement
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "D1_16"
+title = "Add Budget Configuration to roko.toml"
+group = "D1E"
+deps = []
+scope = ["crates/roko-core/src/config/budget.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_17"
+title = "Set Default Budget in ModelCallService"
+group = "D1E"
+deps = ["D1_16"]
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-core/src/config/budget.rs"]
+verify = "quick"
+
+[[batch]]
+id = "D1_18"
+title = "Implement Budget Exceeded Graceful Degradation"
+group = "D1E"
+deps = ["D1_17"]
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# G1A — Gate Foundation
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "G1_01"
+title = "Add complexity and prior_failures to GateConfig"
+group = "G1A"
+deps = []
+scope = ["crates/roko-core/src/foundation.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "G1_02"
+title = "Add feedback and failure_classification to GateReport"
+group = "G1A"
+deps = []
+scope = ["crates/roko-core/src/foundation.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "G1_03"
+title = "Teach GateService rung selection"
+group = "G1A"
+deps = ["G1_01"]
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# G1B — Gate Convergence
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "G1_04"
+title = "Generate feedback inside GateService"
+group = "G1B"
+deps = ["G1_02"]
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+[[batch]]
+id = "G1_05"
+title = "Wire GateService into run.rs"
+group = "G1B"
+deps = ["G1_03", "G1_04"]
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "G1_06"
+title = "Wire GateService into ACP runner"
+group = "G1B"
+deps = ["G1_03", "G1_04"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "G1_07"
+title = "Add Verdict::Skip constructor"
+group = "G1B"
+deps = []
+scope = ["crates/roko-core/src/verdict.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "G1_08"
+title = "Replace stub pass with stub skip"
+group = "G1B"
+deps = ["G1_07"]
+scope = ["crates/roko-gate/src/rung_dispatch.rs"]
+also_read = ["crates/roko-core/src/verdict.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# G1C — Adaptive Intelligence
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "G1_09"
+title = "Drain SPC alerts after pipeline run"
+group = "G1C"
+deps = []
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-gate/src/adaptive_threshold.rs", "crates/roko-gate/src/spc.rs"]
+verify = "quick"
+
+[[batch]]
+id = "G1_10"
+title = "Call Hotelling observe_pipeline"
+group = "G1C"
+deps = []
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-gate/src/adaptive_threshold.rs", "crates/roko-gate/src/hotelling.rs"]
+verify = "quick"
+
+[[batch]]
+id = "G1_11"
+title = "Instantiate domain profiles at plan start"
+group = "G1C"
+deps = []
+scope = ["crates/roko-gate/src/adaptive_threshold.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+# ──────────────────────────────────────────────────────────────
+# CD_A — Code Debt
+# ──────────────────────────────────────────────────────────────
+
+[[batch]]
+id = "CD_01"
+title = "Remove blanket #![allow(dead_code)] from roko-cli"
+group = "CD_A"
+deps = []
+scope = ["crates/roko-cli/src/lib.rs"]
+also_read = []
+verify = "full"
+
+[[batch]]
+id = "CD_02"
+title = "Remove blanket clippy suppression from roko-cli"
+group = "CD_A"
+deps = ["CD_01"]
+scope = ["crates/roko-cli/src/lib.rs"]
+also_read = []
+verify = "full"
+
+[[batch]]
+id = "CD_03"
+title = "Delete dispatch_direct.rs (consolidate into dispatch_v2)"
+group = "CD_A"
+deps = ["D1_11"]
+scope = ["crates/roko-cli/src/dispatch_direct.rs", "crates/roko-cli/src/lib.rs"]
+also_read = ["crates/roko-cli/Cargo.toml"]
+verify = "full"
+
+[[batch]]
+id = "CD_04"
+title = "Remove unsafe env::set_var calls"
+group = "CD_A"
+deps = []
+scope = ["crates/roko-cli/src/commands/util.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "CD_05"
+title = "Unify gate config format in schema"
+group = "CD_A"
+deps = []
+scope = ["crates/roko-core/src/config/schema.rs"]
+also_read = ["crates/roko-core/src/foundation.rs"]
+verify = "quick"
+# =============================================================================
+# batches-phase2-3.toml — 47 entries across Phase 2 (UX & Prompt Assembly) and
+# Phase 3 (Innovations & Learning)
+# =============================================================================
+
+# =============================================================================
+# QA_A: Prompt Assembly — Model-Aware Windowing (Wave 3, 5 batches)
+# Wire ContextTier, BudgetPredictor, SectionInfluence, compaction, VCG auction
+# =============================================================================
+
+[[batch]]
+id = "QA_01"
+title = "Wire ContextTier into PromptAssemblyService"
+group = "QA_A"
+deps = []
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/context_provider.rs"]
+verify = "quick"
+
+[[batch]]
+id = "QA_02"
+title = "Wire BudgetPredictor into live prompt assembly path"
+group = "QA_A"
+deps = []
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/budget_predictor.rs"]
+verify = "quick"
+
+[[batch]]
+id = "QA_03"
+title = "Wire SectionInfluence feedback into prompt assembly"
+group = "QA_A"
+deps = ["QA_01"]
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/budget_predictor.rs"]
+verify = "quick"
+
+[[batch]]
+id = "QA_04"
+title = "Wire conversation compaction for long chat sessions"
+group = "QA_A"
+deps = []
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/token_counter.rs"]
+verify = "quick"
+
+[[batch]]
+id = "QA_05"
+title = "Activate VCG auction for tight budgets"
+group = "QA_A"
+deps = ["QA_01"]
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/auction.rs"]
+verify = "quick"
+
+# =============================================================================
+# LF_A: Learning Feedback — Universal Wiring (Wave 2, 6 batches)
+# Wire FeedbackService into chat and runner paths
+# =============================================================================
+
+[[batch]]
+id = "LF_01"
+title = "Wire FeedbackService to chat_session.rs"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/chat_session.rs"]
+also_read = ["crates/roko-learn/src/feedback_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_02"
+title = "Wire FeedbackService to chat_inline.rs"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-learn/src/feedback_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_03"
+title = "Wire episode logging into runner v2 event loop"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/episode_logger.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_04"
+title = "Wire CascadeRouter observations from runner event loop"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-learn/src/model_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_05"
+title = "Wire gate threshold updates from runner event loop"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-gate/src/adaptive_threshold.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_06"
+title = "Wire efficiency events from runner event loop"
+group = "LF_A"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/efficiency.rs"]
+verify = "quick"
+
+# =============================================================================
+# LF_B: Learning — Anomaly & Intervention (Wave 3, 3 batches)
+# Wire AnomalyDetector, BudgetGuardrail, ConductorBandit
+# =============================================================================
+
+[[batch]]
+id = "LF_07"
+title = "Wire AnomalyDetector into dispatch path"
+group = "LF_B"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-learn/src/anomaly.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_08"
+title = "Wire BudgetGuardrail into live paths"
+group = "LF_B"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-learn/src/budget.rs"]
+verify = "quick"
+
+[[batch]]
+id = "LF_09"
+title = "Wire ConductorBandit into plan runner retry logic"
+group = "LF_B"
+deps = []
+scope = ["crates/roko-cli/src/runner/event_loop.rs"]
+also_read = ["crates/roko-learn/src/conductor.rs"]
+verify = "quick"
+
+# =============================================================================
+# GE_A: Gate Evolution — Foundation (Wave 3, 4 batches)
+# Scaffold roko-eval crate with core types
+# =============================================================================
+
+[[batch]]
+id = "GE_01"
+title = "Scaffold roko-eval crate with core types"
+group = "GE_A"
+deps = []
+scope = ["crates/roko-eval/Cargo.toml", "crates/roko-eval/src/lib.rs", "crates/roko-eval/src/types.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_02"
+title = "Define EvidenceCollector trait"
+group = "GE_A"
+deps = ["GE_01"]
+scope = ["crates/roko-eval/src/collector.rs"]
+also_read = ["crates/roko-eval/src/types.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_03"
+title = "Define Criterion trait and evaluation interface"
+group = "GE_A"
+deps = ["GE_01"]
+scope = ["crates/roko-eval/src/criterion.rs"]
+also_read = ["crates/roko-eval/src/types.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_04"
+title = "Define EvalService orchestrator"
+group = "GE_A"
+deps = ["GE_02", "GE_03"]
+scope = ["crates/roko-eval/src/service.rs"]
+also_read = ["crates/roko-eval/src/collector.rs", "crates/roko-eval/src/criterion.rs"]
+verify = "quick"
+
+# =============================================================================
+# GE_B: Gate Evolution — Bridge (Wave 4, 4 batches, deps GE_A)
+# Bridge legacy gates, implement compile/lint/test criteria
+# =============================================================================
+
+[[batch]]
+id = "GE_05"
+title = "Create BridgeGateService wrapping legacy GateService"
+group = "GE_B"
+deps = ["GE_04"]
+scope = ["crates/roko-eval/src/bridge.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs", "crates/roko-eval/src/service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_06"
+title = "Implement CompileCriterion"
+group = "GE_B"
+deps = ["GE_03"]
+scope = ["crates/roko-eval/src/criteria/compile.rs"]
+also_read = ["crates/roko-eval/src/criterion.rs", "crates/roko-gate/src/compile.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_07"
+title = "Implement LintCriterion"
+group = "GE_B"
+deps = ["GE_03"]
+scope = ["crates/roko-eval/src/criteria/lint.rs"]
+also_read = ["crates/roko-eval/src/criterion.rs", "crates/roko-gate/src/clippy_gate.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GE_08"
+title = "Implement TestCriterion"
+group = "GE_B"
+deps = ["GE_03"]
+scope = ["crates/roko-eval/src/criteria/test.rs"]
+also_read = ["crates/roko-eval/src/criterion.rs", "crates/roko-gate/src/test_gate.rs"]
+verify = "quick"
+
+# =============================================================================
+# UX_A: CLI UX — Foundation (Wave 2, 3 batches)
+# roko next, run summary, --dry-run
+# =============================================================================
+
+[[batch]]
+id = "UX_01"
+title = "Implement roko next command"
+group = "UX_A"
+deps = []
+scope = ["crates/roko-cli/src/commands/next.rs"]
+also_read = ["crates/roko-cli/src/commands/status.rs", "crates/roko-cli/src/commands/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "UX_02"
+title = "Add run summary output after each roko run"
+group = "UX_A"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-cli/src/runner/event_loop.rs"]
+verify = "quick"
+
+[[batch]]
+id = "UX_03"
+title = "Implement --dry-run mode for roko run"
+group = "UX_A"
+deps = []
+scope = ["crates/roko-cli/src/run.rs", "crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-cli/src/runner/event_loop.rs"]
+verify = "quick"
+
+# =============================================================================
+# UX_B: Context Packs MVP (Wave 3, 2 batches)
+# roko pack create and roko pack synthesize
+# =============================================================================
+
+[[batch]]
+id = "UX_04"
+title = "Implement roko pack create command"
+group = "UX_B"
+deps = []
+scope = ["crates/roko-cli/src/commands/pack.rs"]
+also_read = ["crates/roko-cli/src/commands/mod.rs", "crates/roko-cli/src/main.rs"]
+verify = "quick"
+
+[[batch]]
+id = "UX_05"
+title = "Implement roko pack synthesize command"
+group = "UX_B"
+deps = ["UX_04"]
+scope = ["crates/roko-cli/src/commands/pack.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+# =============================================================================
+# RF_A: Performance — Low-Hanging (Wave 1, 5 batches)
+# Benchmark harness, shared config, lazy serialization
+# =============================================================================
+
+[[batch]]
+id = "RF_01"
+title = "Create performance benchmark harness"
+group = "RF_A"
+deps = []
+scope = ["crates/roko-cli/benches/runtime_overhead.rs"]
+also_read = ["crates/roko-cli/Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "RF_02"
+title = "Shared config cache — load once, Arc through"
+group = "RF_A"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-core/src/config/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_03"
+title = "LearningRuntime single-open — avoid redundant file opens"
+group = "RF_A"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-learn/src/runtime_feedback.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_04"
+title = "Safety contract caching — skip redundant YAML loads"
+group = "RF_A"
+deps = []
+scope = ["crates/roko-agent/src/safety/contract.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "RF_05"
+title = "Lazy event serialization — defer JSON encoding"
+group = "RF_A"
+deps = []
+scope = ["crates/roko-runtime/src/jsonl_logger.rs"]
+also_read = ["crates/roko-core/src/runtime_event.rs"]
+verify = "quick"
+
+# =============================================================================
+# RF_B: Performance — Gate Optimization (Wave 2, 3 batches)
+# GateMode enum, Express gate mode, --gates CLI flag
+# =============================================================================
+
+[[batch]]
+id = "RF_06"
+title = "Define GateMode enum (Express/Full/Quick)"
+group = "RF_B"
+deps = []
+scope = ["crates/roko-runtime/src/pipeline_state.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_07"
+title = "Wire Express Gate Mode into GateService"
+group = "RF_B"
+deps = ["RF_06"]
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-runtime/src/pipeline_state.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_08"
+title = "Add --gates CLI flag to roko run"
+group = "RF_B"
+deps = ["RF_06"]
+scope = ["crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-runtime/src/pipeline_state.rs"]
+verify = "quick"
+
+# =============================================================================
+# RF_C: Performance — Warm Pool (Wave 3, 3 batches)
+# Create WarmDispatchPool, wire into EffectDriver and roko run
+# =============================================================================
+
+[[batch]]
+id = "RF_09"
+title = "Create WarmDispatchPool with pre-spawn lifecycle"
+group = "RF_C"
+deps = []
+scope = ["crates/roko-runtime/src/warm_dispatch_pool.rs"]
+also_read = ["crates/roko-cli/src/dispatch/warm_pool.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_10"
+title = "Wire WarmDispatchPool into EffectDriver"
+group = "RF_C"
+deps = ["RF_09"]
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-runtime/src/warm_dispatch_pool.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RF_11"
+title = "Wire WarmDispatchPool into roko run startup"
+group = "RF_C"
+deps = ["RF_09"]
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = ["crates/roko-runtime/src/warm_dispatch_pool.rs"]
+verify = "quick"
+
+# =============================================================================
+# IN_A: Innovations — Agent Memory (Wave 4, 3 batches)
+# MemoryLayer, SemanticCache, ContextBudgetManager
+# =============================================================================
+
+[[batch]]
+id = "IN_01"
+title = "Create MemoryLayer wrapping working/episodic/semantic stores"
+group = "IN_A"
+deps = []
+scope = ["crates/roko-learn/src/memory_layer.rs"]
+also_read = ["crates/roko-learn/src/episode_logger.rs", "crates/roko-neuro/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_02"
+title = "Wire SemanticCache for repeated query deduplication"
+group = "IN_A"
+deps = []
+scope = ["crates/roko-learn/src/semantic_cache.rs"]
+also_read = ["crates/roko-primitives/src/hdc.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_03"
+title = "Wire ContextBudgetManager for per-session allocation"
+group = "IN_A"
+deps = []
+scope = ["crates/roko-learn/src/context_budget.rs"]
+also_read = ["crates/roko-learn/src/budget.rs"]
+verify = "quick"
+
+# =============================================================================
+# IN_B: Innovations — Self-Improving Gates (Wave 4, 3 batches)
+# Failure pattern extraction, dynamic gate generation, Pareto routing
+# =============================================================================
+
+[[batch]]
+id = "IN_04"
+title = "Wire failure pattern extraction from gate history"
+group = "IN_B"
+deps = []
+scope = ["crates/roko-learn/src/gate_evolver.rs"]
+also_read = ["crates/roko-learn/src/error_pattern_store.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_05"
+title = "Wire dynamic gate generation from failure patterns"
+group = "IN_B"
+deps = ["IN_04"]
+scope = ["crates/roko-learn/src/gate_evolver.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_06"
+title = "Cost-aware Pareto routing in CascadeRouter"
+group = "IN_B"
+deps = []
+scope = ["crates/roko-learn/src/cascade_router.rs"]
+also_read = ["crates/roko-learn/src/model_router.rs", "crates/roko-learn/src/cost_table.rs"]
+verify = "quick"
+
+# =============================================================================
+# IN_C: Innovations — Multi-Agent (Wave 4, 3 batches)
+# SteeringAction, SkillSelector routing, speculative execution
+# =============================================================================
+
+[[batch]]
+id = "IN_07"
+title = "Define SteeringAction enum and controller"
+group = "IN_C"
+deps = []
+scope = ["crates/roko-core/src/steering.rs"]
+also_read = ["crates/roko-core/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_08"
+title = "Wire SkillSelector for task-appropriate model routing"
+group = "IN_C"
+deps = []
+scope = ["crates/roko-learn/src/skill_selector.rs"]
+also_read = ["crates/roko-agent/src/composition.rs", "crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "IN_09"
+title = "Wire speculative execution (parallel model racing)"
+group = "IN_C"
+deps = []
+scope = ["crates/roko-agent/src/model_call_service.rs"]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+# =============================================================================
+# post-parity batches-phase4.toml — 54 entries across Phase 4
+# GTM, Integrations, Observability, Safety, Cross-cutting
+# =============================================================================
+
+# =============================================================================
+# SF_A: Safety — Contract Enforcement (Wave 1, all independent)
+# =============================================================================
+
+[[batch]]
+id = "SF_01"
+title = "Wire AgentContract into WorkflowEngine"
+group = "SF_A"
+deps = []
+scope = ["crates/roko-runtime/src/effect_driver.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_02"
+title = "Generate default contracts during roko init"
+group = "SF_A"
+deps = []
+scope = ["crates/roko-cli/src/commands/init.rs"]
+also_read = ["crates/roko-agent/src/safety/contract.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_03"
+title = "Implement trust domain split (privileged/quarantined)"
+group = "SF_A"
+deps = []
+scope = ["crates/roko-agent/src/safety/trust_domain.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs", "crates/roko-agent/src/safety/contract.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_04"
+title = "Immutable gate configs — load at pipeline start, freeze"
+group = "SF_A"
+deps = []
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = ["crates/roko-gate/src/gate_pipeline.rs", "crates/roko-gate/src/adaptive_threshold.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_05"
+title = "Tool output sanitization pipeline — wire ResultFilter"
+group = "SF_A"
+deps = []
+scope = ["crates/roko-agent/src/safety/result_filter.rs"]
+also_read = ["crates/roko-agent/src/safety/scrub.rs", "crates/roko-agent/src/dispatcher/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# SF_B: Safety — Permission System (Wave 2, deps SF_A)
+# =============================================================================
+
+[[batch]]
+id = "SF_06"
+title = "Tiered permission model — define PermissionTier enum"
+group = "SF_B"
+deps = ["SF_01"]
+scope = ["crates/roko-core/src/tool.rs", "crates/roko-agent/src/safety/authz.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_07"
+title = "Worktree isolation enforcement — path policy for agents"
+group = "SF_B"
+deps = ["SF_01"]
+scope = ["crates/roko-agent/src/safety/path.rs"]
+also_read = ["crates/roko-orchestrator/src/worktree.rs", "crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_08"
+title = "Bash command categorization and risk-level blocking"
+group = "SF_B"
+deps = []
+scope = ["crates/roko-agent/src/safety/bash.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# SF_C: Safety — MCP & Audit (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "SF_09"
+title = "MCP server version pinning — require explicit version"
+group = "SF_C"
+deps = []
+scope = ["crates/roko-core/src/config/mod.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_10"
+title = "MCP tool call sanitization — SSRF/injection/size"
+group = "SF_C"
+deps = []
+scope = ["crates/roko-agent/src/safety/mcp_sanitize.rs"]
+also_read = ["crates/roko-agent/src/safety/mod.rs", "crates/roko-agent/src/safety/network.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_11"
+title = "Unified security audit trail — append-only JSONL"
+group = "SF_C"
+deps = []
+scope = ["crates/roko-runtime/src/audit.rs"]
+also_read = ["crates/roko-runtime/src/jsonl_logger.rs", "crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+[[batch]]
+id = "SF_12"
+title = "Secret detection in agent context — wire ScrubPolicy"
+group = "SF_C"
+deps = []
+scope = ["crates/roko-agent/src/safety/scrub.rs"]
+also_read = ["crates/roko-agent/src/safety/result_filter.rs", "crates/roko-agent/src/safety/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# OB_A: Observability — Tracing (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "OB_01"
+title = "Add tracing spans to hot-path functions"
+group = "OB_A"
+deps = []
+scope = ["crates/roko-agent/src/dispatcher/mod.rs"]
+also_read = ["crates/roko-runtime/src/effect_driver.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_02"
+title = "Add OpenTelemetry dependencies to workspace"
+group = "OB_A"
+deps = []
+scope = ["Cargo.toml"]
+also_read = ["crates/roko-runtime/Cargo.toml", "crates/roko-agent/Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "OB_03"
+title = "Emit gen_ai.* spans for model calls"
+group = "OB_A"
+deps = ["OB_02"]
+scope = ["crates/roko-agent/src/gateway_events.rs"]
+also_read = ["crates/roko-agent/src/dispatcher/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_04"
+title = "Lazy event serialization in JSONL logger"
+group = "OB_A"
+deps = []
+scope = ["crates/roko-runtime/src/jsonl_logger.rs"]
+also_read = ["crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+# =============================================================================
+# OB_B: Observability — Dashboard (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "OB_05"
+title = "Add RouterTrace widget to TUI"
+group = "OB_B"
+deps = []
+scope = ["crates/roko-cli/src/tui/widgets/"]
+also_read = ["crates/roko-cli/src/tui/mod.rs", "crates/roko-cli/src/tui/pages/"]
+verify = "quick"
+
+[[batch]]
+id = "OB_06"
+title = "Add CostPanel widget to TUI"
+group = "OB_B"
+deps = []
+scope = ["crates/roko-cli/src/tui/widgets/"]
+also_read = ["crates/roko-cli/src/tui/mod.rs", "crates/roko-learn/src/cost_table.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_07"
+title = "Add GateRow widgets to TUI"
+group = "OB_B"
+deps = []
+scope = ["crates/roko-cli/src/tui/widgets/"]
+also_read = ["crates/roko-cli/src/tui/mod.rs", "crates/roko-gate/src/gate_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_08"
+title = "WebSocket feed endpoint for live events"
+group = "OB_B"
+deps = []
+scope = ["crates/roko-serve/src/routes/ws.rs"]
+also_read = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+# =============================================================================
+# OB_C: Observability — Alerting (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "OB_09"
+title = "Cost spike anomaly detector"
+group = "OB_C"
+deps = []
+scope = ["crates/roko-runtime/src/event_bus.rs"]
+also_read = ["crates/roko-learn/src/cost_table.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_10"
+title = "Pass-rate drop detector"
+group = "OB_C"
+deps = []
+scope = ["crates/roko-runtime/src/event_bus.rs"]
+also_read = ["crates/roko-gate/src/adaptive_threshold.rs"]
+verify = "quick"
+
+[[batch]]
+id = "OB_11"
+title = "Latency surge detector"
+group = "OB_C"
+deps = []
+scope = ["crates/roko-runtime/src/event_bus.rs"]
+also_read = ["crates/roko-learn/src/latency.rs"]
+verify = "quick"
+
+# =============================================================================
+# GT_A: GTM — Adapter Foundation (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "GT_01"
+title = "Define RokoAdapter trait (Bevy plugin pattern)"
+group = "GT_A"
+deps = []
+scope = ["crates/roko-core/src/adapter.rs"]
+also_read = ["crates/roko-core/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GT_02"
+title = "Define SubAdapter traits (Work/Notification/Observer)"
+group = "GT_A"
+deps = ["GT_01"]
+scope = ["crates/roko-core/src/adapter.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "GT_03"
+title = "Wire AdapterRegistry into CLI startup"
+group = "GT_A"
+deps = ["GT_01"]
+scope = ["crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-core/src/adapter.rs"]
+verify = "quick"
+
+# =============================================================================
+# GT_B: GTM — GitHub (Wave 4)
+# =============================================================================
+
+[[batch]]
+id = "GT_04"
+title = "Implement GitHubAdapter"
+group = "GT_B"
+deps = ["GT_01"]
+scope = ["crates/roko-cli/src/adapter/github.rs"]
+also_read = ["crates/roko-core/src/adapter.rs", "crates/roko-serve/src/routes/webhooks.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GT_05"
+title = "GitHub webhook receiver"
+group = "GT_B"
+deps = []
+scope = ["crates/roko-serve/src/routes/webhooks.rs"]
+also_read = ["crates/roko-serve/src/routes/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GT_06"
+title = "Issue-to-plan pipeline"
+group = "GT_B"
+deps = ["GT_04"]
+scope = ["crates/roko-cli/src/workflows/issue_to_plan.rs"]
+also_read = ["crates/roko-cli/src/commands/init.rs"]
+verify = "quick"
+
+# =============================================================================
+# GT_C: GTM — Linear (Wave 4)
+# =============================================================================
+
+[[batch]]
+id = "GT_07"
+title = "Linear GraphQL client"
+group = "GT_C"
+deps = ["GT_01"]
+scope = ["crates/roko-cli/src/adapter/linear.rs"]
+also_read = ["crates/roko-core/src/adapter.rs"]
+verify = "quick"
+
+[[batch]]
+id = "GT_08"
+title = "Linear webhook receiver with HMAC verification"
+group = "GT_C"
+deps = []
+scope = ["crates/roko-serve/src/routes/webhooks.rs"]
+also_read = ["crates/roko-serve/src/routes/mod.rs"]
+verify = "quick"
+
+# =============================================================================
+# AC_A: ACP — Session Improvements (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "AC_01"
+title = "Add TokenBudget to DispatchKnowledge"
+group = "AC_A"
+deps = []
+scope = ["crates/roko-acp/src/knowledge.rs"]
+also_read = ["crates/roko-acp/src/bridge_events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AC_02"
+title = "Build ContextManager with priority queue"
+group = "AC_A"
+deps = []
+scope = ["crates/roko-acp/src/context_manager.rs"]
+also_read = ["crates/roko-acp/src/knowledge.rs", "crates/roko-acp/src/bridge_events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AC_03"
+title = "Wire ContextManager into ACP bridge events"
+group = "AC_A"
+deps = ["AC_02"]
+scope = ["crates/roko-acp/src/bridge_events.rs"]
+also_read = ["crates/roko-acp/src/context_manager.rs", "crates/roko-acp/src/knowledge.rs"]
+verify = "quick"
+
+# =============================================================================
+# AC_B: ACP — Parallel Agents (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "AC_04"
+title = "Add ParallelExecution phase to pipeline"
+group = "AC_B"
+deps = []
+scope = ["crates/roko-acp/src/pipeline.rs"]
+also_read = ["crates/roko-acp/src/runner.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AC_05"
+title = "Implement parallel agent spawning in runner"
+group = "AC_B"
+deps = ["AC_04"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-acp/src/pipeline.rs", "crates/roko-acp/src/bridge_events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AC_06"
+title = "Add workflow templates (Research, Review, Docs)"
+group = "AC_B"
+deps = []
+scope = ["crates/roko-acp/src/pipeline.rs"]
+also_read = ["crates/roko-acp/src/runner.rs"]
+verify = "quick"
+
+# =============================================================================
+# RP_A: Runner Patterns (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "RP_01"
+title = "Wire WorktreeManager per-task worktrees"
+group = "RP_A"
+deps = []
+scope = ["crates/roko-orchestrator/src/worktree.rs", "crates/roko-runtime/src/workflow_engine.rs"]
+also_read = ["crates/roko-runtime/src/effect_driver.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RP_02"
+title = "Wire serialized merge via MergeQueue"
+group = "RP_A"
+deps = []
+scope = ["crates/roko-orchestrator/src/merge_queue.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RP_03"
+title = "Add cumulative context section generator"
+group = "RP_A"
+deps = []
+scope = ["crates/roko-compose/src/prompt_assembly_service.rs"]
+also_read = ["crates/roko-compose/src/system_prompt_builder.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RP_04"
+title = "Add AntiPatternChecker rules and dispatch"
+group = "RP_A"
+deps = []
+scope = ["crates/roko-gate/src/anti_pattern_checker.rs"]
+also_read = ["crates/roko-gate/src/gate_service.rs", "crates/roko-gate/src/gate_pipeline.rs"]
+verify = "quick"
+
+[[batch]]
+id = "RP_05"
+title = "Add auto-cherry-pick conveyor belt"
+group = "RP_A"
+deps = ["RP_01", "RP_02"]
+scope = ["crates/roko-orchestrator/src/cherry_pick.rs"]
+also_read = ["crates/roko-orchestrator/src/worktree.rs", "crates/roko-orchestrator/src/merge_queue.rs"]
+verify = "quick"
+
+# =============================================================================
+# XC_A: Cross-Cutting — Error Handling (Wave 1)
+# =============================================================================
+
+[[batch]]
+id = "XC_01"
+title = "Migrate public APIs from anyhow to structured errors"
+group = "XC_A"
+deps = []
+scope = ["crates/roko-core/src/error.rs"]
+also_read = ["crates/roko-core/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "XC_02"
+title = "Add correlation IDs to logging"
+group = "XC_A"
+deps = []
+scope = ["crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-runtime/src/event_bus.rs"]
+verify = "quick"
+
+[[batch]]
+id = "XC_03"
+title = "Unify logging init (tracing subscriber)"
+group = "XC_A"
+deps = []
+scope = ["crates/roko-cli/src/main.rs"]
+also_read = ["crates/roko-serve/src/lib.rs"]
+verify = "quick"
+
+# =============================================================================
+# XC_B: Cross-Cutting — Lifecycle (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "XC_04"
+title = "Propagate CancelToken for graceful shutdown"
+group = "XC_B"
+deps = []
+scope = ["crates/roko-runtime/src/cancel.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs", "crates/roko-runtime/src/effect_driver.rs"]
+verify = "quick"
+
+[[batch]]
+id = "XC_05"
+title = "Serve shutdown hooks"
+group = "XC_B"
+deps = []
+scope = ["crates/roko-serve/src/lib.rs"]
+also_read = ["crates/roko-runtime/src/cancel.rs"]
+verify = "quick"
+
+[[batch]]
+id = "XC_06"
+title = "Worktree cleanup policy"
+group = "XC_B"
+deps = ["RP_01"]
+scope = ["crates/roko-orchestrator/src/worktree.rs"]
+also_read = ["crates/roko-runtime/src/workflow_engine.rs"]
+verify = "quick"
+
+# =============================================================================
+# TV_A: Testing — Infrastructure (Wave 1)
+# =============================================================================
+
+[[batch]]
+id = "TV_01"
+title = "Create unified test harness"
+group = "TV_A"
+deps = []
+scope = ["crates/roko-cli/tests/harness.rs"]
+also_read = ["crates/roko-cli/tests/smoke.rs", "crates/roko-cli/tests/e2e.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TV_02"
+title = "Create CLI binary runner for integration tests"
+group = "TV_A"
+deps = []
+scope = ["crates/roko-cli/tests/cli_runner.rs"]
+also_read = ["crates/roko-cli/tests/smoke.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TV_03"
+title = "Add gate pipeline integration test"
+group = "TV_A"
+deps = []
+scope = ["crates/roko-gate/tests/"]
+also_read = ["crates/roko-gate/src/gate_service.rs", "crates/roko-gate/src/gate_pipeline.rs"]
+verify = "quick"
+
+# =============================================================================
+# TV_B: Testing — Smoke Tests (Wave 2)
+# =============================================================================
+
+[[batch]]
+id = "TV_04"
+title = "CLI smoke test — roko status, roko doctor"
+group = "TV_B"
+deps = ["TV_01", "TV_02"]
+scope = ["crates/roko-cli/tests/smoke.rs"]
+also_read = ["crates/roko-cli/tests/harness.rs", "crates/roko-cli/tests/cli_runner.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TV_05"
+title = "Config smoke test — roko config show, validate"
+group = "TV_B"
+deps = ["TV_01", "TV_02"]
+scope = ["crates/roko-cli/tests/smoke.rs"]
+also_read = ["crates/roko-cli/tests/harness.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TV_06"
+title = "Plan smoke test — roko plan validate"
+group = "TV_B"
+deps = ["TV_01", "TV_02"]
+scope = ["crates/roko-cli/tests/smoke.rs"]
+also_read = ["crates/roko-cli/tests/harness.rs"]
+verify = "quick"
+
+# =============================================================================
+# AS_A: ACP — Session Manager Concurrency (Wave 1)
+# Closes the unresolved item from R7_F03: SessionManager itself is still
+# single-threaded. Wrap at the call site so daemon-mode / multiplexed
+# transports become possible.
+# =============================================================================
+
+[[batch]]
+id = "AS_01"
+title = "Wrap SessionManager in Arc<tokio::sync::RwLock> at handler call site"
+group = "AS_A"
+deps = []
+scope = ["crates/roko-acp/src/handler.rs"]
+also_read = ["crates/roko-acp/src/session.rs", "crates/roko-acp/src/bridge_events.rs"]
+verify = "quick"
+
+# =============================================================================
+# AF_A: ACP — Affect / Mood Ring Surface (Wave 2)
+# Surfaces roko-daimon AffectPolicy state in ACP session updates.
+# Closes deferred batch R7_F07 from tmp/solutions/acp/09-NOVEL-BATCHES.md.
+# =============================================================================
+
+[[batch]]
+id = "AF_01"
+title = "Enable affect_enabled flag for ACP ServiceFactory build"
+group = "AF_A"
+deps = []
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-orchestrator/src/service_factory.rs", "crates/roko-acp/src/bridge_events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AF_02"
+title = "Add AffectSnapshot type + serialize PAD vector for ACP emission"
+group = "AF_A"
+deps = ["AF_01"]
+scope = ["crates/roko-acp/src/types.rs", "crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-core/src/affect.rs", "crates/roko-core/src/foundation.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AF_03"
+title = "Emit affect card AgentMessageChunk after gate/phase transitions"
+group = "AF_A"
+deps = ["AF_02"]
+scope = ["crates/roko-acp/src/runner.rs", "crates/roko-acp/src/bridge_events.rs"]
+also_read = ["crates/roko-acp/src/types.rs", "crates/roko-core/src/affect.rs"]
+verify = "quick"
+
+# =============================================================================
+# AF_B: ACP — Affect-Driven Modulation (Wave 3)
+# =============================================================================
+
+[[batch]]
+id = "AF_04"
+title = "Auto-escalate model on persistent frustration via CascadeRouter"
+group = "AF_B"
+deps = ["AF_03"]
+scope = ["crates/roko-acp/src/bridge_events.rs"]
+also_read = ["crates/roko-core/src/affect.rs", "crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AF_05"
+title = "Emit ConfigOptionUpdate for routing/scope changes after escalation"
+group = "AF_B"
+deps = ["AF_04"]
+scope = ["crates/roko-acp/src/bridge_events.rs", "crates/roko-acp/src/types.rs"]
+also_read = ["crates/roko-acp/src/session.rs"]
+verify = "quick"
+
+# =============================================================================
+# AD_A: ACP — Dream Journal at Session Start (Wave 2)
+# Closes deferred batch R7_F08 from tmp/solutions/acp/09-NOVEL-BATCHES.md.
+# =============================================================================
+
+[[batch]]
+id = "AD_01"
+title = "Construct DreamRunner from ACP workdir + load latest report"
+group = "AD_A"
+deps = []
+scope = ["crates/roko-acp/src/handler.rs"]
+also_read = ["crates/roko-dreams/src/runner.rs", "crates/roko-dreams/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AD_02"
+title = "Render DreamReport as ToolCall card with replay/imagine/threat sections"
+group = "AD_A"
+deps = ["AD_01"]
+scope = ["crates/roko-acp/src/handler.rs", "crates/roko-acp/src/bridge_events.rs"]
+also_read = ["crates/roko-dreams/src/runner.rs", "crates/roko-acp/src/types.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AD_03"
+title = "Track presented dream report id in session and skip duplicates"
+group = "AD_A"
+deps = ["AD_02"]
+scope = ["crates/roko-acp/src/session.rs", "crates/roko-acp/src/handler.rs"]
+also_read = ["crates/roko-dreams/src/runner.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AD_04"
+title = "Reflect dream routing-advice updates as ConfigOptionUpdate"
+group = "AD_A"
+deps = ["AD_02"]
+scope = ["crates/roko-acp/src/handler.rs"]
+also_read = ["crates/roko-dreams/src/routing_advice.rs", "crates/roko-acp/src/types.rs"]
+verify = "quick"
+
+# =============================================================================
+# AT_A: ACP — Tournament Mode Plumbing (Wave 3)
+# Closes deferred batch R3_F05 from tmp/solutions/acp/09-NOVEL-BATCHES.md.
+# Multi-agent adversarial workflow with N parallel worktrees.
+# =============================================================================
+
+[[batch]]
+id = "AT_01"
+title = "Add WorkflowTemplate::Tournament variant + tournament_arms config"
+group = "AT_A"
+deps = ["AC_06"]
+scope = ["crates/roko-acp/src/pipeline.rs", "crates/roko-acp/src/config.rs"]
+also_read = ["crates/roko-acp/src/runner.rs", "crates/roko-acp/src/workflow.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AT_02"
+title = "Build TournamentArm struct with strategy + worktree path"
+group = "AT_A"
+deps = ["AT_01"]
+scope = ["crates/roko-acp/src/pipeline.rs", "crates/roko-acp/src/workflow.rs"]
+also_read = ["crates/roko-orchestrator/src/worktree.rs"]
+verify = "quick"
+
+# =============================================================================
+# AT_B: ACP — Tournament Execution (Wave 4)
+# =============================================================================
+
+[[batch]]
+id = "AT_03"
+title = "Spawn N worktrees via WorktreeManager + arm-prefixed event bridge"
+group = "AT_B"
+deps = ["AT_02"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-orchestrator/src/worktree.rs", "crates/roko-acp/src/acp_adapter.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AT_04"
+title = "Run tournament arms in parallel via ParallelExecutor + collect verdicts"
+group = "AT_B"
+deps = ["AT_03"]
+scope = ["crates/roko-acp/src/runner.rs"]
+also_read = ["crates/roko-orchestrator/src/executor/mod.rs", "crates/roko-gate/src/lib.rs"]
+verify = "quick"
+
+# =============================================================================
+# AT_C: ACP — Tournament Selection (Wave 4)
+# =============================================================================
+
+[[batch]]
+id = "AT_05"
+title = "Emit comparison ToolCall card + RequestPermission for arm selection"
+group = "AT_C"
+deps = ["AT_04"]
+scope = ["crates/roko-acp/src/runner.rs", "crates/roko-acp/src/bridge_events.rs"]
+also_read = ["crates/roko-acp/src/types.rs"]
+verify = "quick"

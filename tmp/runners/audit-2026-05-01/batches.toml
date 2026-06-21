@@ -1,0 +1,1192 @@
+# =============================================================================
+# audit-2026-05-01 batches.toml
+# Source plans: tmp/subsystem-audits/implementation-plans/
+# Issue tracker: tmp/runners/audit-2026-05-01/ISSUES.md
+# Verified against worktree: 2026-05-01.
+# =============================================================================
+
+# =============================================================================
+# Group T2 — Delete dead code
+# Source: implementation-plans/12-tier2-delete-dead-code.md
+# 9 batches (T2-17 split into 2 sub-batches by module-cluster)
+# =============================================================================
+
+[[batch]]
+id = "T2-16"
+title = "Delete 4 orphan learn files (not in lib.rs)"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-learn/src/resonant_patterns.rs",
+  "crates/roko-learn/src/signal_metabolism.rs",
+  "crates/roko-learn/src/shapley.rs",
+  "crates/roko-learn/src/kalman.rs",
+]
+also_read = ["crates/roko-learn/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T2-17a"
+title = "Delete unused learn modules: research-related (5 modules)"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-learn/src/adversarial.rs",
+  "crates/roko-learn/src/adas.rs",
+  "crates/roko-learn/src/research_pipeline.rs",
+  "crates/roko-learn/src/bandit_research.rs",
+  "crates/roko-learn/src/forensic_replay.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T2-17b"
+title = "Delete unused learn modules: stats-related (9 modules)"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-learn/src/calibration_policy.rs",
+  "crates/roko-learn/src/causal.rs",
+  "crates/roko-learn/src/reinforce_kind.rs",
+  "crates/roko-learn/src/regression.rs",
+  "crates/roko-learn/src/drift.rs",
+  "crates/roko-learn/src/local_reward.rs",
+  "crates/roko-learn/src/section_outcome.rs",
+  "crates/roko-learn/src/post_gate_reflection.rs",
+  "crates/roko-learn/src/verdict_scorer.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T2-18"
+title = "Remove 7 phantom config sections (Oneirography, Demurrage, Attention, Immune, Temporal, Goals, Energy)"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-core/src/config/tools.rs",
+  "crates/roko-core/src/config/learning.rs",
+  "crates/roko-core/src/config/budget.rs",
+  "crates/roko-core/src/config/schema.rs",
+  "crates/roko-core/src/config/hot_reload.rs",
+  "crates/roko-core/src/config/compat.rs",
+  "roko.toml",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T2-19"
+title = "Remove 6 phantom ConductorConfig fields"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-core/src/config/schema.rs",
+  "crates/roko-core/src/config/compat.rs",
+  "crates/roko-cli/src/tui/views/config_meta.rs",
+  "crates/roko-cli/src/config_cmd.rs",
+  "crates/roko-cli/src/commands/config_cmd.rs",
+  "roko.toml",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T2-20"
+title = "Delete write-only sinks: ConductorObservationSink + DreamTriggerSink"
+group = "T2"
+deps = []
+scope = [
+  "crates/roko-cli/src/runtime_feedback/conductor.rs",
+  "crates/roko-cli/src/runtime_feedback/dreams.rs",
+  "crates/roko-cli/src/runtime_feedback/mod.rs",
+  "crates/roko-cli/src/commands/plan.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T2-21"
+title = "Remove phantom AgentConfig fields (policy_manifests, domain)"
+group = "T2"
+deps = []
+scope = ["crates/roko-core/src/config/agent.rs", "roko.toml"]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Group T3 — Security hardening
+# Source: implementation-plans/13-tier3-security-hardening.md
+# 7 batches (T3-22..T3-28)
+# =============================================================================
+
+[[batch]]
+id = "T3-22"
+title = "Flip ServeAuthConfig::default() enabled to true"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-core/src/config/serve.rs",
+  "crates/roko-cli/src/init.rs",
+]
+also_read = ["crates/roko-serve/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T3-23"
+title = "Add tower-governor rate limiting (global + per-route caps)"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/Cargo.toml",
+  "crates/roko-serve/src/routes/mod.rs",
+  "crates/roko-serve/src/routes/middleware.rs",
+  "crates/roko-serve/src/routes/agents.rs",
+  "crates/roko-serve/src/routes/inference.rs",
+  "crates/roko-serve/src/routes/webhooks.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T3-24"
+title = "Lower global body limit to 4 MiB; add per-route overrides"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/src/routes/mod.rs",
+  "crates/roko-serve/src/routes/webhooks.rs",
+  "crates/roko-serve/src/routes/inference.rs",
+  "crates/roko-serve/src/routes/agents.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T3-25"
+title = "PORT env changes port only; bind stays from config"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/src/lib.rs",
+  "crates/roko-cli/src/init.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T3-26"
+title = "Add WebSocket max_message_size + max_frame_size caps"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/src/routes/ws.rs",
+  "crates/roko-serve/src/terminal.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T3-27"
+title = "Fix path traversal + TOML injection in agent creation"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/src/routes/agents.rs",
+  "crates/roko-serve/src/error.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T3-28"
+title = "Restrict CORS allow_methods + allow_headers to explicit lists"
+group = "T3"
+deps = []
+scope = [
+  "crates/roko-serve/src/routes/middleware.rs",
+  "crates/roko-serve/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+# =============================================================================
+# Group T4 — Feedback loop completion
+# Source: implementation-plans/14-tier4-feedback-loops.md
+# 10 batches (T4-31 split into 5 per-provider sub-batches)
+# =============================================================================
+
+[[batch]]
+id = "T4-29"
+title = "Wire KnowledgeIngestionSink.with_ingestor() in plan command"
+group = "T4"
+deps = []
+scope = [
+  "crates/roko-cli/src/runtime_feedback/knowledge.rs",
+  "crates/roko-cli/src/runtime_feedback/mod.rs",
+  "crates/roko-cli/src/commands/plan.rs",
+]
+also_read = ["crates/roko-neuro/src/admission.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T4-30"
+title = "Thread RoutingContext through dispatch + sink"
+group = "T4"
+deps = []
+scope = [
+  "crates/roko-cli/src/dispatch/mod.rs",
+  "crates/roko-cli/src/runner/types.rs",
+  "crates/roko-cli/src/runner/event_loop.rs",
+  "crates/roko-cli/src/runtime_feedback/mod.rs",
+  "crates/roko-cli/src/runtime_feedback/routing.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = ["crates/roko-learn/src/cascade_router.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T4-31a"
+title = "Migrate Anthropic usage parser to UsageObservation"
+group = "T4"
+deps = []
+scope = [
+  "crates/roko-agent/src/providers/anthropic.rs",
+  "crates/roko-agent/src/providers/anthropic_stream.rs",
+]
+also_read = [
+  "crates/roko-core/src/usage.rs",
+  "crates/roko-agent/src/translate/openai.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T4-31b"
+title = "Migrate Ollama usage parser to UsageObservation"
+group = "T4"
+deps = []
+scope = ["crates/roko-agent/src/providers/ollama.rs"]
+also_read = [
+  "crates/roko-core/src/usage.rs",
+  "crates/roko-agent/src/translate/openai.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T4-31c"
+title = "Migrate Gemini usage parser to UsageObservation"
+group = "T4"
+deps = []
+scope = ["crates/roko-agent/src/providers/gemini.rs"]
+also_read = [
+  "crates/roko-core/src/usage.rs",
+  "crates/roko-agent/src/translate/openai.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T4-31d"
+title = "Migrate Cerebras usage parser to UsageObservation"
+group = "T4"
+deps = []
+scope = ["crates/roko-agent/src/providers/cerebras.rs"]
+also_read = [
+  "crates/roko-core/src/usage.rs",
+  "crates/roko-agent/src/translate/openai.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T4-31e"
+title = "Migrate Cursor usage parser to UsageObservation"
+group = "T4"
+deps = []
+scope = ["crates/roko-agent/src/providers/cursor.rs"]
+also_read = [
+  "crates/roko-core/src/usage.rs",
+  "crates/roko-agent/src/translate/openai.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T4-32"
+title = "Wire playbook store into SystemPromptBuilder"
+group = "T4"
+deps = []
+scope = [
+  "crates/roko-prompt/src/lib.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = ["crates/roko-learn/src/playbook.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T4-33"
+title = "Add JSONL rotation helper + apply to episodes/efficiency/knowledge sinks"
+group = "T4"
+deps = []
+scope = [
+  "crates/roko-cli/src/runtime_feedback/rotator.rs",
+  "crates/roko-cli/src/runtime_feedback/mod.rs",
+  "crates/roko-cli/src/runtime_feedback/episodes.rs",
+  "crates/roko-cli/src/runtime_feedback/knowledge.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T4-34"
+title = "Make chat /model switch atomic (resolve-then-commit)"
+group = "T4"
+deps = []
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-cli/src/chat_session.rs"]
+verify = "quick"
+
+# =============================================================================
+# Group T5 — Architectural extraction
+# Source: implementation-plans/15-tier5-architectural.md, 20-orchestrate-rs-extraction.md
+# 18 batches (T5-35 has 4 slices, T5-36 has 6 routes, T5-40 has 4 slices, T5-42 has 5 providers)
+# =============================================================================
+
+[[batch]]
+id = "T5-35a"
+title = "Extract select_model from dispatch_agent_with"
+group = "T5"
+deps = []
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/orchestrate/mod.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/mod.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/select_model.rs",
+]
+also_read = ["crates/roko-cli/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-35b"
+title = "Extract build_prompt from dispatch_agent_with"
+group = "T5"
+deps = ["T5-35a"]
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/mod.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/build_prompt.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-35c"
+title = "Extract launch_agent from dispatch_agent_with"
+group = "T5"
+deps = ["T5-35b"]
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/mod.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/launch_agent.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-35d"
+title = "Extract record_outcome from dispatch_agent_with"
+group = "T5"
+deps = ["T5-35c"]
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/mod.rs",
+  "crates/roko-cli/src/orchestrate/dispatch/record_outcome.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-36a"
+title = "Migrate POST /api/inference/complete to ModelCallService"
+group = "T5"
+deps = []
+scope = ["crates/roko-serve/src/routes/inference.rs"]
+also_read = [
+  "crates/roko-agent/src/model_call_service.rs",
+  "crates/roko-serve/src/state.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T5-36b"
+title = "Migrate POST /api/research/complete to ModelCallService"
+group = "T5"
+deps = []
+scope = ["crates/roko-serve/src/routes/research.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-36c"
+title = "Migrate POST /api/agents/{id}/messages to ModelCallService"
+group = "T5"
+deps = []
+scope = ["crates/roko-serve/src/routes/agents.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-36d"
+title = "Migrate diagnosis routes to ModelCallService"
+group = "T5"
+deps = []
+scope = ["crates/roko-serve/src/routes/diagnosis.rs"]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-37"
+title = "Feature-gate dispatch_direct + migrate production callers"
+group = "T5"
+deps = []
+scope = [
+  "crates/roko-cli/Cargo.toml",
+  "crates/roko-cli/src/lib.rs",
+  "crates/roko-cli/src/dispatch_direct.rs",
+  "crates/roko-cli/src/chat_inline.rs",
+  "crates/roko-cli/src/unified.rs",
+  "crates/roko-chain/src/marketplace.rs",
+  "crates/roko-chain/src/identity_economy_markets.rs",
+]
+also_read = ["crates/roko-agent/src/model_call_service.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-39"
+title = "Add RunnerBudgetGuardrail to Ollama dispatch path"
+group = "T5"
+deps = []
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = [
+  "crates/roko-cli/src/runner/budget_guardrail.rs",
+  "crates/roko-cli/src/runner/task_runner.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "T5-40a"
+title = "RunLedger: gate verdicts as typed entries"
+group = "T5"
+deps = []
+scope = [
+  "crates/roko-runtime/src/run_ledger.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = ["crates/roko-gate/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-40b"
+title = "RunLedger: artifact outcomes block workflow success when invalid+required"
+group = "T5"
+deps = ["T5-40a"]
+scope = [
+  "crates/roko-runtime/src/run_ledger.rs",
+  "crates/roko-runtime/src/effect_driver.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-40c"
+title = "RunLedger: command events recorded for workflow-bound terminal sessions"
+group = "T5"
+deps = ["T5-40a"]
+scope = [
+  "crates/roko-runtime/src/run_ledger.rs",
+  "crates/roko-serve/src/terminal.rs",
+  "crates/roko-serve/src/command_events.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-40d"
+title = "RunLedger: resume + checkpoint via ledger"
+group = "T5"
+deps = ["T5-40a"]
+scope = [
+  "crates/roko-runtime/src/run_ledger.rs",
+  "crates/roko-cli/src/runner/resume.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "T5-41"
+title = "Demo automation: subscribe to typed CommandEvent (one scenario)"
+group = "T5"
+deps = []
+scope = [
+  "demo/demo-app/src/lib/terminal-events.ts",
+  "demo/demo-app/src/lib/scenario-runners/prd-pipeline.ts",
+]
+also_read = [
+  "crates/roko-serve/src/command_events.rs",
+  "demo/demo-app/src/lib/serve-url.ts",
+]
+verify = "quick"
+
+[[batch]]
+id = "T5-42a"
+title = "Anthropic provider: native structured message history"
+group = "T5"
+deps = []
+scope = ["crates/roko-agent/src/providers/anthropic.rs"]
+also_read = ["crates/roko-agent/src/translate/openai.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-42b"
+title = "Gemini provider: native contents/parts message format"
+group = "T5"
+deps = []
+scope = ["crates/roko-agent/src/providers/gemini.rs"]
+also_read = ["crates/roko-agent/src/translate/openai.rs"]
+verify = "quick"
+
+[[batch]]
+id = "T5-42c"
+title = "Ollama chat endpoint: structured messages array"
+group = "T5"
+deps = []
+scope = ["crates/roko-agent/src/providers/ollama.rs"]
+also_read = ["crates/roko-agent/src/translate/openai.rs"]
+verify = "quick"
+
+# =============================================================================
+# Group S — Subsystem cross-cutting
+# Source: implementation-plans/21-..-34-...md
+# 30+ batches across ACP, dispatch, config, ledger, learning, terminal, CI,
+# safety, gates, prompt, cognitive, persistence, codeintel, chain.
+# =============================================================================
+
+# ── S-acp: ACP protocol completion (plan 21) ──
+
+[[batch]]
+id = "S-acp-1"
+title = "Add typed validation errors to DispatchResolver (replace Unvalidated)"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-agent/src/dispatch_resolver.rs",
+  "crates/roko-agent/src/lib.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+  "crates/roko-acp/src/session.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-acp-2"
+title = "Add ACP end-to-end transcript proof test"
+group = "S"
+deps = ["S-acp-1"]
+scope = [
+  "crates/roko-acp/tests/transcript_e2e.rs",
+  "crates/roko-acp/src/lib.rs",
+]
+also_read = ["crates/roko-acp/src/session.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-acp-3"
+title = "Verify ClaudeCli vs Anthropic API identity (regression tests)"
+group = "S"
+deps = ["S-acp-1"]
+scope = [
+  "crates/roko-acp/tests/provider_identity.rs",
+  "crates/roko-acp/src/session.rs",
+  "crates/roko-acp/src/bridge_events.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-acp-4"
+title = "Rename or remove stale dispatch wrappers (run_anthropic_cognitive_task etc.)"
+group = "S"
+deps = ["S-acp-1"]
+scope = [
+  "crates/roko-acp/src/bridge_events.rs",
+  "crates/roko-acp/src/session.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-config: Config validation pipeline (plan 23) ──
+
+[[batch]]
+id = "S-config-1"
+title = "Add semantic validators (provider auth, unique slugs, gate thresholds)"
+group = "S"
+deps = []
+scope = ["crates/roko-core/src/config/validation.rs"]
+also_read = ["crates/roko-core/src/config/schema.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-config-2"
+title = "ResolvedConfig + ValidatedConfig wrappers"
+group = "S"
+deps = ["S-config-1"]
+scope = [
+  "crates/roko-core/src/config/provenance.rs",
+  "crates/roko-core/src/config/mod.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-config-3"
+title = "Migrate roko-cli callers to ValidatedConfig"
+group = "S"
+deps = ["S-config-2"]
+scope = [
+  "crates/roko-cli/src/main.rs",
+  "crates/roko-cli/src/run.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/commands/plan.rs",
+  "crates/roko-cli/src/commands/config_cmd.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-config-4"
+title = "Migrate roko-serve callers to ValidatedConfig"
+group = "S"
+deps = ["S-config-2"]
+scope = [
+  "crates/roko-serve/src/lib.rs",
+  "crates/roko-serve/src/state.rs",
+  "crates/roko-serve/src/routes/config.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-config-5"
+title = "Migrate roko-acp callers to ValidatedConfig"
+group = "S"
+deps = ["S-config-2"]
+scope = [
+  "crates/roko-acp/src/session.rs",
+  "crates/roko-acp/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-config-6"
+title = "DangerousPermissionOverride: typed local-only bypass"
+group = "S"
+deps = ["S-config-2"]
+scope = [
+  "crates/roko-core/src/config/validation.rs",
+  "crates/roko-core/src/config/local.rs",
+  "crates/roko-core/src/config/provenance.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-config-7"
+title = "roko config doctor: provenance display + validation warnings"
+group = "S"
+deps = ["S-config-2", "S-config-6"]
+scope = [
+  "crates/roko-cli/src/commands/config_cmd.rs",
+  "crates/roko-cli/src/config_cmd.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-ledger: RunLedger plumbing (plan 24) ──
+# Note: T5-40a..d already cover the slice migrations. S-ledger adds
+# fail-closed persistence and report builder rewiring.
+
+[[batch]]
+id = "S-ledger-1"
+title = "Fail-closed persistence for gate + artifact ledger writes"
+group = "S"
+deps = ["T5-40a", "T5-40b"]
+scope = [
+  "crates/roko-runtime/src/run_ledger.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-ledger-2"
+title = "Report builder reads from RunLedger (delete event-replay paths)"
+group = "S"
+deps = ["T5-40a", "T5-40b"]
+scope = [
+  "crates/roko-runtime/src/workflow_engine.rs",
+  "crates/roko-runtime/src/run_ledger.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-learn: Learning feedback completion (plan 25) ──
+
+[[batch]]
+id = "S-learn-A"
+title = "Cascade router: expose LearningStage state"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-learn/src/cascade_router.rs",
+  "crates/roko-cli/src/commands/learn.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-learn-B"
+title = "KnowledgeIngestionSink: failure budget instrumentation"
+group = "S"
+deps = ["T4-29"]
+scope = ["crates/roko-cli/src/runtime_feedback/knowledge.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-learn-C"
+title = "Episode JSONL: schema_version field + reader migration"
+group = "S"
+deps = ["T4-33"]
+scope = [
+  "crates/roko-cli/src/runtime_feedback/episodes.rs",
+  "crates/roko-learn/src/episode_logger.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-learn-D"
+title = "Resolve event_subscriber + feedback_service overlap"
+group = "S"
+deps = ["T2-17a", "T2-17b"]
+scope = [
+  "crates/roko-learn/src/event_subscriber.rs",
+  "crates/roko-learn/src/feedback_service.rs",
+  "crates/roko-learn/src/lib.rs",
+  "crates/roko-cli/src/runtime_feedback/mod.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-learn-E"
+title = "Cascade router stage-progression integration test"
+group = "S"
+deps = ["T4-30", "S-learn-A"]
+scope = [
+  "crates/roko-learn/tests/cascade_progression.rs",
+  "crates/roko-learn/src/cascade_router.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-term: Terminal demo truth (plan 26) ──
+
+[[batch]]
+id = "S-term-1"
+title = "Add /api/terminal/sessions/{id}/events typed-event WebSocket"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-serve/src/terminal.rs",
+  "crates/roko-serve/src/terminal/events_ws.rs",
+  "crates/roko-serve/src/routes/mod.rs",
+  "crates/roko-serve/src/command_events.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-term-2"
+title = "Frontend: useTerminalEvents hook + CommandEvent types"
+group = "S"
+deps = ["S-term-1"]
+scope = [
+  "demo/demo-app/src/lib/terminal-events.ts",
+  "demo/demo-app/src/hooks/useTerminal.ts",
+]
+also_read = ["crates/roko-serve/src/command_events.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-term-3"
+title = "Migrate knowledge-transfer scenario to CommandEvent"
+group = "S"
+deps = ["S-term-1", "S-term-2", "T5-41"]
+scope = ["demo/demo-app/src/lib/scenario-runners/knowledge-transfer.ts"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-term-4"
+title = "Terminal lifecycle hardening: spawn fail closes WS + cleanup ZDOTDIR"
+group = "S"
+deps = ["S-term-1"]
+scope = [
+  "crates/roko-serve/src/terminal.rs",
+  "crates/roko-serve/src/command_events.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-term-5"
+title = "Per-session auth + generation counter for reconnect safety"
+group = "S"
+deps = ["S-term-1"]
+scope = ["crates/roko-serve/src/terminal.rs"]
+also_read = []
+verify = "quick"
+
+# ── S-ci: CI fitness checks (plan 27) ──
+
+[[batch]]
+id = "S-ci-1"
+title = "Allowlist format + initial entries (scripts/fitness/allowlist.toml)"
+group = "S"
+deps = []
+scope = [
+  "scripts/fitness/allowlist.toml",
+  "scripts/roko-fitness-checks.sh",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-ci-2"
+title = "Implement allowlist-check binary in roko-tooling"
+group = "S"
+deps = ["S-ci-1"]
+scope = [
+  "crates/roko-tooling/Cargo.toml",
+  "crates/roko-tooling/src/bin/allowlist_check.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-ci-3"
+title = "Add fitness GitHub Actions workflow"
+group = "S"
+deps = ["S-ci-1", "S-ci-2"]
+scope = [".github/workflows/fitness.yml"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-ci-4"
+title = "docs-status-check: promote to no-stale-claim gate"
+group = "S"
+deps = ["S-ci-2"]
+scope = [
+  "scripts/docs-status-check.sh",
+  "scripts/fitness/docs-allowlist.toml",
+]
+also_read = []
+verify = "quick"
+
+# ── S-safety: Safety hardening (plan 28) ──
+
+[[batch]]
+id = "S-safety-1"
+title = "Audit all permissive() call sites; mark test-only"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-agent/src/safety/mod.rs",
+  "crates/roko-agent/src/safety/contract.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-safety-2"
+title = "Wire RecoveryAction into dispatch failure path"
+group = "S"
+deps = ["S-safety-1"]
+scope = [
+  "crates/roko-agent/src/safety/mod.rs",
+  "crates/roko-agent/src/safety/recovery.rs",
+  "crates/roko-agent/src/dispatch.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-safety-3"
+title = "Per-session SafetyOverlay with intersect semantics"
+group = "S"
+deps = ["S-safety-1"]
+scope = [
+  "crates/roko-agent/src/safety/mod.rs",
+  "crates/roko-agent/src/safety/overlay.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-safety-4"
+title = "ACP dispatch enforces SafetyContract (regression tests)"
+group = "S"
+deps = ["S-safety-1"]
+scope = [
+  "crates/roko-acp/tests/safety_enforcement.rs",
+  "crates/roko-acp/src/session.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-gate: Gate pipeline rungs 3, 5, 6 (plan 29) ──
+
+[[batch]]
+id = "S-gate-1"
+title = "Symbol gate (Rung 3) implementation"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-gate/src/symbol_gate.rs",
+  "crates/roko-gate/src/lib.rs",
+]
+also_read = ["crates/roko-codeintel/src/index.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-gate-2"
+title = "PropertyTest gate (Rung 5) implementation"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-gate/src/property_test_gate.rs",
+  "crates/roko-gate/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-gate-3"
+title = "Integration gate (Rung 6) implementation"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-gate/src/integration_gate.rs",
+  "crates/roko-gate/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-gate-4"
+title = "Wire gates 3/5/6 into orchestrate pipeline"
+group = "S"
+deps = ["S-gate-1", "S-gate-2", "S-gate-3"]
+scope = ["crates/roko-cli/src/orchestrate.rs"]
+also_read = []
+verify = "quick"
+
+# ── S-prompt: Prompt assembly completion (plan 30) ──
+
+[[batch]]
+id = "S-prompt-1"
+title = "Audit prompt construction sites; report inline-vs-builder usage"
+group = "S"
+deps = []
+scope = ["tmp/runners/audit-2026-05-01/logs/S-prompt-1-audit.md"]
+also_read = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/chat_inline.rs",
+  "crates/roko-acp/src/session.rs",
+  "crates/roko-cli/src/commands/research.rs",
+  "crates/roko-prompt/src/lib.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "S-prompt-2"
+title = "Migrate chat REPL to full SystemPromptBuilder"
+group = "S"
+deps = ["S-prompt-1"]
+scope = ["crates/roko-cli/src/chat_inline.rs"]
+also_read = ["crates/roko-prompt/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-prompt-3"
+title = "Re-enable HDC similarity in context layer (kill-switch default off)"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-prompt/src/context_layer.rs",
+  "crates/roko-prompt/src/lib.rs",
+  "crates/roko-core/src/config/schema.rs",
+]
+also_read = ["crates/roko-codeintel/src/index.rs"]
+verify = "quick"
+
+[[batch]]
+id = "S-prompt-4"
+title = "Centralize role prompt fragments in roko-prompt/role_text.rs"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-prompt/src/role_text.rs",
+  "crates/roko-prompt/src/lib.rs",
+  "crates/roko-prompt/assets/role/implementer.md",
+  "crates/roko-prompt/assets/role/reviewer.md",
+  "crates/roko-prompt/assets/role/researcher.md",
+]
+also_read = []
+verify = "quick"
+
+# ── S-cog: Cognitive layer cleanup (plan 31) ──
+
+[[batch]]
+id = "S-cog-1"
+title = "Inventory pheromone + daimon callers; produce deletion plan"
+group = "S"
+deps = []
+scope = ["tmp/runners/audit-2026-05-01/logs/S-cog-1-inventory.md"]
+also_read = [
+  "crates/roko-cognitive/Cargo.toml",
+  "crates/roko-daimon/Cargo.toml",
+]
+verify = "quick"
+
+[[batch]]
+id = "S-cog-2"
+title = "Implement FailureTracker in roko-learn"
+group = "S"
+deps = ["S-cog-1"]
+scope = [
+  "crates/roko-learn/src/failure_tracker.rs",
+  "crates/roko-learn/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-cog-3"
+title = "Migrate daimon callers to FailureTracker"
+group = "S"
+deps = ["S-cog-2"]
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/runner/event_loop.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-cog-4"
+title = "Delete daimon crate"
+group = "S"
+deps = ["S-cog-3"]
+scope = [
+  "crates/roko-daimon/",
+  "Cargo.toml",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-cog-5"
+title = "Delete pheromones crate / modules"
+group = "S"
+deps = ["S-cog-1"]
+scope = [
+  "crates/roko-cognitive/",
+  "Cargo.toml",
+]
+also_read = []
+verify = "quick"
+
+# ── S-http: HTTP / persistence followups (plan 32) ──
+
+[[batch]]
+id = "S-http-1"
+title = "Audit + consolidate atomic write helpers"
+group = "S"
+deps = []
+scope = [
+  "crates/roko-runtime/src/persistence.rs",
+  "crates/roko-fs/src/atomic.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-http-2"
+title = "AtomicWriteSet for transactional multi-file writes"
+group = "S"
+deps = ["S-http-1"]
+scope = [
+  "crates/roko-runtime/src/persistence.rs",
+  "crates/roko-fs/src/atomic.rs",
+]
+also_read = []
+verify = "quick"
+
+# ── S-codeintel: Code intelligence followups (plan 33) ──
+
+[[batch]]
+id = "S-codeintel-1"
+title = "Persist symbol index to .roko/index/"
+group = "S"
+deps = []
+scope = ["crates/roko-codeintel/src/index.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "S-codeintel-2"
+title = "Incremental index updates by file fingerprint"
+group = "S"
+deps = ["S-codeintel-1"]
+scope = ["crates/roko-codeintel/src/index.rs"]
+also_read = []
+verify = "quick"
+
+# ── S-chain: Chain / deploy cleanup (plan 34) ──
+
+[[batch]]
+id = "S-chain-1"
+title = "Inventory dormant chain modules; identify deletion candidates"
+group = "S"
+deps = []
+scope = ["tmp/runners/audit-2026-05-01/logs/S-chain-1-inventory.md"]
+also_read = [
+  "crates/roko-chain/src/lib.rs",
+  "crates/roko-chain/src/marketplace.rs",
+  "crates/roko-chain/src/identity_economy_markets.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "S-chain-2"
+title = "Add contracts/broadcast/**/run-*.json to .gitignore"
+group = "S"
+deps = []
+scope = [".gitignore"]
+also_read = []
+verify = "quick"

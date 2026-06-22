@@ -1,0 +1,23 @@
+# Pre-seeded "already done" list.
+# Format:  BATCH_ID  free-form note
+# Run:     python3 bin/preseed-tracker.py preseed.txt --apply
+#
+# These map source-task numbers in tmp/solutions/roko/tasks/ to commits that
+# already shipped them in earlier runners (mega-parity, post-parity) before
+# this runner existed. Add to this list as you verify more items.
+#
+# IMPORTANT: every entry below was verified against the git log on 2026-05-01.
+# If you re-verify and an item is actually still open, REMOVE its entry and
+# re-run preseed (or hand-flip the [x] back to [ ]).
+
+# --- verified shipped (commit hashes given in note) ---
+STAB_32   shipped in post-parity(PG_02) commit 152a7e09 — model "-" -> "unknown" in TUI
+STAB_34   shipped in post-parity(PG_*) — efficiency_events drain
+
+# (Do not use wildcards like PERF_* — list each BATCH_ID explicitly after you verify it.)
+
+# --- candidates that need verification (NOT applied — uncomment and verify) ---
+# STAB_02  POST /runs/{id}/share already inside auth (per dogfood STATE-OF-THE-WORLD.md)
+# STAB_04  scrub_share_text already implemented (per source task 1.04 status reassessment)
+# STAB_07  STILL OPEN — `unreachable!()` confirmed at config_cmd.rs:213 on 2026-05-01
+# STAB_03  STILL OPEN — deploy commands do not auto-provision API key

@@ -1,0 +1,831 @@
+# =============================================================================
+# ux-impl — batches.toml
+# =============================================================================
+# 61 Codex-driven batches across 8 waves (M, AG, CH, TU, MC, FG, BP, HY).
+# Manual tracks (DB, DC, RH, PH) live under manual-tracks/ and are NOT here.
+#
+# Source: tmp/ux/implementation-plans/{01..12}-*.md
+# Tracker: tmp/runners/ux-impl/ISSUE-TRACKER.md
+#
+# Field reference (see tmp/runners/parallel-template/README.md):
+#   id        — unique batch id
+#   title     — human-readable description
+#   group     — wave letter (M / AG / CH / ...)
+#   deps      — list of batch ids that must succeed first
+#   scope     — files this batch may MODIFY (live content injected)
+#   also_read — files this batch READS for context (not modified)
+#   verify    — "quick" (per-crate check + AP grep) or "full"
+# =============================================================================
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE M — MIRAGE EXTRACTION (plan 01)
+# Drives apps/mirage-rs from "EVM substrate + dashboard backend" to "EVM only".
+# Precondition: Wave AG and Wave DB must be merged before M04.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "M01"
+title = "Audit no live consumers depend on mirage REST routes"
+group = "M"
+deps = []
+scope = ["docs/v2/MIRAGE-CONSUMER-AUDIT.md"]
+also_read = [
+  "apps/mirage-rs/src/http_api/mod.rs",
+  "demo/demo-app/src/lib/serve-url.ts",
+  "crates/roko-serve/src/routes/aggregator.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "M02"
+title = "Drop chain → dashboard-api implication in mirage Cargo.toml"
+group = "M"
+deps = ["M01"]
+scope = ["apps/mirage-rs/Cargo.toml"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "M03"
+title = "Add slim http_health.rs with /health and /stats only"
+group = "M"
+deps = ["M02"]
+scope = ["apps/mirage-rs/src/http_health.rs", "apps/mirage-rs/src/main.rs", "apps/mirage-rs/src/lib.rs"]
+also_read = ["apps/mirage-rs/src/http_api/mod.rs"]
+verify = "quick"
+
+[[batch]]
+id = "M04"
+title = "Delete chain/, http_api/, roko_bridge/ modules + Cargo cleanup"
+group = "M"
+deps = ["M03"]
+scope = [
+  "apps/mirage-rs/Cargo.toml",
+  "apps/mirage-rs/src/lib.rs",
+  "apps/mirage-rs/src/main.rs",
+]
+also_read = ["apps/mirage-rs/src/http_health.rs"]
+verify = "full"
+
+[[batch]]
+id = "M05"
+title = "Drop chain_* JSON-RPC methods from rpc.rs (keep mirage_*)"
+group = "M"
+deps = ["M04"]
+scope = ["apps/mirage-rs/src/rpc.rs"]
+also_read = ["apps/mirage-rs/src/lib.rs"]
+verify = "quick"
+
+[[batch]]
+id = "M06"
+title = "Rewire scenario.rs if it still touches ChainContext"
+group = "M"
+deps = ["M04", "M05"]
+scope = ["apps/mirage-rs/src/scenario.rs"]
+also_read = ["apps/mirage-rs/src/replay.rs", "apps/mirage-rs/src/fork.rs"]
+verify = "quick"
+
+[[batch]]
+id = "M07"
+title = "Update README, CLAUDE.md, close plan 01"
+group = "M"
+deps = ["M04", "M05", "M06"]
+scope = [
+  "apps/mirage-rs/README.md",
+  "CLAUDE.md",
+  "tmp/ux/02-mirage-extraction.md",
+]
+also_read = ["apps/mirage-rs/Cargo.toml"]
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE AG — AGGREGATOR BACKENDS (plan 02)
+# Wire chain-backed knowledge + new pheromone surface so Wave DB unblocks.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "AG01"
+title = "Capture legacy mirage-rs response fixtures (golden)"
+group = "AG"
+deps = []
+scope = [
+  "tmp/runners/ux-impl/fixtures/knowledge-entries.json",
+  "tmp/runners/ux-impl/fixtures/knowledge-kinds.json",
+  "tmp/runners/ux-impl/fixtures/pheromones.json",
+  "tmp/runners/ux-impl/fixtures/pheromones-topology.json",
+  "tmp/runners/ux-impl/fixtures/README.md",
+]
+also_read = [
+  "apps/mirage-rs/src/http_api/knowledge.rs",
+  "apps/mirage-rs/src/http_api/pheromone.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "AG02"
+title = "InsightBoardReader in roko-chain (read-only via alloy::sol!)"
+group = "AG"
+deps = []
+scope = [
+  "crates/roko-chain/src/insight_board.rs",
+  "crates/roko-chain/src/lib.rs",
+]
+also_read = [
+  "crates/roko-chain/src/marketplace.rs",
+  "contracts/src/InsightBoard.sol",
+]
+verify = "quick"
+
+[[batch]]
+id = "AG03"
+title = "AgentCardFetcher (HTTP / IPFS / data-URI) in roko-chain"
+group = "AG"
+deps = []
+scope = [
+  "crates/roko-chain/src/agent_card_fetcher.rs",
+  "crates/roko-chain/src/lib.rs",
+]
+also_read = ["crates/roko-agent-server/src/registration.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AG04"
+title = "KnowledgeSource enum on AppState (Local / Chain / Hybrid)"
+group = "AG"
+deps = ["AG02", "AG03"]
+scope = ["crates/roko-serve/src/state.rs"]
+also_read = [
+  "crates/roko-chain/src/insight_board.rs",
+  "crates/roko-chain/src/agent_card_fetcher.rs",
+  "crates/roko-neuro/src/knowledge_store.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "AG05"
+title = "Replace knowledge handlers in aggregator with KnowledgeSource"
+group = "AG"
+deps = ["AG04", "AG01"]
+scope = ["crates/roko-serve/src/routes/aggregator.rs"]
+also_read = [
+  "crates/roko-serve/src/state.rs",
+  "tmp/runners/ux-impl/fixtures/knowledge-entries.json",
+  "tmp/runners/ux-impl/fixtures/knowledge-kinds.json",
+]
+verify = "quick"
+
+[[batch]]
+id = "AG06"
+title = "PheromoneField module + JSONL persistence + decay tick"
+group = "AG"
+deps = []
+scope = [
+  "crates/roko-serve/src/pheromone.rs",
+  "crates/roko-serve/src/lib.rs",
+]
+also_read = ["apps/mirage-rs/src/chain/pheromone.rs", "apps/mirage-rs/src/http_api/pheromone.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AG07"
+title = "Add /api/pheromones/* routes to aggregator"
+group = "AG"
+deps = ["AG06", "AG01"]
+scope = ["crates/roko-serve/src/routes/aggregator.rs"]
+also_read = [
+  "crates/roko-serve/src/pheromone.rs",
+  "tmp/runners/ux-impl/fixtures/pheromones.json",
+  "tmp/runners/ux-impl/fixtures/pheromones-topology.json",
+]
+verify = "quick"
+
+[[batch]]
+id = "AG08"
+title = "Subscribe to InsightBoard events and invalidate aggregator cache"
+group = "AG"
+deps = ["AG02", "AG05"]
+scope = ["crates/roko-serve/src/lib.rs", "crates/roko-serve/src/state.rs"]
+also_read = ["crates/roko-chain/src/insight_board.rs"]
+verify = "quick"
+
+[[batch]]
+id = "AG09"
+title = "Compat regression tests vs captured fixtures"
+group = "AG"
+deps = ["AG05", "AG07"]
+scope = [
+  "crates/roko-serve/tests/knowledge_compat.rs",
+  "crates/roko-serve/tests/pheromone_compat.rs",
+]
+also_read = [
+  "tmp/runners/ux-impl/fixtures/knowledge-entries.json",
+  "tmp/runners/ux-impl/fixtures/knowledge-kinds.json",
+  "tmp/runners/ux-impl/fixtures/pheromones.json",
+  "tmp/runners/ux-impl/fixtures/pheromones-topology.json",
+  "crates/roko-serve/src/routes/aggregator.rs",
+]
+verify = "full"
+
+[[batch]]
+id = "AG10"
+title = "Update OpenAPI tags + CLAUDE.md + close plan 02 / plan 04 dashboard rows"
+group = "AG"
+deps = ["AG07", "AG09"]
+scope = [
+  "crates/roko-serve/src/openapi.rs",
+  "CLAUDE.md",
+  "tmp/ux/04-dashboard-migration.md",
+]
+also_read = ["crates/roko-serve/src/routes/aggregator.rs"]
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE CH — ERC-8004 CHAIN DISCOVERY (plan 04)
+# Capability bitmask bit 15 + "roko" domain tag + chain enumeration.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "CH01"
+title = "Add updateAgentCard(uint256,string,uint64) + capabilityMask to IdentityRegistry.sol"
+group = "CH"
+deps = []
+scope = [
+  "contracts/src/IdentityRegistry.sol",
+  "contracts/test/IdentityRegistry.t.sol",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "CH02"
+title = "IdentityRegistryReader in roko-chain (enumerate, get, watch)"
+group = "CH"
+deps = ["CH01"]
+scope = [
+  "crates/roko-chain/src/identity_registry.rs",
+  "crates/roko-chain/src/lib.rs",
+]
+also_read = [
+  "crates/roko-chain/src/marketplace.rs",
+  "contracts/src/IdentityRegistry.sol",
+]
+verify = "quick"
+
+[[batch]]
+id = "CH03"
+title = "roko-core::capability_bits constants"
+group = "CH"
+deps = []
+scope = [
+  "crates/roko-core/src/capability_bits.rs",
+  "crates/roko-core/src/lib.rs",
+]
+also_read = ["crates/roko-agent-server/src/state.rs"]
+verify = "quick"
+
+[[batch]]
+id = "CH04"
+title = "Agent-server registration uses v2 selector + sets bit 15"
+group = "CH"
+deps = ["CH01", "CH03"]
+scope = ["crates/roko-agent-server/src/registration.rs"]
+also_read = [
+  "crates/roko-agent-server/src/state.rs",
+  "crates/roko-core/src/capability_bits.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "CH05"
+title = "Aggregator known_agents() merges chain + local registry (chain wins)"
+group = "CH"
+deps = ["CH02", "CH03", "AG03"]
+scope = [
+  "crates/roko-serve/src/routes/aggregator.rs",
+  "crates/roko-serve/src/state.rs",
+]
+also_read = [
+  "crates/roko-chain/src/identity_registry.rs",
+  "crates/roko-chain/src/agent_card_fetcher.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "CH06"
+title = "Bearer-protected GET /api/agents/discover-chain debug route"
+group = "CH"
+deps = ["CH05"]
+scope = ["crates/roko-serve/src/routes/aggregator.rs"]
+also_read = ["crates/roko-serve/src/state.rs"]
+verify = "quick"
+
+[[batch]]
+id = "CH07"
+title = "Demo bootstrap: 5 chain-registered Roko passports"
+group = "CH"
+deps = ["CH01", "CH04"]
+scope = [
+  "crates/roko-demo/src/scenarios/bootstrap_passports.rs",
+  "crates/roko-demo/src/scenarios/mod.rs",
+  "crates/roko-demo/src/lib.rs",
+]
+also_read = [
+  "crates/roko-demo/src/bindings.rs",
+  "contracts/src/IdentityRegistry.sol",
+]
+verify = "quick"
+
+[[batch]]
+id = "CH09"
+title = "docs/v2/chain-discovery.md + close plans 03 + 06"
+group = "CH"
+deps = ["CH04", "CH05", "CH07"]
+scope = [
+  "docs/v2/chain-discovery.md",
+  "CLAUDE.md",
+  "tmp/ux/03-auth-and-discovery.md",
+  "tmp/ux/06-open-questions.md",
+]
+also_read = []
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE TU — TUI EVENT PARITY (plan 05)
+# Items 70-78 from tmp/ux/ux-followup/12-tui-event-parity.md.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "TU01"
+title = "Learning trio (experiments, gate-thresholds, cascade) via IncrementalTailer / fs_watch"
+group = "TU"
+deps = []
+scope = ["crates/roko-cli/src/tui/dashboard.rs"]
+also_read = [
+  "crates/roko-cli/src/tui/jsonl_tailer.rs",
+  "crates/roko-cli/src/tui/fs_watch.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "TU02"
+title = "Episode log incremental tail with bounded ring buffer"
+group = "TU"
+deps = []
+scope = ["crates/roko-cli/src/tui/dashboard.rs"]
+also_read = [
+  "crates/roko-cli/src/tui/jsonl_tailer.rs",
+  "crates/roko-learn/src/episode_logger.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "TU03"
+title = "Gate signals incremental tail with reducer-style aggregation"
+group = "TU"
+deps = []
+scope = ["crates/roko-cli/src/tui/dashboard.rs"]
+also_read = ["crates/roko-cli/src/tui/jsonl_tailer.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TU04"
+title = "Task outputs watched per-file via fs_watch (cap 20 concurrent)"
+group = "TU"
+deps = []
+scope = [
+  "crates/roko-cli/src/tui/dashboard.rs",
+  "crates/roko-cli/src/tui/task_outputs.rs",
+]
+also_read = ["crates/roko-cli/src/tui/fs_watch.rs"]
+verify = "quick"
+
+[[batch]]
+id = "TU05"
+title = "Event log incremental tail (Option B: JsonArrayTailer)"
+group = "TU"
+deps = []
+scope = [
+  "crates/roko-cli/src/tui/dashboard.rs",
+  "crates/roko-cli/src/tui/json_array_tailer.rs",
+  "crates/roko-cli/src/tui/mod.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/event_bus.rs",
+  "crates/roko-cli/src/tui/jsonl_cursor.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "TU06"
+title = "Persist generation counter to .roko/state/dashboard-gen.json"
+group = "TU"
+deps = []
+scope = [
+  "crates/roko-cli/src/tui/dashboard_gen_persist.rs",
+  "crates/roko-cli/src/tui/dashboard.rs",
+  "crates/roko-cli/src/tui/mod.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "TU07"
+title = "Agent panel WS multiplex via aggregator /api/ws"
+group = "TU"
+deps = ["TU01"]
+scope = [
+  "crates/roko-cli/src/tui/agent_streams.rs",
+  "crates/roko-cli/src/tui/views/agents_view.rs",
+  "crates/roko-cli/src/tui/state.rs",
+  "crates/roko-cli/src/tui/mod.rs",
+]
+also_read = [
+  "crates/roko-cli/src/tui/ws_client.rs",
+  "crates/roko-serve/src/routes/aggregator.rs",
+]
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE MC — MCP COVERAGE AUDIT (plan 06)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "MC01"
+title = "Symbol + call-site + handshake audit; produce MCP-AUDIT.md"
+group = "MC"
+deps = []
+scope = ["docs/v2/MCP-AUDIT.md"]
+also_read = [
+  "crates/roko-mcp-code/src/lib.rs",
+  "crates/roko-mcp-github/src/lib.rs",
+  "crates/roko-mcp-slack/src/lib.rs",
+  "crates/roko-mcp-scripts/src/lib.rs",
+  "crates/roko-mcp-stdio/src/lib.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "MC02"
+title = "Bucket decision per crate; record in MCP-AUDIT.md"
+group = "MC"
+deps = ["MC01"]
+scope = ["docs/v2/MCP-AUDIT.md"]
+also_read = [
+  "crates/roko-mcp-code/Cargo.toml",
+  "crates/roko-mcp-github/Cargo.toml",
+  "crates/roko-mcp-slack/Cargo.toml",
+  "crates/roko-mcp-scripts/Cargo.toml",
+  "crates/roko-mcp-stdio/Cargo.toml",
+]
+verify = "quick"
+
+[[batch]]
+id = "MC03"
+title = "Integration test scaffolding for shipped-default MCP crates"
+group = "MC"
+deps = ["MC02"]
+scope = [
+  "crates/roko-mcp-code/tests/integration.rs",
+  "crates/roko-mcp-github/tests/integration.rs",
+  "crates/roko-mcp-slack/tests/integration.rs",
+  "crates/roko-mcp-scripts/tests/integration.rs",
+]
+also_read = ["docs/v2/MCP-AUDIT.md"]
+verify = "full"
+
+[[batch]]
+id = "MC04"
+title = "Update roko.toml.example + docs/v2/MCP-INTEGRATION.md"
+group = "MC"
+deps = ["MC02"]
+scope = [
+  "roko.toml.example",
+  "docs/v2/MCP-INTEGRATION.md",
+]
+also_read = ["docs/v2/MCP-AUDIT.md"]
+verify = "quick"
+
+[[batch]]
+id = "MC05"
+title = "CLAUDE.md Key crates rows reflect MCP buckets"
+group = "MC"
+deps = ["MC04"]
+scope = ["CLAUDE.md"]
+also_read = ["docs/v2/MCP-AUDIT.md"]
+verify = "quick"
+
+[[batch]]
+id = "MC06"
+title = "Close followup item 34"
+group = "MC"
+deps = ["MC03", "MC05"]
+scope = ["tmp/ux/ux-followup/05-partially-wired-subsystems.md"]
+also_read = []
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE FG — PHASE-2 FEATURE GATING (plan 07)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "FG01"
+title = "Add default-members to root Cargo.toml; sanity-check builds"
+group = "FG"
+deps = []
+scope = ["Cargo.toml"]
+also_read = [
+  "crates/roko-dreams/Cargo.toml",
+  "crates/roko-daimon/Cargo.toml",
+  "crates/roko-plugin/Cargo.toml",
+]
+verify = "full"
+
+[[batch]]
+id = "FG02"
+title = "Weekly phase2-build CI workflow"
+group = "FG"
+deps = ["FG01"]
+scope = [".github/workflows/phase2-build.yml"]
+also_read = ["Cargo.toml"]
+verify = "quick"
+
+[[batch]]
+id = "FG03"
+title = "roko-plugin audit + decision (gate / delete / promote)"
+group = "FG"
+deps = []
+scope = [
+  "crates/roko-plugin/Cargo.toml",
+  "crates/roko-plugin/README.md",
+  "tmp/ux/ux-followup/08-phase-2-vision.md",
+]
+also_read = [
+  "crates/roko-plugin/src/lib.rs",
+  "Cargo.toml",
+]
+verify = "quick"
+
+[[batch]]
+id = "FG04"
+title = "CLAUDE.md Default-built column + docs/v2/WORKSPACE.md"
+group = "FG"
+deps = ["FG01"]
+scope = ["CLAUDE.md", "docs/v2/WORKSPACE.md"]
+also_read = ["Cargo.toml"]
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE BP — AGENT BACKEND PARITY (plan 08)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "BP01"
+title = "parity_kit.rs test helper module"
+group = "BP"
+deps = []
+scope = [
+  "crates/roko-agent/tests/_helpers/mod.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+also_read = [
+  "crates/roko-agent/src/tool_loop/mod.rs",
+  "crates/roko-agent/src/dispatcher/mod.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP02"
+title = "Rewrite Claude tests through parity_kit (golden reference)"
+group = "BP"
+deps = ["BP01"]
+scope = [
+  "crates/roko-agent/tests/claude_parity.rs",
+]
+also_read = [
+  "crates/roko-agent/src/claude_agent.rs",
+  "crates/roko-agent/src/claude_cli_agent.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP03"
+title = "Codex 10-turn conformance harness + fixture"
+group = "BP"
+deps = ["BP01"]
+scope = [
+  "crates/roko-agent/tests/codex_conformance.rs",
+  "crates/roko-agent/tests/fixtures/codex_session_v1.json",
+  "crates/roko-agent/tests/fixtures/codex-version.txt",
+]
+also_read = ["crates/roko-agent/src/codex_agent.rs"]
+verify = "quick"
+
+[[batch]]
+id = "BP04"
+title = "Cursor send_turn_streaming parity test"
+group = "BP"
+deps = ["BP01"]
+scope = [
+  "crates/roko-agent/src/cursor_agent.rs",
+  "crates/roko-agent/tests/cursor_parity.rs",
+]
+also_read = [
+  "crates/roko-agent/src/claude_agent.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP05"
+title = "Gemini parity tests"
+group = "BP"
+deps = ["BP01"]
+scope = ["crates/roko-agent/tests/gemini_parity.rs"]
+also_read = [
+  "crates/roko-agent/src/gemini/native.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP06"
+title = "Perplexity parity tests"
+group = "BP"
+deps = ["BP01"]
+scope = ["crates/roko-agent/tests/perplexity_parity.rs"]
+also_read = [
+  "crates/roko-agent/src/perplexity/chat.rs",
+  "crates/roko-agent/src/perplexity/tool_loop.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP07"
+title = "Ollama parity tests"
+group = "BP"
+deps = ["BP01"]
+scope = ["crates/roko-agent/tests/ollama_parity.rs"]
+also_read = [
+  "crates/roko-agent/src/ollama_agent.rs",
+  "crates/roko-agent/src/ollama_backend.rs",
+  "crates/roko-agent/tests/_helpers/parity_kit.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "BP08"
+title = "ExecAgent / ClaudeCliAgent consolidation (Option A)"
+group = "BP"
+deps = ["BP02"]
+scope = [
+  "crates/roko-agent/src/cli_agent.rs",
+  "crates/roko-agent/src/exec.rs",
+  "crates/roko-agent/src/claude_cli_agent.rs",
+  "crates/roko-agent/src/lib.rs",
+]
+also_read = []
+verify = "full"
+
+[[batch]]
+id = "BP09"
+title = "File-layout: Gemini + Ollama → single file; Perplexity directory cleanup"
+group = "BP"
+deps = ["BP05", "BP06", "BP07"]
+scope = [
+  "crates/roko-agent/src/gemini.rs",
+  "crates/roko-agent/src/ollama.rs",
+  "crates/roko-agent/src/perplexity/mod.rs",
+  "crates/roko-agent/src/lib.rs",
+]
+also_read = [
+  "crates/roko-agent/src/gemini/native.rs",
+  "crates/roko-agent/src/ollama_agent.rs",
+  "crates/roko-agent/src/ollama_backend.rs",
+]
+verify = "full"
+
+[[batch]]
+id = "BP10"
+title = "Cascade router integration test against mock dispatcher"
+group = "BP"
+deps = ["BP01"]
+scope = ["crates/roko-learn/tests/cascade_router_integration.rs"]
+also_read = [
+  "crates/roko-learn/src/cascade_router.rs",
+  "crates/roko-std/src/mock.rs",
+]
+verify = "full"
+
+[[batch]]
+id = "BP11"
+title = "docs/v2/AGENT-BACKENDS.md coverage table + CLAUDE.md rows"
+group = "BP"
+deps = ["BP02", "BP03", "BP04", "BP05", "BP06", "BP07", "BP10"]
+scope = [
+  "docs/v2/AGENT-BACKENDS.md",
+  "CLAUDE.md",
+  "tmp/ux/ux-followup/06-advanced-agent-backends.md",
+  "tmp/ux/ux-followup/09-hygiene-and-test-coverage.md",
+]
+also_read = []
+verify = "quick"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WAVE HY — HYGIENE + TEST COVERAGE (plan 10)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[[batch]]
+id = "HY01"
+title = "SystemPromptBuilder snapshot tests (one per role)"
+group = "HY"
+deps = []
+scope = [
+  "crates/roko-compose/tests/system_prompt_snapshots.rs",
+  "crates/roko-compose/Cargo.toml",
+]
+also_read = [
+  "crates/roko-compose/src/system_prompt_builder.rs",
+  "crates/roko-core/src/config/schema.rs",
+]
+verify = "quick"
+
+[[batch]]
+id = "HY02"
+title = "6-layer-presence assertion across all roles"
+group = "HY"
+deps = ["HY01"]
+scope = ["crates/roko-compose/tests/system_prompt_snapshots.rs"]
+also_read = ["crates/roko-compose/src/system_prompt_builder.rs"]
+verify = "quick"
+
+[[batch]]
+id = "HY03"
+title = "Fill # Errors / # Panics in roko-core, roko-runtime; remove crate allow"
+group = "HY"
+deps = []
+scope = [
+  "crates/roko-core/src/lib.rs",
+  "crates/roko-runtime/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "HY04"
+title = "Same for roko-gate, roko-compose"
+group = "HY"
+deps = []
+scope = [
+  "crates/roko-gate/src/lib.rs",
+  "crates/roko-compose/src/lib.rs",
+]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "HY05"
+title = "Flaky-timeout audit + fix (mock time / CI scaling)"
+group = "HY"
+deps = []
+scope = ["crates/roko-agent/src/exec.rs"]
+also_read = []
+verify = "quick"
+
+[[batch]]
+id = "HY06"
+title = "Per-gate timeline rendered in TUI Gate tab"
+group = "HY"
+deps = []
+scope = [
+  "crates/roko-cli/src/tui/views/dashboard_view.rs",
+  "crates/roko-cli/src/tui/verdicts.rs",
+]
+also_read = ["crates/roko-cli/src/tui/state.rs"]
+verify = "quick"
+
+[[batch]]
+id = "HY07"
+title = "Smoke test: learning loop with MockDispatcher"
+group = "HY"
+deps = []
+scope = ["crates/roko-cli/tests/smoke_learning_loop.rs"]
+also_read = [
+  "crates/roko-learn/src/cascade_router.rs",
+  "crates/roko-learn/src/episode_logger.rs",
+]
+verify = "full"
+
+[[batch]]
+id = "HY08"
+title = "Smoke test: TUI event responsiveness"
+group = "HY"
+deps = []
+scope = ["crates/roko-cli/tests/smoke_tui.rs"]
+also_read = [
+  "crates/roko-cli/src/tui/app.rs",
+  "crates/roko-cli/src/tui/state.rs",
+  "crates/roko-runtime/src/event_bus.rs",
+]
+verify = "full"

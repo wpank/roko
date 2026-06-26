@@ -1,0 +1,7 @@
+crates/roko-cli/src/commands/init.rs
+crates/roko-cli/src/commands/learn.rs
+crates/roko-cli/src/commands/mod.rs
+crates/roko-cli/src/commands/plan.rs
+crates/roko-cli/src/commands/status.rs
+crates/roko-cli/src/commands/util.rs
+crates/roko-cli/src/main.rs

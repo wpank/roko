@@ -1,0 +1,3 @@
+crates/roko-cli/src/plan_generate.rs
+crates/roko-cli/src/plan_validate.rs
+crates/roko-cli/tests/plan_validate.rs

@@ -1,0 +1,4 @@
+demo/demo-app/src/components/GateWaterfall.tsx
+demo/demo-app/src/hooks/useApiWithFallback.ts
+demo/demo-app/src/lib/demo-data.ts
+demo/demo-app/src/pages/dashboard/ChainView.tsx

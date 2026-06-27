@@ -1,0 +1,5 @@
+crates/roko-cli/src/chat.rs
+crates/roko-cli/src/chat_history.rs
+crates/roko-cli/src/commands/agent.rs
+crates/roko-cli/src/lib.rs
+crates/roko-cli/src/main.rs

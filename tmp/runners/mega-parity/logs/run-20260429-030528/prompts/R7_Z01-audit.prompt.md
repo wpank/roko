@@ -1,0 +1,186 @@
+# AUDIT: Batch R7_Z01 — Document Mori UX behaviors to match
+
+Run: run-20260429-030528 | Phase: AUDIT | Model: codex-5.5
+
+## Your Role
+
+You are an **auditor**. A fast implementation agent just completed batch `R7_Z01`.
+Your job is to verify correctness and fix any issues — do NOT rewrite from scratch.
+
+## Audit Checklist
+
+1. **Compiles:** `cargo check -p <crate>` for each crate touched by this batch
+2. **Clippy clean:** `cargo clippy -p <crate> --no-deps -- -D warnings`
+3. **Prompt compliance:** Compare the implementation against the original prompt below
+4. **No regressions:** Changed files don't break existing functionality
+5. **Anti-patterns:** No stubs that silently pass, no inline prompts, no raw CLI spawns
+6. **Correct types:** Field names, method signatures, and imports match the actual codebase
+7. **Tests pass:** If the prompt required tests, verify they pass
+
+## If You Find Issues
+
+Fix them directly in the files. Then run the verification commands from the prompt.
+If you cannot fix an issue, leave a comment in the file explaining why.
+
+## Scope
+
+Only touch files in the batch's write scope. Do NOT refactor unrelated code.
+
+---
+
+## Original Implementation Prompt
+
+## Task
+Document Mori UX behaviors to match
+
+## Runner Context
+You are working in runner `mega-parity`, batch R7_Z01.
+This batch is part of Runner 7: mori-polish — Complete remaining Mori-like UX polish after core contracts stable.
+
+## Problem
+Roko's CLI UX lacks several behaviors from Mori that users expect. This is a read-only audit task. Produce a catalog of what Mori does that Roko does not, prioritized by user impact, mapped to Runner 7 batches.
+
+## Architecture Contract
+- Polish on top of contracts
+- Demo data labeled
+- API through adapters
+- Truth before appearance
+
+## Changes Required
+This is a context-only audit batch. No code changes.
+
+## Step 1: Verify files exist
+
+```bash
+ls /Users/will/dev/uniswap/bardo/apps/mori/src/agent/connection.rs
+ls /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs
+```
+
+## Step 2: Read Mori's agent spawn and slash commands
+
+Read `/Users/will/dev/uniswap/bardo/apps/mori/src/agent/connection.rs` lines 2444–2622.
+
+Key behaviors to document from Mori:
+- How Mori spawns `claude` with tool restrictions by role (lines 2483–2536)
+- How Mori discovers MCP config (lines 2542–2572): walks up from `working_dir` looking for `.mori/mcp-config.local.json` and `.mori/mcp-config.json`
+- How Mori handles `--resume` with `current_session_id` (line 2574)
+
+## Step 3: Read roko's SLASH_COMMANDS const (lines 58–112 of chat_inline.rs)
+
+```bash
+grep -n '"/tools"\|"/mcp"\|"/context"\|"/history"\|SLASH_COMMANDS' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs | head -30
+```
+
+The const is at lines 58–112. Established facts from reading the file:
+- `/tools` — does NOT exist in SLASH_COMMANDS or handle_slash_command
+- `/mcp` — does NOT exist in SLASH_COMMANDS or handle_slash_command
+- `/context` (line 2015–2027): shows token usage bar ONLY — does NOT show model, system prompt, session ID, or tool list
+- `/history` (line 2029–2063): shows `session.input.history` (typed input, last 20) — does NOT show conversation turns
+- `/stats` (line 1960): shows elapsed time, turns, total cost — this already covers cost summary
+
+## Step 4: Read tool rendering state
+
+```bash
+grep -n 'push_tool_outputs\|ToolCallBlock\|tool_outputs\|ToolOutput' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs | head -20
+
+grep -n 'ToolOutput\|tool_outputs\|tool_name' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch_direct.rs | head -20
+```
+
+Established facts:
+- `push_tool_outputs` function EXISTS at line 3723 of chat_inline.rs
+- It renders tool outputs after turn completion (called at lines 1109 and 1356)
+- It uses `ToolOutput.tool_name` and `ToolOutput.content` (first-line preview)
+- BUT: `push_tool_outputs` fires AFTER the turn completes — no live tool-start/tool-end events during streaming
+- `ToolCallBlock` in `crates/roko-cli/src/inline/primitives/tool_call.rs` exists with `from_start()` and `set_result()` but is NOT called from `chat_inline.rs`
+
+## Step 5: Read per-turn cost state
+
+```bash
+grep -n 'record_run\|eprintln\|stderr\|per.turn\|turn_count' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs | head -20
+```
+
+Established facts:
+- `session.cost.record_run()` is called at lines 1123–1129 and 1370–1376 after each turn
+- No `eprintln!` or stderr line is printed after each turn — the cost info is silent
+- `/stats` (line 1960) and `/cost` commands show cumulative cost on-demand
+- There is NO per-turn cost line in the current implementation
+
+## Step 6: Output your catalog
+
+Produce a structured catalog with this exact format for each item:
+
+```
+### [BEHAVIOR NAME]
+Mori: [what mori does, file:line]
+Roko current: [what roko does or doesn't do, file:line]
+Gap: [specific gap description]
+Runner 7 batch: [R7_Axx or R7_Bxx]
+Priority: [daily | occasional | rare]
+```
+
+Required catalog entries (minimum):
+
+1. `/tools` command — list available tools
+2. `/mcp` command — show MCP config status
+3. `/context` command — show full session context (model, system prompt, session ID, tools, MCP)
+4. `/history` command — show conversation turns (not just typed input)
+5. Tool call display during turns — live start/end events
+6. Per-turn cost/token summary line after each assistant turn
+
+## Write Scope (files you may modify)
+- None. This is a read-only audit. Output your findings as analysis text only.
+
+## Read-Only Context (do not modify these)
+- `/Users/will/dev/uniswap/bardo/apps/mori/src/agent/connection.rs` lines 2444–2622
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs` — current roko chat (43K lines)
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/dispatch_direct.rs` — DispatchResult with tool_outputs
+- `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/inline/primitives/tool_call.rs` — ToolCallBlock
+
+## Acceptance Criteria
+- [ ] Catalog covers all 6 behaviors listed in Step 6
+- [ ] Each entry specifies Mori file:line, roko file:line, and gap
+- [ ] Each entry is mapped to a Runner 7 batch
+- [ ] Priority ranked: daily > occasional > rare
+- [ ] Behaviors already handled (e.g., `/stats` covers cumulative cost) are noted as "already handled"
+
+## Verification
+```bash
+# Verify Mori reference exists
+ls /Users/will/dev/uniswap/bardo/apps/mori/src/agent/connection.rs
+
+# Verify current roko chat structure — all six grep results should match documented state
+grep -n '"/tools"\|"/mcp"' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs
+# Expected: no output (neither /tools nor /mcp exist yet)
+
+grep -n 'push_tool_outputs' \
+  /Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/chat_inline.rs
+# Expected: 3 lines (definition at ~3723, calls at ~1109 and ~1356)
+```
+
+## Do NOT
+- Modify any source files
+- Implement any UX changes
+- Copy Mori code
+- Skip any of the 6 required catalog entries
+
+---
+
+## Verification Commands
+
+Run these and fix any failures:
+```bash
+cargo check --workspace
+cargo clippy --workspace --no-deps -- -D warnings
+```
+
+## Do NOT
+
+- Rewrite the entire implementation from scratch
+- Add features not in the original prompt
+- Modify files outside the write scope
+- Skip running verification commands

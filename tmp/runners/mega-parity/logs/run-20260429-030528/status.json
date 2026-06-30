@@ -1,0 +1,21 @@
+{
+  "run_id": "run-20260429-030528",
+  "runner": "mega-parity",
+  "elapsed": "28m 17s",
+  "elapsed_s": 1697,
+  "total": 3,
+  "success": 3,
+  "verified": 0,
+  "failed": 0,
+  "in_progress": 0,
+  "pending": 0,
+  "blocked": 0,
+  "eta": "unknown",
+  "model": "gpt-5.4-mini",
+  "audit_model": "gpt-5.4-mini",
+  "audit_enabled": 0,
+  "active": [""],
+  "completed": ["R3_F02","R3_F03","R3_F04"],
+  "failed_list": [""],
+  "updated_at": "2026-04-29T23:40:47+02:00"
+}

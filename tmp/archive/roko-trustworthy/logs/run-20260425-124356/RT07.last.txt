@@ -1,0 +1,15 @@
+Implemented RT07.
+
+Changed:
+- Added structured gate failure actions/classes in [compile_errors.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/compile_errors.rs): retry, needs_replan, blocked, needs_human.
+- Added durable `PlanRevisionRequest` / evidence records in [replan.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-orchestrator/src/replan.rs).
+- Extended runtime plan revision events with `request_id`, `required_next_action`, failure pattern ids, and blocking findings in [event_bus.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-runtime/src/event_bus.rs).
+- Wired CLI gate-failure handling to select retry vs replan vs blocked vs human-needed, persist plan revision requests in the replan ledger, and include structured evidence in planner prompts in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs).
+
+Verification passed:
+- `cargo check -p roko-orchestrator -p roko-cli -p roko-serve`
+- `cargo test -p roko-cli --test e2e_self_host --no-run`
+- `cargo test -p roko-serve --test job_runner_integration --no-run`
+- Focused unit tests for classification, revision request records, retry/replan/blocked/human selection, and ledger persistence.
+
+Note: the named `tmp/architecture-plans/*` files were not present in this worktree, so I used the available gap doc surface and existing RT implementation references in code.

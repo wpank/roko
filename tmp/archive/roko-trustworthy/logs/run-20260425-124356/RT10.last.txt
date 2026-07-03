@@ -1,0 +1,18 @@
+Implemented RT10.
+
+Changed live role/prompt behavior so built-in prompts now use Roko-owned wording and `.roko/plans` paths:
+- `.mori/plans` prompt layout replaced in [common.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/templates/common.rs:131)
+- Integration tester no longer references `bardo-test-harness` and writes reports under `.roko/plans` in [integration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/templates/integration.rs:37)
+- Quick-fix selfcheck output moved to `.roko/plans` in [quick.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/templates/quick.rs:189)
+- Added `RolePromptSource` / `role_prompt_source_for()` so runtime can report prompt provenance in [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/role_prompts.rs:44)
+- Added regression tests that every built-in role prompt is Roko-owned and emits no Mori/Bardo tokens in [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/role_prompts.rs:663)
+- Updated role prompt snapshots to the Roko layout.
+
+I also cleaned prompt-path comments so the compose prompt code no longer treats Mori/Bardo as canonical. Remaining `.mori` hits are negative assertions or explicit legacy compatibility comments in `roko-core`.
+
+Verification passed:
+- `cargo check -p roko-compose -p roko-orchestrator -p roko-agent -p roko-cli`
+- `cargo test -p roko-agent --test role_tools --no-run`
+- `cargo test -p roko-compose --lib --no-run`
+- `cargo test -p roko-core --lib --no-run`
+- `INSTA_UPDATE=always cargo test -p roko-compose`

@@ -1,0 +1,16 @@
+Implemented RT00’s typed done-gate contract.
+
+Added `AcceptanceContract` and evidence validation in [acceptance_contract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/acceptance_contract.rs:32). It covers compile/test/lint gates, no-stub evidence, structured agent output, structured review verdicts, retry/reflection/replan evidence, parity ledger rows, and explicit outcomes including `passed`, `failed`, `blocked`, `needs_retry`, `needs_replan`, and `needs_human`. Missing or malformed required evidence returns a failed decision.
+
+Wired `roko plan validate` to parse declared task `acceptance_contract` blocks and emit fail-closed diagnostics in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/plan_validate.rs:320). Added CLI tests for valid and malformed contracts in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/tests/plan_validate.rs:157).
+
+Verification passed:
+
+- `cargo fmt --check`
+- `cargo check -p roko-core -p roko-gate -p roko-cli`
+- `cargo test -p roko-gate --lib --no-run`
+- `cargo test -p roko-cli --test plan_validate --no-run`
+- `cargo test -p roko-gate acceptance_contract`
+- `cargo test -p roko-cli --test plan_validate`
+
+Note: the named `tmp/architecture-plans/*` and `tmp/roko-trustworthy/context-pack/*` files were not present in this worktree, so I used the embedded batch context as the source-doc baseline.

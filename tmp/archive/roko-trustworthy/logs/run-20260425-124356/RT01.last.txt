@@ -1,0 +1,17 @@
+Implemented RT01 structured review verdict handling.
+
+Changed:
+- [review_verdict.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/review_verdict.rs): added strict JSON / JSON code block / TOML code block parsing into typed review evidence, with raw output preserved and fail-closed `needs_human` outcomes.
+- [acceptance_contract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/acceptance_contract.rs): tightened review verdict acceptance so wrong reviewer, follow-up actions, missing raw output refs, invalid confidence, or blocking findings fail.
+- [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs): removed keyword/default-approve parsing and infrastructure-error auto-approval. Review approval now only happens from typed passing evidence.
+- Added focused tests for valid structured verdicts, invalid/free-text verdicts, missing fields, contradictions, and contract fail-closed cases.
+
+Verification run:
+- `cargo check -p roko-gate -p roko-orchestrator -p roko-cli`
+- `cargo test -p roko-gate --lib --no-run`
+- `cargo test -p roko-orchestrator --lib --no-run`
+- `cargo test -p roko-gate review_verdict --lib`
+- `cargo test -p roko-cli review_verdict --lib`
+- `cargo test -p roko-cli --lib --no-run`
+
+Only residual output was pre-existing `unused_mut` warnings in `roko-orchestrator/src/executor/resource_budget.rs`.

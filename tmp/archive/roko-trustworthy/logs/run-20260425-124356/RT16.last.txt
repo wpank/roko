@@ -1,0 +1,27 @@
+Implemented RT16.
+
+Added a bounded learned context attention path in [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:385):
+- `LearningContextBidder`
+- `LearningAttentionConfig`
+- Beta posterior means over RT15 `SectionEffectivenessRegistry`
+- guardrails for min evidence, max budget share, max promotions, max relevance boost, disable flag, and count-based recency cap
+- safe cold-start/load fallback from `.roko/learn/section-effects.json`
+- automatic wiring through `ContextProvider::resolve_with_policies`
+
+Persisted learned decision metadata into `CognitiveWorkspace` context audit rows in [cognitive_workspace.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/cognitive_workspace.rs:292), including posterior means, lift, evidence state, fallback reasons, and relevance boost.
+
+Added focused tests for:
+- cold start
+- low-evidence threshold
+- posterior bias affecting budget selection
+- disabled fallback
+- workspace metadata persistence
+
+Verification passed:
+- `cargo check -p roko-learn -p roko-compose -p roko-orchestrator`
+- `cargo test -p roko-learn --lib --no-run`
+- `cargo test -p roko-compose --lib --no-run`
+- focused `roko-compose` learning bidder tests
+- focused cognitive workspace metadata test
+
+Note: `roko-learn --lib --no-run` still emits 3 pre-existing warnings in unrelated test code. Also, the requested architecture doc path was not present in this worktree.

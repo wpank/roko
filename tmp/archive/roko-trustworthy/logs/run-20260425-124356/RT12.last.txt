@@ -1,0 +1,18 @@
+Implemented RT12 manifest-backed built-in roles.
+
+Changed:
+- Added bundled role manifest at [core_roles.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/builtin_roles/core_roles.toml) for `strategist`, `implementer`, `architect`, `auditor`, `quick-reviewer`, and `scribe`.
+- Added manifest loading/lookup APIs in [policy_manifest.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/policy_manifest.rs), including fail-closed validation for broken manifests.
+- Updated [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/role_prompts.rs) so built-in role profile/prompt policy resolution prefers the bundled manifest and only falls back for unmigrated legacy roles.
+- Added tests in `roko-core`, `roko-compose`, `roko-agent`, and `roko-cli` covering manifest loading, role id/version/prompt policy exposure, reviewer output schema/gate expectations, and no Mori/Bardo prompt-source leakage.
+
+Note: the prompt-requested `tmp/architecture-plans/generalized-cybernetic-agent-architecture-gaps.md` and RT10/RT11 files were not present in this worktree. I used the local shipped role/prompt docs and current RT11-style code surfaces instead.
+
+Verification passed:
+- `cargo check -p roko-agent -p roko-compose -p roko-cli`
+- `cargo test -p roko-agent --test role_tools --no-run`
+- `cargo test -p roko-cli --test agent_config --no-run`
+- `cargo test -p roko-core policy_manifest`
+- `cargo test -p roko-compose role_prompts`
+- `cargo test -p roko-agent --test role_tools`
+- `cargo test -p roko-cli --test agent_config`

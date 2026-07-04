@@ -1,0 +1,17 @@
+Implemented RT23 as a deferral-only packet.
+
+Changed:
+- Added six gated future packets `Q19`-`Q24` in [tasks.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/plans/architecture-core-queue/tasks.toml:1159) for chain deployment, job marketplace, payments/token budgets, knowledge futures/ISFR, global mesh pheromones, and portal/brain-export surfaces.
+- Updated `Q14` to depend on dashboard projections so chain foundation work cannot jump ahead of stable backend projection contracts: [tasks.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/plans/architecture-core-queue/tasks.toml:842).
+- Added `PLAN_026` validation for incomplete `[task.deferral]` metadata in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/plan_validate.rs:643).
+- Added fail/pass tests for deferral metadata validation in [plan_validate.rs test](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/tests/plan_validate.rs:378).
+- `plans/INDEX.md` was auto-updated by `roko plan validate` to reflect 24 queue tasks.
+
+Verification passed:
+- `cargo test -p roko-cli --test plan_validate`
+- `cargo run -p roko-cli -- plan validate plans/architecture-core-queue`
+- `cargo check -p roko-chain -p roko-agent-server -p roko-serve -p roko-demo`
+- `cargo test -p roko-chain --lib --no-run`
+- `cargo test -p roko-demo --lib --no-run`
+
+Note: `roko-chain` emitted one existing unused-variable warning in `crates/roko-chain/src/gate/mev_gate.rs:926`; it did not block the requested gates.

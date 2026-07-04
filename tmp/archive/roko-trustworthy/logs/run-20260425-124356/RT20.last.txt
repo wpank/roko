@@ -1,0 +1,15 @@
+Implemented RT20.
+
+Added the self-hosting architecture queue at [tasks.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/plans/architecture-core-queue/tasks.toml:1) with 18 ordered packets and a short entry-point doc at [plan.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/plans/architecture-core-queue/plan.md:1). Each packet includes source docs, likely crates/artifacts, dependency metadata, verification commands, and a typed acceptance contract.
+
+Also tightened `roko plan validate` for `queue_kind = "architecture_implementation"` in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/plan_validate.rs:250), with integration coverage in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/tests/plan_validate.rs:249). While validating, I found and fixed the plan indexer counting nested acceptance-contract gate IDs as tasks; it now counts top-level `[[task]]` entries from TOML in [index.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/index.rs:162). The regenerated [plans/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/plans/INDEX.md:1) now lists the queue as 18 ready tasks.
+
+Verification passed:
+- `cargo run -p roko-cli -- plan validate plans/architecture-core-queue` -> `0 diagnostics in 1 plan`
+- `cargo check -p roko-core -p roko-runtime -p roko-agent -p roko-orchestrator -p roko-compose -p roko-gate -p roko-learn -p roko-neuro -p roko-serve -p roko-cli`
+- `cargo test -p roko-orchestrator --lib --no-run`
+- `cargo test -p roko-cli --test plan_validate --no-run`
+- `cargo test -p roko-cli index::tests::plans_index_ignores_nested_acceptance_contract_ids --lib`
+- `cargo fmt --check`
+
+Only note: `roko-orchestrator --lib --no-run` still emits two existing `unused_mut` warnings in `crates/roko-orchestrator/src/executor/resource_budget.rs`; I left those unrelated lines untouched.

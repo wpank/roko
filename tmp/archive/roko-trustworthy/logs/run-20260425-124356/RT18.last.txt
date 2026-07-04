@@ -1,0 +1,16 @@
+Implemented RT18’s durable runtime/control-plane gap.
+
+Changed:
+- Added typed process resume policy with stale/backend/task mismatch failures in [process.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-runtime/src/process.rs:308).
+- Added process-session summaries and live supervisor snapshots for operator status surfaces in [process.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-runtime/src/process.rs:284).
+- Added explicit `[runtime]` CLI config for process ledger path and resume staleness validation in [config.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/config.rs:412).
+- Exposed durable process-session state in `roko status` and `/api/status` via [status.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/status.rs:187) and [routes/status.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/status.rs:101).
+- Sidecar agent starts now persist supervised process session metadata to `.roko/state/process-sessions.json` in [routes/agents.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/agents.rs:800).
+
+Verification passed:
+- `cargo check -p roko-runtime -p roko-orchestrator -p roko-serve -p roko-cli`
+- `cargo test -p roko-runtime --test process_supervisor --no-run`
+- `cargo test -p roko-cli --test e2e_self_host --no-run`
+- Focused runtime/config/status tests for stale resume, summaries, config validation, and status exposure.
+
+Note: the named `tmp/architecture-plans/...` files were not present in this worktree, so I used the checked-in runtime/status/control docs and existing RT06 implementation surfaces.

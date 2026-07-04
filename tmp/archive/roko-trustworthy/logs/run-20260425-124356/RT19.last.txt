@@ -1,0 +1,19 @@
+Implemented RT19’s narrow self-host loop wiring.
+
+Changed:
+- [task_parser.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/task_parser.rs): `TaskDef` now carries optional typed `acceptance_contract`.
+- [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs): `plan run` now:
+  - requires structured agent output when the contract asks for it, before marking task implementation complete;
+  - persists output evidence under `.roko/acceptance/<plan>/<task>/`;
+  - validates acceptance contracts after gates and structured review before advancing past review;
+  - persists acceptance decisions and parity rows structurally;
+  - fails closed into retry/reimplementation instead of false success.
+- Updated the mock self-host fixture to emit typed task output and typed review verdicts.
+
+Verification passed:
+- `cargo check -p roko-cli -p roko-orchestrator -p roko-gate -p roko-compose -p roko-learn -p roko-agent`
+- `cargo test -p roko-cli --test e2e_self_host --no-run`
+- `cargo test -p roko-gate --lib --no-run`
+- Focused unit tests for structured agent output and gate requirement matching.
+
+Note: the requested source docs under `tmp/architecture-plans/05-self-hosting.md` and `tmp/architecture-plans/08-end-to-end-acceptance.md` were not present in this worktree, so I worked from the supplied context pack and existing implemented RT surfaces.

@@ -1,0 +1,16 @@
+Implemented RT17’s conservative contextual bandit layer.
+
+Changes:
+- Added [contextual_bandit.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/contextual_bandit.rs:1) with typed decision kinds, context features, action IDs, safety bounds, bounded reward observations, deterministic disabled/cold-start behavior, conservative epsilon-greedy candidate mode, and candidate `PolicyUpdateCandidate` JSONL persistence.
+- Wired the module into [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/lib.rs:100).
+- Added read-only API exposure for `.roko/learn/policy-updates.jsonl` at `/api/learning/policy-updates` and `/api/learn/policy-updates` in [learning.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/learning.rs:51).
+- Added focused tests for selection, reward updates, cold start, disabled mode, safety bounds, candidate update emission, JSONL roundtrip, endpoint exposure, and avoiding terminal-outcome leakage into context keys.
+
+Verification passed:
+- `cargo check -p roko-learn -p roko-agent -p roko-serve -p roko-cli`
+- `cargo test -p roko-learn --lib --no-run`
+- `cargo test -p roko-cli --test agent_config --no-run`
+- `cargo test -p roko-learn --lib contextual_bandit`
+- `cargo test -p roko-serve policy_updates_exposes_candidate_records`
+
+Note: the named `tmp/architecture-plans/...` source docs were not present in this worktree, so I used the existing telemetry/routing code surfaces and repository gap references available locally.

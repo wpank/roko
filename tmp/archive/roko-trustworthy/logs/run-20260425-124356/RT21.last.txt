@@ -1,0 +1,16 @@
+Implemented RT21 parity enforcement.
+
+Changed:
+- Expanded parity packets in [acceptance_contract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/acceptance_contract.rs:432) to carry `requirement_id`, `source_ref`, implementation refs, test/gate evidence refs, and `ParityLedgerStatus`.
+- Missing or incomplete parity evidence now fails closed as `needs_work` instead of being treated as success in [acceptance_contract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/acceptance_contract.rs:293).
+- Runtime parity ledger rows are now derived from declared implementation evidence plus passing gate evidence in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs:11377).
+- Architecture queue plan validation now requires required parity ledger rows via `PLAN_025` in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/plan_validate.rs:587).
+
+Verification passed:
+- `cargo check -p roko-cli -p roko-gate -p roko-orchestrator`
+- `cargo test -p roko-cli --test plan_validate --no-run`
+- `cargo test -p roko-gate --lib --no-run`
+- Extra: `cargo test -p roko-cli --test plan_validate`
+- Extra: `cargo test -p roko-gate acceptance_contract --lib`
+
+Note: the named `tmp/architecture-plans/...`, `tmp/docs-parity2`, and `tmp/refinement-audit-runner` files were not present in this isolated worktree, so I grounded the implementation in the existing acceptance-contract, plan-validation, and runtime gate surfaces.

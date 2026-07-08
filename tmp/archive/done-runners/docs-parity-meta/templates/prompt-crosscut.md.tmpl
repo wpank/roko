@@ -1,0 +1,76 @@
+# Batch {{BATCH_ID}}: {{SECTION_NUM}}-{{SECTION_SLUG}} — Cross-cutting analysis
+
+**Section**: {{DOCS_DIR}} ({{DOCS_FILE_COUNT}} sub-documents)
+**Scope**: Cross-cutting (touches multiple crates)
+**Priority**: {{PRIORITY}}
+**Group**: {{GROUP}}
+**Dependencies**: {{DEPS_DISPLAY}}
+
+## Context
+
+This section describes cross-cutting concerns that span multiple crates.
+Unlike single-crate batches, the work here is about ensuring consistency
+and integration points between subsystems.
+
+## Read These Files First
+
+### Documentation
+
+{{DOCS_FILE_LIST}}
+
+### Existing parity analysis
+
+{{PARITY_FILE_LIST}}
+
+### Code files to inspect (across multiple crates)
+
+{{CODE_FILE_LIST}}
+
+## What The Docs Describe
+
+Key cross-cutting types and patterns referenced:
+
+{{DOC_IDENTIFIERS}}
+
+## What The Code Currently Has
+
+{{PUBLIC_API}}
+
+## Cross-Cutting Gaps
+
+{{GAP_ITEMS}}
+
+## Implementation Requirements
+
+1. Read all documentation files to understand the cross-cutting patterns
+2. Identify which crate owns each concept
+3. For shared types: ensure they're defined once and re-exported correctly
+4. For integration points: ensure trait bounds and type parameters align
+5. Add doc comments on cross-cutting public types
+6. Wire integration tests where patterns span crate boundaries
+
+## Write Scope
+
+Any crate under `crates/` (cross-cutting batch). Primary targets:
+
+{{WRITE_SCOPE}}
+
+## Verification
+
+```bash
+{{VERIFY_COMMANDS}}
+```
+
+## Rules
+
+1. **Minimize blast radius.** Prefer small, targeted changes across crates over large refactors.
+2. **Don't duplicate.** If a type exists in one crate, re-export it — don't copy.
+3. **Compile the workspace.** Cross-cutting changes must not break other crates.
+4. **Naming conventions.** Use `neuro` (not grimoire), `Korai` (not styx), `fleet` (not clade).
+
+## Done When
+
+- All verify commands pass (workspace-wide)
+- Cross-cutting types are consistently defined
+- Integration points compile and type-check
+- Doc comments explain cross-crate relationships

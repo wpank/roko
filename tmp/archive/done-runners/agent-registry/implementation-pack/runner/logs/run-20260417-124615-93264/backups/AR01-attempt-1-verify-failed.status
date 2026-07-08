@@ -1,0 +1,11 @@
+ M apps/mirage-rs/src/chain/agent.rs
+ M apps/mirage-rs/src/main.rs
+ M apps/mirage-rs/src/rpc.rs
+ M crates/roko-agent-server/src/registration.rs
+?? apps/mirage-rs/static/erc8004/
+?? contracts/src/IdentityRegistry.sol
+?? contracts/src/ReputationRegistry.sol
+?? contracts/src/ValidationRegistry.sol
+?? contracts/test/IdentityRegistry.t.sol
+?? contracts/test/ReputationRegistry.t.sol
+?? contracts/test/ValidationRegistry.t.sol

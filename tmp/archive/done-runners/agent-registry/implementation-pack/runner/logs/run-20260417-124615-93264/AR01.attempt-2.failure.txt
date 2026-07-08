@@ -1,0 +1,43 @@
+Verification failed for command: cargo check -p mirage-rs --features "binary,chain"
+
+Recent log tail:
+  --> apps/mirage-rs/src/http_api/topology.rs:31:1
+   |
+31 | ... AgentEdge {
+   | ...^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> apps/mirage-rs/src/http_api/topology.rs:44:1
+   |
+44 | ...gyResponse {
+   | ...^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> apps/mirage-rs/src/http_api/topology.rs:45:5
+   |
+45 |     ...AgentNode>,
+   |     ...^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> apps/mirage-rs/src/http_api/topology.rs:46:5
+   |
+46 |     ...AgentEdge>,
+   |     ...^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> apps/mirage-rs/src/http_api/topology.rs:47:5
+   |
+47 |     ...stamp: u64,
+   |     ...^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> apps/mirage-rs/src/http_api/topology.rs:50:1
+   |
+50 | ...yResponse> {
+   | ...^^^^^^^^^^
+
+warning: `mirage-rs` (lib) generated 249 warnings
+error: could not compile `mirage-rs` (lib); 249 warnings emitted
+
+Caused by:
+  process didn't exit successfully: `/Users/will/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name mirage_rs --edition=2024 apps/mirage-rs/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata -C opt-level=1 -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked '--warn=clippy::pedantic' '--warn=clippy::nursery' '--deny=clippy::unwrap_used' --deny=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' '--allow=clippy::missing_errors_doc' --warn=missing_docs '--warn=clippy::expect_used' -C debug-assertions=on --cfg 'feature="binary"' --cfg 'feature="chain"' --cfg 'feature="default"' --cfg 'feature="legacy-api"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("binary", "chain", "default", "legacy-api", "library", "roko", "sim-gas"))' -C metadata=7ffb73c48151a135 -C extra-filename=-8dea4a52b082373c --out-dir /var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps -C incremental=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/incremental -L dependency=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps --extern alloy_primitives=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/liballoy_primitives-c2af4ee67bf094c2.rmeta --extern anyhow=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libanyhow-3471306df60c5384.rmeta --extern axum=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libaxum-4a037db1ed50b468.rmeta --extern bytes=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libbytes-8e3b3d0a196a4f11.rmeta --extern clap=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libclap-c3a155a8875704f0.rmeta --extern dashmap=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libdashmap-5e9e1361a992e5f5.rmeta --extern futures=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libfutures-e6b6904894299101.rmeta --extern futures_util=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libfutures_util-466c05035976bba1.rmeta --extern jsonrpsee=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libjsonrpsee-9099e940cf6e4322.rmeta --extern k256=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libk256-86a64564a284e464.rmeta --extern lru=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/liblru-b1bb70974e5d5c27.rmeta --extern parking_lot=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libparking_lot-f4862e02e91f0bcc.rmeta --extern reqwest=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libreqwest-acb163c1c4a162b1.rmeta --extern revm=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/librevm-ae2d806a305ad17a.rmeta --extern roko_primitives=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libroko_primitives-ee4bb3b06a898955.rmeta --extern roko_runtime=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libroko_runtime-6badec89327c7c56.rmeta --extern serde=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libserde-36a2e8295610ba3f.rmeta --extern serde_json=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libserde_json-70824c62a60456d9.rmeta --extern sysinfo=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libsysinfo-e36e7eef034c55f6.rmeta --extern thiserror=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libthiserror-0e84c1ef412b4efb.rmeta --extern tokio=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtokio-f4a13e467fda8f7c.rmeta --extern tokio_tungstenite=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtokio_tungstenite-e8aa810f1f509c40.rmeta --extern toml=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtoml-136e99d33ac82bee.rmeta --extern tower=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtower-510a640bd0324475.rmeta --extern tower_http=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtower_http-c369836fe318e3ae.rmeta --extern tracing=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtracing-7116d6f5adec3542.rmeta --extern tracing_subscriber=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/deps/libtracing_subscriber-9bd0d564caa3eff9.rmeta -L native=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/build/ring-897919b883a5d91d/out -L native=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/build/blst-599f9e2641b3f3fe/out -L native=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/build/c-kzg-2a056124be7b2c47/out -L native=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-agent-registry-targets/run-20260417-124615-93264/AR01/verify-attempt-2/debug/build/secp256k1-sys-8fef05604f1645c8/out` (exit status: 101)

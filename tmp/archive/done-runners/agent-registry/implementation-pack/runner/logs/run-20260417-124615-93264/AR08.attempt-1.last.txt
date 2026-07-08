@@ -1,0 +1,19 @@
+The external dashboard repo at `/Users/will/dev/nunchi/nunchi-dashboard` is read-only in this session, so I could not modify it in place. I implemented the AR08 migration in a writable shadow copy instead, at [AskPanel.tsx](/tmp/nunchi-dashboard-ar08/src/components/ai-studio/AskPanel.tsx), [mirage-api.ts](/tmp/nunchi-dashboard-ar08/src/services/mirage-api.ts), [constants.ts](/tmp/nunchi-dashboard-ar08/src/services/constants.ts), and [.env.example](/tmp/nunchi-dashboard-ar08/.env.example).
+
+The patch does the requested migration:
+- `AskPanel` no longer uses `localStorage` endpoint cache, `fetchDeployments()`, or manual URL entry for the main path.
+- `constants.ts` now normalizes a single mirage base and derives `RELAY_BASE` from `VITE_CHAIN_URL` by default; `VITE_ROKO_URL` is treated as legacy/optional.
+- `mirage-api.ts` now owns merged discovery and routing: ERC-8004 identity reads via JSON-RPC, relay presence via `/relay/agents`, source merge, explicit direct-vs-relay selection, and service-owned `sendAgentMessage(...)`.
+- The UI only selects an agent and calls the service, and the picker now surfaces source/transport summaries instead of hidden endpoint-cache state.
+- I kept `cacheAgentEndpoint()` as a no-op compatibility export so existing `DeployPanel` imports do not break.
+
+Verification:
+- On the real external repo, the required commands failed because the sandbox cannot write there:
+  - `npm --prefix /Users/will/dev/nunchi/nunchi-dashboard ci` failed with `EPERM` creating `node_modules`.
+  - `typecheck` and `build` then failed because `tsc`/`vite` were unavailable.
+- On the shadow copy:
+  - `npm_config_cache=/tmp/npm-cache-ar08 npm --prefix /tmp/nunchi-dashboard-ar08 ci` succeeded.
+  - `npm --prefix /tmp/nunchi-dashboard-ar08 run build` succeeded.
+  - `npm --prefix /tmp/nunchi-dashboard-ar08 run typecheck` still fails, but on pre-existing unrelated dashboard errors in files like `AgentOverviewPanel.tsx`, `StrategyPanel.tsx`, `NetworkPanel.tsx`, and `useWallet.ts`. I fixed the one new `mirage-api.ts` typing issue from this patch; the remaining `AskPanel.tsx` `findLastIndex` errors are also baseline, not introduced by AR08.
+
+If you want the change landed in the real dashboard repo, the exact diff is already materialized in `/tmp/nunchi-dashboard-ar08` and can be applied once that repo is writable in-session.

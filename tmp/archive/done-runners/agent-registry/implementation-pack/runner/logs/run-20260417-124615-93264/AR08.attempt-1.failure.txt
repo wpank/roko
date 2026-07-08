@@ -1,0 +1,43 @@
+Verification failed for command: npm --prefix /Users/will/dev/nunchi/nunchi-dashboard run typecheck
+
+Recent log tail:
+src/components/network/KnowledgeGraphCanvas.tsx(75,37): error TS2322: Type 'string' is not assignable to type 'number'.
+src/components/network/KnowledgeGraphCanvas.tsx(79,15): error TS2339: Property 'dependency_edges' does not exist on type '{ edges?: KGEdge[]; node_count?: number; }'.
+src/components/network/KnowledgeGraphCanvas.tsx(80,29): error TS2339: Property 'dependency_edges' does not exist on type '{ edges?: KGEdge[]; node_count?: number; }'.
+src/components/network/KnowledgeGraphCanvas.tsx(82,15): error TS2339: Property 'similarity_edges' does not exist on type '{ edges?: KGEdge[]; node_count?: number; }'.
+src/components/network/KnowledgeGraphCanvas.tsx(83,29): error TS2339: Property 'similarity_edges' does not exist on type '{ edges?: KGEdge[]; node_count?: number; }'.
+src/components/network/KnowledgeGraphCanvas.tsx(274,56): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
+src/components/network/KnowledgeGraphCanvas.tsx(289,47): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
+src/components/network/KnowledgeGraphCanvas.tsx(310,192): error TS2339: Property 'challenges' does not exist on type 'KGEntry'.
+src/components/network/KnowledgeGraphCanvas.tsx(311,181): error TS2339: Property 'half_life_seconds' does not exist on type 'KGEntry'.
+src/components/network/KnowledgeGraphCanvas.tsx(311,219): error TS2339: Property 'half_life_seconds' does not exist on type 'KGEntry'.
+src/components/network/NetworkPanel.tsx(206,29): error TS2322: Type 'TopologyResponse' is not assignable to type '{ nodes: TopoNode[]; edges: TopoEdge[]; timestamp?: number; }'.
+  Types of property 'nodes' are incompatible.
+    Type '{ id: string; address: string; insights_posted: number; confirmations_given: number; challenges_given: number; total_weight: number; }[]' is not assignable to type 'TopoNode[]'.
+      Type '{ id: string; address: string; insights_posted: number; confirmations_given: number; challenges_given: number; total_weight: number; }' is missing the following properties from type 'TopoNode': role, x, y, vx, and 5 more.
+src/components/network/NetworkPanel.tsx(559,15): error TS2322: Type 'EntriesResponse | KnowledgeEntry[]' is not assignable to type 'KGEntry[]'.
+  Type 'EntriesResponse' is missing the following properties from type 'KGEntry[]': length, pop, push, concat, and 27 more.
+src/components/network/NetworkPanel.tsx(581,229): error TS2339: Property 'author' does not exist on type '{ id: string; kind: string; content: string; confirmations: number; weight: number; }'.
+src/components/network/NetworkPanel.tsx(581,252): error TS2339: Property 'state' does not exist on type '{ id: string; kind: string; content: string; confirmations: number; weight: number; }'.
+src/components/network/NetworkPanel.tsx(707,101): error TS2339: Property 'baseFeePerGas' does not exist on type 'MockBlock'.
+src/components/network/NetworkPanel.tsx(736,59): error TS2365: Operator '+' cannot be applied to types '{ count: number; intensity: number; color: string; recent: PheromoneEntry[]; key: string; label: string; }' and 'number'.
+src/components/network/NetworkPanel.tsx(736,72): error TS2345: Argument of type 'number' is not assignable to parameter of type '{ count: number; intensity: number; color: string; recent: PheromoneEntry[]; key: string; label: string; }'.
+src/components/network/NetworkPanel.tsx(750,23): error TS2322: Type '{ key: string; label: string; color: string; count: number; intensity: number; }' is not assignable to type 'ReactNode'.
+  Type '{ key: string; label: string; color: string; count: number; intensity: number; }' is missing the following properties from type 'ReactPortal': children, type, props
+src/components/network/NetworkPanel.tsx(886,37): error TS2339: Property 'author' does not exist on type 'NetworkEvent'.
+src/components/network/NetworkPanel.tsx(886,51): error TS2339: Property 'confirmer' does not exist on type 'NetworkEvent'.
+src/components/network/NetworkPanel.tsx(888,34): error TS2367: This comparison appears to be unintentional because the types '"insight" | "job" | "prediction" | "verification" | "earning" | "retrieval" | "learning" | "status"' and '"posted"' have no overlap.
+src/components/network/NetworkPanel.tsx(889,34): error TS2367: This comparison appears to be unintentional because the types '"insight" | "job" | "prediction" | "verification" | "earning" | "retrieval" | "learning" | "status"' and '"posted"' have no overlap.
+src/components/network/NetworkPanel.tsx(890,44): error TS2339: Property 'insightId' does not exist on type 'NetworkEvent'.
+src/components/network/NetworkPanel.tsx(891,48): error TS2339: Property 'insightId' does not exist on type 'NetworkEvent'.
+src/components/network/NetworkPanel.tsx(892,36): error TS2367: This comparison appears to be unintentional because the types '"insight" | "job" | "prediction" | "verification" | "earning" | "retrieval" | "learning" | "status"' and '"posted"' have no overlap.
+src/components/network/NetworkPanel.tsx(895,113): error TS2367: This comparison appears to be unintentional because the types '"insight" | "job" | "prediction" | "verification" | "earning" | "retrieval" | "learning" | "status"' and '"posted"' have no overlap.
+src/components/network/NetworkPanel.tsx(896,116): error TS2339: Property 'block' does not exist on type 'NetworkEvent'.
+src/components/network/PheromoneCanvas.tsx(122,27): error TS2339: Property 'content' does not exist on type 'PheromoneEntry'.
+src/components/network/PheromoneCanvas.tsx(343,57): error TS2345: Argument of type 'Particle' is not assignable to parameter of type 'PheromoneEntry'.
+  Type 'Particle' is missing the following properties from type 'PheromoneEntry': id, deposited_at
+src/components/network/TopologyCanvas.tsx(15,29): error TS2687: All declarations of 'weight' must have identical modifiers.
+src/components/network/TopologyCanvas.tsx(15,45): error TS2687: All declarations of 'type' must have identical modifiers.
+src/components/network/TopologyCanvas.tsx(19,48): error TS2687: All declarations of 'weight' must have identical modifiers.
+src/components/network/TopologyCanvas.tsx(19,65): error TS2687: All declarations of 'type' must have identical modifiers.
+src/hooks/useWallet.ts(22,38): error TS2591: Cannot find name 'require'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.

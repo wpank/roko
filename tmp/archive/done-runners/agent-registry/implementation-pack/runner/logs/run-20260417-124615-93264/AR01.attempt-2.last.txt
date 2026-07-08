@@ -1,0 +1,9 @@
+I preserved the existing AR01 implementation in the dirty worktree and fixed the remaining verifier miss in [contracts/src/IdentityRegistry.sol](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/contracts/src/IdentityRegistry.sol:259): `updateAgentCardUri` now matches the exact required source signature `function updateAgentCardUri(uint256 passportId, string calldata newUri)`.
+
+Verification passed:
+- `cd contracts && forge build`
+- `cd contracts && forge test --match-contract 'IdentityRegistryTest|ReputationRegistryTest|ValidationRegistryTest'`
+- `cargo check -p mirage-rs --features "binary,chain"`
+- `rg -n 'function updateAgentCardUri\s*\(\s*uint256\s+passportId,\s*string\s+calldata\s+newUri\s*\)' contracts/src/IdentityRegistry.sol`
+
+Residual risk remains in the pre-existing AR01 changes, not this fix: mirage still keeps legacy `/api/agents*` and `chain_*Agent*` runtime-local registry paths alive, and `apps/mirage-rs/src/rpc.rs` still contains a separate experimental ERC-8004 bootstrap surface that can drift from the main startup path.

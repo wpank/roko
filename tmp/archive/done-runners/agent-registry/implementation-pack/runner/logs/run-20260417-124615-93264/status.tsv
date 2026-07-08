@@ -1,0 +1,123 @@
+2026-04-17T12:46:16+02:00	AR01	1	attempt_started	Contracts and mirage fork bootstrap
+2026-04-17T12:46:16+02:00	AR01	1	spawn_started	codex exec started
+2026-04-17T13:06:04+02:00	AR01	1	spawn_succeeded	codex exec completed
+2026-04-17T13:06:06+02:00	AR01	1	verify_running	test -f contracts/src/IdentityRegistry.sol
+2026-04-17T13:06:06+02:00	AR01	1	verify_running	test -f contracts/src/ReputationRegistry.sol
+2026-04-17T13:06:06+02:00	AR01	1	verify_running	test -f contracts/src/ValidationRegistry.sol
+2026-04-17T13:06:06+02:00	AR01	1	verify_running	rg -n 'function updateAgentCardUri\s*\(\s*uint256\s+passportId,\s*string\s+calldata\s+newUri\s*\)' contracts/src/IdentityRegistry.sol
+2026-04-17T13:06:06+02:00	AR01	1	verify_failed	rg -n 'function updateAgentCardUri\s*\(\s*uint256\s+passportId,\s*string\s+calldata\s+newUri\s*\)' contracts/src/IdentityRegistry.sol
+2026-04-17T13:06:06+02:00	AR01	1	attempt_failed	verification failed
+2026-04-17T13:06:06+02:00	AR01	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T13:06:06+02:00	AR01	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T13:06:06+02:00	AR01	2	spawn_started	codex exec started
+2026-04-17T13:08:51+02:00	AR01	2	spawn_succeeded	codex exec completed
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	test -f contracts/src/IdentityRegistry.sol
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	test -f contracts/src/ReputationRegistry.sol
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	test -f contracts/src/ValidationRegistry.sol
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	rg -n 'function updateAgentCardUri\s*\(\s*uint256\s+passportId,\s*string\s+calldata\s+newUri\s*\)' contracts/src/IdentityRegistry.sol
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	cd contracts && forge build
+2026-04-17T13:08:52+02:00	AR01	2	verify_running	cargo check -p mirage-rs --features "binary,chain"
+2026-04-17T13:09:30+02:00	AR01	2	verify_failed	cargo check -p mirage-rs --features "binary,chain"
+2026-04-17T13:09:31+02:00	AR01	2	attempt_failed	verification failed
+2026-04-17T13:09:31+02:00	AR01	2	attempt_backed_up	saved failed verify state for retry
+2026-04-17T13:09:31+02:00	AR01	3	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T13:09:31+02:00	AR01	3	spawn_started	codex exec started
+2026-04-17T13:15:40+02:00	AR01	3	spawn_succeeded	codex exec completed
+2026-04-17T13:15:41+02:00	AR01	3	verify_running	test -f contracts/src/IdentityRegistry.sol
+2026-04-17T13:15:41+02:00	AR01	3	verify_running	test -f contracts/src/ReputationRegistry.sol
+2026-04-17T13:15:42+02:00	AR01	3	verify_running	test -f contracts/src/ValidationRegistry.sol
+2026-04-17T13:15:42+02:00	AR01	3	verify_running	rg -n 'function updateAgentCardUri\s*\(\s*uint256\s+passportId,\s*string\s+calldata\s+newUri\s*\)' contracts/src/IdentityRegistry.sol
+2026-04-17T13:15:42+02:00	AR01	3	verify_running	cd contracts && forge build
+2026-04-17T13:15:42+02:00	AR01	3	verify_running	cargo check -p mirage-rs --features "binary,chain"
+2026-04-17T13:16:27+02:00	AR01	3	verify_succeeded	all verification commands passed
+2026-04-17T13:16:28+02:00	AR01	3	commit_succeeded	4402c717
+2026-04-17T13:16:28+02:00	AR01	3	attempt_succeeded	verified and committed
+2026-04-17T13:16:28+02:00	AR02	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T13:16:28+02:00	AR02	1	attempt_started	Relay binary
+2026-04-17T13:16:28+02:00	AR02	1	spawn_started	codex exec started
+2026-04-17T13:22:41+02:00	AR02	1	spawn_succeeded	codex exec completed
+2026-04-17T13:22:42+02:00	AR02	1	verify_running	test -d apps/agent-relay
+2026-04-17T13:22:42+02:00	AR02	1	verify_running	cargo check -p agent-relay --all-targets
+2026-04-17T13:23:06+02:00	AR02	1	verify_running	cargo test -p agent-relay
+2026-04-17T13:23:39+02:00	AR02	1	verify_succeeded	all verification commands passed
+2026-04-17T13:23:40+02:00	AR02	1	commit_succeeded	683cb9ab
+2026-04-17T13:23:40+02:00	AR02	1	attempt_succeeded	verified and committed
+2026-04-17T13:23:40+02:00	AR03	1	attempt_started	roko agent serve
+2026-04-17T13:23:40+02:00	AR03	1	spawn_started	codex exec started
+2026-04-17T13:30:51+02:00	AR03	1	spawn_succeeded	codex exec completed
+2026-04-17T13:30:54+02:00	AR03	1	verify_running	test -f crates/roko-cli/src/main.rs
+2026-04-17T13:30:54+02:00	AR03	1	verify_running	rg -n 'agent serve|Agent.*Serve|Serve \{' crates/roko-cli/src
+2026-04-17T13:30:55+02:00	AR03	1	verify_running	cargo check -p roko-cli
+2026-04-17T13:31:50+02:00	AR03	1	verify_failed	cargo check -p roko-cli
+2026-04-17T13:31:50+02:00	AR03	1	attempt_failed	verification failed
+2026-04-17T13:31:50+02:00	AR03	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T13:31:50+02:00	AR03	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T13:31:50+02:00	AR03	2	spawn_started	codex exec started
+2026-04-17T13:40:34+02:00	AR03	2	spawn_succeeded	codex exec completed
+2026-04-17T13:40:38+02:00	AR03	2	verify_running	test -f crates/roko-cli/src/main.rs
+2026-04-17T13:40:39+02:00	AR03	2	verify_running	rg -n 'agent serve|Agent.*Serve|Serve \{' crates/roko-cli/src
+2026-04-17T13:40:39+02:00	AR03	2	verify_running	cargo check -p roko-cli
+2026-04-17T13:41:35+02:00	AR03	2	verify_running	cargo test -p roko-cli --test agent_serve
+2026-04-17T13:43:30+02:00	AR03	2	verify_succeeded	all verification commands passed
+2026-04-17T13:43:31+02:00	AR03	2	commit_succeeded	51ed0b33
+2026-04-17T13:43:31+02:00	AR03	2	attempt_succeeded	verified and committed
+2026-04-17T13:43:32+02:00	AR04	1	attempt_started	Agent relay client and chain registration
+2026-04-17T13:43:32+02:00	AR04	1	spawn_started	codex exec started
+2026-04-17T13:56:20+02:00	AR04	1	spawn_succeeded	codex exec completed
+2026-04-17T13:56:22+02:00	AR04	1	verify_running	test -f crates/roko-agent-server/src/registration.rs
+2026-04-17T13:56:22+02:00	AR04	1	verify_running	test -f crates/roko-agent-server/src/features/relay_client.rs
+2026-04-17T13:56:22+02:00	AR04	1	verify_running	rg -n 'updateAgentCardUri\(uint256,string\)' crates/roko-agent-server/src/registration.rs
+2026-04-17T13:56:23+02:00	AR04	1	verify_running	cargo check -p roko-agent-server
+2026-04-17T13:56:59+02:00	AR04	1	verify_running	cargo test -p roko-agent-server --tests
+2026-04-17T13:57:51+02:00	AR04	1	verify_succeeded	all verification commands passed
+2026-04-17T13:57:52+02:00	AR04	1	commit_succeeded	f9459d3b
+2026-04-17T13:57:52+02:00	AR04	1	attempt_succeeded	verified and committed
+2026-04-17T13:57:52+02:00	AR05	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T13:57:52+02:00	AR05	1	attempt_started	Mirage runtime, proxy, Docker, Railway shape
+2026-04-17T13:57:53+02:00	AR05	1	spawn_started	codex exec started
+2026-04-17T14:15:45+02:00	AR05	1	spawn_succeeded	codex exec completed
+2026-04-17T14:15:47+02:00	AR05	1	verify_running	rg -n 'agent-relay|entrypoint' docker/mirage.Dockerfile
+2026-04-17T14:15:47+02:00	AR05	1	verify_running	rg -n '/relay' apps/mirage-rs/src/rpc.rs apps/mirage-rs/src/http_api/mod.rs
+2026-04-17T14:15:47+02:00	AR05	1	verify_running	cargo check -p mirage-rs --features "binary,chain"
+2026-04-17T14:16:25+02:00	AR05	1	verify_running	cargo test -p mirage-rs --test http_api relay_proxy
+2026-04-17T14:17:15+02:00	AR05	1	verify_running	docker build -f docker/mirage.Dockerfile .
+2026-04-17T14:17:20+02:00	AR05	1	verify_succeeded	all verification commands passed
+2026-04-17T14:17:21+02:00	AR05	1	commit_succeeded	2758f074
+2026-04-17T14:17:21+02:00	AR05	1	attempt_succeeded	verified and committed
+2026-04-17T14:17:21+02:00	AR06	1	attempt_started	In-repo mirage demo UI and quickstart
+2026-04-17T14:17:21+02:00	AR06	1	spawn_started	codex exec started
+2026-04-17T14:32:20+02:00	AR06	1	spawn_succeeded	codex exec completed
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	test -f apps/mirage-rs/static/quickstart.sh
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	test -f apps/mirage-rs/static/js/agent_registry_smoke.mjs
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	bash -n apps/mirage-rs/static/quickstart.sh
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	node --experimental-default-type=module --check apps/mirage-rs/static/js/api.js
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	node --experimental-default-type=module --check apps/mirage-rs/static/js/polling.js
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	node --experimental-default-type=module --check apps/mirage-rs/static/js/state.js
+2026-04-17T14:32:20+02:00	AR06	1	verify_running	node --experimental-default-type=module --check apps/mirage-rs/static/js/main.js
+2026-04-17T14:32:21+02:00	AR06	1	verify_running	node apps/mirage-rs/static/js/agent_registry_smoke.mjs --check
+2026-04-17T14:32:21+02:00	AR06	1	verify_succeeded	all verification commands passed
+2026-04-17T14:32:21+02:00	AR06	1	commit_succeeded	44120f65
+2026-04-17T14:32:21+02:00	AR06	1	attempt_succeeded	verified and committed
+2026-04-17T14:32:21+02:00	AR07	1	attempt_started	Remote demo verification and operator docs
+2026-04-17T14:32:21+02:00	AR07	1	spawn_started	codex exec started
+2026-04-17T14:46:01+02:00	AR07	1	spawn_succeeded	codex exec completed
+2026-04-17T14:46:04+02:00	AR07	1	verify_running	test -f tmp/agent-registry/remote-demo-runbook.md
+2026-04-17T14:46:04+02:00	AR07	1	verify_running	test -f tmp/agent-registry/scripts/remote-demo-check.sh
+2026-04-17T14:46:04+02:00	AR07	1	verify_running	bash -n tmp/agent-registry/scripts/remote-demo-check.sh
+2026-04-17T14:46:04+02:00	AR07	1	verify_running	bash tmp/agent-registry/scripts/remote-demo-check.sh --dry-run
+2026-04-17T14:46:04+02:00	AR07	1	verify_running	rg -n 'Railway|remote|local laptop agent|relay restart|mirage demo UI' tmp/agent-registry/remote-demo-runbook.md
+2026-04-17T14:46:05+02:00	AR07	1	verify_succeeded	all verification commands passed
+2026-04-17T14:46:05+02:00	AR07	1	commit_succeeded	51090d66
+2026-04-17T14:46:05+02:00	AR07	1	attempt_succeeded	verified and committed
+2026-04-17T14:46:05+02:00	AR08	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T14:46:05+02:00	AR08	1	attempt_started	Optional Kauri dashboard migration
+2026-04-17T14:46:05+02:00	AR08	1	spawn_started	codex exec started
+2026-04-17T14:55:02+02:00	AR08	1	spawn_succeeded	codex exec completed
+2026-04-17T14:55:02+02:00	AR08	1	verify_running	test -d /Users/will/dev/nunchi/nunchi-dashboard
+2026-04-17T14:55:02+02:00	AR08	1	verify_running	npm --prefix /Users/will/dev/nunchi/nunchi-dashboard ci
+2026-04-17T14:55:30+02:00	AR08	1	verify_running	npm --prefix /Users/will/dev/nunchi/nunchi-dashboard run typecheck
+2026-04-17T14:55:34+02:00	AR08	1	verify_failed	npm --prefix /Users/will/dev/nunchi/nunchi-dashboard run typecheck
+2026-04-17T14:55:34+02:00	AR08	1	attempt_failed	verification failed
+2026-04-17T14:55:34+02:00	AR08	2	attempt_started	Optional Kauri dashboard migration
+2026-04-17T14:55:35+02:00	AR08	2	spawn_started	codex exec started
+2026-04-17T14:58:14+02:00	AR08	2	runner_exit	runner exiting with code 143

@@ -1,0 +1,19 @@
+Added the remote demo proof assets at [remote-demo-runbook.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/tmp/agent-registry/remote-demo-runbook.md), [remote-demo-check.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/tmp/agent-registry/scripts/remote-demo-check.sh), and the supporting templates under `tmp/agent-registry/`, including [demo-agent.roko.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/tmp/agent-registry/demo-agent.roko.toml). The runbook is concrete about Railway mirage+relay deploy, one remote Docker-hosted agent container, one local laptop agent, the local static demo UI against the remote Mirage URL, validation, and relay-restart recovery.
+
+I also fixed [agent_serve.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/agent_serve.rs) so `roko agent serve` now actually builds a message dispatcher from config, applies `--relay-url` to relay registration, and honors `ROKO_CONFIG` for demo-specific agent config. Recovery after a relay restart is still manual and documented that way, because the relay client still does not auto-reconnect.
+
+Verified with:
+- `cargo test -p roko-cli --test agent_serve`
+- `test -f tmp/agent-registry/remote-demo-runbook.md`
+- `test -f tmp/agent-registry/scripts/remote-demo-check.sh`
+- `bash -n tmp/agent-registry/scripts/remote-demo-check.sh`
+- `bash tmp/agent-registry/scripts/remote-demo-check.sh --dry-run`
+
+Official Railway CLI references I used for the operator commands:
+- https://docs.railway.com/cli
+- https://docs.railway.com/cli/up
+- https://docs.railway.com/cli/add
+- https://docs.railway.com/cli/variable
+- https://docs.railway.com/cli/volume
+- https://docs.railway.com/cli/service
+- https://docs.railway.com/cli/domain

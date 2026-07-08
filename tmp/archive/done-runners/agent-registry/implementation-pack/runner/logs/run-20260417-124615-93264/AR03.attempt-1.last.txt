@@ -1,0 +1,9 @@
+Added a new nested `agent` command path in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/main.rs) so `roko agent serve` is separate from the existing top-level `roko serve`. The new runtime lives in [agent_serve.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/agent_serve.rs) and starts `roko-agent-server` directly, enables the current feature surfaces, exposes `--agent-id`, `--bind`, `--relay-url`, `--chain-rpc-url`, `--identity-registry`, `--passport-id`, and `--wallet-key`, and keeps relay/chain setup isolated in dedicated config structs plus startup hooks for later batches.
+
+I also moved `roko-agent-server` into the main CLI dependencies in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/Cargo.toml), added CLI parsing coverage in `main.rs`, and added binary smoke coverage in [tests/agent_serve.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/tests/agent_serve.rs) plus a shared spawn helper in [tests/common/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/tests/common/mod.rs). The smoke test starts a real `roko agent serve` subprocess and checks `/health` for both `status=ok` and the requested `agent_id`.
+
+Verification passed:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli --test agent_serve`
+
+The build still emits existing repo warnings for missing docs and some unused shared test helpers, but there are no verification failures.

@@ -1,0 +1,144 @@
+diff --git a/crates/roko-cli/Cargo.toml b/crates/roko-cli/Cargo.toml
+index e9e77646..455f1fd0 100644
+--- a/crates/roko-cli/Cargo.toml
++++ b/crates/roko-cli/Cargo.toml
+@@ -20,6 +20,7 @@ roko-std = { path = "../roko-std" }
+ roko-fs = { path = "../roko-fs" }
+ roko-compose = { path = "../roko-compose" }
+ roko-agent = { path = "../roko-agent" }
++roko-agent-server = { path = "../roko-agent-server" }
+ roko-gate = { path = "../roko-gate" }
+ roko-orchestrator = { path = "../roko-orchestrator" }
+ roko-learn = { path = "../roko-learn" }
+@@ -67,4 +68,3 @@ notify-debouncer-full = "0.3"
+ tempfile = { workspace = true }
+ assert_cmd = { workspace = true }
+ predicates = { workspace = true }
+-roko-agent-server = { path = "../roko-agent-server" }
+diff --git a/crates/roko-cli/src/main.rs b/crates/roko-cli/src/main.rs
+index c245766c..832d3dcb 100644
+--- a/crates/roko-cli/src/main.rs
++++ b/crates/roko-cli/src/main.rs
+@@ -19,9 +19,11 @@
+     )
+ )]
+ 
++mod agent_serve;
+ mod commands;
+ mod plan_validate;
+ 
++use agent_serve::AgentCmd;
+ use anyhow::{Context as _, Result, anyhow, bail};
+ use clap::{Parser, Subcommand, ValueEnum};
+ use commands::experiment::{ExperimentCmd, dispatch_experiment};
+@@ -230,6 +232,11 @@ enum Command {
+         #[command(subcommand)]
+         cmd: ConfigCmd,
+     },
++    /// Manage standalone agent runtimes.
++    Agent {
++        #[command(subcommand)]
++        cmd: AgentCmd,
++    },
+     /// Inject a signal into a running session.
+     Inject {
+         /// Target session ID.
+@@ -962,6 +969,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
+             dispatch_config(cmd).await?;
+             Ok(EXIT_SUCCESS)
+         }
++        Command::Agent { cmd } => cmd_agent(cli, cmd).await,
+         Command::Inject {
+             session,
+             kind,
+@@ -1068,6 +1076,13 @@ async fn cmd_daemon(cli: &Cli, cmd: DaemonCmd) -> Result<i32> {
+     }
+ }
+ 
++async fn cmd_agent(cli: &Cli, cmd: AgentCmd) -> Result<i32> {
++    let workdir = resolve_workdir(cli);
++    prepare_runtime_hooks(&workdir, cli.quiet);
++    agent_serve::run(cmd).await?;
++    Ok(EXIT_SUCCESS)
++}
++
+ // -----------------------------------------------------------------------
+ // Mode handlers
+ // -----------------------------------------------------------------------
+@@ -6406,6 +6421,44 @@ mod tests {
+         assert!(matches!(cli.command, Some(Command::Status { .. })));
+     }
+ 
++    #[test]
++    fn cli_parses_agent_serve_subcommand() {
++        let cli = Cli::try_parse_from([
++            "roko",
++            "agent",
++            "serve",
++            "--agent-id",
++            "demo-1",
++            "--bind",
++            "127.0.0.1:7777",
++            "--relay-url",
++            "https://relay.example",
++            "--chain-rpc-url",
++            "https://rpc.example",
++            "--identity-registry",
++            "0x1234",
++            "--passport-id",
++            "7",
++            "--wallet-key",
++            "0xdeadbeef",
++        ])
++        .unwrap();
++        assert!(matches!(
++            cli.command,
++            Some(Command::Agent {
++                cmd: AgentCmd::Serve(agent_serve::AgentServeArgs {
++                    agent_id,
++                    bind,
++                    relay_url: Some(_),
++                    chain_rpc_url: Some(_),
++                    identity_registry: Some(_),
++                    passport_id: Some(_),
++                    wallet_key: Some(_),
++                }),
++            }) if agent_id == "demo-1" && bind == "127.0.0.1:7777"
++        ));
++    }
++
+     #[test]
+     fn cli_parses_inject_subcommand() {
+         let cli = Cli::try_parse_from([
+diff --git a/crates/roko-cli/tests/common/mod.rs b/crates/roko-cli/tests/common/mod.rs
+index 090443d7..6a340d32 100644
+--- a/crates/roko-cli/tests/common/mod.rs
++++ b/crates/roko-cli/tests/common/mod.rs
+@@ -266,6 +266,27 @@ pub fn spawn_roko_serve_on_random_port(workdir: &Path) -> ServeHandle {
+     ServeHandle { base_url, child }
+ }
+ 
++pub fn spawn_roko_agent_serve_on_random_port(workdir: &Path, agent_id: &str) -> ServeHandle {
++    let port = pick_unused_port();
++    let bind = format!("127.0.0.1:{port}");
++    let base_url = format!("http://{bind}");
++    let bin = cargo_bin("roko");
++    let child = ProcessCommand::new(bin)
++        .current_dir(workdir)
++        .arg("agent")
++        .arg("serve")
++        .arg("--agent-id")
++        .arg(agent_id)
++        .arg("--bind")
++        .arg(&bind)
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .spawn()
++        .unwrap_or_else(|err| panic!("spawn roko agent serve: {err}"));
++
++    ServeHandle { base_url, child }
++}
++
+ pub async fn wait_for_http_ok(url: &str, timeout: Duration) -> reqwest::Response {
+     let deadline = Instant::now() + timeout;
+     let client = reqwest::Client::new();

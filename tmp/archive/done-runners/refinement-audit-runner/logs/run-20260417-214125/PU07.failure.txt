@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+--- a/tmp/docs-parity/07/context-pack/repo-map.md
++++ b/tmp/docs-parity/07/context-pack/repo-map.md
+@@ -57,6 +57,8 @@
+ - current runtime crate is `roko-runtime`, not `bardo-runtime`
+ - the conductor is real, but many docs are still mixed rather than cleanly
+   shipping-grounded
++- docs `07`, `08`, and `12` stay informational in this pack even though their
++  headers say `Implementation: Built`
+ - process supervision is already in production, but the ownership story is split
+ - the event bus is concrete `EventBus<E>` / `BusSender<E>`, not a shared kernel
+   `Bus<E>` trait
+diff --git a/tmp/docs-parity/07/run-docs-parity.sh b/tmp/docs-parity/07/run-docs-parity.sh
+index 6ae7dd047ee3ac633a10c2f27cf5719676c21bd1..84dc40a87ba2a1d59be7161eb55faa292431d875
+--- a/tmp/docs-parity/07/run-docs-parity.sh
++++ b/tmp/docs-parity/07/run-docs-parity.sh
+@@ -151,7 +151,7 @@
+ }
+ 
+ if [ $# -eq 0 ]; then
+-  BATCHES=(C1 C2 C3 C4 C5 C6 C7 C8)
++  BATCHES=(C1 C2 C3 C4 C5)
+ else
+   BATCHES=("$@")
+ fi
+
+tokens used
+116,664
+Refreshed the conductor parity pack under [tmp/docs-parity/07/00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/BATCHES.md), [F-theory-learning.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/F-theory-learning.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/SOURCE-INDEX.md), the context-pack files, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/run-docs-parity.sh). The main corrections were:
+- removed stale “reconstruction/missing pack” framing and refreshed the parity status table
+- treated OODA as informational/descriptive with a grounded runtime core, while keeping Good Regulator and Yerkes-Dodson out of the active runtime queue
+- tightened `C1`-`C5` as the only default active batches, kept `C6`-`C8` as explicit deferred handoffs, and fixed the stale `fail / pause` wording to `restart / fail`
+- updated source notes to the live anchors, including the two current `RokoEvent` variants and the real `ProcessSupervisor` ownership split
+- sharpened the health/adaptive notes to match the actual `SystemSnapshot` shape and current static-vs-adaptive boundary
+
+Verification: `bash -n tmp/docs-parity/07/run-docs-parity.sh` passed. Running `tmp/docs-parity/07/run-docs-parity.sh` now defaults to `C1 C2 C3 C4 C5`, and `tmp/docs-parity/07/run-docs-parity.sh C6` returns the expected deferred behavior. No files outside `tmp/docs-parity/07/` were edited.
+
+=== Finished: 2026-04-18T01:09:32+02:00 ===
+=== Duration: 5m 36s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/07/

@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+   [L5]="Materialize experiment winners into a durable operator-facing artifact"
+   [L6]="Add bounded heuristic calibration on top of HeuristicRule"
+-  [L7]="Add use-based freshness before any demurrage model"
++  [L7]="Standardize current freshness signals before any demurrage model"
+   [L8]="Document theory / target-state deferrals for docs 12 and 17-20"
+ )
+ 
+@@ -51,7 +51,7 @@
+   [L5]="cargo test -p roko-learn -p roko-cli"
+   [L6]="cargo test -p roko-neuro -p roko-learn -p roko-cli"
+   [L7]="cargo test -p roko-neuro -p roko-learn"
+-  [L8]="rg -n \"Worldview|ReplicationLedger|ImprovementScoreCard|GateGamingDetector|claim!|Demurrage|ADAS|EvoSkills\" docs/05-learning tmp/docs-parity/05"
++  [L8]="rg -n \"Worldview|ReplicationLedger|ImprovementScoreCard|SafetyInvariants|GateGamingDetector|ConstitutionalConstraints|claim!|Demurrage|ADAS|EvoSkills\" docs/05-learning tmp/docs-parity/05"
+ )
+ 
+ declare -A BATCH_FILES=(
+@@ -103,8 +103,9 @@
+ - Treat \`roko-learn\` as substantially shipped, not as a mostly missing prototype.
+ - Prefer bounded runtime hardening for L1-L7.
+ - Keep docs \`12\` and \`17\`-\`20\` in the theory / target-state bucket unless code proves otherwise.
++- If docs \`12\` or \`17\` still say \`Implementation: Shipping\`, treat that as stale header text unless code proves otherwise.
+ - Treat heuristic calibration as ship-soon; treat worldviews, replication ledgers, and constitutional constraints as deferred unless code proves otherwise.
+-- Narrow demurrage claims to current freshness signals before considering any economic model.
++- Narrow demurrage claims to current freshness signals such as \`last_used_ms\`, \`access_count\`, and \`last_access_ms\` before considering any economic model.
+ 
+ Read these files for context:
+ - $PARITY_DIR/00-INDEX.md
+
+tokens used
+149,998
+Refreshed the `tmp/docs-parity/05/` pack to tighten the audit posture rather than just restate it. The main changes are in [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/BATCHES.md), [F-frameworks-vision.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/F-frameworks-vision.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/SOURCE-INDEX.md), and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/run-docs-parity.sh). I made the pack explicitly distrust stale `Implementation: Shipping` headers in docs `12` and `17`, narrowed freshness language to the real current signals (`last_used_ms`, `access_count`, `last_access_ms`), added adjacent shipped anchors for `section_effect`, `events`, `event_subscriber`, and `drift`, and tightened the parity notes around doc `13` (“wired with productization gaps”) and doc `15` (`31.6x` stays heuristic).
+
+I also refreshed the context pack so later runs inherit the same calibrated reading instead of drifting back toward theory-as-runtime. That includes the carry-forward map, learning summary, gap summary, and repo map, plus broader L8 verification for `SafetyInvariants` / `ConstitutionalConstraints` and related deferred terms.
+
+Verification: `bash -n tmp/docs-parity/05/run-docs-parity.sh` passed. I also checked that `docs/05-learning/` still counts as `22` markdown files total (`21` chapter docs plus `INDEX.md`), [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/00-INDEX.md) has `22` document-index rows, and [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/05/BATCHES.md) still has all `8` batch sections. I did not run cargo tests because this batch only changed parity materials under `tmp/docs-parity/05/`.
+
+=== Finished: 2026-04-18T00:34:02+02:00 ===
+=== Duration: 5m 37s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/05/

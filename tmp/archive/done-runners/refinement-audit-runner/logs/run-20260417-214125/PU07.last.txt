@@ -1,0 +1,8 @@
+Refreshed the conductor parity pack under [tmp/docs-parity/07/00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/BATCHES.md), [F-theory-learning.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/F-theory-learning.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/SOURCE-INDEX.md), the context-pack files, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/07/run-docs-parity.sh). The main corrections were:
+- removed stale “reconstruction/missing pack” framing and refreshed the parity status table
+- treated OODA as informational/descriptive with a grounded runtime core, while keeping Good Regulator and Yerkes-Dodson out of the active runtime queue
+- tightened `C1`-`C5` as the only default active batches, kept `C6`-`C8` as explicit deferred handoffs, and fixed the stale `fail / pause` wording to `restart / fail`
+- updated source notes to the live anchors, including the two current `RokoEvent` variants and the real `ProcessSupervisor` ownership split
+- sharpened the health/adaptive notes to match the actual `SystemSnapshot` shape and current static-vs-adaptive boundary
+
+Verification: `bash -n tmp/docs-parity/07/run-docs-parity.sh` passed. Running `tmp/docs-parity/07/run-docs-parity.sh` now defaults to `C1 C2 C3 C4 C5`, and `tmp/docs-parity/07/run-docs-parity.sh C6` returns the expected deferred behavior. No files outside `tmp/docs-parity/07/` were edited.

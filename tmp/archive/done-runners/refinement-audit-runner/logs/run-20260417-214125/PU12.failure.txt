@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
++  echo "  Prompt written to $prompt_file"
++  echo "  [TODO] Run this prompt with: claude --print \"\$(cat \"$prompt_file\")\" 2>&1 | tee $log_file"
++
++  echo "PENDING" > "$result_file"
++}
++
++if [ $# -eq 0 ]; then
++  BATCHES=(M1 M2 M3 M4 M5 M6 M7 M8)
++else
++  BATCHES=("$@")
++fi
++
++echo "Docs-Parity Run: $RUN_ID"
++echo "Batches: ${BATCHES[*]}"
++echo "Logs: $LOG_DIR/$RUN_ID/"
++echo ""
++
++for batch in "${BATCHES[@]}"; do
++  run_batch "$batch"
++  echo ""
++done
++
++echo "=== Run $RUN_ID complete ==="
++echo "Results:"
++for batch in "${BATCHES[@]}"; do
++  result_file="$LOG_DIR/$RUN_ID/$batch.result"
++  result="$(cat "$result_file" 2>/dev/null || echo 'N/A')"
++  echo "  $batch: $result"
++done
+
+tokens used
+185,992
+Rebuilt the missing `tmp/docs-parity/12/` pack from scratch and synced all required files under it, including [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/12/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/12/BATCHES.md), the A-F detail files, the context pack, [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/12/SOURCE-INDEX.md), and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/12/run-docs-parity.sh). The pack now centers the shipped CLI/TUI/serve/statehub/sidecar core, calls out `roko new` and `roko explain` as unshipped concepts, flags the `9090` / `6677` / `8080` port drift, keeps StateHub and CLI parity in the ship-soon lane, and marks Spectre, web, A2UI, sonification, SDK, IDE, and rich UX primitives as deferred.
+
+Verification passed for `bash -n tmp/docs-parity/12/run-docs-parity.sh`, and the document index table in `00-INDEX.md` has 24 doc rows. One caveat: this worktree did not contain the prior `tmp/docs-parity/12/` pack or the `tmp/refinements-audit/*.md` files named in the prompt, so I reconstructed the pack from the audited `docs/12-interfaces/` docs, the task’s shared audit context, and the established `tmp/docs-parity/11/` pack structure.
+
+=== Finished: 2026-04-18T03:56:05+02:00 ===
+=== Duration: 9m 1s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/12/

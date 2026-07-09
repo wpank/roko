@@ -1,0 +1,10 @@
+Updated all required files under `tmp/docs-parity/00/` and kept the pack strictly docs-only.
+
+The pack now consistently treats topic `00` as a verification surface rather than an implementation program. It separates shipped, partial, and planned/deferred states; keeps `Engram` canonical; pins the audit baseline at `36` workspace members and `322,088` Rust LOC; marks `roko-serve` and the TUI as wired; keeps the runtime bus at exactly two live `RokoEvent` variants; defers `Pulse` / `Datum` / `Demurrage` / `Worldview` / `Custody`; softens the layer/cross-cut claims; and reframes the synergy matrix and roadmap material as planning artifacts instead of current architecture truth. I also refreshed `SOURCE-INDEX.md` as a spot-check aid and fixed `run-docs-parity.sh` so its verify strings align with the rewritten files and don’t use shell-breaking backticks.
+
+Verified:
+- `bash -n tmp/docs-parity/00/run-docs-parity.sh`
+- `git diff --check -- tmp/docs-parity/00`
+- Runner-equivalent `rg` checks for counts, wired status, deferred concepts, source-index coverage, and meta-doc wording
+
+`Signal` still appears a few times, but only as intentional legacy/reference wording or in helper verification strings, not as the active architecture noun.

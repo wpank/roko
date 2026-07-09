@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+-    if [ "$dep_status" != "PASS" ] && [ "$dep_status" != "READY" ]; then
+-      echo "  [BLOCKED] $batch depends on $dep (not yet completed)"
++    if [ "$dep_status" != "PASS" ]; then
++      echo "  [BLOCKED] $batch depends on $dep (status: $dep_status; needs PASS)"
+       return 1
+     fi
+   done
+@@ -86,7 +99,7 @@
+ 
+   if ! check_deps "$batch"; then
+     echo "BLOCKED" > "$result_file"
+-    return 1
++    return 0
+   fi
+ 
+   local prompt_file="$LOG_DIR/$RUN_ID/$batch.prompt"
+@@ -108,6 +121,10 @@
+ Also read these batch-specific files:
+ $(for f in ${BATCH_FILES[$batch]}; do echo "- $PARITY_DIR/$f"; done)
+ 
++Also read these owning docs and workflow sources:
++$(for f in ${BATCH_DOCS[$batch]}; do echo "- $REPO_ROOT/$f"; done)
++- $PARITY_DIR/run-docs-parity.sh
++
+ Execution rules:
+ 1. Search before changing docs.
+ 2. Stay inside the batch scope from BATCHES.md.
+
+tokens used
+120,747
+Refreshed the `tmp/docs-parity/10/` pack to match the current audited `docs/10-dreams` and live runtime. The main adjustments were: carrying the full `A-F` evidence set into M7, sharpening the shipping-vs-frontier split around Bus/Pulse overclaiming and doc 17’s planned extensions, broadening stale-banner coverage, and adding direct `crates/roko-serve/src/dreams.rs` anchors to [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/10/SOURCE-INDEX.md).
+
+I also tightened [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/10/run-docs-parity.sh): dependencies now advance only on `PASS`, blocked batches no longer abort the whole launcher, generated prompts explicitly include the owning `docs/10-dreams/*.md` files plus the launcher itself, and the verify commands now match the batch contract more closely.
+
+Verification: `bash -n tmp/docs-parity/10/run-docs-parity.sh` passed. One constraint in this worktree: the referenced `tmp/refinements-audit/*.md` inputs were not present, so the refresh was grounded in the live `docs/10-dreams` files and code anchors instead.
+
+=== Finished: 2026-04-18T02:01:17+02:00 ===
+=== Duration: 6m 4s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/10/

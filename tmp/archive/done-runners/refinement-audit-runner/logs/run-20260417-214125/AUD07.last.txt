@@ -1,0 +1,35 @@
+Applied the AUD07 docs sweep.
+
+Counts:
+- `Signal` -> `Engram` fixes: 36 files
+- Stale number fixes: 14 files
+- 0-code concept qualifiers added: 16 files
+- Total edited: 62 files
+
+Verification:
+- `rg` for stale numbers (`18 crates`, `~177K`, `1,568`, `85 routes`) returned no remaining hits in `docs/`.
+- Targeted `Signal`-type grep no longer finds live core-type uses; remaining hits are excluded cases like `CognitiveSignal`, `SignalRegistry`, and the glossary’s retired-term entry.
+
+Edited files:
+```text
+docs/INDEX.md, docs/QUICKSTART.md, docs/CLI-REFERENCE.md, docs/COMPARISON.md, docs/BENCHMARKS.md, docs/EXECUTIVE-SUMMARY.md, docs/VISION-RUN-ANYWHERE.md
+docs/00-architecture/03-score-7-axis-appraisal.md, docs/00-architecture/11-dual-process-and-active-inference.md, docs/00-architecture/19-compositional-kinds.md, docs/00-architecture/24-cross-section-integration-map.md, docs/00-architecture/30-cross-pollination-innovations.md, docs/00-architecture/31-implementation-readiness-audit.md, docs/00-architecture/32-comprehensive-test-strategy.md
+docs/01-orchestration/00-layer-overview.md, docs/01-orchestration/11-conductor-integration.md, docs/01-orchestration/13-cross-domain-orchestration.md
+docs/02-agents/00-agent-trait.md, docs/02-agents/05-agent-pools.md, docs/02-agents/11-dual-process-routing.md, docs/02-agents/13-creation-sites.md
+docs/03-composition/00-composer-trait.md
+docs/04-verification/00-gate-trait.md, docs/04-verification/03-gate-pipeline.md, docs/04-verification/15-verdicts-as-signals.md
+docs/07-conductor/00-conductor-architecture.md, docs/07-conductor/01-watcher-ensemble.md, docs/07-conductor/02-circuit-breaker.md, docs/07-conductor/03-graduated-interventions.md, docs/07-conductor/05-stuck-detection.md, docs/07-conductor/07-ooda-cybernetic-loop.md, docs/07-conductor/09-cognitive-signals.md, docs/07-conductor/15-conductor-learning-federation.md, docs/07-conductor/INDEX.md
+docs/08-chain/00-vision-and-framing.md, docs/08-chain/15-chainwitness-event-watching.md, docs/08-chain/24-current-status-and-6-contracts.md
+docs/09-daimon/11-coding-agent-integration.md
+docs/10-dreams/12-sleep-time-compute.md, docs/10-dreams/13-scheduling-and-triggers.md
+docs/11-safety/10-mev-protection.md, docs/11-safety/11-temporal-logic.md, docs/11-safety/13-formal-verification.md, docs/11-safety/14-cognitive-kernel-safety.md, docs/11-safety/15-forensic-ai.md
+docs/12-interfaces/00-cli-overview.md, docs/12-interfaces/02-roko-new-scaffolders.md, docs/12-interfaces/03-progressive-help-and-explain.md
+docs/15-code-intelligence/00-vision.md, docs/15-code-intelligence/01-tree-sitter-parsing.md, docs/15-code-intelligence/02-symbol-extraction.md, docs/15-code-intelligence/09-snapshot-optimization.md
+docs/16-heartbeat/07-adaptive-clock.md
+docs/17-lifecycle/03-configuration-and-operator-model.md, docs/17-lifecycle/04-funding-and-budgets.md
+docs/18-tools/03-chain-domain-tools.md, docs/18-tools/05-tool-profiles.md
+docs/19-deployment/00-packaging-and-distribution.md, docs/19-deployment/01-native-x86-arm.md, docs/19-deployment/14-observability-and-telemetry.md
+docs/21-references/25-research-to-runtime.md, docs/21-references/INDEX.md
+```
+
+No tests were needed for this docs-only batch.

@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+   local status="${BATCH_STATUS[$batch]}"
+@@ -101,7 +120,8 @@
+ - The strongest current anchors are docs 03, 06, 08, and 13.
+ - Docs 02, 07, 11, and 12 are deferred/frontier even if their source headers still say Built.
+ - Emotional congruence scoring, PAD-fed SystemPromptBuilder guidance, DaimonPolicy routing input, and PAD-biased prompt-auction selection are real partial integrations.
+-- roko-golem references in the source docs are historical context only and should not be repeated as current runtime ownership.
++- Historical migration wording in the source docs should not be repeated as current runtime ownership.
++- Use doc 13's status vocabulary (\`Complete\`, \`Mostly complete\`, \`Partial\`, \`Not started\`) when compressing the section.
+ 
+ Audit input note:
+ - $AUDIT_NOTE
+@@ -128,7 +148,7 @@
+ 3. Search current code before describing anything as missing or deferred.
+ 4. If a claim cannot be tied to a current code anchor, mark it mixed, frontier, or deferred.
+ 5. Do not treat ALMA, contrarian tracker / mind wandering, per-crate confidence, error familiarity, fatigue detection, or collective contagion as live features unless code proves otherwise.
+-6. Do not repeat stale roko-golem migration language as present-tense status.
++6. Do not repeat stale migration language as present-tense status.
+ 7. After changes, run the verify command and report files changed, commands run, anchors confirmed, and explicit deferrals.
+ 
+ Verify command: ${BATCH_VERIFY[$batch]}
+@@ -145,6 +165,8 @@
+   BATCHES=("$@")
+ fi
+ 
++validate_batches
++
+ echo "Docs-Parity Run: $RUN_ID"
+ echo "Batches: ${BATCHES[*]}"
+ echo "Logs: $LOG_DIR/$RUN_ID/"
+
+tokens used
+166,733
+Refreshed the `tmp/docs-parity/09/` pack in place and tightened it around the audited reality that Topic `09` is mostly shipping or partial shipping. The main changes are in [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/09/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/09/BATCHES.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/09/SOURCE-INDEX.md), the detail notes under `A/B/D/E`, the context-pack summaries, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/09/run-docs-parity.sh). I removed the self-stale “missing pack” framing, switched the pack to doc-13’s `Complete` / `Mostly complete` / `Partial` / `Not started` vocabulary, strengthened the `11 / 15` mostly-shipping message, cleaned historical-owner wording out of the editable parity files, and corrected the stale source anchors.
+
+The runner now matches the batch contract instead of just declaring dependencies: it validates requested batch order before generating prompts. Verification: `bash -n tmp/docs-parity/09/run-docs-parity.sh` passes, `./tmp/docs-parity/09/run-docs-parity.sh J1 J2` succeeds with `READY` prompts, `./tmp/docs-parity/09/run-docs-parity.sh J1 J7` now fails dependency validation as intended, `00-INDEX.md` still has 15 document rows, and a search over the editable parity files returns no `roko-golem` references.
+
+=== Finished: 2026-04-18T01:45:21+02:00 ===
+=== Duration: 8m 17s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/09/

@@ -1,0 +1,2391 @@
+diff --git a/docs/00-architecture/01-naming-and-glossary.md b/docs/00-architecture/01-naming-and-glossary.md
+index 24fbe355..1992b3d1 100644
+--- a/docs/00-architecture/01-naming-and-glossary.md
++++ b/docs/00-architecture/01-naming-and-glossary.md
+@@ -6,7 +6,11 @@
+ > When any other document disagrees with a definition here, this glossary is authoritative.
+ > This serves as a quick-reference companion to the full architecture documentation. See also
+ > `tmp/refinements/03-bus-as-first-class.md` for the Bus promotion that makes the transport
+-> fabric a first-class kernel surface beside Substrate.
++> fabric a first-class kernel surface beside Substrate,
++> `tmp/refinements/04-operators-generalized.md` for the `Datum` and `PolicyOutputs` operator
++> generalization, and
++> `tmp/refinements/09-phase-2-implications.md` for how Chain, Dreams, Coordination, and
++> Heartbeat land on the same two-fabric kernel.
+ 
+ 
+ > **Implementation**: Shipping
+@@ -41,7 +45,8 @@ parenthetical notes when quoting legacy sources).
+ > ephemeral medium is **Pulse**; the two fabrics are **Substrate** and **Bus**. See
+ > [06-synapse-traits.md](./06-synapse-traits.md),
+ > [07-substrate-trait.md](./07-substrate-trait.md), and
+-> `tmp/refinements/03-bus-as-first-class.md`.
++> `tmp/refinements/03-bus-as-first-class.md`. REF09 extends that same vocabulary to
++> `ChainBus`, `MeshBus`, and `HeartbeatPolicy`; see `tmp/refinements/09-phase-2-implications.md`.
+ 
+ ---
+ 
+@@ -167,6 +172,7 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **Topic** | Dot-separated routing handle for Pulses on a Bus, such as `gate.verdict.emitted` or `agent.msg.chunk`. |
+ | **TopicFilter** | Declarative Bus subscription filter with `Exact`, `Glob`, `AnyOf`, `All`, `And`, `Or`, and `Not` forms. |
+ | **BusReceiver** | Subscriber handle returned by `Bus::subscribe()`. Delivers Pulses in publish order and carries sequence state for bounded replay. |
++| **Datum** | Polymorphic operator input: `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`. Used when operators need to accept either medium without inventing a new trait family. |
+ | **Synapse Architecture** | Roko's architectural story: two mediums (Engram and Pulse), two fabrics (Substrate and Bus), and six operators. Replaces the older single-medium mnemonic. |
+ | **Five Layers** | Runtime (L0) / Framework (L1) / Scaffold (L2) / Harness (L3) / Orchestration (L4). |
+ | **Cognitive Cross-Cuts** | Neuro / Daimon / Dreams — subsystems injected across multiple layers. |
+@@ -214,9 +220,11 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **C-Factor** | Collective intelligence ratio: `C-Factor = Collective Performance / Sum(Individual Performances)`. Values > 1.0 indicate superlinear intelligence. (Woolley et al. 2010) |
+ | **C-Score** | Composite optimization metric: `gate_pass×0.3 + cost_efficiency×0.2 + speed×0.15 + first_try_rate×0.25 + knowledge_growth×0.1`. |
+ | **CascadeRouter** | Multi-stage model routing: confidence threshold → contextual bandit (LinUCB) → cost-aware selection. Persisted to `.roko/learn/cascade-router.json`. |
++| **ChainBus** | Bus backend that turns Korai or Daeji log streams into topic-addressed Pulses such as `chain.deposit.emitted`. It is the transport sibling to `ChainSubstrate`, not a replacement for durable on-chain storage. |
++| **ChainSubstrate** | Substrate backend for durable on-chain Engrams such as attestations, transactions, insights, bounties, and pheromones. Queries durable chain state; live chain notifications belong on `ChainBus`. |
+ | **Cognitive Loop** | The 9-step universal loop: PERCEIVE → EVALUATE → ATTEND → INTEGRATE → ACT → VERIFY → PERSIST → ADAPT → META-COGNIZE. |
+ | **Collective** | A group of cooperating agents. Replaces "Clade." |
+-| **Composer** | Synapse trait. Combines multiple Engrams into one new Engram under Budget constraints. Synchronous. Takes `&dyn Scorer`. |
++| **Composer** | Synapse trait. Combines `Datum` inputs into one durable Engram under Budget constraints. Synchronous. Takes `&dyn Scorer`. |
+ | **ContentHash** | 32-byte BLAKE3 digest identifying an Engram. Computed from kind + body + author + tags. Score and decay are excluded. |
+ | **Context** | The shared runtime environment passed to every trait method. Carries time (`now_ms`), goal, session, and extension attributes. |
+ 
+@@ -224,6 +232,7 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ 
+ | Term | Definition |
+ |---|---|
++| **Datum** | Polymorphic operator input: `enum Datum<'a> { Engram(&'a Engram), Pulse(&'a Pulse) }`. Used by Scorer and Composer where the same operator should accept either medium. |
+ | **Daimon** | Motivation and focus subsystem (`roko-daimon`). Maintains PAD (Pleasure-Arousal-Dominance) vectors, six behavioral states, and somatic markers. The agent's self-model. |
+ | **Decay** | Time-based weight reduction for Engrams. Variants: None (permanent), HalfLife (exponential), Ttl (hard cutoff), Ebbinghaus (psychological forgetting curve). |
+ | **Delta** | Consolidation cognitive speed. Hours timescale. Dreams: replay, synthesis, pruning. Knowledge tier promotion. |
+@@ -246,13 +255,14 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ |---|---|
+ | **Forensic AI** | Content-addressed causal replay — the ability to trace any decision back to its inputs via lineage chains. Regulatory pre-compliance moat. |
+ | **Gamma** | Reactive cognitive speed. ~5-15 second timescale. One complete loop tick: tool calls, LLM inference, verification. |
+-| **Gate** | Synapse trait. Verifies an Engram against ground truth, producing a Verdict. Asynchronous. The bridge to external reality. |
++| **Gate** | Synapse trait. Verifies an Engram against ground truth and can optionally verify a Pulse window through a `verify_stream` path. Asynchronous. The bridge to external reality. |
+ 
+ ### H-K
+ 
+ | Term | Definition |
+ |---|---|
+ | **HDC** | Hyperdimensional Computing. 10,240-bit vectors using XOR bind, majority bundle, Hamming similarity. Used for semantic similarity in knowledge retrieval. (Kanerva 2009, Cognitive Computation 1(2); Plate 2003; Frady et al. 2018) |
++| **HeartbeatPolicy** | Policy-owned clock publisher that emits `heartbeat.gamma.tick`, `heartbeat.theta.tick`, and `heartbeat.delta.tick` Pulses on the Bus. REF09 frames heartbeat as a Bus producer rather than a special orchestration mechanism. |
+ | **Hypnagogia** | The creative hypothesis generator in `roko-dreams`. Four components: Thalamic Gate (stimulus filter), Executive Loosener (constraint relaxation), Dali Interrupt (capture mechanism), Homuncular Observer (coherence filter). |
+ | **Kind** | The semantic type of an Engram. `#[non_exhaustive]` enum with variants for agent runtime, verification, tasks, context, routing, memory, observability, chain participation, and `Custom(String)` for extensions. |
+ | **KORAI** | Mainnet token on the Korai chain. 1% annual demurrage. Replaces "GNOS." |
+@@ -263,6 +273,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | Term | Definition |
+ |---|---|
+ | **Lineage** | A vector of ContentHashes tracking the parent Engrams from which a new Engram was derived. Forms an audit DAG. |
++| **MeshBus** | Bus backend for inter-agent transport over NATS or libp2p-style meshes. Carries Pulses such as `mesh.pheromone.deposited` without becoming the durable coordination store. |
++| **MeshSubstrate** | Shared Substrate backend for durable multi-agent Engrams replicated across the mesh. Holds the pheromone and shared-knowledge records that `MeshBus` announces. |
+ | **Neuro** | Knowledge management subsystem (`roko-neuro`). Six knowledge types (Insight, Heuristic, Warning, CausalLink, StrategyFragment, AntiKnowledge). Four tiers (Transient, Working, Consolidated, Persistent). HDC encoding for similarity. |
+ | **NeuroStore** | The storage backend for the Neuro subsystem. |
+ 
+@@ -271,8 +283,9 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | Term | Definition |
+ |---|---|
+ | **Outcome** | Feedback about a prior Router selection. Carries success/failure, reward, cost, and latency. Used by Routers to learn via bandit algorithms. |
+-| **Pheromone** | A stigmergic signal with time-based decay. Three types: THREAT (2h half-life), OPPORTUNITY (4h), WISDOM (24h). Agents communicate indirectly by reading and writing pheromones to shared Substrates. |
+-| **Policy** | Synapse trait. Watches Engram streams and emits new Engrams in response (interventions, reactions). Synchronous. Batch input. |
++| **Pheromone** | A stigmergic Engram with time-based decay. Three types: THREAT (2h half-life), OPPORTUNITY (4h), WISDOM (24h). Agents deposit pheromones into shared Substrates and announce fresh deposits on Bus topics such as `mesh.pheromone.deposited`. |
++| **Policy** | Synapse trait. Watches Pulse streams and emits `PolicyOutputs` in response. Policies publish live reactions as Pulses and persist summaries, verdict records, or graduated artifacts as Engrams. |
++| **PolicyOutputs** | Policy return type with two channels: `pulses: Vec<Pulse>` for Bus publication and `engrams: Vec<Engram>` for Substrate persistence. |
+ | **Pulse** | Ephemeral medium carried by the Bus. Pulses are topic-addressed, sequence-numbered, ring-buffered for short replay, and not persisted by default. |
+ | **Provenance** | Who produced an Engram and how trustworthy they are. Fields: author (String), trust ([0,1]), tainted (bool), session (Option). |
+ 
+@@ -282,15 +295,15 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ |---|---|
+ | **Query** | Filter specification for Substrate lookups. Fields: kinds, author, session, since_ms, until_ms, min_weight, tags, limit. |
+ | **ROSEDUST** | Dark-only design system. Rose on void-black. The visual identity for all Roko interfaces. |
+-| **Router** | Synapse trait. Selects one Engram from candidates. Has `feedback()` method for learning from outcomes. Synchronous. |
++| **Router** | Synapse trait. Selects among Engram candidates for durable retrieval or Pulse candidates for live routing. Has `feedback()` for learning from outcomes and may expose separate `select_engram` and `select_pulse` entry points. |
+ 
+ ### S
+ 
+ | Term | Definition |
+ |---|---|
+ | **Score** | Multi-dimensional quality assessment of an Engram. 4 stable axes: confidence [0,1], novelty [0,1], utility [0,∞), reputation [0,∞). 3 extended axes (planned): precision [0,1], salience [0,1], coherence [0,1]. Effective score formula: `confidence × (1 + novelty) × (1 + utility) × reputation`. |
+-| **Scorer** | Synapse trait. Rates an Engram along multiple axes, producing a Score. Synchronous. Pure function of (Engram, Context). |
+-| **Selection** | Output of a Router: the chosen Engram's ContentHash, confidence, router name, and optional reasoning. |
++| **Scorer** | Synapse trait. Rates either medium, usually through monomorphic `score_engram` and `score_pulse` methods plus a thin `score(Datum, Context)` dispatcher. Synchronous. |
++| **Selection** | Output of a Router: the chosen Engram or Pulse candidate, plus confidence, router name, and optional reasoning. |
+ | **Spectre** | Procedurally generated dot-cloud creature per agent. Body encodes cognitive state; eyes encode emotion; clarity encodes prediction accuracy. |
+ | **Substrate** | Storage fabric and kernel trait for durable Engrams. Multiple backends include MemorySubstrate, FileSubstrate, HdcSubstrate, and ChainSubstrate. |
+ | **Synapse Architecture** | The compositional model underlying Roko: two mediums moving through two fabrics, coordinated by six operators across five layers. |
+@@ -301,8 +314,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ |---|---|
+ | **T0 / T1 / T2** | Inference tiers. T0: no LLM call (direct tool call, ~80% of ticks). T1: fast model, shallow reasoning (~15%). T2: full model, deep reasoning (~5%). Routing emerges from active inference (EFE). |
+ | **Theta** | Reflective cognitive speed. ~75 second timescale. Summarize recent work, update Daimon state, check predictions. |
+-| **TickOutcome** | The result of one `loop_tick` invocation. Contains: candidates_examined, composed Engram, Verdict, emitted Engrams, written ContentHashes. |
+-| **Topic** | Dot-separated routing handle for Pulses. Topics name transport intent rather than storage identity. |
++| **TickOutcome** | The result of one `loop_tick` invocation. In the generalized operator model it spans both durable persistence and live publication: candidates examined, composed Engram, Verdict, emitted Pulses, emitted Engrams, and written ContentHashes. |
++| **Topic** | Dot-separated routing handle for Pulses. Topics name transport intent rather than storage identity, for example `mesh.pheromone.deposited` or `heartbeat.gamma.tick`. |
+ | **TopicFilter** | Declarative matcher for Bus subscriptions and replay queries. Supports exact, glob, set, and boolean composition. |
+ | **Verdict** | Output of a Gate. Contains: passed (bool), reason (String), gate name, score [0,1], optional detail, optional TestCount, optional error_digest, duration_ms. |
+ 
+diff --git a/docs/00-architecture/06-synapse-traits.md b/docs/00-architecture/06-synapse-traits.md
+index 5e4f1562..a1b0c5ab 100644
+--- a/docs/00-architecture/06-synapse-traits.md
++++ b/docs/00-architecture/06-synapse-traits.md
+@@ -66,14 +66,16 @@ The six synapse traits are still the stable operator vocabulary for Roko's kerne
+ | Operator | Core job | Primary layer | Relationship to the two-medium / two-fabric model |
+ |---|---|---|---|
+ | **Substrate** | Persist and query durable state | L0 Runtime | Durable fabric for Engrams |
+-| **Scorer** | Assess salience, value, novelty, quality | L1-L2 | Operates over retrieved or observed data; generalized further in REF04 |
+-| **Gate** | Verify against external reality | L3 Harness | Verifies claims, actions, and composed artifacts |
+-| **Router** | Choose among candidates or next actions | L1 Framework | Makes selections informed by scores, costs, and context |
+-| **Composer** | Assemble bounded artifacts | L2 Scaffold | Builds prompt Engrams and other composed outputs |
+-| **Policy** | React to streams and outcomes | L3-L4 | Most obviously pulled toward Pulse-heavy runtime behavior |
++| **Scorer** | Assess salience, value, novelty, quality | L1-L2 | Scores either medium through `Datum`, with monomorphic Engram and Pulse paths where needed |
++| **Gate** | Verify against external reality | L3 Harness | Verifies Engrams directly and can verify Pulse windows through stream-gates |
++| **Router** | Choose among candidates or next actions | L1 Framework | Selects among Engrams or Pulses depending on whether the decision is durable retrieval or live routing |
++| **Composer** | Assemble bounded artifacts | L2 Scaffold | Consumes `Datum` inputs and emits durable Engrams under a budget |
++| **Policy** | React to streams and outcomes | L3-L4 | Consumes Pulse streams and emits `PolicyOutputs` containing Pulses plus Engrams |
+ 
+-The Bus is not a seventh operator in this document's framing. It is the second fabric the six
+-operators now work alongside. REF03 gives it the full first-class treatment.
++The Bus is not a replacement for the six operators. It is the second fabric those operators now
++work alongside. In other words: six operations plus two fabric traits is the complete kernel
++grammar. REF03 gives Bus the full first-class treatment; REF04 generalizes the operators so the
++trait story matches the two-medium runtime.
+ 
+ ---
+ 
+@@ -105,8 +107,10 @@ durable and live inputs:
+ - candidate actions before execution
+ - live runtime signals that may later graduate into durable records
+ 
+-REF04 carries the signature-generalization work. REF01's point is simpler: the architecture
+-should stop pretending that every assessable thing is already a stored Engram.
++REF04 carries the signature-generalization work. In the revised trait table that means a Scorer
++can expose monomorphic `score_engram` and `score_pulse` methods plus a thin `score(Datum)` entry
++point. REF01's point is simpler: the architecture should stop pretending that every assessable
++thing is already a stored Engram.
+ 
+ ---
+ 
+@@ -124,8 +128,9 @@ runtime:
+ - the Gate pipeline should therefore be described as sitting beside both Substrate and Bus, not
+   as a purely post-storage concern
+ 
+-REF05 retells the loop around this distinction. REF01 only establishes the diagnosis that the
+-Engram-only explanation was hiding real runtime behavior.
++REF04 makes that runtime behavior explicit by adding stream-gates such as
++`verify_stream(&[Pulse], ctx)` that can watch a live window without first pretending the system
++already has a durable record. REF05 retells the loop around this distinction.
+ 
+ ---
+ 
+@@ -139,8 +144,9 @@ choice among stored Engrams. Some routing decisions are about live control flow
+ traffic, and only later become Engrams for audit and learning.
+ 
+ That distinction matters because it explains why routing feels natural in the system while some
+-of the older trait signatures felt stretched. The choice is first-class; the durable record of
+-the choice is often second.
++of the older trait signatures felt stretched. REF04 resolves the mismatch with separate
++`select_engram` and `select_pulse` paths. The choice is first-class; the durable record of the
++choice is often second.
+ 
+ ---
+ 
+@@ -156,9 +162,9 @@ Prompt construction is the clearest example:
+ 3. assemble a prompt Engram under a budget
+ 
+ That story still holds. What changes is the boundary around composition. When the runtime reacts
+-to live traffic, the input set may include observations that are not yet durable. REF04 handles
+-the generalized operator surface; REF01 simply makes room for that fact in the architecture
+-description.
++to live traffic, the input set may include observations that are not yet durable. REF04 names
++that mixed input set as `Datum` and keeps the output durable: `Composer::compose(&[Datum], ...)`
++still emits an Engram even when some ingredients are Pulses.
+ 
+ ---
+ 
+@@ -177,7 +183,9 @@ other follow-on work. In practice that means:
+ 
+ REF01 calls this out explicitly because "stream of Engrams" was doing too much conceptual work.
+ The durable output of a Policy can absolutely be an Engram. But the thing the Policy is watching
+-is often better described as Pulse traffic on a Bus.
++is often better described as Pulse traffic on a Bus. REF04 makes that explicit with
++`Policy::decide(&[Pulse], ctx) -> PolicyOutputs`, where `PolicyOutputs` can publish new Pulses
++and persist graduated Engrams in the same reaction step.
+ 
+ This is also why REF04 matters: operator signatures should generalize where the architecture has
+ already generalized in reality.
+@@ -240,9 +248,10 @@ The most important awkward cases are not random edge conditions. They are eviden
+ 
+ | Boundary case | Why it feels awkward in the old framing | What REF01 says about it |
+ |---|---|---|
+-| Telemetry emission from `Policy::decide(&[], ctx)` | The operator wants to react without pretending an Engram stream already exists | The runtime has live traffic that should be described directly |
+-| Circuit breakers and watcher loops | Policies want to watch runtime changes as they happen | Policy is partly a Pulse-stream consumer, not only an Engram consumer |
++| Telemetry emission from `Policy::decide(&[], ctx)` | The operator wants to react without pretending an Engram stream already exists | `Policy::decide(&[Pulse], ctx) -> PolicyOutputs` describes the live stream directly |
++| Circuit breakers and watcher loops | Policies want to watch runtime changes as they happen | Policy is a Pulse-stream consumer whose reactions may publish Pulses or persist Engrams |
+ | Direct cross-layer runtime dependencies | Subsystems bypass the architecture story to communicate | Bus needs first-class architectural recognition |
++| Mixed live-plus-durable context assembly | Composer wants recent traffic plus stored state in one budget | `Datum` makes the mixed input set explicit without inventing new operator types |
+ 
+ ### 11.2 Why Not Add More Operators Here?
+ 
+diff --git a/docs/00-architecture/08-scorer-gate-router-composer-policy.md b/docs/00-architecture/08-scorer-gate-router-composer-policy.md
+index 5da0443d..42521e7a 100644
+--- a/docs/00-architecture/08-scorer-gate-router-composer-policy.md
++++ b/docs/00-architecture/08-scorer-gate-router-composer-policy.md
+@@ -1,292 +1,295 @@
+-# Scorer, Gate, Router, Composer, Policy — The Five Operational Traits
++# Scorer, Gate, Router, Composer, Policy - The Five Operational Traits
+ 
+-> **Abstract:** This document provides detailed specifications for the five non-Substrate
+-> Synapse traits. Each trait is described with its complete Rust signature, design rationale,
+-> key implementations, and role in the cognitive loop. The Substrate trait is covered
+-> separately in [07-substrate-trait.md](07-substrate-trait.md).
++> **Abstract:** This document specifies the five non-fabric operators in the REF04 architecture: Scorer, Gate, Router, Composer, and Policy. Their signatures are generalized over two mediums using `Datum`, while the two fabrics remain `Substrate` for storage and `Bus` for transport. This rewrite follows `tmp/refinements/04-operators-generalized.md` and uses the canonical terminology in `docs/00-architecture/01-naming-and-glossary.md`.
+ 
++> **Reading order:** For the medium and fabric split, read [06-synapse-traits.md](06-synapse-traits.md) first. For the naming map, use [01-naming-and-glossary.md](01-naming-and-glossary.md). For the rationale behind the trait generalization, see `tmp/refinements/04-operators-generalized.md`.
+ 
+-> **Implementation**: Shipping
++> **Implementation status:** Shipping
+ 
+ ---
+ 
+-## 1. Scorer — Rate Engrams
++## 1. Framing
+ 
+-The Scorer trait rates Engrams along multi-dimensional axes (see
+-[03-score-7-axis-appraisal.md](03-score-7-axis-appraisal.md)). Scorers are pure functions
+-of `(Engram, Context)` — no side effects, no I/O, no state mutation.
++Roko's kernel now has two mediums and two fabrics:
+ 
+-### 1.1 Trait Signature
++- `Engram` is the durable medium.
++- `Pulse` is the ephemeral medium.
++- `Substrate` is the storage fabric.
++- `Bus` is the transport fabric.
++
++The five operators in this document work over those mediums through a shared `Datum` enum when polymorphism is useful. They sit beside the two fabric traits rather than replacing them, so the kernel remains six operations plus two fabric traits even though only these five non-fabric operators need signature updates here.
++
++`Datum` is the bridge type:
++
++```rust
++pub enum Datum<'a> {
++    Engram(&'a Engram),
++    Pulse(&'a Pulse),
++}
++```
++
++The practical rule is simple:
++
++- Use `Engram` when the operation is about durable records.
++- Use `Pulse` when the operation is about live transport or stream windows.
++- Use `Datum` when the same operator should accept either shape without introducing a new trait.
++
++This document treats legacy names only as historical context. User-facing prose uses `Engram`, `Pulse`, `Bus`, `Substrate`, `Topic`, and `Datum`.
++
++---
++
++## 2. Scorer - Rate Either Medium
++
++The Scorer trait measures quality, relevance, or utility. Most score functions are naturally defined over Engrams, but stream chunks and transport records can also be scored when the system needs live calibration.
++
++### 2.1 Recommended Signature
+ 
+ ```rust
+ pub trait Scorer: Send + Sync {
+-    fn score(&self, signal: &Signal, ctx: &Context) -> Score;
+-    fn name(&self) -> &'static str { "unnamed_scorer" }
++    fn score_engram(&self, e: &Engram, ctx: &Context) -> Score;
++
++    fn score_pulse(&self, p: &Pulse, ctx: &Context) -> Score {
++        let synthetic = p.to_synthetic_engram();
++        self.score_engram(&synthetic, ctx)
++    }
++
++    fn score(&self, datum: Datum<'_>, ctx: &Context) -> Score {
++        match datum {
++            Datum::Engram(e) => self.score_engram(e, ctx),
++            Datum::Pulse(p) => self.score_pulse(p, ctx),
++        }
++    }
++
++    fn name(&self) -> &'static str;
+ }
+ ```
+ 
+-### 1.2 Key Implementations
++### 2.2 Why This Shape
++
++`score_engram` remains the fast path for durable records. `score_pulse` gives stream-aware scorers a native hook, while the default conversion path keeps simple implementations small. The top-level `score(Datum)` method is the polymorphic entry point used by operators that do not want to branch at the call site.
+ 
+-| Scorer | What It Measures | Primary Axis |
+-|---|---|---|
+-| `RelevanceScorer` | Semantic match to current goal (via Context.goal) | confidence |
+-| `RecencyScorer` | How recent the Engram is | confidence (decreasing with age) |
+-| `ReputationScorer` | Author's historical track record | reputation |
+-| `CatalyticScorer` | How many downstream Engrams this enabled | utility |
+-| `KeywordOverlapScorer` | Keyword match between Engram and query | confidence |
+-| `ToolRelevanceScorer` | How relevant a tool is to the current task | confidence |
+-| `CompositeScorer` | Weighted combination of multiple Scorers | all axes |
++This matches the REF04 rule: the trait stays the same, but the method surface becomes medium-aware.
+ 
+-### 1.3 Composition
++### 2.3 Typical Uses
+ 
+-Multiple Scorers compose into a pipeline via `CompositeScorer`, which applies weighted
+-combinations using Score arithmetic (addition for evidence aggregation, multiplication for
+-modifier application).
++- `RelevanceScorer` scores an Engram against the current goal.
++- `RecencyScorer` scores an Engram by age and decay.
++- `StreamHealthScorer` scores a Pulse stream chunk for anomaly detection.
++- `ToolRelevanceScorer` scores live transport data when routing or gating depends on current activity.
+ 
+-### 1.4 Scorer as Parameter
++### 2.4 Composition
+ 
+-The Composer trait takes `&dyn Scorer` as an argument, enabling the same Composer to produce
+-different outputs based on which scoring function is injected. This is the key composition
+-point between L2 (Scaffold) scoring and L2 context assembly.
++Scorers still compose through `CompositeScorer`. The composition model does not change; only the admissible input shapes expand.
+ 
+ ---
+ 
+-## 2. Gate — Verify Against Ground Truth
++## 3. Gate - Verify Durable Truth and Stream Windows
+ 
+-The Gate trait verifies Engrams against external reality. Gates are the bridge between the
+-agent's internal representations and the external world.
++The Gate trait remains the verification surface. The important change is that verification now has two entry points: one for a durable Engram and one for a window of Pulses. Verdicts remain durable audit records, so the result of verification is always stored as an Engram.
+ 
+-### 2.1 Trait Signature
++### 3.1 Recommended Signature
+ 
+ ```rust
+ #[async_trait]
+ pub trait Gate: Send + Sync {
+-    async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict;
++    async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict;
++
++    async fn verify_stream(&self, pulses: &[Pulse], ctx: &Context) -> Verdict {
++        let synthetic = Engram::from_pulses(pulses);
++        self.verify(&synthetic, ctx).await
++    }
++
+     fn name(&self) -> &str;
+ }
+ ```
+ 
+-### 2.2 Verdict Structure
++### 3.2 Verdict
+ 
+ ```rust
+ pub struct Verdict {
+-    pub passed: bool,           // binary result
+-    pub reason: String,         // human-readable explanation
+-    pub gate: String,           // which gate rendered this
+-    pub score: f32,             // [0..1] numeric score
+-    pub detail: Option<String>, // stdout, error output, diagnostic
+-    pub test_count: Option<TestCount>, // structured test results
+-    pub error_digest: Option<String>,  // unique errors with file/line
+-    pub duration_ms: u64,       // wall-clock time
++    pub passed: bool,
++    pub reason: String,
++    pub gate: String,
++    pub score: f32,
++    pub detail: Option<String>,
++    pub test_count: Option<TestCount>,
++    pub error_digest: Option<String>,
++    pub duration_ms: u64,
+ }
+ ```
+ 
+-The `is_mostly_passing()` method classifies failed verdicts with high pass rates (>90% of
+->20 tests passing) — useful for Policies that need to distinguish "a few tests regressed"
+-from "compilation is broken."
+-
+-### 2.3 The 11-Gate Pipeline
++`Verdict` is a durable audit record. Even when the verification target is a Pulse window, the outcome is persisted as an Engram so the verification trail remains queryable in `Substrate`.
+ 
+-The `roko-gate` crate implements a multi-rung gate pipeline:
++### 3.3 Why The Stream Hook Exists
+ 
+-| Rung | Gate | Async? | What It Checks |
+-|---|---|---|---|
+-| 1 | `CompileGate` | Yes | Does `cargo build` succeed? |
+-| 2 | `TestGate` | Yes | Does `cargo test` pass? |
+-| 3 | `ClippyGate` | Yes | Does `cargo clippy` pass? |
+-| 4 | `DiffGate` | Yes | Are file changes within expected bounds? |
+-| 5 | `FormatGate` | Yes | Is `cargo fmt --check` clean? |
+-| 6 | `SchemaGate` | No | Does the output match expected JSON schema? |
+-| 7 | `JudgeGate` | Yes | LLM-as-judge quality assessment |
+-| 8 | `SimulationGate` | Yes | Transaction simulation via `eth_call` |
+-| 9 | `BalanceGate` | Yes | Are balances within expected bounds? |
+-| 10 | `ContentGate` | No | Does content match expected patterns? |
+-| 11 | `CustomGate` | Yes | Domain-specific verification |
++Most existing gates still verify Engrams directly. The stream hook exists for cases where the truth criterion lives in the transport fabric, such as rate limits, token budgets, liveness, or approval sequencing. The default implementation converts a Pulse window into a synthetic Engram so existing gate logic can be reused without special casing.
+ 
+-### 2.4 Adaptive Thresholds
+-
+-Gate thresholds adapt via exponential moving average (EMA) per rung:
+-
+-```
+-new_threshold = α × observed_pass_rate + (1 - α) × old_threshold
+-```
++### 3.4 Representative Uses
+ 
+-This prevents overly strict gates from blocking all progress and overly lenient gates from
+-missing regressions. Thresholds persist in `.roko/learn/gate-thresholds.json`.
++- `CompileGate`, `TestGate`, and `ClippyGate` continue to verify durable artifacts.
++- `BudgetGate` can inspect `agent.tokens.used` Pulses over a window.
++- `LivenessGate` can inspect `agent.msg.chunk` timing.
++- `SafetyGate` can verify approval flow over a Pulse stream before it becomes a durable decision.
+ 
+ ---
+ 
+-## 3. Router — Select Among Alternatives
++## 4. Router - Select Among Alternatives
+ 
+-The Router trait selects one Engram from a set of candidates and learns from outcomes.
++The Router trait chooses the best candidate and learns from outcomes. The revised design separates durable candidate sets from live candidate sets so both stored records and transport records can participate in routing.
+ 
+-### 3.1 Trait Signature
++### 4.1 Recommended Signature
+ 
+ ```rust
+ pub trait Router: Send + Sync {
+-    fn select(&self, candidates: &[Signal], ctx: &Context) -> Option<Selection>;
++    fn select_engram(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection>;
++
++    fn select_pulse(&self, candidates: &[Pulse], ctx: &Context) -> Option<Selection> {
++        None
++    }
++
+     fn feedback(&self, outcome: &Outcome);
+-    fn name(&self) -> &str;
++    fn name(&self) -> &'static str;
+ }
+ ```
+ 
+-### 3.2 The feedback() Learning Loop
+-
+-The `feedback()` method is what makes Routers self-improving. After a selection is acted
+-upon, the Outcome (success, reward, cost, latency) updates the Router's internal model:
++### 4.2 Why The Default Is None
+ 
+-```
+-select(candidates, ctx) → Selection
+-    ↓ (act on selection)
+-outcome observed → Outcome { success, reward, cost, latency_ms }
+-    ↓
+-feedback(outcome) → internal model updated
+-    ↓ (next time)
+-select(candidates, ctx) → better Selection
+-```
++Not every router needs to understand Pulses. The default `select_pulse` implementation is intentionally empty so existing durable-record routers can remain unchanged until a subsystem has a genuine transport-routing need.
+ 
+-### 3.3 Key Implementations
++### 4.3 Learning Loop
+ 
+-| Router | Algorithm | Learns From |
+-|---|---|---|
+-| `StaticRouter` | Deterministic (config-driven) | Nothing — fixed |
+-| `LinUCBRouter` | Contextual bandit (LinUCB) | Reward + context features |
+-| `CascadeRouter` | Multi-stage: confidence → UCB → cost | Reward + cost |
+-| `WeightedRouter` | Softmax over Scorer outputs | Scorer weights (fixed) |
+-| `EpsilonGreedyBandit` | ε-greedy with decay | Reward |
++The learning cycle is unchanged:
+ 
+-### 3.4 CascadeRouter Detail
++```text
++select -> act -> observe outcome -> feedback -> improved selection
++```
+ 
+-The CascadeRouter implements the FrugalGPT cascade pattern (Chen et al. 2023,
+-arXiv:2305.05176):
++The only difference is that the candidate set can now come from either medium.
+ 
+-1. **Confidence check**: If the cheap model's confidence exceeds threshold, use it
+-2. **UCB exploration**: If uncertain, use LinUCB to select among models
+-3. **Cost-aware**: Factor in token cost and latency to the reward signal
++### 4.4 Typical Uses
+ 
+-The CascadeRouter persists its state to `.roko/learn/cascade-router.json` and improves with
+-every task completion.
++- `LinUCBRouter` can still rank durable alternatives.
++- `CascadeRouter` can still choose among models or plans.
++- `ApprovalRouter` can route `safety.approval.requested` Pulses to the right reviewer.
++- `WorkDistributionRouter` can route a live task-ready Pulse to the right agent.
+ 
+ ---
+ 
+-## 4. Composer — Combine Under Budget
++## 5. Composer - Combine Either Medium Under Budget
+ 
+-The Composer trait assembles multiple Engrams into a single new Engram under resource
+-constraints.
++Composer assembles many inputs into one new durable artifact. REF04 generalizes the input surface so the composer can blend Engrams and Pulses in one pass.
+ 
+-### 4.1 Trait Signature
++### 5.1 Recommended Signature
+ 
+ ```rust
+ pub trait Composer: Send + Sync {
+     fn compose(
+         &self,
+-        signals: &[Signal],
++        inputs: &[Datum<'_>],
+         budget: &Budget,
+         scorer: &dyn Scorer,
+         ctx: &Context,
+-    ) -> Result<Signal>;
++    ) -> Result<Engram>;
+ 
+-    fn name(&self) -> &str;
++    fn name(&self) -> &'static str;
+ }
+ ```
+ 
+-### 4.2 Budget Constraints
++### 5.2 Why This Shape
++
++The output remains an `Engram` because composition produces a durable record by design. The input, however, can be any mix of durable and ephemeral material. That is the useful abstraction boundary: compose from both mediums, persist the result only if the budget and policy allow it.
++
++### 5.3 Budget
+ 
+ ```rust
+ pub struct Budget {
+-    pub max_tokens: Option<usize>,   // token count cap
+-    pub max_signals: Option<usize>,  // input count cap
+-    pub max_bytes: Option<usize>,    // output size cap
+-    pub max_wall_ms: Option<u64>,    // wall-clock time cap
++    pub max_tokens: Option<usize>,
++    pub max_inputs: Option<usize>,
++    pub max_bytes: Option<usize>,
++    pub max_wall_ms: Option<u64>,
+ }
+ ```
+ 
+-### 4.3 Key Implementations
+-
+-| Composer | What It Assembles | Budget Dimensions |
+-|---|---|---|
+-| `PromptComposer` | Prompt sections → complete prompt | max_tokens |
+-| `ContextComposer` | Code files + docs → context pack | max_tokens, max_signals |
+-| `SystemPromptBuilder` | 6-layer role templates → system prompt | max_tokens |
+-| `PlanComposer` | Task descriptions → execution plan | max_signals |
++The budget model is unchanged. Only the admissible input set broadens.
+ 
+-### 4.4 The SystemPromptBuilder
++### 5.4 Typical Uses
+ 
+-The most complex Composer implementation. Assembles system prompts from six layers:
+-
+-1. **Role description** — what the agent is
+-2. **Task context** — what it's working on
+-3. **Tool inventory** — what tools are available
+-4. **Safety rules** — what it must not do
+-5. **Knowledge** — relevant heuristics and rules from Neuro
+-6. **History** — recent episode summaries
+-
+-Each layer is scored for relevance and included under the token budget. The builder uses
+-templates from `roko-compose/src/templates/` specific to each agent role.
++- `PromptComposer` can blend stored context and live stream chunks.
++- `ContextComposer` can include recent Pulses alongside retrieved Engrams.
++- `PlanComposer` can use a mixed candidate set when live events affect planning.
+ 
+ ---
+ 
+-## 5. Policy — React to Streams
++## 6. Policy - React To Pulses
+ 
+-The Policy trait watches Engram streams and produces reactive interventions.
++Policy is the one trait whose shape changes in a breaking way. Its natural input is now a stream of Pulses, and its output is a structured bundle of Pulses and Engrams.
+ 
+-### 5.1 Trait Signature
++### 6.1 Recommended Signature
+ 
+ ```rust
+ pub trait Policy: Send + Sync {
+-    fn decide(&self, stream: &[Signal], ctx: &Context) -> Vec<Signal>;
+-    fn name(&self) -> &str;
++    fn decide(&self, stream: &[Pulse], ctx: &Context) -> PolicyOutputs;
++    fn name(&self) -> &'static str;
++}
++
++pub struct PolicyOutputs {
++    pub pulses: Vec<Pulse>,
++    pub engrams: Vec<Engram>,
+ }
+ ```
+ 
+-### 5.2 Key Implementations
++### 6.2 Why Policy Changes First
++
++Policy is the reactive layer. Reactive logic naturally consumes transport events, not only durable records. When a policy needs to react to stored material, that durable material should already have been surfaced as Pulses from the relevant fabric bridge. That keeps the source of truth clear: `Bus` carries live updates, `Substrate` stores durable outcomes.
+ 
+-| Policy | Trigger | Emits |
+-|---|---|---|
+-| `CircuitBreakerPolicy` | Repeated gate failures | Pause/stop Engrams |
+-| `EpisodeLogPolicy` | Agent turn completion | Episode Engrams |
+-| `PheromonePolicy` | Market state changes | Pheromone Engrams |
+-| `HeartbeatPolicy` | Timer tick | Heartbeat metric Engrams |
+-| `AlertPolicy` | Tool health degradation | ToolHealthDegraded Engrams |
+-| `EfficiencyPolicy` | Turn completion | Efficiency metric Engrams |
+-| `ConductorPolicy` | Multiple signals | Conductor decisions |
++### 6.3 Typical Outputs
+ 
+-### 5.3 Policy in the Loop
++- Emit Pulses for immediate reactions, notifications, or downstream routing.
++- Emit Engrams for durable summaries, consolidated decisions, or graduated stream content.
+ 
+-Policy runs in step 8 (ADAPT) of the cognitive loop — after the gate verdict, after
+-persistence, the Policy examines what just happened and emits reactions. Reactions are
+-themselves Engrams, stored in the Substrate, and visible to subsequent loop ticks.
++### 6.4 Existing Policy Shapes
++
++- `CircuitBreakerPolicy` can watch gate verdict streams and publish pause Pulses.
++- `EpisodeLogPolicy` can turn turn-completion Pulses into episode records.
++- `HeartbeatPolicy` can publish clock Pulses at Gamma, Theta, and Delta cadence.
++- `EfficiencyPolicy` can emit durable metrics while also broadcasting live telemetry.
++
++### 6.5 Migration Note
++
++Policy is the only breaking change in this batch. The migration path for other operators is additive: existing Engram-oriented call sites can continue to work while Pulse-aware variants are introduced. Policy moves from `decide(&[Engram]) -> Vec<Engram>` to `decide(&[Pulse]) -> PolicyOutputs`, so callers need a structured adapter rather than a simple overload.
+ 
+ ---
+ 
+-## Academic Foundations
++## 7. Cross-Operator Summary
+ 
+-| Citation | Contribution |
+-|---|---|
+-| Chen et al. 2023 (arXiv:2305.05176) | FrugalGPT: cascade routing pattern. Foundation for CascadeRouter. |
+-| Li et al. 2010 | LinUCB: contextual bandit for recommendation. Algorithm behind LinUCBRouter. |
+-| Auer et al. 2002, Machine Learning 47(2-3) | UCB1: finite-time regret bounds for multi-armed bandits. Theoretical basis for exploration. |
+-| Scherer 2001, Applied AI 15 | Appraisal theory: multi-dimensional evaluation. Theoretical basis for Scorer design. |
+-| Ousterhout 2018, A Philosophy of Software Design | Deep modules with simple interfaces. Each trait is a deep module. |
++The updated operator contract is:
++
++- `Scorer` accepts `Engram`, `Pulse`, or `Datum`.
++- `Gate` verifies durable Engrams directly and Pulse windows through a default synthetic Engram path.
++- `Router` can select from durable or live candidates.
++- `Composer` can assemble mixed input sets into a durable Engram.
++- `Policy` consumes Pulse streams and returns both Pulses and Engrams through `PolicyOutputs`.
++
++This is the intended end state for the kernel grammar: two mediums, two fabrics, six operations, with the five non-fabric operators generalized over `Datum` or Pulse streams and the fabric traits kept explicit.
+ 
+ ---
+ 
+-## Current Status and Gaps
++## 8. Legacy Naming Notes
++
++Legacy names remain historical only. If you encounter older references in the codebase, treat them as migration artifacts rather than the current model. The canonical vocabulary for this document is:
+ 
+-- **Scorer**: Implemented in `roko-std` (KeywordOverlapScorer, ToolRelevanceScorer) and
+-  `roko-learn` (FormatBandit as scoring-adjacent). CompositeScorer partially implemented.
+-- **Gate**: 11 gates in `roko-gate` (200 tests). Adaptive thresholds wired.
+-- **Router**: CascadeRouter, LinUCBRouter, EpsilonGreedyBandit in `roko-learn` (101 tests).
+-  StaticRouter in `roko-std`.
+-- **Composer**: SystemPromptBuilder in `roko-compose` (23 tests). PromptComposer in
+-  `roko-compose`.
+-- **Policy**: Efficiency events, episode logging wired in orchestrate.rs. Conductor policies
+-  in `roko-conductor`.
++- `Engram` for durable records.
++- `Pulse` for ephemeral transport records.
++- `Bus` for transport.
++- `Substrate` for storage.
++- `Datum` for operator polymorphism.
++- `PolicyOutputs` for policy reactions.
+ 
+ ---
+ 
+-## Cross-References
++## 9. Cross-References
+ 
+-- [06-synapse-traits.md](06-synapse-traits.md) — Trait overview
+-- [07-substrate-trait.md](07-substrate-trait.md) — Substrate in depth
+-- [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) — How these traits compose
++- The two-medium and two-fabric framing is in [06-synapse-traits.md](06-synapse-traits.md).
++- The canonical naming table is in [01-naming-and-glossary.md](01-naming-and-glossary.md).
++- The Bus trait and transport semantics are documented in [07-substrate-trait.md](07-substrate-trait.md) and [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md).
++- The operator generalization rationale is in `tmp/refinements/04-operators-generalized.md`.
+diff --git a/docs/00-architecture/23-architectural-analysis-improvements.md b/docs/00-architecture/23-architectural-analysis-improvements.md
+index 5329a484..052b0bc4 100644
+--- a/docs/00-architecture/23-architectural-analysis-improvements.md
++++ b/docs/00-architecture/23-architectural-analysis-improvements.md
+@@ -10,6 +10,7 @@
+ > coherence gaps, layer violations, rewrite boundaries, and proposes improvements grounded in
+ > academic literature. See also `tmp/refinements/01-critique-one-noun.md`,
+ > `tmp/refinements/03-bus-as-first-class.md`,
++> `tmp/refinements/04-operators-generalized.md`,
+ > `tmp/refinements/21-from-scratch-redesigns.md`, and
+ > [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+@@ -73,17 +74,18 @@ UI/API boundary code (`roko-cli/src/tui/`, `roko-serve/src/routes/`), none in co
+ 
+ ### 2.2 Boundary Operations
+ 
+-Three operations sit at the boundary of the trait model:
++Three operations sit at the boundary of the trait model, and REF04 shows that they are better
++understood as `Datum`-aware operators rather than special cases:
+ 
+ | Operation | Current Implementation | Fit Quality |
+ |---|---|---|
+-| **Engram transformation** (e.g., summarize, translate) | `Composer::compose(&[single], &Budget::UNLIMITED, ...)` | Adequate. Budget parameter is unused but harmless. |
+-| **Telemetry emission** (metrics, traces) | `Policy::decide(&[], ctx)` returning metric Engrams | Adequate. Empty stream input is awkward but functional. |
+-| **Batch verification** (verify N Engrams at once) | Loop calling `Gate::verify` N times | Adequate. External loop is standard; batch Gate would be premature optimization. |
++| **Engram transformation** (e.g., summarize, translate) | `Composer::compose(&[Datum::Engram(single)], &Budget::UNLIMITED, ...)` | Adequate. Composer can accept either medium, so the same path can also absorb nearby Pulse windows when context is mixed. |
++| **Telemetry emission** (metrics, traces) | `Policy::decide(&[Pulse], ctx)` returning `PolicyOutputs` | Better fit. Policy is naturally stream-oriented, so live telemetry no longer needs to masquerade as an empty Engram slice. |
++| **Batch verification** (verify N Engrams at once) | Loop calling `Gate::verify` N times, or `Gate::verify_stream(&[Pulse], ctx)` for stream windows | Adequate. Gate keeps the durable Engram path while also supporting verification over Pulse windows when the boundary is temporal rather than stored. |
+ 
+-That telemetry row is the first concrete sign that the old framing is too narrow: `Policy::decide(&[], ctx)`
+-works, but only by pretending live telemetry is an empty Engram stream. REF01 treats that awkward
+-boundary as evidence for the two-medium, two-fabric reframing rather than as a harmless quirk.
++That telemetry row is the first concrete sign that the old framing is too narrow: `Policy::decide(&[Pulse], ctx)`
++and `Composer::compose(&[Datum], ...)` let the model express live traffic directly. REF01 treats that
++boundary as evidence for the two mediums and two fabrics reframing rather than as a harmless quirk.
+ 
+ ### 2.3 When a rewrite beats incremental refactor
+ 
+@@ -156,24 +158,25 @@ Full Cargo.toml analysis across all 28 crates:
+ ### 3.2 The roko-conductor Violation
+ 
+ **Root cause**: `roko-conductor` imports learning types for circuit-breaker state tracking.
+-The Conductor needs to react to failure-rate signals, but the current implementation reaches
++The Conductor needs to react to failure-rate Pulses, but the current implementation reaches
+ across into `roko-learn` instead of consuming a shared transport primitive.
+ 
+ **Bus-first fix**: publish the circuit-breaker facts on the kernel `Bus` as topics and let both
+ subsystems subscribe to the same live stream:
+ 
+ - `gate.verdict.emitted` carries the gate result from the verification path.
+-- `gate.failure.rate` carries the learned failure-rate summary that `roko-conductor` needs.
++- `gate.failure.rate` carries the learned failure-rate Pulse that `roko-conductor` needs.
+ 
+ That dissolves the layer violation without introducing a separate `HealthMetrics` trait in
+ `roko-core`. `roko-conductor` depends on the `Bus` trait and a `TopicFilter`; `roko-learn`
+-publishes the learned rate as a Pulse. The compile-time dependency between `roko-conductor`
+-and `roko-learn` disappears because the shared contract is now the Bus fabric, not a direct
+-trait object.
+-
+-REF03 is the load-bearing reframing for this section: the architecture already contains two
+-fabrics, Substrate for durable Engrams and Bus for ephemeral Pulses, so the conductor problem
+-belongs in topic routing rather than in a bespoke health interface.
++publishes the learned rate as a Pulse. Gates can verify stream windows, Policies react to
++Pulses, and Routers can route pending approval or work-distribution Pulses without direct crate
++coupling. The compile-time dependency between `roko-conductor` and `roko-learn` disappears
++because the shared contract is now the Bus fabric, not a direct trait object.
++
++REF03 and REF04 together are the load-bearing reframing for this section: the architecture
++already contains two mediums and two fabrics, so the conductor problem belongs in topic routing
++and Datum-aware operator boundaries rather than in a bespoke health interface.
+ 
+ ### 3.3 Unclassified Crates
+ 
+diff --git a/docs/00-architecture/24-cross-section-integration-map.md b/docs/00-architecture/24-cross-section-integration-map.md
+index 50ced231..8a9b8e1a 100644
+--- a/docs/00-architecture/24-cross-section-integration-map.md
++++ b/docs/00-architecture/24-cross-section-integration-map.md
+@@ -7,7 +7,9 @@
+ > highest leverage improvement. The earlier engine/event-bus proposal is now the promoted
+ > kernel `Bus` trait at L0: the transport fabric beside `Substrate`, with `Topic`,
+ > `TopicFilter`, and bounded replay on the Bus ring as the coordination vocabulary.
+-> See also `tmp/refinements/03-bus-as-first-class.md` and [01-naming-and-glossary.md](./01-naming-and-glossary.md).
++> See also `tmp/refinements/03-bus-as-first-class.md`,
++> `tmp/refinements/09-phase-2-implications.md`, and
++> [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+ > **Implementation**: Reference
+ 
+@@ -49,6 +51,24 @@ map covers all pairwise relationships between these 22 sections.
+ 
+ ---
+ 
++### 1.1 REF09 Overlay: Phase-2 Systems on the Same Kernel
++
++REF09 removes the need to treat Chain, Dreams, Coordination, Heartbeat, and the HTTP control
++plane as special architecture branches. In the two-fabric model they are standard Bus and
++Substrate consumers or backends:
++
++| Subsystem | Durable side | Live side | Net effect |
++|---|---|---|---|
++| Chain | `ChainSubstrate` stores and queries on-chain Engrams | `ChainBus` maps chain logs into `chain.*` Pulses | Chain consumers stop polling chain state just to notice fresh work |
++| Dreams | Substrate scan remains the complete consolidation source | Bus subscription to `substrate.engram.stored` wakes Delta work reactively | Delta-speed can be threshold-triggered instead of fixed polling |
++| Coordination | Pheromones persist as Engrams in shared Substrates | `mesh.pheromone.deposited` and related Pulses alert nearby agents | Stigmergy becomes literal storage plus transport rather than custom plumbing |
++| Heartbeat | Tick history may still persist as Engrams when needed | `HeartbeatPolicy` publishes `heartbeat.{gamma,theta,delta}.tick` Pulses | Clock consumers subscribe by topic instead of importing a scheduler |
++| Interfaces | REST reads and durable writes project Substrate state | WebSocket and SSE streams project Bus subscriptions | `roko-serve` becomes a thin projection layer rather than a custom fanout path |
++
++This overlay is the architecture-level summary of `tmp/refinements/09-phase-2-implications.md`.
++
++---
++
+ ## 2. Full Dependency Matrix
+ 
+ ### 2.1 Legend
+@@ -183,30 +203,29 @@ graph TB
+     style DREAMS fill:#49a,stroke:#333
+ ```
+ 
+-### 3.3 Engram Flow Taxonomy
+-
+-Every inter-section data flow carries Engrams of specific Kinds. The complete Kind flow map:
+-
+-| Source Section | Engram Kind | Target Section(s) | Status |
+-|---|---|---|---|
+-| 01-Orchestration | `Kind::Plan`, `Kind::Task` | 02-Agents, 04-Verification | Wired |
+-| 02-Agents | `Kind::AgentOutput` | 04-Verification, 05-Learning | Wired |
+-| 02-Agents | `Kind::ToolCall`, `Kind::ToolResult` | 18-Tools, 11-Safety | Wired |
+-| 03-Composition | `Kind::Prompt` | 02-Agents | Wired |
+-| 04-Verification | `Kind::GateVerdict` | 01-Orchestration, 05-Learning | Wired |
+-| 05-Learning | `Kind::Episode` | 06-Neuro, 10-Dreams | Partial |
+-| 05-Learning | `Kind::Playbook` | 03-Composition | Partial |
+-| 05-Learning | `Kind::Skill` | 03-Composition | Missing |
+-| 06-Neuro | `Kind::Insight`, `Kind::Heuristic` | 03-Composition, 01-Orchestration | Partial |
+-| 06-Neuro | `Kind::Warning` | 11-Safety, 03-Composition | Missing |
+-| 06-Neuro | `Kind::AntiKnowledge` | 03-Composition, 01-Orchestration | Missing |
+-| 07-Conductor | `Kind::Intervention` | 01-Orchestration | Wired |
+-| 08-Chain | `Kind::Transaction` | 04-Verification, 14-Economy | Wired (chain path) |
+-| 09-Daimon | `Kind::AffectState` | 03-Composition, 16-Heartbeat | Missing |
+-| 10-Dreams | `Kind::DreamInsight` | 06-Neuro | Missing |
+-| 13-Coordination | `Kind::Pheromone` | 06-Neuro, 01-Orchestration | Missing |
+-| 15-Code Intelligence | `Kind::Symbol` | 03-Composition, 02-Agents | Missing |
+-| 20-Tech Analysis | `Kind::Prediction` | 05-Learning, 16-Heartbeat | Partial |
++### 3.3 Datum Flow Taxonomy
++
++Cross-section exchange now uses both mediums: durable Engrams in Substrate and ephemeral
++Pulses on the Bus. The map below highlights the Phase-2 flows that REF09 clarifies.
++
++| Source Section | Datum | Fabric | Target Section(s) | Status |
++|---|---|---|---|---|
++| 01-Orchestration | `Kind::Plan`, `Kind::Task` | Substrate | 02-Agents, 04-Verification | Wired |
++| 02-Agents | `Kind::AgentOutput` | Substrate | 04-Verification, 05-Learning | Wired |
++| 02-Agents | `tool.call.started`, `tool.call.finished` Pulses | Bus | 11-Safety, 12-Interfaces | Partial |
++| 04-Verification | `Kind::GateVerdict` | Substrate | 01-Orchestration, 05-Learning | Wired |
++| 04-Verification | `gate.verdict.emitted` Pulse | Bus | 05-Learning, 09-Daimon, 12-Interfaces | Partial |
++| 05-Learning | `Kind::Episode` | Substrate | 06-Neuro, 10-Dreams | Partial |
++| 06-Neuro | `Kind::Insight`, `Kind::Heuristic` | Substrate | 03-Composition, 01-Orchestration | Partial |
++| 08-Chain | durable chain records via `ChainSubstrate` | Substrate | 04-Verification, 14-Economy, 13-Coordination | Proposed |
++| 08-Chain | `chain.*` Pulses via `ChainBus` | Bus | 05-Learning, 07-Conductor, 12-Interfaces | Proposed |
++| 10-Dreams | consolidated `Kind::Insight` / `Kind::Heuristic` | Substrate | 06-Neuro, 03-Composition | Proposed |
++| 10-Dreams | `engram.promoted`, `neuro.insight.promoted` Pulses | Bus | 03-Composition, 06-Neuro, 12-Interfaces | Proposed |
++| 13-Coordination | `Kind::Pheromone` | Substrate | 06-Neuro, 01-Orchestration, 08-Chain | Proposed |
++| 13-Coordination | `mesh.pheromone.deposited` Pulse | Bus | 02-Agents, 03-Composition, 12-Interfaces | Proposed |
++| 16-Heartbeat | optional tick or telemetry Engrams | Substrate | 05-Learning, 12-Interfaces | Planned |
++| 16-Heartbeat | `heartbeat.gamma.tick`, `heartbeat.theta.tick`, `heartbeat.delta.tick` Pulses | Bus | 07-Conductor, 09-Daimon, 10-Dreams | Proposed |
++| 20-Tech Analysis | `Kind::Prediction` | Substrate | 05-Learning, 16-Heartbeat | Partial |
+ 
+ ---
+ 
+@@ -223,8 +242,11 @@ transport alike.
+ | **Substrate** | 00-Architecture | `MemorySubstrate` | Wired |
+ | **Substrate** | 06-Neuro | `NeuroStore` (as `FileSubstrate`) | Wired |
+ | **Substrate** | 08-Chain | `ChainSubstrate` | Scaffold |
++| **Substrate** | 13-Coordination | `MeshSubstrate` | Proposed in REF09 as the shared durable mesh backend |
+ | **Substrate** | 15-Code Intel | `SymbolSubstrate` | Missing |
+ | **Bus** | 00-Architecture | `BroadcastBus` / `MemoryBus` | Wired |
++| **Bus** | 08-Chain | `ChainBus` | Proposed in REF09 as the chain-log to topic adapter |
++| **Bus** | 13-Coordination | `MeshBus` | Proposed in REF09 as the mesh transport backend |
+ | **Scorer** | 00-Architecture | `RecencyScorer` | Wired |
+ | **Scorer** | 03-Composition | `RelevanceScorer` | Wired |
+ | **Scorer** | 06-Neuro | `KnowledgeScorer` (multi-factor) | Missing |
+@@ -244,6 +266,7 @@ transport alike.
+ | **Policy** | 05-Learning | `PredictionPolicy` | Wired |
+ | **Policy** | 13-Coordination | `CFactorPolicy` | Wired into prompt-time collective calibration guidance |
+ | **Policy** | 10-Dreams | `DreamSchedulePolicy` | Missing |
++| **Policy** | 16-Heartbeat | `HeartbeatPolicy` | Proposed in REF09 as the publisher of heartbeat tick Pulses |
+ | **Policy** | 13-Coordination | `PheromonePolicy` | Missing |
+ 
+ ### 4.2 Trait Consumption by Section
+@@ -336,6 +359,10 @@ Missing integrations ranked by impact × feasibility. Impact measures how much t
+ connection limits the system's self-improvement capability. Feasibility measures how much
+ existing code can be reused.
+ 
++REF09 changes the shape of several entries: Chain, Dreams, Coordination, Heartbeat, and
++Interfaces no longer need bespoke side channels or new trait families. They reduce to Bus
++topics, Bus projections, and backend swaps on the existing two-fabric kernel.
++
+ | # | Missing Integration | From → To | Impact | Feasibility | LOC Est. | Tier |
+ |---|---|---|---|---|---|---|
+ | M1 | **Daimon → Orchestration** | 09 → 01 | Critical | High | ~60 | 1 |
+@@ -642,50 +669,66 @@ pub enum ProvenanceDimension {
+ an optional `dimension: Option<ProvenanceDimension>` field. Existing code continues to work
+ (field defaults to `None`); new cross-section flows tag their dimension.
+ 
+-### 7.3 Dreams as Off-Loop Projection Builder
++### 7.3 Dreams as a Two-Fabric Consolidation Consumer
++
++**Research basis:** arXiv:2507.03724 (MemOS lifecycle model), consolidation literature, and
++`tmp/refinements/09-phase-2-implications.md`.
+ 
+-**Research basis:** arXiv:2507.03724 (MemOS lifecycle model), event sourcing literature.
++**Problem:** Dreams is currently described like a polling-only background loop. That misses the
++Bus side of the two-fabric kernel and makes Delta-speed look fixed-cadence when it should be
++threshold-triggered by fresh durable work.
+ 
+-**Problem:** The Dreams subsystem is designed as a separate process that runs during idle time.
+-But it needs access to the same episode log that the learning subsystem writes to. Currently,
+-there is no protocol for Dreams to "catch up" on episodes it hasn't processed.
++**Proposal:** Treat Dreams as a two-input subsystem:
+ 
+-**Proposal:** Treat Dreams as an event log projection — a background consumer that maintains
+-a cursor into `episodes.jsonl` and processes episodes in order, emitting consolidated
+-knowledge back to NeuroStore.
++- a **Substrate scan** remains the source of completeness for replay and consolidation
++- a **Bus subscription** to `substrate.engram.stored` provides the wake-up and bounded catch-up
+ 
+ ```rust
+ pub struct DreamProjection {
+-    /// Last processed episode offset (persisted to .roko/learn/dream-cursor.json)
+-    cursor: u64,
+-    /// Accumulated episodes since last consolidation
+-    pending_episodes: Vec<Episode>,
+-    /// Consolidation trigger threshold
+-    min_episodes_for_nrem: usize,  // default: 20
++    /// Last durable point fully scanned in the Substrate.
++    last_scan_cursor: Option<ContentHash>,
++    /// Recent storage Pulses that suggest new consolidation work is available.
++    wake_buffer: Vec<Pulse>,
++    /// Threshold of fresh durable items before Delta work starts.
++    min_new_engrams: usize,
+ }
+ 
+ impl DreamProjection {
+-    /// Process new episodes from the log
+-    pub fn catch_up(&mut self, episode_log: &EpisodeLog) -> Vec<ConsolidatedKnowledge> {
+-        let new_episodes = episode_log.read_from(self.cursor);
+-        self.pending_episodes.extend(new_episodes);
+-        self.cursor = episode_log.latest_offset();
+-
+-        if self.pending_episodes.len() >= self.min_episodes_for_nrem {
+-            let consolidated = self.run_nrem_cycle();
+-            self.pending_episodes.clear();
+-            consolidated
+-        } else {
+-            vec![]
++    pub async fn on_pulse(&mut self, pulse: Pulse) {
++        if pulse.topic == "substrate.engram.stored" {
++            self.wake_buffer.push(pulse);
++        }
++    }
++
++    pub async fn maybe_run_delta(
++        &mut self,
++        substrate: &dyn Substrate,
++        bus: &dyn Bus,
++    ) -> Result<()> {
++        if self.wake_buffer.len() < self.min_new_engrams {
++            return Ok(());
+         }
++
++        let candidates = substrate.query(self.scan_query()).await?;
++        let consolidated = self.run_consolidation(candidates).await?;
++
++        for engram in consolidated {
++            substrate.put(engram.clone()).await?;
++            bus.publish(Pulse::new("engram.promoted")).await?;
++        }
++
++        self.wake_buffer.clear();
++        Ok(())
+     }
+ }
+ ```
+ 
+ **Integration points:**
+-- `orchestrate.rs` calls `dream_projection.catch_up()` when an agent idle period begins.
+-- Consolidated knowledge feeds into NeuroStore (closing the Dreams → Neuro gap, M7).
+-- The cursor file enables crash recovery — Dreams picks up where it left off.
++- Dreams subscribes to `substrate.engram.stored` for reactivity but still scans Substrate for completeness.
++- Consolidated `Kind::Insight` and `Kind::Heuristic` Engrams persist through Substrate.
++- Promotion Pulses such as `engram.promoted` and `neuro.insight.promoted` let Neuro,
++  Composition, and Interfaces react without re-querying.
++- Delta-speed remains slower than Gamma and Theta, but it no longer implies fixed polling.
+ 
+ ### 7.4 Compiled Dependency Graph
+ 
+diff --git a/docs/00-architecture/INDEX.md b/docs/00-architecture/INDEX.md
+index 4eda569c..30a0fc9b 100644
+--- a/docs/00-architecture/INDEX.md
++++ b/docs/00-architecture/INDEX.md
+@@ -9,6 +9,9 @@
+ > foundations, and the frontier innovations that distinguish Roko from every other agent
+ > framework. See also `tmp/refinements/02-engram-vs-pulse.md` for the Engram/Pulse split,
+ > `tmp/refinements/03-bus-as-first-class.md` for the Bus promotion and two-fabric kernel,
++> `tmp/refinements/04-operators-generalized.md` for `Datum` and `PolicyOutputs`,
++> `tmp/refinements/09-phase-2-implications.md` for how Chain, Dreams, Coordination, and
++> Heartbeat collapse onto that same kernel,
+ > `tmp/refinements/06-refactoring-plan.md` for the phased refactoring plan and rollout
+ > ordering, and `tmp/refinements/21-from-scratch-redesigns.md` for the rewrite-track
+ > alternative and from-scratch sequencing.
+@@ -56,7 +59,7 @@ loop, and the frontier innovations that emerge from the architecture.
+ | 06 | [Synapse Traits](./06-synapse-traits.md) | Six operators across two mediums and two fabrics, the trait composition model, all six trait signatures, trait × layer map, composability example via loop_tick |
+ | 07 | [Substrate Trait (Deep Dive)](./07-substrate-trait.md) | The durable storage fabric: Substrate's trait surface, backends, concurrency, pruning, and its relationship to the Bus sibling fabric |
+ | 07b | [Bus Transport Fabric](./07b-bus-transport-fabric.md) | The transport fabric: Bus trait, Topic and TopicFilter routing, replay/ring semantics, backend families, and topic-driven decoupling |
+-| 08 | [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md) | Detailed specs for the five non-Substrate operators: Scorer composition, 11-gate pipeline, CascadeRouter feedback, Composer budget, Policy batch model |
++| 08 | [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md) | Detailed specs for the five non-Substrate operators after REF04: `Datum`-aware scoring/composition, stream Gates, Pulse routing, and `PolicyOutputs` |
+ | 09 | [Universal Cognitive Loop](./09-universal-cognitive-loop.md) | 9-step loop specification with trait mappings, shipping loop_tick code, TickOutcome struct, loop at three speeds, universality |
+ | 10 | [Three Cognitive Speeds](./10-three-cognitive-speeds.md) | Gamma (~5-15s), Theta (~75s), Delta (hours): frequency selection, adaptive clock, turn limits, neuroscience inspiration |
+ | 11 | [Dual-Process and Active Inference](./11-dual-process-and-active-inference.md) | T0/T1/T2 tiers, EFE formula, 16 T0 probes, Kahneman mapping, classical architectures (ACT-R, SOAR, CLARION, GWT, modern agent-systems comparison), LLM-era architectures |
+@@ -72,7 +75,7 @@ loop, and the frontier innovations that emerge from the architecture.
+ | 21 | [Performance and Numerical Stability](./21-performance-numerical-stability.md) | f32/f64 decision matrix, hot-path complexity targets, memory budgets, NaN/Inf handling |
+ | 22 | [Error Handling and Recovery](./22-error-handling-recovery.md) | Four error classes, exponential backoff, circuit breaker, 7-level graceful degradation |
+ | 23 | [Architectural Analysis and Improvements](./23-architectural-analysis-improvements.md) | Coherence analysis of the current architecture plus the v2 rewrite path: layer violations, refactor boundaries, category theory, and from-scratch decision points |
+-| 24 | [Cross-Section Integration Map](./24-cross-section-integration-map.md) | Full 22×22 dependency matrix, 20 missing integrations (prioritized), transport-fabric proposal, data flow diagrams, integration roadmap (~2,070 LOC) |
++| 24 | [Cross-Section Integration Map](./24-cross-section-integration-map.md) | Full 22×22 dependency matrix, 20 missing integrations (prioritized), REF09 two-fabric implications for ChainBus/Dreams/Coordination/Heartbeat, data flow diagrams, integration roadmap (~2,070 LOC) |
+ | 25 | [Attention as Universal Cognitive Currency](./25-attention-as-currency.md) | Attention tokens as universal unit of account, VCG auction for Engram selection, budget-aware CascadeRouter, Daimon affect modulation, cross-speed token economics |
+ | 26 | [Cognitive Immune System](./26-cognitive-immune-system.md) | 5-layer defense against knowledge corruption: taint propagation, anomaly detection, quarantine, red-team probes, immune memory with HDC signatures |
+ | 27 | [Temporal Knowledge Topology](./27-temporal-knowledge-topology.md) | Allen's 13 interval relations, temporal calculus (fluents, causation, interval relations), three-tier temporal KG (episodes/entities/communities), temporal queries |
+diff --git a/docs/08-chain/00-vision-and-framing.md b/docs/08-chain/00-vision-and-framing.md
+index 6cc4fd6b..2e9583a4 100644
+--- a/docs/08-chain/00-vision-and-framing.md
++++ b/docs/08-chain/00-vision-and-framing.md
+@@ -15,9 +15,9 @@
+ 
+ Roko is a cognitive agent operating system. Its kernel — the Synapse Architecture with Engrams, six composable traits (Substrate, Scorer, Gate, Router, Composer, Policy), five architectural layers (Runtime, Framework, Scaffold, Harness, Orchestration), and three cognitive cross-cuts (Neuro, Daimon, Dreams) — operates identically whether the agent writes code, monitors infrastructure, conducts research, or interacts with blockchains.
+ 
+-The Korai chain is a **domain plugin** that extends this kernel with chain-specific capabilities: on-chain identity, token economics, decentralized job markets, reputation systems, and collective knowledge coordination. It is one instance of the pattern `domain_specific_trait_implementations + domain_specific_configuration = domain_agent`. Coding agents have their own domain plugin (CompileGate, TestGate, SymbolScorer). Chain agents have theirs (TxSimGate, WalletGate, ChainSubstrate). Neither is more fundamental than the other.
++The Korai chain is a **domain plugin** that extends this kernel with chain-specific capabilities: on-chain identity, token economics, decentralized job markets, reputation systems, and collective knowledge coordination. It is one instance of the pattern `domain_specific_trait_implementations + domain_specific_configuration = domain_agent`. Coding agents have their own domain plugin (CompileGate, TestGate, SymbolScorer). Chain agents have theirs (TxSimGate, WalletGate, ChainSubstrate). In the two-fabric model, `ChainSubstrate` stores and queries durable on-chain Engrams while `ChainBus` turns chain logs into ordinary Bus Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+ 
+-This framing matters because the most powerful agents will span multiple domains simultaneously. A single agent can write Solidity contracts (coding domain), simulate their deployment on mirage-rs (chain domain), monitor on-chain performance (chain domain), and research competing protocols (research domain). The Synapse Architecture makes this composition natural — each domain contributes its Gate, Scorer, and Substrate implementations, and the universal cognitive loop orchestrates them all.
++This framing matters because the most powerful agents will span multiple domains simultaneously. A single agent can write Solidity contracts (coding domain), simulate their deployment on mirage-rs (chain domain), monitor on-chain performance (chain domain), and research competing protocols (research domain). The Synapse Architecture makes this composition natural — each domain contributes its Gate, Scorer, and Substrate implementations, while Bus-backed transport keeps live consumers uniform across chain, mesh, and HTTP surfaces.
+ 
+ This document establishes the vision for how blockchain capabilities fit into the Roko architecture, what goes on-chain versus off-chain, and why a dedicated agent coordination chain (Korai) exists at all.
+ 
+@@ -77,7 +77,23 @@ The Korai chain is a dedicated EVM chain for agent knowledge coordination. Agent
+ - **Pheromone Contracts** — typed coordination signals with on-chain decay profiles
+ - **Reputation Registry** — 7-domain exponential moving average reputation system
+ 
+-The key design principle: **agents that never interact with a blockchain still benefit from the full Roko cognitive stack**. The Korai chain amplifies collective intelligence but is not required for individual agent operation. Solo coding agents, event-driven operations agents, and local research agents work perfectly without it.
++Under the two-fabric framing, durable chain records live in `ChainSubstrate` and chain logs become Pulses on `ChainBus`, so chain-log consumers remain ordinary Bus subscribers instead of bespoke watchers. That is the same model the HTTP control plane and agent sidecars use when they project Bus subscriptions over SSE, WebSocket, or local transport.
++
++The key design principle: **agents that never interact with a blockchain still benefit from the full Roko cognitive stack**. The Korai chain amplifies collective intelligence but is not required for individual agent operation. Solo coding agents, Bus-reactive operations agents, and local research agents work perfectly without it.
++
++---
++
++## Two-Fabric Implications for Phase 2+
++
++The two-fabric model does more than rename chain storage. It makes the Phase 2+ shape obvious:
++
++- Chain persistence belongs in `ChainSubstrate`: transactions, attestations, knowledge entries, and other durable on-chain Engrams.
++- Chain transport belongs in `ChainBus`: chain logs and contract events map to typed Pulses on Bus topics such as `chain.deposit.emitted` or `chain.reputation.updated`.
++- Chain-log consumers stay ordinary Bus subscribers. A dashboard, policy, agent sidecar, or `roko-serve` projection listens to the same topics as any other Bus-backed subsystem.
++- Mesh and chain are both backend choices for the same pub/sub model. Mesh swaps the transport substrate; chain swaps the storage substrate; neither changes the control logic above it.
++- HTTP becomes a projection layer, not a special case. SSE and WebSocket streams forward Bus subscriptions, while REST reads the durable record from Substrate.
++
++See `tmp/refinements/09-phase-2-implications.md` for the full rationale and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) for the Bus, Pulse, and Topic terminology.
+ 
+ ---
+ 
+@@ -275,13 +291,14 @@ Chain capabilities are implemented as domain-specific trait implementations, jus
+ 
+ | Synapse Trait | Chain Domain Implementation | Coding Domain Equivalent |
+ |---|---|---|
+-| `Substrate` | `ChainSubstrate` — query on-chain Engrams via HDC precompile | `FileSubstrate` — JSONL persistence |
++| `Substrate` | `ChainSubstrate` — store and query durable on-chain Engrams via HDC precompile | `FileSubstrate` — JSONL persistence |
++| `Bus` | `ChainBus` — map chain logs and contract events into typed Pulses on Bus topics | `BroadcastBus` — in-process transport |
+ | `Scorer` | `ChainScorer` — 4-factor scoring (price, TVL, gas, health) | `CodeScorer` — complexity, coverage, coupling |
+ | `Gate` | `TxSimGate` — pre-flight tx simulation via mirage-rs | `CompileGate` — `cargo check` |
+ | `Gate` | `WalletGate` — position limits, approved assets | `TestGate` — `cargo test` |
+ | `Gate` | `VerifyChainGate` — post-execution state verification | `ClippyGate` — `cargo clippy` |
+ | `Router` | `CascadeRouter` — T0/T1/T2 with chain probes | `CascadeRouter` — T0/T1/T2 with code probes |
+-| `Policy` | `ChainPolicy` — subscribe to on-chain events | `FileWatchPolicy` — watch for file changes |
++| `Policy` | `ChainPolicy` — subscribe to chain Pulses and react to durable on-chain state changes | `FileWatchPolicy` — watch for file changes |
+ 
+ The cognitive loop, Neuro knowledge tiers, Daimon affect engine, Dreams consolidation, and C-Factor tracking all work automatically with these chain-specific trait implementations. No core changes are required to add chain capabilities — it is pure composition.
+ 
+@@ -341,6 +358,7 @@ The HDC precompile's ~400 gas for top-K=20 similarity search keeps per-query cos
+ - HDC precompile implementation
+ - ERC-8004 agent identity contracts
+ - Agent Mesh (WebSocket/Iroh P2P connections)
++- ChainBus-backed transport projection for chain logs over HTTP/WebSocket
+ - On-chain job market (Spore/Sparrow)
+ - Reputation system (7-domain EMA)
+ - ISFR collective price discovery
+@@ -361,3 +379,4 @@ See `roko/tmp/implementation-plans/12b-chain-layer.md` for the full 76-item impl
+ - See topic [06-neuro](../06-neuro/INDEX.md) for knowledge types and HDC encoding (shared with on-chain)
+ - See topic [13-coordination](../13-coordination/INDEX.md) for stigmergy and mesh coordination
+ - See topic [14-identity-economy](../14-identity-economy/INDEX.md) for identity, reputation, and x402
++- See `tmp/refinements/09-phase-2-implications.md` for the Phase 2+ chain, mesh, heartbeat, and control-plane implications; see [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) for Bus/Pulse/Topic terminology
+diff --git a/docs/08-chain/INDEX.md b/docs/08-chain/INDEX.md
+index 8ecc1f3c..252e7307 100644
+--- a/docs/08-chain/INDEX.md
++++ b/docs/08-chain/INDEX.md
+@@ -8,7 +8,7 @@
+ 
+ | # | Document | Summary |
+ |---|---|---|
+-| 00 | [00-vision-and-framing.md](./00-vision-and-framing.md) | Blockchain as domain plugin framing. Three-level knowledge architecture (Local → Mesh → Chain). What goes on-chain vs. off-chain. Tier 6 deferred status. **NEW: Chain selection rationale (EVM vs. Move/CosmWasm/SVM), Stylus precompile path, cross-chain interoperability (Hyperlane ISM, IBC, intent-based bridges).** |
++| 00 | [00-vision-and-framing.md](./00-vision-and-framing.md) | Blockchain as domain plugin framing. Three-level knowledge architecture (Local → Mesh → Chain). ChainSubstrate vs. ChainBus split. What goes on-chain vs. off-chain. Tier 6 deferred status. **NEW: Chain selection rationale (EVM vs. Move/CosmWasm/SVM), Stylus precompile path, cross-chain interoperability (Hyperlane ISM, IBC, intent-based bridges).** |
+ | 01 | [01-korai-chain-spec.md](./01-korai-chain-spec.md) | Chain parameters (400ms blocks, 2s finality). Block structure, state model. Custom `korai_*` RPC methods. Chain intelligence pipeline. Deployment modes. **NEW: L2/L3 deployment architecture (Arbitrum Orbit), consensus evolution roadmap, EigenLayer AVS integration.** |
+ | 02 | [02-korai-token-economics.md](./02-korai-token-economics.md) | KORAI/DAEJI tokens. Demurrage (1% annual decay). 5 earning mechanisms, 5 spending mechanisms. Fee distribution. Relationship to NeuroStore decay. |
+ | 03 | [03-hdc-on-chain-precompile.md](./03-hdc-on-chain-precompile.md) | HDC precompile at 0xA01. 10,240-bit BSC vectors. ~400 gas for top-K=20. Three-tier search (Bloom → approximate → exact). Cross-domain resonance. **NEW: Detailed gas cost model (calibrated benchmarks), Stylus WASM implementation, verifiable HDC via ZK proofs/optimistic fraud proofs/TEE, Binius binary-field STARKs.** |
+@@ -40,6 +40,7 @@
+ 
+ - **Korai**: Dedicated EVM chain for agent coordination (not Ethereum mainnet)
+ - **KORAI**: Native token with 1% annual demurrage. DAEJI is the testnet equivalent
++- **ChainSubstrate / ChainBus**: Split storage and transport roles for on-chain Engrams versus chain-log Pulses. See `tmp/refinements/09-phase-2-implications.md` and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md)
+ - **Korai Passport**: Soulbound ERC-721 NFT — the agent's on-chain identity
+ - **ERC-8004**: Three registries (Identity, Reputation, Validation)
+ - **HDC Precompile**: 10,240-bit BSC vectors at ~400 gas for top-K similarity search
+@@ -54,7 +55,7 @@
+ 
+ ## Critical Framing
+ 
+-**Blockchain is ONE domain plugin, not the default frame.** The Korai chain uses the same Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) as every other domain. A chain agent is configured differently from a coding agent, but the cognitive architecture is identical. Nothing about the chain layer requires special treatment in the Roko kernel.
++**Blockchain is ONE domain plugin, not the default frame.** The Korai chain uses the same Synapse traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) as every other domain. A chain agent is configured differently from a coding agent, but the cognitive architecture is identical. In the two-fabric model, `ChainSubstrate` stores and queries durable on-chain Engrams while `ChainBus` maps chain logs into ordinary Bus Pulses; chain consumers stay standard Bus subscribers instead of a special transport path. See `tmp/refinements/09-phase-2-implications.md` and the glossary at [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+ 
+ **Tier 6 is DEFERRED.** All 76 implementation items in the chain layer are blocked by Tier 5 (self-hosting loop). The specifications in this topic are complete but the implementation has not started.
+ 
+@@ -125,6 +126,7 @@ Deep research and enhancement of 7 documents across all major subsystems:
+ | [09-oracle](../20-technical-analysis/INDEX.md) | Chain predictions calibrated against actual outcomes |
+ | [12-learn](../05-learning/INDEX.md) | Learning system uses reputation feedback |
+ | [14-identity-economy](../14-identity-economy/INDEX.md) | Broader identity context for Korai Passport |
++| `tmp/refinements/09-phase-2-implications.md` | Phase 2 implications for chain, dreams, mesh, coordination, heartbeat, and control-plane projection |
+ 
+ ---
+ 
+diff --git a/docs/10-dreams/13-scheduling-and-triggers.md b/docs/10-dreams/13-scheduling-and-triggers.md
+index d1038953..b0cdc994 100644
+--- a/docs/10-dreams/13-scheduling-and-triggers.md
++++ b/docs/10-dreams/13-scheduling-and-triggers.md
+@@ -15,7 +15,7 @@
+ 
+ ## Trigger Conditions
+ 
+-Dreams in Roko are triggered by two mechanisms. Both are idle-based — dreams fire when the agent has capacity, not when a clock runs down.
++Dreams in Roko are triggered by two mechanisms. Both are idle-based — dreams fire when the agent has capacity, not when a clock runs down. In the two-fabric model, Delta-speed consolidation is also Bus-aware: the runner can wake on `substrate.engram.stored` Pulses instead of relying on fixed polling.
+ 
+ ### 1. Idle-Time Trigger (Primary)
+ 
+@@ -57,14 +57,14 @@ pub fn schedule(&self) -> Option<Duration> {
+ 
+ ### 2. Scheduled Trigger (Secondary)
+ 
+-The scheduled trigger fires dreams at fixed intervals regardless of idle state. This ensures that busy agents with continuous task queues still consolidate periodically:
++The scheduled trigger is the fallback cadence. In the two-fabric model, Delta-speed consolidation is usually Pulse-triggered: the dream runner subscribes to `substrate.engram.stored` and wakes when enough durable Engrams have landed to justify a consolidation batch. Fixed intervals remain as a safety net for deployments where notifications are delayed or the Bus is temporarily unavailable:
+ 
+ ```toml
+ [dreams]
+ scheduled_interval_hours = 4  # Dream every 4 hours regardless of idle state
+ ```
+ 
+-When the scheduled trigger fires during active task execution, the dream is queued and executed at the next available idle gap. Dreams never interrupt active tasks.
++When the scheduled trigger fires during active task execution, the dream is queued and executed at the next available idle gap. Dreams never interrupt active tasks, and Pulse-triggered Delta wakeups still respect the same idle boundary before they run.
+ 
+ ### 3. Manual Trigger
+ 
+@@ -141,7 +141,7 @@ Plan Executor                    Dream Scheduler
+     |-- Task C starts ----------------->|
+ ```
+ 
+-The orchestrator calls `dream_runner.schedule()` after each task completion. If the scheduler returns `Some(Duration::ZERO)`, the dream fires immediately. If it returns `Some(d)` where `d > 0`, the orchestrator sets a timer. If it returns `None`, no dream is needed.
++The orchestrator calls `dream_runner.schedule()` after each task completion, but the scheduler is also fed by Bus notifications from `substrate.engram.stored`. If the scheduler returns `Some(Duration::ZERO)`, the dream fires immediately. If it returns `Some(d)` where `d > 0`, the orchestrator sets a timer. If it returns `None`, no dream is needed.
+ 
+ ---
+ 
+@@ -158,7 +158,7 @@ idle_threshold_mins = 15
+ # Minimum unprocessed episodes required before a dream can fire
+ min_episodes_for_dream = 5
+ 
+-# Fixed-interval scheduled dreaming (0 = disabled)
++# Fallback scheduled dreaming (0 = disabled)
+ scheduled_interval_hours = 4
+ 
+ # Fraction of inference budget allocated to dreams
+@@ -229,3 +229,5 @@ pub struct CircadianScheduler {
+ | [01-three-phase-cycle.md](01-three-phase-cycle.md) | Dream cycle structure that scheduling triggers |
+ | [12-sleep-time-compute.md](12-sleep-time-compute.md) | Compute budget that constrains dream frequency |
+ | [00-vision-and-dream-as-death-reframe.md](00-vision-and-dream-as-death-reframe.md) | Why dreams are idle-triggered, not death-triggered |
++| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Engram, Pulse, Bus, Topic, and TopicFilter definitions |
++| [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) | Phase-2 two-fabric implications for dreams, chain, coordination, and heartbeat |
+diff --git a/docs/10-dreams/15-cross-system-integration.md b/docs/10-dreams/15-cross-system-integration.md
+index 4cbe0738..57f20f16 100644
+--- a/docs/10-dreams/15-cross-system-integration.md
++++ b/docs/10-dreams/15-cross-system-integration.md
+@@ -15,7 +15,7 @@
+ 
+ ## Overview
+ 
+-Dreams do not exist in isolation. The dream subsystem is a cognitive cross-cut — it touches every layer of the Roko architecture, injecting learned knowledge, emotional modulation, and creative insights into the agent's waking operation. This document maps every integration point between the dream subsystem and other Roko subsystems, documenting the data flows, event channels, and trait implementations that connect dreams to the rest of the cognitive architecture.
++Dreams do not exist in isolation. The dream subsystem is a cognitive cross-cut — it touches every layer of the Roko architecture, injecting learned knowledge, emotional modulation, and creative insights into the agent's waking operation. In the two-fabric model, Dreams consume Substrate scans for completeness and Bus subscriptions for reactivity, so Delta-speed consolidation can wake on `substrate.engram.stored` instead of fixed polling. This document maps every integration point between the dream subsystem and other Roko subsystems, documenting the data flows, Bus channels, and trait implementations that connect dreams to the rest of the cognitive architecture. See also [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) and [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+ 
+ The five layers of the Roko architecture:
+ - **L0 Runtime**: Process lifecycle, events, supervision, adaptive clock
+@@ -26,6 +26,19 @@ The five layers of the Roko architecture:
+ 
+ Dreams operate primarily at L0 (scheduling, process lifecycle) and L4 (orchestration, coordination), but inject results into L1 (model routing updates), L2 (context enrichment), and L3 (gate threshold adaptation).
+ 
++### Reactive Input / Output Model
++
++Dreams use both durable storage and live transport:
++
++| Direction | Fabric | Channel | Purpose |
++|-----------|--------|---------|---------|
++| Substrate → Dreams | Substrate | Query / scan | Completeness pass over durable Engrams during consolidation |
++| Bus → Dreams | Bus | `substrate.engram.stored` | Pulse-triggered Delta wakeup when new durable material lands |
++| Dreams → Substrate | Substrate | `put()` | Persist consolidated Engrams and staged knowledge |
++| Dreams → Bus | Bus | `engram.promoted`, `neuro.insight.promoted` | Broadcast promotion so Neuro and Compose can refresh without re-querying |
++
++This is the key Phase 2+ simplification: the Delta loop becomes reactive without becoming a separate subsystem. The Bus notification wakes the cycle; the Substrate scan finishes the batch.
++
+ ---
+ 
+ ## Dreams × Neuro (Knowledge Store)
+@@ -41,7 +54,7 @@ The Neuro subsystem (`roko-neuro`) is the agent's persistent knowledge base —
+ | Knowledge entries by tier | Neuro → Integration phase | Existing knowledge for deduplication and confidence updates |
+ | Embedding vectors | Neuro → HDC synthesis | Source material for counterfactual blending via XOR binding and majority bundling |
+ 
+-The `DreamEngine::schedule()` method reads episodes from the Neuro store to determine whether enough unprocessed material has accumulated to justify a dream cycle. The current implementation in `roko-dreams/src/runner.rs` reads from `EpisodeLogger`:
++The `DreamEngine::schedule()` method reads episodes from the Neuro store to determine whether enough unprocessed material has accumulated to justify a dream cycle. The current scaffold in `roko-dreams/src/runner.rs` still reads from `EpisodeLogger`, but the intended two-fabric path pairs that completeness scan with Bus notifications from `substrate.engram.stored`:
+ 
+ ```rust
+ let episodes_path = self.workdir.join(".roko").join("episodes.jsonl");
+@@ -77,7 +90,7 @@ The `TierProgression` system in `roko-neuro` classifies dream-generated insights
+ | T3 (Validated Insight) | 0.60–0.79 | Gate-validated dream discoveries |
+ | T4 (Established Knowledge) | 0.80–1.00 | Repeatedly confirmed, multi-dream validated |
+ 
+-Dreams primarily generate T1 and T2 entries. Promotion to T3+ requires waking validation — dreams propose, experience disposes.
++Dreams primarily generate T1 and T2 entries. Promotion to T3+ requires waking validation — dreams propose, experience disposes. When consolidation finishes, Dreams emit the durable Engram and also publish promotion Pulses (`engram.promoted` for the generic promotion Pulse and `neuro.insight.promoted` for Neuro-specific cache refresh) so downstream consumers can react without polling.
+ 
+ ### Bidirectional Feedback Loop
+ 
+@@ -87,6 +100,7 @@ The dream-Neuro integration creates a continuous refinement loop:
+ Episodes accumulate in Neuro
+   → Dreams replay and consolidate episodes
+     → Insights written back to Neuro at T1-T2
++      → Promotion Pulses (`engram.promoted`, `neuro.insight.promoted`) broadcast on the Bus
+       → Waking experience validates or refutes
+         → Validated insights promoted to T3+
+           → T3+ insights influence future dream replay priority
+@@ -209,7 +223,7 @@ The `ExperimentStore` tracks A/B prompt experiments. Dreams can analyze experime
+ 
+ ## Dreams × Context Engineering (roko-compose)
+ 
+-The context engineering subsystem (`roko-compose`) assembles prompts for agent inference using the `SystemPromptBuilder`. Dreams integrate with context engineering in two ways.
++The context engineering subsystem (`roko-compose`) assembles prompts for agent inference using the `SystemPromptBuilder`. Dreams integrate with context engineering in two ways, and it listens for promotion Pulses so it can refresh cached enrichment instead of re-querying after every consolidation cycle.
+ 
+ ### Dream Context Injection
+ 
+@@ -217,7 +231,7 @@ When an agent's context is assembled for a waking task, recent dream insights ca
+ 
+ | Context Layer | Dream Contribution |
+ |--------------|--------------------|
+-| Knowledge context | Recently promoted dream insights (T3+) added to knowledge section |
++| Knowledge context | Recently promoted dream insights (T3+) added to knowledge section after `neuro.insight.promoted` |
+ | Emotional context | Post-dream PAD state (with depotentiation applied) |
+ | Strategy context | Dream-generated playbook revisions that have been validated |
+ | Warning context | Threat simulation results from dream REM phase |
+@@ -247,7 +261,7 @@ pub struct DreamAgentConfig {
+ }
+ ```
+ 
+-Dreams typically use a cheaper, faster model (e.g., Haiku) with low effort settings and bare mode (no tool use), since dream consolidation is a reasoning task that doesn't require tool execution.
++Dreams typically use a cheaper, faster model (e.g., Haiku) with low effort settings and bare mode (no tool use), since dream consolidation is a reasoning task that doesn't require tool execution. The Compose path can consume `neuro.insight.promoted` Pulses to refresh prompt enrichment caches without waiting for another substrate scan.
+ 
+ ---
+ 
+@@ -397,13 +411,13 @@ The `ProcessSupervisor` from `bardo-runtime` manages agent process lifecycle. Dr
+ 
+ | Subsystem | Layer | Direction | Key Data |
+ |-----------|-------|-----------|----------|
+-| **Neuro** (Knowledge) | L1 | Bidirectional | Episodes → dreams; insights → Neuro |
++| **Neuro** (Knowledge) | L1 | Bidirectional | Substrate scans + `substrate.engram.stored`; insights → Neuro; promotion Pulses → refresh |
+ | **Daimon** (Affect) | L1 | Bidirectional | PAD context → dreams; depotentiation → Daimon |
+ | **Learn** (Episodes) | L1 | Neuro-mediated | Episodes, playbooks, patterns, routing |
+-| **Compose** (Context) | L2 | Dreams → Context | Post-dream insights injected into context |
++| **Compose** (Context) | L2 | Dreams → Context | Post-dream insights injected into context; `neuro.insight.promoted` refreshes enrichment |
+ | **Gate** (Validation) | L3 | Bidirectional | Gate results → dreams; threshold updates → gates |
+ | **Mesh** (Coordination) | L4 | Bidirectional | Dream insights → mesh; peer insights → dreams |
+-| **Orchestrator** (Plans) | L4 | Bidirectional | Idle windows → dreams; feedback → plans |
++| **Orchestrator** (Plans) | L4 | Bidirectional | Idle windows + Bus wakeups → dreams; feedback → plans |
+ | **Hypnagogia** (Creativity) | L0/L1 | Unidirectional | Hypnagogic fragments → dream seeds |
+ | **Supervisor** (Process) | L0 | Supervisor → Dreams | Lifecycle, cancellation, resource limits |
+ | **Oneirography** (Art) | L1/L2 | Dreams → Art | DreamCycleReport → image generation |
+@@ -416,10 +430,10 @@ The complete event flow for a dream cycle touching all subsystems:
+ 
+ ```
+ 1. Orchestrator detects idle gap after task completion
+-2. Calls DreamRunner::schedule_next()
+-3. DreamRunner reads episodes from EpisodeLogger (roko-learn)
+-4. DreamRunner reads last dream report from .roko/dreams/
+-5. If threshold met: dream cycle fires
++2. Calls `DreamRunner::schedule_next()` and remains subscribed to `substrate.engram.stored`
++3. DreamRunner reads episodes from `EpisodeLogger` (roko-learn)
++4. DreamRunner scans the Substrate for durable Engrams that have not yet been consolidated
++5. If the batch threshold is met, or enough `substrate.engram.stored` Pulses have arrived, the dream cycle fires
+ 
+ 6. NREM Phase:
+    a. PatternMiner discovers trigram patterns (roko-learn)
+@@ -440,6 +454,7 @@ The complete event flow for a dream cycle touching all subsystems:
+    c. Playbook revisions written to PlaybookStore
+    d. Gate threshold proposals generated
+    e. CascadeRouter updates proposed
++   f. `engram.promoted` and `neuro.insight.promoted` Pulses published for downstream refresh
+ 
+ 9. Post-Dream:
+    a. DreamCycleReport persisted to .roko/dreams/
+@@ -548,3 +563,5 @@ The configuration is loaded by `DreamLoopConfig::from_roko_toml()` and propagate
+ | [12-sleep-time-compute.md](12-sleep-time-compute.md) | Compute budget constraining dream inference |
+ | [13-scheduling-and-triggers.md](13-scheduling-and-triggers.md) | Scheduling coordinated with orchestrator |
+ | [14-oneirography.md](14-oneirography.md) | Art generation consuming DreamCycleReport |
++| [01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md) | Canonical Engram, Pulse, Bus, and Topic terminology |
++| [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) | Phase-2 two-fabric implications for Dreams, Mesh, Chain, and Heartbeat |
+diff --git a/docs/10-dreams/INDEX.md b/docs/10-dreams/INDEX.md
+index 359f9e99..f3ff54b5 100644
+--- a/docs/10-dreams/INDEX.md
++++ b/docs/10-dreams/INDEX.md
+@@ -1,6 +1,6 @@
+ # Dreams (Offline Learning and Consolidation)
+ 
+-> **Abstract:** Dreams are one of three cognitive cross-cuts in Roko — subsystems that span multiple architectural layers rather than living at a single layer. While Neuro provides persistent memory and Daimon provides emotional context, Dreams provide the offline consolidation mechanism that transforms raw episodic experience into durable semantic knowledge, creative hypotheses, and strategic insights. Dreams are the agent's sleep: a periodic offline process where the agent replays recent episodes, generates counterfactual scenarios, depotentiates emotional charge, discovers cross-episode patterns, and stages new knowledge for waking validation. Dreams are idle-triggered and scheduled — they fire when the agent has capacity, not in response to any mortality or termination signal.
++> **Abstract:** Dreams are one of three cognitive cross-cuts in Roko — subsystems that span multiple architectural layers rather than living at a single layer. While Neuro provides persistent memory and Daimon provides emotional context, Dreams provide the offline consolidation mechanism that transforms raw episodic experience into durable semantic knowledge, creative hypotheses, and strategic insights. In the two-fabric model, Dreams consume both Substrate scans and Bus subscriptions, so Delta-speed consolidation can wake on `substrate.engram.stored` instead of relying on fixed polling. Dreams are the agent's sleep: a periodic offline process where the agent replays recent episodes, generates counterfactual scenarios, depotentiates emotional charge, discovers cross-episode patterns, and stages new knowledge for waking validation. Dreams are idle-triggered and scheduled — they fire when the agent has capacity, not in response to any mortality or termination signal. See also [tmp/refinements/09-phase-2-implications.md](../../tmp/refinements/09-phase-2-implications.md) and the naming glossary in [docs/00-architecture/01-naming-and-glossary.md](../00-architecture/01-naming-and-glossary.md).
+ 
+ ---
+ 
+@@ -31,9 +31,9 @@ Before reading this topic, familiarity with the following is helpful:
+ | 10 | [10-hauntology-in-dreams.md](10-hauntology-in-dreams.md) | Derrida hauntology, spectral traces, compound escape from monoculture, knowledge transfer as backup/restore |
+ | 11 | [11-inner-worlds-and-rendering.md](11-inner-worlds-and-rendering.md) | Visual rendering for each dream phase: NREM theater, REM garden, hypnagogia phosphenes, integration crystallization |
+ | 12 | [12-sleep-time-compute.md](12-sleep-time-compute.md) | Lin et al. 2025 sleep-time compute, budget allocation, CascadeRouter model selection, Sleepwalker mode |
+-| 13 | [13-scheduling-and-triggers.md](13-scheduling-and-triggers.md) | Three trigger types (idle, scheduled, manual), frequency adaptation, intensive mode, orchestrator coordination |
++| 13 | [13-scheduling-and-triggers.md](13-scheduling-and-triggers.md) | Idle, scheduled, and Bus-reactive Delta triggers; frequency adaptation, intensive mode, orchestrator coordination |
+ | 14 | [14-oneirography.md](14-oneirography.md) | Dream art and creative expression: image generation pipeline, self-appraisal, affect-reactive auctions, extended art forms |
+-| 15 | [15-cross-system-integration.md](15-cross-system-integration.md) | Integration with Neuro, Daimon, Learn, Compose, Gate, Mesh, Orchestrator, Hypnagogia, Supervisor |
++| 15 | [15-cross-system-integration.md](15-cross-system-integration.md) | Two-fabric reactive input/output model across Neuro, Daimon, Learn, Compose, Gate, Mesh, Orchestrator, Hypnagogia, Supervisor |
+ | 16 | [16-implementation-status.md](16-implementation-status.md) | Current code status, implementation plan items, roko-golem dissolution plan, roadmap, open questions |
+ | 17 | [17-advanced-dream-concepts.md](17-advanced-dream-concepts.md) | Dream sharing across mesh, nightmare detection and containment, persistent dream journals, lucid dream monitoring |
+ 
+diff --git a/docs/13-coordination/03-digital-pheromones.md b/docs/13-coordination/03-digital-pheromones.md
+index e2a2b753..86fb93bf 100644
+--- a/docs/13-coordination/03-digital-pheromones.md
++++ b/docs/13-coordination/03-digital-pheromones.md
+@@ -1,15 +1,18 @@
+ # Digital Pheromones: Typed Engrams with Decay Profiles
+ 
+-> **Layer**: L0 Runtime (persistence and decay timers), L1 Framework (type system and
+-> transport), L2 Scaffold (context assembly enrichment)
++> **Layer**: L0 Runtime (Substrate persistence and decay timers), L1 Framework (Bus
++> publication and type system), L2 Scaffold (context assembly enrichment)
+ >
+-> **Synapse traits**: `Substrate` (store pheromone Engrams), `Scorer` (rate pheromone
+-> intensity and relevance), `Router` (select highest-priority signal), `Policy` (react to
+-> pheromone streams)
++> **Synapse traits**: `Substrate` (store pheromone Engrams), `Bus` (announce Pulses),
++> `Scorer` (rate pheromone intensity and relevance), `Router` (select highest-priority
++> Pulse), `Policy` (react to pheromone streams)
+ >
+ > **Prerequisites**: `00-stigmergy-theory.md` (stigmergy theory),
+ > `01-stigmergy-beyond-termites.md` (generalized stigmergy)
+ 
++> **See also**: `../../tmp/refinements/09-phase-2-implications.md`,
++> `../00-architecture/01-naming-and-glossary.md`
++
+ 
+ > **Implementation**: Specified
+ 
+@@ -18,8 +21,9 @@
+ ## What Are Digital Pheromones?
+ 
+ Digital pheromones are software analogs of the chemical pheromones used by social insects for
+-indirect coordination. In Roko, a digital pheromone is a typed Engram — a content-addressed,
+-scored, decaying unit of cognition — that carries coordination information through the system.
++indirect coordination. In Roko, a digital pheromone is a typed Engram that lives in a shared
++Substrate and is announced as a Pulse on the Bus. The same coordination fact therefore has two
++faces in the two-fabric model: durable storage and ephemeral announcement.
+ 
+ The concept was formalized by Parunak, Brueckner & Sauter (2005), who identified the key
+ properties that make biological pheromones effective as coordination mechanisms and showed how
+@@ -32,7 +36,8 @@ Roko extends Parunak's framework with three additions:
+ 1. **Typed pheromones**: Each pheromone has a `PheromoneKind` that determines its semantic
+    meaning and default decay profile (see `04-pheromone-kinds.md`).
+ 2. **Scoped propagation**: Pheromones propagate through one of three scopes — Local, Mesh,
+-   or Global — controlling their audience and persistence (see `05-pheromone-scope.md`).
++   or Global — controlling their audience and persistence. Mesh scope is expressed as Bus
++   topics such as `mesh.pheromone.deposited` (see `05-pheromone-scope.md`).
+ 3. **Confirmation reinforcement**: Multiple independent deposits of the same pheromone type
+    extend its effective half-life, implementing a quorum-sensing mechanism analogous to
+    bacterial autoinducer accumulation [Nealson, Platt & Hastings, *J. Bacteriology*, 1970].
+@@ -47,13 +52,16 @@ The core data structure for a digital pheromone in Roko:
+ /// A digital pheromone — a typed Engram carrying coordination information.
+ ///
+ /// Pheromones are the primary mechanism for indirect coordination between
+-/// agents. They are deposited into a Substrate, propagate through a scope,
+-/// decay over time, and influence the behavior of agents that sense them.
++/// agents. They are persisted as Engrams in a shared Substrate, announced
++/// as Pulses on the Bus, decay over time, and influence the behavior of
++/// agents that sense them.
+ ///
+ /// # Stigmergic Properties
+ ///
+ /// - **Deposition**: Created by an agent via `Substrate::store()`
+-/// - **Diffusion**: Propagates through the Agent Mesh based on `scope`
++/// - **Announcement**: Published as a Pulse on the Bus, often on
++///   `mesh.pheromone.deposited`
++/// - **Diffusion**: Propagates through MeshBus based on `scope`
+ /// - **Evaporation**: Decays exponentially according to `decay_rate`
+ /// - **Sensing**: Queried by other agents via `Substrate::query()`
+ /// - **Reinforcement**: Confirmations extend effective half-life
+@@ -91,7 +99,7 @@ pub struct Pheromone {
+ 
+     /// The propagation scope of this pheromone.
+     /// - `Local(SubstrateId)`: Visible only within the agent's own store
+-    /// - `Mesh(CollectiveId)`: Visible to all agents in the collective
++    /// - `Mesh(CollectiveId)`: Visible to all agents via MeshBus topics
+     /// - `Global`: Visible to all agents on the Korai chain
+     pub scope: PheromoneScope,
+ }
+@@ -120,6 +128,7 @@ The Engram's `tags` field carries metadata that the `Substrate::query()` method
+ |---------|--------------|---------|
+ | `pheromone_kind` | `"Threat"` | Filter by signal type |
+ | `pheromone_scope` | `"Mesh(collective-42)"` | Filter by propagation scope |
++| `bus_topic` | `"mesh.pheromone.deposited"` | Topic used when announcing the deposit on the Bus |
+ | `pheromone_intensity` | `"0.87"` | Current intensity (updated on read) |
+ | `pheromone_confirmations` | `"3"` | Number of independent confirmations |
+ | `pheromone_domain` | `"code-quality"` | Domain-specific context |
+@@ -354,7 +363,7 @@ Consensus ██████████████░  1 active (0.88 max)
+ 
+ Digital pheromones are integrated into Roko's context assembly pipeline at L2 Scaffold. When
+ the `Composer` assembles a prompt for an agent, it includes a summary of the ambient pheromone
+-field:
++field and any fresh Pulses on the Bus that have not yet been folded into the Substrate:
+ 
+ ### Context Enrichment Flow
+ 
+@@ -363,6 +372,8 @@ Agent receives task assignment
+     ↓
+ Composer queries Substrate for ambient pheromones
+     ↓
++Composer subscribes to `mesh.pheromone.deposited` Pulses for freshness
++    ↓
+ Scorer rates each pheromone by intensity × relevance
+     ↓
+ Router selects top-K pheromones (default K=5)
+@@ -381,15 +392,16 @@ Agent processes task with awareness of ambient signals
+ 
+ This enrichment happens automatically for every agent dispatch. The agent does not need to
+ explicitly request pheromone information — it is part of the environment, just as chemical
+-pheromones are part of the air that biological agents breathe.
++pheromones are part of the air that biological agents breathe. In two-fabric terms, the
++Substrate holds the durable record and the Bus keeps the prompt current.
+ 
+ ### Dynamic Context Assembly as Stigmergic Behavior
+ 
+ The context assembly process itself is stigmergic: the agent's context (which information it
+-receives) is determined by the pheromone field, which was shaped by previous agents' actions.
+-An agent that deposits a high-intensity `Threat` pheromone changes the context that all
+-subsequent agents in the same scope will receive, steering collective attention toward the
+-threat without any direct communication.
++receives) is determined by the pheromone field, which was shaped by previous agents' actions
++and announced on the Bus. An agent that deposits a high-intensity `Threat` pheromone changes
++the context that all subsequent agents in the same scope will receive, steering collective
++attention toward the threat without any direct communication.
+ 
+ This is the digital equivalent of an ant depositing alarm pheromone: the ant doesn't send a
+ message to specific other ants; it modifies the chemical environment, and all ants that pass
+@@ -420,16 +432,15 @@ substrate.store(pheromone.into_engram())?;
+ 
+ ### 2. Propagation
+ 
+-Based on the `scope`, the pheromone propagates:
++Based on the `scope`, the pheromone is announced on the Bus:
+ 
+ - `Local`: Stays in the agent's own NeuroStore. No propagation.
+-- `Mesh`: Propagated to all agents in the Collective via Agent Mesh (WebSocket relay or Iroh
+-  P2P, see `06-agent-mesh-sync.md`).
+-- `Global`: Published to the Korai chain for all agents worldwide.
++- `Mesh`: Published as `mesh.pheromone.deposited` and routed by MeshBus to the Collective.
++- `Global`: Replicated to the Korai chain for all agents worldwide.
+ 
+ ### 3. Sensing
+ 
+-Other agents query the Substrate and encounter the pheromone:
++Other agents query the Substrate and/or subscribe to the Bus and encounter the pheromone:
+ 
+ ```rust
+ let threats = substrate.query(PheromoneFilter {
+@@ -475,7 +486,7 @@ After acting, the agent may deposit its own pheromone:
+ Over time, the pheromone's intensity decays toward zero. When it drops below the sensing
+ threshold (default 0.01), it becomes invisible to other agents. When it drops below the GC
+ threshold (default 0.001), it is eligible for garbage collection by the `Substrate`
+-implementation.
++implementation. The Bus announcement remains ephemeral; only the Engram persists.
+ 
+ ---
+ 
+@@ -722,3 +733,5 @@ systems.
+ - `05-pheromone-scope.md` — Local, Mesh, and Global scoping
+ - `06-agent-mesh-sync.md` — Transport layer for pheromone propagation
+ - `10-exponential-flywheel.md` — How pheromones enable compounding intelligence
++- `../../tmp/refinements/09-phase-2-implications.md` — Phase 2+ Bus/Substrate framing for coordination
++- `../00-architecture/01-naming-and-glossary.md` — Glossary for Bus, Pulse, MeshBus, and MeshSubstrate
+diff --git a/docs/13-coordination/06-agent-mesh-sync.md b/docs/13-coordination/06-agent-mesh-sync.md
+index 50fc38d2..df715213 100644
+--- a/docs/13-coordination/06-agent-mesh-sync.md
++++ b/docs/13-coordination/06-agent-mesh-sync.md
+@@ -3,12 +3,15 @@
+ > **Layer**: L0 Runtime (connection lifecycle, event bus), L1 Framework (transport backends,
+ > protocol definition)
+ >
+-> **Synapse traits**: `Substrate` (the Agent Mesh as a distributed store), `Policy` (reactive
+-> behavior on received messages)
++> **Synapse traits**: `Bus` (MeshBus for Pulses), `Substrate` (MeshSubstrate as a distributed
++> store), `Policy` (reactive behavior on received messages)
+ >
+ > **Prerequisites**: `03-digital-pheromones.md` (what gets transported),
+ > `05-pheromone-scope.md` (Mesh scope definition)
+ 
++> **See also**: `../../tmp/refinements/09-phase-2-implications.md`,
++> `../00-architecture/01-naming-and-glossary.md`
++
+ 
+ > **Implementation**: Specified
+ 
+@@ -16,10 +19,11 @@
+ 
+ ## Overview
+ 
+-The Agent Mesh (renamed from "Styx" in the legacy architecture) is Roko's peer-to-peer
+-connectivity layer for Mesh-scope pheromone propagation, collective knowledge sharing, and
+-morphogenetic coordination signals. It provides transport between agents in a Collective
+-(renamed from "Clade") without requiring a centralized message broker.
++The Agent Mesh is Roko's peer-to-peer connectivity layer for Mesh-scope pheromone
++propagation, collective knowledge sharing, and morphogenetic coordination signals. In the
++two-fabric model it is not a separate trait family: MeshBus carries Pulses and MeshSubstrate
++replicates Engrams. It provides transport between agents in a Collective without requiring a
++centralized relay broker.
+ 
+ The Agent Mesh supports three co-equal transport mechanisms:
+ 
+@@ -48,10 +52,11 @@ forward for offline agents, and ERC-8004 for discovery and identity binding.
+ 
+ ### EventFabric as Integration Point
+ 
+-Regardless of transport, all messages converge on the EventFabric — Roko's internal event bus.
+-A pheromone arriving via WebSocket and the same pheromone arriving via Iroh produce identical
+-events. Consumers (NeuroStore ingestion, context assembly, morphogenetic coordinator) never
+-know which transport delivered a message.
++Regardless of transport, all messages converge on the Bus projection layer. A pheromone
++arriving via WebSocket and the same pheromone arriving via Iroh produce identical Pulses on
++topics such as `mesh.pheromone.deposited`. Durable Engrams land in MeshSubstrate; consumers
++(NeuroStore ingestion, context assembly, morphogenetic coordinator) never need to know which
++transport delivered the signal.
+ 
+ Deduplication happens at the ingestion boundary via version vectors (`{agent_id → last_seen_seq}`). If a pheromone arrives via both WebSocket and Iroh, the second arrival is silently dropped.
+ 
+@@ -66,9 +71,10 @@ This connection works from behind any NAT, firewall, or restrictive network —
+ outbound HTTPS connection on port 443. No inbound ports, no tunnels, no port forwarding.
+ 
+ The WebSocket connection serves as a bidirectional channel for ALL Mesh traffic: collective
+-sync, pheromone updates, knowledge exchange, event relay, and TUI event forwarding. This
+-multiplexed design minimizes connection overhead while supporting the full range of Mesh
+-services.
++sync, pheromone updates, knowledge exchange, Bus relay, and TUI forwarding. In the
++two-fabric model it is one backend for MeshBus Pulses, while MeshSubstrate handles durable
++Engram replication. This multiplexed design minimizes connection overhead while supporting the
++full range of Mesh services.
+ 
+ ### Connection Registry
+ 
+@@ -120,7 +126,7 @@ pheromone signals deposited by daytime agents when it boots in the morning.
+ |-------------|-----------|---------|
+ | `PheromoneSync` | Server -> Agent | Batch of pheromone Engrams from Collective peers |
+ | `PheromoneImmediate` | Server -> Agent | High-priority pheromone (Threat, high-intensity Anomaly) |
+-| `PheromoneDelta` | Agent -> Server | New pheromone deposits for relay to Collective |
++| `PheromoneDelta` | Agent -> Server | New pheromone deposits for relay to Collective and Bus publication |
+ | `KnowledgeSync` | Bidirectional | NeuroStore entries promoted to Mesh scope |
+ | `MorphogeneticBroadcast` | Agent -> Server -> Peers | Role vector and specialization signals |
+ | `VersionVector` | Agent -> Server | Sequence numbers for dedup and delta computation |
+@@ -344,18 +350,21 @@ roughly 500,000 pheromone exchanges per day through the relay -- well above norm
+ 
+ ### Pheromone Propagation via iroh-gossip
+ 
+-Each `(domain, regime)` pair gets a gossip topic. Topic IDs are deterministic:
++Each `(domain, regime)` pair gets a gossip topic. Topic IDs are deterministic, and the same
++transport also carries Bus topics such as `mesh.pheromone.deposited`:
+ 
+ ```
+ TopicId = blake3::hash(format!("roko/pheromone/{domain}/{regime}"))
+ ```
+ 
+ The topic set is bounded: domains × regimes ≈ 50 topics maximum. Agents subscribe only to
+-topics for domains they operate in, preventing unnecessary message delivery.
++topics for domains they operate in, preventing unnecessary pulse delivery. MeshBus reuses
++the same topology to fan out Pulses while MeshSubstrate keeps the durable record.
+ 
+ `PheromoneDeposit` messages are serialized (postcard encoding) and broadcast via
+ `sender.broadcast()`. Decay is computed locally by each agent based on the deposit timestamp —
+-no coordination needed. The existing exponential decay formula applies unchanged.
++no coordination needed. The existing exponential decay formula applies unchanged. The
++`mesh.pheromone.deposited` topic is the Bus-facing announcement for the same deposit.
+ 
+ When gossip receivers fall behind (`Event::Lagged`), the message is dropped and logged at WARN
+ level. Pheromone loss is acceptable -- signals are fuzzy by nature, and a lost pheromone will
+@@ -591,7 +600,7 @@ events invalidate the cache entry immediately, avoiding stale data between poll
+ | Service | WebSocket | Iroh | Notes |
+ |---------|-----------|------|-------|
+ | Collective sync | Store-and-forward for offline agents | Direct QUIC streams | Iroh preferred, WS fallback |
+-| Pheromone propagation | Central fan-out from Mesh server | iroh-gossip per topic | Gossip scales better |
++| Pheromone propagation | Central fan-out from Mesh server | iroh-gossip per topic | MeshBus fans out Pulses; MeshSubstrate persists Engrams |
+ | Knowledge exchange | Relay | iroh-blobs (content-addressed) | Iroh preferred |
+ | Bloom oracle | Server-side cache | Gossip broadcast | Iroh for Collective, WS for ecosystem |
+ | Causal graph federation | Relay | Gossip | Iroh preferred |
+@@ -1030,3 +1039,5 @@ monthly_budget = 10.00     # Max USDC per month
+ - `05-pheromone-scope.md` — Scope model (Local, Mesh, Global)
+ - `08-permissioned-subnets.md` — Private Mesh scopes
+ - `09-stigmergy-scaling.md` — How the transport layer scales
++- `../../tmp/refinements/09-phase-2-implications.md` — Phase 2+ Bus/Substrate split for Mesh, Dreams, coordination, and heartbeat
++- `../00-architecture/01-naming-and-glossary.md` — Glossary for Bus, Pulse, MeshBus, and MeshSubstrate
+diff --git a/docs/13-coordination/11-collective-intelligence-metrics.md b/docs/13-coordination/11-collective-intelligence-metrics.md
+index fb86232b..4e904231 100644
+--- a/docs/13-coordination/11-collective-intelligence-metrics.md
++++ b/docs/13-coordination/11-collective-intelligence-metrics.md
+@@ -9,6 +9,9 @@
+ > **Prerequisites**: `00-stigmergy-theory.md` (coordination fundamentals),
+ > `10-exponential-flywheel.md` (what the metrics should detect)
+ 
++> **See also**: `../../tmp/refinements/09-phase-2-implications.md`,
++> `../00-architecture/01-naming-and-glossary.md`
++
+ 
+ > **Implementation**: Specified
+ 
+@@ -17,15 +20,17 @@
+ ## Overview
+ 
+ Stigmergic coordination is only valuable if it produces measurable collective intelligence —
+-outputs that exceed what individual agents could achieve alone. This sub-doc specifies the
+-metrics framework for measuring, diagnosing, and optimizing collective intelligence in Roko
+-Collectives.
++outputs that exceed what individual agents could achieve alone. In the two-fabric model,
++collectives are pub/sub topologies on the Bus, so the metrics framework measures Bus
++statistics, task outcomes, and lineage together. This sub-doc specifies the metrics framework
++for measuring, diagnosing, and optimizing collective intelligence in Roko Collectives.
+ 
+ The central metric is the **C-Factor** (Collective Intelligence Factor), derived from Woolley
+ et al.'s seminal research on human groups [Woolley, A.W. et al. "Evidence for a Collective
+ Intelligence Factor in the Performance of Human Groups." *Science*, 330(6004):686-688, 2010].
+ The C-Factor quantifies the degree to which a collective's performance exceeds the sum of
+-its members' individual performances.
++its members' individual performances, using Bus statistics to explain how coordination
++actually flowed.
+ 
+ ---
+ 
+@@ -54,9 +59,9 @@ C-Factor = Collective_Output / Σ(Individual_Outputs)
+ Where:
+ - `Collective_Output` = the quality-weighted task completions achieved by the Collective
+   working together (with pheromone coordination, morphogenetic specialization, shared
+-  knowledge)
++  knowledge, and Bus-mediated triggers)
+ - `Σ(Individual_Outputs)` = the sum of quality-weighted task completions each agent would
+-  achieve working independently (no coordination, no shared pheromones)
++  achieve working independently (no coordination, no shared pheromones, no shared Bus)
+ 
+ | C-Factor | Interpretation |
+ |----------|---------------|
+@@ -68,13 +73,14 @@ Where:
+ 
+ ### Measurement Method
+ 
+-C-Factor measurement requires a controlled comparison:
++C-Factor measurement requires a controlled comparison built from Bus statistics:
+ 
+ 1. **Collective trial**: Run the Collective on a task set with full coordination (pheromone
+-   field, morphogenetic specialization, knowledge sharing enabled)
++   Bus publication, morphogenetic specialization, knowledge sharing enabled)
+ 2. **Individual baseline**: Run each agent independently on the same task set (coordination
+    disabled)
+-3. **Compute ratio**: C-Factor = Collective score / Sum of individual scores
++3. **Compute ratio**: C-Factor = Collective score / Sum of individual scores, where the score
++   is reconstructed from task outcomes and Bus topic traces
+ 
+ For ongoing measurement (without disrupting production), Roko uses an estimation approach:
+ 
+@@ -118,15 +124,15 @@ In Woolley et al.'s human group studies, the most predictive feature of collecti
+ was **equality of conversational turn-taking** — groups where one person dominated performed
+ worse than groups where contributions were more equally distributed.
+ 
+-For Roko Collectives, turn-taking equality measures how evenly pheromone deposits are
+-distributed across agents:
++For Roko Collectives, turn-taking equality measures how evenly pheromone-related Bus
++publishes are distributed across agents:
+ 
+ ```rust
+-/// Measure turn-taking equality in pheromone deposits.
++/// Measure turn-taking equality in pheromone-related Bus activity.
+ ///
+ /// Returns a value in [0, 1]:
+-/// - 1.0 = perfectly equal (all agents deposit equally)
+-/// - 0.0 = maximally unequal (one agent deposits everything)
++/// - 1.0 = perfectly equal (all agents publish equally)
++/// - 0.0 = maximally unequal (one agent publishes everything)
+ ///
+ /// Uses normalized Shannon entropy of deposit counts.
+ pub fn turn_taking_equality(
+@@ -152,17 +158,17 @@ pub fn turn_taking_equality(
+ ```
+ 
+ **Target**: > 0.7. Below this threshold, the Collective has a "loudest agent" problem — one
+-agent's pheromones dominate the field, reducing the diversity benefit.
++agent's Bus traffic dominates the field, reducing the diversity benefit.
+ 
+ ### Signal 2: Knowledge Flow Rate
+ 
+ How quickly does knowledge propagate through the Collective? Measured as the average time
+-between a pheromone deposit and its first confirmation by a different agent:
++between a pheromone-related Bus publish and its first confirmation by a different agent:
+ 
+ ```rust
+-/// Measure knowledge flow rate in the Collective.
++/// Measure knowledge flow rate in the Collective from Bus statistics.
+ ///
+-/// Returns the average time (in ticks) between pheromone deposit
++/// Returns the average time (in ticks) between Bus publication
+ /// and first confirmation by a different agent. Lower is better.
+ pub fn knowledge_flow_rate(
+     deposits: &[PheromoneDeposit],
+@@ -185,15 +191,16 @@ pub fn knowledge_flow_rate(
+ ```
+ 
+ **Target**: < 100 ticks (~25 minutes at 4 ticks/minute). Slower flow rates indicate
+-communication bottlenecks or insufficient agent overlap.
++communication bottlenecks, insufficient agent overlap, or Bus backpressure.
+ 
+ ### Signal 3: Cross-Domain Transfer
+ 
+ How often does a pheromone deposited by one agent type influence an agent of a different type?
+-This measures the cross-pollination of ideas across specialization boundaries.
++This measures the cross-pollination of ideas across specialization boundaries, expressed as
++Bus-topic reach across domains.
+ 
+ ```rust
+-/// Measure cross-domain transfer rate.
++/// Measure cross-domain transfer rate from Bus topic statistics.
+ ///
+ /// Returns the fraction of pheromone sensing events where the
+ /// sensing agent has a different primary domain than the depositing
+@@ -212,18 +219,18 @@ pub fn cross_domain_transfer(
+ ```
+ 
+ **Target**: > 0.2. Below this threshold, agents are operating in silos — each domain's
+-pheromones only influence agents in the same domain, missing the cross-domain resonance
++Bus traffic only influences agents in the same domain, missing the cross-domain resonance
+ mechanism (see `10-exponential-flywheel.md`, Mechanism 7).
+ 
+ ### Signal 4: Emergent Coordination
+ 
+ How often do agents spontaneously coordinate without explicit task assignment? Measured by
+-the frequency of "coordination chains" — sequences where Agent A's pheromone deposit triggers
+-Agent B's action, which triggers Agent C's action, without any central orchestrator directing
+-the chain.
++the frequency of "coordination chains" — sequences where Agent A's Bus publish triggers Agent
++B's action, which triggers Agent C's action, without any central orchestrator directing the
++chain.
+ 
+ ```rust
+-/// Measure emergent coordination rate.
++/// Measure emergent coordination rate from Bus-triggered actions.
+ ///
+ /// Returns the fraction of task completions that were triggered by
+ /// pheromone sensing (stigmergic coordination) rather than direct
+@@ -247,7 +254,7 @@ emerges from pheromone sensing rather than top-down assignment.
+ 
+ ### Composite C-Score
+ 
+-The four signals combine into a composite score:
++The four signals combine into a composite score built from Bus statistics and task outcomes:
+ 
+ ```
+ C-Score = w₁ × turn_taking + w₂ × (1 / knowledge_flow) + w₃ × cross_domain + w₄ × emergent
+@@ -762,9 +769,9 @@ Diagnostics:
+   Cross-domain transfer:  0.28  [▓▓▓░░░░░░░] ✓
+   Emergent coordination:  0.35  [▓▓▓░░░░░░░] ✓
+ 
+-Pheromone Field:
+-  Active pheromones: 142
+-  Field entropy: 0.63 [▓▓▓▓▓▓░░░░]
++Bus Statistics:
++  Active Pulses: 142
++  Topic entropy: 0.63 [▓▓▓▓▓▓░░░░]
+   Confirmation rate: 0.41
+ 
+ Morphogenetic:
+@@ -782,11 +789,11 @@ The metrics feed back into the coordination system to optimize collective intell
+ 
+ | Metric | Below Target | Adjustment |
+ |--------|-------------|-----------|
+-| C-Factor < 1.0 | Coordination overhead too high | Reduce pheromone deposit frequency; simplify pheromone kinds |
+-| Turn-taking < 0.7 | Dominant agent | Increase morphogenetic inhibition; reduce dominant agent's deposit rate |
+-| Knowledge flow > 100 ticks | Slow propagation | Increase immediate push threshold; check transport health |
++| C-Factor < 1.0 | Coordination overhead too high | Reduce Bus publish frequency; simplify pheromone kinds |
++| Turn-taking < 0.7 | Dominant agent | Increase morphogenetic inhibition; reduce dominant agent's publish rate |
++| Knowledge flow > 100 ticks | Slow propagation | Increase immediate push threshold; check Bus health |
+ | Cross-domain < 0.2 | Siloed agents | Lower domain filter thresholds; add cross-domain scoring bonus |
+-| Emergent coordination < 0.3 | Over-orchestrated | Reduce explicit task assignment; increase pheromone visibility |
++| Emergent coordination < 0.3 | Over-orchestrated | Reduce explicit task assignment; increase Bus visibility |
+ 
+ These adjustments are implemented by the `Policy` trait at L4 Orchestration, which observes
+ the metrics stream and emits configuration-adjustment Engrams.
+@@ -811,3 +818,5 @@ the metrics stream and emits configuration-adjustment Engrams.
+ - `09-stigmergy-scaling.md` — Scaling properties of coordination
+ - `10-exponential-flywheel.md` — The mechanisms that produce superlinear C-Factor
+ - `12-current-status-and-gaps.md` — Implementation status of metrics
++- `../../tmp/refinements/09-phase-2-implications.md` — Phase 2+ Bus/Substrate framing for collectives and metrics
++- `../00-architecture/01-naming-and-glossary.md` — Glossary for Bus, Pulse, MeshBus, and MeshSubstrate
+diff --git a/docs/13-coordination/INDEX.md b/docs/13-coordination/INDEX.md
+index b8b2db0f..97837c1a 100644
+--- a/docs/13-coordination/INDEX.md
++++ b/docs/13-coordination/INDEX.md
+@@ -12,11 +12,11 @@
+ ## Summary
+ 
+ This topic covers how Roko agents coordinate without direct communication, using **stigmergy**
+-— indirect coordination through environmental modification. The environment in Roko is a
+-multi-layered pheromone field composed of typed, decaying, scoped Engrams that agents deposit
+-and sense. These digital pheromones carry coordination signals (threats, opportunities,
+-patterns, wisdom) that propagate through three scopes (Local, Mesh, Global) via the Agent Mesh
+-transport layer (WebSocket relay, Iroh P2P, ERC-8004 discovery).
++— indirect coordination through environmental modification. In the two-fabric model, the
++environment is a multi-layered pheromone field composed of typed Engrams in shared Substrates
++and matching Pulses on the Bus. These digital pheromones carry coordination signals (threats,
++opportunities, patterns, wisdom) that propagate through three scopes (Local, Mesh, Global)
++via the Agent Mesh, now framed as MeshBus + MeshSubstrate rather than a separate trait family.
+ 
+ On top of the pheromone field, **morphogenetic specialization** uses Turing reaction-diffusion
+ dynamics to produce emergent role differentiation in Collectives of initially identical agents.
+@@ -50,15 +50,15 @@ The **C-Factor** and composite **C-Score** metrics quantify coordination effecti
+ | 00 | [00-stigmergy-theory.md](00-stigmergy-theory.md) | Stigmergy Theory | ~470 | Grassé 1959, formal definition, two forms (sematectonic/marker-based), why stigmergy over direct communication, scalability/robustness/asynchrony analysis, Grossman-Stiglitz paradox resolution, **information-theoretic analysis** (stigmergic channel capacity, entropy rate, transfer entropy, design implications) |
+ | 01 | [01-stigmergy-beyond-termites.md](01-stigmergy-beyond-termites.md) | Stigmergy Beyond Termites | ~280 | Biological examples (ants, bees, bacteria, spiders), human stigmergy (Wikipedia, science, cities, OSS), computational stigmergy (ACO, PSO, swarm robotics), software engineering (code smells, niche construction, information foraging), Constructal Law, self-organized criticality |
+ | 02 | [02-git-as-stigmergy.md](02-git-as-stigmergy.md) | Git as Stigmergy | ~250 | Repository as stigmergic environment, sematectonic (code structure) and marker-based (commits, branches, CI) signals, multi-agent worktree model, base+overlay pattern, declared contracts, pheromone traces in codebases |
+-| 03 | [03-digital-pheromones.md](03-digital-pheromones.md) | Digital Pheromones | ~490 | Pheromone struct, exponential decay formula, decay profiles per kind, confirmation mechanics, anti-spoofing via reputation, pheromone field operations, pheromone-enriched context assembly, complete lifecycle, **pheromone interference model** (SINR framework, cross-kind interference matrix, anti-saturation mechanisms, mitigation strategies) |
++| 03 | [03-digital-pheromones.md](03-digital-pheromones.md) | Digital Pheromones | ~490 | Two-fabric pheromone framing, typed Engrams plus Bus Pulses, decay formula, confirmation mechanics, anti-spoofing via reputation, pheromone field operations, pheromone-enriched context assembly, complete lifecycle, **pheromone interference model** (SINR framework, cross-kind interference matrix, anti-saturation mechanisms, mitigation strategies) |
+ | 04 | [04-pheromone-kinds.md](04-pheromone-kinds.md) | Pheromone Kinds | ~450 | PheromoneKind enum (Threat/Opportunity/Wisdom/Alpha/Pattern/Anomaly/Consensus/Custom), three-tier taxonomy, kind interactions, Alpha paradox, Pattern→Wisdom promotion, Consensus stability, **pheromone-driven task allocation** (response threshold model, Hill function, emergent division of labor) |
+ | 05 | [05-pheromone-scope.md](05-pheromone-scope.md) | Pheromone Scope | ~260 | PheromoneScope enum (Local/Mesh/Global), three-level hierarchy, Constructal Law connection, trust discounting, scope promotion, cross-scope composition, permissioned subnets preview |
+-| 06 | [06-agent-mesh-sync.md](06-agent-mesh-sync.md) | Agent Mesh Sync | ~470 | Dual-transport architecture (WebSocket + Iroh), EventFabric integration, connection registry, store-and-forward, iroh-gossip pheromone propagation, iroh-blobs knowledge exchange, ERC-8004 discovery, failure modes, security model, **partition tolerance** (AP design, partition-aware morphogenetics, post-partition reconciliation, Byzantine agent detection) |
++| 06 | [06-agent-mesh-sync.md](06-agent-mesh-sync.md) | Agent Mesh Sync | ~470 | Dual-transport architecture (WebSocket + Iroh), Bus projection integration, MeshBus + MeshSubstrate split, connection registry, store-and-forward, iroh-gossip pheromone propagation, iroh-blobs knowledge exchange, ERC-8004 discovery, failure modes, security model, **partition tolerance** (AP design, partition-aware morphogenetics, post-partition reconciliation, Byzantine agent detection) |
+ | 07 | [07-morphogenetic-specialization.md](07-morphogenetic-specialization.md) | Morphogenetic Specialization | ~660 | Turing 1952 reaction-diffusion, strategy concentration vector (8 dimensions), Gierer-Meinhardt kinetics, update rule with activation/inhibition/decay/noise, niche competition, role coordination messages, resource pressure modulation, convergence analysis, **Turing pattern stability analysis** (linear stability, pitchfork bifurcation, Hopf oscillatory instability, Lyapunov stability monitoring, pattern selection), DeLanda assemblage theory |
+ | 08 | [08-permissioned-subnets.md](08-permissioned-subnets.md) | Permissioned Subnets | ~240 | Private Mesh scopes, access control models (invite/role/reputation), internal reputation, opt-in publishing, scope boundary enforcement, organizational patterns, club goods theory |
+ | 09 | [09-stigmergy-scaling.md](09-stigmergy-scaling.md) | Stigmergy Scaling | ~250 | O(N×M) vs O(N²) analysis, pheromone field scaling, transport scaling (relay vs gossip), morphogenetic scaling, knowledge sync scaling, practical limits, comparison with consensus and pub-sub |
+ | 10 | [10-exponential-flywheel.md](10-exponential-flywheel.md) | Exponential Flywheel | ~280 | 10 mechanisms for superlinear growth: autocatalytic networks (Kauffman), superlinear scaling (West/Bettencourt β≈1.15), Reed's Law (2^N), distillation cascades (Hinton), evolutionary dynamics, collective calibration (31.6×), cross-domain resonance (HDC 0.526), niche construction, information-theoretic compounding, transactive memory |
+-| 11 | [11-collective-intelligence-metrics.md](11-collective-intelligence-metrics.md) | Collective Intelligence Metrics | ~640 | C-Factor (Woolley et al. 2010), composite C-Score (4 diagnostic signals), turn-taking equality, knowledge flow rate, cross-domain transfer, emergent coordination, information-theoretic metrics, **collective pathology detection** (information cascades/herding, groupthink/premature consensus, echo chambers, cascading hallucinations, pheromone deadlock, composite pathology dashboard), A/B testing with clustered standard errors, dashboard integration |
++| 11 | [11-collective-intelligence-metrics.md](11-collective-intelligence-metrics.md) | Collective Intelligence Metrics | ~640 | C-Factor (Woolley et al. 2010) from Bus statistics, composite C-Score (4 diagnostic signals), turn-taking equality, knowledge flow rate, cross-domain transfer, emergent coordination, information-theoretic metrics, **collective pathology detection** (information cascades/herding, groupthink/premature consensus, echo chambers, cascading hallucinations, pheromone deadlock, composite pathology dashboard), A/B testing with clustered standard errors, dashboard integration |
+ | 12 | [12-current-status-and-gaps.md](12-current-status-and-gaps.md) | Current Status and Gaps | ~250 | Per-feature implementation status (Wired/Scaffold/Design/Gap), 5-tier implementation priority, existing code assets, key gaps (no pheromone types, no transport, no morphogenetic code, no metrics), open questions and decisions |
+ 
+ ---
+@@ -72,6 +72,9 @@ The **C-Factor** and composite **C-Score** metrics quantify coordination effecti
+ - `08-chain/` — Korai chain as the Global pheromone scope
+ - `09-safety/` — Safety constraints on pheromone propagation
+ - `10-learning/` — Efficiency events and adaptive tuning that feed coordination metrics
++- `00-architecture/01-naming-and-glossary.md` — Shared vocabulary for Bus, Pulse, MeshBus, and MeshSubstrate
++- `00-architecture/24-cross-section-integration-map.md` — Bus-based integration map for the two-fabric model
++- `../../tmp/refinements/09-phase-2-implications.md` — Phase 2+ implications for chain, dreams, mesh, coordination, and heartbeat
+ 
+ ---
+ 
+diff --git a/docs/16-heartbeat/03-three-cognitive-speeds.md b/docs/16-heartbeat/03-three-cognitive-speeds.md
+index 8b9782db..ad554735 100644
+--- a/docs/16-heartbeat/03-three-cognitive-speeds.md
++++ b/docs/16-heartbeat/03-three-cognitive-speeds.md
+@@ -13,11 +13,11 @@
+ 
+ ## Abstract
+ 
+-Every Roko agent operates at three timescales simultaneously. These are not sequential phases — they are three concurrent async tasks running in parallel, each processing information at a different temporal grain. The naming follows EEG frequency bands: Gamma (fast reactive), Theta (medium reflective), and Delta (slow consolidation).
++Every Roko agent operates at three timescales simultaneously. In the two-fabric model, the adaptive clock does not call the loops directly; `HeartbeatPolicy` publishes `heartbeat.gamma.tick`, `heartbeat.theta.tick`, and `heartbeat.delta.tick` Pulses on the Bus, and the speed-specific consumers subscribe by topic. These are not sequential phases — they are three concurrent async consumers running in parallel, each processing information at a different temporal grain. The naming follows EEG frequency bands: Gamma (fast reactive), Theta (medium reflective), and Delta (slow consolidation).
+ 
+ The three-speed model draws from Friston's free energy principle (2010), which frames perception as hierarchical prediction at different temporal grains. Clark (2013) extends this into the "predictive brain" framework: biological cognition is nested prediction loops at multiple timescales. Buzsáki's "Rhythms of the Brain" (2006) establishes that oscillatory hierarchies in the brain enable simultaneous processing at different temporal resolutions — fast gamma oscillations (30-100 Hz) ride on top of slower theta oscillations (4-8 Hz), which ride on top of delta oscillations (0.5-4 Hz).
+ 
+-Roko implements this as three concurrent cognitive loops managed by the adaptive clock in `roko-runtime`. All three run simultaneously on separate async tasks. Gamma is the heartbeat. Theta is the breath. Delta is sleep.
++Roko implements this as three concurrent cognitive consumers driven by the Bus in `roko-runtime`. Gamma is the fast subscriber. Theta is the reflective subscriber. Delta is the consolidation subscriber.
+ 
+ ---
+ 
+@@ -25,9 +25,9 @@ Roko implements this as three concurrent cognitive loops managed by the adaptive
+ 
+ | Speed | Period | Name | What Happens | Trigger | Cost |
+ |---|---|---|---|---|---|
+-| **Gamma** | ~5-15s | Real-time / Reactive | One complete loop tick. Tool calls, LLM inference, verification. The main orchestration loop. | Async event loop (continuous) | T0: $0.00, T1: $0.001-0.003, T2: $0.01-0.25 |
+-| **Theta** | ~75s (30-120s range) | Reflection / Strategic | Summarize recent work. Update Daimon state. Check predictions. Re-evaluate plan. "Step back and think about the plan." | Episode completion, or every N=5 gamma cycles | T1-T2: $0.01-0.10 |
+-| **Delta** | Hours (~50 theta cycles) | Consolidation / Offline | Dreams: replay, synthesis, pruning. Knowledge tier promotion. Playbook compilation. Meta-cognition. | Idle detection (no active tasks), or scheduled (nightly) | T0-T1: $0.00-0.01 |
++| **Gamma** | ~5-15s | Real-time / Reactive | One complete loop tick. Tool calls, LLM inference, verification. The main gamma consumer. | `heartbeat.gamma.tick` Pulse from `HeartbeatPolicy` on the Bus | T0: $0.00, T1: $0.001-0.003, T2: $0.01-0.25 |
++| **Theta** | ~75s (30-120s range) | Reflection / Strategic | Summarize recent work. Update Daimon state. Check predictions. Re-evaluate plan. "Step back and think about the plan." | `heartbeat.theta.tick` Pulse, usually every N=5 gamma ticks or on episode completion | T1-T2: $0.01-0.10 |
++| **Delta** | Hours (~50 theta cycles) | Consolidation / Offline | Dreams: replay, synthesis, pruning. Knowledge tier promotion. Playbook compilation. Meta-cognition. | `heartbeat.delta.tick` Pulse, usually on idle detection or scheduled consolidation | T0-T1: $0.00-0.01 |
+ 
+ ### Why Three Speeds, Not One
+ 
+@@ -42,46 +42,22 @@ The total daily cost with three speeds: ~$2-50 (depending on domain volatility),
+ 
+ ### Concurrency Model
+ 
+-All three speeds run as separate `tokio` tasks:
++All three speeds consume their own Bus topics and share state through `Arc<RwLock<AgentState>>`:
+ 
+ ```rust
+ // Conceptual structure (target architecture)
+-async fn run_agent(config: AgentConfig) {
+-    let shared_state = Arc::new(RwLock::new(AgentState::new(config)));
+-
+-    // Gamma: reactive perception + action
+-    let gamma_handle = tokio::spawn({
+-        let state = shared_state.clone();
+-        async move { gamma_loop(state).await }
+-    });
+-
+-    // Theta: periodic reflection
+-    let theta_handle = tokio::spawn({
+-        let state = shared_state.clone();
+-        async move { theta_loop(state).await }
+-    });
+-
+-    // Delta: consolidation during idle time
+-    let delta_handle = tokio::spawn({
+-        let state = shared_state.clone();
+-        async move { delta_loop(state).await }
+-    });
+-
+-    tokio::select! {
+-        _ = gamma_handle => {},
+-        _ = theta_handle => {},
+-        _ = delta_handle => {},
+-    }
+-}
++let gamma_ticks = bus.subscribe("heartbeat.gamma.tick");
++let theta_ticks = bus.subscribe("heartbeat.theta.tick");
++let delta_ticks = bus.subscribe("heartbeat.delta.tick");
+ ```
+ 
+-The three loops share state through `Arc<RwLock<AgentState>>`. Gamma has priority — if a gamma tick and a theta tick collide, gamma runs first. Delta can be preempted by incoming gamma work (task arrives during dreaming → dream is paused via `CognitiveSignal::Pause`, resumed later).
++The control relationship is inverted from a special orchestration loop: the `HeartbeatPolicy` emits the tick Pulses, and each speed reacts to its topic. Gamma still has priority in the shared state layer, but that priority comes from cadence and queueing, not from one loop calling another.
+ 
+ ---
+ 
+ ## Gamma: The Heartbeat (~5-15s)
+ 
+-Gamma is the main orchestration loop — what most agent frameworks call "the agent." Every gamma tick runs the full 9-step CoALA pipeline (or the Synapse loop equivalent):
++Gamma is the high-frequency consumer — what most agent frameworks call "the agent." Every `heartbeat.gamma.tick` Pulse runs the full 9-step CoALA pipeline (or the Synapse loop equivalent):
+ 
+ 1. **PERCEIVE**: Run T0 probes, fetch environment state.
+ 2. **EVALUATE**: Score retrieved knowledge.
+@@ -93,7 +69,7 @@ Gamma is the main orchestration loop — what most agent frameworks call "the ag
+ 8. **ADAPT**: Fire policies, log episode.
+ 9. **META-COGNIZE**: Update Daimon state.
+ 
+-**Adaptive interval**: Gamma accelerates when the environment is volatile (more issues detected → faster ticks, down to 5s) and slows when calm (fewer anomalies → slower ticks, up to 15s).
++**Adaptive interval**: Gamma accelerates when the environment is volatile (more issues detected → faster tick emission, down to 5s) and slows when calm (fewer anomalies → slower tick emission, up to 15s). The `HeartbeatPolicy` changes cadence; the gamma consumer just reacts.
+ 
+ ```rust
+ // Adaptive gamma interval
+@@ -112,7 +88,7 @@ See [04-gamma-reactive-loop.md](./04-gamma-reactive-loop.md) for the full Gamma
+ 
+ ## Theta: The Breath (~75s)
+ 
+-Theta fires periodically — every 5 gamma cycles or upon episode completion (whichever comes first). It is the agent's "step back and think about the plan" moment.
++Theta consumes `heartbeat.theta.tick` Pulses — every 5 gamma cycles or upon episode completion (whichever comes first). It is the agent's "step back and think about the plan" moment.
+ 
+ **What Theta does:**
+ 1. **Summarize recent gamma work**: What happened in the last 5 ticks? Any patterns?
+@@ -121,7 +97,7 @@ Theta fires periodically — every 5 gamma cycles or upon episode completion (wh
+ 4. **Re-evaluate plan**: Is the current plan still the best approach? Should I re-plan?
+ 5. **Trigger interventions**: If stuck (>3 retries on same task), suggest escalation.
+ 
+-**Adaptive interval**: Theta adjusts based on regime multipliers. During volatile periods (chain domain: high market volatility; coding domain: many build failures), theta accelerates toward 30s. During calm periods, theta stretches to 120s.
++**Adaptive interval**: Theta adjusts based on regime multipliers. During volatile periods (chain domain: high market volatility; coding domain: many build failures), the `HeartbeatPolicy` accelerates theta tick emission toward 30s. During calm periods, theta stretches to 120s.
+ 
+ | Domain Regime | Theta Interval | Rationale |
+ |---|---|---|
+@@ -129,7 +105,7 @@ Theta fires periodically — every 5 gamma cycles or upon episode completion (wh
+ | Normal | ~75s | Standard reflection cadence |
+ | Volatile / troubled | ~30s | Rapid changes require frequent re-evaluation |
+ 
+-**Cost structure**: Theta always invokes at least T1 (it needs LLM reasoning to reflect). Most theta cycles use T1 ($0.005-0.01). Complex situations escalate to T2 ($0.03-0.10).
++**Cost structure**: Theta always invokes at least T1 (it needs LLM reasoning to reflect). Most theta ticks use T1 ($0.005-0.01). Complex situations escalate to T2 ($0.03-0.10).
+ 
+ See [05-theta-reflective-loop.md](./05-theta-reflective-loop.md) for the full Theta specification.
+ 
+@@ -137,7 +113,7 @@ See [05-theta-reflective-loop.md](./05-theta-reflective-loop.md) for the full Th
+ 
+ ## Delta: Sleep (~Hours)
+ 
+-Delta runs during agent idle time — when no active tasks are queued and the gamma loop has nothing to do. It is the agent's "offline learning" phase, corresponding to biological sleep consolidation.
++Delta consumes `heartbeat.delta.tick` Pulses during agent idle time — when no active tasks are queued and the delta consumer has work to do. It is the agent's "offline learning" phase, corresponding to biological sleep consolidation.
+ 
+ **What Delta does:**
+ 1. **Dream replay**: Review accumulated episodes using the Mattar-Daw utility formula (see topic [10-dreams](../10-dreams/INDEX.md)).
+@@ -149,13 +125,13 @@ Delta runs during agent idle time — when no active tasks are queued and the ga
+ 7. **Prompt optimization**: Determine which context sections led to better outcomes.
+ 8. **Meta-cognition**: "Am I getting better overall? What should I focus on improving?"
+ 
+-**Trigger conditions**: Delta fires when:
++**Trigger conditions**: Delta ticks are emitted when:
+ - No active tasks for >5 minutes (idle detection).
+ - Scheduled time (nightly consolidation cron).
+ - Episode count since last delta exceeds threshold (~50 episodes).
+ - Explicit `roko dream run` CLI command.
+ 
+-**Non-blocking**: Dreams do not block the agent. If a new task arrives during delta processing, the dream is paused (`CognitiveSignal::Pause`), the dream state is serialized, and gamma takes over. The dream resumes when the agent goes idle again.
++**Non-blocking**: Dreams do not block the agent. If a new task arrives during delta processing, the consumer yields and serializes its dream state, and gamma takes over on its own topic. The dream resumes when the agent goes idle again.
+ 
+ **Cost structure**: Delta uses cheap models for most operations. NREM replay uses Haiku-class (T1, $0.001-0.003). REM imagination uses Sonnet-class (T1-T2, $0.01-0.05). Integration and staging are pure computation (T0, $0.00). Impact on throughput: ~0% when tasks are available (dreams only run when there is nothing else to do).
+ 
+@@ -172,7 +148,7 @@ See [06-delta-consolidation-loop.md](./06-delta-consolidation-loop.md) for the f
+ 
+ ## The Hierarchy: Gamma Rides on Theta Rides on Delta
+ 
+-The three speeds form a nested hierarchy, exactly like biological brain rhythms (Buzsáki 2006):
++The three speeds form a nested hierarchy, exactly like biological brain rhythms (Buzsáki 2006). In the Bus model, the hierarchy is cadence and topic routing rather than a special orchestration chain:
+ 
+ ```
+ Delta (~hours):    ┌──────────────────────────────────────────────────┐
+@@ -214,6 +190,8 @@ The three-speed model maps directly to existing Roko types:
+ 
+ The `InferenceTier` enum in `bardo-primitives/src/tier.rs` directly corresponds to the T0/T1/T2 gating within gamma ticks. The `CascadeRouter` in `roko-learn/src/cascade_router.rs` implements the three-stage routing that drives tier selection. The context tier system in `roko-compose/src/context_provider.rs` (Surgical/Focused/Full) aligns with the cognitive depth at each speed.
+ 
++See also `tmp/refinements/09-phase-2-implications.md` and [Naming and Glossary](../00-architecture/01-naming-and-glossary.md) for the Bus / Pulse / Topic terms that make the three-speed model topic-driven.
++
+ ---
+ 
+ ## Academic Foundations
+diff --git a/docs/16-heartbeat/07-adaptive-clock.md b/docs/16-heartbeat/07-adaptive-clock.md
+index 22ab7152..ae7aa4a8 100644
+--- a/docs/16-heartbeat/07-adaptive-clock.md
++++ b/docs/16-heartbeat/07-adaptive-clock.md
+@@ -13,13 +13,15 @@
+ 
+ ## Abstract
+ 
+-The adaptive clock is the runtime component in `roko-runtime` (L0 Runtime layer) that manages the three cognitive frequencies — gamma, theta, and delta — as concurrent `tokio` tasks. It is not a simple timer. It dynamically adjusts each frequency based on environmental regime (calm vs. volatile), resource constraints (approaching budget ceiling), and agent behavioral state (focused vs. resting).
++The adaptive clock is the runtime policy in `roko-runtime` (L0 Runtime layer) that publishes the three heartbeat tick Pulses on the Bus. It does not orchestrate cognition directly. Instead, a `HeartbeatPolicy` emits `heartbeat.gamma.tick`, `heartbeat.theta.tick`, and `heartbeat.delta.tick` at cadence, and the speed-specific consumers subscribe by topic. That makes the clock a Bus producer, not a special control-flow mechanism.
+ 
+-The fixed ~60-second heartbeat from simpler agent architectures serves all purposes at one rate. This is wrong. A code compilation check resolves in seconds. A deployment pipeline takes minutes. A research synthesis takes hours. Biology solves this with oscillatory hierarchies (Buzsáki 2006, "Rhythms of the Brain", Oxford University Press): fast gamma oscillations (30-100 Hz) ride on top of slower theta oscillations (4-8 Hz), which ride on top of delta oscillations (0.5-4 Hz). The adaptive clock implements this hierarchy for agent cognition.
++It still dynamically adjusts each frequency based on environmental regime (calm vs. volatile), resource constraints (approaching budget ceiling), and agent behavioral state (focused vs. resting). The fixed ~60-second heartbeat from simpler agent architectures serves all purposes at one rate. This is wrong. A code compilation check resolves in seconds. A deployment pipeline takes minutes. A research synthesis takes hours. Biology solves this with oscillatory hierarchies (Buzsáki 2006, "Rhythms of the Brain", Oxford University Press): fast gamma oscillations (30-100 Hz) ride on top of slower theta oscillations (4-8 Hz), which ride on top of delta oscillations (0.5-4 Hz). The adaptive clock implements this hierarchy for agent cognition.
+ 
+ The adaptive clock draws from Friston's (2010) free energy principle: the agent should sample its environment more frequently when prediction error is high (the environment is surprising) and less frequently when prediction error is low (the environment is predictable). Clark (2013, "Whatever Next?", Behavioral and Brain Sciences 36(3)) extends this into the "predictive brain" framework: biological cognition is nested prediction loops at multiple timescales, with each timescale adapting independently.
+ 
+-This document specifies the adaptive clock: its configuration, the regime detection system, the three-frequency scheduler, budget-aware throttling, and the `CognitiveSignal` system for inter-loop communication.
++This document specifies the adaptive clock: its configuration, the regime detection system, the three-frequency scheduler, budget-aware throttling, and the Bus topic delivery model for inter-loop communication.
++
++See also `tmp/refinements/09-phase-2-implications.md` and [Naming and Glossary](../00-architecture/01-naming-and-glossary.md) for the two-fabric framing and the Bus / Pulse / Topic vocabulary.
+ 
+ ---
+ 
+@@ -51,13 +53,13 @@ throttle_at_percent = 80  # start throttling at 80% budget
+ hard_stop_at_percent = 95  # stop T2 calls at 95% budget
+ ```
+ 
+-All intervals have minimum and maximum bounds. The adaptive logic operates within these bounds — it can never make gamma faster than 5 seconds or slower than 15 seconds, regardless of regime.
++All intervals have minimum and maximum bounds. The adaptive logic operates within these bounds — it can never make gamma faster than 5 seconds or slower than 15 seconds, regardless of regime. Those bounds define the cadence of `HeartbeatPolicy`; they do not change the Bus topic shape.
+ 
+ ---
+ 
+ ## Regime Detection
+ 
+-The adaptive clock adjusts frequencies based on the detected environmental regime. Regime detection is performed by the gamma loop's T0 probes (see [09-16-t0-probes.md](./09-16-t0-probes.md)) and is domain-specific:
++The adaptive clock adjusts emission cadence based on the detected environmental regime. Regime detection is performed by the gamma loop's T0 probes (see [09-16-t0-probes.md](./09-16-t0-probes.md)) and is domain-specific:
+ 
+ | Regime | Chain Domain | Coding Domain | Research Domain | Universal |
+ |---|---|---|---|---|
+@@ -66,7 +68,7 @@ The adaptive clock adjusts frequencies based on the detected environmental regim
+ | **Volatile** | High price swings, gas spikes, liquidation risk | Build failures, test regressions, security alerts | Major new findings, contradictory sources | Prediction error 0.3-0.6 |
+ | **Crisis** | Flash crash, protocol exploit, mass liquidation | Critical production outage, data breach | Fundamental paradigm challenge | Prediction error > 0.6 |
+ 
+-Regime is stored in the CorticalState (`regime: AtomicU8`) and is read by all three loops to adjust their frequencies.
++Regime is stored in the CorticalState (`regime: AtomicU8`) and is read by the `HeartbeatPolicy` to adjust tick emission for all three speeds.
+ 
+ ---
+ 
+@@ -149,13 +151,13 @@ Delta does not have an adaptive interval in the same sense. It fires based on tr
+ 
+ ## The Three-Frequency Scheduler
+ 
+-The adaptive clock runs as the top-level coordinator for three concurrent `tokio` tasks. It owns the `CancellationToken` hierarchy and manages priority:
++The adaptive clock runs as the top-level tick producer for three concurrent topic streams. It owns the `CancellationToken` hierarchy for its own lifecycle, but it does not own cognition. Its job is to emit the tick Pulses and let the consumers run:
+ 
+ ```rust
+-/// The adaptive clock: manages gamma, theta, and delta as concurrent tasks.
++/// The adaptive clock: emits gamma, theta, and delta tick Pulses.
+ ///
+-/// Lives at L0 Runtime. Dependencies flow strictly downward — the clock
+-/// has no knowledge of domain-specific logic.
++/// Lives at L0 Runtime. Dependencies flow strictly downward — the policy
++/// has no knowledge of domain-specific cognition.
+ pub struct AdaptiveClock {
+     config: ClockConfig,
+     gamma_interval: AtomicU64,   // stored as milliseconds
+@@ -166,37 +168,20 @@ pub struct AdaptiveClock {
+ }
+ 
+ impl AdaptiveClock {
+-    /// Start the three-frequency cognitive loop.
++    /// Start the three-frequency tick producer.
+     ///
+-    /// All three loops run as separate tokio tasks. Gamma has priority:
+-    /// if gamma and theta collide, gamma runs first. Delta can be
+-    /// preempted by incoming gamma work.
++    /// All three topics are emitted independently. Gamma has priority
++    /// in cadence selection, but the policy never calls into a consumer
++    /// directly.
+     pub async fn run(
+         &self,
+         state: Arc<RwLock<AgentState>>,
+     ) -> Result<()> {
+-        let gamma_handle = tokio::spawn({
+-            let state = state.clone();
+-            let clock = self.clone();
+-            async move { clock.gamma_loop(state).await }
+-        });
+-
+-        let theta_handle = tokio::spawn({
+-            let state = state.clone();
+-            let clock = self.clone();
+-            async move { clock.theta_loop(state).await }
+-        });
+-
+-        let delta_handle = tokio::spawn({
+-            let state = state.clone();
+-            let clock = self.clone();
+-            async move { clock.delta_loop(state).await }
+-        });
+-
++        let _ = state;
+         tokio::select! {
+-            r = gamma_handle => r?,
+-            r = theta_handle => r?,
+-            r = delta_handle => r?,
++            _ = self.emit_gamma_ticks() => {},
++            _ = self.emit_theta_ticks() => {},
++            _ = self.emit_delta_ticks() => {},
+             _ = self.cancel.cancelled() => Ok(()),
+         }
+     }
+@@ -205,27 +190,20 @@ impl AdaptiveClock {
+ 
+ ### Priority and Collision Handling
+ 
+-When gamma and theta attempt to run simultaneously:
+-1. Gamma has priority — it executes first.
+-2. Theta waits for the current gamma tick to complete.
+-3. If gamma is in the middle of a T2 deliberation (which can take 5+ seconds), theta waits. This is acceptable because theta is not time-critical at the sub-second level.
++When gamma and theta are both due, the policy emits the gamma tick first and lets the theta consumer catch up on its own queue. The producer never invokes the consumer directly.
+ 
+-When gamma work arrives during delta:
+-1. Delta receives `CognitiveSignal::Pause`.
+-2. Delta serializes its current dream state to disk.
+-3. Gamma takes over immediately.
+-4. When gamma/theta go idle again, delta resumes from the serialized state.
++When gamma work arrives during delta, the policy keeps publishing the gamma topic and the delta consumer yields to the higher-priority queue. The delta consumer resumes when its topic stream has capacity again.
+ 
+ ---
+ 
+ ## Budget-Aware Throttling
+ 
+-The adaptive clock tracks daily spending and adjusts frequencies when approaching budget limits:
++The adaptive clock tracks daily spending and adjusts tick emission when approaching budget limits:
+ 
+ ```rust
+ /// Budget-aware frequency throttling.
+ ///
+-/// When daily spending approaches the configured budget, the clock
++/// When daily spending approaches the configured budget, the policy
+ /// progressively reduces expensive operations:
+ /// - At 80% budget: extend theta intervals by 2×
+ /// - At 90% budget: extend theta intervals by 4×, limit T2 to crisis only
+@@ -255,7 +233,7 @@ fn apply_budget_throttle(
+ }
+ ```
+ 
+-The key insight: **gamma T0 probes always run** regardless of budget. They cost $0.00 (pure computation). Even at 100% budget utilization, the agent maintains perception — it can see what's happening, it just can't deliberate about it. This means the agent never goes blind, even when it runs out of budget.
++The key insight: **gamma T0 probes always run** regardless of budget. They cost $0.00 (pure computation). Even at 100% budget utilization, the policy can still emit `heartbeat.gamma.tick` Pulses, so the agent maintains perception — it can see what's happening, it just can't deliberate about it. This means the agent never goes blind, even when it runs out of budget.
+ 
+ When T2 is restricted, the agent falls back to T1 (cheaper model) for situations that would normally trigger T2. If T1 is also restricted (extreme budget pressure), the agent operates on T0 only — playbook rules and deterministic heuristics handle everything.
+ 
+@@ -263,57 +241,27 @@ When T2 is restricted, the agent falls back to T1 (cheaper model) for situations
+ 
+ ## Cognitive Signals
+ 
+-The three loops communicate via `CognitiveSignal`, a typed interrupt system analogous to Unix process signals but for cognitive state:
++The three speeds communicate by Bus topic subscription rather than by direct loop-to-loop control. The `HeartbeatPolicy` emits tick Pulses, and each consumer watches the topic it cares about:
+ 
+ ```rust
+-/// Typed cognitive interrupts for inter-loop communication.
+-///
+-/// Unlike process signals (SIGTERM, SIGKILL), cognitive signals alter
+-/// agent behavior without killing the process. An operator can inject
+-/// new context, reprioritize tasks, or force model escalation mid-execution.
+-pub enum CognitiveSignal {
+-    /// Suspend reasoning, serialize state. Used to preempt delta for gamma.
+-    Pause,
+-    /// Resume from serialized state. Used when delta can restart.
+-    Resume,
+-    /// Change current task priority. Used by theta interventions.
+-    Reprioritize(TaskId),
+-    /// Add context mid-reasoning. Used by external operators.
+-    InjectContext(Engram),
+-    /// Switch to stronger model immediately. Used by theta escalation.
+-    Escalate,
+-    /// Reduce arousal, slow down. Used by homeostasis regulator.
+-    Cooldown,
+-    /// Switch to exploratory mode. Used by Daimon state transitions.
+-    Explore,
+-    /// Graceful termination.
+-    Shutdown,
+-}
++let gamma_topic = "heartbeat.gamma.tick";
++let theta_topic = "heartbeat.theta.tick";
++let delta_topic = "heartbeat.delta.tick";
+ ```
+ 
+-Signal flow between loops:
+-
+-| Signal | Sender | Receiver | Effect |
+-|---|---|---|---|
+-| `Pause` | Gamma | Delta | Suspend dream, serialize state |
+-| `Resume` | Gamma (idle) | Delta | Resume dream from serialized state |
+-| `Escalate` | Theta | Gamma | Next gamma tick uses T2 regardless of prediction error |
+-| `Cooldown` | Theta | Gamma | Raise T2 threshold, reduce gamma frequency |
+-| `Explore` | Daimon | Gamma | Lower T1 threshold, increase exploration |
+-| `Reprioritize` | Theta | Gamma | Change which task gamma works on next |
+-| `Shutdown` | External | All | Graceful termination of all three loops |
++The policy can still emit a higher-priority gamma tick early when needed, but that is a topic emission decision, not an inline control path.
+ 
+ ---
+ 
+ ## Event-Driven Wakeup
+ 
+-In addition to periodic ticking, the gamma loop can be interrupted by urgent events:
++In addition to periodic cadence, the policy can emit an early gamma tick when urgency changes:
+ 
+ ```rust
+-/// Event-driven wakeup conditions.
++/// Early gamma tick conditions.
+ ///
+ /// These override the normal gamma interval, triggering an
+-/// immediate gamma tick regardless of the timer.
++/// immediate gamma tick emission regardless of the timer.
+ pub enum WakeupCondition {
+     /// External intervention from user (steer/followUp)
+     UserIntervention,
+@@ -328,7 +276,7 @@ pub enum WakeupCondition {
+ }
+ ```
+ 
+-When a wakeup condition fires, the gamma loop skips the remaining sleep time and immediately starts a new tick. This ensures that urgent events (user steers, safety alerts, peer threat signals) are processed within milliseconds rather than waiting up to 15 seconds for the next scheduled tick.
++When a wakeup condition fires, the policy skips the remaining sleep time and immediately emits a new `heartbeat.gamma.tick` Pulse. This ensures that urgent conditions are processed within milliseconds rather than waiting up to 15 seconds for the next scheduled tick.
+ 
+ ---
+ 
+@@ -339,13 +287,13 @@ The adaptive clock lives at L0 Runtime in `roko-runtime` (currently `bardo-runti
+ | Component | Current Status | Target |
+ |---|---|---|
+ | Process lifecycle | `bardo-runtime/src/process.rs` — `ProcessSupervisor` | Extend with three-loop management |
+-| Event bus | `bardo-runtime/src/event_bus.rs` | Wire CognitiveSignal dispatch |
++| Bus transport | `bardo-runtime/src/event_bus.rs` | Wire topic subscriptions and tick delivery |
+ | Cancellation | `bardo-runtime/src/cancel.rs` | Use for loop shutdown |
+ | Metrics | `bardo-runtime/src/metrics.rs` | Track per-loop timing and cost |
+ | CorticalState | Not yet implemented | New struct in `roko-core` or `roko-runtime` |
+ | Regime detection | Implicit in probe logic | Formalize in adaptive clock |
+ 
+-The existing `bardo-runtime` provides the infrastructure (`ProcessSupervisor`, event bus, cancellation tokens) but does not implement the three-loop architecture. The adaptive clock would be a new component that uses these existing primitives.
++The existing `bardo-runtime` provides the infrastructure (`ProcessSupervisor`, Bus transport, cancellation tokens) but does not implement the three-topic architecture. The adaptive clock would be a new component that uses these existing primitives.
+ 
+ ---
+ 
+@@ -362,18 +310,18 @@ The existing `bardo-runtime` provides the infrastructure (`ProcessSupervisor`, e
+ ## Current Status and Gaps
+ 
+ **What exists:**
+-- `bardo-runtime` provides process supervision, event bus, cancellation tokens, and metrics.
++- `bardo-runtime` provides process supervision, Bus transport, cancellation tokens, and metrics.
+ - The orchestration loop in `roko-cli/src/orchestrate.rs` provides a single-frequency gamma-like loop.
+ - `InferenceTier` and `TierRouter` in `bardo-primitives/src/tier.rs`.
+ 
+ **What is missing (Implementation Plan 12a §I4):**
+-- **I4**: Frequency scheduler deciding which loop to run based on context.
+-- `AdaptiveClock` struct managing three concurrent tokio tasks.
+-- `CognitiveSignal` enum and dispatch mechanism.
++- **I4**: Frequency scheduler deciding which topic to emit based on context.
++- `HeartbeatPolicy` struct managing three concurrent tick streams.
++- Bus topic emission and subscription wiring.
+ - Regime-based interval adjustment.
+ - Budget-aware throttling.
+-- Event-driven wakeup system.
+-- Delta preemption and dream state serialization.
++- Early gamma emission for urgent conditions.
++- Delta yielding and dream state serialization.
+ - CorticalState shared perception surface.
+ 
+ ---
+@@ -385,3 +333,5 @@ The existing `bardo-runtime` provides the infrastructure (`ProcessSupervisor`, e
+ - See [05-theta-reflective-loop.md](./05-theta-reflective-loop.md) for the theta loop
+ - See [06-delta-consolidation-loop.md](./06-delta-consolidation-loop.md) for the delta loop
+ - See [09-16-t0-probes.md](./09-16-t0-probes.md) for regime detection via probes
++- See `tmp/refinements/09-phase-2-implications.md` for the Phase 2+ Bus / Substrate framing
++- See [Naming and Glossary](../00-architecture/01-naming-and-glossary.md) for the canonical Bus, Pulse, and Topic vocabulary
+diff --git a/docs/16-heartbeat/INDEX.md b/docs/16-heartbeat/INDEX.md
+index ca82b375..9f28f1bd 100644
+--- a/docs/16-heartbeat/INDEX.md
++++ b/docs/16-heartbeat/INDEX.md
+@@ -1,6 +1,6 @@
+ # Heartbeat: The Cognitive Clock
+ 
+-> The heartbeat is the agent's autonomous decision cycle — a continuous loop of observe-decide-act-learn running at three concurrent timescales (Gamma, Theta, Delta), with dual-process tier gating that makes ~80% of ticks free and active inference determining compute investment.
++> The heartbeat is the agent's autonomous decision cycle — in the two-fabric model it is driven by Bus-published tick Pulses at three concurrent timescales (Gamma, Theta, Delta), with dual-process tier gating that makes ~80% of ticks free and active inference determining compute investment.
+ 
+ **Part of**: [Roko PRD](../INDEX.md)
+ **Status**: Written
+@@ -11,19 +11,19 @@
+ 
+ ## Abstract
+ 
+-The heartbeat topic covers the core cognitive loop that every Roko agent executes autonomously. Unlike conversation-based agent frameworks where cognition is triggered by user messages, Roko agents run a continuous, timed decision cycle — the "heartbeat" — that operates whether or not a human is present. Approximately 80% of heartbeat ticks have no human input.
++The heartbeat topic covers the core cognitive loop that every Roko agent executes autonomously. Unlike conversation-based agent frameworks where cognition is triggered by user messages, Roko agents run a continuous, timed decision cycle — the "heartbeat" — that operates whether or not a human is present. In the two-fabric framing, the adaptive clock publishes `heartbeat.gamma.tick`, `heartbeat.theta.tick`, and `heartbeat.delta.tick` Pulses on the Bus, and speed-specific consumers subscribe by topic. Approximately 80% of heartbeat ticks have no human input.
+ 
+ The heartbeat is organized around three key ideas:
+ 
+-1. **The 9-step CoALA-derived pipeline** (Sumers et al. 2023, arXiv:2309.02427): PERCEIVE → EVALUATE → ATTEND → INTEGRATE → ACT → VERIFY → PERSIST → ADAPT → META-COGNIZE. Every tick executes this loop, mapped to the six Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy) plus the Daimon cognitive cross-cut.
++1. **The 9-step CoALA-derived pipeline** (Sumers et al. 2023, arXiv:2309.02427): PERCEIVE → EVALUATE → ATTEND → INTEGRATE → ACT → VERIFY → PERSIST → ADAPT → META-COGNIZE. Every tick executes this loop when the corresponding tick Pulse arrives on the Bus, mapped to the six Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy) plus the Daimon cognitive cross-cut.
+ 
+-2. **Three cognitive speeds** (Buzsáki 2006): Gamma (~5-15s, reactive perception), Theta (~75s, reflective planning), and Delta (~hours, offline consolidation). All three run concurrently on separate async tasks managed by the adaptive clock in `roko-runtime`.
++2. **Three cognitive speeds** (Buzsáki 2006): Gamma (~5-15s, reactive perception), Theta (~75s, reflective planning), and Delta (~hours, offline consolidation). All three run concurrently as topic subscribers driven by the `HeartbeatPolicy` in `roko-runtime`.
+ 
+ 3. **Dual-process cognition** (Kahneman 2011): T0 (no LLM, deterministic probes, ~80% of ticks), T1 (fast model, ~15%), T2 (full model, ~5%). The 16 T0 probes drive tier suppression using FrugalGPT-inspired cascade routing (Chen et al. 2023).
+ 
+ The theoretical foundation draws from Friston's free energy principle (2010), Clark's predictive processing framework (2013), active inference for compute allocation (Friston et al. 2015), and VCG mechanism design (Vickrey 1961) for context budget allocation.
+ 
+-This topic spans L0 Runtime (adaptive clock, CorticalState), L1 Framework (tier routing, model selection), L2 Scaffold (context assembly, VCG auction), L3 Harness (gate verification), and L4 Orchestration (plan execution), plus the Daimon, Neuro, and Dreams cognitive cross-cuts.
++This topic spans L0 Runtime (HeartbeatPolicy, adaptive clock, CorticalState, Bus tick delivery), L1 Framework (tier routing, model selection), L2 Scaffold (context assembly, VCG auction), L3 Harness (gate verification), and L4 Orchestration (plan execution), plus the Daimon, Neuro, and Dreams cognitive cross-cuts.
+ 
+ ---
+ 
+@@ -34,11 +34,11 @@ This topic spans L0 Runtime (adaptive clock, CorticalState), L1 Framework (tier
+ | 00 | [CoALA 9-Step Pipeline](./00-coala-9-step-pipeline.md) | The Cognitive Architectures for Language Agents framework. Academic predecessors (Soar, ACT-R, CLARION). Why decision cycles, not conversation turns. The 9-step pipeline specification. OODA loop mapping. |
+ | 01 | [Universal Loop Mapping](./01-universal-loop-mapping.md) | Side-by-side CoALA → Synapse translation. Which Synapse trait implements each step. Layer traversal. Domain parameterization (coding, chain, research). |
+ | 02 | [Chain Heartbeat Variant](./02-chain-heartbeat-variant.md) | Chain agents add SIMULATE (mirage-rs) and VALIDATE (PolicyCage) between ATTEND and ACT. The 11-step chain heartbeat. Three custody modes. Sleepwalker 3-step variant (OBSERVE → REFLECT → PUBLISH). |
+-| 03 | [Three Cognitive Speeds](./03-three-cognitive-speeds.md) | Gamma (5-15s reactive), Theta (75s reflective), Delta (hours consolidation). Nested hierarchy. Concurrency model with tokio tasks. Cost model per speed. |
++| 03 | [Three Cognitive Speeds](./03-three-cognitive-speeds.md) | Gamma (5-15s reactive), Theta (75s reflective), Delta (hours consolidation). Nested hierarchy. Bus topics and topic subscribers. Cost model per speed. |
+ | 04 | [Gamma Reactive Loop](./04-gamma-reactive-loop.md) | Main orchestration loop. Full 9-step execution per tick. Adaptive interval computation. DecisionCycleRecord. Ten cognitive mechanisms. OODA correspondence. |
+ | 05 | [Theta Reflective Loop](./05-theta-reflective-loop.md) | Five-phase reflection: summarize gamma, update Daimon affect (ALMA layers), check prediction calibration, re-evaluate plan, trigger interventions. Adaptive interval by regime. |
+ | 06 | [Delta Consolidation Loop](./06-delta-consolidation-loop.md) | Three-phase dream cycle: NREM replay (Mattar-Daw), REM imagination (Boden + Pearl), integration staging. Knowledge tier promotion. Playbook compilation. Non-blocking architecture. |
+-| 07 | [Adaptive Clock](./07-adaptive-clock.md) | The roko-runtime component managing three frequencies. Regime detection. Frequency adjustment rules. Budget-aware throttling. CognitiveSignal system. Event-driven wakeup. |
++| 07 | [Adaptive Clock](./07-adaptive-clock.md) | The `HeartbeatPolicy` publishes `heartbeat.gamma.tick` / `heartbeat.theta.tick` / `heartbeat.delta.tick` Pulses on the Bus. Regime detection. Frequency adjustment rules. Budget-aware throttling. Topic subscriptions. |
+ | 08 | [Dual-Process T0/T1/T2](./08-dual-process-t0-t1-t2.md) | LLM-Last architecture. InferenceTier enum. Adaptive gating threshold. Cost model. FrugalGPT validation. Interaction with Synapse traits. Active inference connection. |
+ | 09 | [16 T0 Probes](./09-16-t0-probes.md) | All 16 zero-LLM probes specified: 8 chain (price, TVL, position health, gas, credit, RSI, MACD, circuit breaker), 6 coding (build, tests, complexity, deps, coverage, error rate), 2 universal (world model drift, causal consistency). Probe trait. Registry extensibility. |
+ | 10 | [Active Inference: Compute Allocation](./10-active-inference-compute-allocation.md) | Expected Free Energy formula. Zero-hyperparameter exploration/exploitation. EFE for context selection. PredictiveScorer. Connection to CascadeRouter. Rational inattention (Sims 2003). |
+@@ -55,6 +55,7 @@ Before reading this topic, we recommend:
+ - [Topic 09: Daimon](../09-daimon/INDEX.md) — for the PAD affect model, ALMA layers, and behavioral states
+ - [Topic 06: Neuro](../06-neuro/INDEX.md) — for knowledge tiers, HDC vectors, and tier progression
+ - [Topic 05: Learning](../05-learning/INDEX.md) — for episodes, CascadeRouter, playbooks, and calibration
++- [Naming and Glossary](../00-architecture/01-naming-and-glossary.md) — canonical terms for Bus, Pulse, Topic, and the heartbeat vocabulary
+ 
+ ---
+ 
+@@ -106,7 +107,7 @@ This topic connects to:
+ - `InferenceTier` enum (T0/T1/T2) and `TierRouter` in `bardo-primitives/src/tier.rs`.
+ - `CascadeRouter` three-stage model routing in `roko-learn/src/cascade_router.rs`.
+ - Episode logging, efficiency events, adaptive gate thresholds — all wired.
+-- `bardo-runtime` provides process supervision, event bus, cancellation.
++- `bardo-runtime` provides process supervision, Bus transport, cancellation.
+ - `roko-dreams` crate exists as a scaffold.
+ 
+ **What is missing (implementation-plans/12a-cognitive-layer.md §I):**
+@@ -121,7 +122,7 @@ This topic connects to:
+ - Active inference POMDP for tier selection (target: Stage 3).
+ - ALMA three-layer affect model in roko-daimon.
+ - Behavioral state machine (Engaged/Struggling/Coasting/Exploring/Focused/Resting).
+-- CognitiveSignal dispatch between loops.
++- Bus tick subscriptions between loops.
+ 
+ ---
+ 

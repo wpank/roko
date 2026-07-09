@@ -60,7 +60,7 @@ plans/
 # Logs + temp files ----------------------------------------------------------
 *.log
 *.tmp
-/tmp/
+/tmp/ignore/
 
 # Temporary / work-in-progress (will be refined later) ----------------------
 CLAUDE.md

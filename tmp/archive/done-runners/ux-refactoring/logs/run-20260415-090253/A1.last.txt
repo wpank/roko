@@ -1,0 +1,19 @@
+Implemented Batch A1 end to end.
+
+In Mirage, the backend model now carries the new dashboard fields: agent `owner` and `skills` in [apps/mirage-rs/src/chain/agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/chain/agent.rs), plus task `artifacts`, `summary`, and `completion_metadata` in [apps/mirage-rs/src/chain/task.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/chain/task.rs). I wired the HTTP surface for owner-aware agent listing, skill CRUD, and task artifact reads in [apps/mirage-rs/src/http_api/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/mod.rs), [apps/mirage-rs/src/http_api/agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/agent.rs), [apps/mirage-rs/src/http_api/task.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/task.rs), and the new [apps/mirage-rs/src/http_api/skills.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/skills.rs). Heartbeat/stats responses now expose owner/frequency/busy state, and the JSON-RPC registration path was kept compatible.
+
+In `roko-serve`, `/agents/{id}/message` now reuses the existing background run path instead of creating a separate execution path, via [crates/roko-serve/src/routes/run.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/run.rs) and [crates/roko-serve/src/routes/agents.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/agents.rs). I extended `ServerEvent::AgentOutput` in [crates/roko-serve/src/events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/events.rs) so the UI can track agent output/lifecycle by `run_id`, `done`, and optional metadata, and added the cost-tier backend summary route in [crates/roko-serve/src/routes/learning.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/learning.rs). One downstream compatibility fix was required in [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/orchestrate.rs) because it matched the old `AgentOutput` shape.
+
+Verification passed:
+- `cargo check -p mirage-rs --features chain`
+- `cargo check -p roko-serve`
+- `cargo check -p mirage-rs -p roko-serve -p roko-cli`
+- `cargo test -p mirage-rs --features chain --lib skills_round_trip -- --nocapture`
+- `cargo test -p mirage-rs --features chain --lib completion_artifacts_default_to_empty -- --nocapture`
+- `cargo test -p roko-serve --lib send_message_creates_tracked_run_and_events -- --nocapture`
+- `cargo test -p roko-serve --lib agent_output_serializes_optional_run_fields -- --nocapture`
+- `cargo test -p roko-serve --lib cost_tier_response_buckets_trials_by_model_tier -- --nocapture`
+- `cargo test -p mirage-rs --lib --no-run`
+- `cargo test -p roko-serve --lib --no-run`
+
+One implementation detail to note: the agent-message route now emits `AgentOutput` lifecycle events through the shared run infrastructure, but actual streamed text chunks still depend on future runtime support beyond the current one-shot `run_once` interface.

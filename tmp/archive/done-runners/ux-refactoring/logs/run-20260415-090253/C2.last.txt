@@ -1,0 +1,11 @@
+Implemented C2 in [aggregator.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/aggregator.rs) and [rpc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/rpc.rs). `roko-serve` now carries the missing Mirage-compatible agent routes needed for the dashboard URL swap (`/api/agents/{id}/skills`, `/heartbeat`, `/trace`, plus prediction session detail), and `/api/ws` is a real mux: it replays `roko-serve` backlog/live events, connects to discovered agent `/stream` sockets, wraps forwarded frames as `{source,event}`, and refreshes/reconnects on discovery changes. Mirage itself was kept compatibility-safe: no premature deletion, but startup now makes it explicit when the legacy `/api` surface is absent and the dashboard should use `roko-serve`.
+
+I also updated the migration docs to match the actual code state in [02-mirage-extraction.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/tmp/ux/02-mirage-extraction.md), [04-dashboard-migration.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/tmp/ux/04-dashboard-migration.md), and [C-architecture-migration.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/tmp/ux-refactoring/C-architecture-migration.md): C.06 is explicitly partial/deferred, C.07 is serve-side ready but still needs the external env flip, and C.08 is landed. Knowledge routes remain compatibility placeholders and pheromone aggregator routes are still pending; the docs now say that plainly.
+
+Verification passed:
+- `cargo build -p mirage-rs`
+- `cargo build -p mirage-rs --no-default-features --features binary`
+- `cargo build -p roko-serve`
+- `cargo test -p roko-serve --lib -- aggregator`
+
+One cleanup note: verification created an untracked `.cargo-target/` directory in the worktree, and removal was blocked by policy, so it is still present.

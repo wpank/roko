@@ -1,0 +1,11 @@
+Added explicit episode backend tracking across the write path. [`Episode`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/episode_logger.rs:202>) now has `#[serde(default)] pub backend: String`, backend IDs are exposed from the agent/backend traits in [`agent.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/agent.rs:130>) and [`tool_loop/mod.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/tool_loop/mod.rs:77>), and the orchestrator now carries the selected backend through dispatch and into episode enrichment in [`orchestrate.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:1426>). Old episode rows remain compatible: missing `backend` deserializes as `""`.
+
+Stable backend IDs wired: `claude_api`, `claude_cli`, `codex`, `cursor`, `openai`, `openai_compat`, `ollama`, `exec`, `gemini`, `perplexity`.
+
+Verification:
+- `cargo check -p roko-learn -p roko-agent -p roko-cli`
+- `cargo test -p roko-learn --lib --no-run -- episode_logger`
+- `cargo test -p roko-learn --lib completed_run_updates_episode_cost_provider_and_skill`
+- `cargo clippy --no-deps -- -D warnings`
+
+The smoke coverage for persisted backend is now in [`runtime_feedback.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/runtime_feedback.rs:1817>), and the compatibility tests live in [`episode_logger.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/episode_logger.rs:1146>).

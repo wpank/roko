@@ -1,0 +1,10 @@
+The runner failure is fixed by adding the executable wrapper at [tools/mori-parity-check/mori-parity-check.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/mori-parity-check/mori-parity-check.sh), with the usage docs updated in [README.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/mori-parity-check/README.md). The existing verifier and top-level entrypoint were left in place, and `bash tools/mori-parity-check.sh` now regenerates [tmp/mori-parity-verified.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/mori-parity-verified.md).
+
+Fresh run results: 1,253 total items, 920 verified `✅`, 333 verified `❌`, 73.4% verified completion. Runtime on this run was 19.23s.
+
+Validation:
+- `test -x tools/mori-parity-check/mori-parity-check.sh`
+- `bash -n tools/mori-parity-check.sh`
+- `bash -n tools/mori-parity-check/mori-parity-check.sh`
+- `python3 -m py_compile tools/mori-parity-check/verify.py`
+- `/usr/bin/time -p bash tools/mori-parity-check.sh`

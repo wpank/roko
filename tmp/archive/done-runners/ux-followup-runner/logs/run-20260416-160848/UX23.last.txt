@@ -1,0 +1,22 @@
+Updated [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:12068) so `run_gate_rung` now delegates to a shared [rung_dispatch.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/src/rung_dispatch.rs:1) helper in `roko-gate`, and added rung coverage in [rungs.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/tests/rungs.rs:1). I also fixed adjacent `roko-gate` clippy blockers in `generated.rs`, `code_exec.rs`, and `fact_check.rs` so the batch verification gate passes cleanly.
+
+Gate inventory and mapping:
+- `CompileGate`: rung `0`
+- `TestGate`: rung `1`
+- `ClippyGate`: rung `2`
+- `SymbolGate`: rung `3` and currently returns an explicit stub verdict in the orchestrator path until a `SymbolManifest` is wired
+- `GeneratedTestGate`: rung `3` and currently returns an explicit stub verdict in the orchestrator path until generated-test artifacts are wired
+- `PropertyTestGate`: rung `4`
+- `VerifyChainGate`: rung `4` and currently returns an explicit stub verdict until `verify_script` or a fallback gate is wired
+- `FactCheckGate`: rung `5` and currently returns an explicit stub verdict until fact-check content plus an oracle are wired
+- `LlmJudgeGate`: rung `6` and currently returns an explicit stub verdict until judge payload plus an oracle are wired
+- `IntegrationGate`: rung `6` and currently returns an explicit stub verdict until an integration scenario/pattern is wired
+- `DiffGate`: auxiliary guard, not part of the 7-rung ladder
+
+Verification ran:
+- `cargo check -p roko-cli -p roko-gate`
+- `cargo test -p roko-gate --lib --no-run`
+- `cargo test -p roko-gate --test rungs run_rung_invokes_all_seven_rungs_with_expected_gate_mapping -- --exact`
+- `cargo clippy -p roko-cli -p roko-gate --no-deps -- -D warnings`
+
+I could not update `CLAUDE.md` or `tmp/implementation-plans/*` because those files resolve outside this worktree’s writable root, and the sandbox rejected edits there.

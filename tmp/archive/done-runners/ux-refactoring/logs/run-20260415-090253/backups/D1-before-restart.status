@@ -1,0 +1,15 @@
+ M Cargo.lock
+ M crates/roko-agent/src/gemini/adapter.rs
+ M crates/roko-agent/src/perplexity/tool_loop.rs
+ M crates/roko-agent/src/tool_loop/agent_wrapper.rs
+ M crates/roko-agent/src/tool_loop/backends/gemini_native.rs
+ M crates/roko-chain/src/lib.rs
+ M crates/roko-chain/src/witness.rs
+ M crates/roko-cli/src/orchestrate.rs
+ M crates/roko-core/Cargo.toml
+ M crates/roko-core/src/affect.rs
+ M crates/roko-core/src/attestation.rs
+ M crates/roko-core/src/lib.rs
+ M crates/roko-daimon/src/lib.rs
+ M crates/roko-neuro/src/knowledge_store.rs
+ M crates/roko-neuro/src/tier_progression.rs

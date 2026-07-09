@@ -1,0 +1,19 @@
+Implemented D1 across the in-scope runtime crates. The main closures are:
+
+- Attestation is now real in [attestation.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-core/src/attestation.rs): signing, verification, stable witness hashing, and chain attachment.
+- Lineage propagation is wired through the core loop and agent outputs in [loop_tick.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-core/src/loop_tick.rs), [agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent/src/agent.rs), [exec.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent/src/exec.rs), and tool-loop wrappers.
+- Chain witnessing is materially completed in [witness.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-chain/src/witness.rs) with witness-on-chain and verify-on-chain paths plus tests.
+- Somatic, mood, and tiering completion landed in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-daimon/src/lib.rs), [context.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-neuro/src/context.rs), [knowledge_store.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-neuro/src/knowledge_store.rs), and [tier_progression.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-neuro/src/tier_progression.rs).
+- Router/provider/runtime wiring is closed in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/orchestrate.rs), [gemini/adapter.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent/src/gemini/adapter.rs), [gemini/native.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent/src/gemini/native.rs), and [tool_loop/backends/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent/src/tool_loop/backends/mod.rs): native Gemini backend selection, daimon-aware tool filtering, gate feedback into knowledge tiers, replan-on-failure hooks, and optional attestation of emitted engrams.
+
+Verification passed using `/tmp` cargo targets to avoid the earlier disk-space failure:
+
+- `CARGO_TARGET_DIR=/tmp/roko-target-d1 cargo check -p roko-core -p roko-chain -p roko-neuro -p roko-daimon -p roko-agent -p roko-cli`
+- `cargo test` passed for:
+  - `-p roko-core --lib attestation`
+  - `-p roko-chain --lib witness`
+  - `-p roko-neuro --lib tier_progression`
+  - `-p roko-daimon --lib`
+  - `-p roko-agent --lib`
+
+Residual seam: D14/D15 internals in `roko-compose` / `roko-learn` were outside the D1 write scope; the consumer-side orchestration and feedback wiring are now in place, and the existing out-of-scope implementations were left intact.

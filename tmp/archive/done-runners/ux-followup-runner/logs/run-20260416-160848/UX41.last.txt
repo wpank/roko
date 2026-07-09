@@ -1,0 +1,13 @@
+Added the coverage scaffold in [.github/workflows/coverage.yml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/.github/workflows/coverage.yml:1) and [tools/coverage.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/coverage.sh:1). I did not touch `README.md` because the root README has no CI badge section to extend.
+
+Verification:
+- YAML parses cleanly via Ruby `YAML.load_file(...)`.
+- `bash tools/coverage.sh` completed and left `target/llvm-cov/index.html` in place.
+- `tools/coverage.sh` is executable.
+
+Notes:
+- Exclusions are `tests/`, `target/`, `testdata/`, and `benches/`.
+- The repo did not already have a top-level `.github/workflows/` directory.
+- I matched the current root build surface by not using `--workspace`, because this `Cargo.toml` already defines `default-members`.
+- `cargo-llvm-cov 0.8.5` does not support the prompt’s plain `cargo llvm-cov --summary-only > coverage-summary.txt` form, so the workflow uses `cargo llvm-cov report --json --summary-only > coverage-summary.txt` instead.
+- The current tree has unrelated failing tests in `roko-cli` and `roko-mcp-github`, so the scaffold uses `--ignore-run-fail` to keep coverage artifact generation non-gating as requested.

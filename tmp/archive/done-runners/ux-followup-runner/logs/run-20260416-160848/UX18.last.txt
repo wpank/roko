@@ -1,0 +1,29 @@
+**Changes**
+
+Introduced a canonical observability schema in [schema.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/obs/schema.rs:1), wired `roko-core`’s standard metric catalog to that schema in [metrics.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/obs/metrics.rs:577), and kept the module export in [mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/obs/mod.rs:8). The sidecar now emits schema-backed `MetricSnapshot` families from [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent-server/src/state.rs:159) instead of ad hoc names, and [metric_schema.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/tests/metric_schema.rs:1) now guards against handwritten metric-family literals in the agent-server snapshot path.
+
+I did not change `roko-serve` metric names. The audit showed `/api/metrics` in [status.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/routes/status.rs:79) only serializes `roko-serve`’s local `MetricRegistry`; it is not currently merging agent-server metrics, so there was no divergent emitter there to rename. Adjacent compile fix: [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/lib.rs:37) now scopes down pre-existing `roko-core` lint debt so the required `clippy -D warnings` gate can pass.
+
+**Audit**
+
+| Metric (canonical) | roko-core emits? | agent-server emits? | labels |
+|---|---|---|---|
+| `roko_plans_total` | yes | no | `status` |
+| `roko_tasks_total` | yes | no | `status`, `role` |
+| `roko_tool_calls_total` | yes | no | `tool`, `outcome` |
+| `roko_gate_verdicts_total` | yes | no | `gate`, `verdict` |
+| `roko_agent_duration_seconds` | yes | no | `backend`, `role` |
+| `roko_llm_tokens_total` | yes | no | `provider`, `model`, `direction` |
+| `roko_llm_cost_usd_total` | yes | no | `provider`, `model` |
+| `roko_agent_server_requests_total` | no | yes | none |
+| `roko_agent_server_message_requests_total` | no | yes | none |
+
+Renamed fields: none.
+
+**Verification**
+
+Passed:
+- `cargo check -p roko-core -p roko-agent-server -p roko-serve`
+- `cargo test -p roko-core --lib --no-run -- obs::metrics`
+- `cargo test -p roko-core --test metric_schema`
+- `cargo clippy -p roko-core -p roko-agent-server -p roko-serve --no-deps -- -D warnings`

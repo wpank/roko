@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-compose -p roko-cli --no-deps -- -D warnings
+
+Recent log tail:
+  --> crates/roko-compose/src/token_counter.rs:12:34
+   |
+12 |     /// Models with an available HuggingFace `toke...
+   |                                  ^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_markdown
+   = note: `-D clippy::doc-markdown` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::doc_markdown)]`
+help: try
+   |
+12 -     /// Models with an available HuggingFace `tokenizer.json`.
+12 +     /// Models with an available `HuggingFace` `tokenizer.json`.
+   |
+
+error: casting `f64` to `usize` may truncate the value
+  --> crates/roko-compose/src/token_counter.rs:75:5
+   |
+75 |     ((text.len() as f64) / chars_per_token).ceil() as usize
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#cast_possible_truncation
+
+error: casting `f64` to `usize` may lose the sign of the value
+  --> crates/roko-compose/src/token_counter.rs:75:5
+   |
+75 |     ((text.len() as f64) / chars_per_token).ceil() as usize
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#cast_sign_loss
+
+error: casting `usize` to `f64` may cause a loss of precision (`usize` can be up to 64 bits wide depending on the target architecture, but `f64`'s mantissa is only 52 bits wide)
+  --> crates/roko-compose/src/token_counter.rs:75:6
+   |
+75 |     ((text.len() as f64) / chars_per_token).ceil()...
+   |      ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#cast_precision_loss
+
+error: could not compile `roko-compose` (lib) due to 66 previous errors

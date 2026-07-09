@@ -1,0 +1,15 @@
+Implemented Batch E1 end to end in the live runtime. The main wiring lands in [orchestrate.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/orchestrate.rs:1570>), [conductor.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-conductor/src/conductor.rs:28>), [system_prompt_builder.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-compose/src/system_prompt_builder.rs:84>), [cascade_router.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/cascade_router.rs:1510>), and [replan.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-orchestrator/src/replan.rs:44>). Runtime behavior now uses learned provider health, conductor-derived routing bias, cost-spike pressure, learned prompt section tuning, relevant-skill prompt injection, concluded experiment overrides, and typed replan results that actually restart executor state when the plan structure changes.
+
+On the learning side, I added the missing storage and ranking helpers for feedback loops: provider-health fallback filtering, cost-spike detection, latency tracking, section lift weights, relevant skill ranking, and experiment winner extraction/application in [provider_health.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/provider_health.rs:650>), [costs_log.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/costs_log.rs:146>), [latency.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/latency.rs:273>), [section_effect.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/section_effect.rs:216>), [skill_library.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/skill_library.rs:1161>), and [prompt_experiment.rs](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/prompt_experiment.rs:272>).
+
+Verification passed:
+- `cargo test -p roko-learn --lib -- provider_health`
+- `cargo test -p roko-learn --lib -- cost`
+- `cargo test -p roko-learn --lib -- latency`
+- `cargo test -p roko-learn --lib -- experiment`
+- `cargo test -p roko-conductor --lib -- routing_bias`
+- `cargo test -p roko-compose --lib -- system_prompt_builder`
+- `cargo test -p roko-orchestrator --lib -- replan`
+- `cargo build -p roko-cli`
+
+Residual note: `.cargo-target/` is now untracked from the local builds.

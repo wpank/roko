@@ -1,0 +1,14 @@
+Implemented B1 across the demo spine.
+
+Key changes landed in [llm.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/scenarios/llm.rs), [events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/events.rs), [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/main.rs), [yield_routing.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/scenarios/yield_routing.rs), [bindings.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/bindings.rs), [FeeDistributor.sol](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/contracts/src/FeeDistributor.sol), and [FeeDistributor.t.sol](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/contracts/test/FeeDistributor.t.sol). The CLI now supports `--llm-backend`, `--events`, and `--ws-port`; `StubLlm` still works; `InsightBoard.getInsight` is bound with the corrected signature; `FeeDistributor` exists with Forge coverage; and `yield-routing` is registered with prompt/manifest/scenario plumbing plus event emission and multi-model labeling.
+
+Verification passed:
+- `cargo build -p roko-demo`
+- `cargo test -p roko-demo --lib --no-run`
+- `cd contracts && forge test --match-contract FeeDistributor -q`
+- `cargo run -p roko-demo -- --demo-dir demo --runtime-dir demo/.runtime list`
+
+Notes:
+- Foundry dependencies were missing in this worktree, so I cloned `forge-std` and OpenZeppelin into `contracts/lib` to make the contract gate runnable.
+- The build still prints pre-existing `roko-core` missing-docs warnings.
+- `.cargo-target/` is left untracked in the worktree because deletion was blocked by policy.

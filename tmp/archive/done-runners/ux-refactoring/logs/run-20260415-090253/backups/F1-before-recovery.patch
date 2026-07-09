@@ -1,0 +1,1523 @@
+diff --git a/crates/roko-cli/src/orchestrate.rs b/crates/roko-cli/src/orchestrate.rs
+index c31e9a49..0e4442de 100644
+--- a/crates/roko-cli/src/orchestrate.rs
++++ b/crates/roko-cli/src/orchestrate.rs
+@@ -3888,7 +3888,8 @@ impl PlanRunner {
+         delta_due: bool,
+     ) -> Vec<HeartbeatProbeResult> {
+         let (readiness, degraded_reasons) = self.health_probes.readiness();
+-        let health_degraded = matches!(readiness, roko_core::obs::health::ReadinessStatus::NotReady);
++        let health_degraded =
++            matches!(readiness, roko_core::obs::health::ReadinessStatus::NotReady);
+         let recent_gate_failure = self
+             .task_trackers
+             .values()
+@@ -3965,7 +3966,8 @@ impl PlanRunner {
+             HeartbeatProbeResult::new(
+                 HeartbeatProbeKind::LowAffectConfidence,
+                 low_affect_confidence,
+-                low_affect_confidence.then(|| format!("daimon confidence {:.2}", affect_confidence)),
++                low_affect_confidence
++                    .then(|| format!("daimon confidence {:.2}", affect_confidence)),
+             ),
+             HeartbeatProbeResult::new(
+                 HeartbeatProbeKind::ActiveAgentsPresent,
+@@ -3993,7 +3995,8 @@ impl PlanRunner {
+             HeartbeatProbeResult::new(
+                 HeartbeatProbeKind::McpUnavailable,
+                 mcp_unavailable,
+-                mcp_unavailable.then(|| "MCP servers requested but no tools are active".to_string()),
++                mcp_unavailable
++                    .then(|| "MCP servers requested but no tools are active".to_string()),
+             ),
+             HeartbeatProbeResult::new(
+                 HeartbeatProbeKind::SessionSpendElevated,
+diff --git a/crates/roko-cli/src/tui/app.rs b/crates/roko-cli/src/tui/app.rs
+index 9b7a04b6..805f7e81 100644
+--- a/crates/roko-cli/src/tui/app.rs
++++ b/crates/roko-cli/src/tui/app.rs
+@@ -765,14 +765,33 @@ impl App {
+                 self.tui_state.focus = self.tui_state.focus.prev(self.tui_state.active_tab);
+             }
+             TuiAction::SelectPlanUp => {
+-                if self.tui_state.selected_plan_idx > 0 {
++                if matches!(self.tui_state.active_tab, Tab::Agents)
++                    && !matches!(
++                        self.tui_state.focus,
++                        FocusZone::AgentOutput | FocusZone::RightPanel
++                    )
++                {
++                    self.tui_state.selected_agent = self.tui_state.selected_agent.saturating_sub(1);
++                } else if self.tui_state.selected_plan_idx > 0 {
+                     self.tui_state.selected_plan_idx -= 1;
+                 }
+             }
+             TuiAction::SelectPlanDown => {
+-                let max = self.tui_state.plans.len().saturating_sub(1);
+-                if self.tui_state.selected_plan_idx < max {
+-                    self.tui_state.selected_plan_idx += 1;
++                if matches!(self.tui_state.active_tab, Tab::Agents)
++                    && !matches!(
++                        self.tui_state.focus,
++                        FocusZone::AgentOutput | FocusZone::RightPanel
++                    )
++                {
++                    let max = self.tui_state.agents.len().saturating_sub(1);
++                    if self.tui_state.selected_agent < max {
++                        self.tui_state.selected_agent += 1;
++                    }
++                } else {
++                    let max = self.tui_state.plans.len().saturating_sub(1);
++                    if self.tui_state.selected_plan_idx < max {
++                        self.tui_state.selected_plan_idx += 1;
++                    }
+                 }
+             }
+             TuiAction::ScrollFocusedUp => {
+@@ -785,30 +804,67 @@ impl App {
+             }
+             TuiAction::ScrollPageUp => self.scroll_focused(-PAGE_SCROLL_LINES),
+             TuiAction::ScrollPageDown => self.scroll_focused(PAGE_SCROLL_LINES),
+-            TuiAction::ScrollFocusedHome => self.set_focused_scroll(0),
+-            TuiAction::ScrollFocusedEnd => self.set_focused_scroll(usize::MAX),
++            TuiAction::ScrollFocusedHome => match (self.tui_state.active_tab, self.tui_state.focus)
++            {
++                (Tab::Dashboard | Tab::Agents, FocusZone::AgentOutput) => {
++                    self.tui_state.agent_scroll = Some(usize::MAX);
++                }
++                (Tab::Logs, _) => {
++                    self.tui_state.log_auto_tail = false;
++                    self.tui_state.log_scroll = usize::MAX;
++                }
++                _ => self.set_focused_scroll(0),
++            },
++            TuiAction::ScrollFocusedEnd => {
++                match (self.tui_state.active_tab, self.tui_state.focus) {
++                    (Tab::Dashboard | Tab::Agents, FocusZone::AgentOutput) => {
++                        self.tui_state.agent_scroll = None;
++                    }
++                    (Tab::Logs, _) => {
++                        self.tui_state.log_auto_tail = true;
++                        self.tui_state.log_scroll = 0;
++                    }
++                    _ => self.set_focused_scroll(usize::MAX),
++                }
++            }
+             TuiAction::ScrollLogUp => {
+-                let delta = self.scroll_accel.push(-1);
+-                self.tui_state.log_scroll =
+-                    Self::apply_signed_scroll(self.tui_state.log_scroll, delta);
++                if self.tui_state.log_auto_tail {
++                    self.tui_state.log_auto_tail = false;
++                    self.tui_state.log_scroll = 1;
++                } else {
++                    self.tui_state.log_scroll = self.tui_state.log_scroll.saturating_add(1);
++                }
+             }
+             TuiAction::ScrollLogDown => {
+-                let delta = self.scroll_accel.push(1);
+-                self.tui_state.log_scroll =
+-                    Self::apply_signed_scroll(self.tui_state.log_scroll, delta);
++                if !self.tui_state.log_auto_tail {
++                    if self.tui_state.log_scroll > 0 {
++                        self.tui_state.log_scroll = self.tui_state.log_scroll.saturating_sub(1);
++                    }
++                    if self.tui_state.log_scroll == 0 {
++                        self.tui_state.log_auto_tail = true;
++                    }
++                }
+             }
+             TuiAction::ScrollLogEnd => {
+-                self.tui_state.log_scroll = usize::MAX; // Clamped during render
++                self.tui_state.log_auto_tail = true;
++                self.tui_state.log_scroll = 0;
++            }
++            TuiAction::ToggleLogTail => {
++                self.tui_state.log_auto_tail = !self.tui_state.log_auto_tail;
++                self.tui_state.log_scroll = 0;
+             }
+             TuiAction::ScrollAgentUp => {
+                 let current = self.tui_state.agent_scroll.unwrap_or(0);
+-                let delta = self.scroll_accel.push(-1);
+-                self.tui_state.agent_scroll = Some(Self::apply_signed_scroll(current, delta));
++                self.tui_state.agent_scroll = Some(current.saturating_add(1));
+             }
+             TuiAction::ScrollAgentDown => {
+-                let current = self.tui_state.agent_scroll.unwrap_or(0);
+-                let delta = self.scroll_accel.push(1);
+-                self.tui_state.agent_scroll = Some(Self::apply_signed_scroll(current, delta));
++                if let Some(current) = self.tui_state.agent_scroll {
++                    if current == 0 {
++                        self.tui_state.agent_scroll = None;
++                    } else {
++                        self.tui_state.agent_scroll = Some(current.saturating_sub(1));
++                    }
++                }
+             }
+             TuiAction::ScrollAgentEnd => {
+                 self.tui_state.agent_scroll = None; // Resume auto-tail
+@@ -941,12 +997,11 @@ impl App {
+             }
+             TuiAction::SwitchAgentTab(idx) => {
+                 if idx == usize::MAX {
+-                    // Cycle: backtick
+-                    let agent_count = self.tui_state.agents.len().max(1);
++                    let agent_count = 7;
+                     self.tui_state.selected_agent_tab =
+                         (self.tui_state.selected_agent_tab + 1) % agent_count;
+                 } else {
+-                    self.tui_state.selected_agent_tab = idx;
++                    self.tui_state.selected_agent_tab = idx.min(6);
+                 }
+             }
+             TuiAction::SwitchDetailTab(idx) => {
+@@ -1533,24 +1588,60 @@ impl App {
+     }
+ 
+     fn scroll_focused(&mut self, delta: i32) {
+-        match self.tui_state.focus {
+-            FocusZone::PlanTree => {
++        match (self.tui_state.active_tab, self.tui_state.focus) {
++            (Tab::Logs, _) => {
++                if self.tui_state.log_auto_tail {
++                    self.tui_state.log_auto_tail = false;
++                    self.tui_state.log_scroll = delta.unsigned_abs() as usize;
++                } else {
++                    let current = self.tui_state.log_scroll as i32;
++                    let next = (current + delta).max(0) as usize;
++                    self.tui_state.log_scroll = next;
++                    if next == 0 {
++                        self.tui_state.log_auto_tail = true;
++                    }
++                }
++            }
++            (Tab::Agents, FocusZone::PlanTree) => {
++                let max = self.tui_state.agents.len().saturating_sub(1);
++                let next = (self.tui_state.selected_agent as i32 + delta).clamp(0, max as i32);
++                self.tui_state.selected_agent = next as usize;
++            }
++            (Tab::Agents, FocusZone::AgentOutput) => {
++                let current = self.tui_state.agent_scroll.unwrap_or(0);
++                if delta < 0 {
++                    self.tui_state.agent_scroll =
++                        Some(current.saturating_add(delta.unsigned_abs() as usize));
++                } else if current == 0 {
++                    self.tui_state.agent_scroll = None;
++                } else {
++                    self.tui_state.agent_scroll = Some(current.saturating_sub(delta as usize));
++                }
++            }
++            (_, FocusZone::PlanTree) => {
+                 let current = self.tui_state.plan_scroll_offset as i32;
+                 self.tui_state.plan_scroll_offset = (current + delta).max(0) as usize;
+             }
+-            FocusZone::TaskProgress => {
++            (_, FocusZone::TaskProgress) => {
+                 let current = self.tui_state.task_scroll as i32;
+                 self.tui_state.task_scroll = (current + delta).max(0) as usize;
+             }
+-            FocusZone::AgentOutput => {
+-                let current = self.tui_state.agent_scroll.unwrap_or(0) as i32;
+-                self.tui_state.agent_scroll = Some((current + delta).max(0) as usize);
++            (_, FocusZone::AgentOutput) => {
++                let current = self.tui_state.agent_scroll.unwrap_or(0);
++                if delta < 0 {
++                    self.tui_state.agent_scroll =
++                        Some(current.saturating_add(delta.unsigned_abs() as usize));
++                } else if current == 0 {
++                    self.tui_state.agent_scroll = None;
++                } else {
++                    self.tui_state.agent_scroll = Some(current.saturating_sub(delta as usize));
++                }
+             }
+-            FocusZone::CommandOutput => {
++            (_, FocusZone::CommandOutput) => {
+                 let current = self.tui_state.command_output_scroll as i32;
+                 self.tui_state.command_output_scroll = (current + delta).max(0) as usize;
+             }
+-            FocusZone::RightPanel => {
++            (_, FocusZone::RightPanel) => {
+                 let current = self.tui_state.diff_scroll as i32;
+                 self.tui_state.diff_scroll = (current + delta).max(0) as usize;
+             }
+@@ -1558,20 +1649,31 @@ impl App {
+     }
+ 
+     fn set_focused_scroll(&mut self, offset: usize) {
+-        match self.tui_state.focus {
+-            FocusZone::PlanTree => {
++        match (self.tui_state.active_tab, self.tui_state.focus) {
++            (Tab::Agents, FocusZone::PlanTree) => {
++                let max = self.tui_state.agents.len().saturating_sub(1);
++                self.tui_state.selected_agent = if offset == usize::MAX {
++                    max
++                } else {
++                    offset.min(max)
++                };
++            }
++            (Tab::Agents, FocusZone::AgentOutput) => {
++                self.tui_state.agent_scroll = Some(offset);
++            }
++            (_, FocusZone::PlanTree) => {
+                 self.tui_state.plan_scroll_offset = offset;
+             }
+-            FocusZone::TaskProgress => {
++            (_, FocusZone::TaskProgress) => {
+                 self.tui_state.task_scroll = offset;
+             }
+-            FocusZone::AgentOutput => {
++            (_, FocusZone::AgentOutput) => {
+                 self.tui_state.agent_scroll = Some(offset);
+             }
+-            FocusZone::CommandOutput => {
++            (_, FocusZone::CommandOutput) => {
+                 self.tui_state.command_output_scroll = offset;
+             }
+-            FocusZone::RightPanel => {
++            (_, FocusZone::RightPanel) => {
+                 self.tui_state.diff_scroll = offset;
+             }
+         }
+@@ -1710,15 +1812,56 @@ impl App {
+     }
+ 
+     fn current_view_state(&self) -> ViewState {
+-        ViewState {
+-            scroll: self.tui_state.plan_scroll_offset as u16,
+-            selected: match self.tui_state.active_tab {
+-                Tab::Git => self.tui_state.git_branch_cursor,
+-                _ => self.tui_state.selected_plan_idx,
++        match self.tui_state.active_tab {
++            Tab::Dashboard => ViewState {
++                scroll: self.tui_state.agent_scroll.unwrap_or(0) as u16,
++                selected: self.tui_state.selected_plan_idx,
++                sub_tab: self.tui_state.plan_detail_tab,
++                secondary_selected: 0,
++                auto_tail: self.tui_state.agent_scroll.is_none(),
++            },
++            Tab::Plans => ViewState {
++                scroll: self.tui_state.plan_scroll_offset as u16,
++                selected: self.tui_state.selected_plan_idx,
++                sub_tab: self.tui_state.plan_detail_tab,
++                secondary_selected: 0,
++                auto_tail: false,
++            },
++            Tab::Agents => ViewState {
++                scroll: self.tui_state.agent_scroll.unwrap_or(0) as u16,
++                selected: self.tui_state.selected_agent,
++                sub_tab: self.tui_state.selected_agent_tab,
++                secondary_selected: 0,
++                auto_tail: self.tui_state.agent_scroll.is_none(),
++            },
++            Tab::Git => ViewState {
++                scroll: self.tui_state.plan_scroll_offset as u16,
++                selected: self.tui_state.git_branch_cursor,
++                sub_tab: 0,
++                secondary_selected: 0,
++                auto_tail: false,
++            },
++            Tab::Logs => ViewState {
++                scroll: self.tui_state.log_scroll.min(u16::MAX as usize) as u16,
++                selected: 0,
++                sub_tab: 0,
++                secondary_selected: 0,
++                auto_tail: self.tui_state.log_auto_tail,
++            },
++            Tab::Config => ViewState {
++                scroll: self.tui_state.config_scroll_offset.min(u16::MAX as usize) as u16,
++                selected: self.tui_state.config_cursor,
++                sub_tab: 0,
++                secondary_selected: 0,
++                auto_tail: false,
++            },
++            Tab::Inspect => ViewState {
++                scroll: 0,
++                selected: 0,
++                sub_tab: 0,
++                secondary_selected: 0,
++                auto_tail: false,
+             },
+-            sub_tab: self.tui_state.plan_detail_tab,
+-            secondary_selected: 0,
+-            auto_tail: self.tui_state.agent_scroll.is_none(),
+         }
+     }
+ 
+@@ -2005,6 +2148,7 @@ fn help_lines() -> Vec<Line<'static>> {
+         Line::from(""),
+         Line::from(Span::styled("General", theme.accent_bold())),
+         Line::from("Ctrl-r     refresh data"),
++        Line::from("f          toggle log tail / pin"),
+         Line::from("Ctrl-C     quit immediately"),
+     ]
+ }
+@@ -2168,6 +2312,88 @@ mod tests {
+         assert_eq!(app.tui_state.diff_scroll, usize::MAX);
+     }
+ 
++    #[test]
++    fn current_view_state_is_tab_specific() {
++        let dir = tempdir().unwrap();
++        let mut app = App::new(dir.path());
++        app.tui_state.selected_plan_idx = 2;
++        app.tui_state.selected_agent = 3;
++        app.tui_state.selected_agent_tab = 4;
++        app.tui_state.plan_scroll_offset = 8;
++        app.tui_state.agent_scroll = Some(5);
++        app.tui_state.log_scroll = 7;
++        app.tui_state.log_auto_tail = false;
++
++        app.tui_state.active_tab = Tab::Dashboard;
++        let view = app.current_view_state();
++        assert_eq!(view.scroll, 5);
++        assert_eq!(view.selected, 2);
++        assert_eq!(view.sub_tab, 0);
++        assert!(!view.auto_tail);
++
++        app.tui_state.active_tab = Tab::Plans;
++        let view = app.current_view_state();
++        assert_eq!(view.scroll, 8);
++        assert_eq!(view.selected, 2);
++        assert_eq!(view.sub_tab, 0);
++        assert!(!view.auto_tail);
++
++        app.tui_state.active_tab = Tab::Agents;
++        let view = app.current_view_state();
++        assert_eq!(view.scroll, 5);
++        assert_eq!(view.selected, 3);
++        assert_eq!(view.sub_tab, 4);
++        assert!(!view.auto_tail);
++
++        app.tui_state.active_tab = Tab::Logs;
++        let view = app.current_view_state();
++        assert_eq!(view.scroll, 7);
++        assert_eq!(view.selected, 0);
++        assert!(!view.auto_tail);
++    }
++
++    #[test]
++    fn agents_tab_selection_moves_agent_roster() {
++        let dir = tempdir().unwrap();
++        let mut app = App::new(dir.path());
++        app.tui_state.active_tab = Tab::Agents;
++        app.tui_state.selected_agent = 1;
++        app.tui_state.focus = FocusZone::PlanTree;
++        app.tui_state.agents = vec![
++            super::super::state::AgentRow::default(),
++            super::super::state::AgentRow::default(),
++            super::super::state::AgentRow::default(),
++        ];
++
++        app.dispatch_action(TuiAction::ScrollFocusedUp);
++        assert_eq!(app.tui_state.selected_agent, 0);
++
++        app.dispatch_action(TuiAction::ScrollFocusedDown);
++        assert_eq!(app.tui_state.selected_agent, 1);
++
++        app.dispatch_action(TuiAction::ScrollFocusedEnd);
++        assert_eq!(app.tui_state.selected_agent, 2);
++    }
++
++    #[test]
++    fn logs_tail_toggle_and_filter_input_work() {
++        let dir = tempdir().unwrap();
++        let mut app = App::new(dir.path());
++        app.tui_state.active_tab = Tab::Logs;
++        app.tui_state.log_auto_tail = true;
++        app.tui_state.log_scroll = 0;
++
++        app.dispatch_action(TuiAction::ToggleLogTail);
++        assert!(!app.tui_state.log_auto_tail);
++
++        app.dispatch_action(TuiAction::ScrollLogUp);
++        assert_eq!(app.tui_state.log_scroll, 1);
++
++        app.dispatch_action(TuiAction::ScrollLogDown);
++        assert!(app.tui_state.log_auto_tail);
++        assert_eq!(app.tui_state.log_scroll, 0);
++    }
++
+     fn drill_actions_on_git_use_git_cursor_not_plan_expansion() {
+         let dir = tempdir().unwrap();
+         let mut app = App::new(dir.path());
+diff --git a/crates/roko-cli/src/tui/input.rs b/crates/roko-cli/src/tui/input.rs
+index dd9d3d73..062c96aa 100644
+--- a/crates/roko-cli/src/tui/input.rs
++++ b/crates/roko-cli/src/tui/input.rs
+@@ -180,6 +180,7 @@ pub enum TuiAction {
+     ScrollLogUp,
+     ScrollLogDown,
+     ScrollLogEnd,
++    ToggleLogTail,
+ 
+     // -- agent tab --
+     SwitchAgentTab(usize),
+@@ -628,12 +629,12 @@ fn handle_agents_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
+         KeyCode::Up | KeyCode::Char('k') => match focus {
+             FocusZone::AgentOutput => TuiAction::ScrollAgentUp,
+             FocusZone::RightPanel => TuiAction::ScrollDiffUp,
+-            _ => TuiAction::ScrollFocusedUp,
++            _ => TuiAction::SelectPlanUp,
+         },
+         KeyCode::Down | KeyCode::Char('j') => match focus {
+             FocusZone::AgentOutput => TuiAction::ScrollAgentDown,
+             FocusZone::RightPanel => TuiAction::ScrollDiffDown,
+-            _ => TuiAction::ScrollFocusedDown,
++            _ => TuiAction::SelectPlanDown,
+         },
+         KeyCode::PageUp => TuiAction::ScrollPageUp,
+         KeyCode::PageDown => TuiAction::ScrollPageDown,
+@@ -684,6 +685,7 @@ fn handle_logs_key(key: KeyEvent, _focus: FocusZone) -> TuiAction {
+         KeyCode::PageDown => TuiAction::ScrollPageDown,
+         KeyCode::Home => TuiAction::ScrollFocusedHome,
+         KeyCode::End | KeyCode::Char('G') => TuiAction::ScrollLogEnd,
++        KeyCode::Char('f') => TuiAction::ToggleLogTail,
+         KeyCode::Char('/') => TuiAction::StartFilter,
+         _ => TuiAction::None,
+     }
+@@ -885,6 +887,27 @@ mod tests {
+         assert_eq!(action, TuiAction::ScrollPageDown);
+     }
+ 
++    #[test]
++    fn logs_tab_can_toggle_tail_and_filter() {
++        let action = handle_key(
++            key(KeyCode::Char('f')),
++            InputMode::Normal,
++            Tab::Logs,
++            FocusZone::PlanTree,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::ToggleLogTail);
++
++        let action = handle_key(
++            key(KeyCode::Char('/')),
++            InputMode::Normal,
++            Tab::Logs,
++            FocusZone::PlanTree,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::StartFilter);
++    }
++
+     #[test]
+     fn home_end_use_focused_jump_actions() {
+         let action = handle_key(
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 269e84bf..246f1c43 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -386,6 +386,8 @@ pub struct TuiState {
+     pub plan_scroll_offset: usize,
+     /// Log viewer scroll offset.
+     pub log_scroll: usize,
++    /// Whether the log viewer is following the tail.
++    pub log_auto_tail: bool,
+     /// Task detail overlay scroll offset.
+     pub task_detail_scroll: usize,
+ 
+@@ -545,6 +547,7 @@ impl Default for TuiState {
+             plan_summary_scroll: 0,
+             plan_scroll_offset: 0,
+             log_scroll: 0,
++            log_auto_tail: true,
+             task_detail_scroll: 0,
+ 
+             show_plan_detail: false,
+@@ -708,34 +711,115 @@ impl TuiState {
+         self.orchestrator_state = executor_summary.orchestrator_state;
+         self.current_iteration = executor_summary.current_iteration;
+         self.current_phase = executor_summary.current_phase;
++        let expanded_by_plan: HashMap<String, bool> = self
++            .plans
++            .iter()
++            .map(|plan| (plan.id.clone(), plan.expanded))
++            .collect();
++        let latest_events = latest_agent_events(&data.efficiency_events);
++
++        let mut tasks_by_plan: HashMap<String, Vec<TaskEntry>> = HashMap::new();
++        for task in &data.active_tasks {
++            tasks_by_plan
++                .entry(task.plan_id.clone())
++                .or_default()
++                .push(TaskEntry {
++                    id: task.task_id.clone(),
++                    name: task.latest_gate.as_ref().map_or_else(
++                        || task.task_id.clone(),
++                        |gate| format!("{} ({gate})", task.task_id),
++                    ),
++                    status: task.status.clone(),
++                    agent_id: task.assigned_agents.first().cloned(),
++                });
++        }
++
++        if let Some(exec) = &data.current_plan_execution {
++            let entry = tasks_by_plan.entry(exec.plan_id.clone()).or_default();
++            if entry.is_empty() {
++                entry.extend(exec.tasks.iter().map(|task| TaskEntry {
++                    id: task.task_id.clone(),
++                    name: if task.title.is_empty() {
++                        task.task_id.clone()
++                    } else {
++                        task.title.clone()
++                    },
++                    status: task.phase.clone(),
++                    agent_id: None,
++                }));
++            }
++        }
+ 
+         // Plans
+         self.plans = data
+             .plans
+             .iter()
+             .map(|p| {
+-                let completed = p.completed;
+-                let phase = if completed {
++                let tasks = tasks_by_plan.remove(&p.id).unwrap_or_default();
++                let current_exec = data
++                    .current_plan_execution
++                    .as_ref()
++                    .filter(|exec| exec.plan_id == p.id);
++                let tasks_done = if p.completed {
++                    current_exec.map_or(p.task_count, |exec| exec.tasks_done)
++                } else {
++                    current_exec.map_or_else(
++                        || {
++                            tasks
++                                .iter()
++                                .filter(|task| task_status_is_done(&task.status))
++                                .count()
++                        },
++                        |exec| exec.tasks_done,
++                    )
++                };
++                let tasks_failed = tasks
++                    .iter()
++                    .filter(|task| task_status_is_failed(&task.status))
++                    .count();
++                let tasks_active = tasks
++                    .iter()
++                    .filter(|task| {
++                        !task_status_is_done(&task.status) && !task_status_is_failed(&task.status)
++                    })
++                    .count();
++                let phase = if tasks_failed > 0 || p.last_error.is_some() {
++                    "failed".to_string()
++                } else if current_exec.is_some() || tasks_active > 0 {
++                    "running".to_string()
++                } else if p.completed || (p.task_count > 0 && tasks_done >= p.task_count) {
+                     "done".to_string()
++                } else if tasks_done > 0 {
++                    "running".to_string()
+                 } else {
+                     "pending".to_string()
+                 };
+-                let tasks_done = if completed { p.task_count } else { 0 };
++                let tasks_total = current_exec
++                    .map(|exec| exec.tasks_total)
++                    .unwrap_or_else(|| p.task_count.max(tasks.len()));
++                let elapsed_secs = current_exec
++                    .map(|exec| {
++                        exec.tasks
++                            .iter()
++                            .map(|task| parse_duration_to_secs(&task.duration))
++                            .sum()
++                    })
++                    .unwrap_or(0.0);
+                 PlanEntry {
+                     id: p.id.clone(),
+                     name: p.title.clone(),
+                     status: phase.clone(),
+-                    active: !completed,
++                    active: plan_is_active(&phase),
+                     phase,
+-                    tasks_total: p.task_count,
++                    tasks_total,
+                     tasks_done,
+-                    tasks_failed: 0,
+-                    elapsed_secs: 0.0,
++                    tasks_failed,
++                    elapsed_secs,
+                     wave: None,
+-                    task_total: p.task_count,
++                    task_total: tasks_total,
+                     task_done: tasks_done,
+-                    expanded: false,
+-                    tasks: Vec::new(),
++                    expanded: expanded_by_plan.get(&p.id).copied().unwrap_or(false),
++                    tasks,
+                 }
+             })
+             .collect();
+@@ -743,27 +827,58 @@ impl TuiState {
+         // Agents — populate both Vec and HashMap
+         self.agents.clear();
+         self.agents_by_id.clear();
+-        for agent in &data.agents {
+-            let is_active = agent.status == "active" || agent.status == "running";
++        let mut agent_ids = data
++            .agents
++            .iter()
++            .map(|agent| agent.id.clone())
++            .collect::<Vec<_>>();
++        if agent_ids.is_empty() {
++            agent_ids.extend(latest_events.keys().cloned());
++            agent_ids.sort();
++            agent_ids.dedup();
++        }
++        for agent_id in agent_ids {
++            let summary = data.agents.iter().find(|agent| agent.id == agent_id);
++            let latest = latest_events.get(&agent_id);
++            let label = summary
++                .map(|agent| agent.label.clone())
++                .filter(|label| !label.is_empty())
++                .or_else(|| latest.map(|event| event.role.clone()))
++                .unwrap_or_else(|| agent_id.clone());
++            let status = summary
++                .map(|agent| agent.status.clone())
++                .or_else(|| latest.map(|event| event.status.clone()))
++                .unwrap_or_else(|| "idle".to_string());
++            let current_plan = summary
++                .and_then(|agent| agent.plan_id.clone())
++                .or_else(|| latest.and_then(|event| event.plan_id.clone()))
++                .unwrap_or_default();
++            let current_task = latest
++                .map(|event| event.task_id.clone())
++                .unwrap_or_default();
++            let is_active = plan_is_active(&status);
+             self.agents.push(AgentRow {
+-                id: agent.id.clone(),
++                id: agent_id.clone(),
+                 active: is_active,
+-                role: agent.label.clone(),
+-                model: String::new(),
+-                input_tokens: 0,
+-                output_tokens: 0,
++                role: label.clone(),
++                model: latest.map(|event| event.model.clone()).unwrap_or_default(),
++                input_tokens: latest.map_or(0, |event| event.input_tokens),
++                output_tokens: latest.map_or(0, |event| event.output_tokens),
+                 context_limit: 200_000, // sensible default
+-                current_plan: agent.plan_id.clone().unwrap_or_default(),
+-                current_task: String::new(),
++                current_plan: current_plan.clone(),
++                current_task: current_task.clone(),
+                 last_output_line: String::new(),
+             });
+             self.agents_by_id.insert(
+-                agent.id.clone(),
++                agent_id.clone(),
+                 AgentState {
+-                    id: agent.id.clone(),
+-                    name: agent.label.clone(),
+-                    status: agent.status.clone(),
+-                    plan_id: agent.plan_id.clone(),
++                    id: agent_id,
++                    name: label,
++                    status,
++                    input_tokens: latest.map_or(0, |event| event.input_tokens),
++                    output_tokens: latest.map_or(0, |event| event.output_tokens),
++                    plan_id: (!current_plan.is_empty()).then_some(current_plan),
++                    task_id: (!current_task.is_empty()).then_some(current_task),
+                     ..AgentState::default()
+                 },
+             );
+@@ -816,11 +931,7 @@ impl TuiState {
+                 agent_id: a.id.clone(),
+                 plan_id: a.current_plan.clone(),
+                 task_id: a.current_task.clone(),
+-                status: if a.active {
+-                    "running".to_string()
+-                } else {
+-                    "idle".to_string()
+-                },
++                status: "running".to_string(),
+                 progress_pct: 0.0,
+             })
+             .collect();
+@@ -885,6 +996,7 @@ impl TuiState {
+         if !self.agents.is_empty() && self.selected_agent >= self.agents.len() {
+             self.selected_agent = self.agents.len() - 1;
+         }
++        self.selected_agent_tab = self.selected_agent_tab.min(6);
+     }
+ 
+     /// Close all modal overlays and return to normal mode.
+@@ -931,6 +1043,7 @@ impl TuiState {
+         self.plan_summary_scroll = 0;
+         self.plan_scroll_offset = 0;
+         self.log_scroll = 0;
++        self.log_auto_tail = true;
+         self.task_detail_scroll = 0;
+     }
+ }
+@@ -1227,6 +1340,75 @@ fn sum_costs(
+     }
+ }
+ 
++#[derive(Debug, Clone)]
++struct LatestAgentEvent {
++    role: String,
++    status: String,
++    model: String,
++    plan_id: Option<String>,
++    task_id: String,
++    input_tokens: u64,
++    output_tokens: u64,
++    timestamp: Option<DateTime<Utc>>,
++}
++
++fn latest_agent_events(
++    events: &[roko_learn::efficiency::AgentEfficiencyEvent],
++) -> HashMap<String, LatestAgentEvent> {
++    let mut latest = HashMap::new();
++
++    for event in events {
++        let timestamp = parse_efficiency_timestamp(&event.timestamp);
++        let candidate = LatestAgentEvent {
++            role: event.role.clone(),
++            status: if event.gate_passed {
++                "done".to_string()
++            } else {
++                "active".to_string()
++            },
++            model: event.model.clone(),
++            plan_id: Some(event.plan_id.clone()),
++            task_id: event.task_id.clone(),
++            input_tokens: event.input_tokens,
++            output_tokens: event.output_tokens,
++            timestamp,
++        };
++
++        let should_replace = latest
++            .get(&event.agent_id)
++            .map(
++                |existing: &LatestAgentEvent| match (existing.timestamp, candidate.timestamp) {
++                    (Some(lhs), Some(rhs)) => rhs >= lhs,
++                    (None, Some(_)) => true,
++                    _ => false,
++                },
++            )
++            .unwrap_or(true);
++        if should_replace {
++            latest.insert(event.agent_id.clone(), candidate);
++        }
++    }
++
++    latest
++}
++
++fn plan_is_active(status: &str) -> bool {
++    matches!(
++        status.to_ascii_lowercase().as_str(),
++        "active"
++            | "running"
++            | "executing"
++            | "in_progress"
++            | "implementing"
++            | "gating"
++            | "verifying"
++            | "reviewing"
++            | "strategist"
++            | "implementer"
++            | "preflight"
++    )
++}
++
+ fn build_task_checklist_from_execution(data: &DashboardData) -> Vec<TaskRow> {
+     if let Some(exec) = &data.current_plan_execution {
+         return exec
+@@ -1707,12 +1889,52 @@ mod tests {
+         assert!(state.git_age.is_empty());
+         assert!(state.run_started.is_none());
+         assert!(state.filter.is_empty());
++        assert!(state.log_auto_tail);
+         assert_eq!(state.selected_plan, 0);
+         assert_eq!(state.selected_agent, 0);
+         assert_eq!(state.output_scroll, 0);
+         assert_eq!(state.plan_scroll_offset, 0);
+     }
+ 
++    #[test]
++    fn update_from_snapshot_populates_plan_tasks_from_active_tasks() {
++        let mut data = DashboardData::default();
++        data.plans = vec![crate::plan::PlanSummary {
++            id: "plan-a".to_string(),
++            title: "Plan A".to_string(),
++            task_count: 3,
++            completed: false,
++            old_format: false,
++            last_error: None,
++        }];
++        data.active_tasks = vec![
++            TaskSummary {
++                plan_id: "plan-a".to_string(),
++                task_id: "task-1".to_string(),
++                status: "running".to_string(),
++                iteration: 1,
++                assigned_agents: vec!["agent-a".to_string()],
++                latest_gate: None,
++            },
++            TaskSummary {
++                plan_id: "plan-a".to_string(),
++                task_id: "task-2".to_string(),
++                status: "failed".to_string(),
++                iteration: 1,
++                assigned_agents: vec!["agent-b".to_string()],
++                latest_gate: Some("test".to_string()),
++            },
++        ];
++
++        let state = TuiState::from_dashboard_data(&data);
++
++        assert_eq!(state.plans.len(), 1);
++        assert_eq!(state.plans[0].tasks.len(), 2);
++        assert_eq!(state.plans[0].tasks_failed, 1);
++        assert_eq!(state.plans[0].tasks_done, 0);
++        assert_eq!(state.plans[0].tasks[0].agent_id.as_deref(), Some("agent-a"));
++    }
++
+     #[test]
+     fn update_from_snapshot_populates_token_history_and_rate() {
+         let mut data = DashboardData::default();
+diff --git a/crates/roko-cli/src/tui/views/agents_view.rs b/crates/roko-cli/src/tui/views/agents_view.rs
+index 21e03932..efb78b42 100644
+--- a/crates/roko-cli/src/tui/views/agents_view.rs
++++ b/crates/roko-cli/src/tui/views/agents_view.rs
+@@ -591,7 +591,7 @@ fn render_role_tabs(
+ 
+     // Selected role from sub_tab
+     let selected_role = ROLE_TABS
+-        .get(view_state.sub_tab)
++        .get(view_state.sub_tab.min(ROLE_TABS.len().saturating_sub(1)))
+         .map(|(role, _)| *role)
+         .unwrap_or("");
+ 
+@@ -794,11 +794,12 @@ fn render_output_body(
+         .collect();
+ 
+     let max_scroll = text.len().saturating_sub(inner.height as usize);
+-    let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
++    let max_scroll = max_scroll.min(u16::MAX as usize);
+     let scroll = if view_state.auto_tail {
+-        max_scroll
++        max_scroll as u16
+     } else {
+-        view_state.scroll.min(max_scroll)
++        let pinned = view_state.scroll as usize;
++        max_scroll.saturating_sub(pinned.min(max_scroll)) as u16
+     };
+ 
+     let paragraph = Paragraph::new(text)
+diff --git a/crates/roko-cli/src/tui/views/dashboard_view.rs b/crates/roko-cli/src/tui/views/dashboard_view.rs
+index a3f5a680..58501156 100644
+--- a/crates/roko-cli/src/tui/views/dashboard_view.rs
++++ b/crates/roko-cli/src/tui/views/dashboard_view.rs
+@@ -242,7 +242,9 @@ fn render_sub_agents(
+         frame,
+         sections[0],
+         &pool,
+-        view_state.selected,
++        tui_state
++            .selected_agent_tab
++            .min(pool.len().saturating_sub(1)),
+         theme,
+     );
+     render_output_panel(
+@@ -296,14 +298,18 @@ fn render_output_panel(
+             .unwrap_or_default();
+         if !exec_lines.is_empty() {
+             exec_lines
+-        } else if let Some(agent) = tui_state
+-            .agents_by_id
+-            .values()
+-            .nth(tui_state.selected_agent_tab)
+-        {
++        } else if let Some(agent_summary) = tui_state.agents.get(
++            tui_state
++                .selected_agent
++                .min(tui_state.agents.len().saturating_sub(1)),
++        ) {
+             // 2. Selected agent output.
+-            if !agent.output_lines.is_empty() {
+-                agent.output_lines.clone()
++            if let Some(agent) = tui_state.agents_by_id.get(&agent_summary.id) {
++                if !agent.output_lines.is_empty() {
++                    agent.output_lines.clone()
++                } else {
++                    Vec::new()
++                }
+             } else {
+                 Vec::new()
+             }
+@@ -334,9 +340,14 @@ fn render_output_panel(
+ 
+     let text: Vec<Line<'_>> = lines.iter().map(|l| Line::from(*l)).collect();
+     let scroll = if view_state.auto_tail {
+-        text.len().saturating_sub(inner.height as usize) as u16
++        text.len()
++            .saturating_sub(inner.height as usize)
++            .min(u16::MAX as usize) as u16
+     } else {
+-        view_state.scroll
++        let max_scroll = text.len().saturating_sub(inner.height as usize);
++        max_scroll
++            .saturating_sub((view_state.scroll as usize).min(max_scroll))
++            .min(u16::MAX as usize) as u16
+     };
+     frame.render_widget(
+         Paragraph::new(text)
+@@ -369,13 +380,15 @@ fn render_sub_diff(
+ 
+ fn gather_diff_text(data: &DashboardData, tui_state: &TuiState) -> String {
+     // Try selected agent's diff content.
+-    if let Some(agent) = tui_state
+-        .agents_by_id
+-        .values()
+-        .nth(tui_state.selected_agent_tab)
+-    {
+-        if !agent.diff_content.is_empty() {
+-            return agent.diff_content.clone();
++    if let Some(agent_summary) = tui_state.agents.get(
++        tui_state
++            .selected_agent
++            .min(tui_state.agents.len().saturating_sub(1)),
++    ) {
++        if let Some(agent) = tui_state.agents_by_id.get(&agent_summary.id) {
++            if !agent.diff_content.is_empty() {
++                return agent.diff_content.clone();
++            }
+         }
+     }
+     // Fallback: extract diff-like lines from execution output.
+diff --git a/crates/roko-cli/src/tui/views/logs_view.rs b/crates/roko-cli/src/tui/views/logs_view.rs
+index 95d8a6ff..ce8680df 100644
+--- a/crates/roko-cli/src/tui/views/logs_view.rs
++++ b/crates/roko-cli/src/tui/views/logs_view.rs
+@@ -65,12 +65,12 @@ pub fn render(
+     frame: &mut Frame<'_>,
+     area: Rect,
+     data: &DashboardData,
+-    _tui_state: &TuiState,
++    tui_state: &TuiState,
+     view_state: &ViewState,
+     theme: &Theme,
+ ) {
+     let entries = build_unified_log(data);
+-    render_with_entries(frame, area, &entries, data, view_state, theme);
++    render_with_entries(frame, area, &entries, data, tui_state, view_state, theme);
+ }
+ 
+ /// Render the logs view with explicit log entries (for integration layer).
+@@ -79,11 +79,31 @@ pub fn render_with_entries(
+     area: Rect,
+     entries: &[LogEntry],
+     data: &DashboardData,
++    tui_state: &TuiState,
+     view_state: &ViewState,
+     theme: &Theme,
+ ) {
+     let sections = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
+ 
++    let filter_text = if tui_state.filter_active {
++        let filter = tui_state.filter_ref().trim().to_lowercase();
++        if filter.is_empty() {
++            None
++        } else {
++            Some(filter)
++        }
++    } else {
++        None
++    };
++    let filtered_entries: Vec<&LogEntry> = entries
++        .iter()
++        .filter(|entry| {
++            filter_text
++                .as_ref()
++                .map_or(true, |filter| entry_matches_filter(entry, filter))
++        })
++        .collect();
++
+     // Status bar with source counts
+     let signal_count = data.recent_signals.len();
+     let episode_count = data.episodes().len();
+@@ -96,8 +116,11 @@ pub fn render_with_entries(
+     } else {
+         "SCROLL"
+     };
+-    let status_line1 = Line::from(vec![
+-        Span::styled(format!(" {} entries ", entries.len()), theme.muted()),
++    let mut status_spans = vec![
++        Span::styled(
++            format!(" {} entries ", filtered_entries.len()),
++            theme.muted(),
++        ),
+         Span::styled(format!("[{tail_label}]"), theme.accent()),
+         Span::styled("  |  ", theme.muted()),
+         Span::styled(format!("signals:{signal_count}"), theme.info()),
+@@ -109,7 +132,15 @@ pub fn render_with_entries(
+         Span::styled(format!("gates:{gate_count}"), theme.warning()),
+         Span::styled("  ", theme.muted()),
+         Span::styled(format!("events:{event_count}"), theme.text()),
+-    ]);
++    ];
++    if let Some(filter) = filter_text.as_deref() {
++        status_spans.push(Span::styled("  |  ", theme.muted()));
++        status_spans.push(Span::styled(
++            format!("filter:\"{filter}\""),
++            theme.warning(),
++        ));
++    }
++    let status_line1 = Line::from(status_spans);
+     let status = Paragraph::new(vec![status_line1]).alignment(Alignment::Right);
+     frame.render_widget(status, sections[0]);
+ 
+@@ -121,15 +152,20 @@ pub fn render_with_entries(
+     let inner = block.inner(sections[1]);
+     frame.render_widget(block, sections[1]);
+ 
+-    if entries.is_empty() {
+-        let empty = Paragraph::new("no log entries -- run agents to generate signals and episodes")
++    if filtered_entries.is_empty() {
++        let empty_text = if filter_text.is_some() {
++            "no log entries match the active filter"
++        } else {
++            "no log entries -- run agents to generate signals and episodes"
++        };
++        let empty = Paragraph::new(empty_text)
+             .style(theme.muted())
+             .wrap(Wrap { trim: false });
+         frame.render_widget(empty, inner);
+         return;
+     }
+ 
+-    let lines: Vec<Line<'_>> = entries
++    let lines: Vec<Line<'_>> = filtered_entries
+         .iter()
+         .map(|entry| {
+             let level_style = level_style(entry.level, theme);
+@@ -147,11 +183,13 @@ pub fn render_with_entries(
+         .collect();
+ 
+     let max_scroll = lines.len().saturating_sub(inner.height as usize);
+-    let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
+     let scroll = if view_state.auto_tail {
+-        max_scroll
++        max_scroll.min(u16::MAX as usize) as u16
+     } else {
+-        view_state.scroll.min(max_scroll)
++        let pinned = view_state.scroll as usize;
++        max_scroll
++            .saturating_sub(pinned.min(max_scroll))
++            .min(u16::MAX as usize) as u16
+     };
+ 
+     let paragraph = Paragraph::new(lines)
+@@ -381,6 +419,17 @@ fn source_style(source: &str, theme: &Theme) -> ratatui::style::Style {
+     }
+ }
+ 
++fn entry_matches_filter(entry: &LogEntry, filter_lower: &str) -> bool {
++    entry.timestamp.to_lowercase().contains(filter_lower)
++        || entry.message.to_lowercase().contains(filter_lower)
++        || entry.source.to_lowercase().contains(filter_lower)
++        || entry
++            .level
++            .label()
++            .to_ascii_lowercase()
++            .contains(filter_lower)
++}
++
+ fn format_timestamp_ms(ms: i64) -> String {
+     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+         .map(|dt| dt.format("%H:%M:%S").to_string())
+diff --git a/crates/roko-compose/src/scorer.rs b/crates/roko-compose/src/scorer.rs
+index b3ca2876..9ee0d8c9 100644
+--- a/crates/roko-compose/src/scorer.rs
++++ b/crates/roko-compose/src/scorer.rs
+@@ -251,7 +251,9 @@ fn tokenize(text: &str) -> Vec<String> {
+ }
+ 
+ fn token_overlap(left: &str, right: &str) -> f32 {
+-    let left = tokenize(left).into_iter().collect::<std::collections::BTreeSet<_>>();
++    let left = tokenize(left)
++        .into_iter()
++        .collect::<std::collections::BTreeSet<_>>();
+     let right = tokenize(right)
+         .into_iter()
+         .collect::<std::collections::BTreeSet<_>>();
+diff --git a/crates/roko-learn/src/cfactor.rs b/crates/roko-learn/src/cfactor.rs
+index 2a3de36c..be08bc56 100644
+--- a/crates/roko-learn/src/cfactor.rs
++++ b/crates/roko-learn/src/cfactor.rs
+@@ -639,7 +639,9 @@ fn detect_groupthink(episodes: &[&Episode]) -> Option<CollectivePathology> {
+     }
+ 
+     best.filter(|diversity| *diversity < 0.3)
+-        .map(|diversity| CollectivePathology::Groupthink { diversity_score: diversity })
++        .map(|diversity| CollectivePathology::Groupthink {
++            diversity_score: diversity,
++        })
+ }
+ 
+ fn detect_echo_chamber(episodes: &[&Episode]) -> Option<CollectivePathology> {
+diff --git a/crates/roko-neuro/src/knowledge_store.rs b/crates/roko-neuro/src/knowledge_store.rs
+index 604c0333..27783eb1 100644
+--- a/crates/roko-neuro/src/knowledge_store.rs
++++ b/crates/roko-neuro/src/knowledge_store.rs
+@@ -771,9 +771,7 @@ fn inferred_retention_tier(entry: &KnowledgeEntry) -> KnowledgeTier {
+     let confidence = entry.confidence.clamp(0.0, 1.0);
+ 
+     match entry.kind {
+-        KnowledgeKind::StrategyFragment if source_count >= 3 => {
+-            KnowledgeTier::Persistent
+-        }
++        KnowledgeKind::StrategyFragment if source_count >= 3 => KnowledgeTier::Persistent,
+         KnowledgeKind::StrategyFragment => KnowledgeTier::Working,
+         KnowledgeKind::Warning if source_count >= 2 || confidence >= 0.85 => {
+             KnowledgeTier::Consolidated
+diff --git a/crates/roko-serve/src/routes/learning.rs b/crates/roko-serve/src/routes/learning.rs
+index be34facf..5570dfff 100644
+--- a/crates/roko-serve/src/routes/learning.rs
++++ b/crates/roko-serve/src/routes/learning.rs
+@@ -24,6 +24,7 @@ pub fn routes() -> Router<Arc<AppState>> {
+         .route("/learning/efficiency", get(efficiency))
+         .route("/learn/efficiency", get(efficiency))
+         .route("/learning/cascade-router", get(cascade_router))
++        .route("/learning/cascade", get(cascade))
+         .route("/learning/cost-tiers", get(cost_tiers))
+         .route("/learn/cascade", get(cascade))
+         .route("/learn/experiments", get(experiments))
+@@ -881,12 +882,17 @@ mod tests {
+     use roko_core::OperatingFrequency;
+     use std::sync::Arc;
+ 
++    use axum::body::Body;
+     use axum::extract::State;
++    use axum::http::Request;
+     use tempfile::tempdir;
++    use tower::ServiceExt;
+ 
+     use crate::deploy::create_backend;
++    use crate::routes::build_router;
+     use crate::runtime::NoOpRuntime;
+     use crate::state::AppState;
++    use roko_core::config::ServeAuthConfig;
+ 
+     fn make_experiment() -> PromptExperiment {
+         let variants = vec![
+@@ -1097,6 +1103,113 @@ mod tests {
+         (dir, state)
+     }
+ 
++    #[tokio::test]
++    async fn cascade_alias_is_served_under_api_grouping() {
++        let (dir, state) = test_state();
++        let learn_dir = dir.path().join(".roko").join("learn");
++        tokio::fs::create_dir_all(&learn_dir)
++            .await
++            .expect("create learn dir");
++        let cascade_path = learn_dir.join("cascade-router.json");
++        tokio::fs::write(
++            &cascade_path,
++            serde_json::json!({
++                "model_slugs": ["claude-sonnet-4-5"],
++                "confidence_stats": {
++                    "claude-sonnet-4-5": { "trials": 50, "successes": 30 }
++                }
++            })
++            .to_string(),
++        )
++        .await
++        .expect("write cascade snapshot");
++
++        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("GET")
++                    .uri("/api/learning/cascade")
++                    .body(Body::empty())
++                    .expect("request"),
++            )
++            .await
++            .expect("cascade response");
++
++        assert_eq!(response.status(), axum::http::StatusCode::OK);
++        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
++            .await
++            .expect("read body");
++        let payload: Value = serde_json::from_slice(&body).expect("parse cascade response");
++        assert_eq!(payload["source"], cascade_path.display().to_string());
++        assert_eq!(payload["routing_stats"]["total_observations"], 50);
++        assert_eq!(payload["model_weights"][0]["model"], "claude-sonnet-4-5");
++    }
++
++    #[tokio::test]
++    async fn gates_history_collection_is_served_under_api_grouping() {
++        let (dir, state) = test_state();
++        let signals = dir.path().join(".roko").join("signals.jsonl");
++        tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
++            .await
++            .expect("create signals dir");
++        tokio::fs::write(
++            &signals,
++            [
++                serde_json::json!({
++                    "id": "signal-1",
++                    "kind": "gate_verdict",
++                    "created_at_ms": 10,
++                    "tags": {
++                        "gate": "compile",
++                        "passed": "true",
++                        "duration_ms": 120
++                    }
++                })
++                .to_string(),
++                serde_json::json!({
++                    "id": "signal-2",
++                    "kind": "gate_verdict",
++                    "created_at_ms": 20,
++                    "tags": {
++                        "gate": "test",
++                        "passed": "false",
++                        "duration_ms": 240
++                    }
++                })
++                .to_string(),
++            ]
++            .join("\n")
++                + "\n",
++        )
++        .await
++        .expect("write gate history");
++
++        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("GET")
++                    .uri("/api/gates/history?limit=1")
++                    .body(Body::empty())
++                    .expect("request"),
++            )
++            .await
++            .expect("gate history response");
++
++        assert_eq!(response.status(), axum::http::StatusCode::OK);
++        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
++            .await
++            .expect("read body");
++        let payload: Value = serde_json::from_slice(&body).expect("parse gate history response");
++        assert_eq!(payload["source"], signals.display().to_string());
++        assert_eq!(payload["total"], 2);
++        assert_eq!(payload["limit"], 1);
++        assert_eq!(payload["history"].as_array().unwrap().len(), 1);
++        assert_eq!(payload["history"][0]["gate"], "test");
++        assert_eq!(payload["history"][0]["passed"], false);
++    }
++
+     #[tokio::test]
+     async fn experiments_returns_404_when_missing() {
+         let (_dir, state) = test_state();
+diff --git a/crates/roko-serve/src/routes/status.rs b/crates/roko-serve/src/routes/status.rs
+index 6ced0fb1..ba83640b 100644
+--- a/crates/roko-serve/src/routes/status.rs
++++ b/crates/roko-serve/src/routes/status.rs
+@@ -38,6 +38,7 @@ pub fn routes() -> Router<Arc<AppState>> {
+         .route("/metrics/coverage", get(coverage))
+         .route("/dashboard", get(dashboard))
+         .route("/gates/summary", get(gate_summary))
++        .route("/gates/history", get(gates_history))
+         .route("/gates/{gate_name}/history", get(gate_history))
+         .route("/episodes", get(episodes))
+         .route("/signals", get(signals))
+@@ -204,6 +205,36 @@ async fn gate_summary(State(state): State<Arc<AppState>>) -> Result<Json<Value>,
+     Ok(Json(summarize_gate_entries(&entries)))
+ }
+ 
++#[derive(Debug, Deserialize, Default)]
++struct GateHistoryQuery {
++    #[serde(default)]
++    gate: Option<String>,
++    #[serde(default)]
++    limit: Option<usize>,
++}
++
++/// `GET /api/gates/history` — recent gate verdicts across all gates.
++async fn gates_history(
++    State(state): State<Arc<AppState>>,
++    Query(query): Query<GateHistoryQuery>,
++) -> Result<Json<Value>, ApiError> {
++    let path = state.workdir.join(".roko").join("signals.jsonl");
++    let entries = read_jsonl_entries(&path).await?;
++    let gate_filter = query.gate.as_deref();
++    let limit = query.limit.unwrap_or(100).min(MAX_JSONL_RESULTS);
++    let mut history = build_recent_gate_history(&entries, gate_filter);
++    let total = history.len();
++    history.truncate(limit);
++
++    Ok(Json(json!({
++        "source": path.display().to_string(),
++        "gate": gate_filter,
++        "limit": limit,
++        "total": total,
++        "history": history,
++    })))
++}
++
+ /// `GET /api/gates/:gate_name/history` — time series of pass/fail results for one gate.
+ async fn gate_history(
+     State(state): State<Arc<AppState>>,
+@@ -1393,6 +1424,66 @@ fn summarize_gate_entries(entries: &[Value]) -> Value {
+     serde_json::to_value(summary).unwrap_or_else(|_| json!({}))
+ }
+ 
++fn build_recent_gate_history(entries: &[Value], gate_filter: Option<&str>) -> Vec<Value> {
++    let mut history: Vec<Value> = entries
++        .iter()
++        .filter(|entry| {
++            let Some(kind) = entry.get("kind").and_then(Value::as_str) else {
++                return false;
++            };
++            if !is_gate_result_kind(kind) {
++                return false;
++            }
++            match gate_filter {
++                Some(gate) => extract_gate_name(entry).as_deref() == Some(gate),
++                None => true,
++            }
++        })
++        .filter_map(|entry| {
++            let gate = extract_gate_name(entry)?;
++            let passed = extract_gate_passed(entry)?;
++            Some(json!({
++                "signal_id": entry.get("id").cloned().unwrap_or(Value::Null),
++                "created_at_ms": entry.get("created_at_ms").cloned().unwrap_or(Value::Null),
++                "gate": gate,
++                "passed": passed,
++                "duration_ms": extract_gate_duration_ms(entry).unwrap_or(0),
++                "plan_id": entry.pointer("/tags/plan_id")
++                    .cloned()
++                    .or_else(|| entry.pointer("/body/data/plan_id").cloned())
++                    .unwrap_or(Value::Null),
++                "task_id": entry.pointer("/tags/task_id")
++                    .cloned()
++                    .or_else(|| entry.pointer("/body/data/task_id").cloned())
++                    .unwrap_or(Value::Null),
++                "rung": entry.pointer("/tags/rung")
++                    .cloned()
++                    .or_else(|| entry.pointer("/body/data/rung").cloned())
++                    .unwrap_or(Value::Null),
++                "kind": entry.get("kind").cloned().unwrap_or(Value::Null),
++            }))
++        })
++        .collect();
++
++    history.sort_by(|a, b| {
++        let a_ts = a
++            .get("created_at_ms")
++            .and_then(Value::as_i64)
++            .unwrap_or(i64::MIN);
++        let b_ts = b
++            .get("created_at_ms")
++            .and_then(Value::as_i64)
++            .unwrap_or(i64::MIN);
++        b_ts.cmp(&a_ts).then_with(|| {
++            let a_id = a.get("signal_id").and_then(Value::as_str).unwrap_or("");
++            let b_id = b.get("signal_id").and_then(Value::as_str).unwrap_or("");
++            b_id.cmp(a_id)
++        })
++    });
++
++    history
++}
++
+ fn is_gate_result_kind(kind: &str) -> bool {
+     kind == "gate_verdict" || kind.starts_with("gate:") || kind.starts_with("gate_")
+ }
+@@ -1504,12 +1595,17 @@ mod tests {
+     use super::*;
+     use std::sync::Arc;
+ 
++    use axum::body::Body as AxumBody;
+     use axum::extract::{Path, Query, State};
++    use axum::http::Request;
+     use tempfile::tempdir;
++    use tower::ServiceExt;
+ 
+     use crate::deploy::create_backend;
++    use crate::routes::build_router;
+     use crate::runtime::NoOpRuntime;
+-    use crate::state::{AppState, OperationStatus, PlanHandle};
++    use crate::state::AppState;
++    use roko_core::config::ServeAuthConfig;
+     use roko_core::{Body, Engram, Kind, Provenance, Verdict};
+ 
+     fn gate_signal(gate: &str, passed: bool, duration_ms: u64) -> Value {
+@@ -1613,6 +1709,64 @@ mod tests {
+         (dir, state)
+     }
+ 
++    #[tokio::test]
++    async fn gates_history_collection_is_mounted_under_api_grouping() {
++        let (dir, state) = test_state();
++        let signals = dir.path().join(".roko").join("signals.jsonl");
++        tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
++            .await
++            .expect("create signals dir");
++        let mut compile_early = gate_signal("compile", true, 120);
++        compile_early
++            .as_object_mut()
++            .expect("gate signal should be an object")
++            .insert("created_at_ms".into(), Value::from(10));
++        let mut compile_late = gate_signal("compile", false, 300);
++        compile_late
++            .as_object_mut()
++            .expect("gate signal should be an object")
++            .insert("created_at_ms".into(), Value::from(20));
++        let mut test = gate_signal("test", true, 200);
++        test.as_object_mut()
++            .expect("gate signal should be an object")
++            .insert("created_at_ms".into(), Value::from(30));
++        tokio::fs::write(
++            &signals,
++            [compile_early, compile_late, test]
++                .into_iter()
++                .map(|entry| entry.to_string())
++                .collect::<Vec<_>>()
++                .join("\n")
++                + "\n",
++        )
++        .await
++        .expect("write gate history");
++
++        let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("GET")
++                    .uri("/api/gates/history?limit=2")
++                    .body(AxumBody::empty())
++                    .expect("request"),
++            )
++            .await
++            .expect("gate history response");
++
++        assert_eq!(response.status(), axum::http::StatusCode::OK);
++        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
++            .await
++            .expect("read body");
++        let payload: Value = serde_json::from_slice(&body).expect("parse gate history response");
++        assert_eq!(payload["source"], signals.display().to_string());
++        assert_eq!(payload["total"], 3);
++        assert_eq!(payload["limit"], 2);
++        assert_eq!(payload["history"].as_array().unwrap().len(), 2);
++        assert_eq!(payload["history"][0]["gate"], "test");
++        assert_eq!(payload["history"][1]["gate"], "compile");
++    }
++
+     #[tokio::test]
+     async fn health_reports_status_version_uptime_and_counts() {
+         let (_dir, state) = test_state();

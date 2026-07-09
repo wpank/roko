@@ -1,0 +1,10 @@
+Touched [tmp/mori-parity-verified.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/mori-parity-verified.md) and [tmp/ux-followup-runner/bardo-backup-stale-snapshot.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/ux-followup-runner/bardo-backup-stale-snapshot.md). `CLAUDE.md` and `README.md` had no matching terms in this writable worktree, so they were left unchanged.
+
+The sidecar path used for the frozen archive warning is `tmp/ux-followup-runner/bardo-backup-stale-snapshot.md`. Banner text used:
+```text
+> ⚠ Historical snapshot from 2026-04-16 pre-PR-13. **Not** kept in sync
+> with current roko. For current state, see `CLAUDE.md` or
+> `tmp/ux-followup/`.
+```
+
+Verification: the banned-term grep over `CLAUDE.md README.md tmp/` returned no remaining hits after the sweep, and `cargo check --workspace` passed. It finished with existing `missing_docs` warnings in the workspace, but no check failure.

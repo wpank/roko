@@ -1,0 +1,11 @@
+Implemented the UX47 hardening in the runner scripts and docs under `tmp/tui-parity/`, plus the CI workflow at [.github/workflows/tui-parity-dry-run.yml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/.github/workflows/tui-parity-dry-run.yml). The runner already had the env knobs, max-batch limiting, startup logging, log rotation hook, and `no_result_file` trailer in place; the missing functional fix was the dry-run path. I patched both `tmp/tui-parity` and the sibling `tmp/ux-followup-runner` so `--dry-run` skips the `codex` CLI preflight and no longer trips on empty dependency lists, which is necessary for the new CI step to work without Codex installed. I also tightened the postmortem in [POSTMORTEM-20260416.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/tui-parity/POSTMORTEM-20260416.md).
+
+Postmortem conclusion: there was no verified stop at `T14`. The authoritative `status.tsv` shows `T14` succeeded, then `T17` and `T19` succeeded afterward. The likely root cause of the report was artifact drift: the live runner metadata had 19 batches, while the preserved sibling worktree snapshot still showed the older 8-batch `tmp/tui-parity` copy. Defaults are `TUI_PARITY_MAX_BATCHES=0` and `TUI_PARITY_MAX_RETRIES=2` via `${UX_MAX_RETRIES:-2}`. Retention keeps the 5 most recent `run-*` directories and skips any run with `current-batch.env`.
+
+Verified:
+- `PATH=/usr/bin:/bin:/usr/sbin:/sbin bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9`
+- `PATH=/usr/bin:/bin:/usr/sbin:/sbin bash tmp/ux-followup-runner/run-ux-followup.sh --dry-run --only UX47`
+- `bash tmp/tui-parity/tools/rotate-logs.sh` behavior in a temp `LOG_ROOT` kept exactly the 5 newest runs
+- workflow YAML parses cleanly
+
+One constraint: `tmp/` is gitignored in this repo, so the runner/doc/script edits under `tmp/` are present on disk but won’t appear in `git status`; the tracked change is the new workflow file.

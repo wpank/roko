@@ -1,0 +1,22 @@
+Implemented the UX42 sweep and verified both required gates pass.
+
+Changed crates: `roko-serve`, `roko-runtime`, `roko-agent`, `roko-learn`, `roko-fs`, and the `roko-tests` workspace test crate. The main fix set was in [`crates/roko-serve/src/lib.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/lib.rs), [`templates.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/templates.rs), [`error.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/error.rs), and related `roko-serve` modules: I added accurate `# Errors` docs for the remaining public `Result` APIs and shrank `ApiError` by boxing `details`, which cleared the `result_large_err` fallout that surfaced under `-D warnings`.
+
+Timeout audit: 0 unmitigated sub-500ms timeout assertions remained. I hardened 4 wall-clock flaky candidates with `CI=true` scaling where mock time is not applicable:
+- [`crates/roko-runtime/tests/process_supervisor.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-runtime/tests/process_supervisor.rs)
+- [`crates/roko-agent/tests/process_integration.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/tests/process_integration.rs)
+- [`crates/roko-learn/tests/model_router_integration.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/tests/model_router_integration.rs)
+- [`crates/roko-learn/tests/cascade_router_integration.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/tests/cascade_router_integration.rs)
+
+I also fixed two adjacent compile drifts that blocked `cargo test --workspace --no-run`: `Signal -> Engram` API drift in [`tests/tests/end_to_end.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tests/tests/end_to_end.rs) and the `HDC_TAG` test constant seam in [`crates/roko-fs/src/file_substrate.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-fs/src/file_substrate.rs).
+
+Verification:
+- `cargo clippy --workspace --no-deps -- -D warnings -D clippy::missing_errors_doc -D clippy::missing_panics_doc` ✅
+- `cargo test --workspace --no-run` ✅
+
+Remaining `missing_*` allows:
+- `apps/mirage-rs/src/lib.rs`
+- `apps/mirage-rs/src/rpc.rs`
+- `crates/roko-orchestrator/src/safety/audit_chain.rs:283`
+
+Rationale: the two `mirage-rs` allows already carry `TODO(UX42-followup)` comments in the worktree, and `audit_chain.rs` is a narrow item-level test-module allow rather than a crate-wide suppression.

@@ -1,0 +1,43 @@
+Verification failed for command: test -x tools/mori-parity-check/mori-parity-check.sh || test -x tmp/ux-followup-runner/tools/mori-parity.sh
+
+Recent log tail:
++    rendered: list[str] = []
++
++    for line in checklist_path.read_text(encoding="utf-8").splitlines():
++        if not CHECKBOX_RE.match(line):
++            rendered.append(line)
++            continue
++        result = verifier.verify_line(line)
++        total += 1
++        if result.verified:
++            verified += 1
++        rendered.append(f"{line} — {result.evidence}")
++
++    missing = total - verified
++    percent = (verified / total * 100.0) if total else 0.0
++    final_lines = inject_summary(rendered, total=total, verified=verified, missing=missing, percent=percent)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    output_path.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+
+tokens used
+87,994
+Implemented a mechanical MORI parity verifier with a wrapper and README at [tools/mori-parity-check.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/mori-parity-check.sh), [tools/mori-parity-check/verify.py](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/mori-parity-check/verify.py), and [tools/mori-parity-check/README.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tools/mori-parity-check/README.md). The wrapper resolves the checklist and Mori appendix from either the main checkout or the nested runner worktree, and the verifier emits a stable annotated copy to [tmp/mori-parity-verified.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/mori-parity-verified.md).
+
+The generated output covers all 1,253 checklist items and reports 920 mechanically verified `✅`, 333 `❌`, for 73.4% verified completion. End-to-end runtime was 19.288s on this run.
+
+Validation was:
+- `bash -n tools/mori-parity-check.sh`
+- `python3 -m py_compile tools/mori-parity-check/verify.py`
+- `bash tools/mori-parity-check.sh`
+
+No cargo verify step was needed for this batch because the deliverable is a Bash/Python tool rather than a Rust crate.
+
+=== Finished: 2026-04-17T05:50:25+02:00 ===
+=== Duration: 11m 26s ===
+=== Exit code: 0 ===
+[verify] CARGO_TARGET_DIR=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-ux-targets/run-20260416-160848/UX43/verify-attempt-1 test -x tools/mori-parity-check/mori-parity-check.sh || test -x tmp/ux-followup-runner/tools/mori-parity.sh

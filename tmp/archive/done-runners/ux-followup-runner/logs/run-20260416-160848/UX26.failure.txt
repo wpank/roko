@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-agent --no-deps -- -D warnings
+
+Recent log tail:
+72 |     pub cached_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-agent/src/translate/mod.rs:73:5
+   |
+73 |     pub content_filter: Option<serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-agent/src/translate/mod.rs:74:5
+   |
+74 |     pub web_search: Option<serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-agent/src/translate/mod.rs:75:5
+   |
+75 |     pub extra: Option<serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-agent/src/translate/mod.rs:76:5
+   |
+76 |     pub provider_latency_ms: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-agent/src/translate/mod.rs:77:5
+   |
+77 |     pub raw_finish_reason: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a function
+   --> crates/roko-agent/src/translate/openai.rs:187:1
+    |
+187 | pub fn parse_glm_metadata(json: &serde_json::Value) -> crate::translate::ResponseMetadata {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `roko-agent` (lib) due to 336 previous errors

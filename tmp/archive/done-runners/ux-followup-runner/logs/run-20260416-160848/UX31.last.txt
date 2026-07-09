@@ -1,0 +1,11 @@
+Implemented Cursor’s streaming backend path in [cursor_agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/cursor_agent.rs:536). `CursorAgent` now implements `LlmBackend` over `/v1/chat/completions`, emits `StreamChunk`s incrementally, reconstructs the final JSON response from the stream, extracts session metadata, and warns/drops malformed `data:` frames without panicking. The existing non-streaming `/v1/prompt` agent path is unchanged.
+
+Added Cursor streaming replay coverage in [cursor_streaming.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/tests/cursor_streaming.rs:429) with fixture [streaming-basic.jsonl](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/testdata/cursor/streaming-basic.jsonl:1). The test exercises `CursorAgent` directly, includes a mid-stream tool call, injects one malformed SSE frame, and splits the tool-call frame across two socket writes.
+
+Verification passed:
+- `cargo check -p roko-agent`
+- `cargo test -p roko-agent --lib --no-run`
+- `cargo test -p roko-agent --test cursor_streaming`
+- `cargo clippy -p roko-agent --no-deps -- -D warnings`
+
+Frame format: OpenAI-compatible SSE `data: {json}\n\n` plus `data: [DONE]`. Transport: SSE over HTTP, not WebSocket. Max tested stream length: 8 SSE frames in one turn (7 valid + 1 malformed), with the tool-call frame fragmented across 2 writes.

@@ -1,0 +1,14 @@
+Implemented B2 on top of the B1 spine. The main work is in [yield_routing.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/scenarios/yield_routing.rs), which now exposes reusable `prepare`/`post_round_job`/`generate_agent_bid`/`finalize_round` helpers and wires full yield-routing, knowledge querying/posting, fee distribution from the winning agent, knowledge-graph event payloads, reputation save/restore, and the adversarial slashing phase. I also expanded bindings and event types in [bindings.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/bindings.rs) and [events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/events.rs).
+
+The new batch surfaces are wired into the CLI in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/main.rs): `benchmark c-factor`, `tournament`, `autonomous`, `tui`, `register-agent`, plus global `--persist-reputation`. Those modes are implemented in [benchmark.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/benchmark.rs), [tournament.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/tournament.rs), [autonomous.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/autonomous.rs), and [tui.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-demo/src/tui.rs). I updated [demo/README.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/demo/README.md) to document the added commands, and `Cargo.lock` changed because `ratatui`/`crossterm` were added.
+
+Verified:
+- `cargo build -p roko-demo`
+- `cargo run -p roko-demo -- benchmark c-factor --help`
+- `cargo run -p roko-demo -- tournament --help`
+- `cargo run -p roko-demo -- autonomous --help`
+- `cargo run -p roko-demo -- tui --help`
+- `cargo run -p roko-demo -- register-agent --help`
+- `cd contracts && forge test --match-contract FeeDistributor`
+
+I did not run a live end-to-end scenario command against `mirage-rs`, so the new runtime flows are build-verified and CLI-verified, not chain-executed in this turn.

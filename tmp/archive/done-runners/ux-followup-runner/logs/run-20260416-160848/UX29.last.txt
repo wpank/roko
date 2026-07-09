@@ -1,0 +1,23 @@
+Added `[workspace].default-members` in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/Cargo.toml:78) so ordinary root `cargo build` / `cargo check` target the documented default slice: `crates/roko-cli`, `crates/roko-mcp-code`, and `crates/roko-mcp-github`. I did not gate `roko-dreams`, `roko-daimon`, or `roko-chain`: the audit showed they are already in the shipped runtime graph, so fake optionalization would have been wrong. The factual audit is in [tmp/ux-followup-runner/mcp-audit.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/tmp/ux-followup-runner/mcp-audit.md:1), and [CLAUDE.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/CLAUDE.md:78) now matches that runtime/build story.
+
+Phase-2 reality:
+- `roko-dreams`: kept default-on because `roko-cli` and `roko-serve` already consume it.
+- `roko-daimon`: kept default-on because `roko-cli`, `roko-serve`, and `roko-learn` already consume it.
+- `roko-chain`: kept default-on because the default runtime path reaches it via `roko-cli -> roko-serve -> roko-agent-server -> roko-chain`.
+
+MCP audit summary:
+
+| Crate | Build status | Integration signal | Decision |
+|---|---|---|---|
+| `roko-mcp-code` | `cargo check --workspace` | embedded server tests | `ship` |
+| `roko-mcp-github` | `cargo check --workspace` | embedded tests + spawned by cloud worker path | `ship` |
+| `roko-mcp-slack` | `cargo check --workspace` | embedded tests only | `keep-as-opt-in` |
+| `roko-mcp-scripts` | `cargo check --workspace` | embedded tests only | `keep-as-opt-in` |
+| `roko-mcp-stdio` | `cargo check --workspace` | transport-library tests only | `keep-as-opt-in` support crate |
+
+Verification passed:
+- `cargo check`
+- `cargo check --workspace`
+- `cargo clippy --workspace --no-deps -- -D warnings`
+
+I also had to make bounded adjacent clippy cleanup outside UX29’s direct files so the required workspace gate would pass.

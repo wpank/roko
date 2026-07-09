@@ -1,0 +1,122 @@
+2026-04-15T09:02:53+02:00	A1	1	attempt_started	Dashboard backend foundations (A.01-A.05)
+2026-04-15T09:02:53+02:00	A1	1	spawn_started	codex exec started
+2026-04-15T09:24:20+02:00	A1	1	spawn_succeeded	codex exec completed
+2026-04-15T09:24:20+02:00	A1	1	verify_running	cargo check -p mirage-rs -p roko-serve -p roko-cli
+2026-04-15T09:25:20+02:00	A1	1	verify_running	cargo test -p mirage-rs --lib --no-run
+2026-04-15T09:26:09+02:00	A1	1	verify_running	cargo test -p roko-serve --lib --no-run
+2026-04-15T09:27:22+02:00	A1	1	verify_succeeded	all verification commands passed
+2026-04-15T09:27:25+02:00	A1	1	commit_succeeded	64581e9a
+2026-04-15T09:27:25+02:00	A1	1	attempt_succeeded	verified and committed
+2026-04-15T09:27:25+02:00	A2	1	attempt_started	Dashboard backend completion (A.06-A.10)
+2026-04-15T09:27:25+02:00	A2	1	spawn_started	codex exec started
+2026-04-15T09:48:41+02:00	A2	1	spawn_succeeded	codex exec completed
+2026-04-15T09:48:41+02:00	A2	1	verify_running	cargo check -p mirage-rs -p roko-serve -p roko-cli
+2026-04-15T09:49:13+02:00	A2	1	verify_running	cargo test -p mirage-rs --lib --no-run
+2026-04-15T09:49:14+02:00	A2	1	verify_running	cargo test -p roko-cli --lib --no-run
+2026-04-15T09:49:14+02:00	A2	1	verify_succeeded	all verification commands passed
+2026-04-15T09:49:27+02:00	A2	1	commit_succeeded	58d42228
+2026-04-15T09:49:27+02:00	A2	1	attempt_succeeded	verified and committed
+2026-04-15T09:49:27+02:00	B1	1	attempt_started	Demo foundations (B.01-B.06)
+2026-04-15T09:49:27+02:00	B1	1	spawn_started	codex exec started
+2026-04-15T10:05:19+02:00	B1	1	spawn_succeeded	codex exec completed
+2026-04-15T10:05:19+02:00	B1	1	verify_running	cargo build -p roko-demo
+2026-04-15T10:05:20+02:00	B1	1	verify_running	cargo test -p roko-demo --lib --no-run
+2026-04-15T10:05:20+02:00	B1	1	verify_running	bash -lc 'cd contracts && forge test --match-contract FeeDistributor -q'
+2026-04-15T10:05:21+02:00	B1	1	verify_succeeded	all verification commands passed
+2026-04-15T10:05:23+02:00	B1	1	commit_succeeded	63cf23aa
+2026-04-15T10:05:23+02:00	B1	1	attempt_succeeded	verified and committed
+2026-04-15T10:05:23+02:00	B2	1	attempt_started	Demo integration and polish (B.07-B.18)
+2026-04-15T10:05:23+02:00	B2	1	spawn_started	codex exec started
+2026-04-15T10:23:08+02:00	B2	1	spawn_succeeded	codex exec completed
+2026-04-15T10:23:08+02:00	B2	1	verify_running	cargo build -p roko-demo
+2026-04-15T10:24:43+02:00	B2	1	verify_running	cargo test -p roko-demo --lib --no-run
+2026-04-15T10:24:50+02:00	B2	1	verify_succeeded	all verification commands passed
+2026-04-15T10:24:52+02:00	B2	1	commit_succeeded	2076b5f1
+2026-04-15T10:24:52+02:00	B2	1	attempt_succeeded	verified and committed
+2026-04-15T10:24:52+02:00	C1	1	attempt_started	Agent-server architecture core (C.01-C.05)
+2026-04-15T10:24:52+02:00	C1	1	spawn_started	codex exec started
+2026-04-15T10:49:26+02:00	C1	1	spawn_succeeded	codex exec completed
+2026-04-15T10:49:26+02:00	C1	1	verify_running	cargo check -p roko-agent-server -p roko-serve -p mirage-rs
+2026-04-15T10:49:49+02:00	C1	1	verify_running	cargo test -p roko-agent-server --lib --no-run
+2026-04-15T10:49:50+02:00	C1	1	verify_succeeded	all verification commands passed
+2026-04-15T10:49:58+02:00	C1	1	commit_succeeded	bb7faa8c
+2026-04-15T10:49:58+02:00	C1	1	attempt_succeeded	verified and committed
+2026-04-15T10:49:58+02:00	C2	1	attempt_started	Migration cleanup and muxing (C.06-C.08)
+2026-04-15T10:49:58+02:00	C2	1	spawn_started	codex exec started
+2026-04-15T11:04:47+02:00	C2	1	spawn_succeeded	codex exec completed
+2026-04-15T11:04:47+02:00	C2	1	verify_running	cargo check -p roko-serve -p mirage-rs
+2026-04-15T11:05:09+02:00	C2	1	verify_running	cargo build -p mirage-rs --no-default-features --features binary
+2026-04-15T11:05:10+02:00	C2	1	verify_succeeded	all verification commands passed
+2026-04-15T11:05:16+02:00	C2	1	commit_succeeded	c9aac2dc
+2026-04-15T11:05:16+02:00	C2	1	attempt_succeeded	verified and committed
+2026-04-15T11:05:16+02:00	D1	1	attempt_started	Core runtime gaps (D.02-D.17)
+2026-04-15T11:05:17+02:00	D1	1	spawn_started	codex exec started
+2026-04-15T11:29:00+02:00	D1	1	attempt_resumed	reusing dirty worktree state from interrupted run
+2026-04-15T11:29:00+02:00	D1	1	spawn_started	codex exec started
+2026-04-15T11:51:31+02:00	D1	1	spawn_succeeded	codex exec completed
+2026-04-15T11:51:31+02:00	D1	1	verify_running	cargo check -p roko-core -p roko-chain -p roko-neuro -p roko-daimon -p roko-agent -p roko-cli
+2026-04-15T11:51:33+02:00	D1	1	verify_failed	cargo check -p roko-core -p roko-chain -p roko-neuro -p roko-daimon -p roko-agent -p roko-cli
+2026-04-15T11:51:33+02:00	D1	1	attempt_failed	verification failed
+2026-04-15T11:51:33+02:00	D1	2	attempt_started	Core runtime gaps (D.02-D.17)
+2026-04-15T11:52:04+02:00	D1	2	spawn_started	codex exec started
+2026-04-15T12:19:40+02:00	D1	2	spawn_succeeded	codex exec completed
+2026-04-15T12:19:40+02:00	D1	2	verify_running	cargo check -p roko-core -p roko-chain -p roko-neuro -p roko-daimon -p roko-agent -p roko-cli
+2026-04-15T12:20:27+02:00	D1	2	verify_running	cargo test -p roko-core --lib --no-run
+2026-04-15T12:20:34+02:00	D1	2	verify_running	cargo test -p roko-neuro --lib --no-run
+2026-04-15T12:21:08+02:00	D1	2	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-15T12:21:37+02:00	D1	2	verify_succeeded	all verification commands passed
+2026-04-15T12:21:39+02:00	D1	2	commit_succeeded	b0306898
+2026-04-15T12:21:39+02:00	D1	2	attempt_succeeded	verified and committed
+2026-04-15T12:21:39+02:00	E1	1	attempt_started	Feedback-loop wiring (E.01-E.08)
+2026-04-15T12:21:39+02:00	E1	1	spawn_started	codex exec started
+2026-04-15T12:41:13+02:00	E1	1	spawn_succeeded	codex exec completed
+2026-04-15T12:41:13+02:00	E1	1	verify_running	cargo check -p roko-learn -p roko-conductor -p roko-compose -p roko-orchestrator -p roko-cli
+2026-04-15T12:41:47+02:00	E1	1	verify_running	cargo test -p roko-learn --lib --no-run
+2026-04-15T12:41:47+02:00	E1	1	verify_running	cargo test -p roko-orchestrator --lib --no-run
+2026-04-15T12:41:47+02:00	E1	1	verify_succeeded	all verification commands passed
+2026-04-15T12:42:01+02:00	E1	1	commit_succeeded	3c857e74
+2026-04-15T12:42:01+02:00	E1	1	attempt_succeeded	verified and committed
+2026-04-15T12:42:01+02:00	D2	1	attempt_started	Orchestrator and dreams middle layer (D.18-D.33)
+2026-04-15T12:42:01+02:00	D2	1	spawn_started	codex exec started
+2026-04-15T12:56:58+02:00	D2	1	spawn_succeeded	codex exec completed
+2026-04-15T12:56:58+02:00	D2	1	verify_running	cargo check -p roko-orchestrator -p roko-agent -p roko-runtime -p roko-dreams
+2026-04-15T12:56:58+02:00	D2	1	verify_running	cargo test -p roko-orchestrator --lib --no-run
+2026-04-15T12:56:58+02:00	D2	1	verify_running	cargo test -p roko-dreams --lib --no-run
+2026-04-15T12:56:59+02:00	D2	1	verify_succeeded	all verification commands passed
+2026-04-15T12:57:00+02:00	D2	1	commit_succeeded	eaa29d78
+2026-04-15T12:57:00+02:00	D2	1	attempt_succeeded	verified and committed
+2026-04-15T12:57:00+02:00	D3	1	attempt_started	Long-horizon learning and deployment (D.34-D.54)
+2026-04-15T12:57:01+02:00	D3	1	spawn_started	codex exec started
+2026-04-15T13:23:12+02:00	D3	1	spawn_succeeded	codex exec completed
+2026-04-15T13:23:12+02:00	D3	1	verify_running	cargo check -p roko-neuro -p roko-learn -p roko-daimon -p roko-dreams -p roko-compose -p roko-cli
+2026-04-15T13:23:16+02:00	D3	1	verify_running	cargo test -p roko-learn --lib --no-run
+2026-04-15T13:23:17+02:00	D3	1	verify_running	cargo test -p roko-dreams --lib --no-run
+2026-04-15T13:23:17+02:00	D3	1	verify_succeeded	all verification commands passed
+2026-04-15T13:23:31+02:00	D3	1	commit_succeeded	117e2332
+2026-04-15T13:23:31+02:00	D3	1	attempt_succeeded	verified and committed
+2026-04-15T13:23:31+02:00	F1	1	attempt_started	TUI and API core (F.01-F.06)
+2026-04-15T13:23:31+02:00	F1	1	spawn_started	codex exec started
+2026-04-15T13:36:34+02:00	F1	1	spawn_failed	codex exec exited with 101
+2026-04-15T13:36:34+02:00	F1	1	attempt_failed	codex exited unsuccessfully
+2026-04-15T13:36:34+02:00	F1	2	attempt_started	TUI and API core (F.01-F.06)
+2026-04-15T13:36:43+02:00	F1	2	spawn_started	codex exec started
+2026-04-15T13:51:43+02:00	F1	2	spawn_failed	codex exec exited with 101
+2026-04-15T13:51:43+02:00	F1	2	attempt_failed	codex exited unsuccessfully
+2026-04-15T14:36:06+02:00	F1	2	attempt_resumed	reusing dirty worktree state from interrupted run
+2026-04-15T14:36:06+02:00	F1	2	spawn_started	codex exec started
+2026-04-15T14:48:04+02:00	F1	2	spawn_succeeded	codex exec completed
+2026-04-15T14:48:04+02:00	F1	2	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-15T14:48:51+02:00	F1	2	verify_running	cargo test -p roko-cli --lib --no-run
+2026-04-15T14:50:30+02:00	F1	2	verify_running	cargo test -p roko-serve --lib --no-run
+2026-04-15T14:51:42+02:00	F1	2	verify_succeeded	all verification commands passed
+2026-04-15T14:51:42+02:00	F1	2	commit_succeeded	87d21dd5
+2026-04-15T14:51:42+02:00	F1	2	attempt_succeeded	verified and committed
+2026-04-15T14:51:42+02:00	F2	1	attempt_started	Interface extras (F.07-F.12)
+2026-04-15T14:51:43+02:00	F2	1	spawn_started	codex exec started
+2026-04-15T15:12:14+02:00	F2	1	spawn_succeeded	codex exec completed
+2026-04-15T15:12:14+02:00	F2	1	verify_running	cargo check -p roko-cli -p roko-learn -p roko-index -p roko-mcp-stdio -p roko-mcp-github -p roko-mcp-slack -p roko-mcp-scripts
+2026-04-15T15:13:06+02:00	F2	1	verify_running	bash -lc 'if cargo metadata --format-version 1 --no-deps | rg -q "\"name\":\"roko-mcp-code\""; then cargo build -p roko-mcp-code; else echo "roko-mcp-code not present; skipping optional crate build"; fi'
+2026-04-15T15:13:30+02:00	F2	1	verify_running	cargo test -p roko-learn --lib --no-run
+2026-04-15T15:14:09+02:00	F2	1	verify_succeeded	all verification commands passed
+2026-04-15T15:14:09+02:00	F2	1	commit_succeeded	587c0209
+2026-04-15T15:14:09+02:00	F2	1	attempt_succeeded	verified and committed

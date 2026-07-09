@@ -1,0 +1,18 @@
+Implemented D3 across the requested write scope.
+
+The main runtime change is the new zero-LLM heartbeat path in [heartbeat.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/heartbeat.rs:1) and its wiring in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/orchestrate.rs:3841). The runner now computes 16 probes, persists `.roko/learn/heartbeat.json` and `.jsonl`, emits `heartbeat.theta` / `heartbeat.delta`, and only triggers dream consolidation on idle delta windows. Daemon shutdown now flushes those heartbeat artifacts too.
+
+On the learning side, D3 landed EWC, episode importance/tiering, curriculum helpers, active-inference tier selection, collective-pathology detection, and stronger knowledge-tier normalization across [bandits.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/bandits.rs:116), [episode_logger.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/episode_logger.rs:491), [curriculum.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/curriculum.rs:16), [active_inference.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/active_inference.rs:83), [cfactor.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-learn/src/cfactor.rs:63), and [knowledge_store.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-neuro/src/knowledge_store.rs:746). On the compose side, pheromone signals now flow into context/prompt assembly and goal-aware scoring via [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-compose/src/context_provider.rs:772), [scorer.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-compose/src/scorer.rs:98), and [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-compose/src/role_prompts.rs:351). Daimon/dreams got richer task-surface extraction plus heartbeat-aware delta readiness in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-daimon/src/lib.rs:2276) and [runner.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-dreams/src/runner.rs:349).
+
+I also reconciled the speculative or out-of-scope D-items in [D-architectural-gaps.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/tmp/ux-refactoring/D-architectural-gaps.md:1003). That summary marks what is now done vs. what was intentionally collapsed to current repo reality, especially around mesh transport, universal agent safety, deletion lifecycle, WASM, and morphogenetic specialization.
+
+Verification passed on the focused D3 surfaces:
+- `cargo check -p roko-neuro -p roko-learn -p roko-daimon -p roko-dreams -p roko-compose -p roko-cli`
+- `cargo test -p roko-learn --lib`
+- `cargo test -p roko-neuro --lib`
+- `cargo test -p roko-daimon --lib`
+- `cargo test -p roko-dreams --lib`
+- `cargo test -p roko-compose --lib`
+- `cargo test -p roko-cli --lib heartbeat`
+
+Residual note: the detailed legacy `D.34-D.54` entries below the new reconciliation block still contain old per-item status lines; the new batch summary is the authoritative status for this run.

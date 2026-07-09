@@ -1,0 +1,20 @@
+Implemented the narrow PE00 changes that were genuinely additive and already supported by the codebase. Completed batches: `T2`, `T6`, `T7`, `T10`, `T11`. Deferred: `T1`, `T3`, `T4`, `T5`, `T8`, `T9`.
+
+The main code changes landed in [score.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/score.rs:29) and [decay.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/decay.rs:10) for finite-value guards and tests, [kind.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/kind.rs:26) plus [engram.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/engram.rs:80) for `Kind::Compound(Vec<Kind>)` with canonical hashing, [provenance.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/provenance.rs:18) plus [taint_propagation.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-orchestrator/src/safety/taint_propagation.rs:77) for `TaintInfo` and provenance coherence checks, [tier_progression.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-neuro/src/tier_progression.rs:30) for explicit tier thresholds, and [system_prompt_builder.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-compose/src/system_prompt_builder.rs:632) for `impl Composer for SystemPromptBuilder`.
+
+Deferred seams:
+- `T1` needs a real router candidate/feedback contract, especially for `LinUCBRouter`, not just a trait shim.
+- `T3`/`T5` are larger than the prompt suggests because `loop_tick()` does not currently cover the orchestrator’s execution side effects and learning/replan bookkeeping.
+- `T4` needs live routing ownership of `BeliefState`/task requirements, not a narrow patch.
+- `T8`/`T9` are test-program expansion work, not parity wiring.
+
+Verification passed:
+- `cargo fmt --all`
+- `cargo check -p roko-core -p roko-compose -p roko-neuro -p roko-orchestrator`
+- `cargo clippy -p roko-core --no-deps -- -D warnings`
+- `cargo test -p roko-core --lib`
+- `cargo test -p roko-neuro tier_progression`
+- `cargo test -p roko-orchestrator taint_propagation`
+- `cargo test -p roko-compose system_prompt_builder`
+
+There were unrelated pre-existing edits in `apps/mirage-rs/*`; I left them untouched.

@@ -1,0 +1,35 @@
+**Status**
+
+I followed the run prompt’s PE00 code-execution spec as the source of truth; the checked-in `tmp/docs-parity/00/BATCHES.md` available in the tree was an older, conflicting plan.
+
+Completed batches:
+- `T6` explicit tier-promotion rules in [tier_progression.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-neuro/src/tier_progression.rs:35)
+- `T7` finite-value guards and sanitization in [score.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/score.rs:132) and [decay.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/decay.rs:54)
+- `T1` `Router` trait compliance for [LinUCBRouter](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-learn/src/model_router.rs:1412) and [CascadeRouter](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-learn/src/cascade_router.rs:3316)
+- `T2` `Composer` trait compliance for [SystemPromptBuilder](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-compose/src/system_prompt_builder.rs:1031)
+- `T4` narrow activation of EFE/T0 routing via [route_with_active_inference](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-learn/src/cascade_router.rs:1225) on the live CLI dispatch path in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-cli/src/orchestrate.rs:11353)
+- `T8` property tests, bench, and fuzz scaffolding in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/Cargo.toml:29), [score_decay_props.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/tests/score_decay_props.rs:14), and `crates/roko-core/fuzz/`
+- `T10` `Kind::Compound(Vec<Kind>)` plus stable hashing support in [kind.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/kind.rs:103) and [engram.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/engram.rs:82)
+- `T11` additive `TaintInfo` and provenance/coherence checks in [provenance.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/provenance.rs:18) and [taint_propagation.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-orchestrator/src/safety/taint_propagation.rs:224)
+
+Deferred batches:
+- `T3` route production orchestrator through `loop_tick()`
+- `T5` close the remaining failure -> replan -> learning seam
+- `T9` broader test-depth pass across `roko-daimon`, `roko-dreams`, `roko-orchestrator`, `roko-compose`
+
+**Verification**
+
+Passed:
+- `cargo check -p roko-core -p roko-compose -p roko-learn -p roko-neuro -p roko-orchestrator -p roko-cli`
+- `cargo clippy -p roko-core --no-deps -- -D warnings`
+- `cargo test -p roko-core -p roko-compose -p roko-learn -p roko-neuro -p roko-orchestrator`
+- `cargo test -p roko-core --test score_decay_props`
+- `cargo bench -p roko-core --bench score_decay --no-run`
+- `cargo check --manifest-path crates/roko-core/fuzz/Cargo.toml`
+
+**Seams**
+
+- `T4` is intentionally narrow: the live path now consults `BeliefState`, but it starts from `BeliefState::uniform()` and does not persist or update beliefs online.
+- `loop_tick()` remains unwired from the main orchestrator flow; I only fixed a kernel bug there by recomputing `Engram` ids after lineage mutation in [loop_tick.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-131501/crates/roko-core/src/loop_tick.rs:55).
+- The replan/learning loop already exists in pieces; the remaining work is consolidating failure outcomes into the richer learning path instead of only recording narrower episodes.
+- The taint work is additive metadata plus coherence checks, not a full lattice redesign.

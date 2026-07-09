@@ -1,0 +1,29 @@
+diff --git a/apps/mirage-rs/src/main.rs b/apps/mirage-rs/src/main.rs
+index f9dc6bce..db733fb3 100644
+--- a/apps/mirage-rs/src/main.rs
++++ b/apps/mirage-rs/src/main.rs
+@@ -278,7 +278,8 @@ async fn run(cli: Cli, upstream: Arc<UpstreamRpc>) -> anyhow::Result<()> {
+ 
+     // Prefund the synthetic ERC-8004 bootstrap deployer so contract creation
+     // succeeds even on a real mainnet fork (where the address has 0 balance).
+-    fork.db.set_balance(ERC8004_BOOTSTRAP_DEPLOYER, U256::from(10_u128.pow(18)));
++    fork.db
++        .set_balance(ERC8004_BOOTSTRAP_DEPLOYER, U256::from(10_u128.pow(18)));
+ 
+     let erc8004_contracts =
+         bootstrap_erc8004_contracts(&mut fork).context("bootstrap ERC-8004 contracts")?;
+diff --git a/apps/mirage-rs/src/rpc.rs b/apps/mirage-rs/src/rpc.rs
+index db9d2048..e14e16dd 100644
+--- a/apps/mirage-rs/src/rpc.rs
++++ b/apps/mirage-rs/src/rpc.rs
+@@ -1573,9 +1573,7 @@ fn register_state_mutation_methods(
+                 serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| {
+                     invalid_params(MirageError::InvalidParams("nonce out of u64 range".into()))
+                 })?,
+-                serde_json::Value::String(s) => {
+-                    parse_hex_quantity(s).map_err(invalid_params)?
+-                }
++                serde_json::Value::String(s) => parse_hex_quantity(s).map_err(invalid_params)?,
+                 _ => {
+                     return Err(invalid_params(MirageError::InvalidParams(
+                         "nonce must be a number or hex string".into(),

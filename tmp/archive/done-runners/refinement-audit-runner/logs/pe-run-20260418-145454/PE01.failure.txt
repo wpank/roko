@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-orchestrator -p roko-cli --no-deps -- -D warnings
+
+Recent log tail:
+[verify] CARGO_TARGET_DIR=/var/folders/bn/ks_s66191vb0zzvs08qcw_gh0000gn/T//roko-pe-targets/pe-run-20260418-145454/PE01/verify-attempt-1 cargo clippy -p roko-orchestrator -p roko-cli --no-deps -- -D warnings
+    Checking roko-runtime v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-runtime)
+    Checking roko-primitives v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-primitives)
+    Checking agent-relay v0.1.0 (/Users/will/dev/nunchi/roko/roko/apps/agent-relay)
+    Checking roko-core v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-core)
+    Checking roko-std v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-std)
+    Checking roko-fs v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-fs)
+    Checking roko-daimon v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-daimon)
+    Checking roko-chain v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-chain)
+    Checking roko-orchestrator v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-orchestrator)
+    Checking roko-plugin v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-plugin)
+    Checking roko-agent v0.1.0 (/Users/will/dev/nunchi/roko/roko/crates/roko-agent)
+error: called `map(<f>).unwrap_or_else(<g>)` on an `Option` value
+   --> crates/roko-orchestrator/src/safety/taint_propagation.rs:187:26
+    |
+187 |               let reason = signal
+    |  __________________________^
+188 | |                 .provenance
+189 | |                 .taint_info
+190 | |                 .as_ref()
+...   |
+193 | |                     TaintReason::external(format!("signal author {}", signal.provenance.author))
+194 | |                 });
+    | |__________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#map_unwrap_or
+    = note: `-D clippy::map-unwrap-or` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::map_unwrap_or)]`
+help: try
+    |
+187 ~             let reason = signal
+188 +                 .provenance
+189 +                 .taint_info
+190 +                 .as_ref().map_or_else(|| {
+191 +                     TaintReason::external(format!("signal author {}", signal.provenance.author))
+192 ~                 }, TaintReason::from_taint_info);
+    |
+
+error: could not compile `roko-orchestrator` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

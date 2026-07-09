@@ -1,0 +1,25 @@
+Implemented the bounded PE10 code pass in `roko-dreams`.
+
+The main contract fix is that `DreamRuntimeControls.threat_simulation` and `threat_severity_floor` now actually affect the cycle: `DreamRunner` passes them through, `DreamCycle` persists them, and threat emission is gated through the new floor-aware helper in [threat.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/threat.rs:83), with the cycle wiring in [cycle.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/cycle.rs:333) and [runner.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/runner.rs:410). I also narrowed stale public wording in [lib.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/lib.rs:1) and [hypnagogia.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/hypnagogia.rs:116) so the crate reads like the live runtime owner it is, not a placeholder.
+
+Test coverage was strengthened across the shipped surfaces:
+- replay/imagination in [replay.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/replay.rs:395) and [imagination.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/imagination.rs:549)
+- scheduling and cron behavior in [runner.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/runner.rs:948)
+- hypnagogia/threat behavior in [hypnagogia.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/hypnagogia.rs:462) and [threat.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/threat.rs:280)
+- cycle-level threat disabling in [cycle.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-dreams/src/cycle.rs:2872)
+
+Batch status:
+- Completed in code: `M1`, `M2`, `M3`, and `M8`-style housekeeping.
+- Partially completed: `M5` via contract clarification around threat/runtime controls.
+- Deferred by scope: `M4`, `M6`, `M7` because they are doc/frontier-regeneration work, not bounded `crates/roko-dreams` execution work.
+
+Seams left for follow-up:
+- `roko-serve`’s background dream loop is still narrower than the richer `DreamSchedulePolicy` surface.
+- `DreamRunner::replay_insights()` still returns distilled insights only; replay metadata like `utility_score` is not propagated upward.
+- Frontier items remain absent by design: Sleepwalker, oneirography, world models, TDI, alpha/divergence, MAP-Elites, HER/PER/ERE.
+
+Verification passed:
+- `cargo test -p roko-dreams`
+- `cargo check -p roko-dreams`
+- `cargo clippy -p roko-dreams --no-deps -- -D warnings`
+- targeted `rg` checks for shipped dreams surfaces and stale placeholder wording

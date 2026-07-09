@@ -1,0 +1,18 @@
+Implemented PE01 with a narrow execution-first scope. Completed: O1, O3, O4, O5. Partial: O2, O6.
+
+- O1: snapshot load/resume is stricter now. Upgraded snapshots go through current validation in [snapshot_migrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-cli/src/snapshot_migrate.rs:42), resume paths reconcile snapshot state against on-disk plans in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-cli/src/orchestrate.rs:4028), and event-log recovery now rejects broken hash chains and snapshot/log mismatches in [recovery.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-orchestrator/src/executor/recovery.rs:370).
+- O5: worktree activity is exercised during real runs now. `PlanRunner` periodically maintains worktree health and touches the active exec dir during dispatch, backed by `touch_path` in [worktree.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-orchestrator/src/worktree.rs:392).
+- O3: runtime scheduling now leans harder on the DAG surface. Task defs are mapped into DAG tasks with preserved local deps and cross-plan task refs handled at the plan boundary in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-cli/src/orchestrate.rs:3276).
+- O4: conductor decisions now affect execution instead of staying observational. `Restart` and `Fail` are applied from gate, merge, and implement checkpoints via [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-cli/src/orchestrate.rs:4945). No extra patch was needed in `crates/roko-conductor/src/conductor.rs`; the existing decision API was sufficient once the runner consumed it.
+- O2: partial. Speculative execution is now registered/resolved in the runtime loop and logged as an intervention, but it still does not launch a true parallel backup worker.
+- O6: partial. I added a minimal domain-aware foundation by routing existing `TaskCategory` and `TaskComplexityBand` from task defs into DAG scheduling, but I did not add a new domain model under `roko-core`.
+
+Verification passed:
+- Targeted tests: `task_tracker_uses_dag_with_cross_plan_task_refs`, `task_def_to_dag_task_maps_category_and_keeps_local_deps`, `from_snapshot_rejects_missing_plans_when_plans_dir_exists`, `upgrade_rejects_invalid_current_snapshot_shape`, `snapshot_event_log_coherence_rejects_unknown_plan`, `touch_path`.
+- `cargo check -p roko-orchestrator -p roko-cli`
+- `cargo clippy -p roko-orchestrator -p roko-cli --no-deps -- -D warnings`
+
+Seams left for follow-up:
+- O2 needs actual parallel backup dispatch if “speculative execution” is meant to be more than escalation + observability.
+- O6 needs parser/runtime-wide domain normalization if you want more than category/complexity-aware scheduling.
+- I did not run the docs-pack `BATCHES.md` grep verifies because the available parity file in this environment is the sibling docs-audit pack, not a code-exec verify script.

@@ -1,0 +1,15 @@
+Implemented the PE11 code subset in `roko-agent`.
+
+The main change is in [crates/roko-agent/src/safety/mod.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/safety/mod.rs:266): `check_exec_command` now narrows the subprocess coverage gap by applying rate limiting, warrant-backed `Capability::Exec(...)` checks, and full direct-command bash/git screening before spawn, not just shell-wrapper strings. I also fixed the documented-but-not-actually-enforced `env VAR=x git ...` prefix handling in [crates/roko-agent/src/safety/git.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/safety/git.rs:619). Coverage was extended in [crates/roko-agent/src/exec.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/exec.rs:606), [crates/roko-agent/tests/safety_integration.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/tests/safety_integration.rs:101), and [crates/roko-agent/tests/subprocess_safety_parity.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/tests/subprocess_safety_parity.rs:1).
+
+Batch status for the executable subset:
+- Completed: runtime-guard coverage tightening and housekeeping. That covers the real PE11 code work: subprocess parity, `run_tests` alias coverage, fallback `ExecAgent` safety inheritance, and stale safety references cleanup.
+- Deferred: doc-only calibration batches and frontier items. No orchestrator safety code changes were justified; the shipped `Capability<K>`, `AuditChain`, `TaintTracker`, `LoopGuard`, `SandboxEnforcer`, and `Permit` surfaces already exist. Chain-safety/formal-risk/kernel work remains explicitly deferred.
+- Remaining seam: full subprocess parity for path/network/contract checks. `ExecAgent` still lacks structured `ToolContext`, so extending those without heuristics would require new plumbing.
+
+Verification passed:
+- `cargo check -p roko-agent`
+- `cargo clippy -p roko-agent --no-deps -- -D warnings`
+- `cargo test -p roko-agent --test safety_integration --test subprocess_safety_parity`
+
+I left unrelated dirty files under `apps/mirage-rs/` untouched.

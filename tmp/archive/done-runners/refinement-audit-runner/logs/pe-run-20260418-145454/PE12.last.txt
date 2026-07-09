@@ -1,0 +1,13 @@
+Implemented the bounded PE12 code fixes in [crates/roko-cli/src/lib.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/lib.rs), [crates/roko-cli/src/main.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/main.rs), [crates/roko-cli/src/tui/app.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/app.rs), [crates/roko-cli/src/daemon.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/daemon.rs), and [crates/roko-agent-server/src/lib.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent-server/src/lib.rs).
+
+`roko-cli` now has a single canonical serve default of `9090` / `http://localhost:9090` for chat, TUI stream fallback, daemon start/restart, headless mode, and launchd plist generation. I also added parser tests that lock in the command truth: `roko prd draft new` is the live `new` surface, `model route --explain` is the live explain surface, and bare `roko new` / `roko explain` are treated as one-shot prompt text, not subcommands.
+
+On the sidecar, I fixed a real overclaim: reserved capability names like `messaging` are no longer advertised from `/capabilities` unless those routes are actually mounted. That regression is covered by a new test.
+
+Verification passed:
+- `cargo test -p roko-cli cli_`
+- `cargo test -p roko-agent-server reserved_feature_capability_does_not_overclaim_routes`
+- `cargo check -p roko-cli -p roko-serve -p roko-agent-server`
+- `cargo clippy -p roko-cli -p roko-serve -p roko-agent-server --no-deps -- -D warnings`
+
+Batch status: completed the code-side parts of M1 and M2, plus a bounded sidecar truth fix that supports the same parity goal. Deferred: the docs-only frontier tagging/status sweeps from the topic-12 pack, plus the prompt-only `M7`/`M8` items that are not present in the checked-in `tmp/docs-parity/12/BATCHES.md`. Remaining seams for follow-up are README/docs `6677` references outside `crates/*.rs`, and optional direct endpoint tests for `roko-serve` SSE/top-level WebSocket.

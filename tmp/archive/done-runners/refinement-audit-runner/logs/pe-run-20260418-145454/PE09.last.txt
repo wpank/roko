@@ -1,0 +1,18 @@
+Implemented the PE09 code-side parity pass in [crates/roko-core/src/affect.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/affect.rs) and [crates/roko-daimon/src/lib.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-daimon/src/lib.rs), and added focused regression coverage in [crates/roko-daimon/tests/pe09_regression.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-daimon/tests/pe09_regression.rs). The changes are narrow: explicit memoryless-classifier contract wording, explicit single-layer PAD/`mood_snapshot` wording, a decay comment for confidence mean reversion toward `0.5`, and tests that pin threshold precedence, single-layer `EmotionalTag` shape, midpoint decay, reload reclassification, and non-coding strategy fallback behavior.
+
+Batch status for PE09:
+- Completed: `J1`, `J2`, `J3`, `J4` on the code side.
+- Deferred by design: `J5` runtime construction for per-crate confidence, error familiarity, and fatigue.
+- Blocked outside this phase’s write scope: `J6`, `J7` docs/status cleanup. The `BATCHES.md` `rg` verify commands still fail against stale `docs/09-daimon/*`, which I confirmed but did not edit in this code-execution phase.
+
+Verification passed:
+- `cargo test -p roko-core behavioral_state_classification_uses_documented_threshold_precedence --lib`
+- `cargo test -p roko-daimon affect_state_decay_moves_toward_neutral_and_midpoint --lib`
+- `cargo test -p roko-daimon --test pe09_regression`
+- `cargo check -p roko-daimon`
+- `cargo clippy -p roko-daimon --no-deps -- -D warnings`
+
+Seams left for follow-up:
+- Docs under `docs/09-daimon/` still contain the stale `roko-golem`/ALMA/octant/frontier wording flagged by the parity pack.
+- Two CLI wording mismatches were identified but left untouched in this batch: [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs).
+- The worktree already had unrelated user changes in `apps/mirage-rs/*`; I left them alone.

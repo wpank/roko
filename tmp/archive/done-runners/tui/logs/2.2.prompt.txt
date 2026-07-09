@@ -1,0 +1,44 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Make the filter actually filter the plan tree when filter_active is true.
+
+PROBLEM: filter_active and filter (the filter text) exist in TuiState but plan_tree.rs
+may not use filter_active to actually hide non-matching plans.
+
+FIX: In widgets/plan_tree.rs, find where plans are iterated for rendering. When
+state.filter_active is true and state.filter is non-empty, filter the plan list to only
+show plans whose name contains the filter text (case-insensitive).
+
+1. Read plan_tree.rs to find the rendering loop
+2. Add a filter step: if state.filter_active, skip plans where
+   !plan.name.to_lowercase().contains(&state.filter.to_lowercase())
+3. Update the plan count display to show filtered/total (e.g., '3/10 filtered')
+4. Make sure selected_plan_idx is clamped to the filtered list
+
+VERIFY: cargo check -p roko-cli

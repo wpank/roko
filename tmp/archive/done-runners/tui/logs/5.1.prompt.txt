@@ -1,0 +1,47 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Parse ANSI escape sequences in agent output and render with correct colors.
+
+PROBLEM: Agent output is rendered as plain text in agents_view.rs and dashboard_view.rs.
+ANSI color codes (e.g., \x1b[31m for red) appear as raw text or are stripped.
+
+FIX: Create a simple ANSI parser function in a new file or in agents_view.rs:
+  fn parse_ansi_line(line: &str) -> Vec<Span> {
+      // Split on \x1b[ sequences
+      // Map ANSI codes to ratatui Style:
+      //   30-37 = foreground colors (black, red, green, yellow, blue, magenta, cyan, white)
+      //   40-47 = background colors
+      //   1 = bold, 0 = reset
+      // Return Vec<Span> with appropriate styles
+  }
+
+Use this in render_output_body() when building Lines from output text.
+A simple regex-based approach works: split on '\x1b\[([0-9;]*)m' and apply styles.
+
+VERIFY: cargo check -p roko-cli

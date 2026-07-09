@@ -1,0 +1,52 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Prevent scrolling past the end of content.
+
+Use subagents to fix all widgets in parallel.
+
+CONTEXT:
+- Scroll positions can exceed content length, showing empty space.
+- Each widget reads a scroll offset from TuiState and renders a slice of content.
+- The fix is to clamp at render time: scroll.min(total.saturating_sub(visible)).
+
+FILES TO FIX:
+1. widgets/plan_tree.rs — reads state.plan_scroll_offset. Already has clamping — verify.
+2. widgets/task_progress.rs — reads state.task_scroll. Add: let scroll = state.task_scroll.min(items.len().saturating_sub(visible_height));
+3. views/agents_view.rs render_output_body — reads agent_scroll. Add: scroll.min(lines.len().saturating_sub(visible_height));
+4. views/logs_view.rs — reads log_scroll or view_state.scroll. Add clamping.
+5. views/config_view.rs — reads config_cursor. Add: cursor.min(items.len().saturating_sub(1));
+
+For each, find where the scroll offset is used to slice content, and add .min(max_scroll) before the slice.
+
+VERIFY:
+  cargo check -p roko-cli
+ACCEPTANCE: All scroll offsets should be clamped before use in rendering.

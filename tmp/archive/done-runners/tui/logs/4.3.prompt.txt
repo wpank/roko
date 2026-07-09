@@ -1,0 +1,48 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Remove dead/duplicate fields from TuiState.
+
+These fields are confirmed dead:
+- selected_plan (duplicate of selected_plan_idx — only selected_plan_idx is used by dispatch)
+- cumulative_cost_usd (duplicate of cost_dollars — same value)
+- log_messages (Vec<LogEntry> — logs_view builds its own from DashboardData)
+- plan_summary_scroll (never modified by any key handler)
+- task_detail_scroll (never modified by any key handler)
+- config_scroll_offset (never modified by any key handler)
+
+For the LogEntry struct (state.rs:154-160), also remove it if nothing uses it after
+removing log_messages.
+
+FIX:
+1. Remove each field from the TuiState struct
+2. Remove from Default impl
+3. Remove from reset_scrolls() if present
+4. Fix compilation errors — grep for each field name in tui/ directory
+
+VERIFY: cargo check -p roko-cli && cargo test -p roko-cli

@@ -1,0 +1,56 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Remove the triple modal tracking system and use a single source of truth.
+
+PROBLEM: Three parallel systems track modals:
+1. active_modal: Option<ModalState> in App
+2. show_plan_detail, show_help, show_wave_overview, etc. booleans in TuiState
+3. overlay: Option<OverlayState> in App (legacy)
+
+These can go out of sync. Some modals are tracked by both 1 and 2 simultaneously.
+
+FIX: Pick active_modal (Option<ModalState>) as THE source of truth.
+1. For each show_* boolean in TuiState, check if there's a corresponding ModalState variant.
+   If not, create one (e.g., ModalState::Help, ModalState::None).
+2. Replace all show_* = true with self.active_modal = Some(ModalState::Xxx).
+3. Replace all show_* checks with matches!(self.active_modal, Some(ModalState::Xxx)).
+4. Remove the show_* booleans from TuiState.
+5. Remove the legacy overlay: Option<OverlayState> and handle_overlay_key.
+6. Update ModalVisibility to read from active_modal.
+7. Update has_modal() to check active_modal.is_some().
+8. Update dismiss_all_modals() to set active_modal = None.
+
+This is a large refactor — be thorough. Search for every show_plan_detail, show_help,
+show_wave_overview, show_agent_pool_modal, show_queue_overview, show_task_detail,
+show_task_picker in the entire tui/ directory.
+
+VERIFY: cargo check -p roko-cli && cargo test -p roko-cli

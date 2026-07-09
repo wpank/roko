@@ -1,0 +1,44 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Use real model context limits instead of hardcoded 200,000.
+
+PROBLEM: context_limit is hardcoded to 200,000 in 5 places: state.rs:771, agents_view.rs:246,
+dashboard_view.rs:218-222, and config_meta.rs:219.
+
+FIX:
+1. In state.rs update_from_snapshot(), look up the model's context limit from config:
+   - If agent has a model field, map it to a known context limit
+   - Common limits: claude-haiku=200K, claude-sonnet=200K, claude-opus=200K,
+     gpt-4o=128K, gemini-pro=1M
+2. Add a helper function: fn model_context_limit(model: &str) -> u64 that returns the
+   appropriate limit based on model name substring matching
+3. Replace all 200_000 hardcodes with calls to this function or the agent's stored limit
+4. Default to 200_000 only when model is unknown/empty
+
+VERIFY: cargo check -p roko-cli

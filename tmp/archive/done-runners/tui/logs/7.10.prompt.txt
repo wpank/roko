@@ -1,0 +1,56 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Remove unused data structures from TuiState.
+
+Use subagents to grep for all references before removing.
+
+CONTEXT:
+- File: crates/roko-cli/src/tui/state.rs
+- agents_by_id: HashMap<String, AgentState> at line ~573 — populated in update_from_snapshot() but NEVER read by any widget or view.
+- AgentState struct at line ~254 — only used by agents_by_id. Dead code.
+- Only Vec<AgentRow> (the agents field) is read by widgets.
+
+WHAT TO DO:
+1. First verify no code reads agents_by_id:
+     grep -rn 'agents_by_id' crates/roko-cli/src/tui/ --include='*.rs' | grep -v 'state.rs'
+   If any matches, investigate before removing.
+2. Remove agents_by_id field from TuiState struct
+3. Remove its initialization in Default impl (~line 740: agents_by_id: HashMap::new())
+4. Remove all code in update_from_snapshot() that populates it
+5. Remove the AgentState struct definition (~line 254-275)
+6. Remove 'use' imports of AgentState if orphaned
+
+VERIFY:
+  cargo check -p roko-cli && cargo test -p roko-cli
+ACCEPTANCE:
+  ! grep -q 'agents_by_id' crates/roko-cli/src/tui/state.rs  # field gone
+  ! grep -q 'struct AgentState' crates/roko-cli/src/tui/state.rs  # struct gone

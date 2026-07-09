@@ -1,0 +1,53 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Show visible input bar when user is in inject ('i') or filter ('/') mode.
+
+PROBLEM: Typing in inject/filter mode captures text but renders NOTHING. User types blind.
+Also: filter_text never copied to filter field (what plan_tree reads).
+
+FIX:
+1. In app.rs draw() after status footer, before modals, render input bar:
+   if matches!(self.tui_state.input_mode, InputMode::Inject | InputMode::Filter) {
+       let input_area = Rect::new(content_area.x, content_area.bottom().saturating_sub(1),
+                                   content_area.width, 1);
+       frame.render_widget(Clear, input_area);
+       let (label, buf) = match self.tui_state.input_mode {
+           InputMode::Inject => ("inject> ", &self.tui_state.message_input),
+           InputMode::Filter => ("filter> ", &self.tui_state.filter_text),
+           _ => unreachable!(),
+       };
+       // Render label + text + cursor using Paragraph with Spans
+   }
+
+2. In dispatch_action AcceptFilter (~line 728-731), add:
+   self.tui_state.filter = self.tui_state.filter_text.clone();
+
+You need content_area Rect from the layout — extract it if not already in scope.
+
+VERIFY: cargo check -p roko-cli

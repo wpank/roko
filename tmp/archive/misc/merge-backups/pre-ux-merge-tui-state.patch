@@ -1,0 +1,13 @@
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 53676c71..220f9ff1 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -2073,7 +2073,7 @@ tier = "focused"
+         assert!(state.filter.is_empty());
+         assert_eq!(state.selected_agent, 0);
+         assert_eq!(state.agent_scroll, None);
+-        assert_eq!(state.plan_scroll, 0);
++        assert_eq!(state.plan_scroll_offset, 0);
+     }
+ 
+     #[test]

@@ -1,0 +1,33 @@
+[server]
+port = 6677
+
+[agent]
+command = "claude"
+model = "claude-sonnet-4-6"
+
+[[agents]]
+name = "eth-mainnet"
+domain = "chain"
+prompt = "Monitor Ethereum mainnet for significant events"
+chain_rpc = "https://eth.llamarpc.com"
+
+[[agents]]
+name = "mirage-local"
+domain = "chain"
+prompt = "Monitor the local mirage-rs devnet"
+chain_rpc = "http://127.0.0.1:8545"
+
+[[agents]]
+name = "frontend-dev"
+domain = "coding"
+prompt = "Build a simple React dashboard frontend"
+
+[[agents]]
+name = "backend-dev"
+domain = "coding"
+prompt = "Build a simple REST API backend"
+
+[[agents]]
+name = "paper-scout"
+domain = "research"
+prompt = "Find and summarize AI papers published today"

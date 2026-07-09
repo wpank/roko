@@ -1,0 +1,26 @@
+Implemented REF34 in the canonical docs set.
+
+Files changed:
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md:1) — full rewrite into the canonical glossary: current naming map, A-Z vocabulary, retired/deprecated table, maintenance rules, and a REF34 backreference.
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md:66) — added the glossary authority note and updated the chapter description with the REF34 backreference.
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md:210) — added the top-level glossary backreference and REF34 pointer.
+
+New files added: none.
+
+Retired disclaimer cleanup:
+- Removed the old active-prose shape where `Signal = Engram` was still part of the naming story.
+- Confined retired names to explicitly retired, historical, deprecated, or formerly-marked contexts.
+
+Cross-references added:
+- Each touched file now points to `tmp/refinements/34-glossary.md`.
+- The top-level and architecture indexes now explicitly point readers to the glossary chapter as the canonical vocabulary source.
+
+Verification:
+- `git diff --check -- docs/00-architecture/01-naming-and-glossary.md docs/00-architecture/INDEX.md docs/INDEX.md`
+- Focused `rg` sweep for `glossary|retired` and retired-term leakage on touched files.
+
+Follow-up:
+- `docs/00-architecture/02b-pulse-ephemeral-event.md` still carries `event` in its filename/title from earlier work. I left that alone because REF34 is glossary consolidation only.
+
+Commit-ready message:
+- `refinements(REF34): Glossary consolidation across naming-and-glossary`

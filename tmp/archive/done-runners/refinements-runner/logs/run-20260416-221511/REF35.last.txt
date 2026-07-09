@@ -1,0 +1,15 @@
+Changed the REF35 docs set and kept scope to `docs/` only.
+
+Files changed:
+- Added [35-consolidated-roadmap.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/35-consolidated-roadmap.md)
+- Updated [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- Updated [31-implementation-readiness-audit.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/31-implementation-readiness-audit.md)
+- Updated [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+The new architecture backmatter chapter now captures REF35’s roadmap framing: dependency order, Q1-Q4 sequencing, quarter milestones, explicit checkpoints, team shape, mapping to existing planning material, and a not-doing list. The architecture index and top-level index now point readers to it, and the readiness audit now links directly to it as the sequencing companion. Each touched doc includes a cross-reference to `tmp/refinements/35-consolidated-roadmap.md`.
+
+Retired disclaimers removed: none.  
+New files added: `docs/00-architecture/35-consolidated-roadmap.md`.  
+Follow-ups identified: none required for this batch beyond the normal future quarterly maintenance called out in the new roadmap chapter.
+
+Verification: required terms (`roadmap`, `Q1`, `Q4`, `sequencing`) are present in the changed set, REF35 source links are present in all touched docs, and the introduced hunks did not contain retired-term matches. Commit-ready message: `refinements(REF35): Consolidated roadmap as architecture backmatter`.

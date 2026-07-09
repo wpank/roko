@@ -1,0 +1,38 @@
+Updated REF32 into the docs-only scope. The diff is ready to commit as `refinements(REF32): Safety/sandbox/provenance spine across safety chapter`.
+
+Changed files:
+- [docs/11-safety/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/INDEX.md)
+- [docs/11-safety/00-defense-in-depth.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/00-defense-in-depth.md)
+- [docs/11-safety/02-audit-chain.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/02-audit-chain.md)
+- [docs/11-safety/03-taint-tracking.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/03-taint-tracking.md)
+- [docs/11-safety/06-sandboxing.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/06-sandboxing.md)
+- [docs/11-safety/08-threat-model.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/08-threat-model.md)
+- [docs/00-architecture/05-provenance-and-attestation.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/05-provenance-and-attestation.md)
+- [docs/00-architecture/26-cognitive-immune-system.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/26-cognitive-immune-system.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+What landed:
+- The safety chapter now reads as one safety spine: authorization, checkpoints, sandbox tiers, taint, attestation, custody, egress, secrets, and multi-tenant boundaries.
+- Provenance was reframed around durable audit context, typed `Taint`, `Custody`, and `AttestationLevel`.
+- The cognitive immune system now cleanly sits as the knowledge-integrity branch of that spine.
+- Glossary and index entries were updated to reflect the new framing.
+- No new files were added.
+
+Retired/stale material removed from touched docs:
+- Old safety-index generation-note clutter.
+- Older provenance/audit framing centered on generic audit chains rather than `Custody`.
+- Stale terminology leaks in the touched safety docs.
+
+Cross-references:
+- Added REF32 links in every touched chapter file and aligned glossary/index pointers.
+
+Verification:
+- Scope check: only `docs/` files changed.
+- Required vocabulary present: `custody`, `sandbox`, `attestation`.
+- `git diff --check` passed.
+- No tests run; docs-only batch.
+
+Follow-up to note:
+- There are still untouched safety docs with older terminology/examples outside this batch’s edit set, especially [docs/11-safety/05-loop-detection.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/05-loop-detection.md), [docs/11-safety/11-temporal-logic.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/11-temporal-logic.md), [docs/11-safety/12-witness-dag.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/12-witness-dag.md), and [docs/11-safety/14-cognitive-kernel-safety.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/11-safety/14-cognitive-kernel-safety.md) if you want a broader REF32 cleanup later.

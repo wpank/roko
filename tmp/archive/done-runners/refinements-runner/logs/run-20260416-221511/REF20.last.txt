@@ -1,0 +1,17 @@
+REF20 is propagated across the architecture docs and stays within `docs/` only. The main change is a full rewrite of [15-crate-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/15-crate-map.md) so it now distinguishes current workspace reality from the target dep graph, names `roko-bus`, `roko-hdc`, `roko-spi`, and documents the `roko-std` / `roko-compose` splits, migration phases, stability tiers, and CI dep-graph enforcement. [12-five-layer-taxonomy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/12-five-layer-taxonomy.md) and [23-architectural-analysis-improvements.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/23-architectural-analysis-improvements.md) now reflect the stricter kernel boundary story and the audit items REF20 calls out. I also updated [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md), [00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md), and [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md) so the new crate vocabulary and chapter scope are discoverable.
+
+Changed files:
+- [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [12-five-layer-taxonomy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/12-five-layer-taxonomy.md)
+- [15-crate-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/15-crate-map.md)
+- [23-architectural-analysis-improvements.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/23-architectural-analysis-improvements.md)
+- [00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+No new files were added. No explicit retired-term disclaimer removals were needed beyond replacing stale crate-boundary framing with current-vs-target wording. Cross-references to `tmp/refinements/20-modularity-composability.md` were added in each touched architecture doc. Verification: `git diff --check` is clean, required terms are present, and only `docs/` files changed.
+
+Follow-ups outside REF20’s docs scope:
+- actual crate extraction and Cargo dep cleanup are still future code work;
+- CI dep-graph enforcement is documented, not implemented here.
+
+Ready for commit with: `refinements(REF20): Modularity + dep graph across crate-map + architecture`

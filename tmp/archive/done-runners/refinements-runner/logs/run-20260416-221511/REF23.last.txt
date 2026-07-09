@@ -1,0 +1,18 @@
+**Changed**
+- New canonical REF23 chapter: [21-user-ux-running-agents.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/21-user-ux-running-agents.md)
+- Updated interface docs: [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md), [00-cli-overview.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/00-cli-overview.md), [01-cli-command-reference.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/01-cli-command-reference.md), [05-http-api-roko-serve.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/05-http-api-roko-serve.md), [06-websocket-streaming.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/06-websocket-streaming.md), [08-tui-main-layout.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/08-tui-main-layout.md), [13-web-portal.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/13-web-portal.md), [14-agent-onboarding-flow.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/14-agent-onboarding-flow.md), [17-accessibility-and-current-status.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/17-accessibility-and-current-status.md)
+- Updated lifecycle docs: [03-configuration-and-operator-model.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/17-lifecycle/03-configuration-and-operator-model.md), [05-knowledge-backup-export.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/17-lifecycle/05-knowledge-backup-export.md), [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/17-lifecycle/INDEX.md)
+- Updated architecture/top-level docs: [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md), [00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md), [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+**Notes**
+- Cross-references to `tmp/refinements/23-user-ux-running-agents.md` were added across the touched docs.
+- Glossary links were added where REF23 introduces surface/session/verb-set terminology.
+- Retired disclaimers removed: none explicitly removed in this batch; retirement handling remains confined to glossary/historical contexts.
+
+**Verification**
+- `git diff --check` passed.
+- Required REF23 vocabulary is present in the changed set (`verb set`, `four surfaces`, `CLI`/`TUI`/`Chat`/`Web`).
+- I did not create a git commit, but the diff is commit-ready for `refinements(REF23): User UX: four surfaces + unified verb set across interfaces`.
+
+**Follow-ups**
+- REF26, REF27, REF28, and REF30 should deepen the implementation-facing docs for StateHub projections, realtime `watch` transport, palette/slash-command parity, and rich UX primitives.

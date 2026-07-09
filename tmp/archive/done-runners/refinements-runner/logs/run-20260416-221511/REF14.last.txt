@@ -1,0 +1,33 @@
+REF14 is propagated and commit-ready with message `refinements(REF14): Heuristics + falsifiers as new learning sub-chapter`.
+
+Files changed:
+- [docs/05-learning/19-heuristics-worldviews-and-falsifiers.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/19-heuristics-worldviews-and-falsifiers.md) — new primary chapter for `Heuristic`, falsifier handling, worldview clustering, dissonance, and inspectable belief export/import.
+- [docs/05-learning/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/INDEX.md) — added the new chapter and reframed learning around heuristics/worldviews, not just playbooks.
+- [docs/05-learning/01-playbook-system.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/01-playbook-system.md) — repositioned playbooks as compiled procedural projections of heuristics.
+- [docs/06-neuro/12-4-tier-distillation-pipeline.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/06-neuro/12-4-tier-distillation-pipeline.md) — rewrote the pipeline around first-class heuristic durability, receipts, falsifiers, calibration, and worldview preservation.
+- [docs/06-neuro/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/06-neuro/INDEX.md) — updated the Neuro summary and added the REF14 source pointer.
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md) — linked REF14 into the architecture story and updated topic descriptions for learning/neuro.
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md) — added `Heuristic`, `Falsifier`, and `Worldview`.
+- [docs/00-architecture/19-compositional-kinds.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/19-compositional-kinds.md) — noted heuristic/worldview kind composition and linked REF14.
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md) — surfaced REF14 from the master index.
+
+New files added:
+- [docs/05-learning/19-heuristics-worldviews-and-falsifiers.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/19-heuristics-worldviews-and-falsifiers.md)
+
+Retired disclaimers removed:
+- No explicit legacy retirement table was removed in this batch.
+- The stale “playbooks are the whole validated knowledge tier” framing was replaced with the heuristic-first model in [docs/05-learning/01-playbook-system.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/01-playbook-system.md).
+
+Cross-references added:
+- Every touched file now includes a pointer to `tmp/refinements/14-worldview-validation.md`.
+- New terminology-bearing docs also point at [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md).
+
+Follow-ups identified:
+- Optional future polish: align [docs/06-neuro/01-six-knowledge-types.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/06-neuro/01-six-knowledge-types.md) with the richer REF14 heuristic schema and calibration language.
+- Optional future polish: thread worldview/dissonance references into adjacent learning docs like `16-predictive-foraging.md` and `18-self-learning-cybernetic-loops.md`.
+
+Verification:
+- Confirmed only `docs/` paths changed.
+- Confirmed required vocabulary `heuristic|falsifier|worldview` lands in the changed set.
+- Confirmed every touched file contains the REF14 source pointer.
+- Added-line retired-term grep came back clean.

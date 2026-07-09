@@ -1,0 +1,15 @@
+Updated REF28 across the docs set. The familiar-workflow framing now lands in:
+- [docs/12-interfaces/00-cli-overview.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/00-cli-overview.md)
+- [docs/12-interfaces/01-cli-command-reference.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/01-cli-command-reference.md)
+- [docs/12-interfaces/03-progressive-help-and-explain.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/03-progressive-help-and-explain.md)
+- [docs/12-interfaces/21-user-ux-running-agents.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/21-user-ux-running-agents.md)
+- [docs/12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+No new files were added. No files outside `docs/` were touched. Each touched file now links to `tmp/refinements/28-cli-parity-familiar-workflows.md`. The docs now explicitly cover bare `roko` intent detection, slash commands, diff-first and per-hunk review, transcripts/resumption, visible budgets, completion, and non-interactive/CI parity. Glossary terms for `Slash command`, `Diff-first review`, `Transcript`, and `Budget line` were added. I did not remove any retired-term disclaimers in this batch.
+
+Verification passed for scope and formatting: `git diff --check` is clean, and the required REF28 vocabulary is present in the changed docs. Follow-up still called out in the docs: several REF28 elements are documented as target-state rather than shipping now, especially the default interactive `roko` shell, slash-command parity, transcript importers, completion refresh, and replay assertions.
+
+Commit-ready message:
+`refinements(REF28): CLI parity with Claude-Code muscle memory across interfaces`

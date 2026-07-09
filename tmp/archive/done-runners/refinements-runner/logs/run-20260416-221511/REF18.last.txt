@@ -1,0 +1,11 @@
+Updated REF18 in five docs:
+
+- [docs/20-technical-analysis/00-vision-ta-generalized.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/00-vision-ta-generalized.md) now treats TA as the measurement and feedback layer for the moat, with a new `Moat telemetry` section tying TA to architectural coherence, heuristic commons, plugin ecosystem, replication ledger, and Rust-level correctness.
+- [docs/20-technical-analysis/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/INDEX.md) now advertises that chapter as the place where REF18’s moat becomes observable.
+- [docs/00-architecture/17-design-principles-and-frontier-summary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/17-design-principles-and-frontier-summary.md) has a new `3.1 Structural Moat Synthesis` section mapping the five moat components onto the design principles, innovations, two-mediums/two-fabrics kernel, and seven-step loop.
+- [docs/00-architecture/30-cross-pollination-innovations.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/30-cross-pollination-innovations.md) now makes the coherence-as-moat claim explicit in the abstract and interaction synthesis.
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md) now reflects the new moat framing in the chapter summaries.
+
+No new files were added. No retired-term cleanup was needed in newly introduced prose. Every touched doc includes a cross-reference to `tmp/refinements/18-competitive-moat.md`, and the TA docs also point back to the glossary. Verification passed for docs-only scope, required `moat` vocabulary, and `git diff --check`. No tests were run because this was docs-only work.
+
+Ready for commit as `refinements(REF18): Competitive moat structural components across technical-analysis`.

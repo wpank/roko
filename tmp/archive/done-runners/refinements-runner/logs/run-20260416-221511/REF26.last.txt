@@ -1,0 +1,40 @@
+Files changed:
+- [docs/12-interfaces/22-statehub-projection-layer.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/22-statehub-projection-layer.md)
+- [docs/12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md)
+- [docs/12-interfaces/05-http-api-roko-serve.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/05-http-api-roko-serve.md)
+- [docs/12-interfaces/06-websocket-streaming.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/06-websocket-streaming.md)
+- [docs/12-interfaces/21-user-ux-running-agents.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/21-user-ux-running-agents.md)
+- [docs/00-architecture/24-cross-section-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/24-cross-section-integration-map.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+New file added:
+- [docs/12-interfaces/22-statehub-projection-layer.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/22-statehub-projection-layer.md)
+
+What changed:
+- Added the canonical REF26 interfaces chapter describing `StateHub` as the kernel projection layer, with the `Projection` contract, canonical projections, `query + subscribe`, filters, replay/snapshot/testing, and multi-consumer semantics.
+- Reframed the HTTP and realtime streaming docs around `StateHub` projections instead of raw event-bus fanout.
+- Updated the user-UX chapter so `watch` is explicitly projection-backed and cross-surface.
+- Updated the architecture integration map, glossary, and both relevant indexes so the projection-layer bridge is part of the canonical architecture story.
+
+Retired disclaimers removed:
+- No explicit retirement tables were removed.
+- I did remove the old raw event-bus / `Signal`-style public-contract example from the HTTP API chapter when replacing that section with the StateHub framing.
+
+Cross-references added:
+- Every touched area now points to `tmp/refinements/26-statehub-rearchitecture.md`.
+- The new and updated interface docs also point to [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md).
+- Architecture docs now point back to [docs/12-interfaces/22-statehub-projection-layer.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/22-statehub-projection-layer.md).
+
+Follow-ups identified:
+- REF27 should standardize the final wire-protocol/path details for projection streaming.
+- REF29 and REF30 can now build on the canonical `StateHub` projection vocabulary without re-explaining the state pipeline.
+
+Verification:
+- `git diff --check -- docs` passed.
+- Only `docs/` files are changed.
+- Required vocabulary is present throughout the changed set.
+
+Commit-ready message:
+- `refinements(REF26): StateHub rearchitecture across interfaces + architecture`

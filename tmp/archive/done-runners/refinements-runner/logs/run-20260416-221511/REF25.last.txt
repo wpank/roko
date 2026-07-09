@@ -1,0 +1,40 @@
+Updated REF25 across `docs/` only.
+
+Files changed:
+- `docs/00-architecture/01-naming-and-glossary.md`
+- `docs/02-agents/04-agent-roles.md`
+- `docs/02-agents/12-extensibility.md`
+- `docs/02-agents/INDEX.md`
+- `docs/02-agents/16-domain-profiles.md` new
+- `docs/12-interfaces/00-cli-overview.md`
+- `docs/12-interfaces/01-cli-command-reference.md`
+- `docs/12-interfaces/14-agent-onboarding-flow.md`
+- `docs/12-interfaces/21-user-ux-running-agents.md`
+- `docs/12-interfaces/INDEX.md`
+- `docs/18-tools/00-tool-architecture.md`
+- `docs/18-tools/03-chain-domain-tools.md`
+- `docs/18-tools/04-safety-hooks.md`
+- `docs/18-tools/05-tool-profiles.md`
+- `docs/18-tools/14-plugin-sdk.md`
+- `docs/18-tools/16-plugin-loading.md`
+- `docs/18-tools/INDEX.md`
+- `docs/INDEX.md`
+
+What landed:
+- Added a canonical agents chapter at [16-domain-profiles.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/02-agents/16-domain-profiles.md) covering the six domain profiles, composition rules, `TypedContext`, `Custody`, installable bundles, and evaluation suites.
+- Propagated profile-install/profile-composition UX into CLI, onboarding, and cross-surface interface docs.
+- Updated tools docs to treat Tier 2 profiles as domain bundles and to connect tool routing/auditing to `TypedContext` and `Custody`.
+- Updated glossary and indexes so `domain profile`, `TypedContext`, and `Custody` are part of the canonical vocabulary and chapter map.
+- Added `tmp/refinements/25-domain-specific-agents.md` cross-references to every touched file.
+
+Retired-term cleanup:
+- No broad retirements removed, but I normalized touched legacy references by marking them explicitly as `legacy` where they remained (`Mori`, `Bardo`, `Golem`, `Grimoire`, `Clade`).
+
+Verification:
+- Scope stayed under `docs/` only.
+- Required vocabulary is present in the changed set.
+- Added legacy-name mentions are explicitly marked as legacy.
+- No tests run; docs-only batch.
+
+Follow-up:
+- `docs/02-agents/16-domain-profiles.md` is present but still untracked in `git status` because this sandbox blocks git index writes (`index.lock` permission denied), so I could not stage it or make the requested commit from here.

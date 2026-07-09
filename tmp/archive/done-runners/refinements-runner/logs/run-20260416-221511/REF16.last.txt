@@ -1,0 +1,36 @@
+REF16 is landed in `docs/` only. The main additions are [25-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/21-references/25-research-to-runtime.md) and [20-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/20-research-to-runtime.md), which together document the `Paper -> Claim -> Heuristic -> Trial -> Calibration` pipeline, the `replication ledger`, falsifier-driven monitoring, and `claim!`-style runtime parameter resolution.
+
+Files changed:
+- [docs/21-references/25-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/21-references/25-research-to-runtime.md)
+- [docs/21-references/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/21-references/INDEX.md)
+- [docs/05-learning/20-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/20-research-to-runtime.md)
+- [docs/05-learning/19-heuristics-worldviews-and-falsifiers.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/19-heuristics-worldviews-and-falsifiers.md)
+- [docs/05-learning/18-self-learning-cybernetic-loops.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/18-self-learning-cybernetic-loops.md)
+- [docs/05-learning/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/INDEX.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+New files added:
+- [docs/21-references/25-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/21-references/25-research-to-runtime.md)
+- [docs/05-learning/20-research-to-runtime.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/20-research-to-runtime.md)
+
+Retired disclaimers removed:
+- None.
+- I did normalize stale naming in [docs/21-references/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/21-references/INDEX.md) by marking retired names explicitly and updating them to `Neuro`, `Mesh`, and `Fleet`.
+
+Cross-references added:
+- Every touched file now points to `tmp/refinements/16-research-to-runtime.md`.
+- The new references and learning chapters cross-link each other and the glossary.
+
+Follow-ups identified:
+- None required for REF16.
+- Optional later expansion: thread replication-ledger examples into specific domain reference chapters such as HDC, active inference, and collective intelligence.
+
+Verification:
+- Scope stayed inside `docs/`.
+- Required vocabulary is present across changed docs.
+- I ran a diff-based retired-term grep on introduced lines; only explicitly marked retired-name lines matched.
+- No tests were run because this was docs-only work.
+
+Commit-ready message: `refinements(REF16): Research-to-runtime pipeline across references + learning`

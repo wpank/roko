@@ -1,0 +1,36 @@
+Updated REF19 across the canonical docs and kept the scope to `docs/` only.
+
+Changed files:
+- [docs/00-architecture/17-design-principles-and-frontier-summary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/17-design-principles-and-frontier-summary.md)
+- [docs/00-architecture/30-cross-pollination-innovations.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/30-cross-pollination-innovations.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/20-technical-analysis/00-vision-ta-generalized.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/00-vision-ta-generalized.md)
+- [docs/20-technical-analysis/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+What changed:
+- `17` now reframes the old frontier story into a REF19-style net-new catalog, separating primitive innovations from composed/integrated ones and tightening the moat argument around Engram, Pulse, Bus, Substrate, HDC fingerprint, demurrage, heuristics with falsifiers, c-factor, replication ledger, and plugin SPI.
+- `30` now states explicitly that the net-new artifact is the composition, not any isolated primitive, and threads the REF19 vocabulary through the chapter.
+- `20-technical-analysis/00` now carries the publishable-claims ladder and an explicit novelty-honesty lens for TA.
+- The relevant indexes now advertise the REF19 framing and point readers to the updated docs.
+
+New files added: none.
+
+Retired/stale wording removed:
+- Cleaned up stale `Signal` references in the edited `17` prose.
+- Removed the outdated `9-step loop` phrasing there.
+- Removed the one introduced retired project-name reference from the rewritten section.
+
+Cross-references added:
+- Each touched substantive doc now points to `tmp/refinements/19-net-new-innovations.md`.
+
+Follow-ups:
+- `17` and `30` are aligned enough for REF19, but `30` still keeps its older eight-innovation skeleton with REF19 framing layered onto it rather than fully re-taxonomized.
+
+Verification:
+- Confirmed only `docs/` files changed.
+- Confirmed REF19-required vocabulary appears in added lines.
+- Docs-only change; no tests were run.
+
+Commit-ready message:
+- `refinements(REF19): Net-new innovations catalog across design-principles + frontier`

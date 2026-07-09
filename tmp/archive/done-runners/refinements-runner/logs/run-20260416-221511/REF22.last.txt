@@ -1,0 +1,23 @@
+REF22 is propagated and ready to commit as `refinements(REF22): Developer UX: four-layer Rust SDK across interfaces`.
+
+Files changed:
+- New: [19-rust-sdk-developer-ux.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/19-rust-sdk-developer-ux.md)
+- Updated: [12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md), [02-agents/12-extensibility.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/02-agents/12-extensibility.md), [02-agents/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/02-agents/INDEX.md), [00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md), [00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md), [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+What landed:
+- Added a substantive interfaces chapter for the four-layer Rust SDK: one-liner, builder, trait impl, runtime impl, plus typed errors, `cargo roko`, macros, testing ergonomics, tracing, and release compatibility.
+- Updated agent-authoring docs so custom-agent guidance now uses the same four-layer SDK framing.
+- Added glossary and architecture/top-level index cross-links so the SDK story connects back to the two-medium/two-fabric kernel framing and to `tmp/refinements/22-developer-ux-rust.md`.
+
+Retired-disclaimer cleanup:
+- Replaced lifecycle/mortality phrasing in `docs/12-interfaces/INDEX.md` with neutral wording.
+- Kept legacy names only in explicitly marked `legacy/renamed` context.
+
+Verification:
+- Scope stayed inside `docs/` only.
+- Required vocabulary is present (`one-liner`, `builder`, `trait impl`, `runtime impl`, `SDK`).
+- Every touched file includes the REF22 cross-reference.
+- `git diff --check -- docs` passed.
+
+Follow-up identified:
+- The new SDK chapter now points at future tutorial/cookbook/reference/example-tree work, but those docs were not added in this batch.

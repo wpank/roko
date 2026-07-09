@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nunchi — the durable runtime for production agents</title>
+<style>
+  :root {
+    --bg: #0A080C;
+    --bg-2: #0E0B12;
+    --panel: #12101A;
+    --panel-2: #16131E;
+    --bone: #C8B890;
+    --bone-dim: #998566;
+    --rose-gray: #988090;
+    --rose-faint: #6F5A6A;
+    --muted: #584858;
+    --rose: #AA7088;
+    --rose-bright: #CC90A8;
+    --rose-deep: #3A2030;
+    --success: #80A88A;
+    --warning: #C09870;
+    --danger: #C06878;
+    --border: #1F1825;
+    --border-strong: #2A2030;
+    --max-w: 1180px;
+    --pad: clamp(20px, 4vw, 56px);
+
+    --serif: 'Fraunces', 'Iowan Old Style', 'Times New Roman', serif;
+    --mono: 'JetBrains Mono', 'SF Mono', Menlo, ui-monospace, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--bone);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* CRT scanlines — very subtle, fixed, soft-light */
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 200;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(170, 112, 136, 0.012) 0px,
+      rgba(170, 112, 136, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: soft-light;
+  }
+
+  /* subtle radial vignette to add atmosphere without busy texture */
+  body::after {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 199;
+    background: radial-gradient(ellipse at 50% 0%, rgba(170, 112, 136, 0.04) 0%, transparent 55%);
+  }
+
+  /* === NAV === */
+  nav.top {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 8, 12, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.top .inner {
+    max-width: var(--max-w); margin: 0 auto;
+    padding: 14px var(--pad);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px;
+  }
+  nav.top .brand {
+    color: var(--rose); font-weight: 600; letter-spacing: 0.18em;
+  }
+  nav.top .links { display: flex; gap: 24px; color: var(--muted); }
+  nav.top .links a {
+    color: var(--rose-gray); text-decoration: none; transition: color 120ms;
+  }
+  nav.top .links a:hover { color: var(--bone); }
+  nav.top .cta {
+    color: var(--rose); border: 1px solid var(--rose);
+    padding: 6px 14px; text-decoration: none; font-size: 11px;
+    letter-spacing: 0.1em; transition: all 120ms;
+  }
+  nav.top .cta:hover { background: var(--rose); color: var(--bg); }
+
+  @media (max-width: 720px) {
+    nav.top .links { display: none; }
+  }
+
+  section { padding: clamp(72px, 10vw, 140px) var(--pad); position: relative; }
+  .sec-inner { max-width: var(--max-w); margin: 0 auto; position: relative; }
+
+  /* section labels */
+  .sec-label {
+    color: var(--rose); letter-spacing: 0.22em; font-size: 10px;
+    margin-bottom: 18px; display: flex; align-items: center; gap: 12px;
+  }
+  .sec-label::before {
+    content: ''; width: 24px; height: 1px; background: var(--rose);
+  }
+
+  /* headlines */
+  h1, h2, h3 { font-family: var(--serif); font-weight: 400; font-style: italic; }
+  h1 {
+    font-size: clamp(48px, 7vw, 88px); line-height: 1.04;
+    letter-spacing: -0.01em; color: var(--bone);
+    margin-bottom: 28px;
+  }
+  h2 {
+    font-size: clamp(36px, 5vw, 56px); line-height: 1.1;
+    letter-spacing: -0.005em; color: var(--bone);
+    margin-bottom: 18px; max-width: 24ch;
+  }
+  h3 {
+    font-size: clamp(20px, 2vw, 24px); line-height: 1.2;
+    color: var(--bone); margin-bottom: 8px;
+  }
+  .dek {
+    font-family: var(--mono); font-size: clamp(13px, 1.2vw, 15px);
+    color: var(--rose-gray); max-width: 64ch; line-height: 1.65;
+  }
+
+  /* === HERO === */
+  #hero {
+    min-height: 100vh; padding-top: 80px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  #hero .above {
+    color: var(--rose); letter-spacing: 0.22em; font-size: 11px; margin-bottom: 30px;
+  }
+  #hero h1 .accent { color: var(--rose); font-style: italic; }
+  #hero .thesis {
+    font-family: var(--mono); font-size: clamp(15px, 1.5vw, 18px);
+    color: var(--bone-dim); margin-top: 10px; max-width: 56ch;
+  }
+  #hero .below {
+    margin-top: clamp(40px, 6vw, 80px);
+    display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 56px; align-items: end;
+  }
+  @media (max-width: 880px) {
+    #hero .below { grid-template-columns: 1fr; gap: 32px; }
+  }
+  #hero .meter {
+    background: var(--panel-2);
+    border: 1px solid var(--border-strong);
+    padding: 22px 26px;
+    position: relative;
+  }
+  #hero .meter .lbl {
+    color: var(--rose); font-size: 10px; letter-spacing: 0.18em;
+    margin-bottom: 14px;
+  }
+  #hero .meter .nums {
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+  }
+  #hero .meter .from {
+    font-family: var(--serif); font-style: italic; font-size: clamp(36px, 5vw, 56px);
+    color: var(--rose-faint); text-decoration: line-through;
+    text-decoration-color: var(--rose-deep);
+  }
+  #hero .meter .arrow {
+    color: var(--rose); font-size: 22px;
+  }
+  #hero .meter .to {
+    font-family: var(--serif); font-style: italic; font-size: clamp(48px, 7vw, 84px);
+    color: var(--rose-bright);
+  }
+  #hero .meter .src {
+    margin-top: 12px; color: var(--muted); font-size: 11px; line-height: 1.7;
+  }
+  #hero .summary {
+    color: var(--rose-gray); font-size: 14px; line-height: 1.7;
+  }
+  #hero .summary strong { color: var(--bone); font-weight: 600; }
+
+  #hero .cta-row {
+    margin-top: 36px; display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  #hero a.btn {
+    color: var(--rose); border: 1px solid var(--rose);
+    padding: 12px 22px; text-decoration: none; font-size: 12px;
+    letter-spacing: 0.12em; transition: all 120ms;
+  }
+  #hero a.btn:hover { background: var(--rose); color: var(--bg); }
+  #hero a.btn.ghost { color: var(--rose-gray); border-color: var(--border-strong); }
+  #hero a.btn.ghost:hover { color: var(--bone); border-color: var(--rose); background: transparent; }
+
+  /* === PROBLEM === */
+  #problem .stats {
+    margin-top: 56px;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    border: 1px solid var(--border);
+  }
+  @media (max-width: 880px) {
+    #problem .stats { grid-template-columns: 1fr; }
+  }
+  #problem .stat {
+    background: var(--panel);
+    padding: 36px 30px;
+    border: 1px solid var(--border-strong);
+    margin: -1px;
+  }
+  #problem .stat .num {
+    font-family: var(--serif); font-style: italic;
+    font-size: clamp(56px, 6.5vw, 76px);
+    color: var(--rose); line-height: 1;
+    margin-bottom: 18px; letter-spacing: -0.02em;
+  }
+  #problem .stat .lbl {
+    color: var(--bone); font-size: 14px; line-height: 1.45;
+    margin-bottom: 12px;
+  }
+  #problem .stat .src {
+    color: var(--muted); font-size: 11px;
+  }
+  #problem .ribbon {
+    margin-top: 48px; padding: 24px 30px;
+    border-left: 2px solid var(--rose);
+    color: var(--rose-gray); font-size: 14px; line-height: 1.7;
+    background: rgba(170, 112, 136, 0.03);
+  }
+  #problem .ribbon strong { color: var(--bone); font-weight: 600; }
+
+  /* === RUNTIME LOOP === */
+  #loop { background: var(--bg-2); }
+  #loop .stages {
+    margin-top: 48px;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 0; border: 1px solid var(--border);
+  }
+  @media (max-width: 880px) {
+    #loop .stages { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 520px) {
+    #loop .stages { grid-template-columns: 1fr; }
+  }
+  #loop .stage {
+    padding: 28px 24px;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #loop .stage:last-child { border-right: none; }
+  #loop .stage .num {
+    color: var(--rose); font-size: 11px; letter-spacing: 0.18em;
+    margin-bottom: 14px;
+  }
+  #loop .stage h3 { font-size: 22px; color: var(--bone); }
+  #loop .stage .prim {
+    color: var(--rose); font-family: var(--mono); font-size: 11px;
+    margin: 10px 0 16px; padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-strong);
+  }
+  #loop .stage p { color: var(--rose-gray); font-size: 13px; line-height: 1.65; }
+
+  #loop .primitives {
+    margin-top: 64px;
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+  @media (max-width: 880px) {
+    #loop .primitives { grid-template-columns: 1fr; }
+  }
+  #loop .primitive {
+    padding: 28px 26px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-strong);
+  }
+  #loop .primitive .name {
+    font-family: var(--serif); font-style: italic;
+    font-size: 28px; color: var(--rose-bright);
+    margin-bottom: 6px;
+  }
+  #loop .primitive .one {
+    color: var(--bone); font-size: 13px; margin-bottom: 14px;
+    padding-bottom: 14px; border-bottom: 1px solid var(--border);
+  }
+  #loop .primitive .body { color: var(--rose-gray); font-size: 13px; line-height: 1.65; }
+  #loop .primitive .body code {
+    color: var(--rose); background: var(--bg); padding: 1px 6px; border-radius: 2px;
+    font-size: 12px;
+  }
+
+  /* === COST === */
+  #cost {
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+  }
+  #cost .grid {
+    margin-top: 48px;
+    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 56px;
+    align-items: start;
+  }
+  @media (max-width: 880px) { #cost .grid { grid-template-columns: 1fr; gap: 32px; } }
+  #cost table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  #cost table th, #cost table td {
+    padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  #cost table th {
+    color: var(--muted); font-weight: 400; font-size: 10px;
+    letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  #cost table td { color: var(--rose-gray); }
+  #cost table td.layer { color: var(--bone); }
+  #cost table td.x { color: var(--rose); font-family: var(--mono); font-weight: 600; }
+  #cost table tr.total td { color: var(--bone); padding-top: 18px; padding-bottom: 18px; border-bottom: none; border-top: 1px solid var(--rose); }
+  #cost table tr.total td.x { color: var(--rose-bright); font-size: 14px; }
+
+  #cost .disclosure {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-left: 2px solid var(--rose);
+    padding: 24px 26px;
+    color: var(--rose-gray); font-size: 13px; line-height: 1.7;
+  }
+  #cost .disclosure h3 {
+    font-family: var(--mono); font-style: normal;
+    font-size: 11px; color: var(--rose); letter-spacing: 0.18em;
+    margin-bottom: 12px; text-transform: uppercase;
+  }
+  #cost .disclosure code {
+    color: var(--rose); background: var(--bg); padding: 1px 6px; font-size: 12px;
+  }
+
+  /* === CHAIN === */
+  #chain { background: var(--bg-2); }
+  #chain .head {
+    display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 56px; align-items: end;
+  }
+  @media (max-width: 880px) { #chain .head { grid-template-columns: 1fr; } }
+  #chain .status {
+    padding: 18px 22px; border: 1px solid var(--border-strong);
+    background: var(--panel); color: var(--rose-gray); font-size: 12px;
+    line-height: 1.7;
+  }
+  #chain .status strong { color: var(--warning); font-family: var(--mono); }
+  #chain .blocks {
+    margin-top: 64px;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    border: 1px solid var(--border);
+  }
+  @media (max-width: 880px) { #chain .blocks { grid-template-columns: 1fr; } }
+  #chain .block {
+    padding: 36px 30px; background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+  #chain .block:last-child { border-right: none; }
+  #chain .block .name {
+    font-family: var(--serif); font-style: italic;
+    font-size: 32px; color: var(--rose-bright); margin-bottom: 4px;
+  }
+  #chain .block .sub {
+    color: var(--muted); font-size: 11px; letter-spacing: 0.1em;
+    margin-bottom: 18px;
+  }
+  #chain .block .body { color: var(--rose-gray); font-size: 13px; line-height: 1.65; }
+  #chain .block code {
+    color: var(--rose); background: var(--bg); padding: 1px 6px; font-size: 12px;
+  }
+
+  /* === COMPLIANCE === */
+  #compliance {
+    background: var(--bg);
+  }
+  #compliance .grid {
+    margin-top: 48px;
+    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 56px;
+  }
+  @media (max-width: 880px) { #compliance .grid { grid-template-columns: 1fr; } }
+  #compliance ul {
+    list-style: none; padding: 0;
+  }
+  #compliance ul li {
+    padding: 14px 0; border-bottom: 1px solid var(--border);
+    display: grid; grid-template-columns: 200px 1fr; gap: 24px;
+    color: var(--rose-gray); font-size: 13px;
+  }
+  #compliance ul li b { color: var(--bone); font-family: var(--mono); font-weight: 400; }
+  #compliance ul li em { color: var(--rose); font-style: normal; font-family: var(--mono); }
+  #compliance .deadline {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-top: 2px solid var(--rose);
+    padding: 28px;
+  }
+  #compliance .deadline .date {
+    font-family: var(--serif); font-style: italic;
+    font-size: 36px; color: var(--bone); line-height: 1.05; margin-bottom: 12px;
+  }
+  #compliance .deadline .what { color: var(--rose-gray); font-size: 13px; line-height: 1.6; }
+  #compliance .deadline .penalty {
+    margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);
+    color: var(--rose); font-size: 12px;
+  }
+
+  /* === CTA === */
+  #cta {
+    background: var(--bg-2);
+    text-align: left;
+  }
+  #cta h2 { max-width: 26ch; }
+  #cta .actions {
+    margin-top: 40px; display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  #cta a {
+    text-decoration: none; padding: 14px 28px; font-size: 12px;
+    letter-spacing: 0.14em; transition: all 120ms;
+    border: 1px solid var(--rose); color: var(--rose);
+  }
+  #cta a:hover { background: var(--rose); color: var(--bg); }
+  #cta a.ghost {
+    color: var(--rose-gray); border-color: var(--border-strong);
+  }
+  #cta a.ghost:hover { color: var(--bone); border-color: var(--rose); background: transparent; }
+
+  #cta .trust {
+    margin-top: 64px; padding-top: 32px;
+    border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px;
+    color: var(--rose-gray); font-size: 12px; line-height: 1.65;
+  }
+  @media (max-width: 880px) { #cta .trust { grid-template-columns: 1fr; gap: 24px; } }
+  #cta .trust .col .h {
+    color: var(--rose); letter-spacing: 0.16em; font-size: 10px;
+    margin-bottom: 10px;
+  }
+  #cta .trust .col strong { color: var(--bone); font-weight: 600; }
+
+  /* === FOOTER === */
+  footer.bottom {
+    padding: 36px var(--pad);
+    border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 11px;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  footer.bottom a { color: var(--rose-gray); text-decoration: none; }
+  footer.bottom a:hover { color: var(--bone); }
+
+  /* fade-in on scroll */
+  .fade {
+    opacity: 0; transform: translateY(20px);
+    transition: opacity 700ms ease, transform 700ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+  .fade.in { opacity: 1; transform: translateY(0); }
+
+  /* selection */
+  ::selection { background: var(--rose); color: var(--bg); }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="inner">
+    <div class="brand">NUNCHI</div>
+    <div class="links">
+      <a href="#problem">problem</a>
+      <a href="#loop">runtime</a>
+      <a href="#cost">cost</a>
+      <a href="#chain">chain</a>
+      <a href="#cta">contact</a>
+    </div>
+    <a class="cta" href="#cta">EARLY ACCESS  →</a>
+  </div>
+</nav>
+
+<!-- ============= 01  HERO ============= -->
+<section id="hero">
+  <div class="sec-inner">
+    <div class="above">SERIES A · APRIL 2026 · AGENT COORDINATION PLANE</div>
+    <h1>The durable runtime<br/><span class="accent">for production agents.</span></h1>
+    <div class="thesis">The model is the same. The system is the variable.</div>
+
+    <div class="below fade">
+      <div>
+        <div class="meter">
+          <div class="lbl">PER-TASK COST · HAL BENCHMARK</div>
+          <div class="nums">
+            <span class="from">$44.86</span>
+            <span class="arrow">→</span>
+            <span class="to">$1.42</span>
+          </div>
+          <div class="src">
+            <strong style="color:var(--rose-gray)">Princeton HAL · ICLR 2026.</strong>
+            Naive baseline excludes caching by design. Optimized run is reproducible with <code style="color:var(--rose);background:var(--bg);padding:1px 6px;font-size:11px">nunchi run --share</code>.
+          </div>
+        </div>
+      </div>
+      <div class="summary">
+        Agents broke reliability — again. <strong>41–86% of multi-agent deployments fail in production</strong>, and 79% of those failures come from coordination, not capability. Nunchi is the durable runtime that closes the loop: identity, routing, gates, knowledge, replay — separated from agent execution, the way SDN separated control from data.
+
+        <div class="cta-row">
+          <a class="btn" href="#cta">REQUEST DESIGN PARTNER ACCESS</a>
+          <a class="btn ghost" href="#loop">SEE THE RUNTIME →</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= 02  PROBLEM ============= -->
+<section id="problem">
+  <div class="sec-inner">
+    <div class="sec-label">02 · THE PROBLEM</div>
+    <h2>Coordination, not capability.</h2>
+    <p class="dek">
+      Three numbers describe the gap between agents that work in demos and agents that work in production. None of them is about how smart the model is.
+    </p>
+
+    <div class="stats fade">
+      <div class="stat">
+        <div class="num">41–86%</div>
+        <div class="lbl">of multi-agent deployments fail in production.</div>
+        <div class="src">MAST taxonomy · Berkeley · NeurIPS 2025  (arXiv:2503.13657)</div>
+      </div>
+      <div class="stat">
+        <div class="num">79%</div>
+        <div class="lbl">of those failures come from <strong style="color:var(--bone)">coordination</strong> — not from model capability.</div>
+        <div class="src">Same study. Replicated by Hugging Face GAIA leaderboard, 2025–26.</div>
+      </div>
+      <div class="stat">
+        <div class="num">82&nbsp;:&nbsp;1</div>
+        <div class="lbl">machine-to-human identity ratio in production today.</div>
+        <div class="src">CyberArk · Entro Security · State of NHI 2025</div>
+      </div>
+    </div>
+
+    <div class="ribbon fade">
+      <strong>Klarna reversed its all-AI customer service in May 2025.</strong> The agents could do the tasks. Klarna couldn't audit them. The pattern is older than agents — monoliths broke reliability in 2010, microservices broke it again in 2020. Coordination layers fixed each. Nunchi is the coordination layer for agents.
+    </div>
+  </div>
+</section>
+
+<!-- ============= 03  RUNTIME LOOP ============= -->
+<section id="loop">
+  <div class="sec-inner">
+    <div class="sec-label">03 · THE RUNTIME</div>
+    <h2>Observe. Decide. Enforce. Record.</h2>
+    <p class="dek">
+      The control loop the field said couldn't close on agents. Every stage external to the model. Every stage deterministic. Every stage replayable.
+    </p>
+
+    <div class="stages fade">
+      <div class="stage">
+        <div class="num">01 · OBSERVE</div>
+        <h3>Pulse</h3>
+        <div class="prim">ephemeral · structured</div>
+        <p>Every action emits structured events on the bus — token, latency, tool, gate, decision. Captured at source, not reconstructed after.</p>
+      </div>
+      <div class="stage">
+        <div class="num">02 · DECIDE</div>
+        <h3>Score · Route</h3>
+        <div class="prim">cascade · context</div>
+        <p>Cascade routing chooses model and parameters per task. Knowledge substrate injects context. Reputation gates trust.</p>
+      </div>
+      <div class="stage">
+        <div class="num">03 · ENFORCE</div>
+        <h3>Gate pipeline</h3>
+        <div class="prim">11 gates · language-agnostic</div>
+        <p>Compile, test, diff, lint, security, semantic, coverage, budget, latency, policy, replay. Failures route back. Frontier calls are last resort.</p>
+      </div>
+      <div class="stage">
+        <div class="num">04 · RECORD</div>
+        <h3>Signal</h3>
+        <div class="prim">durable · cited</div>
+        <p>Content-addressed. HDC-fingerprinted. Replayable. Citable cross-org. Becomes context for the next agent on the next task.</p>
+      </div>
+    </div>
+
+    <div class="primitives fade">
+      <div class="primitive">
+        <div class="name">Pulse</div>
+        <div class="one">The ephemeral primitive.</div>
+        <div class="body">Every <code>nunchi.audit()</code>, every tool call, every gate decision is a Pulse. They live on the bus, not on disk — the runtime decides which become Signals.</div>
+      </div>
+      <div class="primitive">
+        <div class="name">Signal</div>
+        <div class="one">The durable primitive.</div>
+        <div class="body">Content-addressed events written to the substrate. HDC-fingerprinted. Reputable. The history that lets the next agent skip the failures of the last.</div>
+      </div>
+      <div class="primitive">
+        <div class="name">Cell</div>
+        <div class="one">The execution primitive.</div>
+        <div class="body">An agent execution context bound to an ERC-8004 identity. Cells are scoped, sandboxed, and replayable. The unit billed by the cloud, the unit slashable on the chain.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= 04  COST ============= -->
+<section id="cost">
+  <div class="sec-inner">
+    <div class="sec-label">04 · COST PROOF</div>
+    <h2>Forty-three dollars to a buck forty-two.</h2>
+    <p class="dek">
+      Three composable optimizations, each measurable. We disclose the methodology because the alternative is "trust us."
+    </p>
+
+    <div class="grid fade">
+      <table>
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>Optimization</th>
+            <th style="text-align:right">Multiplier</th>
+            <th>Source / verification</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="layer">Baseline</td>
+            <td>HAL benchmark, naive</td>
+            <td class="x" style="text-align:right">—</td>
+            <td>Princeton, ICLR 2026 — excludes caching</td>
+          </tr>
+          <tr>
+            <td class="layer">1. Cache</td>
+            <td>Anthropic prompt caching, priced per docs</td>
+            <td class="x" style="text-align:right">5×</td>
+            <td>Anthropic API documentation, current pricing</td>
+          </tr>
+          <tr>
+            <td class="layer">2. Route</td>
+            <td>RouteLLM cascade haiku → sonnet → opus</td>
+            <td class="x" style="text-align:right">3×</td>
+            <td>Princeton NLP, RouteLLM 2024</td>
+          </tr>
+          <tr>
+            <td class="layer">3. Gate</td>
+            <td>Pre-screen (compile, test, diff) before frontier</td>
+            <td class="x" style="text-align:right">2×</td>
+            <td>Internal benchmark, reproducible</td>
+          </tr>
+          <tr class="total">
+            <td class="layer"><strong style="color:var(--bone)">Composed</strong></td>
+            <td>Multiplicative, with disclosure</td>
+            <td class="x" style="text-align:right">30×</td>
+            <td><strong style="color:var(--bone)">$44.86 → $1.42</strong> per HAL task</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="disclosure">
+        <h3>Honest read</h3>
+        <p>The HAL baseline excludes prompt caching by design — that's the reference point against which the field measures, not a number we picked to flatter ourselves. Our optimized $1.42 includes Anthropic prompt caching priced per docs (verified), Princeton's RouteLLM cascade, and our own gate pre-screening data. The composition is multiplicative because the optimizations operate on disjoint slices of cost.</p>
+        <p style="margin-top:12px">Every layer is reproducible. <code>nunchi run --share</code> posts a public receipt of the dollar delta on any HAL task an evaluator wants to repeat.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= 05  CHAIN ============= -->
+<section id="chain">
+  <div class="sec-inner">
+    <div class="sec-label">05 · WHY IT COMPOUNDS</div>
+    <div class="head fade">
+      <div>
+        <h2>The chain is the moat. The runtime ships first.</h2>
+        <p class="dek">
+          The runtime is open source today. The chain is a 2027 milestone. Three protocol primitives turn coordination cost into compounding identity, knowledge, and verifiability.
+        </p>
+      </div>
+      <div class="status">
+        <div style="color:var(--rose);letter-spacing:0.16em;font-size:10px;margin-bottom:8px">CHAIN STATUS · Q2 2026</div>
+        Specs frozen. <strong>76 implementation items deferred Tier 6</strong> — testnet 2027. The runtime works without the chain. The chain doesn't ship until on-chain volume justifies it.
+      </div>
+    </div>
+
+    <div class="blocks fade">
+      <div class="block">
+        <div class="name">HDC</div>
+        <div class="sub">PRECOMPILE 0xA01</div>
+        <div class="body">Hyperdimensional similarity over 10,240-bit binary vectors. Native EVM precompile, ~400 gas top-K. The substrate that makes cross-org knowledge queryable on-chain at a price agents can pay.</div>
+      </div>
+      <div class="block">
+        <div class="name">ERC-8004</div>
+        <div class="sub">AGENT IDENTITY</div>
+        <div class="body">Transferable on-chain identity with 7-domain reputation EMA — coding, security, research, chain, knowledge, ops, strategy. Slashable on policy violation. Queryable cross-org without disclosure.</div>
+      </div>
+      <div class="block">
+        <div class="name">ZK-HDC</div>
+        <div class="sub">CIRCOM · GROTH16</div>
+        <div class="body">Hamming distance proofs over committed hypervectors. Sub-second proving on a laptop. ~250K gas to verify. Lets one agent prove it knows something without revealing what.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= 06  COMPLIANCE ============= -->
+<section id="compliance">
+  <div class="sec-inner">
+    <div class="sec-label">06 · COMPLIANCE BY-PRODUCT</div>
+    <h2>Compliance is a by-product of coordination.</h2>
+    <p class="dek">
+      We do not sell compliance. We sell coordination. Coordination produces auditable receipts as a free side-effect — and the receipts happen to satisfy emerging regulation.
+    </p>
+
+    <div class="grid fade">
+      <ul>
+        <li><b>Audit trail</b><span><em>byproduct of</em> &nbsp;the durable event log every Nunchi run produces.</span></li>
+        <li><b>Identity provenance</b><span><em>byproduct of</em> &nbsp;ERC-8004 token assignment per Cell.</span></li>
+        <li><b>Decision rationale</b><span><em>byproduct of</em> &nbsp;Score &amp; Route writing decisions to Pulse.</span></li>
+        <li><b>Replay-ability</b><span><em>byproduct of</em> &nbsp;deterministic event log + content-addressed substrate.</span></li>
+        <li><b>Counterfactual review</b><span><em>byproduct of</em> &nbsp;cached model calls + branch-replay tooling.</span></li>
+        <li><b>Cross-vendor portability</b><span><em>byproduct of</em> &nbsp;the runtime being model-agnostic.</span></li>
+      </ul>
+
+      <div class="deadline">
+        <div style="color:var(--rose);letter-spacing:0.16em;font-size:10px;margin-bottom:14px">EU AI ACT · ARTICLE 50 · DISCLOSURE</div>
+        <div class="date">August 2,&nbsp;2026.</div>
+        <div class="what">
+          High-risk AI providers must demonstrate audit trail, identity provenance, and decision rationale for any AI system serving EU residents. Nunchi runs produce all three by default.
+        </div>
+        <div class="penalty">
+          Penalty for non-compliance: up to <strong style="color:var(--bone-dim)">€15M or 3% of global turnover</strong>, whichever is higher.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= 07  CTA ============= -->
+<section id="cta">
+  <div class="sec-inner">
+    <div class="sec-label">07 · GET INVOLVED</div>
+    <h2>This is the inevitable architecture for agent coordination.</h2>
+    <p class="dek">
+      We're talking with eight enterprise design partners. Three are deploying. The runtime is open source, the cloud is in private beta, the chain ships in 2027. If you're building agents in production, we'd like to hear from you.
+    </p>
+
+    <div class="actions fade">
+      <a href="mailto:design-partner@nunchi.dev?subject=Nunchi%20design%20partner%20interest">DESIGN PARTNER  →</a>
+      <a class="ghost" href="https://github.com/nunchi/roko">RUNTIME ON GITHUB ↗</a>
+      <a class="ghost" href="mailto:investors@nunchi.dev">INVESTOR INQUIRIES  →</a>
+    </div>
+
+    <div class="trust">
+      <div class="col">
+        <div class="h">RUNTIME</div>
+        <strong>Roko</strong> · Apache 2.0 · 18 crates · Rust · open source. The coordination plane sits in your VPC or ours.
+      </div>
+      <div class="col">
+        <div class="h">DESIGN PARTNERS</div>
+        Currently in deployment with three named enterprise partners. Logos on request.
+      </div>
+      <div class="col">
+        <div class="h">SECURITY</div>
+        SOC 2 Type II in progress. Self-hosted option available. No customer model traffic touches our infrastructure unless you opt in.
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="bottom">
+  <div>NUNCHI · Series A · April 2026 · <a href="mailto:hi@nunchi.dev">hi@nunchi.dev</a></div>
+  <div>Made for agents that ship.</div>
+</footer>
+
+<script>
+  // Simple intersection-observer fade-in
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        obs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+  document.querySelectorAll('.fade').forEach((el) => obs.observe(el));
+</script>
+</body>
+</html>

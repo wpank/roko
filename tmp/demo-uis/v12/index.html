@@ -1,0 +1,2702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Series A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<style>
+/* ================================================================
+   ROSEDUST DESIGN SYSTEM v12 — STAR CONSTELLATION / CELESTIAL MAP
+   ================================================================ */
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+
+  --dream: #585878;
+  --dream-bright: #7878a0;
+
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow: hidden;
+  width: 100%; height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Atmospheric Overlays --- */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9998; opacity: 0.03;
+  mix-blend-mode: overlay;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9997;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.12) 2px, rgba(0,0,0,0.12) 4px);
+  opacity: 0.05;
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9996;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* --- Typography --- */
+.headline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(32px, 4.5vw, 68px);
+  color: #d8c8d0;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-shadow: 0 0 40px rgba(170,112,136,0.15), 0 0 80px rgba(170,112,136,0.06);
+}
+.headline em {
+  color: var(--rose-neon);
+  font-style: italic;
+  text-shadow: 0 0 20px rgba(220,165,189,0.3), 0 0 60px rgba(220,165,189,0.12);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--t1);
+  max-width: 780px;
+}
+.body-text strong { color: var(--bone); font-weight: 500; }
+.body-text em { color: var(--rose-neon); font-style: italic; }
+
+.section-tag {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  position: absolute;
+  top: 24px; left: 32px;
+  z-index: 10;
+}
+
+/* --- Chassis Panel --- */
+.chassis {
+  background: linear-gradient(180deg, rgba(12,10,14,0.85), rgba(8,8,16,0.85));
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  backdrop-filter: blur(12px);
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* --- Pages --- */
+.page {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  pointer-events: none;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.page.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 5;
+  transform: translateY(0);
+}
+.page.exit-up {
+  opacity: 0;
+  transform: translateY(-24px);
+}
+
+.page-content {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 40px;
+}
+
+/* --- Canvas backgrounds --- */
+.page-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+
+/* --- Navigation --- */
+.page-nav {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 9999;
+  user-select: none;
+}
+.nav-dots {
+  display: flex;
+  gap: 10px;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+.nav-dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 10px rgba(170,112,136,0.5), 0 0 20px rgba(170,112,136,0.2);
+  border-color: var(--rose-dim);
+}
+.nav-dot:hover:not(.active) {
+  background: var(--rose-dim);
+}
+.nav-arrow {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--rose-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--rose-neon); }
+
+/* --- Block HUD --- */
+.block-hud {
+  position: fixed;
+  top: 16px; right: 20px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--jade);
+  letter-spacing: 0.12em;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .block-flash {
+  display: inline-block;
+  animation: blockFlash 0.6s ease-out;
+}
+@keyframes blockFlash {
+  0% { color: var(--jade-hot); text-shadow: 0 0 12px var(--jade-hot); }
+  100% { color: var(--jade); text-shadow: none; }
+}
+
+/* --- Page-specific styles --- */
+
+/* Page 0: Hero */
+.hero-content {
+  text-align: center;
+  position: relative;
+  z-index: 10;
+}
+.hero-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(56px, 8vw, 120px);
+  color: var(--rose-neon);
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 60px rgba(220,165,189,0.4), 0 0 120px rgba(220,165,189,0.15);
+  margin-bottom: 12px;
+}
+.hero-subtitle {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.4vw, 16px);
+  text-transform: uppercase;
+  letter-spacing: 0.4em;
+  color: var(--bone-dim);
+  margin-bottom: 40px;
+}
+.hero-thesis {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1.2vw, 15px);
+  color: var(--t1);
+  max-width: 600px;
+  margin: 0 auto 60px;
+  line-height: 1.7;
+}
+.hero-footer {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+
+/* Page 1: The Plane Between */
+.plane-between-content {
+  width: 100%;
+  max-width: 900px;
+  text-align: center;
+}
+.layer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 30px auto 30px;
+  max-width: 760px;
+}
+.layer-band {
+  padding: 20px 28px;
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: center;
+  transition: all 0.6s ease;
+}
+.layer-band.top {
+  color: var(--bone-dim);
+  border-bottom: none;
+  background: rgba(8,8,12,0.6);
+  border-radius: 2px 2px 0 0;
+}
+.layer-band.middle {
+  color: var(--rose-neon);
+  background: rgba(60,30,50,0.2);
+  border-color: var(--rose-dim);
+  box-shadow: 0 0 40px rgba(170,112,136,0.1), inset 0 0 40px rgba(170,112,136,0.05);
+  padding: 28px;
+}
+.layer-band.middle .layer-label {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--rose-neon);
+  margin-bottom: 8px;
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.layer-band.middle .layer-detail {
+  font-size: 11px;
+  color: var(--rose);
+  letter-spacing: 0.08em;
+}
+.layer-band.bottom {
+  color: var(--bone-dim);
+  border-top: none;
+  background: rgba(8,8,12,0.6);
+  border-radius: 0 0 2px 2px;
+}
+.layer-band .layer-title {
+  font-size: 10px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--dream-bright);
+  margin-bottom: 6px;
+}
+.layer-band .layer-items {
+  font-size: 11px;
+  color: var(--t-dim);
+  letter-spacing: 0.04em;
+}
+.plane-thesis {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.1vw, 13px);
+  color: var(--t1);
+  max-width: 640px;
+  margin: 0 auto;
+  line-height: 1.7;
+}
+
+/* Page 2: Two Components */
+.two-comp-content {
+  width: 100%;
+  max-width: 1100px;
+  padding: 0 20px;
+}
+.two-comp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin: 24px 0;
+}
+@media (max-width: 768px) {
+  .two-comp-grid { grid-template-columns: 1fr; }
+}
+.comp-panel {
+  padding: 24px;
+}
+.comp-panel .panel-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(20px, 2.5vw, 30px);
+  margin-bottom: 4px;
+}
+.comp-panel .panel-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  margin-bottom: 16px;
+}
+.comp-panel.roko-panel .panel-title { color: var(--rose-neon); }
+.comp-panel.roko-panel .panel-sub { color: var(--rose-dim); }
+.comp-panel.chain-panel .panel-title { color: var(--bone-hot); }
+.comp-panel.chain-panel .panel-sub { color: var(--bone-dim); }
+
+.comp-panel ul {
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+  line-height: 2;
+}
+.comp-panel ul li::before {
+  content: '';
+  display: inline-block;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  margin-right: 10px;
+  vertical-align: middle;
+}
+.roko-panel ul li::before { background: var(--rose); }
+.chain-panel ul li::before { background: var(--bone); }
+
+.two-comp-bottom {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1vw, 13px);
+  color: var(--t1);
+  text-align: center;
+  max-width: 780px;
+  margin: 0 auto;
+  line-height: 1.7;
+}
+
+/* Page 3: Chain Architecture */
+.chain-content {
+  width: 100%;
+  max-width: 960px;
+  text-align: center;
+}
+.chain-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 20px auto 20px;
+  max-width: 700px;
+}
+.chain-layer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: rgba(8,8,12,0.5);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.chain-layer .layer-num {
+  font-size: 10px;
+  color: var(--rose-dim);
+  width: 20px;
+  flex-shrink: 0;
+}
+.chain-layer .layer-name {
+  color: var(--rose-neon);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  width: 160px;
+  flex-shrink: 0;
+  text-align: left;
+}
+.chain-layer .layer-desc {
+  color: var(--t-dim);
+  font-size: 11px;
+  text-align: left;
+}
+.commonware-quote {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--bone-dim);
+  margin: 16px auto 12px;
+  padding: 12px 20px;
+  border-left: 2px solid var(--bone-dim);
+  text-align: left;
+  max-width: 540px;
+}
+.cw-modules {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dream-bright);
+  letter-spacing: 0.06em;
+  margin-bottom: 16px;
+}
+.block-time-row {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.block-time-item {
+  color: var(--t-dim);
+}
+.block-time-item.highlight {
+  color: var(--rose-neon);
+  text-shadow: 0 0 16px rgba(220,165,189,0.3);
+  font-weight: 500;
+}
+
+/* Page 4: HDC */
+.hdc-content {
+  width: 100%;
+  max-width: 800px;
+  text-align: center;
+}
+.hdc-steps {
+  margin: 20px auto;
+}
+.hdc-step {
+  display: none;
+  text-align: left;
+  padding: 20px 24px;
+  animation: fadeInStep 0.4s ease;
+}
+.hdc-step.active { display: block; }
+@keyframes fadeInStep {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.hdc-step .step-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--rose-dim);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.hdc-step .step-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(18px, 2vw, 24px);
+  color: #d8c8d0;
+  margin-bottom: 12px;
+}
+.hdc-step .step-body {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+  line-height: 1.8;
+}
+.hdc-step code {
+  display: block;
+  background: rgba(8,8,16,0.6);
+  border: 1px solid var(--border);
+  padding: 12px 16px;
+  margin: 10px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--bone);
+  border-radius: 2px;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+.hdc-nav {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.hdc-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: background 0.3s;
+}
+.hdc-dot.active { background: var(--rose); box-shadow: 0 0 8px rgba(170,112,136,0.4); }
+
+/* Page 5: ISFR */
+.isfr-content {
+  width: 100%;
+  max-width: 860px;
+  text-align: center;
+}
+.source-flow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 20px auto;
+  max-width: 700px;
+}
+@media (max-width: 640px) {
+  .source-flow { grid-template-columns: repeat(2, 1fr); }
+}
+.source-card {
+  padding: 16px 12px;
+  text-align: center;
+}
+.source-card .source-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--rose);
+  margin-bottom: 6px;
+}
+.source-card .source-weight {
+  font-family: var(--mono);
+  font-size: 22px;
+  color: var(--rose-neon);
+  font-weight: 300;
+}
+.source-card .source-names {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.isfr-explainer {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1vw, 13px);
+  color: var(--t1);
+  max-width: 600px;
+  margin: 16px auto 0;
+  line-height: 1.7;
+}
+.isfr-gap {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--bone);
+  margin-top: 12px;
+}
+
+/* Page 6: Collective */
+.collective-content {
+  width: 100%;
+  max-width: 800px;
+  text-align: center;
+}
+.slider-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 20px auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+}
+.slider-row input[type="range"] {
+  width: 240px;
+  accent-color: var(--rose);
+  cursor: pointer;
+}
+.slider-value {
+  color: var(--rose-neon);
+  font-size: 18px;
+  min-width: 60px;
+  text-align: right;
+}
+.collective-quote {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.1vw, 14px);
+  color: var(--t1);
+  max-width: 600px;
+  margin: 16px auto 0;
+  line-height: 1.7;
+}
+.collective-quote em {
+  color: var(--rose-neon);
+  font-style: italic;
+}
+.stigmergy-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t-dim);
+  max-width: 560px;
+  margin: 12px auto 0;
+  line-height: 1.6;
+}
+
+/* --- Star canvas overlay for all pages --- */
+#starfield-bg {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<!-- Global star field background -->
+<canvas id="starfield-bg"></canvas>
+
+<!-- Atmospheric overlays -->
+<div class="grain" id="grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">
+  BLOCK <span id="blockNum">--</span>
+</div>
+
+<!-- ============================================================
+     PAGE 0 — HERO
+     ============================================================ -->
+<div class="page active" id="page0">
+  <canvas class="page-canvas" id="canvas0"></canvas>
+  <div class="page-content hero-content">
+    <div class="hero-title">Nunchi</div>
+    <div class="hero-subtitle">Agent Coordination Plane</div>
+    <div class="hero-thesis">The infrastructure layer between AI models and the applications they power.</div>
+    <div class="hero-footer">Series A &middot; 2026</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 1 — THE PLANE BETWEEN
+     ============================================================ -->
+<div class="page" id="page1">
+  <canvas class="page-canvas" id="canvas1"></canvas>
+  <div class="section-tag">Architecture</div>
+  <div class="page-content">
+    <div class="plane-between-content">
+      <div class="headline" style="margin-bottom: 24px;">The plane between the planes.</div>
+      <div class="layer-stack">
+        <div class="layer-band top">
+          <div class="layer-title">Application Layer</div>
+          <div class="layer-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+        </div>
+        <div class="layer-band middle">
+          <div class="layer-label">Agent Coordination Plane</div>
+          <div class="layer-detail">Nunchi &mdash; identity, routing, knowledge, policy, settlement</div>
+        </div>
+        <div class="layer-band bottom">
+          <div class="layer-title">Execution Layer</div>
+          <div class="layer-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+        </div>
+      </div>
+      <div class="plane-thesis">Every adjacent layer is funded. The plane between them is empty. <em>Nunchi fills it.</em></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 2 — TWO COMPONENTS
+     ============================================================ -->
+<div class="page" id="page2">
+  <canvas class="page-canvas" id="canvas2"></canvas>
+  <div class="section-tag">Components</div>
+  <div class="page-content">
+    <div class="two-comp-content">
+      <div class="headline" style="text-align:center; margin-bottom: 20px;">Two components. One architecture.</div>
+      <div class="two-comp-grid">
+        <div class="chassis comp-panel roko-panel">
+          <div class="head"><span>Runtime</span><div class="led"></div></div>
+          <div style="padding: 20px;">
+            <div class="panel-title">Roko</div>
+            <div class="panel-sub">Open-source &middot; Apache 2.0</div>
+            <ul>
+              <li>The cognitive runtime for governed model calls</li>
+              <li>18 crates, 177K lines of Rust</li>
+              <li>CascadeRouter &mdash; cost-aware model routing</li>
+              <li>11 gates, 7 rungs between every call</li>
+              <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+              <li>Deterministic replay</li>
+            </ul>
+          </div>
+        </div>
+        <div class="chassis comp-panel chain-panel">
+          <div class="head"><span>Chain</span><div class="led"></div></div>
+          <div style="padding: 20px;">
+            <div class="panel-title">Nunchi Chain</div>
+            <div class="panel-sub">Verifiable Substrate</div>
+            <ul>
+              <li>Agent-native sovereign EVM L1</li>
+              <li>Built on Commonware ($9M, Haun + Dragonfly)</li>
+              <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+              <li>HDC precompile at 0x09 &mdash; native semantic search</li>
+              <li>ISFR Oracle &mdash; DeFi benchmark by validators</li>
+              <li>Knowledge demurrage &mdash; decay + confirmation</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="two-comp-bottom">Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 3 — CHAIN ARCHITECTURE
+     ============================================================ -->
+<div class="page" id="page3">
+  <canvas class="page-canvas" id="canvas3"></canvas>
+  <div class="section-tag">Chain</div>
+  <div class="page-content">
+    <div class="chain-content">
+      <div class="headline" style="margin-bottom: 16px;">Built on Commonware.</div>
+      <div class="chain-layers">
+        <div class="chain-layer">
+          <div class="layer-num">01</div>
+          <div class="layer-name">Consensus (Simplex)</div>
+          <div class="layer-desc">~50ms blocks, 2 hops notarize, 3 hops finalize</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">02</div>
+          <div class="layer-name">Execution (revm)</div>
+          <div class="layer-desc">Full EVM compatibility, Block-STM parallel execution</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">03</div>
+          <div class="layer-name">Agent Registry (0x08)</div>
+          <div class="layer-desc">On-chain agent identity</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">04</div>
+          <div class="layer-name">HDC Precompile (0x09)</div>
+          <div class="layer-desc">Semantic search at consensus layer</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">05</div>
+          <div class="layer-name">ISFR Oracle (0xA01)</div>
+          <div class="layer-desc">DeFi rate computation</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">06</div>
+          <div class="layer-name">Knowledge Layer</div>
+          <div class="layer-desc">InsightEntry storage, Merkle tree, demurrage</div>
+        </div>
+        <div class="chain-layer">
+          <div class="layer-num">07</div>
+          <div class="layer-name">P2P (authenticated)</div>
+          <div class="layer-desc">Encrypted validator communication</div>
+        </div>
+      </div>
+      <div class="commonware-quote">"Not a framework. An anti-framework. Pick-and-choose Rust primitives."</div>
+      <div class="cw-modules">p2p::authenticated &middot; cryptography::bls12381 &middot; runtime::deterministic &middot; consensus::simplex</div>
+      <div class="block-time-row">
+        <div class="block-time-item">Ethereum 12s</div>
+        <div class="block-time-item">Solana 400ms</div>
+        <div class="block-time-item">Sui ~390ms</div>
+        <div class="block-time-item highlight">Nunchi ~50ms</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 4 — HDC INTERACTIVE
+     ============================================================ -->
+<div class="page" id="page4">
+  <canvas class="page-canvas" id="canvas4"></canvas>
+  <div class="section-tag">HDC</div>
+  <div class="page-content">
+    <div class="hdc-content">
+      <div class="headline" style="margin-bottom: 8px;">Hyperdimensional Computing</div>
+      <div class="chassis" style="max-width: 660px; margin: 0 auto;">
+        <div class="head"><span>Walkthrough</span><div class="led"></div></div>
+        <div class="hdc-steps" id="hdcSteps">
+          <div class="hdc-step active" data-step="0">
+            <div class="step-num">Step 1 of 5</div>
+            <div class="step-title">An agent finds a Uniswap transaction</div>
+            <div class="step-body">
+              <code>swap(USDC -> WETH, 50,000 USDC, pool 0x88e6...)
+gas: 142,891 &middot; block: 19,847,221</code>
+            </div>
+          </div>
+          <div class="hdc-step" data-step="1">
+            <div class="step-num">Step 2 of 5</div>
+            <div class="step-title">Encode to hypervector</div>
+            <div class="step-body">
+              Each concept gets a random 10,000-bit base vector, then:<br><br>
+              <strong>Bind:</strong> swap XOR USDC XOR WETH = transaction identity<br>
+              <strong>Permute:</strong> shift for sequence position in episode<br>
+              <strong>Bundle:</strong> majority vote combines into single vector
+            </div>
+          </div>
+          <div class="hdc-step" data-step="2">
+            <div class="step-num">Step 3 of 5</div>
+            <div class="step-title">Post to chain</div>
+            <div class="step-body">
+              <code>InsightEntry { content, hypervector (1,250 bytes), decay_params }
+  -> Transaction -> Validator -> sm_root updated</code>
+            </div>
+          </div>
+          <div class="hdc-step" data-step="3">
+            <div class="step-num">Step 4 of 5</div>
+            <div class="step-title">Future agent searches</div>
+            <div class="step-body">
+              Query: <em>"Uniswap USDC pool large swap"</em><br><br>
+              Encode query to hypervector<br>
+              Hamming distance search across all entries<br>
+              Top-K results in <strong>0.17ms</strong> (vs 12ms for float embeddings)
+            </div>
+          </div>
+          <div class="hdc-step" data-step="4">
+            <div class="step-num">Step 5 of 5</div>
+            <div class="step-title">Results compound</div>
+            <div class="step-body">
+              10 confirmations = 6x half-life.<br><br>
+              Knowledge many agents verify becomes <em>long-lived</em>. Unconfirmed insights decay. The store is self-curating.
+            </div>
+          </div>
+        </div>
+        <div class="hdc-nav" id="hdcNav"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 5 — ISFR
+     ============================================================ -->
+<div class="page" id="page5">
+  <canvas class="page-canvas" id="canvas5"></canvas>
+  <div class="section-tag">ISFR</div>
+  <div class="page-content">
+    <div class="isfr-content">
+      <div class="headline" style="margin-bottom: 6px;">The first of many.</div>
+      <div style="font-family: var(--mono); font-size: 11px; color: var(--t-dim); letter-spacing: 0.1em; margin-bottom: 20px;">INTERNET SECURED FUNDING RATE</div>
+      <div class="source-flow">
+        <div class="chassis source-card">
+          <div class="source-label">Lending</div>
+          <div class="source-weight">60%</div>
+          <div class="source-names">Aave &middot; Compound<br>Spark &middot; Morpho</div>
+        </div>
+        <div class="chassis source-card">
+          <div class="source-label">Structured</div>
+          <div class="source-weight">25%</div>
+          <div class="source-names">Pendle &middot; Spectra<br>Term Finance</div>
+        </div>
+        <div class="chassis source-card">
+          <div class="source-label">Funding</div>
+          <div class="source-weight">10%</div>
+          <div class="source-names">dYdX &middot; Hyperliquid<br>GMX</div>
+        </div>
+        <div class="chassis source-card">
+          <div class="source-label">Staking</div>
+          <div class="source-weight">5%</div>
+          <div class="source-names">Lido &middot; Rocket Pool<br>Coinbase</div>
+        </div>
+      </div>
+      <div class="isfr-gap">The $668 trillion gap: traditional finance has SOFR. DeFi has nothing comparable.</div>
+      <div class="isfr-explainer">"First of many" &mdash; ISFR proves the pattern. Next: volatility indices, credit spreads, cross-chain rates. Each new index = new revenue line, same infrastructure.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     PAGE 6 — COLLECTIVE INTELLIGENCE
+     ============================================================ -->
+<div class="page" id="page6">
+  <canvas class="page-canvas" id="canvas6"></canvas>
+  <div class="section-tag">Collective</div>
+  <div class="page-content">
+    <div class="collective-content">
+      <div class="headline" style="margin-bottom: 16px;">Every agent makes every agent smarter.</div>
+      <div class="slider-row">
+        <span>Agents:</span>
+        <input type="range" id="agentSlider" min="5" max="1000" value="5" step="5">
+        <div class="slider-value" id="agentCount">5</div>
+      </div>
+      <canvas id="collectiveCanvas" width="700" height="320" style="border: 1px solid var(--border); border-radius: 2px; max-width: 100%;"></canvas>
+      <div class="collective-quote"><em>"The thousandth agent pulls 30,000 tokens of context the first agent never had."</em></div>
+      <div class="stigmergy-note">Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents. Demurrage = pheromone evaporation. Confirmation = reinforcement. More agents = denser galaxy, more structure.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- ============================================================
+     SCRIPTS
+     ============================================================ -->
+<script type="module">
+import * as THREE from 'three';
+
+// ----------------------------------------------------------------
+// GLOBALS
+// ----------------------------------------------------------------
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+let blockNumber = 0;
+let blockModulation = 0;
+
+// Three.js per-page scenes
+const scenes = {};
+const cameras = {};
+const renderers = {};
+const animationFrames = {};
+const pageMeshes = {};
+
+// ----------------------------------------------------------------
+// NAVIGATION — with bug fixes from spec
+// ----------------------------------------------------------------
+function initNav() {
+  const dotsEl = document.getElementById('navDots');
+  for (let i = 0; i < TOTAL_PAGES; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.addEventListener('click', () => goToPage(i));
+    dotsEl.appendChild(dot);
+  }
+  document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+  document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ') {
+      e.preventDefault();
+      // On HDC page, advance sub-steps first
+      if (currentPage === 4 && advanceHDCStep()) return;
+      goToPage(currentPage + 1);
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (currentPage === 4 && retreatHDCStep()) return;
+      goToPage(currentPage - 1);
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); goToPage(currentPage + 1); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); goToPage(currentPage - 1); }
+  });
+}
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+function onPageEnter(idx) {
+  // Start animation for the entered page, pause others
+  for (let i = 0; i < TOTAL_PAGES; i++) {
+    if (i === idx) {
+      startPageAnimation(i);
+    }
+  }
+  // Update collective canvas if entering page 6
+  if (idx === 6) drawCollective(parseInt(document.getElementById('agentSlider').value));
+}
+
+// ----------------------------------------------------------------
+// HDC SUB-STEP NAV
+// ----------------------------------------------------------------
+let hdcStep = 0;
+const HDC_TOTAL = 5;
+
+function initHDC() {
+  const nav = document.getElementById('hdcNav');
+  for (let i = 0; i < HDC_TOTAL; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'hdc-dot' + (i === 0 ? ' active' : '');
+    dot.addEventListener('click', () => setHDCStep(i));
+    nav.appendChild(dot);
+  }
+}
+
+function setHDCStep(s) {
+  hdcStep = s;
+  document.querySelectorAll('.hdc-step').forEach((el, i) => {
+    el.classList.toggle('active', i === s);
+  });
+  document.querySelectorAll('.hdc-dot').forEach((d, i) => {
+    d.classList.toggle('active', i === s);
+  });
+  // Update constellation for this step
+  updateHDCConstellation(s);
+}
+
+function advanceHDCStep() {
+  if (hdcStep < HDC_TOTAL - 1) { setHDCStep(hdcStep + 1); return true; }
+  return false;
+}
+function retreatHDCStep() {
+  if (hdcStep > 0) { setHDCStep(hdcStep - 1); return true; }
+  return false;
+}
+
+// ----------------------------------------------------------------
+// GLOBAL STAR FIELD (fixed background — deep parallax)
+// ----------------------------------------------------------------
+function initGlobalStarfield() {
+  const canvas = document.getElementById('starfield-bg');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  const layers = [[], [], []]; // 3 depth layers
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    generateStars();
+  }
+
+  function generateStars() {
+    const counts = [180, 120, 60]; // far, mid, near
+    const colors = [
+      'rgba(152,128,144,', // rose-tinted dim
+      'rgba(200,184,144,', // bone-tinted
+      'rgba(220,165,189,'  // rose-neon
+    ];
+    for (let l = 0; l < 3; l++) {
+      layers[l] = [];
+      for (let i = 0; i < counts[l]; i++) {
+        layers[l].push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          r: 0.3 + Math.random() * (l === 2 ? 1.5 : l === 1 ? 0.8 : 0.4),
+          color: colors[l],
+          twinkle: Math.random() * Math.PI * 2,
+          twinkleSpeed: 0.005 + Math.random() * 0.015
+        });
+      }
+    }
+  }
+
+  let mouseX = 0, mouseY = 0;
+  document.addEventListener('mousemove', (e) => {
+    mouseX = (e.clientX / w - 0.5) * 2;
+    mouseY = (e.clientY / h - 0.5) * 2;
+  });
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+    const parallaxScale = [2, 5, 10]; // far, mid, near
+
+    for (let l = 0; l < 3; l++) {
+      const px = mouseX * parallaxScale[l];
+      const py = mouseY * parallaxScale[l];
+      for (const star of layers[l]) {
+        star.twinkle += star.twinkleSpeed;
+        const alpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(star.twinkle));
+        const sx = star.x + px;
+        const sy = star.y + py;
+        ctx.beginPath();
+        ctx.arc(sx, sy, star.r, 0, Math.PI * 2);
+        ctx.fillStyle = star.color + alpha + ')';
+        ctx.fill();
+        // Cross-shaped glow on brighter stars
+        if (l === 2 && star.r > 1) {
+          ctx.strokeStyle = star.color + (alpha * 0.3) + ')';
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(sx - star.r * 3, sy);
+          ctx.lineTo(sx + star.r * 3, sy);
+          ctx.moveTo(sx, sy - star.r * 3);
+          ctx.lineTo(sx, sy + star.r * 3);
+          ctx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  draw();
+}
+
+// ----------------------------------------------------------------
+// PAGE 0 — HERO: Constellation spelling "NUNCHI" + rotating nebula
+// ----------------------------------------------------------------
+function initPage0() {
+  const canvas = document.getElementById('canvas0');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 5;
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[0] = scene; cameras[0] = camera; renderers[0] = renderer;
+
+  // Nebula cloud — rotating particle cloud
+  const nebulaGeo = new THREE.BufferGeometry();
+  const nebulaCount = 3000;
+  const nebulaPos = new Float32Array(nebulaCount * 3);
+  const nebulaColors = new Float32Array(nebulaCount * 3);
+  const nebulaSizes = new Float32Array(nebulaCount);
+
+  for (let i = 0; i < nebulaCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.random() * Math.PI;
+    const r = 1.5 + Math.random() * 2.5;
+    nebulaPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+    nebulaPos[i*3+1] = (r * Math.sin(phi) * Math.sin(theta)) * 0.4;
+    nebulaPos[i*3+2] = r * Math.cos(phi) * 0.6;
+
+    // rose/dream nebula colors
+    const t = Math.random();
+    if (t < 0.4) {
+      nebulaColors[i*3] = 0.67 + Math.random() * 0.15;
+      nebulaColors[i*3+1] = 0.38 + Math.random() * 0.1;
+      nebulaColors[i*3+2] = 0.55 + Math.random() * 0.15;
+    } else if (t < 0.7) {
+      nebulaColors[i*3] = 0.35 + Math.random() * 0.1;
+      nebulaColors[i*3+1] = 0.35 + Math.random() * 0.1;
+      nebulaColors[i*3+2] = 0.5 + Math.random() * 0.12;
+    } else {
+      nebulaColors[i*3] = 0.86 + Math.random() * 0.1;
+      nebulaColors[i*3+1] = 0.65 + Math.random() * 0.1;
+      nebulaColors[i*3+2] = 0.74 + Math.random() * 0.1;
+    }
+    nebulaSizes[i] = 3 + Math.random() * 8;
+  }
+  nebulaGeo.setAttribute('position', new THREE.BufferAttribute(nebulaPos, 3));
+  nebulaGeo.setAttribute('color', new THREE.BufferAttribute(nebulaColors, 3));
+  nebulaGeo.setAttribute('size', new THREE.BufferAttribute(nebulaSizes, 1));
+
+  const nebulaMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (200.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+        vAlpha = clamp(1.0 - length(position) / 4.0, 0.0, 1.0) * 0.15;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * vAlpha;
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const nebula = new THREE.Points(nebulaGeo, nebulaMat);
+  scene.add(nebula);
+
+  // Constellation stars for foreground decoration
+  const constellationGeo = new THREE.BufferGeometry();
+  const cStarCount = 200;
+  const cPos = new Float32Array(cStarCount * 3);
+  const cSizes = new Float32Array(cStarCount);
+  const cColors = new Float32Array(cStarCount * 3);
+
+  for (let i = 0; i < cStarCount; i++) {
+    cPos[i*3] = (Math.random() - 0.5) * 12;
+    cPos[i*3+1] = (Math.random() - 0.5) * 8;
+    cPos[i*3+2] = (Math.random() - 0.5) * 6;
+    cSizes[i] = 1.5 + Math.random() * 4;
+    const bright = 0.5 + Math.random() * 0.5;
+    cColors[i*3] = bright;
+    cColors[i*3+1] = bright * (0.7 + Math.random() * 0.3);
+    cColors[i*3+2] = bright * (0.8 + Math.random() * 0.2);
+  }
+  constellationGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3));
+  constellationGeo.setAttribute('size', new THREE.BufferAttribute(cSizes, 1));
+  constellationGeo.setAttribute('color', new THREE.BufferAttribute(cColors, 3));
+
+  const cMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (150.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float core = smoothstep(0.5, 0.0, d);
+        float glow = smoothstep(1.0, 0.0, d) * 0.4;
+        float a = core + glow;
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const cStars = new THREE.Points(constellationGeo, cMat);
+  scene.add(cStars);
+
+  // Constellation lines spelling "NUNCHI" — define letter paths
+  const letterPaths = buildNunchiLetters();
+  const lineMat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(0.86, 0.65, 0.74),
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending
+  });
+
+  const letterGroup = new THREE.Group();
+  letterPaths.forEach(pts => {
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const line = new THREE.Line(geo, lineMat.clone());
+    letterGroup.add(line);
+  });
+  // Add dots at each vertex
+  const dotPositions = [];
+  letterPaths.forEach(pts => pts.forEach(p => dotPositions.push(p.x, p.y, p.z)));
+  const dotGeo = new THREE.BufferGeometry();
+  dotGeo.setAttribute('position', new THREE.Float32BufferAttribute(dotPositions, 3));
+  const dotMat = new THREE.PointsMaterial({
+    color: new THREE.Color(0.86, 0.65, 0.74),
+    size: 4,
+    transparent: true,
+    opacity: 0.7,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true
+  });
+  letterGroup.add(new THREE.Points(dotGeo, dotMat));
+
+  letterGroup.position.y = 1.6;
+  letterGroup.scale.set(0.6, 0.6, 0.6);
+  scene.add(letterGroup);
+
+  pageMeshes[0] = { nebula, cStars, letterGroup };
+
+  function animate() {
+    animationFrames[0] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    nebula.rotation.y = t * 0.03;
+    nebula.rotation.x = Math.sin(t * 0.02) * 0.05;
+    cStars.rotation.y = t * 0.005;
+    letterGroup.children.forEach((child, i) => {
+      if (child.material && child.material.opacity !== undefined) {
+        child.material.opacity = 0.25 + 0.15 * Math.sin(t * 0.5 + i * 0.3);
+      }
+    });
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+function buildNunchiLetters() {
+  // Simple constellation-style letter forms for N-U-N-C-H-I
+  const s = 0.55; // scale
+  const sp = 0.95; // spacing
+  const xStart = -2.7;
+  const letters = [];
+
+  // N
+  const ox0 = xStart;
+  letters.push([
+    new THREE.Vector3(ox0, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox0, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox0 + 0.6, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox0 + 0.6, 1, 0).multiplyScalar(s),
+  ]);
+
+  // U
+  const ox1 = xStart + sp;
+  letters.push([
+    new THREE.Vector3(ox1, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox1, -0.6, 0).multiplyScalar(s),
+    new THREE.Vector3(ox1 + 0.3, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox1 + 0.6, -0.6, 0).multiplyScalar(s),
+    new THREE.Vector3(ox1 + 0.6, 1, 0).multiplyScalar(s),
+  ]);
+
+  // N
+  const ox2 = xStart + sp * 2;
+  letters.push([
+    new THREE.Vector3(ox2, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox2, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox2 + 0.6, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox2 + 0.6, 1, 0).multiplyScalar(s),
+  ]);
+
+  // C
+  const ox3 = xStart + sp * 3;
+  letters.push([
+    new THREE.Vector3(ox3 + 0.6, 0.8, 0).multiplyScalar(s),
+    new THREE.Vector3(ox3 + 0.15, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox3, 0.5, 0).multiplyScalar(s),
+    new THREE.Vector3(ox3, -0.5, 0).multiplyScalar(s),
+    new THREE.Vector3(ox3 + 0.15, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox3 + 0.6, -0.8, 0).multiplyScalar(s),
+  ]);
+
+  // H
+  const ox4 = xStart + sp * 4;
+  letters.push([
+    new THREE.Vector3(ox4, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox4, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox4, 0, 0).multiplyScalar(s),
+    new THREE.Vector3(ox4 + 0.6, 0, 0).multiplyScalar(s),
+    new THREE.Vector3(ox4 + 0.6, 1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox4 + 0.6, -1, 0).multiplyScalar(s),
+  ]);
+
+  // I
+  const ox5 = xStart + sp * 5;
+  letters.push([
+    new THREE.Vector3(ox5 + 0.3, -1, 0).multiplyScalar(s),
+    new THREE.Vector3(ox5 + 0.3, 1, 0).multiplyScalar(s),
+  ]);
+
+  return letters;
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 1 — ORBITAL PLANES (The Plane Between)
+// ----------------------------------------------------------------
+function initPage1() {
+  const canvas = document.getElementById('canvas1');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 2, 6);
+  camera.lookAt(0, 0, 0);
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[1] = scene; cameras[1] = camera; renderers[1] = renderer;
+
+  // Three orbital rings — inner (Execution), middle (Nunchi), outer (Application)
+  const rings = [];
+  const ringData = [
+    { radius: 1.2, color: new THREE.Color(0.35, 0.35, 0.5), particleCount: 80, label: 'Execution', y: -0.6, speed: 0.3 },
+    { radius: 2.0, color: new THREE.Color(0.86, 0.65, 0.74), particleCount: 150, label: 'Nunchi', y: 0, speed: 0.2 },
+    { radius: 2.8, color: new THREE.Color(0.78, 0.72, 0.56), particleCount: 100, label: 'Application', y: 0.6, speed: 0.15 }
+  ];
+
+  ringData.forEach(rd => {
+    // Ring line
+    const ringGeo = new THREE.BufferGeometry();
+    const ringPts = [];
+    for (let i = 0; i <= 128; i++) {
+      const a = (i / 128) * Math.PI * 2;
+      ringPts.push(new THREE.Vector3(Math.cos(a) * rd.radius, rd.y, Math.sin(a) * rd.radius));
+    }
+    ringGeo.setFromPoints(ringPts);
+    const ringLine = new THREE.Line(ringGeo, new THREE.LineBasicMaterial({
+      color: rd.color,
+      transparent: true,
+      opacity: rd.label === 'Nunchi' ? 0.5 : 0.2,
+      blending: THREE.AdditiveBlending
+    }));
+    scene.add(ringLine);
+
+    // Particles orbiting
+    const pGeo = new THREE.BufferGeometry();
+    const pPos = new Float32Array(rd.particleCount * 3);
+    const pSizes = new Float32Array(rd.particleCount);
+    const pAngles = new Float32Array(rd.particleCount);
+    for (let i = 0; i < rd.particleCount; i++) {
+      const a = Math.random() * Math.PI * 2;
+      pAngles[i] = a;
+      const rr = rd.radius + (Math.random() - 0.5) * 0.3;
+      pPos[i*3] = Math.cos(a) * rr;
+      pPos[i*3+1] = rd.y + (Math.random() - 0.5) * 0.15;
+      pPos[i*3+2] = Math.sin(a) * rr;
+      pSizes[i] = rd.label === 'Nunchi' ? (2 + Math.random() * 4) : (1 + Math.random() * 2);
+    }
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    pGeo.setAttribute('size', new THREE.BufferAttribute(pSizes, 1));
+
+    const pMat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: rd.color } },
+      vertexShader: `
+        attribute float size;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = size * (120.0 / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        void main() {
+          float d = length(gl_PointCoord - 0.5) * 2.0;
+          float a = smoothstep(1.0, 0.0, d);
+          gl_FragColor = vec4(uColor, a * 0.6);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+
+    const particles = new THREE.Points(pGeo, pMat);
+    scene.add(particles);
+
+    rings.push({ particles, angles: pAngles, radius: rd.radius, y: rd.y, speed: rd.speed, count: rd.particleCount });
+  });
+
+  pageMeshes[1] = { rings };
+
+  function animate() {
+    animationFrames[1] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    rings.forEach(ring => {
+      const pos = ring.particles.geometry.attributes.position.array;
+      for (let i = 0; i < ring.count; i++) {
+        ring.angles[i] += ring.speed * 0.01;
+        const rr = ring.radius + Math.sin(ring.angles[i] * 3 + i) * 0.1;
+        pos[i*3] = Math.cos(ring.angles[i]) * rr;
+        pos[i*3+2] = Math.sin(ring.angles[i]) * rr;
+      }
+      ring.particles.geometry.attributes.position.needsUpdate = true;
+    });
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 2 — BINARY STAR SYSTEM (Two Components)
+// ----------------------------------------------------------------
+function initPage2() {
+  const canvas = document.getElementById('canvas2');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 6;
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[2] = scene; cameras[2] = camera; renderers[2] = renderer;
+
+  // Roko — bright hot star (rose-neon, smaller, energetic)
+  const rokoGeo = new THREE.BufferGeometry();
+  const rokoCount = 600;
+  const rokoPos = new Float32Array(rokoCount * 3);
+  const rokoSizes = new Float32Array(rokoCount);
+  for (let i = 0; i < rokoCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 0.3 + Math.random() * 0.5;
+    rokoPos[i*3] = r * Math.sin(phi) * Math.cos(theta) - 2;
+    rokoPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    rokoPos[i*3+2] = r * Math.cos(phi);
+    rokoSizes[i] = 1 + Math.random() * 3;
+  }
+  rokoGeo.setAttribute('position', new THREE.BufferAttribute(rokoPos, 3));
+  rokoGeo.setAttribute('size', new THREE.BufferAttribute(rokoSizes, 1));
+
+  const rokoMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;
+      uniform float uTime;
+      varying float vDist;
+      void main() {
+        vec3 p = position;
+        float d = length(p - vec3(-2.0, 0.0, 0.0));
+        vDist = d;
+        p += normalize(p - vec3(-2.0, 0.0, 0.0)) * sin(uTime * 3.0 + d * 8.0) * 0.05;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = size * (120.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying float vDist;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        vec3 col = mix(vec3(0.95, 0.75, 0.85), vec3(0.86, 0.45, 0.6), vDist * 1.5);
+        gl_FragColor = vec4(col, a * 0.7);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const rokoStar = new THREE.Points(rokoGeo, rokoMat);
+  scene.add(rokoStar);
+
+  // Chain — cool red giant (bone-colored, larger, massive)
+  const chainGeo = new THREE.BufferGeometry();
+  const chainCount = 800;
+  const chainPos = new Float32Array(chainCount * 3);
+  const chainSizes = new Float32Array(chainCount);
+  for (let i = 0; i < chainCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 0.5 + Math.random() * 0.8;
+    chainPos[i*3] = r * Math.sin(phi) * Math.cos(theta) + 2;
+    chainPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    chainPos[i*3+2] = r * Math.cos(phi);
+    chainSizes[i] = 1.5 + Math.random() * 3.5;
+  }
+  chainGeo.setAttribute('position', new THREE.BufferAttribute(chainPos, 3));
+  chainGeo.setAttribute('size', new THREE.BufferAttribute(chainSizes, 1));
+
+  const chainMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;
+      uniform float uTime;
+      varying float vDist;
+      void main() {
+        vec3 p = position;
+        float d = length(p - vec3(2.0, 0.0, 0.0));
+        vDist = d;
+        p += normalize(p - vec3(2.0, 0.0, 0.0)) * sin(uTime * 1.5 + d * 5.0) * 0.03;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = size * (120.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying float vDist;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        vec3 col = mix(vec3(0.9, 0.83, 0.65), vec3(0.78, 0.6, 0.35), vDist);
+        gl_FragColor = vec4(col, a * 0.55);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const chainStar = new THREE.Points(chainGeo, chainMat);
+  scene.add(chainStar);
+
+  // Matter stream between them
+  const streamGeo = new THREE.BufferGeometry();
+  const streamCount = 200;
+  const streamPos = new Float32Array(streamCount * 3);
+  const streamSizes = new Float32Array(streamCount);
+  const streamPhases = new Float32Array(streamCount);
+  for (let i = 0; i < streamCount; i++) {
+    streamPhases[i] = Math.random() * Math.PI * 2;
+    const t = Math.random();
+    streamPos[i*3] = -2 + t * 4;
+    streamPos[i*3+1] = (Math.random() - 0.5) * 0.4;
+    streamPos[i*3+2] = (Math.random() - 0.5) * 0.4;
+    streamSizes[i] = 1 + Math.random() * 2;
+  }
+  streamGeo.setAttribute('position', new THREE.BufferAttribute(streamPos, 3));
+  streamGeo.setAttribute('size', new THREE.BufferAttribute(streamSizes, 1));
+
+  const streamMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (100.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.4;
+        gl_FragColor = vec4(0.85, 0.65, 0.75, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const stream = new THREE.Points(streamGeo, streamMat);
+  scene.add(stream);
+
+  pageMeshes[2] = { rokoStar, chainStar, stream, streamPhases };
+
+  function animate() {
+    animationFrames[2] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    rokoMat.uniforms.uTime.value = t;
+    chainMat.uniforms.uTime.value = t;
+
+    // Animate matter stream
+    const sp = stream.geometry.attributes.position.array;
+    for (let i = 0; i < streamCount; i++) {
+      const phase = streamPhases[i];
+      const prog = ((t * 0.3 + phase) % 1);
+      sp[i*3] = -2 + prog * 4;
+      sp[i*3+1] = Math.sin(prog * Math.PI * 4 + phase * 3) * 0.2 * Math.sin(prog * Math.PI);
+      sp[i*3+2] = Math.cos(prog * Math.PI * 3 + phase * 5) * 0.15 * Math.sin(prog * Math.PI);
+    }
+    stream.geometry.attributes.position.needsUpdate = true;
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 3 — SOLAR SYSTEM (Chain Architecture)
+// ----------------------------------------------------------------
+function initPage3() {
+  const canvas = document.getElementById('canvas3');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 3, 6);
+  camera.lookAt(0, 0, 0);
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[3] = scene; cameras[3] = camera; renderers[3] = renderer;
+
+  // Simplex sun core
+  const sunGeo = new THREE.BufferGeometry();
+  const sunCount = 400;
+  const sunPos = new Float32Array(sunCount * 3);
+  const sunSizes = new Float32Array(sunCount);
+  for (let i = 0; i < sunCount; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = Math.random() * 0.4;
+    sunPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+    sunPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    sunPos[i*3+2] = r * Math.cos(phi);
+    sunSizes[i] = 2 + Math.random() * 5;
+  }
+  sunGeo.setAttribute('position', new THREE.BufferAttribute(sunPos, 3));
+  sunGeo.setAttribute('size', new THREE.BufferAttribute(sunSizes, 1));
+
+  const sunMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;
+      uniform float uTime;
+      void main() {
+        vec3 p = position;
+        p += normalize(p) * sin(uTime * 2.0 + length(p) * 10.0) * 0.04;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = size * (150.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        vec3 col = vec3(0.95, 0.75, 0.85);
+        gl_FragColor = vec4(col, a * 0.8);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const sun = new THREE.Points(sunGeo, sunMat);
+  scene.add(sun);
+
+  // Inner planets (precompiles) — 3 orbiting dots
+  const planetData = [
+    { radius: 1.0, speed: 0.5, color: new THREE.Color(0.86, 0.65, 0.74), size: 6 },
+    { radius: 1.4, speed: 0.35, color: new THREE.Color(0.67, 0.44, 0.53), size: 5 },
+    { radius: 1.8, speed: 0.25, color: new THREE.Color(0.48, 0.31, 0.42), size: 4 }
+  ];
+
+  const planets = planetData.map(pd => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3));
+    const mat = new THREE.PointsMaterial({
+      color: pd.color,
+      size: pd.size,
+      transparent: true,
+      opacity: 0.8,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true
+    });
+    const p = new THREE.Points(geo, mat);
+    scene.add(p);
+
+    // Orbit ring
+    const oGeo = new THREE.BufferGeometry();
+    const oPts = [];
+    for (let i = 0; i <= 96; i++) {
+      const a = (i / 96) * Math.PI * 2;
+      oPts.push(new THREE.Vector3(Math.cos(a) * pd.radius, 0, Math.sin(a) * pd.radius));
+    }
+    oGeo.setFromPoints(oPts);
+    const oLine = new THREE.Line(oGeo, new THREE.LineBasicMaterial({
+      color: pd.color,
+      transparent: true,
+      opacity: 0.12,
+      blending: THREE.AdditiveBlending
+    }));
+    scene.add(oLine);
+
+    return { mesh: p, ...pd, angle: Math.random() * Math.PI * 2 };
+  });
+
+  // Asteroid belt (knowledge layer)
+  const beltGeo = new THREE.BufferGeometry();
+  const beltCount = 300;
+  const beltPos = new Float32Array(beltCount * 3);
+  const beltSizes = new Float32Array(beltCount);
+  const beltAngles = new Float32Array(beltCount);
+  for (let i = 0; i < beltCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    beltAngles[i] = a;
+    const r = 2.4 + (Math.random() - 0.5) * 0.5;
+    beltPos[i*3] = Math.cos(a) * r;
+    beltPos[i*3+1] = (Math.random() - 0.5) * 0.15;
+    beltPos[i*3+2] = Math.sin(a) * r;
+    beltSizes[i] = 0.5 + Math.random() * 1.5;
+  }
+  beltGeo.setAttribute('position', new THREE.BufferAttribute(beltPos, 3));
+  beltGeo.setAttribute('size', new THREE.BufferAttribute(beltSizes, 1));
+
+  const beltMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (100.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.4;
+        gl_FragColor = vec4(0.78, 0.72, 0.56, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const belt = new THREE.Points(beltGeo, beltMat);
+  scene.add(belt);
+
+  // Outer planets (P2P)
+  const outerGeo = new THREE.BufferGeometry();
+  const outerCount = 40;
+  const outerPos = new Float32Array(outerCount * 3);
+  const outerSizes = new Float32Array(outerCount);
+  const outerAngles = new Float32Array(outerCount);
+  for (let i = 0; i < outerCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    outerAngles[i] = a;
+    const r = 3.2 + Math.random() * 0.4;
+    outerPos[i*3] = Math.cos(a) * r;
+    outerPos[i*3+1] = (Math.random() - 0.5) * 0.1;
+    outerPos[i*3+2] = Math.sin(a) * r;
+    outerSizes[i] = 1 + Math.random() * 2;
+  }
+  outerGeo.setAttribute('position', new THREE.BufferAttribute(outerPos, 3));
+  outerGeo.setAttribute('size', new THREE.BufferAttribute(outerSizes, 1));
+
+  const outerMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (100.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.35;
+        gl_FragColor = vec4(0.47, 0.47, 0.63, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const outer = new THREE.Points(outerGeo, outerMat);
+  scene.add(outer);
+
+  pageMeshes[3] = { sun, planets, belt, beltAngles, outer, outerAngles, beltCount, outerCount };
+
+  function animate() {
+    animationFrames[3] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    sunMat.uniforms.uTime.value = t;
+
+    // Orbit planets
+    planets.forEach(p => {
+      p.angle += p.speed * 0.01;
+      const pos = p.mesh.geometry.attributes.position.array;
+      pos[0] = Math.cos(p.angle) * p.radius;
+      pos[1] = 0;
+      pos[2] = Math.sin(p.angle) * p.radius;
+      p.mesh.geometry.attributes.position.needsUpdate = true;
+    });
+
+    // Rotate belt
+    const bp = belt.geometry.attributes.position.array;
+    for (let i = 0; i < beltCount; i++) {
+      beltAngles[i] += 0.001;
+      const r = 2.4 + Math.sin(beltAngles[i] * 5 + i) * 0.15;
+      bp[i*3] = Math.cos(beltAngles[i]) * r;
+      bp[i*3+2] = Math.sin(beltAngles[i]) * r;
+    }
+    belt.geometry.attributes.position.needsUpdate = true;
+
+    // Rotate outer
+    const op = outer.geometry.attributes.position.array;
+    for (let i = 0; i < outerCount; i++) {
+      outerAngles[i] += 0.0005;
+      const r = 3.2 + Math.sin(outerAngles[i] * 3 + i) * 0.15;
+      op[i*3] = Math.cos(outerAngles[i]) * r;
+      op[i*3+2] = Math.sin(outerAngles[i]) * r;
+    }
+    outer.geometry.attributes.position.needsUpdate = true;
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 4 — STAR CHART (HDC Interactive)
+// ----------------------------------------------------------------
+function initPage4() {
+  const canvas = document.getElementById('canvas4');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 5;
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[4] = scene; cameras[4] = camera; renderers[4] = renderer;
+
+  // Background constellation field
+  const fieldGeo = new THREE.BufferGeometry();
+  const fieldCount = 500;
+  const fieldPos = new Float32Array(fieldCount * 3);
+  const fieldSizes = new Float32Array(fieldCount);
+  const fieldColors = new Float32Array(fieldCount * 3);
+  for (let i = 0; i < fieldCount; i++) {
+    fieldPos[i*3] = (Math.random() - 0.5) * 14;
+    fieldPos[i*3+1] = (Math.random() - 0.5) * 10;
+    fieldPos[i*3+2] = (Math.random() - 0.5) * 6;
+    fieldSizes[i] = 0.5 + Math.random() * 2;
+    const b = 0.3 + Math.random() * 0.4;
+    fieldColors[i*3] = b;
+    fieldColors[i*3+1] = b * 0.8;
+    fieldColors[i*3+2] = b * 0.9;
+  }
+  fieldGeo.setAttribute('position', new THREE.BufferAttribute(fieldPos, 3));
+  fieldGeo.setAttribute('size', new THREE.BufferAttribute(fieldSizes, 1));
+  fieldGeo.setAttribute('color', new THREE.BufferAttribute(fieldColors, 3));
+
+  const fieldMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (100.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.5;
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const field = new THREE.Points(fieldGeo, fieldMat);
+  scene.add(field);
+
+  // Active constellation — changes per step
+  const activeGroup = new THREE.Group();
+  scene.add(activeGroup);
+
+  pageMeshes[4] = { field, activeGroup, scene };
+
+  // Build initial constellation
+  updateHDCConstellation(0);
+
+  function animate() {
+    animationFrames[4] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    field.rotation.y = t * 0.008;
+    activeGroup.rotation.y = Math.sin(t * 0.15) * 0.05;
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+function updateHDCConstellation(step) {
+  if (!pageMeshes[4]) return;
+  const group = pageMeshes[4].activeGroup;
+  // Clear old
+  while (group.children.length > 0) {
+    const c = group.children[0];
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+    group.remove(c);
+  }
+
+  // Each step builds a different constellation pattern
+  const constellations = [
+    // Step 1: Single star cluster (the transaction)
+    () => {
+      const pts = [];
+      for (let i = 0; i < 8; i++) {
+        pts.push(new THREE.Vector3(
+          (Math.random() - 0.5) * 0.8,
+          (Math.random() - 0.5) * 0.6,
+          (Math.random() - 0.5) * 0.3
+        ));
+      }
+      addConstellationStars(group, pts, new THREE.Color(0.86, 0.65, 0.74), 4);
+      addConstellationLines(group, pts, new THREE.Color(0.86, 0.65, 0.74), 0.3);
+    },
+    // Step 2: XOR / bind pattern — two clusters merging
+    () => {
+      const left = [], right = [], merged = [];
+      for (let i = 0; i < 6; i++) {
+        left.push(new THREE.Vector3(-1.5 + Math.random() * 0.4, (Math.random() - 0.5) * 0.8, 0));
+        right.push(new THREE.Vector3(1.5 + Math.random() * 0.4, (Math.random() - 0.5) * 0.8, 0));
+        merged.push(new THREE.Vector3((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.4 - 1.5, 0));
+      }
+      addConstellationStars(group, left, new THREE.Color(0.67, 0.44, 0.53), 3);
+      addConstellationStars(group, right, new THREE.Color(0.78, 0.72, 0.56), 3);
+      addConstellationStars(group, merged, new THREE.Color(0.86, 0.65, 0.74), 5);
+      addConstellationLines(group, merged, new THREE.Color(0.86, 0.65, 0.74), 0.4);
+      // Connecting lines from left/right to merged
+      left.forEach((l, i) => {
+        if (i < merged.length) {
+          addConstellationLines(group, [l, merged[i]], new THREE.Color(0.5, 0.35, 0.45), 0.15);
+        }
+      });
+      right.forEach((r, i) => {
+        if (i < merged.length) {
+          addConstellationLines(group, [r, merged[i]], new THREE.Color(0.5, 0.45, 0.35), 0.15);
+        }
+      });
+    },
+    // Step 3: Chain posting — constellation moves toward a bright center
+    () => {
+      const center = new THREE.Vector3(0, 0, 0);
+      const pts = [center];
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2;
+        const r = 1 + Math.random() * 0.5;
+        pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+      }
+      addConstellationStars(group, [center], new THREE.Color(0.95, 0.8, 0.88), 8);
+      addConstellationStars(group, pts.slice(1), new THREE.Color(0.67, 0.44, 0.53), 3);
+      pts.slice(1).forEach(p => {
+        addConstellationLines(group, [center, p], new THREE.Color(0.67, 0.44, 0.53), 0.2);
+      });
+    },
+    // Step 4: Search — query constellation vs field, brightness = similarity
+    () => {
+      // Query constellation (bright)
+      const query = [];
+      for (let i = 0; i < 5; i++) {
+        query.push(new THREE.Vector3(-2 + Math.random() * 0.5, (Math.random() - 0.5) * 0.8, 0));
+      }
+      addConstellationStars(group, query, new THREE.Color(0.86, 0.65, 0.74), 5);
+      addConstellationLines(group, query, new THREE.Color(0.86, 0.65, 0.74), 0.4);
+
+      // Matching constellation (bright, right side)
+      const match = [];
+      for (let i = 0; i < 5; i++) {
+        match.push(new THREE.Vector3(1.5 + Math.random() * 0.5, (Math.random() - 0.5) * 0.8 + 0.3, 0));
+      }
+      addConstellationStars(group, match, new THREE.Color(0.86, 0.65, 0.74), 5);
+      addConstellationLines(group, match, new THREE.Color(0.86, 0.65, 0.74), 0.35);
+
+      // Non-matching constellations (dim)
+      for (let c = 0; c < 3; c++) {
+        const dim = [];
+        const cx = (c - 1) * 1.5;
+        const cy = -1.5;
+        for (let i = 0; i < 4; i++) {
+          dim.push(new THREE.Vector3(cx + Math.random() * 0.4, cy + Math.random() * 0.4, 0));
+        }
+        addConstellationStars(group, dim, new THREE.Color(0.3, 0.25, 0.3), 2);
+        addConstellationLines(group, dim, new THREE.Color(0.2, 0.18, 0.22), 0.15);
+      }
+
+      // Connecting beam from query to match
+      addConstellationLines(group, [query[2], match[2]], new THREE.Color(0.86, 0.65, 0.74), 0.25);
+    },
+    // Step 5: Compounding — growing cluster, bright core
+    () => {
+      const pts = [];
+      for (let i = 0; i < 20; i++) {
+        const a = (i / 20) * Math.PI * 2;
+        const r = 0.3 + (i / 20) * 1.2;
+        pts.push(new THREE.Vector3(Math.cos(a + i * 0.3) * r, Math.sin(a + i * 0.3) * r, 0));
+      }
+      // Core is brightest
+      addConstellationStars(group, pts.slice(0, 5), new THREE.Color(0.95, 0.8, 0.88), 5);
+      addConstellationStars(group, pts.slice(5, 12), new THREE.Color(0.86, 0.65, 0.74), 3.5);
+      addConstellationStars(group, pts.slice(12), new THREE.Color(0.67, 0.44, 0.53), 2.5);
+      addConstellationLines(group, pts, new THREE.Color(0.67, 0.44, 0.53), 0.2);
+    }
+  ];
+
+  if (constellations[step]) constellations[step]();
+}
+
+function addConstellationStars(group, pts, color, size) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(pts.length * 3);
+  pts.forEach((p, i) => { pos[i*3] = p.x; pos[i*3+1] = p.y; pos[i*3+2] = p.z; });
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color, size, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, sizeAttenuation: true
+  });
+  group.add(new THREE.Points(geo, mat));
+}
+
+function addConstellationLines(group, pts, color, opacity) {
+  if (pts.length < 2) return;
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({
+    color, transparent: true, opacity,
+    blending: THREE.AdditiveBlending
+  });
+  group.add(new THREE.Line(geo, mat));
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 5 — GRAVITATIONAL LENSING (ISFR)
+// ----------------------------------------------------------------
+function initPage5() {
+  const canvas = document.getElementById('canvas5');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 5;
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[5] = scene; cameras[5] = camera; renderers[5] = renderer;
+
+  // Data source galaxies (top, distant)
+  const sourceGeo = new THREE.BufferGeometry();
+  const sourceCount = 300;
+  const sourcePos = new Float32Array(sourceCount * 3);
+  const sourceSizes = new Float32Array(sourceCount);
+  for (let i = 0; i < sourceCount; i++) {
+    const col = Math.floor(i / 75); // 4 columns
+    const cx = -3 + col * 2;
+    sourcePos[i*3] = cx + (Math.random() - 0.5) * 1.2;
+    sourcePos[i*3+1] = 2 + (Math.random() - 0.5) * 0.8;
+    sourcePos[i*3+2] = (Math.random() - 0.5) * 1;
+    sourceSizes[i] = 0.5 + Math.random() * 1.5;
+  }
+  sourceGeo.setAttribute('position', new THREE.BufferAttribute(sourcePos, 3));
+  sourceGeo.setAttribute('size', new THREE.BufferAttribute(sourceSizes, 1));
+
+  const sourceColors = [
+    new THREE.Color(0.86, 0.65, 0.74), // lending
+    new THREE.Color(0.78, 0.72, 0.56), // structured
+    new THREE.Color(0.47, 0.47, 0.63), // funding
+    new THREE.Color(0.44, 0.53, 0.48)  // staking
+  ];
+
+  const sourceMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (100.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.35;
+        gl_FragColor = vec4(0.78, 0.62, 0.72, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const sources = new THREE.Points(sourceGeo, sourceMat);
+  scene.add(sources);
+
+  // Agent lens nodes (middle, bending light)
+  const lensGeo = new THREE.BufferGeometry();
+  const lensCount = 60;
+  const lensPos = new Float32Array(lensCount * 3);
+  const lensSizes = new Float32Array(lensCount);
+  for (let i = 0; i < lensCount; i++) {
+    lensPos[i*3] = (Math.random() - 0.5) * 6;
+    lensPos[i*3+1] = (Math.random() - 0.5) * 1.5;
+    lensPos[i*3+2] = (Math.random() - 0.5) * 2;
+    lensSizes[i] = 2 + Math.random() * 3;
+  }
+  lensGeo.setAttribute('position', new THREE.BufferAttribute(lensPos, 3));
+  lensGeo.setAttribute('size', new THREE.BufferAttribute(lensSizes, 1));
+
+  const lensMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;
+      uniform float uTime;
+      void main() {
+        vec3 p = position;
+        p.y += sin(uTime + position.x * 2.0) * 0.05;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = size * (120.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float core = smoothstep(0.3, 0.0, d);
+        float ring = smoothstep(0.7, 0.5, d) * smoothstep(1.0, 0.7, d) * 0.5;
+        float a = core + ring;
+        gl_FragColor = vec4(0.86, 0.65, 0.74, a * 0.6);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const lenses = new THREE.Points(lensGeo, lensMat);
+  scene.add(lenses);
+
+  // Chain observer (bottom center, bright)
+  const observerGeo = new THREE.BufferGeometry();
+  const obCount = 100;
+  const obPos = new Float32Array(obCount * 3);
+  const obSizes = new Float32Array(obCount);
+  for (let i = 0; i < obCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 0.3;
+    obPos[i*3] = Math.cos(a) * r;
+    obPos[i*3+1] = -2.2 + Math.sin(a) * r * 0.5;
+    obPos[i*3+2] = Math.random() * 0.2;
+    obSizes[i] = 2 + Math.random() * 4;
+  }
+  observerGeo.setAttribute('position', new THREE.BufferAttribute(obPos, 3));
+  observerGeo.setAttribute('size', new THREE.BufferAttribute(obSizes, 1));
+
+  const observerMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (120.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.7;
+        gl_FragColor = vec4(0.95, 0.82, 0.65, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const observer = new THREE.Points(observerGeo, observerMat);
+  scene.add(observer);
+
+  // Light rays streaming from sources through lenses to observer
+  const rayGroup = new THREE.Group();
+  for (let i = 0; i < 12; i++) {
+    const sx = -3 + (i % 4) * 2 + (Math.random() - 0.5) * 0.5;
+    const sy = 2;
+    const mx = (Math.random() - 0.5) * 3;
+    const my = (Math.random() - 0.5) * 0.5;
+    const pts = [
+      new THREE.Vector3(sx, sy, 0),
+      new THREE.Vector3(mx, my, 0),
+      new THREE.Vector3(0, -2.2, 0)
+    ];
+    const curve = new THREE.QuadraticBezierCurve3(pts[0], pts[1], pts[2]);
+    const cPts = curve.getPoints(20);
+    const geo = new THREE.BufferGeometry().setFromPoints(cPts);
+    const mat = new THREE.LineBasicMaterial({
+      color: new THREE.Color(0.86, 0.65, 0.74),
+      transparent: true,
+      opacity: 0.08 + Math.random() * 0.06,
+      blending: THREE.AdditiveBlending
+    });
+    rayGroup.add(new THREE.Line(geo, mat));
+  }
+  scene.add(rayGroup);
+
+  pageMeshes[5] = { sources, lenses, observer, rayGroup };
+
+  function animate() {
+    animationFrames[5] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    lensMat.uniforms.uTime.value = t;
+    rayGroup.rotation.z = Math.sin(t * 0.1) * 0.02;
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+
+// ----------------------------------------------------------------
+// PAGE 6 — GALAXY FORMATION (Collective Intelligence)
+// ----------------------------------------------------------------
+function initPage6() {
+  const canvas = document.getElementById('canvas6');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 2.5, 5);
+  camera.lookAt(0, 0, 0);
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scenes[6] = scene; cameras[6] = camera; renderers[6] = renderer;
+
+  // Galaxy particle system — shape controlled by slider
+  const galaxyCount = 2000;
+  const galaxyGeo = new THREE.BufferGeometry();
+  const galaxyPos = new Float32Array(galaxyCount * 3);
+  const galaxySizes = new Float32Array(galaxyCount);
+  const galaxyColors = new Float32Array(galaxyCount * 3);
+  const galaxyBase = []; // store base random positions
+
+  for (let i = 0; i < galaxyCount; i++) {
+    const x = (Math.random() - 0.5) * 8;
+    const y = (Math.random() - 0.5) * 8;
+    const z = (Math.random() - 0.5) * 3;
+    galaxyBase.push({ x, y, z });
+    galaxyPos[i*3] = x;
+    galaxyPos[i*3+1] = y;
+    galaxyPos[i*3+2] = z;
+    galaxySizes[i] = 1 + Math.random() * 2;
+
+    const t = Math.random();
+    if (t < 0.3) {
+      galaxyColors[i*3] = 0.86; galaxyColors[i*3+1] = 0.65; galaxyColors[i*3+2] = 0.74;
+    } else if (t < 0.6) {
+      galaxyColors[i*3] = 0.78; galaxyColors[i*3+1] = 0.72; galaxyColors[i*3+2] = 0.56;
+    } else {
+      galaxyColors[i*3] = 0.5 + Math.random() * 0.2;
+      galaxyColors[i*3+1] = 0.45 + Math.random() * 0.15;
+      galaxyColors[i*3+2] = 0.55 + Math.random() * 0.15;
+    }
+  }
+  galaxyGeo.setAttribute('position', new THREE.BufferAttribute(galaxyPos, 3));
+  galaxyGeo.setAttribute('size', new THREE.BufferAttribute(galaxySizes, 1));
+  galaxyGeo.setAttribute('color', new THREE.BufferAttribute(galaxyColors, 3));
+
+  const galaxyMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      varying vec3 vColor;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (120.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d) * 0.6;
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  const galaxy = new THREE.Points(galaxyGeo, galaxyMat);
+  scene.add(galaxy);
+
+  pageMeshes[6] = { galaxy, galaxyBase, galaxyCount };
+
+  // Slider event
+  const slider = document.getElementById('agentSlider');
+  const countEl = document.getElementById('agentCount');
+  slider.addEventListener('input', () => {
+    const val = parseInt(slider.value);
+    countEl.textContent = val;
+    updateGalaxyShape(val);
+    drawCollective(val);
+  });
+
+  updateGalaxyShape(5);
+
+  function animate() {
+    animationFrames[6] = requestAnimationFrame(animate);
+    const t = performance.now() * 0.001;
+    galaxy.rotation.y = t * 0.05;
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+function updateGalaxyShape(agentCount) {
+  if (!pageMeshes[6]) return;
+  const { galaxy, galaxyBase, galaxyCount } = pageMeshes[6];
+  const pos = galaxy.geometry.attributes.position.array;
+  const sizes = galaxy.geometry.attributes.size.array;
+
+  // t: 0 = scattered, 1 = full spiral
+  const t = Math.min(1, (agentCount - 5) / 995);
+
+  for (let i = 0; i < galaxyCount; i++) {
+    const base = galaxyBase[i];
+    // Spiral galaxy target position
+    const arm = i % 3;
+    const armAngle = (arm / 3) * Math.PI * 2;
+    const dist = (i / galaxyCount) * 3;
+    const spiralAngle = armAngle + dist * 2.5;
+    const sx = Math.cos(spiralAngle) * dist;
+    const sy = (Math.random() - 0.5) * 0.15 * (1 + dist * 0.3);
+    const sz = Math.sin(spiralAngle) * dist;
+
+    // Interpolate from scattered to spiral
+    pos[i*3] = base.x * (1 - t) + sx * t;
+    pos[i*3+1] = base.y * (1 - t) + sy * t;
+    pos[i*3+2] = base.z * (1 - t) + sz * t;
+
+    // Stars get brighter as galaxy forms
+    sizes[i] = (1 + Math.random() * 2) * (1 + t * 0.5);
+
+    // Only render particles up to density proportional to agent count
+    const visible = i < (agentCount / 1000) * galaxyCount;
+    if (!visible) {
+      sizes[i] = 0;
+    }
+  }
+  galaxy.geometry.attributes.position.needsUpdate = true;
+  galaxy.geometry.attributes.size.needsUpdate = true;
+}
+
+
+// ----------------------------------------------------------------
+// COLLECTIVE 2D CANVAS (network visualization)
+// ----------------------------------------------------------------
+function drawCollective(agentCount) {
+  const canvas = document.getElementById('collectiveCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(5,5,7,0.3)';
+  ctx.fillRect(0, 0, w, h);
+
+  // Generate agent nodes
+  const nodes = [];
+  const count = Math.min(agentCount, 200); // cap visual nodes
+  for (let i = 0; i < count; i++) {
+    nodes.push({
+      x: 40 + Math.random() * (w - 80),
+      y: 30 + Math.random() * (h - 60)
+    });
+  }
+
+  // Draw connections — more agents = denser connections
+  const connectionThreshold = Math.max(60, 200 - agentCount * 0.15);
+  ctx.strokeStyle = 'rgba(170,112,136,0.06)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dx = nodes[i].x - nodes[j].x;
+      const dy = nodes[i].y - nodes[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < connectionThreshold) {
+        ctx.beginPath();
+        ctx.moveTo(nodes[i].x, nodes[i].y);
+        ctx.lineTo(nodes[j].x, nodes[j].y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Draw nodes
+  nodes.forEach(n => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(220,165,189,0.7)';
+    ctx.fill();
+    // Glow
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(220,165,189,0.15)';
+    ctx.fill();
+  });
+
+  // Superlinear label
+  const beta = 1.15;
+  const output = Math.pow(agentCount, beta).toFixed(0);
+  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(152,128,144,0.6)';
+  ctx.textAlign = 'right';
+  ctx.fillText(`agents: ${agentCount}  |  output: ${output}  |  \u03B2 \u2248 1.15`, w - 16, h - 10);
+}
+
+
+// ----------------------------------------------------------------
+// PAGE ANIMATION START
+// ----------------------------------------------------------------
+function startPageAnimation(idx) {
+  // All animations run continuously once started
+  // This function can be used for page-enter effects later
+}
+
+
+// ----------------------------------------------------------------
+// FILM GRAIN
+// ----------------------------------------------------------------
+function initGrain() {
+  const el = document.getElementById('grain');
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+
+  function updateGrain() {
+    const imageData = ctx.createImageData(256, 256);
+    for (let i = 0; i < imageData.data.length; i += 4) {
+      const v = Math.random() * 255;
+      imageData.data[i] = v;
+      imageData.data[i+1] = v;
+      imageData.data[i+2] = v;
+      imageData.data[i+3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    el.style.backgroundImage = `url(${canvas.toDataURL()})`;
+    el.style.backgroundSize = '256px 256px';
+    requestAnimationFrame(updateGrain);
+  }
+  updateGrain();
+}
+
+
+// ----------------------------------------------------------------
+// WINDOW RESIZE
+// ----------------------------------------------------------------
+function onResize() {
+  for (let i = 0; i < TOTAL_PAGES; i++) {
+    if (cameras[i] && renderers[i]) {
+      cameras[i].aspect = window.innerWidth / window.innerHeight;
+      cameras[i].updateProjectionMatrix();
+      renderers[i].setSize(window.innerWidth, window.innerHeight);
+    }
+  }
+}
+window.addEventListener('resize', onResize);
+
+
+// ----------------------------------------------------------------
+// MIRAGE BLOCK POLLING
+// ----------------------------------------------------------------
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running, ignore */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  const hud = document.getElementById('blockHud');
+  const numEl = document.getElementById('blockNum');
+  hud.classList.add('visible');
+  numEl.innerHTML = `<span class="block-flash">${n}</span>`;
+
+  // Pulse effect — briefly brighten scenes
+  // (handled through blockModulation in render loops)
+}
+
+
+// ----------------------------------------------------------------
+// INIT
+// ----------------------------------------------------------------
+function init() {
+  initNav();
+  initHDC();
+  initGrain();
+  initGlobalStarfield();
+
+  // Initialize all page scenes
+  initPage0();
+  initPage1();
+  initPage2();
+  initPage3();
+  initPage4();
+  initPage5();
+  initPage6();
+
+  // Initial collective canvas draw
+  drawCollective(5);
+}
+
+// Wait for fonts to load, then init
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(init);
+} else {
+  window.addEventListener('DOMContentLoaded', init);
+}
+</script>
+
+</body>
+</html>

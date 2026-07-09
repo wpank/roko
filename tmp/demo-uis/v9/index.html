@@ -1,0 +1,2502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Agent Coordination Plane</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+  --dream: #585878;
+  --dream-bright: #7878a0;
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+  --copper: #c8907a;
+  --copper-hot: #e6a88e;
+  --copper-glow: rgba(200,144,122,0.4);
+  --substrate: #0a0808;
+  --solder: #d4c8a0;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  overflow: hidden;
+  width: 100%; height: 100%;
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Pages */
+.page {
+  position: absolute;
+  width: 100%; height: 100%;
+  top: 0; left: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.page.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+.page.exit-up {
+  opacity: 0;
+  transform: translateY(-24px);
+}
+
+.page canvas.page-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+
+.page-content {
+  position: relative;
+  z-index: 5;
+  max-width: 1100px;
+  width: 100%;
+  padding: 40px;
+  pointer-events: none;
+}
+.page-content * { pointer-events: auto; }
+
+/* Typography */
+h1 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(36px, 6vw, 72px);
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(24px, 3.5vw, 44px);
+  line-height: 1.2;
+  margin-bottom: 12px;
+}
+h3 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: #c8b8c0;
+  font-size: clamp(18px, 2.5vw, 28px);
+  line-height: 1.3;
+  margin-bottom: 8px;
+}
+.rose-glow {
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.copper-glow {
+  color: var(--copper-hot);
+  text-shadow: 0 0 20px var(--copper-glow);
+}
+.tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+}
+.subtitle {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.2vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--rose-dim);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: clamp(12px, 1.1vw, 14px);
+  color: var(--t1);
+  line-height: 1.7;
+}
+.dim { color: var(--t-dim); }
+
+/* Chassis panel */
+.chassis {
+  background: linear-gradient(180deg, rgba(12,10,14,0.85), rgba(8,8,16,0.85));
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  backdrop-filter: blur(12px);
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+.chassis-body { padding: 20px; }
+
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Navigation */
+.page-nav {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 9999;
+}
+.nav-dots {
+  display: flex;
+  gap: 10px;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+.nav-dot.active {
+  background: var(--copper-hot);
+  box-shadow: 0 0 8px var(--copper-glow);
+  border-color: var(--copper);
+}
+.nav-dot:hover {
+  background: var(--rose-dim);
+}
+.nav-arrow {
+  font-size: 18px;
+  color: var(--t-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--copper-hot); }
+
+/* HUD */
+.block-hud {
+  position: fixed;
+  top: 16px; right: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--jade);
+  z-index: 9997;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.block-hud.live { opacity: 1; }
+
+/* Atmospheric overlays */
+.film-grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0.05;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9997;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Page-specific styles */
+
+/* Hero */
+.hero-content {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.hero-content h1 {
+  font-size: clamp(48px, 8vw, 96px);
+  margin-bottom: 8px;
+}
+.hero-content .subtitle {
+  margin-bottom: 32px;
+}
+.hero-content .thesis {
+  max-width: 600px;
+  font-size: clamp(13px, 1.3vw, 16px);
+  color: var(--t1);
+  line-height: 1.8;
+  margin-bottom: 60px;
+}
+.hero-content .series {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--t-dim);
+}
+
+/* Plane Between */
+.plane-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.plane-layer {
+  padding: 16px 24px;
+  border: 1px solid rgba(24,20,32,0.6);
+  position: relative;
+}
+.plane-layer.top { border-radius: 2px 2px 0 0; background: rgba(8,8,12,0.6); }
+.plane-layer.middle {
+  border-radius: 0;
+  background: linear-gradient(180deg, rgba(58,32,48,0.3), rgba(12,10,14,0.7));
+  border-color: var(--border-live);
+  box-shadow: 0 0 30px rgba(170,112,136,0.1);
+}
+.plane-layer.bottom { border-radius: 0 0 2px 2px; background: rgba(8,8,12,0.6); }
+.plane-label {
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.plane-items {
+  font-size: 12px;
+  color: var(--t-dim);
+  line-height: 1.6;
+}
+.plane-items .rose-glow { font-size: 12px; }
+
+/* Two components */
+.two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  width: 100%;
+}
+@media (max-width: 768px) {
+  .two-cols { grid-template-columns: 1fr; }
+}
+.component-card {
+  padding: 0;
+}
+.component-card .chassis-body ul {
+  list-style: none;
+  padding: 0;
+}
+.component-card .chassis-body li {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--t1);
+  border-bottom: 1px solid rgba(24,20,32,0.3);
+}
+.component-card .chassis-body li:last-child { border: none; }
+
+/* Chain architecture */
+.chain-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.chain-layer-card {
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.chain-layer-card .layer-num {
+  font-size: 10px;
+  color: var(--copper-hot);
+  letter-spacing: 0.15em;
+  min-width: 20px;
+}
+.chain-layer-card .layer-name {
+  font-size: 13px;
+  color: #c8b8c0;
+  min-width: 160px;
+}
+.chain-layer-card .layer-detail {
+  font-size: 11px;
+  color: var(--t-dim);
+}
+.block-compare {
+  display: flex;
+  gap: 16px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.block-time {
+  font-size: 11px;
+  color: var(--t-dim);
+  padding: 6px 12px;
+  border: 1px solid rgba(24,20,32,0.5);
+  border-radius: 2px;
+}
+.block-time.highlight {
+  color: var(--copper-hot);
+  border-color: var(--copper);
+  background: rgba(200,144,122,0.08);
+}
+
+/* HDC */
+.hdc-steps {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.hdc-step {
+  display: none;
+  animation: fadeIn 0.3s ease;
+}
+.hdc-step.active { display: block; }
+.hdc-nav-controls {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  align-items: center;
+}
+.hdc-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 8px 16px;
+  background: rgba(12,10,14,0.8);
+  border: 1px solid var(--copper);
+  color: var(--copper-hot);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s;
+}
+.hdc-btn:hover {
+  background: rgba(200,144,122,0.1);
+}
+.hdc-step-indicator {
+  font-size: 10px;
+  color: var(--t-dim);
+  letter-spacing: 0.15em;
+}
+.code-block {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(5,5,7,0.7);
+  border: 1px solid rgba(24,20,32,0.5);
+  padding: 12px 16px;
+  border-radius: 2px;
+  color: var(--copper-hot);
+  margin: 12px 0;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+/* ISFR */
+.isfr-sources {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+@media (max-width: 768px) {
+  .isfr-sources { grid-template-columns: 1fr 1fr; }
+}
+.isfr-source {
+  padding: 12px;
+  text-align: center;
+}
+.isfr-source .weight {
+  font-size: 20px;
+  color: var(--copper-hot);
+  font-family: var(--serif);
+  font-style: italic;
+}
+.isfr-source .label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--t-dim);
+  margin-top: 4px;
+}
+.isfr-source .protocols {
+  font-size: 10px;
+  color: var(--rose-dim);
+  margin-top: 4px;
+}
+
+/* Collective */
+.collective-controls {
+  margin: 16px 0;
+}
+.agent-slider {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--ghost);
+  border-radius: 2px;
+  outline: none;
+}
+.agent-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  background: var(--copper-hot);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 8px var(--copper-glow);
+}
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--t-dim);
+  margin-top: 4px;
+}
+.agent-count-display {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 48px;
+  color: var(--copper-hot);
+  text-align: center;
+  text-shadow: 0 0 30px var(--copper-glow);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<!-- Page 0: Hero -->
+<div class="page active" id="page0">
+  <canvas class="page-canvas" id="canvas0"></canvas>
+  <div class="page-content hero-content">
+    <h1><span class="copper-glow">Nunchi</span></h1>
+    <div class="subtitle">Agent Coordination Plane</div>
+    <p class="thesis">The infrastructure layer between AI models and the applications they power.</p>
+    <div class="series">Series A &middot; 2026</div>
+  </div>
+</div>
+
+<!-- Page 1: The Plane Between -->
+<div class="page" id="page1">
+  <canvas class="page-canvas" id="canvas1"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:24px;">
+      <div class="tag" style="margin-bottom:8px;">Architecture</div>
+      <h2><span class="rose-glow">The plane between the planes.</span></h2>
+    </div>
+    <div class="plane-layout">
+      <div class="plane-layer top">
+        <div class="plane-label" style="color:var(--dream-bright);">Application Layer</div>
+        <div class="plane-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+      </div>
+      <div class="plane-layer middle">
+        <div class="plane-label" style="color:var(--copper-hot);">Agent Coordination Plane</div>
+        <div class="plane-items"><span class="copper-glow">Nunchi</span> &mdash; identity, routing, knowledge, policy, settlement</div>
+      </div>
+      <div class="plane-layer bottom">
+        <div class="plane-label" style="color:var(--dream-bright);">Execution Layer</div>
+        <div class="plane-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+      </div>
+    </div>
+    <p class="body-text" style="text-align:center; margin-top:24px; max-width:700px; margin-left:auto; margin-right:auto;">
+      Every adjacent layer is funded. The plane between them is empty. <span class="copper-glow">Nunchi fills it.</span>
+    </p>
+  </div>
+</div>
+
+<!-- Page 2: Two Components -->
+<div class="page" id="page2">
+  <canvas class="page-canvas" id="canvas2"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:24px;">
+      <div class="tag" style="margin-bottom:8px;">Components</div>
+      <h2>Two components. <span class="copper-glow">One architecture.</span></h2>
+    </div>
+    <div class="two-cols">
+      <div class="component-card chassis">
+        <div class="head"><span>Roko &middot; Runtime</span><div class="led"></div></div>
+        <div class="chassis-body">
+          <div class="tag" style="margin-bottom:8px;">Open Source &middot; Apache 2.0</div>
+          <p class="body-text" style="margin-bottom:12px;">The cognitive runtime that turns a model call into a governed event.</p>
+          <ul>
+            <li>18 crates, 177K lines of Rust</li>
+            <li>CascadeRouter &mdash; cost-aware model routing</li>
+            <li>11 gates, 7 rungs between every call</li>
+            <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+            <li>Deterministic replay</li>
+          </ul>
+        </div>
+      </div>
+      <div class="component-card chassis">
+        <div class="head"><span>Nunchi Chain &middot; Verifiable Substrate</span><div class="led" style="background:var(--copper-hot); box-shadow:0 0 6px var(--copper-hot), 0 0 12px var(--copper-glow);"></div></div>
+        <div class="chassis-body">
+          <div class="tag" style="margin-bottom:8px;">Sovereign EVM L1</div>
+          <p class="body-text" style="margin-bottom:12px;">Agent-native sovereign chain built on Commonware.</p>
+          <ul>
+            <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+            <li>HDC precompile at 0x09 &mdash; native semantic search</li>
+            <li>ISFR Oracle &mdash; DeFi benchmark by validators</li>
+            <li>Knowledge demurrage &mdash; exponential decay</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <p class="body-text" style="text-align:center; margin-top:20px; max-width:800px; margin-left:auto; margin-right:auto; font-size:12px;">
+      Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.
+    </p>
+  </div>
+</div>
+
+<!-- Page 3: Chain Architecture -->
+<div class="page" id="page3">
+  <canvas class="page-canvas" id="canvas3"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:20px;">
+      <div class="tag" style="margin-bottom:8px;">Chain Architecture</div>
+      <h2>Built on <span class="copper-glow">Commonware.</span></h2>
+      <p class="body-text dim" style="font-size:11px;">Not a framework. An anti-framework. Pick-and-choose Rust primitives.</p>
+    </div>
+    <div class="chain-stack">
+      <div class="chain-layer-card chassis">
+        <span class="layer-num">01</span>
+        <span class="layer-name">Consensus (Simplex BFT)</span>
+        <span class="layer-detail">~50ms blocks &middot; 2 hops notarize &middot; 3 hops finalize</span>
+      </div>
+      <div class="chain-layer-card chassis">
+        <span class="layer-num">02</span>
+        <span class="layer-name">Execution (revm)</span>
+        <span class="layer-detail">Full EVM &middot; Block-STM parallel execution</span>
+      </div>
+      <div class="chain-layer-card chassis">
+        <span class="layer-num">03</span>
+        <span class="layer-name">Native Precompiles</span>
+        <span class="layer-detail">0x08 Agent Registry &middot; 0x09 HDC &middot; 0xA01 ISFR</span>
+      </div>
+      <div class="chain-layer-card chassis">
+        <span class="layer-num">04</span>
+        <span class="layer-name">Knowledge Layer</span>
+        <span class="layer-detail">InsightEntry storage &middot; Merkle tree &middot; demurrage</span>
+      </div>
+      <div class="chain-layer-card chassis">
+        <span class="layer-num">05</span>
+        <span class="layer-name">P2P (authenticated)</span>
+        <span class="layer-detail">Encrypted validator communication</span>
+      </div>
+    </div>
+    <div style="text-align:center; margin-top:16px;">
+      <div class="code-block" style="display:inline-block; font-size:11px;">
+        p2p::authenticated &middot; cryptography::bls12381 &middot; runtime::deterministic &middot; consensus::simplex
+      </div>
+    </div>
+    <div class="block-compare" style="justify-content:center;">
+      <div class="block-time">Ethereum: 12s</div>
+      <div class="block-time">Solana: 400ms</div>
+      <div class="block-time">Sui: ~390ms</div>
+      <div class="block-time highlight">Nunchi: ~50ms</div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 4: HDC Interactive -->
+<div class="page" id="page4">
+  <canvas class="page-canvas" id="canvas4"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:16px;">
+      <div class="tag" style="margin-bottom:8px;">Core Primitive</div>
+      <h2><span class="copper-glow">Hyperdimensional Computing</span></h2>
+    </div>
+    <div class="hdc-steps chassis" style="padding:0;">
+      <div class="head"><span>HDC Walkthrough</span><div class="hdc-step-indicator" id="hdcIndicator">Step 1 / 5</div></div>
+      <div class="chassis-body">
+        <div class="hdc-step active" id="hdcStep0">
+          <h3>An agent finds a Uniswap transaction</h3>
+          <div class="code-block">swap(USDC → WETH, 50,000 USDC, pool 0x88e6...)<br>gas: 142,891 &middot; block: 19,847,221</div>
+          <p class="body-text">A Roko agent monitoring DeFi activity discovers this swap event.</p>
+        </div>
+        <div class="hdc-step" id="hdcStep1">
+          <h3>Encode to hypervector</h3>
+          <p class="body-text">Each concept gets a random 10,000-bit base vector, then:</p>
+          <div class="code-block">Bind: swap ⊕ USDC ⊕ WETH = transaction identity<br>Permute: shift for sequence position<br>Bundle: majority vote → single episode vector</div>
+          <p class="body-text dim" style="font-size:11px; margin-top:8px;">XOR for bind, majority for bundle — hardware-native, no floating point.</p>
+        </div>
+        <div class="hdc-step" id="hdcStep2">
+          <h3>Post to chain</h3>
+          <div class="code-block">InsightEntry { content, hypervector (1,250 bytes), decay_params }<br>→ Transaction → Validator → sm_root updated</div>
+          <p class="body-text">The encoded knowledge is posted on-chain as a compact binary vector.</p>
+        </div>
+        <div class="hdc-step" id="hdcStep3">
+          <h3>Future agent searches</h3>
+          <div class="code-block">Query: "Uniswap USDC pool large swap"<br>→ Encode query to hypervector<br>→ Hamming distance search across all entries<br>→ Top-K results in 0.17ms (vs 12ms for float embeddings)</div>
+          <p class="body-text">Binary Hamming distance is <span class="copper-glow">70x faster</span> than cosine similarity on float vectors.</p>
+        </div>
+        <div class="hdc-step" id="hdcStep4">
+          <h3>Results compound</h3>
+          <p class="body-text">10 confirmations = 6x half-life. Knowledge many agents verify becomes <span class="copper-glow">long-lived</span>.</p>
+          <p class="body-text dim" style="margin-top:8px; font-size:11px;">Unverified knowledge decays exponentially. Confirmed knowledge persists. The network self-curates.</p>
+        </div>
+        <div class="hdc-nav-controls">
+          <button class="hdc-btn" id="hdcPrev">&#8592; Prev</button>
+          <button class="hdc-btn" id="hdcNext">Next &#8594;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 5: ISFR -->
+<div class="page" id="page5">
+  <canvas class="page-canvas" id="canvas5"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:20px;">
+      <div class="tag" style="margin-bottom:8px;">Financial Primitive</div>
+      <h2>The <span class="copper-glow">first</span> of many.</h2>
+      <p class="body-text dim" style="font-size:12px;">ISFR — Internet Secured Funding Rate. The first financial instrument native to agent coordination.</p>
+    </div>
+    <div class="isfr-sources">
+      <div class="isfr-source chassis">
+        <div class="weight">60%</div>
+        <div class="label">Lending</div>
+        <div class="protocols">Aave &middot; Compound &middot; Spark &middot; Morpho</div>
+      </div>
+      <div class="isfr-source chassis">
+        <div class="weight">25%</div>
+        <div class="label">Structured</div>
+        <div class="protocols">Pendle &middot; Spectra &middot; Term Finance</div>
+      </div>
+      <div class="isfr-source chassis">
+        <div class="weight">10%</div>
+        <div class="label">Funding</div>
+        <div class="protocols">dYdX &middot; Hyperliquid &middot; GMX</div>
+      </div>
+      <div class="isfr-source chassis">
+        <div class="weight">5%</div>
+        <div class="label">Staking</div>
+        <div class="protocols">Lido &middot; Rocket Pool &middot; Coinbase</div>
+      </div>
+    </div>
+    <div style="text-align:center;">
+      <p class="body-text" style="max-width:650px; margin:0 auto;">
+        The <span class="copper-glow">$668 trillion</span> gap: traditional finance has SOFR. DeFi has nothing comparable.<br>
+        <span class="dim" style="font-size:11px;">Each new index = new revenue line, same infrastructure.</span>
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Page 6: Collective Intelligence -->
+<div class="page" id="page6">
+  <canvas class="page-canvas" id="canvas6"></canvas>
+  <div class="page-content">
+    <div style="text-align:center; margin-bottom:16px;">
+      <div class="tag" style="margin-bottom:8px;">Network Effects</div>
+      <h2>Every agent makes every agent <span class="copper-glow">smarter.</span></h2>
+    </div>
+    <div class="chassis" style="max-width:600px; margin:0 auto;">
+      <div class="head"><span>Collective Intelligence</span><div class="led"></div></div>
+      <div class="chassis-body">
+        <div class="agent-count-display" id="agentCount">5</div>
+        <div class="collective-controls">
+          <input type="range" class="agent-slider" id="agentSlider" min="5" max="1000" value="5">
+          <div class="slider-labels"><span>5 agents</span><span>1,000 agents</span></div>
+        </div>
+        <p class="body-text" style="margin-top:12px; text-align:center; font-size:12px;">
+          <span class="dim">Superlinear scaling:</span> <span class="copper-glow">&beta; &asymp; 1.15</span> &mdash; when agents double, output grows 115%.
+        </p>
+        <p class="body-text" style="margin-top:8px; text-align:center; font-size:11px; color:var(--t-dim);">
+          The thousandth agent pulls 30,000 tokens of context the first agent never had.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">
+  <span id="blockLabel">BLOCK</span> <span id="blockNum">---</span>
+</div>
+
+<!-- Atmospheric overlays -->
+<div class="film-grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<script>
+// ============================================================
+// NAVIGATION
+// ============================================================
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+// Build nav dots
+const navDots = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  navDots.appendChild(dot);
+}
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') {
+    e.preventDefault();
+    goToPage(currentPage + 1);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    goToPage(currentPage - 1);
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    // HDC step forward on page 4
+    if (currentPage === 4) hdcNextStep();
+    else goToPage(currentPage + 1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (currentPage === 4) hdcPrevStep();
+    else goToPage(currentPage - 1);
+  }
+});
+
+// ============================================================
+// HDC STEP NAVIGATION
+// ============================================================
+let hdcStep = 0;
+const HDC_TOTAL = 5;
+
+function hdcNextStep() {
+  if (hdcStep < HDC_TOTAL - 1) {
+    document.getElementById('hdcStep' + hdcStep).classList.remove('active');
+    hdcStep++;
+    document.getElementById('hdcStep' + hdcStep).classList.add('active');
+    document.getElementById('hdcIndicator').textContent = 'Step ' + (hdcStep + 1) + ' / ' + HDC_TOTAL;
+  }
+}
+function hdcPrevStep() {
+  if (hdcStep > 0) {
+    document.getElementById('hdcStep' + hdcStep).classList.remove('active');
+    hdcStep--;
+    document.getElementById('hdcStep' + hdcStep).classList.add('active');
+    document.getElementById('hdcIndicator').textContent = 'Step ' + (hdcStep + 1) + ' / ' + HDC_TOTAL;
+  }
+}
+document.getElementById('hdcNext').addEventListener('click', hdcNextStep);
+document.getElementById('hdcPrev').addEventListener('click', hdcPrevStep);
+
+// ============================================================
+// MIRAGE BLOCK POLLING
+// ============================================================
+let blockNumber = 0;
+let blockModulation = 0;
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      document.getElementById('blockHud').classList.add('live');
+      document.getElementById('blockNum').textContent = '#' + n;
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  // Pulse effect across canvases
+  blockPulse = 1.0;
+}
+let blockPulse = 0;
+
+function onPageEnter(idx) {
+  // Reset HDC on enter
+  if (idx === 4) {
+    hdcStep = 0;
+    for (let i = 0; i < HDC_TOTAL; i++) {
+      document.getElementById('hdcStep' + i).classList.toggle('active', i === 0);
+    }
+    document.getElementById('hdcIndicator').textContent = 'Step 1 / 5';
+  }
+}
+
+// ============================================================
+// AGENT SLIDER
+// ============================================================
+const agentSlider = document.getElementById('agentSlider');
+const agentCountDisplay = document.getElementById('agentCount');
+let agentSliderValue = 5;
+
+agentSlider.addEventListener('input', (e) => {
+  agentSliderValue = parseInt(e.target.value);
+  agentCountDisplay.textContent = agentSliderValue;
+});
+
+// ============================================================
+// CIRCUIT BOARD CANVAS RENDERING ENGINE
+// ============================================================
+
+// Utility functions
+function copperColor(alpha) { return `rgba(200, 144, 122, ${alpha})`; }
+function roseColor(alpha) { return `rgba(170, 112, 136, ${alpha})`; }
+function copperHot(alpha) { return `rgba(230, 168, 142, ${alpha})`; }
+function jadeColor(alpha) { return `rgba(112, 136, 122, ${alpha})`; }
+function dreamColor(alpha) { return `rgba(88, 88, 120, ${alpha})`; }
+function boneColor(alpha) { return `rgba(200, 184, 144, ${alpha})`; }
+function solderColor(alpha) { return `rgba(212, 200, 160, ${alpha})`; }
+
+// Seeded random for reproducible patterns
+function seededRandom(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  };
+}
+
+// Draw a right-angle PCB trace between two points
+function drawTrace(ctx, x1, y1, x2, y2, width, color, glow) {
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (glow) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = glow;
+  }
+
+  // Right-angle routing: go horizontal first, then vertical
+  const midX = x1 + (x2 - x1) * 0.5;
+  ctx.moveTo(x1, y1);
+
+  // 45-degree chamfer style routing
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  if (Math.abs(dx) > Math.abs(dy)) {
+    // Horizontal dominant
+    const chamfer = Math.min(Math.abs(dy), 20);
+    const signX = dx > 0 ? 1 : -1;
+    const signY = dy > 0 ? 1 : -1;
+    ctx.lineTo(x2 - signX * chamfer, y1);
+    ctx.lineTo(x2, y1 + signY * chamfer);
+    ctx.lineTo(x2, y2);
+  } else {
+    // Vertical dominant
+    const chamfer = Math.min(Math.abs(dx), 20);
+    const signX = dx > 0 ? 1 : -1;
+    const signY = dy > 0 ? 1 : -1;
+    ctx.lineTo(x1, y2 - signY * chamfer);
+    ctx.lineTo(x1 + signX * chamfer, y2);
+    ctx.lineTo(x2, y2);
+  }
+
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+// Draw a via (connection between PCB layers)
+function drawVia(ctx, x, y, outerR, innerR, color, glowColor) {
+  // Outer ring
+  ctx.beginPath();
+  ctx.arc(x, y, outerR, 0, Math.PI * 2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Inner fill
+  ctx.beginPath();
+  ctx.arc(x, y, innerR, 0, Math.PI * 2);
+  ctx.fillStyle = glowColor || color;
+  ctx.fill();
+
+  // Glow
+  if (glowColor) {
+    ctx.beginPath();
+    ctx.arc(x, y, outerR + 3, 0, Math.PI * 2);
+    ctx.strokeStyle = glowColor;
+    ctx.lineWidth = 0.5;
+    ctx.shadowColor = glowColor;
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+}
+
+// Draw a solder pad
+function drawPad(ctx, x, y, w, h, color) {
+  const r = 2;
+  ctx.beginPath();
+  ctx.roundRect(x - w/2, y - h/2, w, h, r);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle = copperColor(0.5);
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+}
+
+// Draw a logic gate symbol
+function drawGateSymbol(ctx, x, y, size, type, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.2;
+  ctx.fillStyle = 'rgba(5,5,7,0.7)';
+
+  if (type === 'xor') {
+    // XOR gate body
+    ctx.beginPath();
+    ctx.moveTo(x - size, y - size * 0.6);
+    ctx.quadraticCurveTo(x, y - size * 0.3, x + size, y);
+    ctx.quadraticCurveTo(x, y + size * 0.3, x - size, y + size * 0.6);
+    ctx.quadraticCurveTo(x - size * 0.5, y, x - size, y - size * 0.6);
+    ctx.fill();
+    ctx.stroke();
+    // Extra curve for XOR
+    ctx.beginPath();
+    ctx.moveTo(x - size * 1.2, y - size * 0.6);
+    ctx.quadraticCurveTo(x - size * 0.7, y, x - size * 1.2, y + size * 0.6);
+    ctx.stroke();
+  } else if (type === 'and') {
+    ctx.beginPath();
+    ctx.moveTo(x - size, y - size * 0.6);
+    ctx.lineTo(x, y - size * 0.6);
+    ctx.arc(x, y, size * 0.6, -Math.PI/2, Math.PI/2);
+    ctx.lineTo(x - size, y + size * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else if (type === 'or') {
+    ctx.beginPath();
+    ctx.moveTo(x - size, y - size * 0.6);
+    ctx.quadraticCurveTo(x + size * 0.5, y - size * 0.5, x + size, y);
+    ctx.quadraticCurveTo(x + size * 0.5, y + size * 0.5, x - size, y + size * 0.6);
+    ctx.quadraticCurveTo(x - size * 0.5, y, x - size, y - size * 0.6);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+// Draw an IC chip symbol
+function drawIC(ctx, x, y, w, h, pins, label, color) {
+  // Body
+  ctx.fillStyle = 'rgba(8,8,12,0.8)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(x - w/2, y - h/2, w, h, 3);
+  ctx.fill();
+  ctx.stroke();
+
+  // Notch
+  ctx.beginPath();
+  ctx.arc(x - w/2 + 8, y - h/2, 4, 0, Math.PI);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Pins
+  const pinSpacing = h / (pins + 1);
+  for (let i = 1; i <= pins; i++) {
+    const py = y - h/2 + i * pinSpacing;
+    // Left pins
+    ctx.beginPath();
+    ctx.moveTo(x - w/2 - 8, py);
+    ctx.lineTo(x - w/2, py);
+    ctx.strokeStyle = copperColor(0.6);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    drawPad(ctx, x - w/2 - 8, py, 5, 3, copperColor(0.4));
+    // Right pins
+    ctx.beginPath();
+    ctx.moveTo(x + w/2, py);
+    ctx.lineTo(x + w/2 + 8, py);
+    ctx.stroke();
+    drawPad(ctx, x + w/2 + 8, py, 5, 3, copperColor(0.4));
+  }
+
+  // Label
+  if (label) {
+    ctx.fillStyle = color;
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x, y);
+  }
+}
+
+// Data pulse traveling along a trace
+class DataPulse {
+  constructor(path, speed, color, size) {
+    this.path = path; // Array of {x, y} points
+    this.t = Math.random();
+    this.speed = speed || 0.003;
+    this.color = color || copperHot(0.9);
+    this.size = size || 3;
+    this.active = true;
+  }
+
+  update() {
+    this.t += this.speed;
+    if (this.t > 1) { this.t -= 1; }
+  }
+
+  getPosition() {
+    if (this.path.length < 2) return this.path[0] || {x:0, y:0};
+    const totalLen = this.path.length - 1;
+    const segment = this.t * totalLen;
+    const idx = Math.floor(segment);
+    const frac = segment - idx;
+    const i = Math.min(idx, this.path.length - 2);
+    return {
+      x: this.path[i].x + (this.path[i+1].x - this.path[i].x) * frac,
+      y: this.path[i].y + (this.path[i+1].y - this.path[i].y) * frac
+    };
+  }
+
+  draw(ctx) {
+    const pos = this.getPosition();
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = 12;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Trail
+    const trailLen = 5;
+    for (let i = 1; i <= trailLen; i++) {
+      const tt = this.t - i * this.speed * 2;
+      if (tt < 0) continue;
+      const totalLen2 = this.path.length - 1;
+      const segment2 = ((tt % 1) + 1) % 1 * totalLen2;
+      const idx2 = Math.floor(segment2);
+      const frac2 = segment2 - idx2;
+      const ii = Math.min(idx2, this.path.length - 2);
+      const px = this.path[ii].x + (this.path[ii+1].x - this.path[ii].x) * frac2;
+      const py = this.path[ii].y + (this.path[ii+1].y - this.path[ii].y) * frac2;
+      ctx.beginPath();
+      ctx.arc(px, py, this.size * (1 - i/trailLen) * 0.7, 0, Math.PI * 2);
+      ctx.fillStyle = this.color.replace(/[\d.]+\)$/, (0.5 - i * 0.08) + ')');
+      ctx.fill();
+    }
+  }
+}
+
+// Generate a right-angle path between two points
+function rightAnglePath(x1, y1, x2, y2, midBias) {
+  const bias = midBias || 0.5;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const points = [{x: x1, y: y1}];
+
+  if (Math.abs(dx) > 10 && Math.abs(dy) > 10) {
+    const mx = x1 + dx * bias;
+    points.push({x: mx, y: y1});
+    points.push({x: mx, y: y2});
+  } else if (Math.abs(dx) > 10) {
+    points.push({x: x1 + dx * 0.5, y: y1});
+    points.push({x: x1 + dx * 0.5, y: y2});
+  }
+  points.push({x: x2, y: y2});
+  return points;
+}
+
+// Background substrate pattern
+function drawSubstrate(ctx, w, h, density) {
+  const d = density || 1;
+  const rng = seededRandom(42);
+
+  // Tiny grid dots (fiberglass texture)
+  ctx.fillStyle = 'rgba(20,16,14,0.3)';
+  const spacing = 16;
+  for (let x = 0; x < w; x += spacing) {
+    for (let y = 0; y < h; y += spacing) {
+      if (rng() > 0.7 * d) continue;
+      ctx.beginPath();
+      ctx.arc(x + rng() * 4, y + rng() * 4, 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Silkscreen marks
+  ctx.strokeStyle = 'rgba(30,24,22,0.2)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < 12 * d; i++) {
+    const x = rng() * w;
+    const y = rng() * h;
+    const s = 4 + rng() * 8;
+    ctx.strokeRect(x, y, s, s);
+  }
+}
+
+// ============================================================
+// PAGE 0: HERO — Vast circuit board landscape
+// ============================================================
+function initPage0() {
+  const canvas = document.getElementById('canvas0');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  const pulses = [];
+  const traceNetwork = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    generateTraces();
+  }
+
+  function generateTraces() {
+    traceNetwork.length = 0;
+    pulses.length = 0;
+    const rng = seededRandom(123);
+    const gridW = 60;
+    const gridH = 40;
+    const cellW = W / gridW;
+    const cellH = H / gridH;
+
+    // Generate horizontal traces (main bus lines)
+    for (let y = 3; y < gridH - 3; y += 2) {
+      if (rng() > 0.6) continue;
+      const startX = Math.floor(rng() * 10);
+      const endX = gridW - Math.floor(rng() * 10);
+      const py = y * cellH;
+      const trace = [];
+      let px = startX * cellW;
+      trace.push({x: px, y: py});
+
+      // Add jogs
+      while (px < endX * cellW) {
+        const step = (3 + Math.floor(rng() * 8)) * cellW;
+        px += step;
+        if (rng() > 0.7) {
+          const jog = (rng() > 0.5 ? 1 : -1) * cellH;
+          trace.push({x: px, y: py});
+          trace.push({x: px, y: py + jog});
+          trace.push({x: px + cellW, y: py + jog});
+          trace.push({x: px + cellW, y: py});
+          px += cellW;
+        }
+        trace.push({x: Math.min(px, endX * cellW), y: py});
+      }
+
+      traceNetwork.push({
+        points: trace,
+        width: 1 + rng() * 1.5,
+        alpha: 0.15 + rng() * 0.15,
+        isHoriz: true
+      });
+
+      // Add pulses to some traces
+      if (rng() > 0.4) {
+        pulses.push(new DataPulse(trace, 0.001 + rng() * 0.003, copperHot(0.7 + rng() * 0.3), 2 + rng() * 2));
+      }
+    }
+
+    // Vertical traces
+    for (let x = 4; x < gridW - 4; x += 3) {
+      if (rng() > 0.5) continue;
+      const startY = Math.floor(rng() * 8);
+      const endY = gridH - Math.floor(rng() * 8);
+      const px = x * cellW;
+      const trace = [];
+      let py = startY * cellH;
+      trace.push({x: px, y: py});
+      trace.push({x: px, y: endY * cellH});
+      traceNetwork.push({
+        points: trace,
+        width: 0.8 + rng() * 1,
+        alpha: 0.1 + rng() * 0.1,
+        isHoriz: false
+      });
+      if (rng() > 0.6) {
+        pulses.push(new DataPulse(trace, 0.002 + rng() * 0.003, roseColor(0.6), 2));
+      }
+    }
+
+    // Vias at intersections
+    for (let i = 0; i < 40; i++) {
+      const x = (5 + Math.floor(rng() * (gridW - 10))) * cellW;
+      const y = (3 + Math.floor(rng() * (gridH - 6))) * cellH;
+      traceNetwork.push({
+        type: 'via',
+        x: x, y: y,
+        outerR: 4 + rng() * 3,
+        innerR: 2,
+        glow: rng() > 0.5
+      });
+    }
+
+    // Solder pads
+    for (let i = 0; i < 25; i++) {
+      traceNetwork.push({
+        type: 'pad',
+        x: (8 + Math.floor(rng() * (gridW - 16))) * cellW,
+        y: (4 + Math.floor(rng() * (gridH - 8))) * cellH,
+        w: 8 + rng() * 6,
+        h: 4 + rng() * 4
+      });
+    }
+
+    // IC chips scattered around
+    for (let i = 0; i < 6; i++) {
+      traceNetwork.push({
+        type: 'ic',
+        x: (10 + Math.floor(rng() * (gridW - 20))) * cellW,
+        y: (5 + Math.floor(rng() * (gridH - 10))) * cellH,
+        w: 40 + rng() * 30,
+        h: 20 + rng() * 20,
+        pins: 3 + Math.floor(rng() * 4),
+        label: ['U1','U2','U3','U4','U5','U6'][i]
+      });
+    }
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    // Perspective effect: traces fade toward top (horizon)
+    const horizonY = H * 0.3;
+
+    drawSubstrate(ctx, W, H, 1);
+
+    // Draw traces
+    for (const t of traceNetwork) {
+      if (t.type === 'via') {
+        const fade = Math.max(0.3, 1 - (horizonY - t.y) / (H * 0.5));
+        const pulse = t.glow ? 0.3 + 0.2 * Math.sin(time * 0.002 + t.x * 0.01) : 0;
+        drawVia(ctx, t.x, t.y, t.outerR, t.innerR,
+          copperColor(0.3 * fade + pulse),
+          t.glow ? copperHot(0.3 * fade + pulse) : null);
+        continue;
+      }
+      if (t.type === 'pad') {
+        drawPad(ctx, t.x, t.y, t.w, t.h, copperColor(0.2));
+        continue;
+      }
+      if (t.type === 'ic') {
+        drawIC(ctx, t.x, t.y, t.w, t.h, t.pins, t.label, copperColor(0.35));
+        continue;
+      }
+
+      // Regular trace
+      ctx.beginPath();
+      ctx.strokeStyle = copperColor(t.alpha + blockPulse * 0.1);
+      ctx.lineWidth = t.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 0; i < t.points.length; i++) {
+        if (i === 0) ctx.moveTo(t.points[i].x, t.points[i].y);
+        else ctx.lineTo(t.points[i].x, t.points[i].y);
+      }
+      ctx.stroke();
+    }
+
+    // Draw pulses
+    for (const p of pulses) {
+      p.update();
+      p.draw(ctx);
+    }
+
+    // Central glow
+    const grad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, W * 0.4);
+    grad.addColorStop(0, 'rgba(200,144,122,0.04)');
+    grad.addColorStop(0.5, 'rgba(170,112,136,0.02)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 1: THE PLANE BETWEEN — Three PCB layers with vias
+// ============================================================
+function initPage1() {
+  const canvas = document.getElementById('canvas1');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  const pulses = [];
+  const viaConnections = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    generateLayers();
+  }
+
+  function generateLayers() {
+    pulses.length = 0;
+    viaConnections.length = 0;
+    const rng = seededRandom(456);
+
+    // Three layer bands
+    const layerH = H * 0.15;
+    const topY = H * 0.2;
+    const midY = H * 0.45;
+    const botY = H * 0.7;
+
+    // Generate traces for each layer
+    // Top layer — sparse, few traces
+    for (let i = 0; i < 8; i++) {
+      const y = topY + rng() * layerH * 0.3;
+      const startX = rng() * W * 0.3;
+      const endX = W * 0.7 + rng() * W * 0.3;
+      const path = rightAnglePath(startX, y, endX, y + (rng() - 0.5) * 20);
+      pulses.push(new DataPulse(path, 0.002, dreamColor(0.4), 2));
+    }
+
+    // Middle layer — DENSE, many traces (Nunchi)
+    for (let i = 0; i < 25; i++) {
+      const y = midY + (rng() - 0.5) * layerH * 0.5;
+      const startX = rng() * W * 0.2;
+      const endX = W * 0.8 + rng() * W * 0.2;
+      const path = rightAnglePath(startX, y, endX, y + (rng() - 0.5) * 30, 0.3 + rng() * 0.4);
+      pulses.push(new DataPulse(path, 0.001 + rng() * 0.004, copperHot(0.5 + rng() * 0.4), 2 + rng() * 2));
+    }
+
+    // Bottom layer — medium density
+    for (let i = 0; i < 10; i++) {
+      const y = botY + rng() * layerH * 0.3;
+      const startX = rng() * W * 0.3;
+      const endX = W * 0.7 + rng() * W * 0.3;
+      const path = rightAnglePath(startX, y, endX, y + (rng() - 0.5) * 15);
+      pulses.push(new DataPulse(path, 0.002, dreamColor(0.4), 2));
+    }
+
+    // Vias connecting layers
+    for (let i = 0; i < 15; i++) {
+      const x = W * 0.15 + rng() * W * 0.7;
+      viaConnections.push({
+        x: x,
+        topY: topY + rng() * layerH * 0.3,
+        midY: midY + (rng() - 0.5) * layerH * 0.3,
+        botY: botY + rng() * layerH * 0.3,
+        phase: rng() * Math.PI * 2,
+        topToMid: rng() > 0.3,
+        midToBot: rng() > 0.3
+      });
+    }
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    drawSubstrate(ctx, W, H, 0.5);
+
+    const layerH = H * 0.15;
+    const topY = H * 0.2;
+    const midY = H * 0.45;
+    const botY = H * 0.7;
+
+    // Layer regions (subtle backgrounds)
+    // Top
+    ctx.fillStyle = 'rgba(88,88,120,0.03)';
+    ctx.fillRect(0, topY - 20, W, layerH + 40);
+
+    // Middle — glowing
+    const midGrad = ctx.createLinearGradient(0, midY - 30, 0, midY + layerH + 30);
+    midGrad.addColorStop(0, 'rgba(200,144,122,0)');
+    midGrad.addColorStop(0.3, 'rgba(200,144,122,0.06)');
+    midGrad.addColorStop(0.7, 'rgba(170,112,136,0.06)');
+    midGrad.addColorStop(1, 'rgba(200,144,122,0)');
+    ctx.fillStyle = midGrad;
+    ctx.fillRect(0, midY - 30, W, layerH + 60);
+
+    // Bottom
+    ctx.fillStyle = 'rgba(88,88,120,0.03)';
+    ctx.fillRect(0, botY - 20, W, layerH + 40);
+
+    // Horizontal trace lines for each layer
+    const rng = seededRandom(456);
+
+    // Top traces
+    for (let i = 0; i < 8; i++) {
+      const y = topY + rng() * layerH * 0.3;
+      const startX = rng() * W * 0.3;
+      const endX = W * 0.7 + rng() * W * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(endX, y + (rng() - 0.5) * 20);
+      ctx.strokeStyle = dreamColor(0.15);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Middle traces (dense copper)
+    for (let i = 0; i < 25; i++) {
+      const y = midY + (rng() - 0.5) * layerH * 0.5;
+      const startX = rng() * W * 0.2;
+      const endX = W * 0.8 + rng() * W * 0.2;
+      const bias = 0.3 + rng() * 0.4;
+      const mx = startX + (endX - startX) * bias;
+      const endYp = y + (rng() - 0.5) * 30;
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(mx, y);
+      ctx.lineTo(mx, endYp);
+      ctx.lineTo(endX, endYp);
+      ctx.strokeStyle = copperColor(0.2 + 0.05 * Math.sin(time * 0.001 + i));
+      ctx.lineWidth = 1 + rng() * 1;
+      ctx.stroke();
+      rng(); rng(); // consume same randoms
+    }
+
+    // Bottom traces
+    for (let i = 0; i < 10; i++) {
+      const y = botY + rng() * layerH * 0.3;
+      const startX = rng() * W * 0.3;
+      const endX = W * 0.7 + rng() * W * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(endX, y + (rng() - 0.5) * 15);
+      ctx.strokeStyle = dreamColor(0.15);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Draw via connections (vertical dashed lines)
+    for (const v of viaConnections) {
+      const pulse = 0.3 + 0.2 * Math.sin(time * 0.003 + v.phase);
+      if (v.topToMid) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 6]);
+        ctx.moveTo(v.x, v.topY);
+        ctx.lineTo(v.x, v.midY);
+        ctx.strokeStyle = copperColor(0.15 + pulse * 0.15);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        drawVia(ctx, v.x, v.topY, 4, 2, copperColor(0.3), null);
+        drawVia(ctx, v.x, v.midY, 5, 2.5, copperHot(0.4 + pulse * 0.2), copperHot(0.3));
+      }
+      if (v.midToBot) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 6]);
+        ctx.moveTo(v.x, v.midY);
+        ctx.lineTo(v.x, v.botY);
+        ctx.strokeStyle = copperColor(0.15 + pulse * 0.15);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        drawVia(ctx, v.x, v.midY, 5, 2.5, copperHot(0.4 + pulse * 0.2), copperHot(0.3));
+        drawVia(ctx, v.x, v.botY, 4, 2, copperColor(0.3), null);
+      }
+    }
+
+    // Draw pulses
+    for (const p of pulses) {
+      p.update();
+      p.draw(ctx);
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 2: TWO COMPONENTS — Processor + Memory modules
+// ============================================================
+function initPage2() {
+  const canvas = document.getElementById('canvas2');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  const busPulses = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    generateBus();
+  }
+
+  function generateBus() {
+    busPulses.length = 0;
+    const rng = seededRandom(789);
+
+    // High-bandwidth bus between the two halves
+    const busY = H * 0.5;
+    const midX = W * 0.5;
+
+    for (let i = 0; i < 12; i++) {
+      const y = busY - 30 + i * 5;
+      const path = [
+        {x: midX - 80, y: y},
+        {x: midX - 20, y: y},
+        {x: midX + 20, y: y},
+        {x: midX + 80, y: y}
+      ];
+      const goRight = rng() > 0.5;
+      busPulses.push(new DataPulse(
+        goRight ? path : [...path].reverse(),
+        0.005 + rng() * 0.005,
+        copperHot(0.5 + rng() * 0.4),
+        1.5 + rng()
+      ));
+    }
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    drawSubstrate(ctx, W, H, 0.6);
+
+    const leftCX = W * 0.28;
+    const rightCX = W * 0.72;
+    const cy = H * 0.5;
+    const moduleW = W * 0.25;
+    const moduleH = H * 0.35;
+    const rng = seededRandom(789);
+
+    // Left module — Roko Processor Complex
+    // Processor die outline
+    ctx.strokeStyle = copperColor(0.25);
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(leftCX - moduleW/2, cy - moduleH/2, moduleW, moduleH);
+
+    // Internal traces for processor
+    for (let i = 0; i < 15; i++) {
+      const y1 = cy - moduleH/2 + 20 + rng() * (moduleH - 40);
+      const x1 = leftCX - moduleW/2 + 10;
+      const x2 = leftCX + moduleW/2 - 10;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      const mx = x1 + (x2 - x1) * (0.3 + rng() * 0.4);
+      const y2 = y1 + (rng() - 0.5) * 20;
+      ctx.lineTo(mx, y1);
+      ctx.lineTo(mx, y2);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = copperColor(0.12 + 0.05 * Math.sin(time * 0.002 + i));
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+
+    // Processor core (inner rectangle)
+    const coreW = moduleW * 0.4;
+    const coreH = moduleH * 0.3;
+    ctx.strokeStyle = copperHot(0.3 + 0.1 * Math.sin(time * 0.003));
+    ctx.lineWidth = 1;
+    ctx.strokeRect(leftCX - coreW/2, cy - coreH/2, coreW, coreH);
+    ctx.fillStyle = 'rgba(200,144,122,0.03)';
+    ctx.fillRect(leftCX - coreW/2, cy - coreH/2, coreW, coreH);
+
+    // Pins on left module
+    for (let i = 0; i < 8; i++) {
+      const py = cy - moduleH/2 + 15 + i * (moduleH - 30) / 7;
+      drawPad(ctx, leftCX - moduleW/2 - 10, py, 6, 3, copperColor(0.3));
+      ctx.beginPath();
+      ctx.moveTo(leftCX - moduleW/2 - 7, py);
+      ctx.lineTo(leftCX - moduleW/2, py);
+      ctx.strokeStyle = copperColor(0.2);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Right side pins
+      drawPad(ctx, leftCX + moduleW/2 + 10, py, 6, 3, copperColor(0.3));
+      ctx.beginPath();
+      ctx.moveTo(leftCX + moduleW/2, py);
+      ctx.lineTo(leftCX + moduleW/2 + 7, py);
+      ctx.stroke();
+    }
+
+    // Right module — Chain Memory/Storage
+    ctx.strokeStyle = copperColor(0.25);
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(rightCX - moduleW/2, cy - moduleH/2, moduleW, moduleH);
+
+    // Memory cells grid
+    const cellsX = 6;
+    const cellsY = 8;
+    const cellW = (moduleW - 30) / cellsX;
+    const cellH = (moduleH - 30) / cellsY;
+    for (let gx = 0; gx < cellsX; gx++) {
+      for (let gy = 0; gy < cellsY; gy++) {
+        const cx = rightCX - moduleW/2 + 15 + gx * cellW + cellW/2;
+        const ccy = cy - moduleH/2 + 15 + gy * cellH + cellH/2;
+        const pulse = Math.sin(time * 0.003 + gx * 0.5 + gy * 0.3) * 0.5 + 0.5;
+        ctx.fillStyle = copperColor(0.05 + pulse * 0.08);
+        ctx.fillRect(cx - cellW/2 + 1, ccy - cellH/2 + 1, cellW - 2, cellH - 2);
+        ctx.strokeStyle = copperColor(0.1);
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(cx - cellW/2 + 1, ccy - cellH/2 + 1, cellW - 2, cellH - 2);
+      }
+    }
+
+    // Pins on right module
+    for (let i = 0; i < 8; i++) {
+      const py = cy - moduleH/2 + 15 + i * (moduleH - 30) / 7;
+      drawPad(ctx, rightCX - moduleW/2 - 10, py, 6, 3, copperColor(0.3));
+      ctx.beginPath();
+      ctx.moveTo(rightCX - moduleW/2 - 7, py);
+      ctx.lineTo(rightCX - moduleW/2, py);
+      ctx.strokeStyle = copperColor(0.2);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // High-bandwidth bus between modules
+    const busLeft = leftCX + moduleW/2 + 20;
+    const busRight = rightCX - moduleW/2 - 20;
+    for (let i = 0; i < 12; i++) {
+      const y = cy - 30 + i * 5;
+      ctx.beginPath();
+      ctx.moveTo(busLeft, y);
+      ctx.lineTo(busRight, y);
+      ctx.strokeStyle = copperColor(0.15 + 0.05 * Math.sin(time * 0.002 + i * 0.5));
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Bus connector symbols
+    ctx.strokeStyle = copperColor(0.3);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(busLeft - 5, cy - 35, 10, 70);
+    ctx.strokeRect(busRight - 5, cy - 35, 10, 70);
+
+    // Bus pulses
+    for (const p of busPulses) {
+      // Update path positions based on current layout
+      const y = cy - 30 + busPulses.indexOf(p) * 5;
+      p.path = [
+        {x: busLeft, y: y},
+        {x: (busLeft + busRight) / 2 - 20, y: y},
+        {x: (busLeft + busRight) / 2 + 20, y: y},
+        {x: busRight, y: y}
+      ];
+      p.update();
+      p.draw(ctx);
+    }
+
+    // Surrounding scattered traces
+    const rng2 = seededRandom(1234);
+    for (let i = 0; i < 20; i++) {
+      const x1 = rng2() * W;
+      const y1 = rng2() * H;
+      const len = 30 + rng2() * 80;
+      const horiz = rng2() > 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      if (horiz) ctx.lineTo(x1 + len, y1);
+      else ctx.lineTo(x1, y1 + len);
+      ctx.strokeStyle = copperColor(0.06);
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 3: CHAIN ARCHITECTURE — Exploded PCB stackup
+// ============================================================
+function initPage3() {
+  const canvas = document.getElementById('canvas3');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    drawSubstrate(ctx, W, H, 0.4);
+
+    const rng = seededRandom(321);
+
+    // 5 PCB layers exploded view (3D-ish perspective)
+    const layers = 5;
+    const layerW = W * 0.55;
+    const layerH = 40;
+    const startX = W * 0.22;
+    const startY = H * 0.15;
+    const gap = (H * 0.65) / layers;
+    const offsetX = 12; // perspective shift
+    const offsetY = 0;
+
+    const layerColors = [
+      copperHot(0.3),
+      copperColor(0.3),
+      copperHot(0.35),
+      copperColor(0.25),
+      dreamColor(0.25)
+    ];
+
+    for (let l = 0; l < layers; l++) {
+      const lx = startX + l * offsetX;
+      const ly = startY + l * gap;
+      const pulse = 0.05 * Math.sin(time * 0.002 + l * 0.8);
+
+      // Layer board
+      ctx.fillStyle = `rgba(12,10,14,0.7)`;
+      ctx.strokeStyle = layerColors[l].replace(/[\d.]+\)$/, (0.3 + pulse) + ')');
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(lx, ly, layerW, layerH, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Traces on each layer
+      for (let t = 0; t < 6 + l * 2; t++) {
+        const ty = ly + 8 + rng() * (layerH - 16);
+        const tx1 = lx + 10 + rng() * 30;
+        const tx2 = lx + layerW - 10 - rng() * 30;
+        ctx.beginPath();
+        ctx.moveTo(tx1, ty);
+        // Right angle routing
+        const mx = tx1 + (tx2 - tx1) * (0.3 + rng() * 0.4);
+        const ty2 = ty + (rng() - 0.5) * 10;
+        ctx.lineTo(mx, ty);
+        ctx.lineTo(mx, ty2);
+        ctx.lineTo(tx2, ty2);
+        ctx.strokeStyle = layerColors[l].replace(/[\d.]+\)$/, (0.15 + pulse) + ')');
+        ctx.lineWidth = 0.7 + rng() * 0.8;
+        ctx.stroke();
+      }
+
+      // IC chips on some layers
+      if (l === 0 || l === 2 || l === 3) {
+        const chipX = lx + layerW * (0.3 + rng() * 0.4);
+        const chipY = ly + layerH / 2;
+        drawIC(ctx, chipX, chipY, 35, 18, 2,
+          l === 0 ? 'BFT' : l === 2 ? 'HDC' : 'REG',
+          layerColors[l]);
+      }
+
+      // Vias between layers (if not last)
+      if (l < layers - 1) {
+        const nextLy = startY + (l + 1) * gap;
+        for (let v = 0; v < 4; v++) {
+          const vx = lx + 30 + rng() * (layerW - 60);
+          ctx.beginPath();
+          ctx.setLineDash([2, 4]);
+          ctx.moveTo(vx, ly + layerH);
+          ctx.lineTo(vx + offsetX, nextLy);
+          ctx.strokeStyle = copperColor(0.12 + 0.05 * Math.sin(time * 0.003 + v));
+          ctx.lineWidth = 0.6;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          drawVia(ctx, vx, ly + layerH, 3, 1.5, copperColor(0.25), null);
+          drawVia(ctx, vx + offsetX, nextLy, 3, 1.5, copperColor(0.25), null);
+        }
+      }
+    }
+
+    // Floating data pulses across the stackup
+    const pulseCount = 8;
+    for (let i = 0; i < pulseCount; i++) {
+      const px = startX + (rng() * layerW);
+      const baseY = startY + (rng() * layers * gap);
+      const py = baseY + Math.sin(time * 0.003 + i * 1.5) * 15;
+      const sz = 2 + rng() * 2;
+      ctx.beginPath();
+      ctx.arc(px + 30, py, sz, 0, Math.PI * 2);
+      ctx.fillStyle = copperHot(0.4 + 0.2 * Math.sin(time * 0.004 + i));
+      ctx.shadowColor = copperHot(0.6);
+      ctx.shadowBlur = 10;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 4: HDC — Circuit encoding with logic gates
+// ============================================================
+function initPage4() {
+  const canvas = document.getElementById('canvas4');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  const dataBits = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    generateBits();
+  }
+
+  function generateBits() {
+    dataBits.length = 0;
+    const rng = seededRandom(654);
+    for (let i = 0; i < 60; i++) {
+      dataBits.push({
+        x: rng() * W,
+        y: rng() * H,
+        vx: (rng() - 0.5) * 0.3,
+        vy: (rng() - 0.5) * 0.3,
+        val: rng() > 0.5 ? 1 : 0,
+        size: 6 + rng() * 4,
+        phase: rng() * Math.PI * 2
+      });
+    }
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    drawSubstrate(ctx, W, H, 0.3);
+
+    const rng = seededRandom(654);
+
+    // Circuit with gates
+    // Layout: input traces → XOR gate → permute shift → majority gate → output
+
+    const gateY = H * 0.35;
+    const gateSpacing = W * 0.18;
+    const startX = W * 0.15;
+
+    // Input traces (3 conceptual inputs from left)
+    const inputs = [
+      {label: 'swap', y: gateY - 40},
+      {label: 'USDC', y: gateY},
+      {label: 'WETH', y: gateY + 40}
+    ];
+
+    for (const inp of inputs) {
+      ctx.beginPath();
+      ctx.moveTo(20, inp.y);
+      ctx.lineTo(startX, inp.y);
+      ctx.strokeStyle = copperColor(0.25);
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      // Label
+      ctx.fillStyle = copperColor(0.5);
+      ctx.font = '9px "JetBrains Mono", monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(inp.label, startX - 15, inp.y + 3);
+    }
+
+    // XOR gate (BIND)
+    const xorX = startX + gateSpacing * 0.5;
+    drawGateSymbol(ctx, xorX, gateY, 22, 'xor', copperHot(0.5 + 0.1 * Math.sin(time * 0.003)));
+
+    // Label
+    ctx.fillStyle = copperHot(0.6);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('BIND (XOR)', xorX, gateY + 35);
+
+    // Trace from inputs to XOR
+    for (const inp of inputs) {
+      ctx.beginPath();
+      ctx.moveTo(startX, inp.y);
+      ctx.lineTo(xorX - 22, inp.y);
+      ctx.lineTo(xorX - 22, gateY);
+      ctx.strokeStyle = copperColor(0.2);
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+
+    // Output from XOR
+    const xorOutX = xorX + 30;
+    ctx.beginPath();
+    ctx.moveTo(xorX + 22, gateY);
+    ctx.lineTo(xorOutX + 40, gateY);
+    ctx.strokeStyle = copperColor(0.25);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Permute (shift register symbol)
+    const permX = xorOutX + 80;
+    ctx.strokeStyle = copperColor(0.3);
+    ctx.lineWidth = 1;
+    const boxW = 50, boxH = 24;
+    ctx.strokeRect(permX - boxW/2, gateY - boxH/2, boxW, boxH);
+    ctx.fillStyle = 'rgba(8,8,12,0.7)';
+    ctx.fillRect(permX - boxW/2, gateY - boxH/2, boxW, boxH);
+
+    // Shift arrows inside
+    ctx.strokeStyle = copperHot(0.4);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const ax = permX - 15 + i * 12;
+      ctx.beginPath();
+      ctx.moveTo(ax, gateY);
+      ctx.lineTo(ax + 8, gateY);
+      ctx.moveTo(ax + 5, gateY - 3);
+      ctx.lineTo(ax + 8, gateY);
+      ctx.lineTo(ax + 5, gateY + 3);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = copperHot(0.6);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PERMUTE', permX, gateY + 25);
+
+    // Trace to permute
+    ctx.beginPath();
+    ctx.moveTo(xorOutX + 40, gateY);
+    ctx.lineTo(permX - boxW/2, gateY);
+    ctx.strokeStyle = copperColor(0.2);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Majority gate (BUNDLE)
+    const majX = permX + gateSpacing * 0.7;
+    drawGateSymbol(ctx, majX, gateY, 22, 'and', copperHot(0.5 + 0.1 * Math.sin(time * 0.003 + 1)));
+
+    ctx.fillStyle = copperHot(0.6);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('BUNDLE (MAJ)', majX, gateY + 35);
+
+    // Trace from permute to majority
+    ctx.beginPath();
+    ctx.moveTo(permX + boxW/2, gateY);
+    ctx.lineTo(majX - 22, gateY);
+    ctx.strokeStyle = copperColor(0.25);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Output: hypervector
+    const outX = majX + 50;
+    ctx.beginPath();
+    ctx.moveTo(majX + 22, gateY);
+    ctx.lineTo(W - 40, gateY);
+    ctx.strokeStyle = copperColor(0.25);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = copperHot(0.7);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('→ HYPERVECTOR', W - 180, gateY - 8);
+
+    // Floating data bits around the circuit
+    for (const bit of dataBits) {
+      bit.x += bit.vx;
+      bit.y += bit.vy;
+      if (bit.x < 0 || bit.x > W) bit.vx *= -1;
+      if (bit.y < 0 || bit.y > H) bit.vy *= -1;
+
+      const pulse = 0.3 + 0.2 * Math.sin(time * 0.002 + bit.phase);
+      ctx.fillStyle = bit.val ?
+        copperHot(0.15 + pulse * 0.1) :
+        dreamColor(0.1 + pulse * 0.05);
+      ctx.font = `${bit.size}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(bit.val ? '1' : '0', bit.x, bit.y);
+    }
+
+    // Data flow pulses along the circuit path
+    const circuitPath = [
+      {x: 20, y: gateY},
+      {x: startX, y: gateY},
+      {x: xorX, y: gateY},
+      {x: xorOutX + 40, y: gateY},
+      {x: permX, y: gateY},
+      {x: majX, y: gateY},
+      {x: W - 40, y: gateY}
+    ];
+
+    const t = (time * 0.0005) % 1;
+    const totalSegs = circuitPath.length - 1;
+    const seg = t * totalSegs;
+    const segIdx = Math.floor(seg);
+    const frac = seg - segIdx;
+    const si = Math.min(segIdx, circuitPath.length - 2);
+    const px = circuitPath[si].x + (circuitPath[si+1].x - circuitPath[si].x) * frac;
+    const py = circuitPath[si].y + (circuitPath[si+1].y - circuitPath[si].y) * frac;
+
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fillStyle = copperHot(0.9);
+    ctx.shadowColor = copperHot(0.8);
+    ctx.shadowBlur = 15;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Additional circuit traces in background
+    const bgRng = seededRandom(999);
+    for (let i = 0; i < 30; i++) {
+      const bx = bgRng() * W;
+      const by = bgRng() * H;
+      const blen = 20 + bgRng() * 60;
+      const vert = bgRng() > 0.5;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      if (vert) ctx.lineTo(bx, by + blen);
+      else ctx.lineTo(bx + blen, by);
+      ctx.strokeStyle = copperColor(0.05);
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+
+      if (bgRng() > 0.8) {
+        drawVia(ctx, bx, by, 3, 1, copperColor(0.1), null);
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 5: ISFR — Data sources flowing through routing traces
+// ============================================================
+function initPage5() {
+  const canvas = document.getElementById('canvas5');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  const sourcePulses = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    generateSources();
+  }
+
+  function generateSources() {
+    sourcePulses.length = 0;
+    const rng = seededRandom(555);
+
+    // 4 source areas flowing to central processor
+    const centerX = W * 0.5;
+    const centerY = H * 0.55;
+
+    const sources = [
+      {x: W * 0.1, y: H * 0.2, weight: 0.6, color: copperHot(0.7)},
+      {x: W * 0.9, y: H * 0.2, weight: 0.25, color: roseColor(0.7)},
+      {x: W * 0.1, y: H * 0.85, weight: 0.1, color: boneColor(0.6)},
+      {x: W * 0.9, y: H * 0.85, weight: 0.05, color: jadeColor(0.6)}
+    ];
+
+    for (const src of sources) {
+      const numTraces = Math.ceil(src.weight * 15);
+      for (let i = 0; i < numTraces; i++) {
+        const sx = src.x + (rng() - 0.5) * 60;
+        const sy = src.y + (rng() - 0.5) * 40;
+        const path = rightAnglePath(sx, sy, centerX + (rng() - 0.5) * 30, centerY + (rng() - 0.5) * 20, 0.4 + rng() * 0.2);
+        sourcePulses.push(new DataPulse(
+          path,
+          0.002 + rng() * 0.003,
+          src.color,
+          1.5 + rng() * 1.5
+        ));
+      }
+    }
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    drawSubstrate(ctx, W, H, 0.4);
+
+    const centerX = W * 0.5;
+    const centerY = H * 0.55;
+    const rng = seededRandom(555);
+
+    // Source component areas
+    const sources = [
+      {x: W * 0.1, y: H * 0.2, label: 'LENDING', weight: 0.6, color: copperHot(0.4)},
+      {x: W * 0.9, y: H * 0.2, label: 'STRUCTURED', weight: 0.25, color: roseColor(0.4)},
+      {x: W * 0.1, y: H * 0.85, label: 'FUNDING', weight: 0.1, color: boneColor(0.35)},
+      {x: W * 0.9, y: H * 0.85, label: 'STAKING', weight: 0.05, color: jadeColor(0.35)}
+    ];
+
+    // Draw source components
+    for (const src of sources) {
+      // Component outline
+      ctx.strokeStyle = src.color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(src.x - 40, src.y - 20, 80, 40);
+      ctx.fillStyle = 'rgba(8,8,12,0.5)';
+      ctx.fillRect(src.x - 40, src.y - 20, 80, 40);
+
+      // Pins
+      for (let p = 0; p < 4; p++) {
+        const px = src.x - 30 + p * 20;
+        drawPad(ctx, px, src.y + 20 + 6, 4, 3, src.color);
+        drawPad(ctx, px, src.y - 20 - 6, 4, 3, src.color);
+      }
+
+      // Traces to center
+      const numTraces = Math.ceil(src.weight * 15);
+      for (let i = 0; i < numTraces; i++) {
+        const sx = src.x + (rng() - 0.5) * 60;
+        const sy = src.y + (rng() - 0.5) * 40;
+        const ex = centerX + (rng() - 0.5) * 30;
+        const ey = centerY + (rng() - 0.5) * 20;
+        const mx = sx + (ex - sx) * (0.4 + rng() * 0.2);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(mx, sy);
+        ctx.lineTo(mx, ey);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = src.color.replace(/[\d.]+\)$/, '0.1)');
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+      }
+    }
+
+    // Central processor (ISFR computation)
+    const procW = 80, procH = 50;
+    ctx.strokeStyle = copperHot(0.4 + 0.1 * Math.sin(time * 0.003));
+    ctx.lineWidth = 2;
+    ctx.strokeRect(centerX - procW/2, centerY - procH/2, procW, procH);
+    ctx.fillStyle = 'rgba(12,10,14,0.7)';
+    ctx.fillRect(centerX - procW/2, centerY - procH/2, procW, procH);
+
+    ctx.fillStyle = copperHot(0.7);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ISFR', centerX, centerY + 3);
+
+    // Output trace to the right
+    ctx.beginPath();
+    ctx.moveTo(centerX + procW/2, centerY);
+    ctx.lineTo(centerX + procW/2 + 100, centerY);
+    ctx.strokeStyle = copperHot(0.3);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Output rate display
+    const rateX = centerX + procW/2 + 120;
+    ctx.fillStyle = copperHot(0.6);
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('→ RATE OUTPUT', rateX, centerY + 3);
+
+    // Draw pulses
+    for (const p of sourcePulses) {
+      p.update();
+      p.draw(ctx);
+    }
+
+    // Vias scattered
+    const viaRng = seededRandom(888);
+    for (let i = 0; i < 20; i++) {
+      const vx = viaRng() * W;
+      const vy = viaRng() * H;
+      const glow = viaRng() > 0.7;
+      drawVia(ctx, vx, vy, 3, 1.5, copperColor(0.1),
+        glow ? copperHot(0.15 + 0.05 * Math.sin(time * 0.002 + i)) : null);
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// PAGE 6: COLLECTIVE — Growing circuit board
+// ============================================================
+function initPage6() {
+  const canvas = document.getElementById('canvas6');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  function draw(time) {
+    ctx.fillStyle = '#060505';
+    ctx.fillRect(0, 0, W, H);
+
+    const agents = agentSliderValue;
+    const density = agents / 1000; // 0 to 1
+    const rng = seededRandom(777);
+
+    drawSubstrate(ctx, W, H, 0.3 + density * 0.7);
+
+    // Agent nodes as solder pads / vias
+    const nodeCount = Math.min(agents, 200); // Cap visual nodes
+    const nodes = [];
+
+    for (let i = 0; i < nodeCount; i++) {
+      // Distribute in a circular-ish pattern, spreading out with density
+      const angle = rng() * Math.PI * 2;
+      const radius = (0.1 + rng() * 0.35) * Math.min(W, H) * (0.5 + density * 0.5);
+      const nx = W/2 + Math.cos(angle) * radius;
+      const ny = H/2 + Math.sin(angle) * radius;
+      nodes.push({x: nx, y: ny, idx: i});
+    }
+
+    // Draw traces between nearby nodes (more traces = more density)
+    const maxConnections = Math.floor(density * 600);
+    let connCount = 0;
+
+    for (let i = 0; i < nodes.length && connCount < maxConnections; i++) {
+      const connectionPer = Math.ceil(1 + density * 5);
+      let conns = 0;
+      for (let j = i + 1; j < nodes.length && conns < connectionPer; j++) {
+        const dx = nodes[j].x - nodes[i].x;
+        const dy = nodes[j].y - nodes[i].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const maxDist = 80 + density * 200;
+
+        if (dist < maxDist && rng() > 0.3) {
+          // Right-angle trace
+          const mx = nodes[i].x + dx * (0.3 + rng() * 0.4);
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(mx, nodes[i].y);
+          ctx.lineTo(mx, nodes[j].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+
+          const traceAlpha = 0.05 + density * 0.15;
+          const pulse = 0.03 * Math.sin(time * 0.002 + i * 0.3 + j * 0.1);
+          ctx.strokeStyle = copperColor(traceAlpha + pulse);
+          ctx.lineWidth = 0.5 + density * 0.5;
+          ctx.stroke();
+          connCount++;
+          conns++;
+        }
+      }
+    }
+
+    // Draw nodes
+    for (const node of nodes) {
+      const pulse = 0.3 + 0.15 * Math.sin(time * 0.003 + node.idx * 0.5);
+      const nodeSize = 3 + density * 3;
+
+      // Via style
+      drawVia(ctx, node.x, node.y, nodeSize, nodeSize * 0.5,
+        copperColor(0.3 + pulse * density),
+        density > 0.3 ? copperHot(0.2 + pulse * density * 0.3) : null);
+    }
+
+    // Central hub grows with density
+    if (density > 0.1) {
+      const hubR = 15 + density * 30;
+      ctx.beginPath();
+      ctx.arc(W/2, H/2, hubR, 0, Math.PI * 2);
+      ctx.strokeStyle = copperHot(0.2 + density * 0.3);
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = copperHot(0.4);
+      ctx.shadowBlur = 15 * density;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Inner rings
+      ctx.beginPath();
+      ctx.arc(W/2, H/2, hubR * 0.6, 0, Math.PI * 2);
+      ctx.strokeStyle = copperColor(0.15 + density * 0.2);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Data pulses flowing between nodes (more with density)
+    const pulseCount = Math.floor(5 + density * 30);
+    for (let i = 0; i < pulseCount; i++) {
+      const t = ((time * 0.001 + i * 0.137) % 1 + 1) % 1;
+      // Pick two nodes
+      const ni1 = Math.floor(rng() * nodes.length);
+      const ni2 = Math.floor(rng() * nodes.length);
+      if (ni1 === ni2 || !nodes[ni1] || !nodes[ni2]) continue;
+
+      const n1 = nodes[ni1];
+      const n2 = nodes[ni2];
+      const px = n1.x + (n2.x - n1.x) * t;
+      const py = n1.y + (n2.y - n1.y) * t;
+
+      ctx.beginPath();
+      ctx.arc(px, py, 2 + density * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = copperHot(0.3 + density * 0.4);
+      ctx.shadowColor = copperHot(0.5);
+      ctx.shadowBlur = 6;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // ICs appear at high density
+    if (density > 0.3) {
+      const icCount = Math.floor(density * 8);
+      const icRng = seededRandom(333);
+      for (let i = 0; i < icCount; i++) {
+        const angle = icRng() * Math.PI * 2;
+        const r = 100 + icRng() * 150;
+        const ix = W/2 + Math.cos(angle) * r;
+        const iy = H/2 + Math.sin(angle) * r;
+        drawIC(ctx, ix, iy, 30 + icRng() * 20, 15 + icRng() * 10, 2,
+          'N' + i, copperColor(0.15 + density * 0.15));
+      }
+    }
+
+    // Logic gates appear at high density
+    if (density > 0.5) {
+      const gateRng = seededRandom(444);
+      const gateTypes = ['xor', 'and', 'or'];
+      for (let i = 0; i < Math.floor(density * 6); i++) {
+        const gx = W * 0.1 + gateRng() * W * 0.8;
+        const gy = H * 0.1 + gateRng() * H * 0.8;
+        drawGateSymbol(ctx, gx, gy, 12, gateTypes[i % 3], copperColor(0.1 + density * 0.1));
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+}
+
+// ============================================================
+// INITIALIZE ALL CANVASES
+// ============================================================
+initPage0();
+initPage1();
+initPage2();
+initPage3();
+initPage4();
+initPage5();
+initPage6();
+
+// Handle window resize for all canvases
+window.addEventListener('resize', () => {
+  // Canvases auto-resize via their own resize handlers
+});
+
+// Block pulse decay
+setInterval(() => { blockPulse *= 0.95; }, 50);
+</script>
+</body>
+</html>

@@ -1,0 +1,1743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NUNCHI // TOPOGRAPHIC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-void: #060608;
+  --rose-glow: #dca5bd;
+  --rose: #aa7088;
+  --bone-bright: #d8c8a0;
+  --text-primary: #c8b8c0;
+  --text-strong: #d8c8d0;
+  --text-soft: #988090;
+  --text-dim: #6a5a68;
+  --dream: #7a7a98;
+  --success: #7a8a78;
+  --warning: #c89a68;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  overflow: hidden;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── GRAIN / SCANLINE / VIGNETTE OVERLAYS ── */
+#grain {
+  position: fixed; inset: 0; z-index: 9998;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+}
+#scanlines {
+  position: fixed; inset: 0; z-index: 9997;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(6,6,8,0.08) 2px,
+    rgba(6,6,8,0.08) 4px
+  );
+}
+#vignette {
+  position: fixed; inset: 0; z-index: 9996;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(6,6,8,0.7) 100%);
+}
+
+/* ── PAGES CONTAINER ── */
+#pages {
+  position: fixed; inset: 0;
+  display: flex;
+  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.page {
+  min-width: 100vw; min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── PAGE CANVAS (Three.js) ── */
+.page-canvas {
+  position: absolute; inset: 0;
+  z-index: 1;
+}
+
+/* ── CHAIN STATUS BAR ── */
+#chain-bar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 36px;
+  background: rgba(6,6,8,0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(170,112,136,0.15);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  z-index: 9990;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  gap: 20px;
+}
+#chain-bar .led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+#chain-bar .led.live {
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(122,138,120,0.6);
+}
+#chain-bar .led.error {
+  background: #c86868;
+  box-shadow: 0 0 8px rgba(200,104,104,0.5);
+}
+.chain-label { color: var(--text-dim); }
+.chain-value { color: var(--rose-glow); font-weight: 500; }
+.chain-hash { color: var(--text-soft); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chain-sep { color: var(--text-dim); opacity: 0.3; }
+
+/* ── NAV DOTS ── */
+#nav-dots {
+  position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px;
+  z-index: 9990;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border: 1px solid var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.nav-dot.active {
+  background: var(--rose-glow);
+  border-color: var(--rose-glow);
+  box-shadow: 0 0 10px rgba(220,165,189,0.4);
+}
+.nav-dot:hover { border-color: var(--rose); }
+
+/* ── SECTION TAG ── */
+.section-tag {
+  position: absolute;
+  top: 52px; left: 32px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--text-dim);
+  z-index: 10;
+  text-transform: uppercase;
+}
+
+/* ── PAGE TITLE ── */
+.page-title {
+  position: absolute;
+  top: 80px; left: 32px;
+  z-index: 10;
+  pointer-events: none;
+}
+.page-title h1 {
+  font-family: 'Fraunces', serif;
+  font-size: 48px;
+  font-weight: 300;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.page-title .subtitle {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-top: 8px;
+  letter-spacing: 0.05em;
+}
+
+/* ── GLASS PANELS ── */
+.glass-panel {
+  background: rgba(6,6,8,0.65);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(170,112,136,0.12);
+  padding: 16px;
+  z-index: 10;
+  position: absolute;
+}
+.glass-panel h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* ── CONTROLS ── */
+.ctrl-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px;
+  font-size: 10px; color: var(--text-soft);
+}
+.ctrl-row label { min-width: 80px; text-transform: uppercase; letter-spacing: 0.08em; font-size: 9px; color: var(--text-dim); }
+input[type="range"] {
+  -webkit-appearance: none;
+  width: 120px; height: 2px;
+  background: var(--text-dim);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px; height: 10px;
+  background: var(--rose-glow);
+  border: none;
+  cursor: pointer;
+}
+.toggle-btn {
+  background: rgba(170,112,136,0.1);
+  border: 1px solid rgba(170,112,136,0.2);
+  color: var(--text-soft);
+  padding: 4px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.toggle-btn:hover { border-color: var(--rose); color: var(--rose-glow); }
+.toggle-btn.active { background: rgba(170,112,136,0.25); color: var(--rose-glow); border-color: var(--rose-glow); }
+
+/* ── STATS ── */
+.stat-row {
+  display: flex; justify-content: space-between;
+  margin-bottom: 6px; font-size: 10px;
+}
+.stat-label { color: var(--text-dim); }
+.stat-value { color: var(--rose-glow); font-weight: 500; }
+
+/* ── NAV ARROWS ── */
+#nav-hint {
+  position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; color: var(--text-dim);
+  letter-spacing: 0.1em; text-transform: uppercase;
+  z-index: 9990;
+  animation: pulse-hint 2s ease-in-out infinite;
+}
+@keyframes pulse-hint {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+
+/* ── SEISMOGRAPH LINES ── */
+.seismo-canvas {
+  position: absolute;
+  z-index: 10;
+}
+
+/* ── PAGE 3 BAROMETER ── */
+.barometer {
+  position: absolute;
+  z-index: 10;
+}
+
+/* ── PAGE 4 EPOCH LABELS ── */
+.epoch-label {
+  font-family: 'Fraunces', serif;
+  font-size: 14px;
+  color: var(--bone-bright);
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  transition: opacity 0.5s;
+}
+
+/* ── TOOLTIPS ── */
+.tooltip {
+  position: absolute;
+  background: rgba(6,6,8,0.9);
+  border: 1px solid rgba(170,112,136,0.2);
+  padding: 6px 10px;
+  font-size: 9px;
+  color: var(--text-soft);
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+  display: none;
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 768px) {
+  .page-title h1 { font-size: 32px; }
+  .glass-panel { padding: 10px; }
+  #chain-bar { font-size: 9px; padding: 0 12px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Atmospheric overlays -->
+<div id="grain"></div>
+<div id="scanlines"></div>
+<div id="vignette"></div>
+
+<!-- Chain status bar -->
+<div id="chain-bar">
+  <div class="led" id="chain-led"></div>
+  <span class="chain-label">CHAIN</span>
+  <span class="chain-value" id="chain-id">1337</span>
+  <span class="chain-sep">|</span>
+  <span class="chain-label">BLOCK</span>
+  <span class="chain-value" id="chain-block">--</span>
+  <span class="chain-sep">|</span>
+  <span class="chain-label">HASH</span>
+  <span class="chain-hash" id="chain-hash">--</span>
+  <span class="chain-sep">|</span>
+  <span class="chain-label">STATUS</span>
+  <span class="chain-value" id="chain-status">CONNECTING</span>
+  <span style="flex:1"></span>
+  <span class="chain-label" style="color:var(--text-dim);">NUNCHI // TOPOGRAPHIC</span>
+</div>
+
+<!-- Pages container -->
+<div id="pages">
+
+  <!-- PAGE 1: STRATA -->
+  <div class="page" id="page-strata">
+    <canvas class="page-canvas" id="canvas-strata"></canvas>
+    <div class="section-tag">&mdash;&mdash; 01 &middot; STRATA</div>
+    <div class="page-title">
+      <h1>Strata</h1>
+      <div class="subtitle">Blockchain as geological formation</div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; left:32px; width:260px;">
+      <h3>Terrain Controls</h3>
+      <div class="ctrl-row">
+        <label>Tectonic</label>
+        <input type="range" id="ctrl-tectonic" min="0" max="100" value="50">
+      </div>
+      <div class="ctrl-row">
+        <label>Cross-sect</label>
+        <button class="toggle-btn" id="ctrl-cross">OFF</button>
+      </div>
+      <div class="ctrl-row" style="gap:6px;">
+        <label>Layers</label>
+        <button class="toggle-btn active" id="ctrl-bedrock">Bedrock</button>
+        <button class="toggle-btn active" id="ctrl-mantle">Mantle</button>
+        <button class="toggle-btn active" id="ctrl-surface">Surface</button>
+      </div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; right:32px; width:200px;">
+      <h3>Strata Stats</h3>
+      <div class="stat-row"><span class="stat-label">Validators</span><span class="stat-value" id="stat-validators">21</span></div>
+      <div class="stat-row"><span class="stat-label">DKG Threshold</span><span class="stat-value" id="stat-dkg">14/21</span></div>
+      <div class="stat-row"><span class="stat-label">Seismic Activity</span><span class="stat-value" id="stat-seismic">0.00</span></div>
+      <div class="stat-row"><span class="stat-label">Block Rate</span><span class="stat-value" id="stat-blockrate">--</span></div>
+    </div>
+  </div>
+
+  <!-- PAGE 2: PEAKS -->
+  <div class="page" id="page-peaks">
+    <canvas class="page-canvas" id="canvas-peaks"></canvas>
+    <div class="section-tag">&mdash;&mdash; 02 &middot; PEAKS</div>
+    <div class="page-title">
+      <h1>Peaks</h1>
+      <div class="subtitle">HDC as data mountains</div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; left:32px; width:260px;">
+      <h3>HDC Controls</h3>
+      <div class="ctrl-row">
+        <label>Density</label>
+        <input type="range" id="ctrl-density" min="0" max="100" value="50">
+      </div>
+      <div class="ctrl-row" style="gap:6px;">
+        <label>View</label>
+        <button class="toggle-btn active" id="ctrl-topo">Topo</button>
+        <button class="toggle-btn" id="ctrl-relief">3D</button>
+        <button class="toggle-btn" id="ctrl-heatmap">Heat</button>
+      </div>
+      <div class="ctrl-row">
+        <label>Query</label>
+        <button class="toggle-btn" id="ctrl-plant-flag">Plant Flag</button>
+      </div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; right:32px; width:220px;">
+      <h3>Performance</h3>
+      <div class="stat-row"><span class="stat-label">HDC Ops/sec</span><span class="stat-value" id="stat-hdc-ops">1.2M</span></div>
+      <div class="stat-row"><span class="stat-label">Vectors Stored</span><span class="stat-value" id="stat-vectors">128</span></div>
+      <div class="stat-row"><span class="stat-label">Avg Similarity</span><span class="stat-value" id="stat-similarity">0.72</span></div>
+      <div class="stat-row"><span class="stat-label">Query Latency</span><span class="stat-value" id="stat-latency">&lt;1ms</span></div>
+    </div>
+  </div>
+
+  <!-- PAGE 3: WEATHER -->
+  <div class="page" id="page-weather">
+    <canvas class="page-canvas" id="canvas-weather"></canvas>
+    <div class="section-tag">&mdash;&mdash; 03 &middot; WEATHER</div>
+    <div class="page-title">
+      <h1>Weather</h1>
+      <div class="subtitle">ISFR as climate system</div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; left:32px; width:280px;">
+      <h3>Weather Fronts</h3>
+      <div class="ctrl-row">
+        <label style="min-width:90px; color:var(--rose-glow)">Lending 60%</label>
+        <input type="range" id="ctrl-lending" min="0" max="100" value="60">
+      </div>
+      <div class="ctrl-row">
+        <label style="min-width:90px; color:var(--bone-bright)">Struct 25%</label>
+        <input type="range" id="ctrl-struct" min="0" max="100" value="25">
+      </div>
+      <div class="ctrl-row">
+        <label style="min-width:90px; color:var(--dream)">Funding 10%</label>
+        <input type="range" id="ctrl-funding" min="0" max="100" value="10">
+      </div>
+      <div class="ctrl-row">
+        <label style="min-width:90px; color:var(--success)">Staking 5%</label>
+        <input type="range" id="ctrl-staking" min="0" max="100" value="5">
+      </div>
+      <div class="ctrl-row" style="margin-top:4px;">
+        <button class="toggle-btn" id="ctrl-chaos">Climate Chaos</button>
+        <button class="toggle-btn" id="ctrl-history">History</button>
+      </div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; right:32px; width:200px;">
+      <h3>Barometer</h3>
+      <div class="stat-row"><span class="stat-label">ISFR Composite</span><span class="stat-value" id="stat-isfr">4.82%</span></div>
+      <div class="stat-row"><span class="stat-label">Confidence</span><span class="stat-value" id="stat-confidence">HIGH</span></div>
+      <div class="stat-row"><span class="stat-label">Volatility</span><span class="stat-value" id="stat-volatility">LOW</span></div>
+      <div class="stat-row"><span class="stat-label">Data Points</span><span class="stat-value" id="stat-datapoints">0</span></div>
+    </div>
+  </div>
+
+  <!-- PAGE 4: CONTINENTAL DRIFT -->
+  <div class="page" id="page-drift">
+    <canvas class="page-canvas" id="canvas-drift"></canvas>
+    <div class="section-tag">&mdash;&mdash; 04 &middot; CONTINENTAL DRIFT</div>
+    <div class="page-title">
+      <h1>Continental Drift</h1>
+      <div class="subtitle">Network growth as geological time</div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; left:32px; width:280px;">
+      <h3>Geological Time</h3>
+      <div class="ctrl-row">
+        <label>Epoch</label>
+        <input type="range" id="ctrl-epoch" min="0" max="100" value="0">
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:8px; color:var(--text-dim); margin-top:-4px; margin-bottom:8px; padding:0 2px;">
+        <span>Primordial</span><span>Archean</span><span>Mesozoic</span><span>Modern</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Zoom</label>
+        <input type="range" id="ctrl-zoom" min="0" max="100" value="30">
+      </div>
+      <div class="ctrl-row">
+        <button class="toggle-btn" id="ctrl-seismo">Seismograph</button>
+      </div>
+    </div>
+    <div class="glass-panel" style="bottom:32px; right:32px; width:220px;">
+      <h3>Network State</h3>
+      <div class="stat-row"><span class="stat-label">Agents</span><span class="stat-value" id="stat-agents">3</span></div>
+      <div class="stat-row"><span class="stat-label">Knowledge Mass</span><span class="stat-value" id="stat-mass">0.12</span></div>
+      <div class="stat-row"><span class="stat-label">C-Factor</span><span class="stat-value" id="stat-cfactor">0.85</span></div>
+      <div class="stat-row"><span class="stat-label">Epoch</span><span class="stat-value" id="stat-epoch">Primordial</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Nav dots -->
+<div id="nav-dots">
+  <div class="nav-dot active" data-page="0"></div>
+  <div class="nav-dot" data-page="1"></div>
+  <div class="nav-dot" data-page="2"></div>
+  <div class="nav-dot" data-page="3"></div>
+</div>
+<div id="nav-hint">Arrow keys to navigate</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ═══════════════════════════════════════════
+// GLOBAL STATE
+// ═══════════════════════════════════════════
+const STATE = {
+  currentPage: 0,
+  totalPages: 4,
+  blockNumber: 0,
+  blockHash: '0x0',
+  blockBytes: new Uint8Array(32),
+  connected: false,
+  lastBlockTime: 0,
+  blockRate: 0,
+  seismicEnergy: 0,
+  scenes: [],
+  cameras: [],
+  renderers: [],
+  animating: [false, false, false, false],
+  mouse: { x: 0, y: 0, dragX: 0, dragY: 0, dragging: false },
+  flagMode: false,
+  flagPos: null,
+};
+
+// ═══════════════════════════════════════════
+// CHAIN SUBSCRIPTION
+// ═══════════════════════════════════════════
+const RPC = 'http://65.109.61.210:8545/';
+
+async function rpcCall(method, params = []) {
+  const res = await fetch(RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  const json = await res.json();
+  return json.result;
+}
+
+async function pollChain() {
+  try {
+    const numHex = await rpcCall('eth_blockNumber');
+    const num = parseInt(numHex, 16);
+    if (num !== STATE.blockNumber) {
+      const block = await rpcCall('eth_getBlockByNumber', [numHex, false]);
+      if (block) {
+        const now = Date.now();
+        if (STATE.lastBlockTime > 0) {
+          STATE.blockRate = ((now - STATE.lastBlockTime) / 1000).toFixed(2);
+        }
+        STATE.lastBlockTime = now;
+        STATE.blockNumber = num;
+        STATE.blockHash = block.hash;
+        STATE.blockBytes = hexToBytes(block.hash);
+        STATE.connected = true;
+        STATE.seismicEnergy = Math.min(STATE.seismicEnergy + 0.4, 1.0);
+        onNewBlock(block);
+      }
+    }
+    updateChainBar();
+  } catch (e) {
+    STATE.connected = false;
+    updateChainBar();
+  }
+}
+
+function hexToBytes(hex) {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32 && i * 2 < clean.length; i++) {
+    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+function updateChainBar() {
+  const led = document.getElementById('chain-led');
+  const blockEl = document.getElementById('chain-block');
+  const hashEl = document.getElementById('chain-hash');
+  const statusEl = document.getElementById('chain-status');
+  const rateEl = document.getElementById('stat-blockrate');
+
+  led.className = 'led ' + (STATE.connected ? 'live' : 'error');
+  blockEl.textContent = STATE.blockNumber > 0 ? STATE.blockNumber.toLocaleString() : '--';
+  hashEl.textContent = STATE.blockHash !== '0x0' ? STATE.blockHash : '--';
+  statusEl.textContent = STATE.connected ? 'LIVE' : 'DISCONNECTED';
+  statusEl.style.color = STATE.connected ? 'var(--success)' : '#c86868';
+  if (rateEl) rateEl.textContent = STATE.blockRate ? `${STATE.blockRate}s` : '--';
+}
+
+function onNewBlock(block) {
+  // Trigger seismic events across all scenes
+  triggerSeismic();
+}
+
+setInterval(pollChain, 400);
+pollChain();
+
+// ═══════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════
+function goToPage(idx) {
+  if (idx < 0 || idx >= STATE.totalPages) return;
+  STATE.currentPage = idx;
+  document.getElementById('pages').style.transform = `translateX(-${idx * 100}vw)`;
+  document.querySelectorAll('.nav-dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+  // Activate/deactivate renderers
+  STATE.animating = STATE.animating.map((_, i) => i === idx);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); goToPage(STATE.currentPage + 1); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); goToPage(STATE.currentPage - 1); }
+});
+
+document.querySelectorAll('.nav-dot').forEach(d => {
+  d.addEventListener('click', () => goToPage(parseInt(d.dataset.page)));
+});
+
+// Mouse tracking for orbit
+document.addEventListener('mousemove', e => {
+  STATE.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  STATE.mouse.y = (e.clientY / window.innerHeight) * 2 - 1;
+  if (STATE.mouse.dragging) {
+    STATE.mouse.dragX += e.movementX * 0.003;
+    STATE.mouse.dragY += e.movementY * 0.003;
+  }
+});
+document.addEventListener('mousedown', e => { if (e.button === 0) STATE.mouse.dragging = true; });
+document.addEventListener('mouseup', () => { STATE.mouse.dragging = false; });
+
+// ═══════════════════════════════════════════
+// UTILITY: Simplex Noise (compact implementation)
+// ═══════════════════════════════════════════
+const GRAD3 = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+const PERM = new Uint8Array(512);
+(function initPerm() {
+  const p = [];
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
+  for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+})();
+
+function simplex2(x, y) {
+  const F2 = 0.5 * (Math.sqrt(3) - 1);
+  const G2 = (3 - Math.sqrt(3)) / 6;
+  const s = (x + y) * F2;
+  const i = Math.floor(x + s), j = Math.floor(y + s);
+  const t = (i + j) * G2;
+  const X0 = i - t, Y0 = j - t;
+  const x0 = x - X0, y0 = y - Y0;
+  let i1, j1;
+  if (x0 > y0) { i1 = 1; j1 = 0; } else { i1 = 0; j1 = 1; }
+  const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+  const x2 = x0 - 1 + 2 * G2, y2 = y0 - 1 + 2 * G2;
+  const ii = i & 255, jj = j & 255;
+  function dot(gi, xa, ya) { const g = GRAD3[gi % 12]; return g[0] * xa + g[1] * ya; }
+  let n0 = 0, n1 = 0, n2 = 0;
+  let t0 = 0.5 - x0 * x0 - y0 * y0;
+  if (t0 >= 0) { t0 *= t0; n0 = t0 * t0 * dot(PERM[ii + PERM[jj]], x0, y0); }
+  let t1 = 0.5 - x1 * x1 - y1 * y1;
+  if (t1 >= 0) { t1 *= t1; n1 = t1 * t1 * dot(PERM[ii + i1 + PERM[jj + j1]], x1, y1); }
+  let t2 = 0.5 - x2 * x2 - y2 * y2;
+  if (t2 >= 0) { t2 *= t2; n2 = t2 * t2 * dot(PERM[ii + 1 + PERM[jj + 1]], x2, y2); }
+  return 70 * (n0 + n1 + n2);
+}
+
+function simplex3(x, y, z) {
+  // Quick 3D simplex via layered 2D
+  return simplex2(x + z * 0.37, y + z * 0.71) * 0.6 + simplex2(x * 1.3 - z * 0.5, y * 1.3 + z * 0.3) * 0.4;
+}
+
+// ═══════════════════════════════════════════
+// COMMON: Create a base terrain PlaneGeometry
+// ═══════════════════════════════════════════
+function createTerrain(segments = 64, size = 10) {
+  const geo = new THREE.PlaneGeometry(size, size, segments, segments);
+  geo.rotateX(-Math.PI / 2);
+  return geo;
+}
+
+function displaceTerrain(geo, time, intensity, blockBytes, offsetX = 0, offsetZ = 0) {
+  const pos = geo.attributes.position;
+  const seg = Math.sqrt(pos.count) - 1;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const bx = blockBytes[(i * 3) % 32] / 255;
+    const bz = blockBytes[(i * 3 + 1) % 32] / 255;
+    let h = simplex2((x + offsetX) * 0.3 + time * 0.05, (z + offsetZ) * 0.3) * intensity;
+    h += simplex2((x + offsetX) * 0.7 + bx * 0.5, (z + offsetZ) * 0.7 + bz * 0.5) * intensity * 0.4;
+    h += simplex2((x + offsetX) * 1.5, (z + offsetZ) * 1.5 + time * 0.02) * intensity * 0.15;
+    pos.setY(i, h);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+// ═══════════════════════════════════════════
+// COMMON: Contour lines
+// ═══════════════════════════════════════════
+function createContourLines(terrainGeo, levels, color, opacity = 0.3) {
+  const group = new THREE.Group();
+  const pos = terrainGeo.attributes.position;
+  const seg = Math.round(Math.sqrt(pos.count)) - 1;
+
+  for (const level of levels) {
+    const points = [];
+    for (let iz = 0; iz < seg; iz++) {
+      for (let ix = 0; ix < seg; ix++) {
+        const i00 = iz * (seg + 1) + ix;
+        const i10 = i00 + 1;
+        const i01 = i00 + (seg + 1);
+        const i11 = i01 + 1;
+        const v = [
+          { x: pos.getX(i00), y: pos.getY(i00), z: pos.getZ(i00) },
+          { x: pos.getX(i10), y: pos.getY(i10), z: pos.getZ(i10) },
+          { x: pos.getX(i11), y: pos.getY(i11), z: pos.getZ(i11) },
+          { x: pos.getX(i01), y: pos.getY(i01), z: pos.getZ(i01) },
+        ];
+        // March edges
+        const edges = [[0,1],[1,2],[2,3],[3,0]];
+        const crossings = [];
+        for (const [a, b] of edges) {
+          const ya = v[a].y, yb = v[b].y;
+          if ((ya >= level && yb < level) || (ya < level && yb >= level)) {
+            const t = (level - ya) / (yb - ya);
+            crossings.push(new THREE.Vector3(
+              v[a].x + t * (v[b].x - v[a].x),
+              level,
+              v[a].z + t * (v[b].z - v[a].z)
+            ));
+          }
+        }
+        if (crossings.length >= 2) {
+          points.push(crossings[0], crossings[1]);
+        }
+      }
+    }
+    if (points.length > 0) {
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const lineMat = new THREE.LineBasicMaterial({ color, opacity, transparent: true });
+      group.add(new THREE.LineSegments(lineGeo, lineMat));
+    }
+  }
+  return group;
+}
+
+// ═══════════════════════════════════════════
+// SEISMIC TRIGGER
+// ═══════════════════════════════════════════
+let seismicWaveTime = 0;
+function triggerSeismic() {
+  seismicWaveTime = performance.now();
+  STATE.seismicEnergy = 1.0;
+  const el = document.getElementById('stat-seismic');
+  if (el) el.textContent = STATE.seismicEnergy.toFixed(2);
+}
+
+// ═══════════════════════════════════════════
+// PAGE 1: STRATA
+// ═══════════════════════════════════════════
+function initStrata() {
+  const canvas = document.getElementById('canvas-strata');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x060608, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x060608, 0.04);
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(8, 7, 8);
+  camera.lookAt(0, 0, 0);
+
+  // ── THREE GEOLOGICAL LAYERS ──
+
+  // SURFACE (top) — wireframe terrain
+  const surfaceGeo = createTerrain(64, 14);
+  const surfaceMat = new THREE.MeshBasicMaterial({
+    color: 0xaa7088,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.25,
+  });
+  const surfaceMesh = new THREE.Mesh(surfaceGeo, surfaceMat);
+  surfaceMesh.position.y = 0;
+  scene.add(surfaceMesh);
+
+  // Surface contours
+  let surfaceContours = new THREE.Group();
+  scene.add(surfaceContours);
+
+  // MANTLE (middle) — dense mesh
+  const mantleGeo = createTerrain(48, 14);
+  const mantleMat = new THREE.MeshBasicMaterial({
+    color: 0x7a7a98,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.12,
+  });
+  const mantleMesh = new THREE.Mesh(mantleGeo, mantleMat);
+  mantleMesh.position.y = -2;
+  scene.add(mantleMesh);
+
+  // BEDROCK (bottom) — with validator points
+  const bedrockGeo = createTerrain(32, 14);
+  const bedrockMat = new THREE.MeshBasicMaterial({
+    color: 0x3a3a48,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.08,
+  });
+  const bedrockMesh = new THREE.Mesh(bedrockGeo, bedrockMat);
+  bedrockMesh.position.y = -4;
+  scene.add(bedrockMesh);
+
+  // 21 validator points in bedrock
+  const valGeo = new THREE.SphereGeometry(0.08, 8, 8);
+  const validators = [];
+  for (let i = 0; i < 21; i++) {
+    const angle = (i / 21) * Math.PI * 2;
+    const r = 2.5 + Math.sin(i * 1.7) * 1.5;
+    const mat = new THREE.MeshBasicMaterial({
+      color: i < 14 ? 0xdca5bd : 0x6a5a68,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const m = new THREE.Mesh(valGeo, mat);
+    m.position.set(Math.cos(angle) * r, -4 + Math.sin(i * 0.8) * 0.3, Math.sin(angle) * r);
+    scene.add(m);
+    validators.push(m);
+  }
+
+  // Agent markers on surface (instanced)
+  const agentGeo = new THREE.ConeGeometry(0.06, 0.2, 4);
+  const agentMat = new THREE.MeshBasicMaterial({ color: 0xd8c8a0 });
+  const agentCount = 8;
+  const agents = [];
+  for (let i = 0; i < agentCount; i++) {
+    const m = new THREE.Mesh(agentGeo, agentMat.clone());
+    m.position.set((Math.random() - 0.5) * 10, 0, (Math.random() - 0.5) * 10);
+    m.userData = { vx: (Math.random() - 0.5) * 0.01, vz: (Math.random() - 0.5) * 0.01 };
+    scene.add(m);
+    agents.push(m);
+  }
+
+  // Agent trails
+  const trailMat = new THREE.PointsMaterial({ color: 0xd8c8a0, size: 0.03, transparent: true, opacity: 0.3 });
+  const trailPositions = new Float32Array(agentCount * 60 * 3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+  const trailPoints = new THREE.Points(trailGeo, trailMat);
+  scene.add(trailPoints);
+  let trailIdx = 0;
+
+  // ISFR data streams from sky
+  const rainCount = 200;
+  const rainPositions = new Float32Array(rainCount * 3);
+  const rainGeo = new THREE.BufferGeometry();
+  for (let i = 0; i < rainCount; i++) {
+    rainPositions[i * 3] = (Math.random() - 0.5) * 14;
+    rainPositions[i * 3 + 1] = Math.random() * 10 + 2;
+    rainPositions[i * 3 + 2] = (Math.random() - 0.5) * 14;
+  }
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+  const rainMat = new THREE.PointsMaterial({ color: 0x7a7a98, size: 0.04, transparent: true, opacity: 0.4 });
+  const rain = new THREE.Points(rainGeo, rainMat);
+  scene.add(rain);
+
+  // Ambient light
+  scene.add(new THREE.AmbientLight(0xaa7088, 0.3));
+
+  // Cross section plane
+  const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  let crossSectionOn = false;
+
+  // Controls
+  const tectonicSlider = document.getElementById('ctrl-tectonic');
+  const crossBtn = document.getElementById('ctrl-cross');
+  const bedrockBtn = document.getElementById('ctrl-bedrock');
+  const mantleBtn = document.getElementById('ctrl-mantle');
+  const surfaceBtn = document.getElementById('ctrl-surface');
+
+  crossBtn.addEventListener('click', () => {
+    crossSectionOn = !crossSectionOn;
+    crossBtn.textContent = crossSectionOn ? 'ON' : 'OFF';
+    crossBtn.classList.toggle('active', crossSectionOn);
+    if (crossSectionOn) {
+      renderer.clippingPlanes = [clipPlane];
+    } else {
+      renderer.clippingPlanes = [];
+    }
+    surfaceMat.clippingPlanes = crossSectionOn ? [clipPlane] : [];
+    mantleMat.clippingPlanes = crossSectionOn ? [clipPlane] : [];
+    bedrockMat.clippingPlanes = crossSectionOn ? [clipPlane] : [];
+    surfaceMat.needsUpdate = true;
+    mantleMat.needsUpdate = true;
+    bedrockMat.needsUpdate = true;
+  });
+
+  bedrockBtn.addEventListener('click', () => {
+    bedrockBtn.classList.toggle('active');
+    bedrockMesh.visible = bedrockBtn.classList.contains('active');
+    validators.forEach(v => v.visible = bedrockMesh.visible);
+  });
+  mantleBtn.addEventListener('click', () => {
+    mantleBtn.classList.toggle('active');
+    mantleMesh.visible = mantleBtn.classList.contains('active');
+  });
+  surfaceBtn.addEventListener('click', () => {
+    surfaceBtn.classList.toggle('active');
+    surfaceMesh.visible = surfaceBtn.classList.contains('active');
+    surfaceContours.visible = surfaceMesh.visible;
+  });
+
+  // Store for resize
+  STATE.scenes[0] = scene;
+  STATE.cameras[0] = camera;
+  STATE.renderers[0] = renderer;
+
+  // Animation
+  let cameraAngle = 0;
+  function animate(time) {
+    if (!STATE.animating[0]) { requestAnimationFrame(animate); return; }
+    requestAnimationFrame(animate);
+
+    const t = time * 0.001;
+    const tectonic = tectonicSlider.value / 100;
+    const intensity = 0.5 + tectonic * 3.0;
+
+    // Terrain displacement
+    displaceTerrain(surfaceGeo, t, intensity, STATE.blockBytes);
+    displaceTerrain(mantleGeo, t * 0.5, intensity * 0.5, STATE.blockBytes, 2, 2);
+    displaceTerrain(bedrockGeo, t * 0.2, intensity * 0.2, STATE.blockBytes, 4, 4);
+
+    // Update contour lines every 30 frames
+    if (Math.floor(t * 30) % 30 === 0) {
+      scene.remove(surfaceContours);
+      const levels = [];
+      for (let l = -intensity; l <= intensity; l += intensity * 0.25) levels.push(l);
+      surfaceContours = createContourLines(surfaceGeo, levels, 0xdca5bd, 0.15);
+      scene.add(surfaceContours);
+    }
+
+    // Seismic decay
+    STATE.seismicEnergy *= 0.98;
+    document.getElementById('stat-seismic').textContent = STATE.seismicEnergy.toFixed(2);
+
+    // Seismic wave ripple
+    if (STATE.seismicEnergy > 0.05) {
+      const sPos = surfaceGeo.attributes.position;
+      const waveDist = (time - seismicWaveTime) * 0.003;
+      for (let i = 0; i < sPos.count; i++) {
+        const x = sPos.getX(i), z = sPos.getZ(i);
+        const d = Math.sqrt(x * x + z * z);
+        const wave = Math.sin((d - waveDist) * 3) * STATE.seismicEnergy * 0.3 * Math.max(0, 1 - d * 0.1);
+        sPos.setY(i, sPos.getY(i) + wave);
+      }
+      sPos.needsUpdate = true;
+    }
+
+    // DKG threshold glow
+    const dkgPhase = Math.sin(t * 2) * 0.5 + 0.5;
+    validators.forEach((v, i) => {
+      if (i < 14) {
+        v.material.opacity = 0.4 + dkgPhase * 0.5;
+        v.scale.setScalar(1 + dkgPhase * 0.2);
+      }
+      v.position.y = -4 + Math.sin(t + i * 0.5) * 0.15;
+    });
+
+    // Agents walk
+    agents.forEach((a, i) => {
+      const bDir = STATE.blockBytes[i % 32] / 128 - 1;
+      a.userData.vx += bDir * 0.0003;
+      a.userData.vz += (STATE.blockBytes[(i + 16) % 32] / 128 - 1) * 0.0003;
+      a.userData.vx *= 0.99;
+      a.userData.vz *= 0.99;
+      a.position.x += a.userData.vx;
+      a.position.z += a.userData.vz;
+      // Wrap
+      if (Math.abs(a.position.x) > 6) a.position.x *= -0.9;
+      if (Math.abs(a.position.z) > 6) a.position.z *= -0.9;
+      // Get height at position
+      const h = simplex2(a.position.x * 0.3 + t * 0.05, a.position.z * 0.3) * intensity;
+      a.position.y = h + 0.15;
+      // Trail
+      const ti = (trailIdx * 3) % trailPositions.length;
+      trailPositions[ti] = a.position.x;
+      trailPositions[ti + 1] = a.position.y - 0.1;
+      trailPositions[ti + 2] = a.position.z;
+      trailIdx++;
+    });
+    trailGeo.attributes.position.needsUpdate = true;
+
+    // ISFR rain
+    const rp = rainGeo.attributes.position;
+    for (let i = 0; i < rainCount; i++) {
+      rp.array[i * 3 + 1] -= 0.05;
+      if (rp.array[i * 3 + 1] < -1) {
+        rp.array[i * 3] = (Math.random() - 0.5) * 14;
+        rp.array[i * 3 + 1] = Math.random() * 5 + 5;
+        rp.array[i * 3 + 2] = (Math.random() - 0.5) * 14;
+      }
+    }
+    rp.needsUpdate = true;
+
+    // Camera orbit
+    cameraAngle += 0.002 + STATE.mouse.dragX * 0.1;
+    STATE.mouse.dragX *= 0.95;
+    const camR = 11;
+    const camH = 6 + STATE.mouse.dragY * 3;
+    camera.position.x = Math.cos(cameraAngle) * camR;
+    camera.position.z = Math.sin(cameraAngle) * camR;
+    camera.position.y = camH;
+    camera.lookAt(0, -0.5, 0);
+
+    // Cross section plane animation
+    if (crossSectionOn) {
+      clipPlane.constant = Math.sin(t * 0.3) * 3;
+    }
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════
+// PAGE 2: PEAKS
+// ═══════════════════════════════════════════
+function initPeaks() {
+  const canvas = document.getElementById('canvas-peaks');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x060608, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x060608, 0.03);
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(9, 8, 9);
+  camera.lookAt(0, 0, 0);
+
+  // Base terrain
+  const terrainGeo = createTerrain(64, 16);
+  const terrainMat = new THREE.MeshBasicMaterial({
+    color: 0x4a3a48,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.12,
+  });
+  const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+  scene.add(terrain);
+
+  // Contour group
+  let contourGroup = new THREE.Group();
+  scene.add(contourGroup);
+
+  // HDC Peaks — knowledge vectors as mountains
+  const peakCount = 48;
+  const peaks = [];
+  const peakTypes = ['insight', 'heuristic', 'strategy'];
+  const peakColors = { insight: 0xdca5bd, heuristic: 0xd8c8a0, strategy: 0x7a7a98 };
+
+  for (let i = 0; i < peakCount; i++) {
+    const type = peakTypes[i % 3];
+    const height = 0.3 + Math.random() * 1.5;
+    const geo = new THREE.ConeGeometry(0.15 + Math.random() * 0.15, height, 6);
+    const mat = new THREE.MeshBasicMaterial({
+      color: peakColors[type],
+      wireframe: true,
+      transparent: true,
+      opacity: 0.4 + Math.random() * 0.3,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set((Math.random() - 0.5) * 12, 0, (Math.random() - 0.5) * 12);
+    mesh.userData = { type, baseHeight: height, relevance: Math.random() };
+    scene.add(mesh);
+    peaks.push(mesh);
+  }
+
+  // Operation valleys — BIND, BUNDLE, PERMUTE zones
+  const zoneLabels = [
+    { name: 'BIND Canyon', x: -4, z: -3, color: 0xdca5bd },
+    { name: 'BUNDLE Mesa', x: 0, z: 4, color: 0xd8c8a0 },
+    { name: 'PERMUTE Ridge', x: 4, z: -2, color: 0x7a7a98 },
+  ];
+
+  const zoneMarkers = [];
+  zoneLabels.forEach(z => {
+    const ring = new THREE.RingGeometry(0.8, 1.0, 32);
+    const mat = new THREE.MeshBasicMaterial({ color: z.color, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(ring, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(z.x, 0.05, z.z);
+    scene.add(mesh);
+    zoneMarkers.push(mesh);
+  });
+
+  // Query shadow (flag mode)
+  const shadowGeo = new THREE.ConeGeometry(0.3, 0.8, 6);
+  const shadowMat = new THREE.MeshBasicMaterial({ color: 0xdca5bd, wireframe: true, transparent: true, opacity: 0 });
+  const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+  shadowMesh.visible = false;
+  scene.add(shadowMesh);
+
+  // Speedometer particles for HDC performance
+  const speedCount = 50;
+  const speedPositions = new Float32Array(speedCount * 3);
+  const speedGeo = new THREE.BufferGeometry();
+  for (let i = 0; i < speedCount; i++) {
+    speedPositions[i * 3] = 5 + Math.random() * 2;
+    speedPositions[i * 3 + 1] = 0.2 + Math.random() * 0.5;
+    speedPositions[i * 3 + 2] = 5 + Math.random() * 2;
+  }
+  speedGeo.setAttribute('position', new THREE.BufferAttribute(speedPositions, 3));
+  const speedMat = new THREE.PointsMaterial({ color: 0xdca5bd, size: 0.06, transparent: true, opacity: 0.6 });
+  scene.add(new THREE.Points(speedGeo, speedMat));
+
+  // Heatmap plane (initially invisible)
+  const heatGeo = createTerrain(64, 16);
+  const heatMat = new THREE.MeshBasicMaterial({
+    color: 0xaa7088,
+    transparent: true,
+    opacity: 0,
+    wireframe: false,
+    side: THREE.DoubleSide,
+  });
+  const heatMesh = new THREE.Mesh(heatGeo, heatMat);
+  heatMesh.position.y = -0.1;
+  scene.add(heatMesh);
+
+  // Controls
+  const densitySlider = document.getElementById('ctrl-density');
+  const topoBtn = document.getElementById('ctrl-topo');
+  const reliefBtn = document.getElementById('ctrl-relief');
+  const heatmapBtn = document.getElementById('ctrl-heatmap');
+  const flagBtn = document.getElementById('ctrl-plant-flag');
+
+  let viewMode = 'topo'; // topo, relief, heatmap
+  [topoBtn, reliefBtn, heatmapBtn].forEach(btn => {
+    btn.addEventListener('click', () => {
+      viewMode = btn.id.replace('ctrl-', '');
+      topoBtn.classList.toggle('active', viewMode === 'topo');
+      reliefBtn.classList.toggle('active', viewMode === 'relief');
+      heatmapBtn.classList.toggle('active', viewMode === 'heatmap');
+    });
+  });
+
+  flagBtn.addEventListener('click', () => {
+    STATE.flagMode = !STATE.flagMode;
+    flagBtn.classList.toggle('active', STATE.flagMode);
+  });
+
+  // Click to plant flag
+  canvas.addEventListener('click', (e) => {
+    if (!STATE.flagMode || STATE.currentPage !== 1) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(mx, my), camera);
+    const hits = raycaster.intersectObject(terrain);
+    if (hits.length > 0) {
+      STATE.flagPos = hits[0].point.clone();
+      shadowMesh.position.copy(STATE.flagPos);
+      shadowMesh.position.y += 0.4;
+      shadowMesh.visible = true;
+      shadowMat.opacity = 0.5;
+    }
+  });
+
+  STATE.scenes[1] = scene;
+  STATE.cameras[1] = camera;
+  STATE.renderers[1] = renderer;
+
+  let cameraAngle = 0.5;
+  function animate(time) {
+    if (!STATE.animating[1]) { requestAnimationFrame(animate); return; }
+    requestAnimationFrame(animate);
+
+    const t = time * 0.001;
+    const density = densitySlider.value / 100;
+
+    // Terrain
+    const terrainIntensity = 0.3 + density * 2.0;
+    displaceTerrain(terrainGeo, t, terrainIntensity, STATE.blockBytes);
+
+    // Heatmap displacement to match
+    if (viewMode === 'heatmap') {
+      displaceTerrain(heatGeo, t, terrainIntensity * 0.5, STATE.blockBytes);
+      heatMat.opacity = Math.min(heatMat.opacity + 0.02, 0.3);
+      terrainMat.opacity = 0.05;
+    } else {
+      heatMat.opacity = Math.max(heatMat.opacity - 0.02, 0);
+      terrainMat.opacity = viewMode === 'topo' ? 0.12 : 0.2;
+    }
+
+    // Contour visibility
+    contourGroup.visible = viewMode === 'topo';
+    terrainMat.wireframe = viewMode !== 'relief' || true; // always wireframe
+
+    // Update contours periodically
+    if (viewMode === 'topo' && Math.floor(t * 10) % 20 === 0) {
+      scene.remove(contourGroup);
+      const levels = [];
+      for (let l = -terrainIntensity; l <= terrainIntensity; l += terrainIntensity * 0.2) levels.push(l);
+      contourGroup = createContourLines(terrainGeo, levels, 0xdca5bd, 0.12);
+      scene.add(contourGroup);
+    }
+
+    // Peaks bob with terrain
+    const visiblePeaks = Math.floor(12 + density * 36);
+    peaks.forEach((p, i) => {
+      p.visible = i < visiblePeaks;
+      if (p.visible) {
+        const h = simplex2(p.position.x * 0.3 + t * 0.05, p.position.z * 0.3) * terrainIntensity;
+        p.position.y = h + p.userData.baseHeight * 0.5;
+        p.scale.y = 0.8 + Math.sin(t + i) * 0.2;
+
+        // Flag proximity glow
+        if (STATE.flagPos) {
+          const dist = p.position.distanceTo(STATE.flagPos);
+          const glow = Math.max(0, 1 - dist / 3);
+          p.material.opacity = 0.3 + glow * 0.6;
+          if (glow > 0.3) p.material.color.setHex(0xdca5bd);
+        }
+      }
+    });
+
+    // Shadow mesh pulse
+    if (shadowMesh.visible) {
+      shadowMesh.rotation.y = t;
+      shadowMat.opacity = 0.3 + Math.sin(t * 3) * 0.2;
+    }
+
+    // Zone markers pulse
+    zoneMarkers.forEach((z, i) => {
+      z.material.opacity = 0.1 + Math.sin(t * 2 + i * 2) * 0.1;
+      z.scale.setScalar(1 + Math.sin(t + i) * 0.1);
+    });
+
+    // Update stats
+    document.getElementById('stat-vectors').textContent = visiblePeaks;
+    document.getElementById('stat-similarity').textContent = (0.6 + density * 0.35).toFixed(2);
+
+    // Camera orbit
+    cameraAngle += 0.0015 + STATE.mouse.dragX * 0.1;
+    STATE.mouse.dragX *= 0.95;
+    camera.position.x = Math.cos(cameraAngle) * 12;
+    camera.position.z = Math.sin(cameraAngle) * 12;
+    camera.position.y = 7 + STATE.mouse.dragY * 3;
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════
+// PAGE 3: WEATHER
+// ═══════════════════════════════════════════
+function initWeather() {
+  const canvas = document.getElementById('canvas-weather');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x060608, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x060608, 0.025);
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 12, 14);
+  camera.lookAt(0, 0, 0);
+
+  // Base terrain for weather
+  const terrainGeo = createTerrain(64, 18);
+  const terrainMat = new THREE.MeshBasicMaterial({
+    color: 0x3a3a48,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.1,
+  });
+  scene.add(new THREE.Mesh(terrainGeo, terrainMat));
+
+  // Four weather fronts (cloud clusters)
+  const fronts = [
+    { name: 'LENDING', color: 0xdca5bd, weight: 0.6, pos: new THREE.Vector3(-4, 5, -3), particles: null },
+    { name: 'STRUCTURED', color: 0xd8c8a0, weight: 0.25, pos: new THREE.Vector3(4, 5, -2), particles: null },
+    { name: 'FUNDING', color: 0x7a7a98, weight: 0.1, pos: new THREE.Vector3(-2, 6, 4), particles: null },
+    { name: 'STAKING', color: 0x7a8a78, weight: 0.05, pos: new THREE.Vector3(3, 6, 3), particles: null },
+  ];
+
+  // Create cloud particles for each front
+  fronts.forEach(f => {
+    const count = Math.floor(80 * f.weight + 20);
+    const positions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = f.pos.x + (Math.random() - 0.5) * (2 + f.weight * 4);
+      positions[i * 3 + 1] = f.pos.y + (Math.random() - 0.5) * 1.5;
+      positions[i * 3 + 2] = f.pos.z + (Math.random() - 0.5) * (2 + f.weight * 4);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      color: f.color,
+      size: 0.15 + f.weight * 0.2,
+      transparent: true,
+      opacity: 0.3 + f.weight * 0.3,
+    });
+    f.particles = new THREE.Points(geo, mat);
+    scene.add(f.particles);
+  });
+
+  // Precipitation particles (data droplets falling from clouds)
+  const precipCount = 300;
+  const precipPositions = new Float32Array(precipCount * 3);
+  const precipColors = new Float32Array(precipCount * 3);
+  const precipGeo = new THREE.BufferGeometry();
+  for (let i = 0; i < precipCount; i++) {
+    const front = fronts[Math.floor(Math.random() * 4)];
+    precipPositions[i * 3] = front.pos.x + (Math.random() - 0.5) * 4;
+    precipPositions[i * 3 + 1] = front.pos.y - Math.random() * 6;
+    precipPositions[i * 3 + 2] = front.pos.z + (Math.random() - 0.5) * 4;
+    const c = new THREE.Color(front.color);
+    precipColors[i * 3] = c.r;
+    precipColors[i * 3 + 1] = c.g;
+    precipColors[i * 3 + 2] = c.b;
+  }
+  precipGeo.setAttribute('position', new THREE.BufferAttribute(precipPositions, 3));
+  precipGeo.setAttribute('color', new THREE.BufferAttribute(precipColors, 3));
+  const precipMat = new THREE.PointsMaterial({
+    size: 0.04,
+    transparent: true,
+    opacity: 0.5,
+    vertexColors: true,
+  });
+  const precip = new THREE.Points(precipGeo, precipMat);
+  scene.add(precip);
+
+  // Central convergence ring (composite weather)
+  const convRing = new THREE.RingGeometry(1.5, 1.7, 64);
+  const convMat = new THREE.MeshBasicMaterial({ color: 0xdca5bd, transparent: true, opacity: 0.15, side: THREE.DoubleSide });
+  const convMesh = new THREE.Mesh(convRing, convMat);
+  convMesh.rotation.x = -Math.PI / 2;
+  convMesh.position.y = 4;
+  scene.add(convMesh);
+
+  // Confidence fog plane
+  const fogPlane = new THREE.PlaneGeometry(20, 20);
+  const fogMat = new THREE.MeshBasicMaterial({ color: 0x060608, transparent: true, opacity: 0, side: THREE.DoubleSide });
+  const fogMesh = new THREE.Mesh(fogPlane, fogMat);
+  fogMesh.rotation.x = -Math.PI / 2;
+  fogMesh.position.y = 1;
+  scene.add(fogMesh);
+
+  // ISFR history
+  const isfrHistory = [];
+  let chaosMode = false;
+  let historyMode = false;
+
+  // Controls
+  const lendingSlider = document.getElementById('ctrl-lending');
+  const structSlider = document.getElementById('ctrl-struct');
+  const fundingSlider = document.getElementById('ctrl-funding');
+  const stakingSlider = document.getElementById('ctrl-staking');
+  const chaosBtn = document.getElementById('ctrl-chaos');
+  const historyBtn = document.getElementById('ctrl-history');
+
+  chaosBtn.addEventListener('click', () => {
+    chaosMode = !chaosMode;
+    chaosBtn.classList.toggle('active', chaosMode);
+  });
+  historyBtn.addEventListener('click', () => {
+    historyMode = !historyMode;
+    historyBtn.classList.toggle('active', historyMode);
+  });
+
+  STATE.scenes[2] = scene;
+  STATE.cameras[2] = camera;
+  STATE.renderers[2] = renderer;
+
+  let cameraAngle = 0;
+  function animate(time) {
+    if (!STATE.animating[2]) { requestAnimationFrame(animate); return; }
+    requestAnimationFrame(animate);
+
+    const t = time * 0.001;
+
+    // Get weights from sliders
+    const weights = [
+      lendingSlider.value / 100,
+      structSlider.value / 100,
+      fundingSlider.value / 100,
+      stakingSlider.value / 100,
+    ];
+    const totalW = weights.reduce((a, b) => a + b, 0) || 1;
+    const normalized = weights.map(w => w / totalW);
+
+    // Chaos mode: random perturbations
+    if (chaosMode) {
+      normalized.forEach((_, i) => {
+        normalized[i] += (Math.random() - 0.5) * 0.3;
+        normalized[i] = Math.max(0, Math.min(1, normalized[i]));
+      });
+    }
+
+    // Terrain displacement from weather
+    const terrainIntensity = 1.0 + normalized[0] * 2;
+    displaceTerrain(terrainGeo, t, terrainIntensity, STATE.blockBytes);
+
+    // Animate cloud fronts
+    fronts.forEach((f, fi) => {
+      const pp = f.particles.geometry.attributes.position;
+      for (let i = 0; i < pp.count; i++) {
+        pp.array[i * 3] += Math.sin(t * 0.5 + i * 0.1) * 0.005 * normalized[fi];
+        pp.array[i * 3 + 1] += Math.cos(t * 0.3 + i * 0.2) * 0.002;
+        pp.array[i * 3 + 2] += Math.cos(t * 0.4 + i * 0.15) * 0.005 * normalized[fi];
+      }
+      pp.needsUpdate = true;
+      f.particles.material.opacity = 0.2 + normalized[fi] * 0.5;
+      f.particles.material.size = 0.1 + normalized[fi] * 0.25;
+    });
+
+    // Precipitation fall
+    const pp = precipGeo.attributes.position;
+    for (let i = 0; i < precipCount; i++) {
+      pp.array[i * 3 + 1] -= 0.04 + Math.random() * 0.02;
+      if (pp.array[i * 3 + 1] < -1) {
+        const fi = Math.floor(Math.random() * 4);
+        const front = fronts[fi];
+        pp.array[i * 3] = front.pos.x + (Math.random() - 0.5) * (3 + normalized[fi] * 3);
+        pp.array[i * 3 + 1] = front.pos.y - Math.random() * 1;
+        pp.array[i * 3 + 2] = front.pos.z + (Math.random() - 0.5) * (3 + normalized[fi] * 3);
+      }
+    }
+    pp.needsUpdate = true;
+
+    // Convergence ring pulse
+    convMesh.material.opacity = 0.1 + Math.sin(t * 2) * 0.08;
+    convMesh.rotation.z = t * 0.1;
+    convMesh.scale.setScalar(1 + Math.sin(t) * 0.1);
+
+    // Composite ISFR
+    const compositeRate = normalized[0] * 5.2 + normalized[1] * 4.1 + normalized[2] * 6.8 + normalized[3] * 3.2;
+    const volatility = chaosMode ? 'EXTREME' : (Math.abs(compositeRate - 4.82) > 1 ? 'HIGH' : 'LOW');
+    const confidence = chaosMode ? 'LOW' : (volatility === 'HIGH' ? 'MEDIUM' : 'HIGH');
+
+    // Fog for low confidence
+    fogMat.opacity = confidence === 'LOW' ? 0.3 : (confidence === 'MEDIUM' ? 0.1 : 0);
+
+    // Track history
+    if (Math.floor(t * 10) % 10 === 0 && isfrHistory.length < 100) {
+      isfrHistory.push(compositeRate);
+    }
+
+    // Update stats
+    document.getElementById('stat-isfr').textContent = compositeRate.toFixed(2) + '%';
+    document.getElementById('stat-confidence').textContent = confidence;
+    document.getElementById('stat-confidence').style.color = confidence === 'HIGH' ? 'var(--success)' : (confidence === 'LOW' ? '#c86868' : 'var(--warning)');
+    document.getElementById('stat-volatility').textContent = volatility;
+    document.getElementById('stat-volatility').style.color = volatility === 'EXTREME' ? '#c86868' : (volatility === 'HIGH' ? 'var(--warning)' : 'var(--text-soft)');
+    document.getElementById('stat-datapoints').textContent = isfrHistory.length;
+
+    // Camera
+    cameraAngle += 0.001 + STATE.mouse.dragX * 0.08;
+    STATE.mouse.dragX *= 0.95;
+    const r = 16;
+    camera.position.x = Math.cos(cameraAngle) * r;
+    camera.position.z = Math.sin(cameraAngle) * r;
+    camera.position.y = 10 + STATE.mouse.dragY * 4;
+    camera.lookAt(0, 2, 0);
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════
+// PAGE 4: CONTINENTAL DRIFT
+// ═══════════════════════════════════════════
+function initDrift() {
+  const canvas = document.getElementById('canvas-drift');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x060608, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x060608, 0.02);
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera.position.set(0, 15, 20);
+  camera.lookAt(0, 0, 0);
+
+  // Terrain that grows with epoch
+  const terrainGeo = createTerrain(64, 20);
+  const terrainMat = new THREE.MeshBasicMaterial({
+    color: 0xaa7088,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.15,
+  });
+  const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+  scene.add(terrainMesh);
+
+  // Contour group
+  let contourGroup = new THREE.Group();
+  scene.add(contourGroup);
+
+  // Agent dots (scale with epoch)
+  const maxAgents = 200;
+  const agentGeo = new THREE.SphereGeometry(0.05, 6, 6);
+  const agentMat = new THREE.MeshBasicMaterial({ color: 0xd8c8a0, transparent: true, opacity: 0.5 });
+  const agentInstances = [];
+  for (let i = 0; i < maxAgents; i++) {
+    const m = new THREE.Mesh(agentGeo, agentMat.clone());
+    m.position.set((Math.random() - 0.5) * 16, 0, (Math.random() - 0.5) * 16);
+    m.visible = false;
+    scene.add(m);
+    agentInstances.push(m);
+  }
+
+  // Volcanic eruption particles
+  const volcanoCount = 100;
+  const volcanoPositions = new Float32Array(volcanoCount * 3);
+  const volcanoGeo = new THREE.BufferGeometry();
+  for (let i = 0; i < volcanoCount; i++) {
+    volcanoPositions[i * 3] = (Math.random() - 0.5) * 2;
+    volcanoPositions[i * 3 + 1] = Math.random() * 5;
+    volcanoPositions[i * 3 + 2] = (Math.random() - 0.5) * 2;
+  }
+  volcanoGeo.setAttribute('position', new THREE.BufferAttribute(volcanoPositions, 3));
+  const volcanoMat = new THREE.PointsMaterial({ color: 0xc89a68, size: 0.1, transparent: true, opacity: 0 });
+  const volcanoParticles = new THREE.Points(volcanoGeo, volcanoMat);
+  scene.add(volcanoParticles);
+
+  // Seismograph lines (2D canvas overlay)
+  const seismoCanvas = document.createElement('canvas');
+  seismoCanvas.width = 400;
+  seismoCanvas.height = 120;
+  seismoCanvas.className = 'seismo-canvas';
+  seismoCanvas.style.cssText = 'position:absolute; top:80px; right:32px; width:400px; height:120px; z-index:10; opacity:0; transition:opacity 0.3s;';
+  document.getElementById('page-drift').appendChild(seismoCanvas);
+  const seismoCtx = seismoCanvas.getContext('2d');
+  const seismoData = { linear: [], super: [], reed: [] };
+  let seismoVisible = false;
+
+  // Three tectonic plate visuals
+  const plateColors = [0x4a3a48, 0x3a4a48, 0x483a4a];
+  const plates = [];
+  for (let i = 0; i < 3; i++) {
+    const pGeo = new THREE.PlaneGeometry(7, 7, 8, 8);
+    pGeo.rotateX(-Math.PI / 2);
+    const pMat = new THREE.MeshBasicMaterial({
+      color: plateColors[i],
+      wireframe: true,
+      transparent: true,
+      opacity: 0.06,
+    });
+    const pMesh = new THREE.Mesh(pGeo, pMat);
+    const angle = (i / 3) * Math.PI * 2;
+    pMesh.position.set(Math.cos(angle) * 3, -1.5 - i * 0.3, Math.sin(angle) * 3);
+    scene.add(pMesh);
+    plates.push(pMesh);
+  }
+
+  // Geological layer cross-section indicators
+  const layerLabels = ['Sediment', 'Rock', 'Crystal', 'Diamond'];
+  const layerColors = [0x6a5a68, 0x7a7a98, 0xd8c8a0, 0xdca5bd];
+
+  // Controls
+  const epochSlider = document.getElementById('ctrl-epoch');
+  const zoomSlider = document.getElementById('ctrl-zoom');
+  const seismoBtn = document.getElementById('ctrl-seismo');
+
+  seismoBtn.addEventListener('click', () => {
+    seismoVisible = !seismoVisible;
+    seismoBtn.classList.toggle('active', seismoVisible);
+    seismoCanvas.style.opacity = seismoVisible ? '1' : '0';
+  });
+
+  STATE.scenes[3] = scene;
+  STATE.cameras[3] = camera;
+  STATE.renderers[3] = renderer;
+
+  let cameraAngle = 0;
+  function animate(time) {
+    if (!STATE.animating[3]) { requestAnimationFrame(animate); return; }
+    requestAnimationFrame(animate);
+
+    const t = time * 0.001;
+    const epoch = epochSlider.value / 100; // 0 = primordial, 1 = modern
+    const zoom = zoomSlider.value / 100;
+
+    // Epoch determines terrain intensity and agent count
+    const intensity = 0.2 + epoch * 4.0;
+    const agentCount = Math.floor(3 + epoch * 197);
+    const epochName = epoch < 0.25 ? 'Primordial' : epoch < 0.5 ? 'Archean' : epoch < 0.75 ? 'Mesozoic' : 'Modern';
+
+    // Terrain displacement scales with epoch
+    displaceTerrain(terrainGeo, t, intensity, STATE.blockBytes);
+
+    // Update contours periodically
+    if (Math.floor(t * 8) % 16 === 0) {
+      scene.remove(contourGroup);
+      const levels = [];
+      for (let l = -intensity; l <= intensity; l += Math.max(intensity * 0.2, 0.2)) levels.push(l);
+      contourGroup = createContourLines(terrainGeo, levels, 0xdca5bd, 0.1 + epoch * 0.1);
+      scene.add(contourGroup);
+    }
+
+    // Agents visibility
+    agentInstances.forEach((a, i) => {
+      a.visible = i < agentCount;
+      if (a.visible) {
+        const h = simplex2(a.position.x * 0.3 + t * 0.05, a.position.z * 0.3) * intensity;
+        a.position.y = h + 0.1;
+        a.material.opacity = 0.3 + epoch * 0.4;
+        // Gentle drift
+        a.position.x += Math.sin(t * 0.5 + i * 0.3) * 0.002;
+        a.position.z += Math.cos(t * 0.5 + i * 0.5) * 0.002;
+      }
+    });
+
+    // Volcanic eruption at threshold (~60% epoch)
+    const volcanoActive = epoch > 0.55 && epoch < 0.75;
+    volcanoMat.opacity = volcanoActive ? 0.6 : Math.max(0, volcanoMat.opacity - 0.01);
+    if (volcanoActive) {
+      const vp = volcanoGeo.attributes.position;
+      for (let i = 0; i < volcanoCount; i++) {
+        vp.array[i * 3 + 1] += 0.08 + Math.random() * 0.04;
+        if (vp.array[i * 3 + 1] > 6) {
+          vp.array[i * 3] = (Math.random() - 0.5) * 2;
+          vp.array[i * 3 + 1] = 0;
+          vp.array[i * 3 + 2] = (Math.random() - 0.5) * 2;
+        }
+        vp.array[i * 3] += (Math.random() - 0.5) * 0.05;
+        vp.array[i * 3 + 2] += (Math.random() - 0.5) * 0.05;
+      }
+      vp.needsUpdate = true;
+    }
+
+    // Plates drift with epoch
+    plates.forEach((p, i) => {
+      const angle = (i / 3) * Math.PI * 2 + epoch * 0.5;
+      const drift = 2 + epoch * 4;
+      p.position.x = Math.cos(angle) * drift;
+      p.position.z = Math.sin(angle) * drift;
+      p.rotation.y = epoch * 0.3 + i;
+    });
+
+    // Seismograph
+    if (seismoVisible) {
+      const x = epoch * 10;
+      const linear = x;
+      const superlinear = Math.pow(x, 1.15);
+      const reed = Math.min(Math.pow(2, x * 0.3), 50);
+      seismoData.linear.push(linear);
+      seismoData.super.push(superlinear);
+      seismoData.reed.push(reed);
+      if (seismoData.linear.length > 200) {
+        seismoData.linear.shift();
+        seismoData.super.shift();
+        seismoData.reed.shift();
+      }
+
+      seismoCtx.fillStyle = 'rgba(6,6,8,0.3)';
+      seismoCtx.fillRect(0, 0, 400, 120);
+      const drawLine = (data, color, max) => {
+        seismoCtx.strokeStyle = color;
+        seismoCtx.lineWidth = 1.5;
+        seismoCtx.beginPath();
+        data.forEach((v, i) => {
+          const px = (i / 200) * 400;
+          const py = 110 - (v / max) * 100;
+          if (i === 0) seismoCtx.moveTo(px, py);
+          else seismoCtx.lineTo(px, py);
+        });
+        seismoCtx.stroke();
+      };
+      drawLine(seismoData.linear, '#6a5a68', 50);
+      drawLine(seismoData.super, '#dca5bd', 50);
+      drawLine(seismoData.reed, '#d8c8a0', 50);
+
+      // Labels
+      seismoCtx.font = '8px JetBrains Mono';
+      seismoCtx.fillStyle = '#6a5a68';
+      seismoCtx.fillText('Linear', 5, 10);
+      seismoCtx.fillStyle = '#dca5bd';
+      seismoCtx.fillText('Superlinear', 50, 10);
+      seismoCtx.fillStyle = '#d8c8a0';
+      seismoCtx.fillText("Reed's Law", 130, 10);
+    }
+
+    // C-Factor
+    const cFactor = 0.85 + epoch * 0.65 + Math.sin(t) * 0.05;
+    const mass = 0.12 + epoch * 12;
+
+    // Update stats
+    document.getElementById('stat-agents').textContent = agentCount;
+    document.getElementById('stat-mass').textContent = mass.toFixed(2);
+    document.getElementById('stat-cfactor').textContent = cFactor.toFixed(2);
+    document.getElementById('stat-epoch').textContent = epochName;
+
+    // Camera — zoom controls distance
+    const camDist = 25 - zoom * 18;
+    cameraAngle += 0.001 + STATE.mouse.dragX * 0.08;
+    STATE.mouse.dragX *= 0.95;
+    camera.position.x = Math.cos(cameraAngle) * camDist;
+    camera.position.z = Math.sin(cameraAngle) * camDist;
+    camera.position.y = camDist * 0.6 + STATE.mouse.dragY * 5;
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════
+// INIT ALL + RESIZE
+// ═══════════════════════════════════════════
+function handleResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  STATE.renderers.forEach((r, i) => {
+    if (r) {
+      r.setSize(w, h);
+      STATE.cameras[i].aspect = w / h;
+      STATE.cameras[i].updateProjectionMatrix();
+    }
+  });
+}
+window.addEventListener('resize', handleResize);
+
+// Initialize all pages
+initStrata();
+initPeaks();
+initWeather();
+initDrift();
+
+// Start with page 0 active
+STATE.animating[0] = true;
+
+// Touch navigation support
+let touchStartX = 0, touchStartY = 0;
+document.addEventListener('touchstart', e => {
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+});
+document.addEventListener('touchend', e => {
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  const dy = e.changedTouches[0].clientY - touchStartY;
+  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+    if (dx < 0) goToPage(STATE.currentPage + 1);
+    else goToPage(STATE.currentPage - 1);
+  }
+});
+
+console.log('%c NUNCHI // TOPOGRAPHIC ', 'background: #060608; color: #dca5bd; font-size: 16px; padding: 8px 16px; font-family: Fraunces;');
+console.log('%c Chain RPC: http://65.109.61.210:8545/ | Chain ID: 1337 ', 'color: #988090; font-size: 10px;');
+
+</script>
+</body>
+</html>

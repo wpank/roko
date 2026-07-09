@@ -1,0 +1,1876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Agent Coordination Plane</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+  --dream: #585878;
+  --dream-bright: #7878a0;
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { overflow: hidden; width: 100%; height: 100%; background: var(--void); color: var(--t1); font-family: var(--mono); }
+
+/* Pages */
+.page {
+  position: absolute; width: 100%; height: 100%;
+  top: 0; left: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.page.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+.page.exit-up {
+  opacity: 0;
+  transform: translateY(-24px);
+}
+
+/* Canvas backgrounds */
+.page-canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 0;
+}
+
+/* Content overlays */
+.page-content {
+  position: relative; z-index: 1;
+  max-width: 1100px; width: 90%;
+  pointer-events: none;
+}
+.page-content * { pointer-events: auto; }
+
+/* Typography */
+h1 {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(2.5rem, 5vw, 4.5rem);
+  line-height: 1.1;
+}
+h2 {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  line-height: 1.2;
+}
+.subtitle {
+  font-family: var(--mono); font-weight: 400;
+  font-size: clamp(10px, 1.2vw, 13px);
+  text-transform: uppercase; letter-spacing: 0.28em;
+  color: var(--rose-dim);
+}
+.body-text {
+  font-family: var(--mono); font-weight: 400;
+  font-size: clamp(12px, 1.1vw, 14px);
+  color: var(--t1); line-height: 1.7;
+}
+.rose-glow {
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.tag {
+  font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.28em; color: var(--rose-dim);
+}
+.small-mono {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+}
+
+/* Chassis panel */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+.chassis-body { padding: 20px; }
+
+/* Navigation */
+.page-nav {
+  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px;
+  z-index: 100;
+  background: rgba(8,8,12,0.7);
+  backdrop-filter: blur(8px);
+  padding: 8px 16px; border-radius: 20px;
+  border: 1px solid var(--border);
+}
+.nav-arrow {
+  font-family: var(--mono); font-size: 16px; color: var(--t-dim);
+  cursor: pointer; user-select: none;
+  padding: 4px 8px;
+  transition: color 0.2s;
+}
+.nav-arrow:hover { color: var(--rose); }
+.nav-dots { display: flex; gap: 8px; }
+.nav-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s;
+  border: 1px solid transparent;
+}
+.nav-dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 8px rgba(170,112,136,0.5);
+  border-color: var(--rose-dim);
+}
+.nav-dot:hover { background: var(--rose-dim); }
+
+/* Block HUD */
+.block-hud {
+  position: fixed; top: 16px; right: 16px; z-index: 100;
+  font-family: var(--mono); font-size: 10px;
+  color: var(--jade); letter-spacing: 0.1em;
+  display: flex; align-items: center; gap: 8px;
+  opacity: 0; transition: opacity 0.3s;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .ekg-indicator {
+  width: 40px; height: 16px;
+  position: relative;
+}
+.block-hud .ekg-indicator canvas {
+  width: 100%; height: 100%;
+}
+
+/* Atmospheric overlays */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9998; pointer-events: none;
+  opacity: 0.03; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9997; pointer-events: none;
+  opacity: 0.05;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9996; pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Page-specific styles */
+
+/* Page 0 - Hero */
+.hero-content {
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+}
+.hero-content h1 { font-size: clamp(3rem, 7vw, 6rem); margin-bottom: 4px; }
+.hero-series {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+  letter-spacing: 0.2em; margin-top: 40px;
+}
+
+/* Page 1 - Plane Between */
+.plane-layout { display: flex; flex-direction: column; gap: 0; width: 100%; }
+.plane-band {
+  padding: 16px 24px;
+  position: relative;
+  border: 1px solid transparent;
+}
+.plane-band.top { border-color: rgba(88,88,120,0.2); background: rgba(88,88,120,0.05); }
+.plane-band.middle {
+  border-color: var(--border-live);
+  background: rgba(170,112,136,0.06);
+  padding: 20px 24px;
+}
+.plane-band.bottom { border-color: rgba(88,88,120,0.2); background: rgba(88,88,120,0.05); }
+.plane-band .band-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.28em;
+  margin-bottom: 6px;
+}
+.plane-band .band-items {
+  font-family: var(--mono); font-size: 12px; color: var(--t-dim);
+}
+.plane-band.middle .band-label { color: var(--rose-neon); }
+.plane-band.middle .band-items { color: var(--rose); }
+.plane-bottom-text {
+  margin-top: 24px; text-align: center;
+  font-family: var(--mono); font-size: 13px; color: var(--t1);
+  line-height: 1.6; max-width: 680px; margin-left: auto; margin-right: auto;
+}
+
+/* Page 2 - Two Components */
+.two-col {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  width: 100%;
+}
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+.component-card { padding: 0; }
+.component-card .card-body { padding: 16px 20px; }
+.component-card h3 {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  font-size: clamp(1.1rem, 2vw, 1.4rem); color: #d8c8d0;
+  margin-bottom: 4px;
+}
+.component-card .card-subtitle {
+  font-size: 11px; color: var(--rose-dim); margin-bottom: 12px;
+}
+.component-card ul {
+  list-style: none; padding: 0;
+}
+.component-card li {
+  font-family: var(--mono); font-size: 12px; color: var(--t-dim);
+  padding: 4px 0; border-bottom: 1px solid rgba(24,20,32,0.5);
+}
+.component-card li:last-child { border-bottom: none; }
+.two-bottom {
+  grid-column: 1 / -1; text-align: center;
+  font-family: var(--mono); font-size: 12px; color: var(--t-dim);
+  line-height: 1.7; max-width: 760px; margin: 0 auto;
+}
+
+/* Page 3 - Chain */
+.chain-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  width: 100%;
+}
+@media (max-width: 800px) { .chain-grid { grid-template-columns: 1fr; } }
+.chain-stage {
+  padding: 14px 18px;
+}
+.chain-stage .stage-icon {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--rose-dim); margin-bottom: 8px;
+}
+.chain-stage .stage-title {
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  font-size: 16px; color: #d8c8d0; margin-bottom: 6px;
+}
+.chain-stage .stage-detail {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim); line-height: 1.6;
+}
+.cw-quote {
+  grid-column: 1 / -1;
+  text-align: center; padding: 12px;
+  font-family: var(--mono); font-size: 11px; color: var(--dream-bright);
+  letter-spacing: 0.05em;
+}
+.timing-row {
+  grid-column: 1 / -1;
+  display: flex; justify-content: center; gap: 28px; flex-wrap: wrap;
+  padding: 8px 0;
+}
+.timing-item {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+  text-align: center;
+}
+.timing-item.highlight {
+  color: var(--rose-neon);
+  text-shadow: 0 0 12px rgba(220,165,189,0.3);
+  font-weight: 500;
+}
+.timing-item .time-val { font-size: 18px; display: block; margin-bottom: 2px; }
+
+/* Page 4 - HDC */
+.hdc-steps { width: 100%; }
+.hdc-step {
+  display: none;
+  flex-direction: column; gap: 12px;
+}
+.hdc-step.active { display: flex; }
+.hdc-step-indicator {
+  display: flex; gap: 8px; justify-content: center; margin-bottom: 12px;
+}
+.hdc-step-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ghost); cursor: pointer; transition: all 0.2s;
+}
+.hdc-step-dot.active { background: var(--rose); box-shadow: 0 0 8px rgba(170,112,136,0.4); }
+.hdc-code {
+  font-family: var(--mono); font-size: 12px;
+  background: rgba(5,5,7,0.8); padding: 16px;
+  border: 1px solid var(--border); border-radius: 2px;
+  color: var(--bone-dim); line-height: 1.6;
+  white-space: pre-wrap;
+}
+.hdc-code .hl { color: var(--rose-neon); }
+.hdc-viz {
+  height: 80px; width: 100%;
+  position: relative;
+}
+.hdc-nav-hint {
+  text-align: center; font-size: 10px; color: var(--t-dim);
+  margin-top: 8px; letter-spacing: 0.1em;
+}
+
+/* Page 5 - ISFR */
+.isfr-layout {
+  width: 100%;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.isfr-sources {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+}
+@media (max-width: 800px) { .isfr-sources { grid-template-columns: repeat(2, 1fr); } }
+.isfr-source {
+  padding: 12px 14px; text-align: center;
+}
+.isfr-source .src-weight {
+  font-size: 20px; font-family: var(--serif); font-style: italic;
+  color: var(--rose-neon); font-weight: 300;
+}
+.isfr-source .src-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--t-dim); margin-top: 4px;
+}
+.isfr-source .src-items {
+  font-size: 10px; color: var(--dream-bright); margin-top: 6px;
+  line-height: 1.5;
+}
+.isfr-rate-display {
+  text-align: center; padding: 16px;
+}
+.isfr-rate-display .rate-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.28em;
+  color: var(--rose-dim);
+}
+.isfr-rate-display .rate-value {
+  font-size: clamp(2rem, 4vw, 3rem); font-family: var(--serif);
+  font-style: italic; font-weight: 300;
+  color: var(--rose-neon); text-shadow: 0 0 30px rgba(220,165,189,0.3);
+}
+.isfr-gap-text {
+  text-align: center; font-family: var(--mono); font-size: 12px;
+  color: var(--t1); line-height: 1.6;
+}
+
+/* Page 6 - Collective */
+.collective-layout { width: 100%; }
+.collective-slider-row {
+  display: flex; align-items: center; gap: 16px;
+  justify-content: center; margin-bottom: 16px;
+}
+.collective-slider-row label {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+}
+.collective-slider-row input[type=range] {
+  width: 200px; accent-color: var(--rose);
+}
+.collective-slider-row .agent-count {
+  font-family: var(--mono); font-size: 14px; color: var(--rose-neon);
+  min-width: 50px;
+}
+.collective-viz {
+  width: 100%; height: 280px; position: relative;
+  margin-bottom: 16px;
+}
+.collective-quote {
+  text-align: center;
+  font-family: var(--serif); font-style: italic; font-weight: 300;
+  font-size: clamp(1rem, 2vw, 1.3rem); color: #d8c8d0;
+  line-height: 1.5;
+}
+.collective-sub {
+  text-align: center; margin-top: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+}
+
+/* Block pulse overlay */
+.block-pulse {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 9995; pointer-events: none;
+  border: 2px solid transparent;
+  transition: border-color 0.1s;
+}
+.block-pulse.flash {
+  border-color: rgba(112,136,122,0.4);
+}
+</style>
+</head>
+<body>
+
+<!-- Page 0: Hero -->
+<div class="page active" id="page0">
+  <canvas class="page-canvas" id="canvas0"></canvas>
+  <div class="page-content hero-content">
+    <h1>Nunchi</h1>
+    <div class="subtitle">Agent Coordination Plane</div>
+    <p class="body-text" style="max-width:560px; text-align:center; margin-top:8px;">
+      The infrastructure layer between AI models and the applications they power.
+    </p>
+    <div class="hero-series">Series A &middot; 2026</div>
+  </div>
+</div>
+
+<!-- Page 1: Plane Between -->
+<div class="page" id="page1">
+  <canvas class="page-canvas" id="canvas1"></canvas>
+  <div class="page-content">
+    <h2 style="text-align:center; margin-bottom:24px;">The plane between the planes.</h2>
+    <div class="plane-layout">
+      <div class="plane-band top chassis">
+        <div class="band-label" style="color:var(--dream-bright);">Application Layer</div>
+        <div class="band-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+      </div>
+      <div class="plane-band middle chassis">
+        <div class="head" style="padding:8px 20px; border-bottom:none;">
+          <span style="color:var(--rose-neon); letter-spacing:0.3em;">Agent Coordination Plane</span>
+          <span class="led"></span>
+        </div>
+        <div class="band-items" style="padding:4px 20px 12px;">
+          Nunchi &mdash; identity, routing, knowledge, policy, settlement
+        </div>
+      </div>
+      <div class="plane-band bottom chassis">
+        <div class="band-label" style="color:var(--dream-bright);">Execution Layer</div>
+        <div class="band-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+      </div>
+    </div>
+    <div class="plane-bottom-text">
+      Every adjacent layer is funded. The plane between them is empty. <span class="rose-glow">Nunchi fills it.</span>
+    </div>
+  </div>
+</div>
+
+<!-- Page 2: Two Components -->
+<div class="page" id="page2">
+  <canvas class="page-canvas" id="canvas2"></canvas>
+  <div class="page-content">
+    <h2 style="text-align:center; margin-bottom:24px;">Two components. One architecture.</h2>
+    <div class="two-col">
+      <div class="component-card chassis">
+        <div class="head"><span>Roko &middot; Runtime</span><span class="led"></span></div>
+        <div class="card-body">
+          <h3>Roko</h3>
+          <div class="card-subtitle">Open-source cognitive runtime &middot; Apache 2.0</div>
+          <ul>
+            <li>The cognitive runtime that turns a model call into a governed event</li>
+            <li>18 crates, 177K lines of Rust</li>
+            <li>CascadeRouter &mdash; cost-aware model routing</li>
+            <li>11 gates, 7 rungs between every call</li>
+            <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+            <li>Deterministic replay</li>
+          </ul>
+        </div>
+      </div>
+      <div class="component-card chassis">
+        <div class="head"><span>Nunchi Chain &middot; Substrate</span><span class="led"></span></div>
+        <div class="card-body">
+          <h3>Nunchi Chain</h3>
+          <div class="card-subtitle">Agent-native sovereign EVM L1</div>
+          <ul>
+            <li>Built on Commonware &mdash; open-source Rust anti-framework ($9M, Haun + Dragonfly)</li>
+            <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+            <li>HDC precompile at 0x09 &mdash; native semantic search</li>
+            <li>ISFR Oracle &mdash; DeFi benchmark computed by validators</li>
+            <li>Knowledge demurrage &mdash; exponential decay, confirmations extend half-life</li>
+          </ul>
+        </div>
+      </div>
+      <div class="two-bottom">
+        Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 3: Chain Architecture -->
+<div class="page" id="page3">
+  <canvas class="page-canvas" id="canvas3"></canvas>
+  <div class="page-content">
+    <h2 style="text-align:center; margin-bottom:20px;">Built on Commonware.</h2>
+    <div class="chain-grid">
+      <div class="chain-stage chassis">
+        <div class="head"><span>Antenna &middot; P2P</span></div>
+        <div class="chassis-body">
+          <div class="stage-title">P2P Network</div>
+          <div class="stage-detail">p2p::authenticated &middot; encrypted validator communication &middot; gossip protocol</div>
+        </div>
+      </div>
+      <div class="chain-stage chassis">
+        <div class="head"><span>Demodulator &middot; Consensus</span></div>
+        <div class="chassis-body">
+          <div class="stage-title">Simplex BFT</div>
+          <div class="stage-detail">~50ms blocks &middot; 2 hops notarize &middot; 3 hops finalize &middot; single-slot finality</div>
+        </div>
+      </div>
+      <div class="chain-stage chassis">
+        <div class="head"><span>Amplifier &middot; Execution</span></div>
+        <div class="chassis-body">
+          <div class="stage-title">revm Engine</div>
+          <div class="stage-detail">Full EVM compatibility &middot; Block-STM parallel execution</div>
+        </div>
+      </div>
+      <div class="chain-stage chassis">
+        <div class="head"><span>Filters &middot; Precompiles</span></div>
+        <div class="chassis-body">
+          <div class="stage-title">Native Precompiles</div>
+          <div class="stage-detail">
+            Agent Registry (0x08) &middot; HDC Precompile (0x09) &middot; ISFR Oracle (0xA01)
+          </div>
+        </div>
+      </div>
+      <div class="cw-quote">
+        "Not a framework. An anti-framework. Pick-and-choose Rust primitives."<br>
+        <span style="font-size:10px; color:var(--t-dim); margin-top:4px; display:inline-block;">
+          p2p::authenticated &middot; cryptography::bls12381 &middot; runtime::deterministic &middot; consensus::simplex
+        </span>
+      </div>
+      <div class="timing-row">
+        <div class="timing-item"><span class="time-val">12s</span>Ethereum</div>
+        <div class="timing-item"><span class="time-val">400ms</span>Solana</div>
+        <div class="timing-item"><span class="time-val">~390ms</span>Sui</div>
+        <div class="timing-item highlight"><span class="time-val">~50ms</span>Nunchi</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 4: HDC -->
+<div class="page" id="page4">
+  <canvas class="page-canvas" id="canvas4"></canvas>
+  <div class="page-content">
+    <h2 style="text-align:center; margin-bottom:16px;">Hyperdimensional Computing</h2>
+    <div class="hdc-steps">
+      <div class="hdc-step-indicator" id="hdcIndicator"></div>
+      <div class="hdc-step active" data-step="0">
+        <div class="tag" style="text-align:center;">Step 1 &mdash; Discovery</div>
+        <h2 style="text-align:center; font-size:1.2rem;">An agent finds a Uniswap transaction</h2>
+        <div class="hdc-code">swap(<span class="hl">USDC</span> &rarr; <span class="hl">WETH</span>, 50,000 USDC, pool 0x88e6...)
+gas: 142,891 &middot; block: 19,847,221</div>
+        <canvas class="hdc-viz" id="hdcViz0"></canvas>
+        <div class="hdc-nav-hint">Click or press &rarr; to advance steps</div>
+      </div>
+      <div class="hdc-step" data-step="1">
+        <div class="tag" style="text-align:center;">Step 2 &mdash; Encode</div>
+        <h2 style="text-align:center; font-size:1.2rem;">Encode to hypervector</h2>
+        <div class="hdc-code">Each concept &rarr; random 10,000-bit base vector
+<span class="hl">Bind:</span>  swap &oplus; USDC &oplus; WETH = transaction identity
+<span class="hl">Permute:</span> shift for sequence position
+<span class="hl">Bundle:</span> majority vote &rarr; single episode vector</div>
+        <canvas class="hdc-viz" id="hdcViz1"></canvas>
+      </div>
+      <div class="hdc-step" data-step="2">
+        <div class="tag" style="text-align:center;">Step 3 &mdash; Post to Chain</div>
+        <h2 style="text-align:center; font-size:1.2rem;">Anchor on-chain</h2>
+        <div class="hdc-code">InsightEntry {
+  content, hypervector (1,250 bytes), decay_params
+}
+&rarr; Transaction &rarr; Validator &rarr; sm_root updated</div>
+        <canvas class="hdc-viz" id="hdcViz2"></canvas>
+      </div>
+      <div class="hdc-step" data-step="3">
+        <div class="tag" style="text-align:center;">Step 4 &mdash; Search</div>
+        <h2 style="text-align:center; font-size:1.2rem;">Future agent searches</h2>
+        <div class="hdc-code">Query: <span class="hl">"Uniswap USDC pool large swap"</span>
+&rarr; Encode query to hypervector
+&rarr; Hamming distance search across all entries
+&rarr; Top-K results in <span class="hl">0.17ms</span> (vs 12ms float embeddings)</div>
+        <canvas class="hdc-viz" id="hdcViz3"></canvas>
+      </div>
+      <div class="hdc-step" data-step="4">
+        <div class="tag" style="text-align:center;">Step 5 &mdash; Compound</div>
+        <h2 style="text-align:center; font-size:1.2rem;">Results compound</h2>
+        <div class="hdc-code">10 confirmations = 6&times; half-life
+Knowledge many agents verify becomes <span class="hl">long-lived</span>.
+Demurrage decays unconfirmed entries.
+The store self-curates.</div>
+        <canvas class="hdc-viz" id="hdcViz4"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 5: ISFR -->
+<div class="page" id="page5">
+  <canvas class="page-canvas" id="canvas5"></canvas>
+  <div class="page-content">
+    <div class="isfr-layout">
+      <h2 style="text-align:center;">The first of many.</h2>
+      <div class="tag" style="text-align:center; margin-bottom:8px;">ISFR &mdash; Internet Secured Funding Rate</div>
+      <div class="isfr-sources">
+        <div class="isfr-source chassis">
+          <div class="src-weight">60%</div>
+          <div class="src-label">Lending</div>
+          <div class="src-items">Aave &middot; Compound<br>Spark &middot; Morpho</div>
+        </div>
+        <div class="isfr-source chassis">
+          <div class="src-weight">25%</div>
+          <div class="src-label">Structured</div>
+          <div class="src-items">Pendle &middot; Spectra<br>Term Finance</div>
+        </div>
+        <div class="isfr-source chassis">
+          <div class="src-weight">10%</div>
+          <div class="src-label">Funding</div>
+          <div class="src-items">dYdX &middot; Hyperliquid<br>GMX</div>
+        </div>
+        <div class="isfr-source chassis">
+          <div class="src-weight">5%</div>
+          <div class="src-label">Staking</div>
+          <div class="src-items">Lido &middot; Rocket Pool<br>Coinbase</div>
+        </div>
+      </div>
+      <div class="isfr-rate-display">
+        <div class="rate-label">Composite Rate (Live)</div>
+        <div class="rate-value" id="isfrRate">4.23%</div>
+      </div>
+      <canvas id="isfrOscilloscope" style="width:100%; height:80px;"></canvas>
+      <div class="isfr-gap-text">
+        The $668 trillion gap: traditional finance has SOFR. DeFi has nothing comparable.<br>
+        <span class="rose-glow">ISFR proves the pattern.</span> Next: volatility indices, credit spreads, cross-chain rates.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 6: Collective Intelligence -->
+<div class="page" id="page6">
+  <canvas class="page-canvas" id="canvas6"></canvas>
+  <div class="page-content collective-layout">
+    <h2 style="text-align:center; margin-bottom:12px;">Every agent makes every agent smarter.</h2>
+    <div class="collective-slider-row">
+      <label>Agents:</label>
+      <input type="range" id="agentSlider" min="1" max="1000" value="5">
+      <span class="agent-count" id="agentCount">5</span>
+    </div>
+    <canvas class="collective-viz" id="collectiveCanvas"></canvas>
+    <div class="collective-quote">
+      "The thousandth agent pulls 30,000 tokens of context the first agent never had."
+    </div>
+    <div class="collective-sub">
+      Superlinear scaling: &beta; &asymp; 1.15 &mdash; when agents double, output grows 115%.
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">
+  <canvas id="ekgCanvas" width="60" height="20"></canvas>
+  <span id="blockNum">---</span>
+</div>
+
+<!-- Block pulse overlay -->
+<div class="block-pulse" id="blockPulse"></div>
+
+<!-- Atmospheric overlays -->
+<div class="grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<script>
+// ============================================================
+// NAVIGATION
+// ============================================================
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+// Build nav dots
+const dotsContainer = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  dotsContainer.appendChild(dot);
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') {
+    e.preventDefault();
+    // On HDC page, advance step first
+    if (currentPage === 4 && hdcStep < 4) {
+      setHdcStep(hdcStep + 1);
+    } else {
+      goToPage(currentPage + 1);
+    }
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (currentPage === 4 && hdcStep > 0) {
+      setHdcStep(hdcStep - 1);
+    } else {
+      goToPage(currentPage - 1);
+    }
+  }
+});
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+// ============================================================
+// WAVEFORM ENGINE (Canvas 2D oscilloscope renderer)
+// ============================================================
+const canvases = {};
+const contexts = {};
+const animations = {};
+
+function initCanvas(id) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return null;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  canvases[id] = canvas;
+  contexts[id] = ctx;
+  return { canvas, ctx, resize };
+}
+
+function drawWave(ctx, w, h, opts) {
+  const { freq = 1, amp = 0.3, phase = 0, color = 'rgba(170,112,136,0.5)',
+          lineWidth = 1.5, points = 200, yOffset = 0.5, type = 'sine',
+          noiseAmt = 0, decay = 0 } = opts;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  for (let i = 0; i <= points; i++) {
+    const x = (i / points) * w;
+    const t = (i / points) * Math.PI * 2 * freq + phase;
+    let y;
+    if (type === 'sine') {
+      y = Math.sin(t);
+    } else if (type === 'square') {
+      y = Math.sin(t) > 0 ? 1 : -1;
+    } else if (type === 'sawtooth') {
+      y = 2 * ((t / (2 * Math.PI)) % 1) - 1;
+    } else if (type === 'triangle') {
+      y = 2 * Math.abs(2 * ((t / (2 * Math.PI)) % 1) - 1) - 1;
+    } else {
+      y = Math.sin(t);
+    }
+    // Add noise
+    if (noiseAmt > 0) {
+      y += (Math.random() - 0.5) * noiseAmt;
+    }
+    // Apply decay (fade out toward edges)
+    if (decay > 0) {
+      const edge = Math.min(i / points, 1 - i / points) * 2;
+      y *= Math.pow(edge, decay);
+    }
+    const py = h * yOffset + y * h * amp;
+    if (i === 0) ctx.moveTo(x, py);
+    else ctx.lineTo(x, py);
+  }
+  ctx.stroke();
+}
+
+function drawGlow(ctx, w, h, opts) {
+  // Draw a wave with glow effect
+  ctx.save();
+  ctx.shadowBlur = opts.glow || 12;
+  ctx.shadowColor = opts.glowColor || opts.color || 'rgba(170,112,136,0.3)';
+  drawWave(ctx, w, h, opts);
+  ctx.restore();
+  // Draw crisp line on top
+  drawWave(ctx, w, h, { ...opts, lineWidth: (opts.lineWidth || 1.5) * 0.6 });
+}
+
+// ============================================================
+// PAGE 0: Hero - Oscilloscope waveforms with constructive interference
+// ============================================================
+function animateHero() {
+  const c = initCanvas('canvas0');
+  if (!c) return;
+  const { ctx, canvas } = c;
+  let t = 0;
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background grid lines (oscilloscope style)
+    ctx.strokeStyle = 'rgba(24,20,32,0.4)';
+    ctx.lineWidth = 0.5;
+    const gridSpacing = 40;
+    for (let x = 0; x < w; x += gridSpacing) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y < h; y += gridSpacing) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // Center crosshair
+    ctx.strokeStyle = 'rgba(24,20,32,0.6)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
+
+    // Multiple overlapping sine waves
+    const waves = [
+      { freq: 2.3, amp: 0.12, phase: t * 0.3, color: 'rgba(170,112,136,0.35)', glow: 15, glowColor: 'rgba(170,112,136,0.15)', lineWidth: 2 },
+      { freq: 3.7, amp: 0.08, phase: t * 0.5 + 1, color: 'rgba(200,184,144,0.25)', glow: 12, glowColor: 'rgba(200,184,144,0.12)', lineWidth: 1.5 },
+      { freq: 1.1, amp: 0.18, phase: t * 0.15, color: 'rgba(88,88,120,0.3)', glow: 18, glowColor: 'rgba(88,88,120,0.15)', lineWidth: 2.5 },
+      { freq: 5.2, amp: 0.05, phase: t * 0.8 + 2.5, color: 'rgba(220,165,189,0.2)', glow: 8, glowColor: 'rgba(220,165,189,0.1)', lineWidth: 1 },
+      { freq: 0.7, amp: 0.22, phase: t * 0.1, color: 'rgba(122,80,96,0.2)', glow: 20, glowColor: 'rgba(122,80,96,0.1)', lineWidth: 3 },
+    ];
+
+    // Constructive interference zone in center
+    const intZoneStart = w * 0.35;
+    const intZoneEnd = w * 0.65;
+
+    waves.forEach(wave => {
+      drawGlow(ctx, w, h, { ...wave, points: 400, yOffset: 0.5, decay: 0.3 });
+    });
+
+    // Bright constructive interference line in center
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(220,165,189,${0.15 + Math.sin(t * 0.5) * 0.08})`;
+    ctx.lineWidth = 2;
+    ctx.shadowBlur = 25;
+    ctx.shadowColor = 'rgba(220,165,189,0.25)';
+    for (let i = 0; i <= 400; i++) {
+      const x = (i / 400) * w;
+      if (x < intZoneStart || x > intZoneEnd) continue;
+      let sum = 0;
+      waves.forEach(wave => {
+        const wt = (i / 400) * Math.PI * 2 * wave.freq + wave.phase;
+        sum += Math.sin(wt) * wave.amp;
+      });
+      const localIntensity = 1 - 2 * Math.abs((x - w * 0.5) / (intZoneEnd - intZoneStart));
+      sum *= localIntensity;
+      const y = h * 0.5 + sum * h;
+      if (x <= intZoneStart + 1) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Block modulation pulse
+    if (blockModulation > 0.05) {
+      ctx.save();
+      ctx.globalAlpha = blockModulation * 0.3;
+      ctx.strokeStyle = 'rgba(112,136,122,0.8)';
+      ctx.lineWidth = 3;
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = 'rgba(112,136,122,0.5)';
+      drawWave(ctx, w, h, { freq: 8, amp: 0.06 * blockModulation, phase: t * 2, yOffset: 0.5, points: 400 });
+      ctx.restore();
+    }
+
+    t += 0.016;
+    animations.hero = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE 1: Plane Between - Three frequency bands
+// ============================================================
+function animatePlane() {
+  const c = initCanvas('canvas1');
+  if (!c) return;
+  const { ctx, canvas } = c;
+  let t = 0;
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Three frequency bands
+    // High frequency (Application) - top third
+    for (let i = 0; i < 3; i++) {
+      drawWave(ctx, w, h, {
+        freq: 12 + i * 4, amp: 0.03, phase: t * (1.5 + i * 0.3),
+        color: `rgba(88,88,120,${0.15 - i * 0.03})`,
+        yOffset: 0.18 + i * 0.02, lineWidth: 1, points: 500
+      });
+    }
+
+    // Mid frequency (Nunchi) - center, strong carrier signal
+    for (let i = 0; i < 4; i++) {
+      drawGlow(ctx, w, h, {
+        freq: 3 + i * 0.7, amp: 0.06 + i * 0.015, phase: t * (0.4 + i * 0.1),
+        color: `rgba(170,112,136,${0.25 - i * 0.04})`,
+        glow: 15, glowColor: `rgba(170,112,136,${0.1 - i * 0.02})`,
+        yOffset: 0.5, lineWidth: 2 - i * 0.3, points: 400
+      });
+    }
+
+    // Cross-modulation shimmer between bands
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(220,165,189,${0.06 + Math.sin(t * 0.3) * 0.03})`;
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 400; i++) {
+      const x = (i / 400) * w;
+      const carrier = Math.sin((i / 400) * Math.PI * 2 * 3 + t * 0.4);
+      const modulator = Math.sin((i / 400) * Math.PI * 2 * 12 + t * 1.5);
+      const y = h * 0.35 + carrier * modulator * h * 0.03;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Low frequency (Execution) - bottom third
+    for (let i = 0; i < 2; i++) {
+      drawWave(ctx, w, h, {
+        freq: 0.8 + i * 0.3, amp: 0.04, phase: t * (0.1 + i * 0.05),
+        color: `rgba(88,88,120,${0.12 - i * 0.03})`,
+        yOffset: 0.82 + i * 0.02, lineWidth: 2, points: 300
+      });
+    }
+
+    // Vertical data flow lines (occasional)
+    const flowCount = 5;
+    for (let f = 0; f < flowCount; f++) {
+      const flowX = (w * 0.2) + (f / flowCount) * w * 0.6;
+      const flowPhase = (t * 0.3 + f * 1.3) % 3;
+      if (flowPhase < 1) {
+        const flowY = h * 0.15 + flowPhase * h * 0.7;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(170,112,136,${0.2 * (1 - flowPhase)})`;
+        ctx.lineWidth = 1;
+        ctx.moveTo(flowX, flowY - 15);
+        ctx.lineTo(flowX, flowY + 15);
+        ctx.stroke();
+        // Glow dot
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(220,165,189,${0.5 * (1 - flowPhase)})`;
+        ctx.arc(flowX, flowY, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (blockModulation > 0.05) {
+      ctx.save();
+      ctx.globalAlpha = blockModulation * 0.4;
+      drawGlow(ctx, w, h, { freq: 6, amp: 0.08 * blockModulation, phase: t * 3, yOffset: 0.5, color: 'rgba(112,136,122,0.6)', glow: 20, glowColor: 'rgba(112,136,122,0.3)', lineWidth: 2, points: 400 });
+      ctx.restore();
+    }
+
+    t += 0.016;
+    animations.plane = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE 2: Two Components - AM/FM combined + steady carrier
+// ============================================================
+function animateComponents() {
+  const c = initCanvas('canvas2');
+  if (!c) return;
+  const { ctx, canvas } = c;
+  let t = 0;
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    const mid = w / 2;
+
+    // LEFT side: Roko - complex modulated signal (AM/FM combined)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, mid - 8, h);
+    ctx.clip();
+
+    // AM envelope
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(170,112,136,0.12)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 300; i++) {
+      const x = (i / 300) * (mid - 8);
+      const envelope = 0.5 + 0.5 * Math.sin((i / 300) * Math.PI * 2 * 0.8 + t * 0.2);
+      const y = h * 0.5 - envelope * h * 0.15;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // Lower envelope
+    ctx.beginPath();
+    for (let i = 0; i <= 300; i++) {
+      const x = (i / 300) * (mid - 8);
+      const envelope = 0.5 + 0.5 * Math.sin((i / 300) * Math.PI * 2 * 0.8 + t * 0.2);
+      const y = h * 0.5 + envelope * h * 0.15;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Complex modulated carrier
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(220,165,189,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = 'rgba(220,165,189,0.15)';
+    for (let i = 0; i <= 500; i++) {
+      const x = (i / 500) * (mid - 8);
+      const norm = i / 500;
+      const amEnvelope = 0.5 + 0.5 * Math.sin(norm * Math.PI * 2 * 0.8 + t * 0.2);
+      const fmMod = Math.sin(norm * Math.PI * 2 * 1.5 + t * 0.3) * 2;
+      const carrier = Math.sin(norm * Math.PI * 2 * 8 + fmMod + t * 0.6);
+      const y = h * 0.5 + carrier * amEnvelope * h * 0.13;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Extra information harmonics
+    for (let j = 0; j < 2; j++) {
+      drawWave(ctx, mid - 8, h, {
+        freq: 15 + j * 7, amp: 0.02, phase: t * (1.2 + j * 0.4),
+        color: `rgba(170,112,136,${0.1 - j * 0.03})`,
+        yOffset: 0.5, lineWidth: 0.8, points: 300
+      });
+    }
+    ctx.restore();
+
+    // RIGHT side: Chain - steady carrier wave
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(mid + 8, 0, mid - 8, h);
+    ctx.clip();
+    ctx.translate(mid + 8, 0);
+    const rw = mid - 16;
+
+    // Steady strong carrier
+    drawGlow(ctx, rw, h, {
+      freq: 4, amp: 0.1, phase: t * 0.3,
+      color: 'rgba(200,184,144,0.3)', glow: 15, glowColor: 'rgba(200,184,144,0.12)',
+      yOffset: 0.5, lineWidth: 2, points: 400
+    });
+
+    // Harmonics (stable, regular)
+    drawWave(ctx, rw, h, {
+      freq: 8, amp: 0.04, phase: t * 0.6,
+      color: 'rgba(200,184,144,0.12)', yOffset: 0.5, lineWidth: 1, points: 300
+    });
+    drawWave(ctx, rw, h, {
+      freq: 12, amp: 0.02, phase: t * 0.9,
+      color: 'rgba(200,184,144,0.08)', yOffset: 0.5, lineWidth: 0.8, points: 300
+    });
+
+    ctx.restore();
+
+    // Center divider with combined signal hint
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(24,20,32,0.6)';
+    ctx.setLineDash([4, 4]);
+    ctx.moveTo(mid, 0); ctx.lineTo(mid, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    t += 0.016;
+    animations.components = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE 3: Chain Architecture - Signal processing chain
+// ============================================================
+function animateChain() {
+  const c = initCanvas('canvas3');
+  if (!c) return;
+  const { ctx, canvas } = c;
+  let t = 0;
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Signal processing chain path (horizontal)
+    const stages = 5;
+    const stageWidth = w / stages;
+
+    for (let s = 0; s < stages; s++) {
+      const sx = s * stageWidth;
+
+      // Each stage has a different filter/processing effect on the signal
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(170,112,136,${0.12 + s * 0.03})`;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i <= 100; i++) {
+        const x = sx + (i / 100) * stageWidth;
+        const norm = i / 100;
+        let y;
+
+        switch(s) {
+          case 0: // Antenna - raw noisy signal
+            y = Math.sin(norm * Math.PI * 2 * 6 + t) * 0.06 +
+                (Math.random() - 0.5) * 0.04;
+            break;
+          case 1: // Demodulator - cleaned signal
+            y = Math.sin(norm * Math.PI * 2 * 4 + t * 0.8) * 0.08;
+            break;
+          case 2: // Amplifier - stronger
+            y = Math.sin(norm * Math.PI * 2 * 4 + t * 0.8) * 0.14;
+            break;
+          case 3: // Filter - specific frequencies
+            y = Math.sin(norm * Math.PI * 2 * 4 + t * 0.8) * 0.1 *
+                (1 - 0.5 * Math.cos(norm * Math.PI * 2 * 0.5));
+            break;
+          case 4: // Recorder - clean output
+            y = Math.sin(norm * Math.PI * 2 * 3 + t * 0.5) * 0.08;
+            break;
+        }
+        const py = h * 0.5 + y * h;
+        if (i === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+      }
+      ctx.stroke();
+
+      // Stage separator
+      if (s < stages - 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(24,20,32,0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 6]);
+        ctx.moveTo(sx + stageWidth, h * 0.3);
+        ctx.lineTo(sx + stageWidth, h * 0.7);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Arrow
+        const ax = sx + stageWidth;
+        const ay = h * 0.5;
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(170,112,136,0.2)';
+        ctx.moveTo(ax - 4, ay - 4);
+        ctx.lineTo(ax + 4, ay);
+        ctx.lineTo(ax - 4, ay + 4);
+        ctx.fill();
+      }
+    }
+
+    // Horizontal grid
+    ctx.strokeStyle = 'rgba(24,20,32,0.2)';
+    ctx.lineWidth = 0.5;
+    for (let y = h * 0.3; y <= h * 0.7; y += 20) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    t += 0.016;
+    animations.chain = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE 4: HDC - Spectral analysis / frequency fingerprint
+// ============================================================
+let hdcStep = 0;
+const HDC_TOTAL_STEPS = 5;
+
+// Build step indicator
+const hdcIndicator = document.getElementById('hdcIndicator');
+for (let i = 0; i < HDC_TOTAL_STEPS; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'hdc-step-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => setHdcStep(i));
+  hdcIndicator.appendChild(dot);
+}
+
+function setHdcStep(step) {
+  hdcStep = step;
+  document.querySelectorAll('.hdc-step').forEach((el, i) => {
+    el.classList.toggle('active', i === step);
+  });
+  document.querySelectorAll('.hdc-step-dot').forEach((d, i) => {
+    d.classList.toggle('active', i === step);
+  });
+}
+
+// HDC page click handler
+document.getElementById('page4').addEventListener('click', (e) => {
+  if (e.target.closest('.hdc-step-dot') || e.target.closest('.nav-dot') || e.target.closest('.nav-arrow')) return;
+  if (hdcStep < 4) setHdcStep(hdcStep + 1);
+});
+
+function animateHDC() {
+  const c = initCanvas('canvas4');
+  if (!c) return;
+  const { ctx, canvas } = c;
+  let t = 0;
+
+  // Generate deterministic frequency fingerprint data
+  const fingerprint = [];
+  for (let i = 0; i < 200; i++) {
+    fingerprint.push(Math.pow(Math.sin(i * 0.31) * Math.cos(i * 0.17), 2) +
+                     Math.random() * 0.1);
+  }
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background: frequency domain grid
+    ctx.strokeStyle = 'rgba(24,20,32,0.3)';
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x < w; x += 30) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y < h; y += 30) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // Spectral display based on current step
+    const bins = 200;
+    const binWidth = w / bins;
+
+    // Base noise floor
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(88,88,120,0.05)';
+    ctx.moveTo(0, h);
+    for (let i = 0; i < bins; i++) {
+      const x = i * binWidth;
+      const noise = Math.random() * 0.02 * h;
+      ctx.lineTo(x, h - noise);
+    }
+    ctx.lineTo(w, h);
+    ctx.fill();
+
+    if (hdcStep >= 0) {
+      // Step 0: Raw transaction signal
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(200,184,144,0.3)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < bins; i++) {
+        const x = i * binWidth + binWidth / 2;
+        const val = fingerprint[i] * 0.15 * h;
+        if (i === 0) ctx.moveTo(x, h - val); else ctx.lineTo(x, h - val);
+      }
+      ctx.stroke();
+    }
+
+    if (hdcStep >= 1) {
+      // Step 1-2: Encoding - frequency peaks form
+      const peakPositions = [30, 67, 95, 128, 160];
+      peakPositions.forEach((pos, idx) => {
+        const intensity = Math.min(1, (hdcStep - 1) * 0.5 + 0.5);
+        ctx.beginPath();
+        const gradient = ctx.createLinearGradient(0, h, 0, h * 0.3);
+        gradient.addColorStop(0, 'rgba(170,112,136,0)');
+        gradient.addColorStop(1, `rgba(220,165,189,${0.15 * intensity})`);
+        ctx.fillStyle = gradient;
+        const peakW = 12;
+        const peakH = (0.3 + fingerprint[pos] * 0.5) * h * intensity;
+        const px = pos * binWidth;
+        ctx.moveTo(px - peakW, h);
+        ctx.quadraticCurveTo(px, h - peakH - Math.sin(t + idx) * 5, px + peakW, h);
+        ctx.fill();
+
+        // Peak line
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(220,165,189,${0.4 * intensity})`;
+        ctx.lineWidth = 1.5;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = 'rgba(220,165,189,0.2)';
+        ctx.moveTo(px - peakW, h);
+        ctx.quadraticCurveTo(px, h - peakH - Math.sin(t + idx) * 5, px + peakW, h);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      });
+    }
+
+    if (hdcStep >= 3) {
+      // Step 3-4: Search - matched filter correlation peak
+      const searchPhase = Math.min(1, (hdcStep - 3) + Math.sin(t * 0.5) * 0.1);
+      const matchPos = 95; // Strong match peak
+
+      // Scanning line
+      const scanX = ((t * 0.3) % 1) * w;
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(112,136,122,${0.3 * searchPhase})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.moveTo(scanX, 0); ctx.lineTo(scanX, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Match peak
+      if (hdcStep >= 3) {
+        const matchX = matchPos * binWidth;
+        const matchH = 0.6 * h * searchPhase;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(154,181,163,${0.6 * searchPhase})`;
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = 'rgba(154,181,163,0.3)';
+        ctx.moveTo(matchX - 15, h);
+        ctx.quadraticCurveTo(matchX, h - matchH, matchX + 15, h);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Match label
+        if (searchPhase > 0.5) {
+          ctx.font = '10px JetBrains Mono';
+          ctx.fillStyle = `rgba(154,181,163,${searchPhase})`;
+          ctx.textAlign = 'center';
+          ctx.fillText('MATCH', matchX, h - matchH - 10);
+          ctx.fillText('0.17ms', matchX, h - matchH + 2);
+        }
+      }
+    }
+
+    t += 0.016;
+    animations.hdc = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// Also animate individual HDC step vizs
+function animateHDCStepViz() {
+  for (let step = 0; step < HDC_TOTAL_STEPS; step++) {
+    const vizCanvas = document.getElementById('hdcViz' + step);
+    if (!vizCanvas) continue;
+    const vizCtx = vizCanvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = vizCanvas.getBoundingClientRect();
+    vizCanvas.width = rect.width * dpr;
+    vizCanvas.height = rect.height * dpr;
+    vizCtx.scale(dpr, dpr);
+
+    let lt = 0;
+    function drawViz() {
+      const vw = rect.width;
+      const vh = rect.height;
+      vizCtx.clearRect(0, 0, vw, vh);
+
+      // Different viz per step
+      switch(step) {
+        case 0: // Raw data signal
+          drawWave(vizCtx, vw, vh, { freq: 6, amp: 0.3, phase: lt * 0.5, color: 'rgba(200,184,144,0.4)', yOffset: 0.5, points: 200, noiseAmt: 0.3 });
+          break;
+        case 1: // XOR encoding
+          for (let b = 0; b < 3; b++) {
+            drawWave(vizCtx, vw, vh, { freq: 4 + b * 3, amp: 0.15, phase: lt * 0.3 + b * 2, color: `rgba(220,165,189,${0.3 - b * 0.08})`, yOffset: 0.5, points: 200 });
+          }
+          break;
+        case 2: // Chain posting - square wave (digital)
+          drawWave(vizCtx, vw, vh, { freq: 3, amp: 0.25, phase: lt * 0.4, color: 'rgba(200,184,144,0.4)', yOffset: 0.5, points: 200, type: 'square' });
+          break;
+        case 3: // Search - matched filter
+          drawWave(vizCtx, vw, vh, { freq: 5, amp: 0.2, phase: lt * 0.6, color: 'rgba(154,181,163,0.4)', yOffset: 0.5, points: 200 });
+          // Correlation peak
+          vizCtx.beginPath();
+          vizCtx.fillStyle = `rgba(154,181,163,${0.2 + Math.sin(lt) * 0.1})`;
+          const px = vw * 0.6;
+          vizCtx.moveTo(px - 20, vh);
+          vizCtx.quadraticCurveTo(px, vh * 0.2, px + 20, vh);
+          vizCtx.fill();
+          break;
+        case 4: // Compounding - growing amplitude
+          for (let i = 0; i < 3; i++) {
+            const growth = 0.1 + i * 0.08;
+            drawWave(vizCtx, vw, vh, { freq: 2 + i, amp: growth, phase: lt * (0.2 + i * 0.1), color: `rgba(220,165,189,${0.3 - i * 0.05})`, yOffset: 0.5, points: 200 });
+          }
+          break;
+      }
+
+      lt += 0.016;
+      animations['hdcViz' + step] = requestAnimationFrame(drawViz);
+    }
+    drawViz();
+  }
+}
+
+// ============================================================
+// PAGE 5: ISFR - Real-time oscilloscope composite rate
+// ============================================================
+function animateISFR() {
+  const c = initCanvas('canvas5');
+  if (!c) return;
+  const { ctx, canvas } = c;
+
+  // ISFR Oscilloscope
+  const oscCanvas = document.getElementById('isfrOscilloscope');
+  const oscCtx = oscCanvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const oscRect = oscCanvas.getBoundingClientRect();
+  oscCanvas.width = oscRect.width * dpr;
+  oscCanvas.height = oscRect.height * dpr;
+  oscCtx.scale(dpr, dpr);
+
+  let t = 0;
+  let rateHistory = [];
+  for (let i = 0; i < 200; i++) {
+    rateHistory.push(4.23 + Math.sin(i * 0.05) * 0.15 + Math.random() * 0.05);
+  }
+
+  function draw() {
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background: multiple input signal streams flowing down into center
+    const sources = [
+      { x: 0.15, freq: 3, amp: 0.03, color: 'rgba(170,112,136,0.15)', label: 'LEND' },
+      { x: 0.38, freq: 4, amp: 0.025, color: 'rgba(200,184,144,0.12)', label: 'STRUCT' },
+      { x: 0.62, freq: 5, amp: 0.02, color: 'rgba(88,88,120,0.12)', label: 'FUND' },
+      { x: 0.85, freq: 2, amp: 0.015, color: 'rgba(112,136,122,0.12)', label: 'STAKE' },
+    ];
+
+    sources.forEach(src => {
+      const sx = w * src.x;
+      ctx.beginPath();
+      ctx.strokeStyle = src.color;
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 100; i++) {
+        const y = (i / 100) * h * 0.3 + h * 0.1;
+        const x = sx + Math.sin((i / 100) * Math.PI * 2 * src.freq + t * 0.5) * w * src.amp;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    });
+
+    // Multiplexed composite signal at bottom
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(220,165,189,0.15)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i <= 400; i++) {
+      const x = (i / 400) * w;
+      let sum = 0;
+      sources.forEach(src => {
+        sum += Math.sin((i / 400) * Math.PI * 2 * src.freq * 2 + t * 0.8) * 0.02;
+      });
+      const y = h * 0.85 + sum * h;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // ISFR Oscilloscope trace
+    const ow = oscRect.width;
+    const oh = oscRect.height;
+    oscCtx.clearRect(0, 0, ow, oh);
+
+    // Background
+    oscCtx.fillStyle = 'rgba(5,5,7,0.8)';
+    oscCtx.fillRect(0, 0, ow, oh);
+
+    // Grid
+    oscCtx.strokeStyle = 'rgba(24,20,32,0.5)';
+    oscCtx.lineWidth = 0.5;
+    for (let x = 0; x < ow; x += 20) {
+      oscCtx.beginPath(); oscCtx.moveTo(x, 0); oscCtx.lineTo(x, oh); oscCtx.stroke();
+    }
+    oscCtx.beginPath(); oscCtx.moveTo(0, oh / 2); oscCtx.lineTo(ow, oh / 2); oscCtx.stroke();
+
+    // Rate trace
+    const newRate = 4.23 + Math.sin(t * 0.3) * 0.18 + Math.cos(t * 0.7) * 0.06 + (Math.random() - 0.5) * 0.02;
+    rateHistory.push(newRate);
+    if (rateHistory.length > 200) rateHistory.shift();
+
+    // Update displayed rate
+    const displayRate = rateHistory[rateHistory.length - 1];
+    document.getElementById('isfrRate').textContent = displayRate.toFixed(2) + '%';
+
+    oscCtx.beginPath();
+    oscCtx.strokeStyle = 'rgba(220,165,189,0.7)';
+    oscCtx.lineWidth = 1.5;
+    oscCtx.shadowBlur = 8;
+    oscCtx.shadowColor = 'rgba(220,165,189,0.3)';
+    const rateMin = 3.8, rateMax = 4.7;
+    for (let i = 0; i < rateHistory.length; i++) {
+      const x = (i / rateHistory.length) * ow;
+      const norm = (rateHistory[i] - rateMin) / (rateMax - rateMin);
+      const y = oh - norm * oh;
+      if (i === 0) oscCtx.moveTo(x, y); else oscCtx.lineTo(x, y);
+    }
+    oscCtx.stroke();
+    oscCtx.shadowBlur = 0;
+
+    // Current value dot
+    const lastX = ow;
+    const lastNorm = (displayRate - rateMin) / (rateMax - rateMin);
+    const lastY = oh - lastNorm * oh;
+    oscCtx.beginPath();
+    oscCtx.fillStyle = 'rgba(220,165,189,0.9)';
+    oscCtx.arc(lastX - 2, lastY, 3, 0, Math.PI * 2);
+    oscCtx.fill();
+
+    t += 0.016;
+    animations.isfr = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE 6: Collective Intelligence - Signal space
+// ============================================================
+function animateCollective() {
+  const c6 = initCanvas('canvas6');
+  if (!c6) return;
+
+  const colCanvas = document.getElementById('collectiveCanvas');
+  const colCtx = colCanvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const colRect = colCanvas.getBoundingClientRect();
+  colCanvas.width = colRect.width * dpr;
+  colCanvas.height = colRect.height * dpr;
+  colCtx.scale(dpr, dpr);
+
+  const slider = document.getElementById('agentSlider');
+  const countDisplay = document.getElementById('agentCount');
+
+  // Pre-generate agent signal parameters
+  const agentSignals = [];
+  for (let i = 0; i < 1000; i++) {
+    agentSignals.push({
+      freq: 0.5 + Math.random() * 8,
+      amp: 0.02 + Math.random() * 0.08,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.1 + Math.random() * 0.5,
+      color: i % 3 === 0 ? 'rose' : i % 3 === 1 ? 'bone' : 'dream'
+    });
+  }
+
+  let t = 0;
+
+  function draw() {
+    const bgW = c6.canvas.getBoundingClientRect().width;
+    const bgH = c6.canvas.getBoundingClientRect().height;
+    const bgCtx = c6.ctx;
+    bgCtx.clearRect(0, 0, bgW, bgH);
+
+    const cw = colRect.width;
+    const ch = colRect.height;
+    colCtx.clearRect(0, 0, cw, ch);
+
+    const agentCount = parseInt(slider.value);
+    countDisplay.textContent = agentCount;
+
+    // Background grid
+    colCtx.strokeStyle = 'rgba(24,20,32,0.3)';
+    colCtx.lineWidth = 0.5;
+    for (let x = 0; x < cw; x += 30) {
+      colCtx.beginPath(); colCtx.moveTo(x, 0); colCtx.lineTo(x, ch); colCtx.stroke();
+    }
+    colCtx.beginPath(); colCtx.moveTo(0, ch / 2); colCtx.lineTo(cw, ch / 2); colCtx.stroke();
+
+    // Draw individual agent signals (show up to 20 individual traces)
+    const showIndividual = Math.min(agentCount, 20);
+    for (let a = 0; a < showIndividual; a++) {
+      const sig = agentSignals[a];
+      const colors = {
+        rose: `rgba(170,112,136,${0.08 + (1 / showIndividual) * 0.15})`,
+        bone: `rgba(200,184,144,${0.06 + (1 / showIndividual) * 0.12})`,
+        dream: `rgba(88,88,120,${0.08 + (1 / showIndividual) * 0.12})`
+      };
+      drawWave(colCtx, cw, ch, {
+        freq: sig.freq, amp: sig.amp, phase: sig.phase + t * sig.speed,
+        color: colors[sig.color], yOffset: 0.5, lineWidth: 0.8, points: 300
+      });
+    }
+
+    // Composite signal (sum of all active agents)
+    colCtx.beginPath();
+    const compositeAlpha = Math.min(0.7, 0.2 + agentCount * 0.0005);
+    colCtx.strokeStyle = `rgba(220,165,189,${compositeAlpha})`;
+    colCtx.lineWidth = 2;
+    colCtx.shadowBlur = 12;
+    colCtx.shadowColor = `rgba(220,165,189,${compositeAlpha * 0.4})`;
+
+    for (let i = 0; i <= 400; i++) {
+      const x = (i / 400) * cw;
+      let sum = 0;
+      for (let a = 0; a < agentCount; a++) {
+        const sig = agentSignals[a];
+        const wt = (i / 400) * Math.PI * 2 * sig.freq + sig.phase + t * sig.speed;
+        sum += Math.sin(wt) * sig.amp;
+      }
+      // Normalize to prevent clipping
+      const normFactor = 1 / Math.sqrt(agentCount) * 3;
+      const y = ch * 0.5 + sum * ch * normFactor;
+      if (i === 0) colCtx.moveTo(x, y); else colCtx.lineTo(x, y);
+    }
+    colCtx.stroke();
+    colCtx.shadowBlur = 0;
+
+    // Harmonic richness indicator
+    const richness = Math.log2(agentCount + 1) / Math.log2(1001);
+    const barWidth = cw * 0.6;
+    const barX = (cw - barWidth) / 2;
+    const barY = ch - 16;
+    colCtx.fillStyle = 'rgba(24,20,32,0.5)';
+    colCtx.fillRect(barX, barY, barWidth, 6);
+    const gradient = colCtx.createLinearGradient(barX, 0, barX + barWidth * richness, 0);
+    gradient.addColorStop(0, 'rgba(122,80,96,0.6)');
+    gradient.addColorStop(1, 'rgba(220,165,189,0.8)');
+    colCtx.fillStyle = gradient;
+    colCtx.fillRect(barX, barY, barWidth * richness, 6);
+
+    // Label
+    colCtx.font = '9px JetBrains Mono';
+    colCtx.fillStyle = 'rgba(152,128,144,0.6)';
+    colCtx.textAlign = 'center';
+    colCtx.fillText('HARMONIC RICHNESS', cw / 2, barY - 4);
+
+    // Background page: subtle ambient waveforms
+    const bgWaveCount = Math.min(agentCount, 8);
+    for (let i = 0; i < bgWaveCount; i++) {
+      const sig = agentSignals[i];
+      drawWave(bgCtx, bgW, bgH, {
+        freq: sig.freq * 0.5, amp: 0.04, phase: sig.phase + t * sig.speed * 0.3,
+        color: `rgba(88,88,120,${0.04 / bgWaveCount * 3})`,
+        yOffset: 0.3 + (i / bgWaveCount) * 0.4,
+        lineWidth: 1, points: 300
+      });
+    }
+
+    // Block modulation on background
+    if (blockModulation > 0.05) {
+      bgCtx.save();
+      bgCtx.globalAlpha = blockModulation * 0.3;
+      drawGlow(bgCtx, bgW, bgH, { freq: 6, amp: 0.05, phase: t * 2, yOffset: 0.5, color: 'rgba(112,136,122,0.6)', glow: 15, glowColor: 'rgba(112,136,122,0.3)', lineWidth: 2, points: 400 });
+      bgCtx.restore();
+    }
+
+    t += 0.016;
+    animations.collective = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// ============================================================
+// PAGE LIFECYCLE
+// ============================================================
+const pageAnimators = {
+  0: animateHero,
+  1: animatePlane,
+  2: animateComponents,
+  3: animateChain,
+  4: () => { animateHDC(); animateHDCStepViz(); },
+  5: animateISFR,
+  6: animateCollective,
+};
+
+let activeAnimators = new Set();
+
+function onPageEnter(idx) {
+  // Start animator for new page if not already running
+  if (!activeAnimators.has(idx) && pageAnimators[idx]) {
+    pageAnimators[idx]();
+    activeAnimators.add(idx);
+  }
+  // Reset HDC step when entering page 4
+  if (idx === 4) {
+    setHdcStep(0);
+  }
+}
+
+// Start hero animation immediately
+onPageEnter(0);
+
+// Pre-initialize all page canvases on load for smooth transitions
+setTimeout(() => {
+  for (let i = 1; i < TOTAL_PAGES; i++) {
+    if (!activeAnimators.has(i) && pageAnimators[i]) {
+      pageAnimators[i]();
+      activeAnimators.add(i);
+    }
+  }
+}, 500);
+
+// ============================================================
+// MIRAGE BLOCK POLLING
+// ============================================================
+let blockNumber = 0;
+let blockModulation = 0;
+
+const blockHud = document.getElementById('blockHud');
+const blockNumEl = document.getElementById('blockNum');
+const blockPulse = document.getElementById('blockPulse');
+const ekgCanvas = document.getElementById('ekgCanvas');
+const ekgCtx = ekgCanvas.getContext('2d');
+
+let ekgHistory = [];
+for (let i = 0; i < 30; i++) ekgHistory.push(0);
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      blockHud.classList.add('visible');
+      blockNumEl.textContent = '#' + n;
+      onNewBlock(n);
+    }
+  } catch(e) {
+    // mirage not running, ignore
+  }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  // Flash border
+  blockPulse.classList.add('flash');
+  setTimeout(() => blockPulse.classList.remove('flash'), 200);
+
+  // EKG spike
+  ekgHistory.push(1);
+  if (ekgHistory.length > 30) ekgHistory.shift();
+}
+
+// EKG render loop
+function drawEKG() {
+  const w = 60, h = 20;
+  ekgCtx.clearRect(0, 0, w, h);
+  ekgCtx.beginPath();
+  ekgCtx.strokeStyle = 'rgba(112,136,122,0.8)';
+  ekgCtx.lineWidth = 1.5;
+  for (let i = 0; i < ekgHistory.length; i++) {
+    const x = (i / ekgHistory.length) * w;
+    let val = ekgHistory[i];
+    // EKG shape: sharp spike then quick decay
+    let y = h * 0.7;
+    if (val > 0) {
+      y = h * 0.1;
+      ekgHistory[i] *= 0.7; // Decay
+    }
+    if (i === 0) ekgCtx.moveTo(x, y); else ekgCtx.lineTo(x, y);
+  }
+  ekgCtx.stroke();
+  requestAnimationFrame(drawEKG);
+}
+drawEKG();
+
+// ============================================================
+// WINDOW RESIZE HANDLER
+// ============================================================
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    // Re-init canvases that need size updates
+    const oscCanvas = document.getElementById('isfrOscilloscope');
+    if (oscCanvas) {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = oscCanvas.getBoundingClientRect();
+      oscCanvas.width = rect.width * dpr;
+      oscCanvas.height = rect.height * dpr;
+      const ctx = oscCanvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+    }
+    const colCanvas = document.getElementById('collectiveCanvas');
+    if (colCanvas) {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = colCanvas.getBoundingClientRect();
+      colCanvas.width = rect.width * dpr;
+      colCanvas.height = rect.height * dpr;
+      const ctx = colCanvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+    }
+  }, 100);
+});
+
+// Touch/swipe support
+let touchStartY = 0;
+document.addEventListener('touchstart', (e) => {
+  touchStartY = e.touches[0].clientY;
+});
+document.addEventListener('touchend', (e) => {
+  const diff = touchStartY - e.changedTouches[0].clientY;
+  if (Math.abs(diff) > 50) {
+    if (diff > 0) goToPage(currentPage + 1);
+    else goToPage(currentPage - 1);
+  }
+});
+</script>
+</body>
+</html>

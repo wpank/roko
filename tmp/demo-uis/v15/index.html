@@ -1,0 +1,2154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi - Agent Coordination Plane</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+  --dream: #585878;
+  --dream-bright: #7878a0;
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  overflow: hidden;
+  width: 100%; height: 100%;
+  background: var(--void);
+  font-family: var(--mono);
+  color: var(--t1);
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  position: absolute;
+  width: 100%; height: 100%;
+  top: 0; left: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.page.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 2;
+}
+.page.exit-up {
+  opacity: 0;
+  transform: translateY(-24px);
+}
+.page canvas.page-bg {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+.page-content {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  width: 90%;
+  padding: 20px;
+}
+
+/* Typography */
+h1 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(2.2rem, 5vw, 4rem);
+  line-height: 1.1;
+}
+h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  color: #d8c8d0;
+  font-size: clamp(1.4rem, 3vw, 2.2rem);
+  line-height: 1.2;
+  margin-bottom: 16px;
+}
+h3 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: #c0b0b8;
+  font-size: clamp(1rem, 2vw, 1.4rem);
+  margin-bottom: 10px;
+}
+.rose-em {
+  color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.3);
+}
+.mono-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: clamp(11px, 1.4vw, 14px);
+  color: var(--t1);
+  line-height: 1.7;
+}
+.subtitle {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  font-size: clamp(10px, 1.2vw, 14px);
+  color: var(--rose);
+}
+
+/* Chassis */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+}
+.chassis .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+.chassis-body { padding: 20px; }
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Glass overlay */
+.glass {
+  background: rgba(5,5,7,0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(24,20,32,0.6);
+  border-radius: 3px;
+  padding: 28px 32px;
+}
+
+/* Navigation */
+.page-nav {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 9999;
+  user-select: none;
+}
+.nav-dots { display: flex; gap: 10px; }
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+.nav-dot.active {
+  background: var(--rose);
+  box-shadow: 0 0 8px rgba(170,112,136,0.5);
+  border-color: var(--rose-dim);
+}
+.nav-dot:hover { background: var(--rose-dim); }
+.nav-arrow {
+  font-size: 18px;
+  color: var(--t-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s;
+  font-family: var(--mono);
+}
+.nav-arrow:hover { color: var(--rose); }
+
+/* Overlays */
+.film-grain {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 9998;
+  pointer-events: none;
+  opacity: 0.03;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.scanlines {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 9997;
+  pointer-events: none;
+  opacity: 0.05;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+}
+.vignette {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 9996;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Block HUD */
+.block-hud {
+  position: fixed;
+  top: 16px; right: 20px;
+  z-index: 9990;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--jade);
+  opacity: 0;
+  transition: opacity 0.3s;
+  letter-spacing: 0.1em;
+}
+.block-hud.visible { opacity: 1; }
+.block-hud .block-pulse {
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--jade);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: ledPulse 1s ease-in-out;
+}
+
+/* Page-specific */
+
+/* Page 0 Hero */
+#page0 .hero-center {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+#page0 h1 {
+  font-size: clamp(3rem, 7vw, 6rem);
+  letter-spacing: 0.02em;
+}
+#page0 .hero-bottom {
+  position: absolute;
+  bottom: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+/* Page 1 Plane Between */
+.layer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.layer-band {
+  padding: 20px 28px;
+  border: 1px solid var(--border);
+  position: relative;
+}
+.layer-band.app {
+  background: rgba(88,88,120,0.08);
+  border-color: rgba(88,88,120,0.2);
+}
+.layer-band.nunchi {
+  background: rgba(170,112,136,0.08);
+  border-color: var(--rose-dim);
+  box-shadow: 0 0 30px rgba(170,112,136,0.1), inset 0 0 30px rgba(170,112,136,0.03);
+}
+.layer-band.exec {
+  background: rgba(112,136,122,0.06);
+  border-color: rgba(112,136,122,0.2);
+}
+.layer-label {
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.layer-items {
+  font-size: clamp(10px, 1.2vw, 12px);
+  color: var(--t-dim);
+  line-height: 1.8;
+}
+.layer-band.nunchi .layer-items {
+  color: var(--rose);
+  font-size: clamp(11px, 1.3vw, 13px);
+}
+
+/* Page 2 Split */
+.split-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+@media (max-width: 768px) {
+  .split-panel { grid-template-columns: 1fr; }
+}
+.split-side { padding: 0; }
+.split-side .chassis { height: 100%; }
+.split-side .chassis-body ul {
+  list-style: none;
+  padding: 0;
+}
+.split-side .chassis-body li {
+  font-size: clamp(10px, 1.2vw, 12px);
+  color: var(--t1);
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(24,20,32,0.4);
+  line-height: 1.5;
+}
+.split-side .chassis-body li:last-child { border-bottom: none; }
+
+/* Page 3 Chain */
+.chain-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+}
+.chain-layer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-left: 2px solid var(--border);
+  transition: border-color 0.3s;
+}
+.chain-layer:hover { border-left-color: var(--rose-dim); }
+.chain-layer .layer-num {
+  font-size: 10px;
+  color: var(--rose-dim);
+  font-family: var(--mono);
+  min-width: 20px;
+}
+.chain-layer .layer-name {
+  font-family: var(--serif);
+  font-style: italic;
+  color: #c0b0b8;
+  font-size: clamp(12px, 1.5vw, 15px);
+}
+.chain-layer .layer-desc {
+  font-size: clamp(10px, 1.1vw, 11px);
+  color: var(--t-dim);
+  margin-left: auto;
+}
+.block-compare {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.block-item {
+  font-size: 11px;
+  color: var(--t-dim);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.block-item.highlight {
+  color: var(--rose-neon);
+  border-color: var(--rose-dim);
+  background: rgba(170,112,136,0.06);
+  text-shadow: 0 0 10px rgba(220,165,189,0.2);
+}
+.cw-modules {
+  font-size: 10px;
+  color: var(--dream);
+  margin-top: 10px;
+  letter-spacing: 0.05em;
+  line-height: 1.8;
+}
+
+/* Page 4 HDC */
+.hdc-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hdc-step {
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: rgba(8,8,12,0.5);
+  cursor: pointer;
+  transition: all 0.3s;
+  opacity: 0.4;
+}
+.hdc-step.active {
+  opacity: 1;
+  border-color: var(--rose-dim);
+  background: rgba(170,112,136,0.04);
+}
+.hdc-step .step-num {
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  color: var(--rose-dim);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.hdc-step .step-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(12px, 1.4vw, 15px);
+  color: #c0b0b8;
+  margin-bottom: 6px;
+}
+.hdc-step .step-detail {
+  font-size: clamp(10px, 1.1vw, 11px);
+  color: var(--t-dim);
+  line-height: 1.6;
+}
+.hdc-step .step-code {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dream-bright);
+  background: rgba(5,5,7,0.6);
+  padding: 6px 10px;
+  margin-top: 6px;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Page 5 ISFR */
+.isfr-sources {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 14px 0;
+}
+@media (max-width: 600px) {
+  .isfr-sources { grid-template-columns: 1fr; }
+}
+.isfr-source {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: rgba(8,8,12,0.4);
+}
+.isfr-source .src-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.isfr-source .src-weight {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 20px;
+  color: var(--rose-hot);
+  margin-bottom: 4px;
+}
+.isfr-source .src-names {
+  font-size: 10px;
+  color: var(--t-dim);
+}
+
+/* Page 6 Collective */
+.slider-container {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0;
+}
+.slider-container input[type="range"] {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+}
+.slider-container input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--rose);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(170,112,136,0.4);
+}
+.slider-label {
+  font-size: 11px;
+  color: var(--rose-hot);
+  min-width: 60px;
+  text-align: right;
+  font-family: var(--mono);
+}
+</style>
+</head>
+<body>
+
+<!-- Atmospheric overlays -->
+<div class="film-grain"></div>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Block HUD -->
+<div class="block-hud" id="blockHud">
+  <span class="block-pulse"></span>
+  BLOCK <span id="blockNum">---</span>
+</div>
+
+<!-- Page 0: Hero -->
+<div class="page active" id="page0">
+  <canvas class="page-bg" id="canvas0"></canvas>
+  <div class="page-content hero-center">
+    <h1 class="rose-em">Nunchi</h1>
+    <div class="subtitle" style="margin-top: 4px;">Agent Coordination Plane</div>
+    <p class="body-text" style="max-width: 560px; margin-top: 20px; text-align: center; color: var(--t1);">
+      The infrastructure layer between AI models and the applications they power.
+    </p>
+  </div>
+  <div class="hero-bottom">
+    <span class="mono-tag">Series A &middot; 2026</span>
+  </div>
+</div>
+
+<!-- Page 1: The Plane Between -->
+<div class="page" id="page1">
+  <canvas class="page-bg" id="canvas1"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width: 860px; margin: 0 auto;">
+      <div class="mono-tag" style="margin-bottom: 14px;">Architecture</div>
+      <h2><span class="rose-em">The plane between</span> the planes.</h2>
+      <div class="layer-stack" style="margin-top: 24px;">
+        <div class="layer-band app">
+          <div class="layer-label" style="color: var(--dream-bright);">Application Layer</div>
+          <div class="layer-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</div>
+        </div>
+        <div class="layer-band nunchi">
+          <div class="layer-label" style="color: var(--rose-hot);">Agent Coordination Plane</div>
+          <div class="layer-items">Nunchi &mdash; identity, routing, knowledge, policy, settlement</div>
+        </div>
+        <div class="layer-band exec">
+          <div class="layer-label" style="color: var(--jade);">Execution Layer</div>
+          <div class="layer-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</div>
+        </div>
+      </div>
+      <p class="body-text" style="margin-top: 20px; text-align: center; color: var(--t-dim); font-size: 12px;">
+        Every adjacent layer is funded. The plane between them is empty. <span class="rose-em">Nunchi fills it.</span>
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Page 2: Two Components -->
+<div class="page" id="page2">
+  <canvas class="page-bg" id="canvas2"></canvas>
+  <div class="page-content">
+    <div class="mono-tag" style="margin-bottom: 10px; text-align: center;">Architecture</div>
+    <h2 style="text-align: center;">Two components. <span class="rose-em">One architecture.</span></h2>
+    <div class="split-panel" style="margin-top: 20px;">
+      <div class="split-side">
+        <div class="chassis">
+          <div class="head"><span>Roko &middot; Runtime</span><span class="led"></span></div>
+          <div class="chassis-body">
+            <div style="font-size: 10px; color: var(--jade); margin-bottom: 10px; letter-spacing: 0.15em;">OPEN SOURCE &middot; APACHE 2.0</div>
+            <p class="body-text" style="font-size: 11px; margin-bottom: 10px;">The cognitive runtime that turns a model call into a governed event.</p>
+            <ul>
+              <li>18 crates, 177K lines of Rust</li>
+              <li>CascadeRouter &mdash; cost-aware model routing</li>
+              <li>11 gates, 7 rungs between every call</li>
+              <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+              <li>Deterministic replay</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="split-side">
+        <div class="chassis">
+          <div class="head"><span>Nunchi Chain &middot; Substrate</span><span class="led"></span></div>
+          <div class="chassis-body">
+            <div style="font-size: 10px; color: var(--rose-dim); margin-bottom: 10px; letter-spacing: 0.15em;">VERIFIABLE &middot; SOVEREIGN L1</div>
+            <p class="body-text" style="font-size: 11px; margin-bottom: 10px;">Agent-native sovereign EVM L1 built on Commonware.</p>
+            <ul>
+              <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+              <li>HDC precompile at 0x09 &mdash; native semantic search</li>
+              <li>ISFR Oracle &mdash; DeFi benchmark by validators</li>
+              <li>Knowledge demurrage &mdash; exponential decay</li>
+              <li>Commonware: $9M, Haun + Dragonfly</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="body-text" style="margin-top: 18px; text-align: center; font-size: 11px; color: var(--t-dim); max-width: 700px; margin-left: auto; margin-right: auto;">
+      Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.
+    </p>
+  </div>
+</div>
+
+<!-- Page 3: Chain Architecture -->
+<div class="page" id="page3">
+  <canvas class="page-bg" id="canvas3"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width: 820px; margin: 0 auto;">
+      <div class="mono-tag" style="margin-bottom: 10px;">Chain</div>
+      <h2>Built on <span class="rose-em">Commonware.</span></h2>
+      <p class="body-text" style="font-size: 11px; color: var(--t-dim); margin-bottom: 16px;">Not a framework. An anti-framework. Pick-and-choose Rust primitives.</p>
+      <div class="chain-layers">
+        <div class="chain-layer">
+          <span class="layer-num">01</span>
+          <span class="layer-name">P2P (authenticated)</span>
+          <span class="layer-desc">Encrypted validator communication</span>
+        </div>
+        <div class="chain-layer">
+          <span class="layer-num">02</span>
+          <span class="layer-name">Consensus (Simplex BFT)</span>
+          <span class="layer-desc">2 hops notarize, 3 hops finalize</span>
+        </div>
+        <div class="chain-layer">
+          <span class="layer-num">03</span>
+          <span class="layer-name">Execution (revm)</span>
+          <span class="layer-desc">Full EVM, Block-STM parallel</span>
+        </div>
+        <div class="chain-layer">
+          <span class="layer-num">04</span>
+          <span class="layer-name">Native Precompiles</span>
+          <span class="layer-desc">Agent Registry (0x08) &middot; HDC (0x09) &middot; ISFR (0xA01)</span>
+        </div>
+        <div class="chain-layer">
+          <span class="layer-num">05</span>
+          <span class="layer-name">Knowledge Layer</span>
+          <span class="layer-desc">InsightEntry, Merkle tree, demurrage</span>
+        </div>
+      </div>
+      <div class="cw-modules">
+        <code>p2p::authenticated</code> &middot; <code>cryptography::bls12381</code> &middot; <code>runtime::deterministic</code> &middot; <code>consensus::simplex</code>
+      </div>
+      <div class="block-compare" style="margin-top: 16px;">
+        <div class="block-item">Ethereum: 12s</div>
+        <div class="block-item">Solana: 400ms</div>
+        <div class="block-item">Sui: ~390ms</div>
+        <div class="block-item highlight">Nunchi: ~50ms</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 4: HDC Interactive -->
+<div class="page" id="page4">
+  <canvas class="page-bg" id="canvas4"></canvas>
+  <div class="page-content" style="display: flex; gap: 28px; max-width: 1100px; align-items: flex-start;">
+    <div style="flex: 1; min-width: 0;">
+      <div class="mono-tag" style="margin-bottom: 10px;">Technology</div>
+      <h2><span class="rose-em">Hyperdimensional</span> Computing</h2>
+      <div class="hdc-steps" style="margin-top: 16px;" id="hdcSteps">
+        <div class="hdc-step active" data-step="0" onclick="setHdcStep(0)">
+          <div class="step-num">Step 1</div>
+          <div class="step-title">Agent finds a transaction</div>
+          <div class="step-code">swap(USDC -> WETH, 50,000 USDC, pool 0x88e6...)
+gas: 142,891 | block: 19,847,221</div>
+        </div>
+        <div class="hdc-step" data-step="1" onclick="setHdcStep(1)">
+          <div class="step-num">Step 2</div>
+          <div class="step-title">Encode to hypervector</div>
+          <div class="step-detail">Each concept gets a random 10,000-bit base vector. Bind: swap XOR USDC XOR WETH. Permute for sequence. Bundle via majority vote.</div>
+        </div>
+        <div class="hdc-step" data-step="2" onclick="setHdcStep(2)">
+          <div class="step-num">Step 3</div>
+          <div class="step-title">Post to chain</div>
+          <div class="step-detail">InsightEntry { content, hypervector (1,250 bytes), decay params } &rarr; Validator &rarr; sm_root updated</div>
+        </div>
+        <div class="hdc-step" data-step="3" onclick="setHdcStep(3)">
+          <div class="step-num">Step 4</div>
+          <div class="step-title">Future agent searches</div>
+          <div class="step-detail">Query &rarr; encode to hypervector &rarr; Hamming distance search &rarr; Top-K results in 0.17ms (vs 12ms for float embeddings)</div>
+        </div>
+        <div class="hdc-step" data-step="4" onclick="setHdcStep(4)">
+          <div class="step-num">Step 5</div>
+          <div class="step-title">Results compound</div>
+          <div class="step-detail">10 confirmations = 6x half-life. Knowledge many agents verify becomes long-lived.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Page 5: ISFR -->
+<div class="page" id="page5">
+  <canvas class="page-bg" id="canvas5"></canvas>
+  <div class="page-content">
+    <div class="glass" style="max-width: 820px; margin: 0 auto;">
+      <div class="mono-tag" style="margin-bottom: 10px;">Finance</div>
+      <h2><span class="rose-em">The first</span> of many.</h2>
+      <p class="body-text" style="font-size: 12px; margin-bottom: 16px;">
+        ISFR &mdash; Internet Secured Funding Rate. A composite DeFi benchmark rate, like SOFR for the internet economy. Computed by validators every 10 seconds.
+      </p>
+      <div class="isfr-sources">
+        <div class="isfr-source">
+          <div class="src-label" style="color: var(--rose);">Lending</div>
+          <div class="src-weight">60%</div>
+          <div class="src-names">Aave &middot; Compound &middot; Spark &middot; Morpho</div>
+        </div>
+        <div class="isfr-source">
+          <div class="src-label" style="color: var(--dream-bright);">Structured</div>
+          <div class="src-weight">25%</div>
+          <div class="src-names">Pendle &middot; Spectra &middot; Term Finance</div>
+        </div>
+        <div class="isfr-source">
+          <div class="src-label" style="color: var(--warn);">Funding</div>
+          <div class="src-weight">10%</div>
+          <div class="src-names">dYdX &middot; Hyperliquid &middot; GMX</div>
+        </div>
+        <div class="isfr-source">
+          <div class="src-label" style="color: var(--jade);">Staking</div>
+          <div class="src-weight">5%</div>
+          <div class="src-names">Lido &middot; Rocket Pool &middot; Coinbase</div>
+        </div>
+      </div>
+      <p class="body-text" style="margin-top: 16px; font-size: 11px; color: var(--t-dim); text-align: center;">
+        The $668 trillion gap: traditional finance has SOFR. DeFi has nothing comparable.<br>
+        ISFR proves the pattern. Next: volatility indices, credit spreads, cross-chain rates.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Page 6: Collective Intelligence -->
+<div class="page" id="page6">
+  <canvas class="page-bg" id="canvas6"></canvas>
+  <div class="page-content" style="display: flex; flex-direction: column; align-items: center;">
+    <div class="glass" style="max-width: 640px; width: 100%;">
+      <div class="mono-tag" style="margin-bottom: 10px;">Vision</div>
+      <h2>Every agent makes <span class="rose-em">every agent smarter.</span></h2>
+      <div class="slider-container">
+        <span class="body-text" style="font-size: 10px; color: var(--t-dim);">Agents</span>
+        <input type="range" min="5" max="1000" value="5" id="agentSlider" oninput="updateAgentCount(this.value)">
+        <span class="slider-label" id="agentCount">5</span>
+      </div>
+      <p class="body-text" style="font-size: 11px; color: var(--t-dim); margin-top: 12px; text-align: center;">
+        Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents.
+        Demurrage = evaporation. Confirmation = reinforcement.
+      </p>
+      <p class="body-text" style="margin-top: 14px; text-align: center; font-size: 12px; color: var(--rose-hot);">
+        "The thousandth agent pulls 30,000 tokens of context the first agent never had."
+      </p>
+      <p class="body-text" style="margin-top: 10px; text-align: center; font-size: 10px; color: var(--t-dim);">
+        Innovation rate: superlinear &mdash; beta ~ 1.15. When agents double, output grows 115%.
+      </p>
+      <p class="body-text" style="margin-top: 14px; text-align: center; font-size: 11px; color: var(--dream-bright); font-style: italic;">
+        A forest is a single organism.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<script>
+// ─── Navigation ───
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+
+// Build nav dots
+const dotsContainer = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  dotsContainer.appendChild(dot);
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') {
+    e.preventDefault();
+    goToPage(currentPage + 1);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    goToPage(currentPage - 1);
+  } else if (e.key === 'ArrowDown') {
+    // HDC step advance on page 4
+    if (currentPage === 4) {
+      e.preventDefault();
+      setHdcStep(Math.min(hdcStep + 1, 4));
+    }
+  } else if (e.key === 'ArrowUp') {
+    if (currentPage === 4) {
+      e.preventDefault();
+      setHdcStep(Math.max(hdcStep - 1, 0));
+    }
+  }
+});
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+// ─── Mirage Block Polling ───
+let blockNumber = 0;
+let blockModulation = 0;
+
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      document.getElementById('blockNum').textContent = n;
+      const hud = document.getElementById('blockHud');
+      hud.classList.add('visible');
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  // Pulse effect handled by block modulation in render loops
+}
+
+// ─── HDC Steps ───
+let hdcStep = 0;
+function setHdcStep(s) {
+  hdcStep = s;
+  document.querySelectorAll('.hdc-step').forEach((el, i) => {
+    el.classList.toggle('active', i <= s);
+  });
+}
+
+// ─── Agent Slider ───
+let agentCount = 5;
+function updateAgentCount(v) {
+  agentCount = parseInt(v);
+  document.getElementById('agentCount').textContent = v;
+}
+
+// ─── Page Enter Hook ───
+function onPageEnter(idx) {
+  // Any per-page init
+}
+
+// ═══════════════════════════════════════════════════
+// MYCELIUM RENDERING ENGINE
+// Canvas 2D organic branching + spore system
+// ═══════════════════════════════════════════════════
+
+// Shared colors
+const ROSE_GOLD = { r: 200, g: 140, b: 160 };
+const ROSE_NEON = { r: 220, g: 165, b: 189 };
+const BONE = { r: 200, g: 184, b: 144 };
+const JADE = { r: 112, g: 136, b: 122 };
+const DREAM = { r: 88, g: 88, b: 120 };
+const VOID = { r: 5, g: 5, b: 7 };
+
+// ─── Utility ───
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function dist(x1, y1, x2, y2) { return Math.sqrt((x2-x1)**2 + (y2-y1)**2); }
+
+// ─── Mycelium Branch class ───
+class Branch {
+  constructor(x, y, angle, len, depth, maxDepth, color, thickness) {
+    this.x = x;
+    this.y = y;
+    this.angle = angle;
+    this.len = len;
+    this.depth = depth;
+    this.maxDepth = maxDepth;
+    this.color = color || ROSE_GOLD;
+    this.thickness = thickness || 1.5;
+    this.grown = 0; // 0..1
+    this.growSpeed = rand(0.003, 0.012);
+    this.children = [];
+    this.spawnedChildren = false;
+    this.endX = x + Math.cos(angle) * len;
+    this.endY = y + Math.sin(angle) * len;
+    this.wobble = rand(0, Math.PI * 2);
+    this.wobbleAmp = rand(0.5, 2);
+    this.nutrientFlow = 0;
+    this.nutrientPhase = rand(0, Math.PI * 2);
+  }
+
+  update(dt) {
+    if (this.grown < 1) {
+      this.grown = Math.min(1, this.grown + this.growSpeed * dt);
+    }
+    this.nutrientFlow = 0.3 + 0.7 * Math.sin(performance.now() * 0.001 + this.nutrientPhase) * 0.5 + 0.5;
+    this.wobble += 0.01 * dt;
+
+    if (this.grown > 0.8 && !this.spawnedChildren && this.depth < this.maxDepth) {
+      this.spawnedChildren = true;
+      const numChildren = this.depth < 3 ? Math.floor(rand(2, 4)) : Math.floor(rand(1, 3));
+      for (let i = 0; i < numChildren; i++) {
+        const spread = rand(0.3, 0.8) * (Math.random() < 0.5 ? 1 : -1);
+        const childAngle = this.angle + spread;
+        const childLen = this.len * rand(0.55, 0.8);
+        const childThick = this.thickness * 0.7;
+        const child = new Branch(
+          this.endX, this.endY, childAngle, childLen,
+          this.depth + 1, this.maxDepth, this.color, childThick
+        );
+        child.growSpeed = rand(0.002, 0.008);
+        this.children.push(child);
+      }
+    }
+
+    for (const c of this.children) c.update(dt);
+  }
+
+  draw(ctx, alpha) {
+    if (this.grown <= 0) return;
+
+    const progress = this.grown;
+    const cx = lerp(this.x, this.endX, progress);
+    const cy = lerp(this.y, this.endY, progress);
+
+    // Main hypha
+    const a = alpha * (0.3 + 0.7 * (1 - this.depth / this.maxDepth));
+    const na = a * this.nutrientFlow;
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y);
+
+    // Slight organic wobble via quadratic curve
+    const midX = (this.x + cx) / 2 + Math.sin(this.wobble) * this.wobbleAmp;
+    const midY = (this.y + cy) / 2 + Math.cos(this.wobble) * this.wobbleAmp;
+    ctx.quadraticCurveTo(midX, midY, cx, cy);
+
+    ctx.strokeStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${na})`;
+    ctx.lineWidth = this.thickness * (1 - this.depth * 0.1 / this.maxDepth);
+    ctx.stroke();
+
+    // Glow on main branches
+    if (this.depth < 3 && this.thickness > 0.8) {
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.quadraticCurveTo(midX, midY, cx, cy);
+      ctx.strokeStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${na * 0.15})`;
+      ctx.lineWidth = this.thickness * 3;
+      ctx.stroke();
+    }
+
+    // Junction node
+    if (this.grown > 0.95 && this.children.length > 0) {
+      ctx.beginPath();
+      ctx.arc(this.endX, this.endY, this.thickness * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${a * 0.4})`;
+      ctx.fill();
+    }
+
+    for (const c of this.children) c.draw(ctx, alpha);
+  }
+}
+
+// ─── Spore class ───
+class Spore {
+  constructor(x, y, color) {
+    this.x = x;
+    this.y = y;
+    this.vx = rand(-0.3, 0.3);
+    this.vy = rand(-0.8, -0.2);
+    this.life = 1;
+    this.decay = rand(0.002, 0.008);
+    this.size = rand(1, 3);
+    this.color = color || BONE;
+    this.wobble = rand(0, Math.PI * 2);
+  }
+
+  update(dt) {
+    this.x += this.vx * dt + Math.sin(this.wobble) * 0.1;
+    this.y += this.vy * dt;
+    this.vy *= 0.999;
+    this.wobble += 0.02 * dt;
+    this.life -= this.decay * dt;
+  }
+
+  draw(ctx) {
+    if (this.life <= 0) return;
+    const a = this.life * 0.6;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${a})`;
+    ctx.fill();
+    // Tiny glow
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${a * 0.1})`;
+    ctx.fill();
+  }
+}
+
+// ─── Fruiting Body (mushroom) ───
+class FruitingBody {
+  constructor(x, y, size) {
+    this.x = x;
+    this.y = y;
+    this.size = size;
+    this.grown = 0;
+    this.growSpeed = rand(0.001, 0.004);
+    this.sporeTimer = 0;
+    this.spores = [];
+    this.pulsePhase = rand(0, Math.PI * 2);
+  }
+
+  update(dt) {
+    if (this.grown < 1) this.grown = Math.min(1, this.grown + this.growSpeed * dt);
+    this.pulsePhase += 0.02 * dt;
+    this.sporeTimer += dt;
+
+    if (this.grown > 0.9 && this.sporeTimer > 80) {
+      this.sporeTimer = 0;
+      if (this.spores.length < 8) {
+        this.spores.push(new Spore(
+          this.x + rand(-this.size, this.size),
+          this.y - this.size * this.grown * 1.5,
+          BONE
+        ));
+      }
+    }
+
+    this.spores = this.spores.filter(s => s.life > 0);
+    for (const s of this.spores) s.update(dt);
+  }
+
+  draw(ctx) {
+    if (this.grown <= 0) return;
+    const g = this.grown;
+    const pulse = 1 + Math.sin(this.pulsePhase) * 0.05;
+    const sz = this.size * g * pulse;
+
+    // Stem
+    ctx.beginPath();
+    ctx.moveTo(this.x - sz * 0.15, this.y);
+    ctx.lineTo(this.x + sz * 0.15, this.y);
+    ctx.lineTo(this.x + sz * 0.1, this.y - sz * 1.2);
+    ctx.lineTo(this.x - sz * 0.1, this.y - sz * 1.2);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${BONE.r},${BONE.g},${BONE.b},${g * 0.3})`;
+    ctx.fill();
+
+    // Cap
+    ctx.beginPath();
+    ctx.ellipse(this.x, this.y - sz * 1.2, sz * 0.8, sz * 0.5, 0, Math.PI, 0);
+    ctx.fillStyle = `rgba(${ROSE_GOLD.r},${ROSE_GOLD.g},${ROSE_GOLD.b},${g * 0.4})`;
+    ctx.fill();
+
+    // Glow
+    ctx.beginPath();
+    ctx.ellipse(this.x, this.y - sz * 1.2, sz * 1.5, sz * 1, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${ROSE_NEON.r},${ROSE_NEON.g},${ROSE_NEON.b},${g * 0.05})`;
+    ctx.fill();
+
+    for (const s of this.spores) s.draw(ctx);
+  }
+}
+
+// ─── Nutrient Packet (flows along hyphae) ───
+class NutrientPacket {
+  constructor(startX, startY, endX, endY, color) {
+    this.sx = startX;
+    this.sy = startY;
+    this.ex = endX;
+    this.ey = endY;
+    this.t = 0;
+    this.speed = rand(0.005, 0.015);
+    this.color = color || ROSE_NEON;
+    this.size = rand(1.5, 3);
+  }
+
+  update(dt) {
+    this.t += this.speed * dt;
+  }
+
+  draw(ctx) {
+    if (this.t > 1) return;
+    const x = lerp(this.sx, this.ex, this.t);
+    const y = lerp(this.sy, this.ey, this.t);
+    const a = Math.sin(this.t * Math.PI) * 0.8;
+    ctx.beginPath();
+    ctx.arc(x, y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${a})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, this.size * 3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${this.color.r},${this.color.g},${this.color.b},${a * 0.1})`;
+    ctx.fill();
+  }
+}
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 0: Hero — Mycelium growing from center
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas0');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let branches = [];
+  let fruitingBodies = [];
+  let spores = [];
+  let packets = [];
+  let initialized = false;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    if (!initialized) init();
+  }
+
+  function init() {
+    initialized = true;
+    branches = [];
+    fruitingBodies = [];
+    spores = [];
+    packets = [];
+
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Central mycelium radiating outward
+    const numArms = 12;
+    for (let i = 0; i < numArms; i++) {
+      const angle = (Math.PI * 2 / numArms) * i + rand(-0.2, 0.2);
+      const len = rand(h * 0.15, h * 0.3);
+      const b = new Branch(cx, cy, angle, len, 0, 6, ROSE_GOLD, 2);
+      b.growSpeed = rand(0.002, 0.006);
+      branches.push(b);
+    }
+
+    // Fruiting body at center (Nunchi)
+    fruitingBodies.push(new FruitingBody(cx, cy + 20, 24));
+
+    // A few more scattered
+    for (let i = 0; i < 3; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const r = rand(100, 200);
+      fruitingBodies.push(new FruitingBody(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, rand(10, 16)));
+    }
+  }
+
+  function spawnSpore() {
+    if (spores.length > 40) return;
+    const b = branches[Math.floor(Math.random() * branches.length)];
+    if (b && b.grown > 0.5) {
+      spores.push(new Spore(b.endX, b.endY, BONE));
+    }
+  }
+
+  function spawnPacket() {
+    if (packets.length > 20) return;
+    const b = branches[Math.floor(Math.random() * branches.length)];
+    if (b && b.grown > 0.3) {
+      packets.push(new NutrientPacket(b.x, b.y, b.endX, b.endY, ROSE_NEON));
+    }
+  }
+
+  let frameCount = 0;
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.08)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    if (frameCount % 15 === 0) spawnSpore();
+    if (frameCount % 25 === 0) spawnPacket();
+
+    const dt = 1;
+    const pulseAlpha = 1 + blockModulation * 0.3;
+
+    for (const b of branches) {
+      b.update(dt);
+      b.draw(ctx, 0.7 * pulseAlpha);
+    }
+
+    for (const fb of fruitingBodies) {
+      fb.update(dt);
+      fb.draw(ctx);
+    }
+
+    spores = spores.filter(s => s.life > 0);
+    for (const s of spores) {
+      s.update(dt);
+      s.draw(ctx);
+    }
+
+    packets = packets.filter(p => p.t <= 1);
+    for (const p of packets) {
+      p.update(dt);
+      p.draw(ctx);
+    }
+
+    // Subtle center glow
+    const grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, 120);
+    grad.addColorStop(0, `rgba(220,165,189,${0.03 * pulseAlpha})`);
+    grad.addColorStop(1, 'transparent');
+    ctx.fillStyle = grad;
+    ctx.fillRect(w/2 - 150, h/2 - 150, 300, 300);
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 1: Plane Between — Three root layers cross-section
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas1');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  // Root fibers connecting layers
+  let fibers = [];
+  let flowDots = [];
+
+  function initFibers() {
+    fibers = [];
+    flowDots = [];
+    const topY = h * 0.28;
+    const midY = h * 0.48;
+    const botY = h * 0.68;
+
+    // Surface roots (app layer)
+    for (let i = 0; i < 20; i++) {
+      const x = rand(w * 0.1, w * 0.9);
+      fibers.push({
+        x1: x + rand(-30, 30), y1: topY + rand(-20, 10),
+        x2: x + rand(-20, 20), y2: midY + rand(-10, 10),
+        color: DREAM, thickness: rand(0.5, 1.2), phase: rand(0, Math.PI * 2)
+      });
+    }
+
+    // Dense mycelium mat (middle)
+    for (let i = 0; i < 40; i++) {
+      const x = rand(w * 0.05, w * 0.95);
+      const x2 = x + rand(-80, 80);
+      fibers.push({
+        x1: x, y1: midY + rand(-15, 15),
+        x2: x2, y2: midY + rand(-15, 15),
+        color: ROSE_GOLD, thickness: rand(0.3, 1.5), phase: rand(0, Math.PI * 2)
+      });
+    }
+
+    // Deep roots (execution layer)
+    for (let i = 0; i < 15; i++) {
+      const x = rand(w * 0.1, w * 0.9);
+      fibers.push({
+        x1: x + rand(-20, 20), y1: midY + rand(-10, 10),
+        x2: x + rand(-40, 40), y2: botY + rand(-10, 20),
+        color: JADE, thickness: rand(0.5, 1), phase: rand(0, Math.PI * 2)
+      });
+    }
+  }
+
+  let frameCount = 0;
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.06)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+
+    // Draw soil bands (very subtle)
+    const topY = h * 0.28;
+    const midY = h * 0.48;
+    const botY = h * 0.68;
+
+    // Draw fibers
+    for (const f of fibers) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.5 + f.phase);
+      const a = 0.15 + 0.15 * pulse + blockModulation * 0.2;
+      ctx.beginPath();
+      const mx = (f.x1 + f.x2) / 2 + Math.sin(t + f.phase) * 5;
+      const my = (f.y1 + f.y2) / 2 + Math.cos(t * 0.7 + f.phase) * 3;
+      ctx.moveTo(f.x1, f.y1);
+      ctx.quadraticCurveTo(mx, my, f.x2, f.y2);
+      ctx.strokeStyle = `rgba(${f.color.r},${f.color.g},${f.color.b},${a})`;
+      ctx.lineWidth = f.thickness;
+      ctx.stroke();
+    }
+
+    // Nutrient flow dots
+    if (frameCount % 8 === 0 && flowDots.length < 30) {
+      const f = fibers[Math.floor(Math.random() * fibers.length)];
+      flowDots.push({
+        sx: f.x1, sy: f.y1, ex: f.x2, ey: f.y2,
+        t: 0, speed: rand(0.005, 0.015), color: f.color, size: rand(1, 2.5)
+      });
+    }
+
+    flowDots = flowDots.filter(d => d.t <= 1);
+    for (const d of flowDots) {
+      d.t += d.speed;
+      const x = lerp(d.sx, d.ex, d.t);
+      const y = lerp(d.sy, d.ey, d.t);
+      const a = Math.sin(d.t * Math.PI) * 0.7;
+      ctx.beginPath();
+      ctx.arc(x, y, d.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${d.color.r},${d.color.g},${d.color.b},${a})`;
+      ctx.fill();
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', () => { resize(); initFibers(); });
+  resize();
+  initFibers();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 2: Two Components — Two trees connected underground
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas2');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let leftTree = [];
+  let rightTree = [];
+  let underground = [];
+  let sapFlows = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    initTrees();
+  }
+
+  function buildTree(x, y, angle, len, depth, maxDepth, color) {
+    if (depth > maxDepth || len < 3) return [];
+    const result = [];
+    const ex = x + Math.cos(angle) * len;
+    const ey = y + Math.sin(angle) * len;
+    result.push({ x1: x, y1: y, x2: ex, y2: ey, depth, maxDepth, color, phase: rand(0, Math.PI * 2) });
+
+    const spread = rand(0.3, 0.6);
+    const shrink = rand(0.6, 0.78);
+    result.push(...buildTree(ex, ey, angle - spread, len * shrink, depth + 1, maxDepth, color));
+    result.push(...buildTree(ex, ey, angle + spread, len * shrink, depth + 1, maxDepth, color));
+    if (Math.random() < 0.3 && depth < maxDepth - 1) {
+      result.push(...buildTree(ex, ey, angle + rand(-0.15, 0.15), len * shrink * 0.9, depth + 1, maxDepth, color));
+    }
+    return result;
+  }
+
+  function initTrees() {
+    const groundY = h * 0.55;
+    const leftX = w * 0.3;
+    const rightX = w * 0.7;
+
+    // Roko tree (dynamic, younger)
+    leftTree = buildTree(leftX, groundY, -Math.PI/2, h * 0.12, 0, 7, JADE);
+
+    // Chain tree (ancient, massive)
+    rightTree = buildTree(rightX, groundY, -Math.PI/2, h * 0.15, 0, 8, ROSE_GOLD);
+
+    // Underground mycelium connecting them
+    underground = [];
+    for (let i = 0; i < 30; i++) {
+      const x1 = leftX + rand(-80, 80);
+      const x2 = rightX + rand(-80, 80);
+      const y = groundY + rand(20, h * 0.3);
+      const mx = (x1 + x2) / 2 + rand(-50, 50);
+      const my = y + rand(-20, 20);
+      underground.push({ x1, y1: y, mx, my, x2, y2: y + rand(-15, 15), phase: rand(0, Math.PI * 2) });
+    }
+    sapFlows = [];
+  }
+
+  let frameCount = 0;
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.07)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+    const groundY = h * 0.55;
+    const pa = 1 + blockModulation * 0.2;
+
+    // Subtle ground line
+    ctx.beginPath();
+    ctx.moveTo(0, groundY);
+    ctx.lineTo(w, groundY);
+    ctx.strokeStyle = `rgba(${ROSE_GOLD.r},${ROSE_GOLD.g},${ROSE_GOLD.b},0.06)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Draw trees
+    function drawTreeSegments(segments) {
+      for (const s of segments) {
+        const thick = Math.max(0.3, (1 - s.depth / s.maxDepth) * 2.5);
+        const a = (0.15 + 0.25 * (1 - s.depth / s.maxDepth)) * pa;
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y1);
+        ctx.lineTo(s.x2, s.y2);
+        ctx.strokeStyle = `rgba(${s.color.r},${s.color.g},${s.color.b},${a})`;
+        ctx.lineWidth = thick;
+        ctx.stroke();
+      }
+    }
+
+    drawTreeSegments(leftTree);
+    drawTreeSegments(rightTree);
+
+    // Underground mycelium
+    for (const u of underground) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.4 + u.phase);
+      const a = (0.08 + 0.08 * pulse) * pa;
+      ctx.beginPath();
+      ctx.moveTo(u.x1, u.y1);
+      ctx.quadraticCurveTo(u.mx, u.my, u.x2, u.y2);
+      ctx.strokeStyle = `rgba(${ROSE_GOLD.r},${ROSE_GOLD.g},${ROSE_GOLD.b},${a})`;
+      ctx.lineWidth = rand(0.3, 1);
+      ctx.stroke();
+    }
+
+    // Sap flow packets
+    if (frameCount % 12 === 0 && sapFlows.length < 20) {
+      const u = underground[Math.floor(Math.random() * underground.length)];
+      const goRight = Math.random() < 0.5;
+      sapFlows.push({
+        sx: goRight ? u.x1 : u.x2,
+        sy: goRight ? u.y1 : u.y2,
+        ex: goRight ? u.x2 : u.x1,
+        ey: goRight ? u.y2 : u.y1,
+        t: 0, speed: rand(0.004, 0.012), size: rand(1, 2.5)
+      });
+    }
+
+    sapFlows = sapFlows.filter(s => s.t <= 1);
+    for (const s of sapFlows) {
+      s.t += s.speed;
+      const x = lerp(s.sx, s.ex, s.t);
+      const y = lerp(s.sy, s.ey, s.t);
+      const a = Math.sin(s.t * Math.PI) * 0.6;
+      ctx.beginPath();
+      ctx.arc(x, y, s.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${ROSE_NEON.r},${ROSE_NEON.g},${ROSE_NEON.b},${a})`;
+      ctx.fill();
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 3: Chain Architecture — Root cross-section
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas3');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let particles = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    initParticles();
+  }
+
+  function initParticles() {
+    particles = [];
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Concentric rings representing root cross-section layers
+    const layers = [
+      { radius: 180, count: 60, color: DREAM, label: 'bark (P2P)' },          // outer
+      { radius: 140, count: 50, color: ROSE_GOLD, label: 'cambium (consensus)' },
+      { radius: 100, count: 40, color: JADE, label: 'sapwood (execution)' },
+      { radius: 60, count: 25, color: ROSE_NEON, label: 'heartwood (precompiles)' },
+      { radius: 25, count: 12, color: BONE, label: 'root tips (knowledge)' },
+    ];
+
+    for (const layer of layers) {
+      for (let i = 0; i < layer.count; i++) {
+        const angle = (Math.PI * 2 / layer.count) * i + rand(-0.1, 0.1);
+        const r = layer.radius + rand(-8, 8);
+        particles.push({
+          x: cx + Math.cos(angle) * r,
+          y: cy + Math.sin(angle) * r,
+          baseAngle: angle,
+          baseR: r,
+          cx, cy,
+          color: layer.color,
+          size: rand(1, 2.5),
+          orbitSpeed: rand(0.0003, 0.001) * (Math.random() < 0.5 ? 1 : -1),
+          phase: rand(0, Math.PI * 2),
+          breathAmp: rand(2, 6)
+        });
+      }
+    }
+
+    // Soil nutrient particles (Commonware)
+    for (let i = 0; i < 40; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const r = rand(200, Math.min(w, h) * 0.4);
+      particles.push({
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+        baseAngle: angle,
+        baseR: r,
+        cx, cy,
+        color: { r: 138, g: 122, b: 90 },
+        size: rand(0.5, 1.5),
+        orbitSpeed: rand(0.0001, 0.0005) * (Math.random() < 0.5 ? 1 : -1),
+        phase: rand(0, Math.PI * 2),
+        breathAmp: rand(3, 10),
+        isSoil: true
+      });
+    }
+  }
+
+  let frameCount = 0;
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.06)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+    const pa = 1 + blockModulation * 0.3;
+
+    for (const p of particles) {
+      p.baseAngle += p.orbitSpeed;
+      const breath = Math.sin(t * 0.5 + p.phase) * p.breathAmp;
+      const r = p.baseR + breath;
+      p.x = p.cx + Math.cos(p.baseAngle) * r;
+      p.y = p.cy + Math.sin(p.baseAngle) * r;
+
+      const a = p.isSoil ? 0.15 * pa : (0.25 + 0.15 * Math.sin(t + p.phase)) * pa;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${p.color.r},${p.color.g},${p.color.b},${a})`;
+      ctx.fill();
+
+      if (!p.isSoil && p.size > 1.5) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${p.color.r},${p.color.g},${p.color.b},${a * 0.08})`;
+        ctx.fill();
+      }
+    }
+
+    // Ring outlines (very subtle)
+    const cx = w / 2;
+    const cy = h / 2;
+    const radii = [180, 140, 100, 60, 25];
+    const rColors = [DREAM, ROSE_GOLD, JADE, ROSE_NEON, BONE];
+    for (let i = 0; i < radii.length; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, radii[i], 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${rColors[i].r},${rColors[i].g},${rColors[i].b},0.06)`;
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 4: HDC — Spore dispersal
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas4');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let sporeClouds = [];
+  let bitParticles = [];
+  let searchSignals = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  function emitSporeCloud(x, y, count, color) {
+    for (let i = 0; i < count; i++) {
+      sporeClouds.push({
+        x, y,
+        vx: rand(-2, 2),
+        vy: rand(-3, -0.5),
+        life: 1,
+        decay: rand(0.003, 0.008),
+        size: rand(1, 4),
+        color: color || BONE,
+        wobble: rand(0, Math.PI * 2),
+        hasData: Math.random() < 0.4 // carries "genetic information"
+      });
+    }
+  }
+
+  function emitBitParticles(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      bitParticles.push({
+        x: x + rand(-20, 20),
+        y: y + rand(-10, 10),
+        targetX: rand(w * 0.6, w * 0.9),
+        targetY: rand(h * 0.2, h * 0.8),
+        t: 0,
+        speed: rand(0.003, 0.01),
+        val: Math.random() < 0.5 ? '0' : '1',
+        color: ROSE_NEON
+      });
+    }
+  }
+
+  function emitSearchSignal(x, y) {
+    searchSignals.push({
+      x, y, radius: 0,
+      maxRadius: 300,
+      speed: 2,
+      life: 1
+    });
+  }
+
+  let frameCount = 0;
+  let lastHdcStep = -1;
+
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.07)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+    const pa = 1 + blockModulation * 0.2;
+
+    // React to HDC step changes
+    if (hdcStep !== lastHdcStep) {
+      lastHdcStep = hdcStep;
+      const emitX = w * 0.3;
+      const emitY = h * 0.5;
+      if (hdcStep === 0) {
+        // Transaction found — small spore burst
+        emitSporeCloud(emitX, emitY, 15, BONE);
+      } else if (hdcStep === 1) {
+        // Encode — bit particles flying
+        emitBitParticles(emitX, emitY, 30);
+        emitSporeCloud(emitX, emitY, 20, ROSE_NEON);
+      } else if (hdcStep === 2) {
+        // Post to chain — spores landing
+        emitSporeCloud(w * 0.7, h * 0.5, 25, JADE);
+      } else if (hdcStep === 3) {
+        // Search — chemical signal wave
+        emitSearchSignal(w * 0.5, h * 0.5);
+        emitSporeCloud(w * 0.5, h * 0.5, 10, ROSE_NEON);
+      } else if (hdcStep === 4) {
+        // Compound — massive spore release
+        emitSporeCloud(w * 0.5, h * 0.3, 40, BONE);
+        emitSporeCloud(w * 0.5, h * 0.5, 30, ROSE_GOLD);
+      }
+    }
+
+    // Ambient background mycelium
+    if (frameCount % 60 === 0) {
+      emitSporeCloud(rand(0, w), rand(0, h), 3, { r: 100, g: 80, b: 90 });
+    }
+
+    // Draw subtle background hyphae
+    ctx.save();
+    ctx.globalAlpha = 0.04;
+    for (let i = 0; i < 8; i++) {
+      const sx = w * 0.1 + (w * 0.8 / 8) * i;
+      const sy = h * 0.9;
+      drawHypha(ctx, sx, sy, -Math.PI / 2 + rand(-0.3, 0.3), h * 0.15, 4, ROSE_GOLD, t);
+    }
+    ctx.restore();
+
+    // Spore clouds
+    sporeClouds = sporeClouds.filter(s => s.life > 0);
+    for (const s of sporeClouds) {
+      s.x += s.vx + Math.sin(s.wobble) * 0.3;
+      s.y += s.vy;
+      s.vy *= 0.995;
+      s.vx *= 0.99;
+      s.wobble += 0.03;
+      s.life -= s.decay;
+
+      const a = s.life * 0.6 * pa;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${s.color.r},${s.color.g},${s.color.b},${a})`;
+      ctx.fill();
+
+      if (s.hasData && s.size > 2) {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${s.color.r},${s.color.g},${s.color.b},${a * 0.1})`;
+        ctx.fill();
+      }
+    }
+
+    // Bit particles
+    bitParticles = bitParticles.filter(b => b.t <= 1);
+    for (const b of bitParticles) {
+      b.t += b.speed;
+      const x = lerp(b.x, b.targetX, b.t);
+      const y = lerp(b.y, b.targetY, b.t) + Math.sin(b.t * Math.PI * 3) * 10;
+      const a = Math.sin(b.t * Math.PI) * 0.8;
+      ctx.font = '9px JetBrains Mono';
+      ctx.fillStyle = `rgba(${b.color.r},${b.color.g},${b.color.b},${a})`;
+      ctx.fillText(b.val, x, y);
+    }
+
+    // Search signals (expanding rings)
+    searchSignals = searchSignals.filter(s => s.life > 0);
+    for (const s of searchSignals) {
+      s.radius += s.speed;
+      s.life = 1 - s.radius / s.maxRadius;
+      if (s.life <= 0) continue;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${ROSE_NEON.r},${ROSE_NEON.g},${ROSE_NEON.b},${s.life * 0.3})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  function drawHypha(ctx, x, y, angle, len, depth, color, t) {
+    if (depth <= 0 || len < 5) return;
+    const ex = x + Math.cos(angle) * len;
+    const ey = y + Math.sin(angle) * len;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(ex, ey);
+    ctx.strokeStyle = `rgba(${color.r},${color.g},${color.b},0.5)`;
+    ctx.lineWidth = depth * 0.3;
+    ctx.stroke();
+    drawHypha(ctx, ex, ey, angle - 0.4, len * 0.7, depth - 1, color, t);
+    drawHypha(ctx, ex, ey, angle + 0.4, len * 0.7, depth - 1, color, t);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 5: ISFR — Root systems feeding central mycelium
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas5');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let rootSystems = [];
+  let nutrientFlows = [];
+  let centralHyphae = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    initRoots();
+  }
+
+  function initRoots() {
+    rootSystems = [];
+    nutrientFlows = [];
+    centralHyphae = [];
+
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // 4 DeFi source root systems at cardinal positions
+    const sources = [
+      { x: w * 0.15, y: h * 0.3, color: ROSE_GOLD, label: 'LENDING' },
+      { x: w * 0.85, y: h * 0.3, color: DREAM, label: 'STRUCTURED' },
+      { x: w * 0.15, y: h * 0.7, color: { r: 170, g: 136, b: 85 }, label: 'FUNDING' },
+      { x: w * 0.85, y: h * 0.7, color: JADE, label: 'STAKING' },
+    ];
+
+    for (const src of sources) {
+      const roots = [];
+      for (let i = 0; i < 8; i++) {
+        const angle = Math.atan2(cy - src.y, cx - src.x) + rand(-0.6, 0.6);
+        const len = rand(40, 80);
+        roots.push({
+          x1: src.x, y1: src.y,
+          x2: src.x + Math.cos(angle) * len,
+          y2: src.y + Math.sin(angle) * len,
+          color: src.color, phase: rand(0, Math.PI * 2)
+        });
+      }
+      rootSystems.push({ ...src, roots });
+    }
+
+    // Central mycelium mat
+    for (let i = 0; i < 25; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const r = rand(20, 80);
+      centralHyphae.push({
+        x1: cx + Math.cos(angle) * r * 0.3,
+        y1: cy + Math.sin(angle) * r * 0.3,
+        x2: cx + Math.cos(angle) * r,
+        y2: cy + Math.sin(angle) * r,
+        phase: rand(0, Math.PI * 2)
+      });
+    }
+  }
+
+  let frameCount = 0;
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.06)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+    const cx = w / 2;
+    const cy = h / 2;
+    const pa = 1 + blockModulation * 0.25;
+
+    // Draw source root systems
+    for (const sys of rootSystems) {
+      for (const r of sys.roots) {
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.5 + r.phase);
+        const a = (0.15 + 0.1 * pulse) * pa;
+        ctx.beginPath();
+        ctx.moveTo(r.x1, r.y1);
+        ctx.lineTo(r.x2, r.y2);
+        ctx.strokeStyle = `rgba(${r.color.r},${r.color.g},${r.color.b},${a})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Source glow
+      const grad = ctx.createRadialGradient(sys.x, sys.y, 0, sys.x, sys.y, 40);
+      grad.addColorStop(0, `rgba(${sys.color.r},${sys.color.g},${sys.color.b},0.06)`);
+      grad.addColorStop(1, 'transparent');
+      ctx.fillStyle = grad;
+      ctx.fillRect(sys.x - 50, sys.y - 50, 100, 100);
+    }
+
+    // Central mycelium
+    for (const h2 of centralHyphae) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.7 + h2.phase);
+      const a = (0.15 + 0.15 * pulse) * pa;
+      ctx.beginPath();
+      ctx.moveTo(h2.x1, h2.y1);
+      ctx.lineTo(h2.x2, h2.y2);
+      ctx.strokeStyle = `rgba(${ROSE_NEON.r},${ROSE_NEON.g},${ROSE_NEON.b},${a})`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+
+    // Central glow
+    const cGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 60);
+    cGrad.addColorStop(0, `rgba(${ROSE_NEON.r},${ROSE_NEON.g},${ROSE_NEON.b},${0.04 * pa})`);
+    cGrad.addColorStop(1, 'transparent');
+    ctx.fillStyle = cGrad;
+    ctx.fillRect(cx - 80, cy - 80, 160, 160);
+
+    // Nutrient flows from sources to center
+    if (frameCount % 10 === 0 && nutrientFlows.length < 25) {
+      const sys = rootSystems[Math.floor(Math.random() * rootSystems.length)];
+      nutrientFlows.push({
+        sx: sys.x + rand(-20, 20),
+        sy: sys.y + rand(-20, 20),
+        ex: cx + rand(-30, 30),
+        ey: cy + rand(-30, 30),
+        t: 0, speed: rand(0.004, 0.01),
+        color: sys.color,
+        size: rand(1.5, 3)
+      });
+    }
+
+    nutrientFlows = nutrientFlows.filter(n => n.t <= 1);
+    for (const n of nutrientFlows) {
+      n.t += n.speed;
+      const x = lerp(n.sx, n.ex, n.t);
+      const y = lerp(n.sy, n.ey, n.t);
+      const a = Math.sin(n.t * Math.PI) * 0.6;
+      ctx.beginPath();
+      ctx.arc(x, y, n.size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${n.color.r},${n.color.g},${n.color.b},${a})`;
+      ctx.fill();
+    }
+
+    // Flow from center outward (output to chain trunk)
+    if (frameCount % 20 === 0 && nutrientFlows.length < 30) {
+      const angle = rand(-Math.PI * 0.3, Math.PI * 0.3) - Math.PI / 2;
+      nutrientFlows.push({
+        sx: cx + rand(-10, 10),
+        sy: cy + rand(-10, 10),
+        ex: cx + Math.cos(angle) * 150,
+        ey: cy + Math.sin(angle) * 150,
+        t: 0, speed: rand(0.005, 0.012),
+        color: ROSE_NEON,
+        size: rand(2, 4)
+      });
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  render();
+})();
+
+
+// ═══════════════════════════════════════════════════
+// PAGE 6: Collective — Forest growth with mycelium
+// ═══════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('canvas6');
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  let allTrees = [];
+  let myceliumNet = [];
+  let forestSpores = [];
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  function buildSimpleTree(x, groundY, height, depth, color) {
+    const segs = [];
+    function branch(px, py, angle, len, d) {
+      if (d > depth || len < 2) return;
+      const ex = px + Math.cos(angle) * len;
+      const ey = py + Math.sin(angle) * len;
+      segs.push({ x1: px, y1: py, x2: ex, y2: ey, d, depth, color });
+      branch(ex, ey, angle - rand(0.3, 0.6), len * rand(0.6, 0.75), d + 1);
+      branch(ex, ey, angle + rand(0.3, 0.6), len * rand(0.6, 0.75), d + 1);
+    }
+    branch(x, groundY, -Math.PI / 2, height, 0);
+    return segs;
+  }
+
+  function regenerateForest() {
+    allTrees = [];
+    myceliumNet = [];
+    const groundY = h * 0.72;
+    const count = Math.max(1, Math.min(agentCount, 1000));
+
+    // Map agent count to tree count (logarithmic)
+    const numTrees = Math.floor(Math.log2(count + 1) * 3) + 1;
+    const treePositions = [];
+
+    for (let i = 0; i < numTrees; i++) {
+      const x = w * 0.1 + (w * 0.8 / Math.max(numTrees - 1, 1)) * i + rand(-20, 20);
+      const treeHeight = rand(h * 0.05, h * 0.15) * (0.5 + (count / 1000) * 0.5);
+      const treeDepth = Math.min(3 + Math.floor(count / 200), 7);
+      const color = Math.random() < 0.5 ? JADE : ROSE_GOLD;
+      const segs = buildSimpleTree(x, groundY, treeHeight, treeDepth, color);
+      allTrees.push(...segs);
+      treePositions.push({ x, y: groundY });
+    }
+
+    // Underground mycelium — density scales with agent count
+    const myceliumDensity = Math.floor(5 + (count / 1000) * 50);
+    for (let i = 0; i < myceliumDensity; i++) {
+      if (treePositions.length < 2) break;
+      const a = treePositions[Math.floor(Math.random() * treePositions.length)];
+      const b = treePositions[Math.floor(Math.random() * treePositions.length)];
+      const depth = rand(15, h * 0.15);
+      myceliumNet.push({
+        x1: a.x + rand(-30, 30),
+        y1: a.y + depth,
+        x2: b.x + rand(-30, 30),
+        y2: b.y + depth + rand(-10, 10),
+        phase: rand(0, Math.PI * 2),
+        thickness: rand(0.3, 1 + count / 500)
+      });
+    }
+  }
+
+  let lastAgentCount = -1;
+  let frameCount = 0;
+
+  function render() {
+    ctx.fillStyle = `rgba(5,5,7,0.06)`;
+    ctx.fillRect(0, 0, w, h);
+
+    frameCount++;
+    const t = performance.now() * 0.001;
+    const groundY = h * 0.72;
+    const pa = 1 + blockModulation * 0.2;
+
+    // Regenerate if slider changed
+    if (agentCount !== lastAgentCount) {
+      lastAgentCount = agentCount;
+      regenerateForest();
+    }
+
+    // Ground line
+    ctx.beginPath();
+    ctx.moveTo(0, groundY);
+    ctx.lineTo(w, groundY);
+    ctx.strokeStyle = `rgba(${ROSE_GOLD.r},${ROSE_GOLD.g},${ROSE_GOLD.b},0.04)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Trees
+    for (const s of allTrees) {
+      const thick = Math.max(0.3, (1 - s.d / s.depth) * 2);
+      const a = (0.12 + 0.18 * (1 - s.d / s.depth)) * pa;
+      ctx.beginPath();
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+      ctx.strokeStyle = `rgba(${s.color.r},${s.color.g},${s.color.b},${a})`;
+      ctx.lineWidth = thick;
+      ctx.stroke();
+    }
+
+    // Underground mycelium
+    for (const m of myceliumNet) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.4 + m.phase);
+      const a = (0.06 + 0.08 * pulse) * pa;
+      const mx = (m.x1 + m.x2) / 2 + Math.sin(t * 0.3 + m.phase) * 10;
+      const my = (m.y1 + m.y2) / 2 + Math.cos(t * 0.2 + m.phase) * 5;
+      ctx.beginPath();
+      ctx.moveTo(m.x1, m.y1);
+      ctx.quadraticCurveTo(mx, my, m.x2, m.y2);
+      ctx.strokeStyle = `rgba(${ROSE_GOLD.r},${ROSE_GOLD.g},${ROSE_GOLD.b},${a})`;
+      ctx.lineWidth = m.thickness;
+      ctx.stroke();
+    }
+
+    // Spore release (more with more agents)
+    if (frameCount % Math.max(5, 40 - Math.floor(agentCount / 30)) === 0 && forestSpores.length < 60) {
+      const x = rand(w * 0.1, w * 0.9);
+      forestSpores.push(new Spore(x, groundY + rand(5, 30), BONE));
+    }
+
+    forestSpores = forestSpores.filter(s => s.life > 0);
+    for (const s of forestSpores) {
+      s.update(1);
+      s.draw(ctx);
+    }
+
+    // Knowledge flow packets along mycelium
+    if (frameCount % 15 === 0 && myceliumNet.length > 0) {
+      const m = myceliumNet[Math.floor(Math.random() * myceliumNet.length)];
+      const goRight = Math.random() < 0.5;
+      forestSpores.push(Object.assign(new Spore(goRight ? m.x1 : m.x2, goRight ? m.y1 : m.y2, ROSE_NEON), {
+        vx: (goRight ? 1 : -1) * rand(0.3, 0.8),
+        vy: rand(-0.1, 0.1),
+        size: rand(1.5, 2.5)
+      }));
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  regenerateForest();
+  render();
+})();
+
+</script>
+</body>
+</html>

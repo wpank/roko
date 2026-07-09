@@ -1,0 +1,2294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Series A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<style>
+/* =====================================================
+   ROSEDUST DESIGN SYSTEM v16 — ORRERY / ARMILLARY
+   ===================================================== */
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+
+  --dream: #585878;
+  --dream-bright: #7878a0;
+
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+
+  /* Orrery-specific palette */
+  --brass: #c8a86e;
+  --brass-hot: #e6c888;
+  --brass-dim: #8a7a4e;
+  --brass-deep: #4a3a20;
+  --rose-gold: #c49888;
+  --rose-gold-hot: #e0b8a8;
+  --patina: #607868;
+
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow: hidden;
+  width: 100%; height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Atmospheric Overlays --- */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9998; opacity: 0.03;
+  mix-blend-mode: overlay;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9997;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.12) 2px, rgba(0,0,0,0.12) 4px);
+  opacity: 0.05;
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9996;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* --- Typography --- */
+.headline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(32px, 4.5vw, 68px);
+  color: #d8c8d0;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-shadow: 0 0 40px rgba(170,112,136,0.15), 0 0 80px rgba(170,112,136,0.06);
+}
+.headline em {
+  color: var(--rose-neon);
+  font-style: italic;
+  text-shadow: 0 0 20px rgba(220,165,189,0.3), 0 0 60px rgba(220,165,189,0.12);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--t1);
+  max-width: 780px;
+}
+.body-text strong { color: var(--bone); font-weight: 500; }
+.body-text em { color: var(--rose-neon); font-style: italic; }
+
+.section-tag {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  position: absolute;
+  top: 24px; left: 32px;
+  z-index: 10;
+}
+
+/* --- Glass Panels --- */
+.glass {
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  background: rgba(8,8,12,0.5);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 2px;
+}
+
+/* --- Chassis --- */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  position: relative;
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+
+/* --- HUD --- */
+.hud {
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78; background: rgba(6,6,8,0.78);
+  border: 1px solid #1a1622; padding: 10px 14px;
+  backdrop-filter: blur(4px);
+  border-radius: 1px;
+}
+.hud .v {
+  display: block; font-size: 16px; color: var(--rose-neon);
+  letter-spacing: 0.04em; margin-top: 4px; font-weight: 500;
+}
+
+/* --- Pages --- */
+.pages-container {
+  width: 100%; height: 100vh;
+  position: relative; overflow: hidden;
+}
+.page {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+  padding: 60px 48px 80px;
+  opacity: 0; transform: translateY(24px);
+  transition: opacity 400ms ease, transform 400ms ease;
+  pointer-events: none;
+  overflow: hidden;
+}
+.page.active {
+  opacity: 1; transform: translateY(0);
+  pointer-events: auto;
+}
+.page.exit-up {
+  opacity: 0; transform: translateY(-24px);
+}
+.page-inner {
+  width: 100%; max-width: 1200px;
+  display: flex; flex-direction: column;
+  position: relative; z-index: 5;
+}
+
+/* --- Three.js Canvas --- */
+.three-bg {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+.three-bg canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* --- Chain Status Bar --- */
+.chain-bar {
+  position: fixed; bottom: 48px; right: 24px; z-index: 100;
+  display: flex; gap: 10px; align-items: center;
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 0.15em; color: var(--jade);
+  padding: 6px 12px;
+  background: rgba(5,5,7,0.85);
+  border: 1px solid rgba(112,136,122,0.2);
+  border-radius: 1px;
+  opacity: 0; transition: opacity 0.5s;
+}
+.chain-bar.live { opacity: 1; }
+.chain-bar .pulse-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 4px var(--jade);
+  animation: ledPulse 1.5s ease-in-out infinite;
+}
+
+/* --- Navigation --- */
+.page-nav {
+  position: fixed; bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px;
+  background: rgba(5,5,7,0.7);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(24,20,32,0.6);
+  border-radius: 20px;
+}
+.nav-dots {
+  display: flex; gap: 8px;
+}
+.nav-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ghost);
+  cursor: pointer;
+  transition: all 0.3s;
+  border: 1px solid transparent;
+}
+.nav-dot:hover {
+  background: var(--rose-dim);
+}
+.nav-dot.active {
+  background: var(--rose);
+  border-color: var(--rose-dim);
+  box-shadow: 0 0 8px rgba(170,112,136,0.4);
+}
+.nav-arrow {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--t-dim);
+  cursor: pointer;
+  padding: 2px 6px;
+  transition: color 0.2s;
+  user-select: none;
+}
+.nav-arrow:hover { color: var(--rose); }
+
+/* --- Page 0: Hero --- */
+#page0 .hero-content {
+  text-align: center;
+  z-index: 5;
+  position: relative;
+}
+#page0 .hero-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(52px, 8vw, 120px);
+  color: #d8c8d0;
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 60px rgba(200,168,110,0.2), 0 0 120px rgba(170,112,136,0.1);
+  margin-bottom: 12px;
+}
+#page0 .hero-subtitle {
+  font-family: var(--mono);
+  font-size: clamp(11px, 1.2vw, 15px);
+  text-transform: uppercase;
+  letter-spacing: 0.38em;
+  color: var(--brass);
+  margin-bottom: 32px;
+}
+#page0 .hero-thesis {
+  font-family: var(--mono);
+  font-size: clamp(12px, 1vw, 15px);
+  color: var(--t1);
+  max-width: 560px;
+  margin: 0 auto 40px;
+  line-height: 1.7;
+}
+#page0 .hero-series {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--rose-dim);
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* --- Page 1: Plane Between --- */
+.layer-stack {
+  display: flex; flex-direction: column;
+  gap: 0; align-items: center;
+  width: 100%; max-width: 800px;
+  margin: 24px auto;
+}
+.layer-band {
+  width: 100%;
+  padding: 18px 28px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--border);
+  position: relative;
+  transition: all 0.5s;
+}
+.layer-band.app {
+  background: rgba(12,10,14,0.6);
+  color: var(--bone-dim);
+  border-color: rgba(138,122,90,0.2);
+  border-radius: 2px 2px 0 0;
+}
+.layer-band.nunchi {
+  background: linear-gradient(180deg, rgba(60,30,40,0.3), rgba(40,20,30,0.3));
+  color: var(--rose-neon);
+  border-color: var(--border-live);
+  padding: 24px 28px;
+  font-size: 13px;
+  box-shadow: 0 0 30px rgba(170,112,136,0.08), inset 0 0 30px rgba(170,112,136,0.04);
+}
+.layer-band.exec {
+  background: rgba(12,10,14,0.6);
+  color: var(--bone-dim);
+  border-color: rgba(138,122,90,0.2);
+  border-radius: 0 0 2px 2px;
+}
+.layer-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  margin-bottom: 8px;
+  display: block;
+}
+.layer-items {
+  color: var(--t-dim);
+  font-size: 11px;
+}
+.layer-band.nunchi .layer-items {
+  color: var(--rose);
+}
+
+/* --- Page 2: Two Components --- */
+.split-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%; max-width: 1000px;
+  margin: 24px auto;
+}
+.component-card {
+  padding: 24px;
+  position: relative;
+}
+.component-card h3 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(20px, 2.2vw, 30px);
+  color: #d8c8d0;
+  margin-bottom: 4px;
+}
+.component-card .card-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--brass-dim);
+  margin-bottom: 16px;
+}
+.component-card ul {
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t1);
+  line-height: 2;
+}
+.component-card ul li::before {
+  content: "\2022";
+  color: var(--rose-dim);
+  margin-right: 8px;
+}
+.bottom-text {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--t-dim);
+  max-width: 800px;
+  text-align: center;
+  margin: 20px auto 0;
+  line-height: 1.8;
+}
+
+/* --- Page 3: Chain Architecture --- */
+.chain-layers {
+  display: flex; flex-direction: column;
+  gap: 2px; width: 100%; max-width: 700px;
+  margin: 20px auto;
+}
+.chain-layer {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px;
+  background: rgba(12,10,14,0.5);
+  border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px;
+}
+.chain-layer .cl-icon {
+  font-size: 14px; min-width: 24px; text-align: center;
+  color: var(--brass);
+}
+.chain-layer .cl-name {
+  color: var(--bone);
+  min-width: 160px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+}
+.chain-layer .cl-desc {
+  color: var(--t-dim);
+  font-size: 11px;
+}
+.block-comparison {
+  display: flex; gap: 16px; justify-content: center;
+  margin: 20px auto; flex-wrap: wrap;
+}
+.block-time {
+  padding: 10px 16px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--t-dim);
+  border: 1px solid var(--border);
+  background: rgba(8,8,12,0.5);
+  text-align: center;
+}
+.block-time .bt-val {
+  font-size: 18px; font-weight: 500;
+  display: block; margin-top: 4px;
+}
+.block-time.highlight {
+  border-color: var(--border-live);
+  background: rgba(60,30,40,0.15);
+}
+.block-time.highlight .bt-val {
+  color: var(--rose-neon);
+  text-shadow: 0 0 12px rgba(220,165,189,0.4);
+}
+.cw-modules {
+  display: flex; gap: 8px; justify-content: center;
+  margin: 12px auto; flex-wrap: wrap;
+}
+.cw-mod {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--brass-dim);
+  padding: 4px 10px;
+  border: 1px solid rgba(200,168,110,0.15);
+  background: rgba(200,168,110,0.04);
+  letter-spacing: 0.06em;
+}
+
+/* --- Page 4: HDC --- */
+.hdc-steps {
+  width: 100%; max-width: 700px;
+  margin: 16px auto;
+}
+.hdc-step {
+  padding: 16px 20px;
+  border-left: 2px solid var(--border);
+  margin-left: 12px;
+  margin-bottom: 8px;
+  opacity: 0.3;
+  transition: opacity 0.5s, border-color 0.5s;
+  cursor: pointer;
+}
+.hdc-step.active-step {
+  opacity: 1;
+  border-left-color: var(--brass);
+}
+.hdc-step .step-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--brass-dim);
+  margin-bottom: 6px;
+}
+.hdc-step .step-title {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(16px, 1.8vw, 22px);
+  color: #d8c8d0;
+  margin-bottom: 6px;
+}
+.hdc-step .step-detail {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--t-dim);
+  line-height: 1.7;
+}
+.hdc-step .step-detail code {
+  color: var(--bone-dim);
+  background: rgba(200,168,110,0.06);
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
+/* --- Page 5: ISFR --- */
+.isfr-sources {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  width: 100%; max-width: 800px;
+  margin: 20px auto;
+}
+.isfr-source {
+  padding: 16px;
+  text-align: center;
+}
+.isfr-source .is-weight {
+  font-family: var(--mono);
+  font-size: 24px; font-weight: 500;
+  color: var(--brass);
+  display: block;
+  margin-bottom: 4px;
+}
+.isfr-source .is-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--t-dim);
+  margin-bottom: 6px;
+}
+.isfr-source .is-names {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--t-dim);
+  line-height: 1.6;
+  opacity: 0.6;
+}
+
+/* --- Page 6: Collective --- */
+.slider-container {
+  display: flex; align-items: center; gap: 16px;
+  margin: 20px auto;
+  font-family: var(--mono); font-size: 12px;
+  color: var(--t-dim);
+}
+.slider-container input[type="range"] {
+  -webkit-appearance: none;
+  width: 300px; height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+}
+.slider-container input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--brass);
+  border: 2px solid var(--brass-hot);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(200,168,110,0.3);
+}
+.agent-count-display {
+  font-family: var(--mono);
+  font-size: 28px;
+  color: var(--rose-neon);
+  font-weight: 500;
+  min-width: 80px;
+  text-align: right;
+}
+
+/* --- Animations --- */
+@keyframes ledPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+@keyframes gearSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes blockPulse {
+  0% { box-shadow: 0 0 0 0 rgba(112,136,122,0.4); }
+  70% { box-shadow: 0 0 0 8px rgba(112,136,122,0); }
+  100% { box-shadow: 0 0 0 0 rgba(112,136,122,0); }
+}
+
+/* --- Responsive --- */
+@media (max-width: 768px) {
+  .page { padding: 40px 20px 70px; }
+  .split-panel { grid-template-columns: 1fr; }
+  .isfr-sources { grid-template-columns: repeat(2, 1fr); }
+  .block-comparison { gap: 8px; }
+  .layer-stack { max-width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<!-- Atmospheric overlays -->
+<canvas class="grain" id="grainCanvas"></canvas>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Chain status bar (live when mirage running) -->
+<div class="chain-bar" id="chainBar">
+  <div class="pulse-dot"></div>
+  <span>BLOCK <span id="blockNum">---</span></span>
+</div>
+
+<!-- Pages container -->
+<div class="pages-container" id="pagesContainer">
+
+  <!-- ===================== PAGE 0: HERO ===================== -->
+  <div class="page active" id="page0">
+    <div class="three-bg" id="hero3d"></div>
+    <div class="hero-content">
+      <div class="hero-title">Nunchi</div>
+      <div class="hero-subtitle">Agent Coordination Plane</div>
+      <p class="hero-thesis">The infrastructure layer between AI models and the applications they power.</p>
+    </div>
+    <div class="hero-series">Series A &middot; 2026</div>
+  </div>
+
+  <!-- ===================== PAGE 1: PLANE BETWEEN ===================== -->
+  <div class="page" id="page1">
+    <div class="three-bg" id="plane3d"></div>
+    <div class="section-tag">01 &mdash; Position</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 28px; font-size: clamp(26px, 3.5vw, 48px);">The plane between the planes.</h2>
+      <div class="layer-stack">
+        <div class="layer-band app glass">
+          <span class="layer-label">Application Layer</span>
+          <span class="layer-items">LangChain &middot; CrewAI &middot; Mastra &middot; AutoGen &middot; Orkes &middot; AGENTS.md</span>
+        </div>
+        <div class="layer-band nunchi">
+          <span class="layer-label" style="color: var(--rose);">Agent Coordination Plane</span>
+          <span class="layer-items">Nunchi &mdash; identity, routing, knowledge, policy, settlement</span>
+        </div>
+        <div class="layer-band exec glass">
+          <span class="layer-label">Execution Layer</span>
+          <span class="layer-items">Temporal &middot; Keycard &middot; x402 &middot; ERC-8004 &middot; MCP &middot; A2A &middot; Model APIs</span>
+        </div>
+      </div>
+      <p class="bottom-text">Every adjacent layer is funded. The plane between them is empty. Nunchi fills it.</p>
+    </div>
+  </div>
+
+  <!-- ===================== PAGE 2: TWO COMPONENTS ===================== -->
+  <div class="page" id="page2">
+    <div class="three-bg" id="components3d"></div>
+    <div class="section-tag">02 &mdash; Architecture</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 24px; font-size: clamp(26px, 3.5vw, 48px);">Two components. One architecture.</h2>
+      <div class="split-panel">
+        <div class="component-card chassis">
+          <div class="head"><span>Open Source</span><div class="led"></div></div>
+          <div style="padding: 20px;">
+            <h3>Roko</h3>
+            <div class="card-sub">Cognitive Runtime &middot; Apache 2.0</div>
+            <ul>
+              <li>18 crates, 177K lines of Rust</li>
+              <li>CascadeRouter &mdash; cost-aware model routing</li>
+              <li>11 gates, 7 rungs between every call</li>
+              <li>NeuroStore &mdash; HDC-indexed knowledge</li>
+              <li>Deterministic replay</li>
+            </ul>
+          </div>
+        </div>
+        <div class="component-card chassis">
+          <div class="head"><span>Sovereign L1</span><div class="led"></div></div>
+          <div style="padding: 20px;">
+            <h3>Nunchi Chain</h3>
+            <div class="card-sub">Verifiable Substrate &middot; Commonware ($9M, Haun + Dragonfly)</div>
+            <ul>
+              <li>Agent-native sovereign EVM L1</li>
+              <li>Simplex BFT &mdash; ~50ms blocks, single-slot finality</li>
+              <li>HDC precompile at 0x09</li>
+              <li>ISFR Oracle &mdash; DeFi benchmark</li>
+              <li>Knowledge demurrage &amp; decay</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <p class="bottom-text">Roko runs alone. The chain runs alone. Together, local traces compound into shared memory, attestable reputation, and verifiable settlement across trust boundaries.</p>
+    </div>
+  </div>
+
+  <!-- ===================== PAGE 3: CHAIN ARCHITECTURE ===================== -->
+  <div class="page" id="page3">
+    <div class="three-bg" id="chain3d"></div>
+    <div class="section-tag">03 &mdash; Chain</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 8px; font-size: clamp(26px, 3.5vw, 48px);">Built on Commonware.</h2>
+      <p class="body-text" style="text-align:center; margin: 0 auto 20px; font-size: 12px; color: var(--brass-dim);">Not a framework. An anti-framework. Pick-and-choose Rust primitives.</p>
+      <div class="chain-layers">
+        <div class="chain-layer glass"><span class="cl-icon">&#9670;</span><span class="cl-name">Consensus (Simplex)</span><span class="cl-desc">~50ms blocks, 2-hop notarize, 3-hop finalize</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9671;</span><span class="cl-name">Execution (revm)</span><span class="cl-desc">Full EVM, Block-STM parallel execution</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9674;</span><span class="cl-name">Agent Registry (0x08)</span><span class="cl-desc">On-chain agent identity</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9674;</span><span class="cl-name">HDC Precompile (0x09)</span><span class="cl-desc">Semantic search at consensus layer</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9674;</span><span class="cl-name">ISFR Oracle (0xA01)</span><span class="cl-desc">DeFi rate computation</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9670;</span><span class="cl-name">Knowledge Layer</span><span class="cl-desc">InsightEntry storage, Merkle tree, demurrage</span></div>
+        <div class="chain-layer glass"><span class="cl-icon">&#9670;</span><span class="cl-name">P2P (authenticated)</span><span class="cl-desc">Encrypted validator communication</span></div>
+      </div>
+      <div class="cw-modules">
+        <span class="cw-mod">p2p::authenticated</span>
+        <span class="cw-mod">cryptography::bls12381</span>
+        <span class="cw-mod">runtime::deterministic</span>
+        <span class="cw-mod">consensus::simplex</span>
+      </div>
+      <div class="block-comparison">
+        <div class="block-time glass"><span>Ethereum</span><span class="bt-val">12s</span></div>
+        <div class="block-time glass"><span>Solana</span><span class="bt-val">400ms</span></div>
+        <div class="block-time glass"><span>Sui</span><span class="bt-val">~390ms</span></div>
+        <div class="block-time highlight glass"><span>Nunchi</span><span class="bt-val">~50ms</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PAGE 4: HDC ===================== -->
+  <div class="page" id="page4">
+    <div class="three-bg" id="hdc3d"></div>
+    <div class="section-tag">04 &mdash; Hyperdimensional Computing</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 20px; font-size: clamp(24px, 3vw, 42px);">Hyperdimensional Computing</h2>
+      <div class="hdc-steps" id="hdcSteps">
+        <div class="hdc-step active-step" data-step="0">
+          <div class="step-num">Step 1</div>
+          <div class="step-title">An agent finds a transaction</div>
+          <div class="step-detail"><code>swap(USDC -> WETH, 50,000 USDC, pool 0x88e6...)</code><br>gas: 142,891 &middot; block: 19,847,221</div>
+        </div>
+        <div class="hdc-step" data-step="1">
+          <div class="step-num">Step 2</div>
+          <div class="step-title">Encode to hypervector</div>
+          <div class="step-detail">10,000-bit base vectors. <code>Bind: swap XOR USDC XOR WETH</code><br>Permute for sequence. Bundle via majority vote.</div>
+        </div>
+        <div class="hdc-step" data-step="2">
+          <div class="step-num">Step 3</div>
+          <div class="step-title">Post to chain</div>
+          <div class="step-detail"><code>InsightEntry { content, hypervector (1,250 bytes), decay }</code><br>Transaction -> Validator -> sm_root updated</div>
+        </div>
+        <div class="hdc-step" data-step="3">
+          <div class="step-num">Step 4</div>
+          <div class="step-title">Future agent searches</div>
+          <div class="step-detail">Encode query to hypervector -> Hamming distance search<br>Top-K results in <code>0.17ms</code> (vs 12ms for float embeddings)</div>
+        </div>
+        <div class="hdc-step" data-step="4">
+          <div class="step-num">Step 5</div>
+          <div class="step-title">Results compound</div>
+          <div class="step-detail">10 confirmations = 6x half-life. Knowledge many agents verify becomes long-lived.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PAGE 5: ISFR ===================== -->
+  <div class="page" id="page5">
+    <div class="three-bg" id="isfr3d"></div>
+    <div class="section-tag">05 &mdash; Agent-Native Finance</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 8px; font-size: clamp(26px, 3.5vw, 48px);">The first of many.</h2>
+      <p class="body-text" style="text-align:center; margin: 0 auto 20px; font-size: 12px;">ISFR: Internet Secured Funding Rate. Like SOFR for the internet economy.</p>
+      <div class="isfr-sources">
+        <div class="isfr-source glass">
+          <span class="is-weight">60%</span>
+          <span class="is-label">Lending</span>
+          <span class="is-names">Aave, Compound<br>Spark, Morpho</span>
+        </div>
+        <div class="isfr-source glass">
+          <span class="is-weight">25%</span>
+          <span class="is-label">Structured</span>
+          <span class="is-names">Pendle, Spectra<br>Term Finance</span>
+        </div>
+        <div class="isfr-source glass">
+          <span class="is-weight">10%</span>
+          <span class="is-label">Funding</span>
+          <span class="is-names">dYdX, Hyperliquid<br>GMX</span>
+        </div>
+        <div class="isfr-source glass">
+          <span class="is-weight">5%</span>
+          <span class="is-label">Staking</span>
+          <span class="is-names">Lido, Rocket Pool<br>Coinbase</span>
+        </div>
+      </div>
+      <p class="bottom-text">The $668 trillion gap: traditional finance has SOFR. DeFi has nothing comparable.<br>Each new index = new revenue line, same infrastructure.</p>
+    </div>
+  </div>
+
+  <!-- ===================== PAGE 6: COLLECTIVE ===================== -->
+  <div class="page" id="page6">
+    <div class="three-bg" id="collective3d"></div>
+    <div class="section-tag">06 &mdash; Collective Intelligence</div>
+    <div class="page-inner" style="align-items: center;">
+      <h2 class="headline" style="text-align:center; margin-bottom: 8px; font-size: clamp(24px, 3vw, 42px);">Every agent makes every agent smarter.</h2>
+      <div class="slider-container">
+        <span>Agents:</span>
+        <input type="range" id="agentSlider" min="5" max="1000" value="5" step="5">
+        <span class="agent-count-display" id="agentCountDisplay">5</span>
+      </div>
+      <p class="body-text" style="text-align:center; margin: 0 auto 12px; font-size: 12px;">
+        Like ants leaving pheromone trails. Each agent's knowledge deposit strengthens paths for future agents.
+      </p>
+      <p class="bottom-text" style="color: var(--rose-neon); font-size: 13px;">
+        "The thousandth agent pulls 30,000 tokens of context the first agent never had."
+      </p>
+      <p class="body-text" style="text-align:center; margin: 12px auto 0; font-size: 11px; opacity: 0.7;">
+        Superlinear scaling: beta ~ 1.15 &mdash; when agents double, output grows 115%
+      </p>
+    </div>
+  </div>
+
+</div><!-- /pages-container -->
+
+<!-- Navigation -->
+<nav class="page-nav">
+  <div class="nav-arrow left" id="navLeft">&larr;</div>
+  <div class="nav-dots" id="navDots"></div>
+  <div class="nav-arrow right" id="navRight">&rarr;</div>
+</nav>
+
+<!-- ===================== MAIN SCRIPT ===================== -->
+<script type="module">
+import * as THREE from 'three';
+
+// ========================
+// CONSTANTS & STATE
+// ========================
+const TOTAL_PAGES = 7;
+let currentPage = 0;
+let transitioning = false;
+let blockNumber = 0;
+let blockModulation = 0;
+const scenes = {};
+const animationFrames = {};
+let globalTime = 0;
+
+// ========================
+// FILM GRAIN
+// ========================
+(function initGrain() {
+  const c = document.getElementById('grainCanvas');
+  const ctx = c.getContext('2d');
+  function resize() { c.width = window.innerWidth; c.height = window.innerHeight; }
+  resize();
+  window.addEventListener('resize', resize);
+  function drawGrain() {
+    const w = c.width, h = c.height;
+    const img = ctx.createImageData(w, h);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.random() * 255;
+      d[i] = d[i+1] = d[i+2] = v;
+      d[i+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    requestAnimationFrame(drawGrain);
+  }
+  drawGrain();
+})();
+
+// ========================
+// NAVIGATION
+// ========================
+(function initNav() {
+  const dots = document.getElementById('navDots');
+  for (let i = 0; i < TOTAL_PAGES; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.addEventListener('click', () => goToPage(i));
+    dots.appendChild(dot);
+  }
+  document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+  document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goToPage(currentPage + 1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); goToPage(currentPage - 1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); goToPage(currentPage + 1); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); goToPage(currentPage - 1); }
+  });
+})();
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+
+  try {
+    const oldPage = document.getElementById('page' + currentPage);
+    const newPage = document.getElementById('page' + idx);
+    if (!oldPage || !newPage) { transitioning = false; return; }
+
+    const goingForward = idx > currentPage;
+
+    oldPage.classList.remove('active');
+    if (goingForward) oldPage.classList.add('exit-up');
+
+    newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+    newPage.style.opacity = '0';
+
+    requestAnimationFrame(() => {
+      newPage.classList.add('active');
+      newPage.style.transform = '';
+      newPage.style.opacity = '';
+    });
+
+    document.querySelectorAll('.nav-dot').forEach((d, i) => {
+      d.classList.toggle('active', i === idx);
+    });
+
+    setTimeout(() => {
+      if (oldPage) oldPage.classList.remove('exit-up');
+      transitioning = false;
+    }, 450);
+
+    currentPage = idx;
+    onPageEnter(idx);
+  } catch(e) {
+    console.warn('Navigation error:', e);
+    transitioning = false;
+  }
+}
+
+// ========================
+// MIRAGE BLOCK POLLING
+// ========================
+async function pollBlocks() {
+  try {
+    const r = await fetch('http://127.0.0.1:8545', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const d = await r.json();
+    const n = parseInt(d.result, 16);
+    if (n > blockNumber) {
+      blockNumber = n;
+      blockModulation = 1.0;
+      document.getElementById('blockNum').textContent = n.toLocaleString();
+      document.getElementById('chainBar').classList.add('live');
+      onNewBlock(n);
+    }
+  } catch(e) { /* mirage not running */ }
+}
+setInterval(pollBlocks, 1000);
+setInterval(() => { blockModulation *= 0.92; }, 50);
+
+function onNewBlock(n) {
+  // Pulse effect on active scene
+  const bar = document.getElementById('chainBar');
+  bar.style.boxShadow = '0 0 12px rgba(112,136,122,0.5)';
+  setTimeout(() => { bar.style.boxShadow = ''; }, 300);
+}
+
+// ========================
+// THREE.JS UTILITIES
+// ========================
+const BRASS = new THREE.Color(0xc8a86e);
+const BRASS_HOT = new THREE.Color(0xe6c888);
+const BRASS_DIM = new THREE.Color(0x8a7a4e);
+const ROSE_GOLD = new THREE.Color(0xc49888);
+const ROSE_GOLD_HOT = new THREE.Color(0xe0b8a8);
+const ROSE_NEON = new THREE.Color(0xdca5bd);
+const BONE = new THREE.Color(0xc8b890);
+const VOID = new THREE.Color(0x050507);
+const PATINA = new THREE.Color(0x607868);
+
+function makeScene(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return null;
+  const scene = new THREE.Scene();
+  scene.background = VOID.clone();
+  const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 200);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.9;
+  container.appendChild(renderer.domElement);
+
+  const ambient = new THREE.AmbientLight(0x2a2028, 0.6);
+  scene.add(ambient);
+
+  const handleResize = () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  };
+  window.addEventListener('resize', handleResize);
+
+  return { scene, camera, renderer, container, handleResize };
+}
+
+function brassMaterial(opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color: opts.color || BRASS,
+    metalness: opts.metalness || 0.85,
+    roughness: opts.roughness || 0.35,
+    emissive: opts.emissive || new THREE.Color(0x1a1508),
+    emissiveIntensity: opts.emissiveIntensity || 0.15,
+    ...opts
+  });
+}
+
+function roseGoldMaterial(opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color: opts.color || ROSE_GOLD,
+    metalness: 0.8,
+    roughness: 0.3,
+    emissive: new THREE.Color(0x200808),
+    emissiveIntensity: 0.2,
+    ...opts
+  });
+}
+
+function createTorus(radius, tube, radialSeg, tubularSeg, mat) {
+  const geo = new THREE.TorusGeometry(radius, tube, radialSeg || 16, tubularSeg || 100);
+  return new THREE.Mesh(geo, mat);
+}
+
+function createGear(radius, teeth, thickness, mat) {
+  // Simplified gear as a torus with tooth bumps
+  const group = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, thickness, 8, teeth * 2),
+    mat
+  );
+  group.add(base);
+
+  // Hub
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.2, radius * 0.2, thickness * 3, 16),
+    mat
+  );
+  hub.rotation.x = Math.PI / 2;
+  group.add(hub);
+
+  // Spokes
+  for (let i = 0; i < 4; i++) {
+    const spoke = new THREE.Mesh(
+      new THREE.CylinderGeometry(thickness * 0.5, thickness * 0.5, radius * 0.8, 6),
+      mat
+    );
+    spoke.rotation.z = (Math.PI / 4) * (i * 2);
+    spoke.position.x = Math.cos((Math.PI / 2) * i) * radius * 0.4;
+    spoke.position.y = Math.sin((Math.PI / 2) * i) * radius * 0.4;
+    group.add(spoke);
+  }
+
+  // Teeth
+  for (let i = 0; i < teeth; i++) {
+    const angle = (i / teeth) * Math.PI * 2;
+    const tooth = new THREE.Mesh(
+      new THREE.BoxGeometry(thickness * 2.5, thickness * 3, thickness * 2),
+      mat
+    );
+    tooth.position.x = Math.cos(angle) * (radius + thickness * 1.2);
+    tooth.position.y = Math.sin(angle) * (radius + thickness * 1.2);
+    tooth.rotation.z = angle;
+    group.add(tooth);
+  }
+
+  return group;
+}
+
+// ========================
+// PAGE 0: HERO — GRAND ARMILLARY SPHERE
+// ========================
+function initHeroScene() {
+  const s = makeScene('hero3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 0, 9);
+  camera.lookAt(0, 0, 0);
+
+  // Warm point lights
+  const light1 = new THREE.PointLight(0xe6c888, 1.5, 30);
+  light1.position.set(5, 4, 6);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xc49888, 1.0, 25);
+  light2.position.set(-4, -3, 5);
+  scene.add(light2);
+
+  const light3 = new THREE.PointLight(0xdca5bd, 0.5, 20);
+  light3.position.set(0, 5, -4);
+  scene.add(light3);
+
+  const armillary = new THREE.Group();
+
+  // Equatorial ring (largest, most ornate) — "Nunchi" engraved
+  const equatorial = createTorus(3.2, 0.06, 16, 120, brassMaterial());
+  armillary.add(equatorial);
+
+  // Equatorial band (wider, for the engraving feel)
+  const eqBand = createTorus(3.2, 0.14, 8, 120, brassMaterial({
+    roughness: 0.25, color: BRASS_HOT, transparent: true, opacity: 0.4
+  }));
+  armillary.add(eqBand);
+
+  // Meridian ring 1
+  const meridian1 = createTorus(3.0, 0.04, 12, 100, roseGoldMaterial());
+  meridian1.rotation.y = Math.PI / 2;
+  armillary.add(meridian1);
+
+  // Meridian ring 2
+  const meridian2 = createTorus(2.8, 0.04, 12, 100, brassMaterial({ color: BRASS_DIM }));
+  meridian2.rotation.y = Math.PI / 2;
+  meridian2.rotation.x = Math.PI / 6;
+  armillary.add(meridian2);
+
+  // Arctic circle ring
+  const arctic = createTorus(2.2, 0.03, 12, 80, roseGoldMaterial({ roughness: 0.4 }));
+  arctic.rotation.x = Math.PI / 4;
+  arctic.rotation.z = Math.PI / 8;
+  armillary.add(arctic);
+
+  // Tropic ring
+  const tropic = createTorus(2.5, 0.03, 12, 80, brassMaterial({ color: BONE }));
+  tropic.rotation.x = -Math.PI / 3;
+  tropic.rotation.z = -Math.PI / 6;
+  armillary.add(tropic);
+
+  // Inner ecliptic ring
+  const ecliptic = createTorus(1.8, 0.035, 12, 80, brassMaterial({
+    emissive: new THREE.Color(0x2a1808), emissiveIntensity: 0.3
+  }));
+  ecliptic.rotation.x = Math.PI / 5;
+  ecliptic.rotation.y = Math.PI / 3;
+  armillary.add(ecliptic);
+
+  // Small celestial ring
+  const celestial = createTorus(1.3, 0.025, 10, 60, roseGoldMaterial({
+    color: ROSE_NEON, emissive: new THREE.Color(0x301018), emissiveIntensity: 0.4
+  }));
+  celestial.rotation.x = -Math.PI / 4;
+  celestial.rotation.y = -Math.PI / 5;
+  armillary.add(celestial);
+
+  // Central sphere (earth / core)
+  const coreSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 32, 32),
+    new THREE.MeshStandardMaterial({
+      color: ROSE_NEON,
+      metalness: 0.6,
+      roughness: 0.2,
+      emissive: new THREE.Color(0x3a1828),
+      emissiveIntensity: 0.6
+    })
+  );
+  armillary.add(coreSphere);
+
+  // Axis pole (north-south)
+  const axis = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.018, 0.018, 7.2, 8),
+    brassMaterial({ color: BRASS_DIM, roughness: 0.5 })
+  );
+  armillary.add(axis);
+
+  // Small planetary bodies orbiting within
+  const planets = [];
+  const planetColors = [BRASS_HOT, ROSE_GOLD_HOT, BONE, PATINA, ROSE_NEON];
+  for (let i = 0; i < 5; i++) {
+    const size = 0.04 + Math.random() * 0.06;
+    const planet = new THREE.Mesh(
+      new THREE.SphereGeometry(size, 12, 12),
+      new THREE.MeshStandardMaterial({
+        color: planetColors[i],
+        metalness: 0.7,
+        roughness: 0.3,
+        emissive: planetColors[i].clone().multiplyScalar(0.2),
+        emissiveIntensity: 0.5
+      })
+    );
+    const orbitRadius = 0.8 + i * 0.35;
+    const speed = 0.3 + Math.random() * 0.5;
+    const tilt = (Math.random() - 0.5) * Math.PI * 0.5;
+    planets.push({ mesh: planet, orbitRadius, speed, tilt, phase: Math.random() * Math.PI * 2 });
+    armillary.add(planet);
+  }
+
+  // Support stand (base)
+  const standBase = new THREE.Mesh(
+    new THREE.TorusGeometry(1.2, 0.05, 8, 40),
+    brassMaterial({ color: BRASS_DIM, roughness: 0.5 })
+  );
+  standBase.position.y = -3.6;
+  standBase.rotation.x = Math.PI / 2;
+  armillary.add(standBase);
+
+  // Stand legs
+  for (let i = 0; i < 3; i++) {
+    const angle = (i / 3) * Math.PI * 2;
+    const leg = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.035, 1.2, 6),
+      brassMaterial({ color: BRASS_DIM })
+    );
+    leg.position.set(
+      Math.cos(angle) * 1.15,
+      -3.0,
+      Math.sin(angle) * 1.15
+    );
+    leg.rotation.z = Math.cos(angle) * 0.15;
+    leg.rotation.x = Math.sin(angle) * 0.15;
+    armillary.add(leg);
+  }
+
+  // Decorative gear at base
+  const baseGear = createGear(0.5, 16, 0.02, brassMaterial({ color: BRASS_DIM, roughness: 0.5 }));
+  baseGear.position.y = -3.6;
+  baseGear.rotation.x = Math.PI / 2;
+  armillary.add(baseGear);
+
+  scene.add(armillary);
+
+  // Background stars
+  const starGeo = new THREE.BufferGeometry();
+  const starPositions = new Float32Array(2000 * 3);
+  for (let i = 0; i < 2000; i++) {
+    starPositions[i * 3] = (Math.random() - 0.5) * 100;
+    starPositions[i * 3 + 1] = (Math.random() - 0.5) * 100;
+    starPositions[i * 3 + 2] = -20 - Math.random() * 80;
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+  const starMat = new THREE.PointsMaterial({ color: 0x584858, size: 0.08 });
+  scene.add(new THREE.Points(starGeo, starMat));
+
+  scenes.hero = { s, armillary, equatorial, eqBand, meridian1, meridian2, arctic, tropic, ecliptic, celestial, coreSphere, planets, baseGear };
+
+  function animate() {
+    animationFrames.hero = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    // Slow overall rotation
+    armillary.rotation.y = t * 0.08;
+
+    // Individual ring rotations
+    equatorial.rotation.z = t * 0.05;
+    eqBand.rotation.z = t * 0.05;
+    meridian1.rotation.x = t * 0.12;
+    meridian2.rotation.z = t * 0.07;
+    arctic.rotation.y = t * 0.15;
+    tropic.rotation.y = -t * 0.1;
+    ecliptic.rotation.z = t * 0.09;
+    celestial.rotation.x = t * 0.18;
+
+    // Planet orbits
+    for (const p of planets) {
+      const angle = t * p.speed + p.phase;
+      p.mesh.position.x = Math.cos(angle) * p.orbitRadius;
+      p.mesh.position.y = Math.sin(angle) * p.orbitRadius * Math.cos(p.tilt);
+      p.mesh.position.z = Math.sin(angle) * p.orbitRadius * Math.sin(p.tilt);
+    }
+
+    // Core glow pulsing
+    coreSphere.material.emissiveIntensity = 0.4 + Math.sin(t * 2) * 0.2 + blockModulation * 0.5;
+
+    // Base gear rotation
+    baseGear.rotation.z = t * 0.2;
+
+    // Subtle camera sway
+    camera.position.x = Math.sin(t * 0.1) * 0.3;
+    camera.position.y = Math.cos(t * 0.08) * 0.2;
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 1: PLANE BETWEEN — THREE CONCENTRIC RINGS
+// ========================
+function initPlaneScene() {
+  const s = makeScene('plane3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 3, 8);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.2, 25);
+  light1.position.set(4, 5, 5);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.8, 20);
+  light2.position.set(-3, -2, 4);
+  scene.add(light2);
+
+  const ringsGroup = new THREE.Group();
+
+  // Outer ring (Application, fastest)
+  const outerRing = createTorus(3.5, 0.05, 12, 100, brassMaterial({ color: BONE, roughness: 0.4 }));
+  outerRing.rotation.x = Math.PI / 2;
+  ringsGroup.add(outerRing);
+
+  // Outer ring decorative markers
+  for (let i = 0; i < 24; i++) {
+    const angle = (i / 24) * Math.PI * 2;
+    const marker = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.04, 0.12),
+      brassMaterial({ color: BONE })
+    );
+    marker.position.set(Math.cos(angle) * 3.5, 0, Math.sin(angle) * 3.5);
+    marker.lookAt(0, 0, 0);
+    ringsGroup.add(marker);
+  }
+
+  // Middle ring (Nunchi, largest, most ornate)
+  const middleRing = createTorus(2.5, 0.12, 16, 120, roseGoldMaterial({
+    emissive: new THREE.Color(0x3a1828), emissiveIntensity: 0.4
+  }));
+  middleRing.rotation.x = Math.PI / 2;
+  ringsGroup.add(middleRing);
+
+  // Middle ring inner detail
+  const middleInner = createTorus(2.5, 0.06, 8, 120, brassMaterial({
+    color: BRASS_HOT, transparent: true, opacity: 0.5
+  }));
+  middleInner.rotation.x = Math.PI / 2;
+  ringsGroup.add(middleInner);
+
+  // Engraved tick marks on middle ring
+  for (let i = 0; i < 36; i++) {
+    const angle = (i / 36) * Math.PI * 2;
+    const tick = new THREE.Mesh(
+      new THREE.BoxGeometry(0.02, 0.02, i % 3 === 0 ? 0.2 : 0.1),
+      roseGoldMaterial()
+    );
+    tick.position.set(Math.cos(angle) * 2.5, 0, Math.sin(angle) * 2.5);
+    tick.lookAt(0, 0, 0);
+    ringsGroup.add(tick);
+  }
+
+  // Inner ring (Execution, steady)
+  const innerRing = createTorus(1.5, 0.04, 12, 80, brassMaterial({ color: BRASS_DIM }));
+  innerRing.rotation.x = Math.PI / 2;
+  ringsGroup.add(innerRing);
+
+  // Data spheres traveling along tracks
+  const dataSpheres = [];
+  for (let i = 0; i < 12; i++) {
+    const ringIdx = i % 3; // 0=outer, 1=middle, 2=inner
+    const radius = [3.5, 2.5, 1.5][ringIdx];
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.04 + (ringIdx === 1 ? 0.02 : 0), 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: [BONE, ROSE_NEON, BRASS][ringIdx],
+        emissive: [BONE, ROSE_NEON, BRASS][ringIdx],
+        emissiveIntensity: 0.8
+      })
+    );
+    const speed = [0.6, 0.35, 0.2][ringIdx] + Math.random() * 0.15;
+    const phase = Math.random() * Math.PI * 2;
+    dataSpheres.push({ mesh: sphere, radius, speed, phase, ringIdx });
+    ringsGroup.add(sphere);
+  }
+
+  // Connecting shafts between rings
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * Math.PI * 2;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.015, 1, 6),
+      brassMaterial({ color: BRASS_DIM })
+    );
+    shaft.position.set(Math.cos(angle) * 2, 0, Math.sin(angle) * 2);
+    shaft.rotation.z = Math.PI / 2;
+    shaft.rotation.y = angle;
+    ringsGroup.add(shaft);
+  }
+
+  scene.add(ringsGroup);
+
+  scenes.plane = { s, ringsGroup, outerRing, middleRing, innerRing, dataSpheres };
+
+  function animate() {
+    animationFrames.plane = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    ringsGroup.rotation.y = t * 0.03;
+    ringsGroup.rotation.x = Math.sin(t * 0.05) * 0.1;
+
+    // Rings rotate at different speeds
+    outerRing.rotation.z = t * 0.4;
+    middleRing.rotation.z = -t * 0.15;
+    middleInner.rotation.z = -t * 0.15;
+    innerRing.rotation.z = t * 0.1;
+
+    // Data spheres travel along tracks
+    for (const ds of dataSpheres) {
+      const angle = t * ds.speed + ds.phase;
+      ds.mesh.position.set(
+        Math.cos(angle) * ds.radius,
+        Math.sin(t * 0.5 + ds.phase) * 0.1,
+        Math.sin(angle) * ds.radius
+      );
+    }
+
+    // Middle ring emissive pulse
+    middleRing.material.emissiveIntensity = 0.3 + Math.sin(t * 1.5) * 0.15 + blockModulation * 0.4;
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 2: TWO COMPONENTS — DUAL ORRERY
+// ========================
+function initComponentsScene() {
+  const s = makeScene('components3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 2, 10);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.2, 30);
+  light1.position.set(6, 4, 6);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.8, 25);
+  light2.position.set(-6, 3, 4);
+  scene.add(light2);
+
+  const dualGroup = new THREE.Group();
+
+  // LEFT: Roko — Complex clockwork (many gears)
+  const rokoGroup = new THREE.Group();
+  rokoGroup.position.x = -2.8;
+
+  // Main gear
+  const mainGear = createGear(1.0, 20, 0.04, brassMaterial());
+  rokoGroup.add(mainGear);
+
+  // Secondary gears
+  const secGear1 = createGear(0.6, 12, 0.035, brassMaterial({ color: BRASS_HOT }));
+  secGear1.position.set(1.55, 0.4, 0.1);
+  rokoGroup.add(secGear1);
+
+  const secGear2 = createGear(0.45, 10, 0.03, roseGoldMaterial());
+  secGear2.position.set(-0.3, 1.4, 0.05);
+  rokoGroup.add(secGear2);
+
+  const secGear3 = createGear(0.35, 8, 0.025, brassMaterial({ color: BONE }));
+  secGear3.position.set(0.8, -1.2, 0.08);
+  rokoGroup.add(secGear3);
+
+  const secGear4 = createGear(0.5, 14, 0.03, brassMaterial({ color: BRASS_DIM }));
+  secGear4.position.set(-1.3, -0.5, 0.05);
+  rokoGroup.add(secGear4);
+
+  // Small accent gears
+  for (let i = 0; i < 4; i++) {
+    const sg = createGear(0.2, 6, 0.02, brassMaterial({ color: BRASS_DIM, roughness: 0.5 }));
+    const angle = (i / 4) * Math.PI * 2 + 0.5;
+    sg.position.set(Math.cos(angle) * 1.8, Math.sin(angle) * 1.8, 0.15);
+    rokoGroup.add(sg);
+  }
+
+  dualGroup.add(rokoGroup);
+
+  // RIGHT: Chain — Celestial globe
+  const chainGroup = new THREE.Group();
+  chainGroup.position.x = 2.8;
+
+  // Outer celestial sphere (wireframe)
+  const celestialSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(1.4, 24, 24),
+    new THREE.MeshStandardMaterial({
+      color: BRASS,
+      metalness: 0.7,
+      roughness: 0.4,
+      wireframe: true,
+      emissive: new THREE.Color(0x0a0804),
+      emissiveIntensity: 0.3
+    })
+  );
+  chainGroup.add(celestialSphere);
+
+  // Meridian rings on celestial globe
+  const cMeridian1 = createTorus(1.45, 0.025, 10, 60, roseGoldMaterial({ roughness: 0.4 }));
+  chainGroup.add(cMeridian1);
+
+  const cMeridian2 = createTorus(1.45, 0.025, 10, 60, brassMaterial({ color: BRASS_DIM }));
+  cMeridian2.rotation.y = Math.PI / 2;
+  chainGroup.add(cMeridian2);
+
+  const cEquator = createTorus(1.45, 0.035, 12, 80, brassMaterial({ color: BRASS_HOT }));
+  cEquator.rotation.x = Math.PI / 2;
+  chainGroup.add(cEquator);
+
+  // Inner glowing core
+  const chainCore = new THREE.Mesh(
+    new THREE.SphereGeometry(0.4, 20, 20),
+    new THREE.MeshStandardMaterial({
+      color: ROSE_NEON,
+      metalness: 0.3,
+      roughness: 0.2,
+      emissive: new THREE.Color(0x4a2038),
+      emissiveIntensity: 0.8
+    })
+  );
+  chainGroup.add(chainCore);
+
+  dualGroup.add(chainGroup);
+
+  // Drive shaft connecting them
+  const driveShaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.025, 0.025, 3.0, 8),
+    brassMaterial({ color: BRASS_DIM })
+  );
+  driveShaft.rotation.z = Math.PI / 2;
+  driveShaft.position.y = 0;
+  dualGroup.add(driveShaft);
+
+  // Small coupling gears on shaft
+  const coupling1 = createGear(0.25, 8, 0.02, brassMaterial());
+  coupling1.position.set(-0.5, 0, 0);
+  coupling1.rotation.y = Math.PI / 2;
+  dualGroup.add(coupling1);
+
+  const coupling2 = createGear(0.25, 8, 0.02, roseGoldMaterial());
+  coupling2.position.set(0.5, 0, 0);
+  coupling2.rotation.y = Math.PI / 2;
+  dualGroup.add(coupling2);
+
+  scene.add(dualGroup);
+
+  scenes.components = { s, dualGroup, rokoGroup, chainGroup, mainGear, secGear1, secGear2, secGear3, secGear4, celestialSphere, chainCore, coupling1, coupling2 };
+
+  function animate() {
+    animationFrames.components = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    dualGroup.rotation.y = Math.sin(t * 0.05) * 0.15;
+
+    // Roko gears turning
+    mainGear.rotation.z = t * 0.3;
+    secGear1.rotation.z = -t * 0.5;
+    secGear2.rotation.z = t * 0.7;
+    secGear3.rotation.z = -t * 0.9;
+    secGear4.rotation.z = t * 0.4;
+    rokoGroup.children.forEach((child, i) => {
+      if (i > 4) child.rotation.z = t * (0.5 + i * 0.1) * (i % 2 ? 1 : -1);
+    });
+
+    // Chain celestial globe rotation
+    celestialSphere.rotation.y = t * 0.1;
+    celestialSphere.rotation.x = t * 0.05;
+    cMeridian1.rotation.x = t * 0.08;
+    cMeridian2.rotation.z = t * 0.06;
+    cEquator.rotation.z = t * 0.04;
+
+    // Chain core pulse
+    chainCore.material.emissiveIntensity = 0.6 + Math.sin(t * 2) * 0.3 + blockModulation * 0.4;
+
+    // Coupling gears
+    coupling1.rotation.z = t * 0.6;
+    coupling2.rotation.z = -t * 0.6;
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 3: CHAIN ARCHITECTURE — CLOCK EXPLODED VIEW
+// ========================
+function initChainScene() {
+  const s = makeScene('chain3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.5, 30);
+  light1.position.set(5, 5, 6);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.6, 20);
+  light2.position.set(-4, -3, 5);
+  scene.add(light2);
+
+  const clockGroup = new THREE.Group();
+
+  // Layer positions (vertical stack, slightly exploded)
+  const layers = [
+    { y: 2.4, label: 'Consensus', color: BRASS_HOT },
+    { y: 1.4, label: 'Execution', color: BRASS },
+    { y: 0.4, label: 'Precompiles', color: ROSE_GOLD },
+    { y: -0.8, label: 'Knowledge', color: ROSE_NEON },
+    { y: -1.8, label: 'P2P', color: BRASS_DIM },
+  ];
+
+  const layerMeshes = [];
+
+  layers.forEach((layer, i) => {
+    const group = new THREE.Group();
+    group.position.y = layer.y;
+
+    // Main ring for each layer
+    const ring = createTorus(2.0 - i * 0.15, 0.04, 12, 80,
+      brassMaterial({ color: layer.color })
+    );
+    ring.rotation.x = Math.PI / 2;
+    group.add(ring);
+
+    // Inner mechanism per layer
+    if (i === 0) {
+      // Consensus: mainspring coil
+      for (let j = 0; j < 3; j++) {
+        const coilRing = createTorus(0.6 + j * 0.3, 0.02, 8, 40,
+          brassMaterial({ color: BRASS_HOT, roughness: 0.3 })
+        );
+        coilRing.rotation.x = Math.PI / 2;
+        coilRing.rotation.y = j * 0.3;
+        group.add(coilRing);
+      }
+    } else if (i === 1) {
+      // Execution: gear train (escapement)
+      const eg = createGear(0.5, 12, 0.025, brassMaterial());
+      group.add(eg);
+      const eg2 = createGear(0.3, 8, 0.02, roseGoldMaterial());
+      eg2.position.x = 0.75;
+      group.add(eg2);
+    } else if (i === 2) {
+      // Precompiles: three small jeweled bearings
+      for (let j = 0; j < 3; j++) {
+        const bearing = new THREE.Mesh(
+          new THREE.SphereGeometry(0.12, 16, 16),
+          new THREE.MeshStandardMaterial({
+            color: [ROSE_NEON, BRASS_HOT, new THREE.Color(0x9ab5a3)][j],
+            metalness: 0.9,
+            roughness: 0.1,
+            emissive: [ROSE_NEON, BRASS_HOT, new THREE.Color(0x9ab5a3)][j],
+            emissiveIntensity: 0.4
+          })
+        );
+        bearing.position.x = (j - 1) * 0.8;
+        group.add(bearing);
+      }
+    } else if (i === 3) {
+      // Knowledge: dial face
+      const dial = new THREE.Mesh(
+        new THREE.CircleGeometry(0.8, 32),
+        new THREE.MeshStandardMaterial({
+          color: new THREE.Color(0x0a0808),
+          metalness: 0.5,
+          roughness: 0.6,
+          emissive: new THREE.Color(0x200810),
+          emissiveIntensity: 0.2
+        })
+      );
+      dial.rotation.x = -Math.PI / 2;
+      group.add(dial);
+
+      // Dial markings
+      for (let j = 0; j < 12; j++) {
+        const angle = (j / 12) * Math.PI * 2;
+        const mark = new THREE.Mesh(
+          new THREE.BoxGeometry(0.02, 0.01, 0.08),
+          roseGoldMaterial()
+        );
+        mark.position.set(Math.cos(angle) * 0.7, 0.01, Math.sin(angle) * 0.7);
+        mark.lookAt(0, 0.01, 0);
+        group.add(mark);
+      }
+    } else {
+      // P2P: network lines
+      for (let j = 0; j < 6; j++) {
+        const angle = (j / 6) * Math.PI * 2;
+        const line = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.01, 0.01, 1.2, 4),
+          brassMaterial({ color: BRASS_DIM, roughness: 0.6 })
+        );
+        line.position.set(Math.cos(angle) * 0.6, 0, Math.sin(angle) * 0.6);
+        line.rotation.z = Math.PI / 2;
+        line.rotation.y = angle;
+        group.add(line);
+      }
+    }
+
+    // Connecting rods between layers
+    if (i < layers.length - 1) {
+      for (let j = 0; j < 3; j++) {
+        const angle = (j / 3) * Math.PI * 2 + i * 0.3;
+        const rod = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.012, 0.012, 0.8, 6),
+          brassMaterial({ color: BRASS_DIM, roughness: 0.5 })
+        );
+        rod.position.set(
+          Math.cos(angle) * 1.5,
+          -0.5,
+          Math.sin(angle) * 1.5
+        );
+        group.add(rod);
+      }
+    }
+
+    clockGroup.add(group);
+    layerMeshes.push(group);
+  });
+
+  scene.add(clockGroup);
+
+  scenes.chain = { s, clockGroup, layerMeshes };
+
+  function animate() {
+    animationFrames.chain = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    clockGroup.rotation.y = t * 0.06;
+
+    // Each layer rotates slightly differently
+    layerMeshes.forEach((layer, i) => {
+      // Internal rotations
+      layer.children.forEach((child, ci) => {
+        if (ci === 0) {
+          // Main ring
+          child.rotation.z = t * (0.05 + i * 0.02) * (i % 2 ? 1 : -1);
+        }
+      });
+      // Gentle floating
+      layer.position.y = layers[i].y + Math.sin(t * 0.5 + i * 0.5) * 0.05;
+    });
+
+    // Gears in execution layer
+    if (layerMeshes[1]) {
+      const execChildren = layerMeshes[1].children;
+      if (execChildren[1]) execChildren[1].rotation.z = t * 0.4;
+      if (execChildren[2]) execChildren[2].rotation.z = -t * 0.7;
+    }
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 4: HDC — CIPHER MACHINE
+// ========================
+function initHDCScene() {
+  const s = makeScene('hdc3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 0, 8);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.3, 25);
+  light1.position.set(4, 4, 6);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.7, 20);
+  light2.position.set(-3, -2, 5);
+  scene.add(light2);
+
+  const machineGroup = new THREE.Group();
+
+  // Combination lock / cipher wheels
+  const wheels = [];
+  const numWheels = 8;
+  for (let i = 0; i < numWheels; i++) {
+    const wheelGroup = new THREE.Group();
+    const x = (i - (numWheels - 1) / 2) * 0.7;
+
+    // Main wheel
+    const wheel = createTorus(0.6, 0.08, 12, 40,
+      brassMaterial({
+        color: i % 2 === 0 ? BRASS : ROSE_GOLD,
+        roughness: 0.3
+      })
+    );
+    wheel.rotation.y = Math.PI / 2;
+    wheelGroup.add(wheel);
+
+    // Notches on wheel
+    for (let j = 0; j < 10; j++) {
+      const angle = (j / 10) * Math.PI * 2;
+      const notch = new THREE.Mesh(
+        new THREE.BoxGeometry(0.04, 0.18, 0.04),
+        brassMaterial({ color: BRASS_HOT })
+      );
+      notch.position.set(0, Math.cos(angle) * 0.6, Math.sin(angle) * 0.6);
+      notch.rotation.x = angle;
+      wheelGroup.add(notch);
+    }
+
+    wheelGroup.position.x = x;
+    machineGroup.add(wheelGroup);
+    wheels.push({ group: wheelGroup, wheel, speed: 0.1 + i * 0.05, targetAngle: 0 });
+  }
+
+  // Frame around the wheels
+  const frameTop = new THREE.Mesh(
+    new THREE.BoxGeometry(numWheels * 0.7 + 0.6, 0.04, 0.04),
+    brassMaterial({ color: BRASS_DIM })
+  );
+  frameTop.position.y = 0.9;
+  machineGroup.add(frameTop);
+
+  const frameBottom = new THREE.Mesh(
+    new THREE.BoxGeometry(numWheels * 0.7 + 0.6, 0.04, 0.04),
+    brassMaterial({ color: BRASS_DIM })
+  );
+  frameBottom.position.y = -0.9;
+  machineGroup.add(frameBottom);
+
+  // Side plates
+  for (let side = -1; side <= 1; side += 2) {
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 1.84, 0.6),
+      brassMaterial({ color: BRASS_DIM, roughness: 0.5 })
+    );
+    plate.position.x = side * (numWheels * 0.7 / 2 + 0.3);
+    machineGroup.add(plate);
+  }
+
+  // Central axis rod
+  const axisRod = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.015, 0.015, numWheels * 0.7 + 0.2, 8),
+    brassMaterial({ color: BRASS_DIM })
+  );
+  axisRod.rotation.z = Math.PI / 2;
+  machineGroup.add(axisRod);
+
+  // "Bits" flowing — small cubes representing data
+  const bits = [];
+  for (let i = 0; i < 30; i++) {
+    const bit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.04, 0.04),
+      new THREE.MeshStandardMaterial({
+        color: Math.random() > 0.5 ? BRASS_HOT : ROSE_NEON,
+        emissive: Math.random() > 0.5 ? BRASS_HOT : ROSE_NEON,
+        emissiveIntensity: 0.6,
+        metalness: 0.5,
+        roughness: 0.3
+      })
+    );
+    const startX = (Math.random() - 0.5) * 6;
+    const startY = 3 + Math.random() * 2;
+    bit.position.set(startX, startY, (Math.random() - 0.5) * 2);
+    bits.push({ mesh: bit, vx: (Math.random() - 0.5) * 0.02, vy: -0.01 - Math.random() * 0.02, phase: Math.random() * Math.PI * 2 });
+    machineGroup.add(bit);
+  }
+
+  machineGroup.position.y = 0.5;
+  scene.add(machineGroup);
+
+  scenes.hdc = { s, machineGroup, wheels, bits };
+
+  // HDC step click handler
+  let currentHdcStep = 0;
+  document.querySelectorAll('#hdcSteps .hdc-step').forEach((stepEl, i) => {
+    stepEl.addEventListener('click', () => {
+      currentHdcStep = i;
+      document.querySelectorAll('#hdcSteps .hdc-step').forEach((s, j) => {
+        s.classList.toggle('active-step', j === i);
+      });
+      // Change wheel speeds based on step
+      wheels.forEach((w, wi) => {
+        if (i === 0) w.speed = 0.05 + wi * 0.02; // slow discovery
+        else if (i === 1) w.speed = 0.2 + wi * 0.08; // fast encoding
+        else if (i === 2) w.speed = 0.02; // posting (settling)
+        else if (i === 3) w.speed = 0.3 + Math.random() * 0.2; // searching
+        else w.speed = 0.01; // compounding (steady)
+      });
+    });
+  });
+
+  function animate() {
+    animationFrames.hdc = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    machineGroup.rotation.y = Math.sin(t * 0.04) * 0.15;
+    machineGroup.rotation.x = Math.sin(t * 0.03) * 0.05;
+
+    // Wheels rotate
+    wheels.forEach((w, i) => {
+      w.wheel.rotation.x += w.speed * 0.03;
+      w.group.children.forEach((child, ci) => {
+        if (ci > 0) {
+          // Notches follow wheel
+        }
+      });
+    });
+
+    // Bits falling and recycling
+    for (const bit of bits) {
+      bit.mesh.position.x += bit.vx;
+      bit.mesh.position.y += bit.vy;
+      bit.mesh.rotation.x += 0.03;
+      bit.mesh.rotation.z += 0.02;
+
+      // Reset when fallen below
+      if (bit.mesh.position.y < -3) {
+        bit.mesh.position.y = 3 + Math.random() * 2;
+        bit.mesh.position.x = (Math.random() - 0.5) * 5;
+        bit.vx = (Math.random() - 0.5) * 0.02;
+      }
+    }
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 5: ISFR — GEAR REDUCER
+// ========================
+function initISFRScene() {
+  const s = makeScene('isfr3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 1, 9);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.3, 30);
+  light1.position.set(5, 4, 6);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.6, 20);
+  light2.position.set(-4, -2, 5);
+  scene.add(light2);
+
+  const isfrGroup = new THREE.Group();
+
+  // Four input dials (data sources) — left side
+  const inputDials = [];
+  const dialLabels = ['LENDING', 'STRUCTURED', 'FUNDING', 'STAKING'];
+  const dialWeights = [0.6, 0.25, 0.1, 0.05];
+  const dialColors = [BRASS_HOT, BRASS, ROSE_GOLD, BONE];
+
+  for (let i = 0; i < 4; i++) {
+    const dialGroup = new THREE.Group();
+    const y = (i - 1.5) * 1.1;
+
+    // Dial face
+    const dial = new THREE.Mesh(
+      new THREE.CircleGeometry(0.35 + dialWeights[i] * 0.3, 24),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(0x0a0808),
+        metalness: 0.5, roughness: 0.5,
+        side: THREE.DoubleSide
+      })
+    );
+    dial.rotation.y = Math.PI / 2;
+    dialGroup.add(dial);
+
+    // Dial rim
+    const rim = createTorus(0.35 + dialWeights[i] * 0.3, 0.025, 8, 40,
+      brassMaterial({ color: dialColors[i] })
+    );
+    rim.rotation.y = Math.PI / 2;
+    dialGroup.add(rim);
+
+    // Dial hand (needle)
+    const hand = new THREE.Mesh(
+      new THREE.BoxGeometry(0.015, 0.3 + dialWeights[i] * 0.15, 0.015),
+      roseGoldMaterial()
+    );
+    hand.position.z = 0.01;
+    dialGroup.add(hand);
+
+    // Tick marks
+    for (let j = 0; j < 8; j++) {
+      const angle = (j / 8) * Math.PI * 2;
+      const tick = new THREE.Mesh(
+        new THREE.BoxGeometry(0.01, 0.06, 0.01),
+        brassMaterial({ color: dialColors[i] })
+      );
+      const r = 0.3 + dialWeights[i] * 0.25;
+      tick.position.set(0, Math.cos(angle) * r, Math.sin(angle) * r + 0.01);
+      tick.rotation.x = angle;
+      dialGroup.add(tick);
+    }
+
+    dialGroup.position.set(-3, y, 0);
+    isfrGroup.add(dialGroup);
+    inputDials.push({ group: dialGroup, hand, speed: 0.1 + dialWeights[i] * 0.3 });
+  }
+
+  // Gear reducer (center) — multiple meshing gears reducing to single output
+  const reducer = new THREE.Group();
+
+  const rg1 = createGear(0.8, 16, 0.04, brassMaterial());
+  reducer.add(rg1);
+
+  const rg2 = createGear(0.5, 10, 0.035, roseGoldMaterial());
+  rg2.position.set(1.2, 0.3, 0.05);
+  reducer.add(rg2);
+
+  const rg3 = createGear(0.35, 8, 0.03, brassMaterial({ color: BRASS_HOT }));
+  rg3.position.set(1.8, -0.2, 0.08);
+  reducer.add(rg3);
+
+  reducer.position.set(0, 0, 0);
+  isfrGroup.add(reducer);
+
+  // Connecting shafts from dials to reducer
+  for (let i = 0; i < 4; i++) {
+    const y = (i - 1.5) * 1.1;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.01, 2.5, 6),
+      brassMaterial({ color: BRASS_DIM })
+    );
+    shaft.rotation.z = Math.PI / 2;
+    shaft.position.set(-1.5, y, 0);
+    isfrGroup.add(shaft);
+  }
+
+  // Output gauge (right side) — single large dial
+  const outputGroup = new THREE.Group();
+  outputGroup.position.set(3.2, 0, 0);
+
+  // Output gauge face
+  const outputFace = new THREE.Mesh(
+    new THREE.CircleGeometry(0.7, 32),
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x080608),
+      metalness: 0.4, roughness: 0.5,
+      side: THREE.DoubleSide
+    })
+  );
+  outputFace.rotation.y = Math.PI / 2;
+  outputGroup.add(outputFace);
+
+  // Output rim (ornate)
+  const outputRim = createTorus(0.7, 0.04, 12, 60,
+    roseGoldMaterial({ emissive: new THREE.Color(0x301018), emissiveIntensity: 0.4 })
+  );
+  outputRim.rotation.y = Math.PI / 2;
+  outputGroup.add(outputRim);
+
+  // Output needle
+  const outputNeedle = new THREE.Mesh(
+    new THREE.BoxGeometry(0.02, 0.55, 0.02),
+    new THREE.MeshStandardMaterial({
+      color: ROSE_NEON,
+      emissive: ROSE_NEON,
+      emissiveIntensity: 0.5,
+      metalness: 0.5,
+      roughness: 0.2
+    })
+  );
+  outputNeedle.position.z = 0.02;
+  outputGroup.add(outputNeedle);
+
+  // Gauge markings
+  for (let j = 0; j < 12; j++) {
+    const angle = (j / 12) * Math.PI * 2;
+    const mark = new THREE.Mesh(
+      new THREE.BoxGeometry(0.01, j % 3 === 0 ? 0.1 : 0.06, 0.01),
+      roseGoldMaterial()
+    );
+    mark.position.set(0.01, Math.cos(angle) * 0.6, Math.sin(angle) * 0.6);
+    mark.rotation.x = angle;
+    outputGroup.add(mark);
+  }
+
+  isfrGroup.add(outputGroup);
+
+  // Connecting shaft from reducer to output
+  const outputShaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 1.5, 6),
+    brassMaterial({ color: BRASS_DIM })
+  );
+  outputShaft.rotation.z = Math.PI / 2;
+  outputShaft.position.set(2.3, 0, 0);
+  isfrGroup.add(outputShaft);
+
+  isfrGroup.position.y = -0.5;
+  scene.add(isfrGroup);
+
+  scenes.isfr = { s, isfrGroup, inputDials, reducer, rg1, rg2, rg3, outputNeedle };
+
+  function animate() {
+    animationFrames.isfr = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    isfrGroup.rotation.y = Math.sin(t * 0.04) * 0.1;
+
+    // Input dial hands rotate
+    inputDials.forEach((d, i) => {
+      d.hand.rotation.z = Math.sin(t * d.speed + i) * 1.5;
+    });
+
+    // Reducer gears
+    rg1.rotation.z = t * 0.3;
+    rg2.rotation.z = -t * 0.5;
+    rg3.rotation.z = t * 0.8;
+
+    // Output needle sweeps
+    outputNeedle.rotation.z = Math.sin(t * 0.2) * 0.8;
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE 6: COLLECTIVE — GROWING ORRERY
+// ========================
+function initCollectiveScene() {
+  const s = makeScene('collective3d');
+  if (!s) return;
+  const { scene, camera, renderer } = s;
+  camera.position.set(0, 3, 10);
+  camera.lookAt(0, 0, 0);
+
+  const light1 = new THREE.PointLight(0xe6c888, 1.5, 35);
+  light1.position.set(5, 5, 7);
+  scene.add(light1);
+
+  const light2 = new THREE.PointLight(0xdca5bd, 0.8, 25);
+  light2.position.set(-4, -2, 5);
+  scene.add(light2);
+
+  const orreryGroup = new THREE.Group();
+
+  // Central mechanism (chain core) — always present
+  const centralGear = createGear(0.6, 16, 0.04, roseGoldMaterial({
+    emissive: new THREE.Color(0x301018), emissiveIntensity: 0.3
+  }));
+  orreryGroup.add(centralGear);
+
+  const centralSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 16, 16),
+    new THREE.MeshStandardMaterial({
+      color: ROSE_NEON,
+      emissive: ROSE_NEON,
+      emissiveIntensity: 0.6,
+      metalness: 0.5,
+      roughness: 0.2
+    })
+  );
+  orreryGroup.add(centralSphere);
+
+  // Dynamic orbital bodies — managed by slider
+  let orbitals = [];
+  const MAX_VISIBLE = 60; // max rendered for performance
+
+  function buildOrrery(count) {
+    // Remove old orbitals
+    for (const o of orbitals) {
+      orreryGroup.remove(o.mesh);
+      if (o.orbit) orreryGroup.remove(o.orbit);
+      if (o.connection) orreryGroup.remove(o.connection);
+    }
+    orbitals = [];
+
+    const displayed = Math.min(count, MAX_VISIBLE);
+    const scale = count > 100 ? 0.7 : 1.0;
+
+    for (let i = 0; i < displayed; i++) {
+      const orbitRadius = 1.0 + (i / displayed) * 3.5 * scale;
+      const size = 0.04 + Math.random() * 0.06;
+      const tilt = (Math.random() - 0.5) * Math.PI * 0.8;
+      const speed = 0.15 + Math.random() * 0.4;
+      const phase = Math.random() * Math.PI * 2;
+
+      // Planet / moon
+      const colors = [BRASS, BRASS_HOT, ROSE_GOLD, BONE, ROSE_NEON, PATINA];
+      const c = colors[i % colors.length];
+      const planet = new THREE.Mesh(
+        new THREE.SphereGeometry(size, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: c,
+          metalness: 0.7,
+          roughness: 0.3,
+          emissive: c.clone().multiplyScalar(0.15),
+          emissiveIntensity: 0.4
+        })
+      );
+      orreryGroup.add(planet);
+
+      // Orbit track
+      const orbitTrack = createTorus(orbitRadius, 0.005, 6, 60,
+        new THREE.MeshBasicMaterial({ color: c.clone().multiplyScalar(0.2), transparent: true, opacity: 0.3 })
+      );
+      orbitTrack.rotation.x = Math.PI / 2 + tilt * 0.3;
+      orbitTrack.rotation.z = phase;
+      orreryGroup.add(orbitTrack);
+
+      // Connection gear (for some)
+      let gear = null;
+      if (i < displayed * 0.3) {
+        gear = createGear(0.15 + Math.random() * 0.1, 6, 0.01,
+          brassMaterial({ color: BRASS_DIM, roughness: 0.5 })
+        );
+        orreryGroup.add(gear);
+      }
+
+      orbitals.push({ mesh: planet, orbit: orbitTrack, connection: gear, orbitRadius, speed, phase, tilt });
+    }
+  }
+
+  buildOrrery(5);
+  scene.add(orreryGroup);
+
+  // Slider interaction
+  const slider = document.getElementById('agentSlider');
+  const countDisplay = document.getElementById('agentCountDisplay');
+  slider.addEventListener('input', () => {
+    const v = parseInt(slider.value);
+    countDisplay.textContent = v;
+    buildOrrery(v);
+  });
+
+  scenes.collective = { s, orreryGroup, centralGear, centralSphere, getOrbitals: () => orbitals };
+
+  function animate() {
+    animationFrames.collective = requestAnimationFrame(animate);
+    const t = globalTime;
+
+    orreryGroup.rotation.y = t * 0.03;
+
+    centralGear.rotation.z = t * 0.15;
+    centralSphere.material.emissiveIntensity = 0.4 + Math.sin(t * 2) * 0.2 + blockModulation * 0.5;
+
+    const currentOrbitals = orbitals;
+    for (const o of currentOrbitals) {
+      const angle = t * o.speed + o.phase;
+      o.mesh.position.x = Math.cos(angle) * o.orbitRadius;
+      o.mesh.position.y = Math.sin(angle) * o.orbitRadius * Math.sin(o.tilt);
+      o.mesh.position.z = Math.sin(angle) * o.orbitRadius * Math.cos(o.tilt);
+
+      if (o.connection) {
+        o.connection.position.copy(o.mesh.position);
+        o.connection.rotation.z = t * 0.5;
+      }
+    }
+
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ========================
+// PAGE LIFECYCLE
+// ========================
+function onPageEnter(idx) {
+  // Initialize scenes lazily on first visit
+  if (idx === 0 && !scenes.hero) initHeroScene();
+  if (idx === 1 && !scenes.plane) initPlaneScene();
+  if (idx === 2 && !scenes.components) initComponentsScene();
+  if (idx === 3 && !scenes.chain) initChainScene();
+  if (idx === 4 && !scenes.hdc) initHDCScene();
+  if (idx === 5 && !scenes.isfr) initISFRScene();
+  if (idx === 6 && !scenes.collective) initCollectiveScene();
+}
+
+// Initialize hero immediately
+initHeroScene();
+
+// Global animation clock
+function globalTick() {
+  globalTime += 0.016;
+  requestAnimationFrame(globalTick);
+}
+globalTick();
+
+</script>
+</body>
+</html>

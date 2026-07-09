@@ -1,0 +1,1732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nunchi — Series A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<style>
+/* ═══════════════════════════════════════════════════
+   ROSEDUST DESIGN SYSTEM v7
+   ═══════════════════════════════════════════════════ */
+:root {
+  --void: #050507;
+  --void-2: #08080c;
+  --raised: #0c0a0e;
+  --mid: #080810;
+  --border: #181420;
+  --border-live: rgba(170,112,136,0.32);
+
+  --rose: #aa7088;
+  --rose-hot: #cc90a8;
+  --rose-neon: #dca5bd;
+  --rose-dim: #7a5060;
+  --rose-deep: #3a2030;
+
+  --bone: #c8b890;
+  --bone-hot: #e6d4a6;
+  --bone-dim: #8a7a5a;
+
+  --dream: #585878;
+  --dream-bright: #7878a0;
+
+  --jade: #70887a;
+  --jade-hot: #9ab5a3;
+  --warn: #aa8855;
+
+  --t1: #988090;
+  --t-dim: #584858;
+  --ghost: #302830;
+
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --serif: "Fraunces", serif;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--void);
+  color: var(--t1);
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.5;
+  overflow: hidden;
+  width: 100%; height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Atmospheric Overlays ─── */
+.grain {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9998; opacity: 0.03;
+  mix-blend-mode: overlay;
+}
+.scanlines {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9997;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.12) 2px, rgba(0,0,0,0.12) 4px);
+  opacity: 0.05;
+}
+.vignette {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 9996;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%);
+}
+
+/* ─── Typography ─── */
+.headline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(32px, 4.5vw, 68px);
+  color: #d8c8d0;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-shadow: 0 0 40px rgba(170,112,136,0.15), 0 0 80px rgba(170,112,136,0.06);
+}
+.headline em {
+  color: var(--rose-neon);
+  font-style: italic;
+  text-shadow: 0 0 20px rgba(220,165,189,0.3), 0 0 60px rgba(220,165,189,0.12);
+}
+.body-text {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--t1);
+  max-width: 780px;
+}
+.body-text strong { color: var(--bone); font-weight: 500; }
+.body-text em { color: var(--rose-neon); font-style: italic; }
+
+.section-tag {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--rose-dim);
+  position: absolute;
+  top: 24px; left: 32px;
+  z-index: 10;
+}
+
+/* ─── Glass Panels ─── */
+.glass {
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  background: rgba(8,8,12,0.5);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 2px;
+}
+
+/* ─── Chassis ─── */
+.chassis {
+  background: linear-gradient(180deg, #0c0a0e, #080810);
+  border: 1px solid #1a1622;
+  border-radius: 2px;
+  position: relative;
+}
+.chassis .head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1a1622;
+  background: rgba(6,6,8,0.5);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78;
+}
+.chassis .head .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade), 0 0 12px rgba(112,136,122,0.3);
+  animation: ledPulse 2s ease-in-out infinite;
+}
+
+/* ─── HUD ─── */
+.hud {
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #7a6a78; background: rgba(6,6,8,0.78);
+  border: 1px solid #1a1622; padding: 10px 14px;
+  backdrop-filter: blur(4px);
+  border-radius: 1px;
+}
+.hud .v {
+  display: block; font-size: 16px; color: var(--rose-neon);
+  letter-spacing: 0.04em; margin-top: 4px; font-weight: 500;
+}
+
+/* ─── Pages ─── */
+.pages-container {
+  width: 100%; height: 100vh;
+  position: relative; overflow: hidden;
+}
+.page {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+  padding: 60px 48px 80px;
+  opacity: 0; transform: translateY(24px);
+  transition: opacity 400ms ease, transform 400ms ease;
+  pointer-events: none;
+  overflow: hidden;
+}
+.page.active {
+  opacity: 1; transform: translateY(0);
+  pointer-events: auto;
+}
+.page.exit-up {
+  opacity: 0; transform: translateY(-24px);
+}
+.page-inner {
+  width: 100%; max-width: 1200px;
+  display: flex; flex-direction: column;
+  position: relative; z-index: 5;
+}
+
+/* ─── Chain Status Bar ─── */
+.chain-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 32px;
+  display: flex; align-items: center;
+  gap: 16px; padding: 0 20px;
+  font-family: var(--mono);
+  font-size: 9.5px; letter-spacing: 0.14em;
+  color: var(--t-dim);
+  background: rgba(5,5,7,0.9);
+  border-top: 1px solid rgba(255,255,255,0.03);
+  z-index: 200;
+  backdrop-filter: blur(8px);
+  text-transform: uppercase;
+}
+.chain-led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #cc5555;
+  box-shadow: 0 0 6px #cc5555;
+  transition: background 0.4s, box-shadow 0.4s;
+}
+.chain-led.connected {
+  background: var(--jade);
+  box-shadow: 0 0 6px var(--jade);
+}
+
+/* ─── Navigation ─── */
+.nav-dots {
+  position: fixed;
+  bottom: 44px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 14px; z-index: 201;
+}
+.nav-dot {
+  width: 7px; height: 7px;
+  border: 1px solid var(--t-dim);
+  background: transparent;
+  cursor: pointer;
+  transform: rotate(45deg);
+  transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+}
+.nav-dot.active {
+  background: var(--rose-neon);
+  border-color: var(--rose-neon);
+  box-shadow: 0 0 8px rgba(220,165,189,0.35);
+}
+.nav-arrow {
+  position: fixed; bottom: 40px;
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--t-dim);
+  font-size: 16px; z-index: 201;
+  transition: color 0.2s;
+  user-select: none;
+  font-family: var(--mono);
+}
+.nav-arrow:hover { color: var(--rose-neon); }
+.nav-arrow.left { right: calc(50% + 72px); }
+.nav-arrow.right { left: calc(50% + 72px); }
+
+/* ─── Stat Tiles ─── */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin-top: auto;
+}
+.stat-tile {
+  background: linear-gradient(180deg, rgba(12,10,14,0.9), rgba(8,8,16,0.9));
+  border: 1px solid #1a1622;
+  padding: 16px 18px;
+  text-align: center;
+}
+.stat-tile .st-label {
+  font-family: var(--mono);
+  font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: #6a5a68;
+  margin-bottom: 8px;
+}
+.stat-tile .st-value {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(18px, 2vw, 28px);
+  color: var(--bone);
+}
+.stat-tile .st-note {
+  font-family: var(--mono);
+  font-size: 9px; color: var(--t-dim);
+  margin-top: 4px;
+}
+
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ─── Three.js canvas ─── */
+#threeBg {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 0; pointer-events: none;
+}
+
+/* ═══════════════════════════════════════
+   PAGE 1 — THE BIG PICTURE
+   ═══════════════════════════════════════ */
+.p1-content {
+  display: flex; flex-direction: column;
+  gap: 20px;
+  max-width: 860px;
+}
+
+/* ═══════════════════════════════════════
+   PAGE 2 — THE CHAIN
+   ═══════════════════════════════════════ */
+.p2-layout {
+  display: flex; gap: 40px; align-items: stretch;
+  width: 100%; max-width: 1200px;
+}
+.p2-text { flex: 0 0 380px; display: flex; flex-direction: column; gap: 14px; }
+.p2-visual { flex: 1; min-height: 320px; position: relative; }
+#p2Canvas { width: 100%; height: 100%; display: block; }
+.p2-tag {
+  position: absolute;
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.15em;
+  text-transform: uppercase; padding: 4px 10px;
+  background: rgba(6,6,8,0.85); border: 1px solid #1a1622;
+  backdrop-filter: blur(4px); white-space: nowrap;
+}
+.p2-tag.rose { color: var(--rose-hot); border-color: rgba(170,112,136,0.3); }
+.p2-tag.bone { color: var(--bone); border-color: rgba(138,122,90,0.3); }
+.p2-tag.dream { color: var(--dream-bright); border-color: rgba(88,88,120,0.3); }
+
+/* ═══════════════════════════════════════
+   PAGE 3 — CHAIN WITNESS
+   ═══════════════════════════════════════ */
+.p3-steps {
+  display: flex; gap: 2px;
+  width: 100%;
+  margin: 16px 0;
+}
+.p3-step {
+  flex: 1;
+  padding: 14px 8px 10px;
+  text-align: center;
+  background: rgba(8,8,12,0.7);
+  border: 1px solid #1a1622;
+  transition: all 0.5s ease;
+  position: relative;
+}
+.p3-step .step-name {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--t-dim);
+  transition: color 0.5s;
+}
+.p3-step .step-desc {
+  font-family: var(--mono); font-size: 8.5px;
+  color: var(--t-dim); margin-top: 6px;
+  opacity: 0; transition: opacity 0.4s;
+  line-height: 1.4;
+}
+.p3-step.lit {
+  border-color: var(--border-live);
+  background: rgba(58,32,48,0.15);
+  box-shadow: 0 0 16px rgba(170,112,136,0.08);
+}
+.p3-step.lit .step-name { color: var(--rose-neon); }
+.p3-step.lit .step-desc { opacity: 1; color: var(--t1); }
+.p3-step::after {
+  content: ''; position: absolute; right: -2px; top: 50%;
+  transform: translateY(-50%);
+  width: 0; height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 4px solid #1a1622;
+}
+.p3-step:last-child::after { display: none; }
+
+.p3-envelope {
+  padding: 16px 20px;
+  font-family: var(--mono); font-size: 12px;
+  line-height: 1.8; color: var(--t-dim);
+  max-width: 700px;
+}
+.p3-envelope .ek { color: var(--rose-dim); }
+.p3-envelope .ev { color: var(--bone); }
+.p3-envelope .ev-live { color: var(--jade-hot); }
+
+/* ═══════════════════════════════════════
+   PAGE 4 — HDC
+   ═══════════════════════════════════════ */
+.p4-layout {
+  display: flex; flex-direction: column; gap: 12px;
+  width: 100%; max-width: 1100px;
+}
+.p4-scenario {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+}
+.p4-panel {
+  padding: 14px 16px;
+}
+.p4-panel .panel-title {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--rose-dim); margin-bottom: 10px;
+}
+.p4-tx {
+  font-family: var(--mono); font-size: 12px;
+  color: var(--bone); line-height: 1.6;
+}
+.p4-tx .dim { color: var(--t-dim); }
+
+.p4-ribbon-row {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 10px;
+  margin-bottom: 4px;
+}
+.p4-ribbon-label { color: var(--rose-dim); width: 72px; text-align: right; letter-spacing: 0.1em; text-transform: uppercase; flex-shrink: 0; }
+.p4-ribbon {
+  display: flex; gap: 1px; flex: 1;
+}
+.p4-ribbon .bit {
+  width: 6px; height: 12px; border-radius: 1px;
+  transition: background 0.3s;
+}
+.p4-ribbon .bit.on { background: var(--rose); }
+.p4-ribbon .bit.off { background: rgba(24,20,32,0.8); }
+.p4-ribbon-desc {
+  font-size: 9px; color: var(--t-dim); flex-shrink: 0;
+}
+.p4-query-row {
+  background: var(--rose-deep);
+  border: 1px solid var(--border-live);
+  padding: 6px 12px; margin-top: 4px;
+  display: flex; align-items: center; gap: 10px;
+}
+
+.p4-match {
+  padding: 10px 14px; margin-bottom: 4px;
+  border: 1px solid #1a1622;
+  background: rgba(8,8,12,0.6);
+  font-family: var(--mono); font-size: 11px;
+  transition: all 0.6s ease;
+}
+.p4-match.glow {
+  border-color: var(--border-live);
+  box-shadow: 0 0 12px rgba(170,112,136,0.1);
+}
+.p4-match .pct { color: var(--jade-hot); font-weight: 500; }
+.p4-match .desc { color: var(--t1); margin-left: 8px; }
+
+.p4-bars { margin-top: 8px; }
+.p4-bar-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 6px;
+  font-family: var(--mono); font-size: 10px;
+}
+.p4-bar-label { width: 110px; color: var(--t-dim); text-align: right; text-transform: uppercase; letter-spacing: 0.1em; }
+.p4-bar-track { flex: 1; height: 10px; background: rgba(24,20,32,0.5); border-radius: 1px; overflow: hidden; position: relative; }
+.p4-bar-fill { height: 100%; border-radius: 1px; transition: width 1s ease; }
+.p4-bar-fill.rose { background: linear-gradient(90deg, var(--rose-dim), var(--rose-hot)); }
+.p4-bar-fill.bone { background: linear-gradient(90deg, var(--bone-dim), var(--bone)); }
+.p4-bar-fill.dream { background: linear-gradient(90deg, var(--dream), var(--dream-bright)); }
+.p4-bar-time { width: 60px; color: var(--bone); font-weight: 500; }
+.p4-bar-note { color: var(--t-dim); font-size: 9px; }
+
+.p4-insight {
+  font-family: var(--mono); font-size: 11px; color: var(--t-dim);
+  font-style: italic; margin-top: 6px; text-align: center;
+}
+
+/* ═══════════════════════════════════════
+   PAGE 5 — ISFR
+   ═══════════════════════════════════════ */
+.p5-flow {
+  display: grid; grid-template-columns: 220px 1fr 260px; gap: 20px;
+  width: 100%; max-width: 1100px;
+  align-items: stretch;
+}
+.p5-sources { display: flex; flex-direction: column; gap: 6px; }
+.p5-source {
+  padding: 10px 14px;
+  font-family: var(--mono); font-size: 11px;
+  display: flex; justify-content: space-between;
+  border: 1px solid #1a1622;
+  background: rgba(8,8,12,0.7);
+}
+.p5-source .name { color: var(--t1); }
+.p5-source .rate { color: var(--bone-hot); font-weight: 500; }
+
+.p5-agents {
+  position: relative;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+#p5AgentCanvas { width: 100%; height: 100%; display: block; }
+
+.p5-output {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.p5-weight-row {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 11px;
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(24,20,32,0.5);
+}
+.p5-weight-row .cat { color: var(--t-dim); }
+.p5-weight-row .wt { color: var(--t-dim); }
+.p5-weight-row .rt { color: var(--bone); }
+.p5-composite {
+  padding: 12px 14px;
+  text-align: center;
+  border-top: 1px solid var(--border-live);
+}
+.p5-composite .label { font-family: var(--mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rose-dim); }
+.p5-composite .val {
+  font-family: var(--serif); font-style: italic;
+  font-size: 32px; color: var(--rose-neon);
+  text-shadow: 0 0 20px rgba(220,165,189,0.25);
+}
+
+.p5-bottom-text {
+  font-family: var(--mono); font-size: 10px; color: var(--t-dim);
+  max-width: 900px; text-align: center; margin-top: 12px;
+  line-height: 1.6;
+}
+
+/* ═══════════════════════════════════════
+   PAGE 6 — COLLECTIVE INTELLIGENCE
+   ═══════════════════════════════════════ */
+.p6-layout {
+  width: 100%; max-width: 1100px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.p6-swarm-chassis {
+  flex: 1;
+  min-height: 0;
+}
+.p6-swarm-chassis .head {
+  padding: 10px 18px;
+}
+#p6Canvas {
+  width: 100%;
+  height: 260px;
+  display: block;
+}
+.p6-stats-bar {
+  display: flex; justify-content: space-between;
+  padding: 8px 18px;
+  border-top: 1px solid #1a1622;
+  font-family: var(--mono); font-size: 10px;
+  color: var(--t-dim); letter-spacing: 0.1em;
+}
+.p6-stats-bar .sv { color: var(--rose-neon); font-weight: 500; }
+
+.p6-slider-row {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px;
+  background: rgba(8,8,12,0.6);
+  border: 1px solid #1a1622;
+}
+.p6-slider-label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em;
+  text-transform: uppercase; color: var(--t-dim);
+  white-space: nowrap;
+}
+.p6-slider-val {
+  font-family: var(--mono); font-size: 16px;
+  color: var(--rose-neon); font-weight: 500;
+  min-width: 50px; text-align: right;
+}
+.p6-slider {
+  flex: 1;
+  -webkit-appearance: none; appearance: none;
+  height: 3px; background: #1a1622;
+  outline: none; border-radius: 1px;
+}
+.p6-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px;
+  background: var(--rose-neon);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(220,165,189,0.4);
+}
+.p6-phase {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--t-dim); letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.p6-insight {
+  font-family: var(--serif); font-style: italic;
+  font-size: 13px; color: var(--t-dim);
+  text-align: center;
+}
+</style>
+</head>
+<body>
+
+<!-- Atmospheric overlays -->
+<svg class="grain" width="100%" height="100%">
+  <filter id="noiseFilter"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter>
+  <rect width="100%" height="100%" filter="url(#noiseFilter)"/>
+</svg>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<!-- Three.js background -->
+<canvas id="threeBg"></canvas>
+
+<!-- ═══════════════════════════════════════
+     PAGES
+     ═══════════════════════════════════════ -->
+<div class="pages-container">
+
+  <!-- PAGE 1: THE BIG PICTURE -->
+  <div class="page active" id="page0">
+    <span class="section-tag">&mdash;&mdash; 01 &middot; the big picture</span>
+    <div class="page-inner p1-content">
+      <h1 class="headline">Every other agent framework is <em>amnesiac.</em></h1>
+      <p class="body-text">Nunchi is one integrated system. <strong>Roko</strong> &mdash; a cognitive runtime, 177K lines of Rust. The <strong>Nunchi chain</strong> &mdash; a blockchain purpose-built for agent coordination. Session #1000 starts smarter than session #1.</p>
+      <div class="stat-row">
+        <div class="stat-tile glass">
+          <div class="st-label">Coordination Failure</div>
+          <div class="st-value">79%</div>
+          <div class="st-note">of multi-agent failures</div>
+        </div>
+        <div class="stat-tile glass">
+          <div class="st-label">TradFi Rate Gap</div>
+          <div class="st-value">6 orders</div>
+          <div class="st-note">of magnitude</div>
+        </div>
+        <div class="stat-tile glass">
+          <div class="st-label">Cost Reduction</div>
+          <div class="st-value">~30x</div>
+          <div class="st-note">composed vs. raw</div>
+        </div>
+        <div class="stat-tile glass">
+          <div class="st-label">Collective Ctx</div>
+          <div class="st-value">+78%</div>
+          <div class="st-note">same model, shared knowledge</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 2: THE CHAIN -->
+  <div class="page" id="page1">
+    <span class="section-tag">&mdash;&mdash; 02 &middot; the chain</span>
+    <div class="page-inner">
+      <div class="p2-layout">
+        <div class="p2-text">
+          <h1 class="headline" style="font-size:clamp(26px,3.5vw,48px)">A library, not a ledger. Every block is a <em>glass prism</em> carrying signals forward.</h1>
+          <p class="body-text" style="font-size:13px;">Nunchi is a sovereign EVM Layer 1 &mdash; not a rollup, not a sidechain. Co-located validators for ~50ms blocks. Simplex BFT consensus. Three native precompiles no general-purpose chain has: agent identity, HDC similarity, and ISFR oracles.</p>
+          <div class="stat-row" style="grid-template-columns: repeat(4, 1fr); margin-top: auto;">
+            <div class="stat-tile glass" style="padding: 10px 12px;">
+              <div class="st-label" style="font-size:8px;">Block Time</div>
+              <div class="st-value" style="font-size:20px;">~50ms</div>
+            </div>
+            <div class="stat-tile glass" style="padding: 10px 12px;">
+              <div class="st-label" style="font-size:8px;">Finality</div>
+              <div class="st-value" style="font-size:20px;">single-slot</div>
+            </div>
+            <div class="stat-tile glass" style="padding: 10px 12px;">
+              <div class="st-label" style="font-size:8px;">Validators</div>
+              <div class="st-value" style="font-size:20px;">21</div>
+            </div>
+            <div class="stat-tile glass" style="padding: 10px 12px;">
+              <div class="st-label" style="font-size:8px;">Knowledge Types</div>
+              <div class="st-value" style="font-size:20px;">6</div>
+            </div>
+          </div>
+        </div>
+        <div class="p2-visual">
+          <canvas id="p2Canvas"></canvas>
+          <div class="p2-tag rose" style="top: 10%; right: 6%;">Agent Registry (0x08)</div>
+          <div class="p2-tag bone" style="top: 42%; right: 3%;">HDC Precompile (0x09)</div>
+          <div class="p2-tag dream" style="top: 74%; right: 8%;">ISFR Oracle (0xA01)</div>
+          <div class="p2-tag bone" style="top: 56%; left: 4%; font-size:8px; opacity:0.7;">sm_root: BLAKE3 Merkle over all knowledge per block</div>
+          <div class="p2-tag rose" style="top: 26%; left: 4%; font-size:8px; opacity:0.7;">Demurrage: uncited knowledge decays &amp; is pruned</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 3: CHAIN WITNESS -->
+  <div class="page" id="page2">
+    <span class="section-tag">&mdash;&mdash; 03 &middot; chain witness</span>
+    <div class="page-inner" style="gap: 14px;">
+      <h1 class="headline" style="font-size:clamp(28px,3.8vw,56px)">Not logging &mdash; <em>witnessing.</em></h1>
+      <p class="body-text" style="font-size:13px;">Every agent action flows through 8 steps. Each step signed. Each signature anchored on chain. A log can be edited. A witness cannot. This is what Article 50 of the EU AI Act requires by August 2, 2026.</p>
+      <div class="p3-steps" id="p3Steps">
+        <div class="p3-step" data-desc="Intent received, tokenized"><span class="step-name">Prompt</span><span class="step-desc">Intent received, tokenized</span></div>
+        <div class="p3-step" data-desc="Decompose into subtasks"><span class="step-name">Plan</span><span class="step-desc">Decompose into subtasks</span></div>
+        <div class="p3-step" data-desc="Cheapest capable model"><span class="step-name">Route</span><span class="step-desc">Cheapest capable model</span></div>
+        <div class="p3-step" data-desc="11 gates verify"><span class="step-name">Gate</span><span class="step-desc">11 gates verify</span></div>
+        <div class="p3-step" data-desc="Execute, signed, bounded"><span class="step-name">Call</span><span class="step-desc">Execute, signed, bounded</span></div>
+        <div class="p3-step" data-desc="Tokens, latency, cost"><span class="step-name">Observe</span><span class="step-desc">Tokens, latency, cost</span></div>
+        <div class="p3-step" data-desc="HDC fingerprint to chain"><span class="step-name">Deposit</span><span class="step-desc">HDC fingerprint &rarr; chain</span></div>
+        <div class="p3-step" data-desc="Ed25519 signed"><span class="step-name">Attest</span><span class="step-desc" id="p3AttestDesc">Ed25519 &rarr; block #&mdash;</span></div>
+      </div>
+      <div class="p3-envelope glass" id="p3Envelope">
+        <span class="ek">agent:</span> <span class="ev">"researcher@v2"</span>, <span class="ek">cost:</span> <span class="ev">"$0.003"</span>, <span class="ek">gates:</span> <span class="ev">11/11</span>, <span class="ek">block:</span> <span class="ev-live" id="p3Block">#&mdash;</span>, <span class="ek">hash:</span> <span class="ev-live" id="p3Hash">0x&mdash;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 4: HDC -->
+  <div class="page" id="page3">
+    <span class="section-tag">&mdash;&mdash; 04 &middot; hdc retrieval</span>
+    <div class="page-inner p4-layout">
+      <h1 class="headline" style="font-size:clamp(24px,3.2vw,44px); margin-bottom: 4px;">10,000-bit vectors. <em>0.17ms</em> exact search.</h1>
+      <p class="body-text" style="font-size:12px; margin-bottom: 4px;">Every piece of agent knowledge is encoded as a point in 10,000-dimensional space. Three operations &mdash; Bind, Bundle, Permute &mdash; compose and search knowledge in nanoseconds.</p>
+      <div class="p4-scenario">
+        <!-- Step 1: Transaction -->
+        <div class="p4-panel chassis">
+          <div class="panel-title">Step 1 &middot; Encounter</div>
+          <div class="p4-tx">
+            <span class="dim">POOL:</span> ETH/USDC<br>
+            <span class="dim">ACTION:</span> swap<br>
+            <span class="dim">GAS:</span> 182,419<br>
+            <span class="dim">CHAIN:</span> mainnet
+          </div>
+        </div>
+        <!-- Step 2: Encode -->
+        <div class="p4-panel chassis">
+          <div class="panel-title">Step 2 &middot; Encode as HDC</div>
+          <div id="p4Ribbons"></div>
+        </div>
+        <!-- Step 3: Search -->
+        <div class="p4-panel chassis">
+          <div class="panel-title">Step 3 &middot; Search 100K episodes</div>
+          <div class="p4-match glow"><span class="pct">97.2%</span><span class="desc">V3 ETH/USDC swap, 178K gas, multicall</span></div>
+          <div class="p4-match glow" style="transition-delay:0.2s"><span class="pct">94.1%</span><span class="desc">V3 ETH/USDT swap, 185K gas, 0.3% slip</span></div>
+          <div class="p4-match glow" style="transition-delay:0.4s"><span class="pct">89.7%</span><span class="desc">Sushi ETH/USDC, 201K gas, retry</span></div>
+        </div>
+      </div>
+      <!-- Speed comparison -->
+      <div class="p4-bars">
+        <div class="p4-bar-row">
+          <div class="p4-bar-label">HDC Hamming</div>
+          <div class="p4-bar-track"><div class="p4-bar-fill rose" id="barHDC" style="width:0%"></div></div>
+          <div class="p4-bar-time">0.17ms</div>
+          <div class="p4-bar-note">exact + semantic</div>
+        </div>
+        <div class="p4-bar-row">
+          <div class="p4-bar-label">SQL Keyword</div>
+          <div class="p4-bar-track"><div class="p4-bar-fill bone" id="barSQL" style="width:0%"></div></div>
+          <div class="p4-bar-time">0.10ms</div>
+          <div class="p4-bar-note">exact, no semantic</div>
+        </div>
+        <div class="p4-bar-row">
+          <div class="p4-bar-label">Qdrant HNSW</div>
+          <div class="p4-bar-track"><div class="p4-bar-fill dream" id="barQD" style="width:0%"></div></div>
+          <div class="p4-bar-time">12ms</div>
+          <div class="p4-bar-note">approximate</div>
+        </div>
+      </div>
+      <div class="p4-insight">"SQL is fast but can't find semantic similarity. Vector DBs can but take 70x longer. HDC does both."</div>
+    </div>
+  </div>
+
+  <!-- PAGE 5: ISFR -->
+  <div class="page" id="page4">
+    <span class="section-tag">&mdash;&mdash; 05 &middot; isfr oracle</span>
+    <div class="page-inner" style="gap: 10px;">
+      <h1 class="headline" style="font-size:clamp(22px,3vw,42px)">The first benchmark rate for DeFi. <em>The first of many.</em></h1>
+      <p class="body-text" style="font-size:11px; margin-bottom: 4px;">ISFR is a composite benchmark &mdash; like SOFR for crypto. Agents query rates from lending, structured, funding, and staking protocols, then post the aggregate to the chain every 10 seconds. The gap between $668T in TradFi rate derivatives and &lt;$100M in DeFi is a missing primitive.</p>
+      <div class="p5-flow">
+        <!-- Sources -->
+        <div class="p5-sources chassis">
+          <div class="head"><span>Sources</span><div class="led"></div></div>
+          <div class="p5-source"><span class="name">Aave V3 USDC</span><span class="rate" id="r1">4.21%</span></div>
+          <div class="p5-source"><span class="name">Compound V3</span><span class="rate" id="r2">3.84%</span></div>
+          <div class="p5-source"><span class="name">Ethena sUSDe</span><span class="rate" id="r3">12.10%</span></div>
+          <div class="p5-source"><span class="name">Hyperliquid</span><span class="rate" id="r4">8.54%</span></div>
+          <div class="p5-source"><span class="name">ETH Staking</span><span class="rate" id="r5">3.10%</span></div>
+        </div>
+        <!-- Agents (Canvas) -->
+        <div class="p5-agents chassis">
+          <div class="head"><span>Agents</span><div class="led"></div></div>
+          <canvas id="p5AgentCanvas"></canvas>
+        </div>
+        <!-- Output -->
+        <div class="p5-output chassis">
+          <div class="head"><span>ISFR Oracle (0xA01)</span><div class="led"></div></div>
+          <div class="p5-weight-row"><span class="cat">Lending</span><span class="wt">(60%)</span><span class="rt" id="wo1">3.98%</span></div>
+          <div class="p5-weight-row"><span class="cat">Structured</span><span class="wt">(25%)</span><span class="rt" id="wo2">12.10%</span></div>
+          <div class="p5-weight-row"><span class="cat">Funding</span><span class="wt">(10%)</span><span class="rt" id="wo3">8.54%</span></div>
+          <div class="p5-weight-row"><span class="cat">Staking</span><span class="wt">(5%)</span><span class="rt" id="wo4">3.10%</span></div>
+          <div class="p5-composite">
+            <div class="label">Composite ISFR</div>
+            <div class="val" id="isfrVal">5.87%</div>
+          </div>
+        </div>
+      </div>
+      <p class="p5-bottom-text">ISFR is the beachhead. The same oracle architecture extends to volatility indices, credit spreads, cross-chain basis rates. Benchmark rates are natural monopolies &mdash; the first credible one captures the category.</p>
+    </div>
+  </div>
+
+  <!-- PAGE 6: COLLECTIVE INTELLIGENCE -->
+  <div class="page" id="page5">
+    <span class="section-tag">&mdash;&mdash; 06 &middot; collective intelligence</span>
+    <div class="page-inner p6-layout">
+      <h1 class="headline" style="font-size:clamp(20px,2.8vw,38px); margin-bottom: 2px;">The thousandth agent inherits everything the first 999 learned &mdash; for the cost of <em>one retrieval.</em></h1>
+      <p class="body-text" style="font-size:11px; margin-bottom: 2px;">Every agent deposits HDC-indexed knowledge into a shared substrate. Knowledge that earns citations persists. Uncited knowledge decays. The network is the moat.</p>
+      <div class="p6-swarm-chassis chassis">
+        <div class="head">
+          <span>Agents Active: <span id="p6ActiveCount" style="color:var(--rose-neon)">5</span></span>
+          <span>InsightStore: <span id="p6InsightCount" style="color:var(--bone)">12</span></span>
+          <div class="led"></div>
+        </div>
+        <canvas id="p6Canvas"></canvas>
+        <div class="p6-stats-bar">
+          <span>Gate pass: <span class="sv" id="p6GatePass">68.2%</span></span>
+          <span>Cost/episode: <span class="sv" id="p6Cost">$0.14</span></span>
+        </div>
+      </div>
+      <div class="p6-slider-row">
+        <span class="p6-slider-label">Agent Count</span>
+        <span class="p6-slider-val" id="p6SliderVal">5</span>
+        <input type="range" class="p6-slider" id="p6Slider" min="1" max="1000" value="5">
+        <span class="p6-phase" id="p6Phase">isolated</span>
+      </div>
+      <p class="p6-insight">At 1,000, per-episode cost drops 73%, gate-pass rises to 91%, and InsightStore grows superlinearly. The network is the moat.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- Navigation -->
+<div class="nav-arrow left" id="navLeft">&larr;</div>
+<div class="nav-arrow right" id="navRight">&rarr;</div>
+<div class="nav-dots" id="navDots"></div>
+
+<!-- Chain status bar -->
+<div class="chain-bar">
+  <div class="chain-led" id="chainLed"></div>
+  <span id="chainLabel">NUNCHI DEVNET</span>
+  <span id="chainBlock">BLOCK #&mdash;</span>
+  <span id="chainHash">0x&mdash;</span>
+  <span>CHAIN 88888</span>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ═══════════════════════════════════════════════════
+// GLOBAL STATE
+// ═══════════════════════════════════════════════════
+const TOTAL_PAGES = 6;
+let currentPage = 0;
+let transitioning = false;
+let chainConnected = false;
+let latestBlock = null;
+let latestHash = null;
+let blockModulation = 0;
+
+// ═══════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════
+const dotsContainer = document.getElementById('navDots');
+for (let i = 0; i < TOTAL_PAGES; i++) {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+  dot.addEventListener('click', () => goToPage(i));
+  dotsContainer.appendChild(dot);
+}
+
+function goToPage(idx) {
+  if (idx === currentPage || idx < 0 || idx >= TOTAL_PAGES || transitioning) return;
+  transitioning = true;
+  const oldPage = document.getElementById('page' + currentPage);
+  const newPage = document.getElementById('page' + idx);
+  const goingForward = idx > currentPage;
+
+  oldPage.classList.remove('active');
+  oldPage.classList.add(goingForward ? 'exit-up' : '');
+
+  newPage.style.transform = goingForward ? 'translateY(24px)' : 'translateY(-24px)';
+  newPage.style.opacity = '0';
+
+  requestAnimationFrame(() => {
+    newPage.classList.add('active');
+    newPage.style.transform = '';
+    newPage.style.opacity = '';
+  });
+
+  document.querySelectorAll('.nav-dot').forEach((d, i) => {
+    d.classList.toggle('active', i === idx);
+  });
+
+  setTimeout(() => {
+    oldPage.classList.remove('exit-up');
+    oldPage.style.transform = '';
+    transitioning = false;
+  }, 420);
+
+  currentPage = idx;
+  onPageEnter(idx);
+}
+
+document.getElementById('navLeft').addEventListener('click', () => goToPage(currentPage - 1));
+document.getElementById('navRight').addEventListener('click', () => goToPage(currentPage + 1));
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goToPage(currentPage + 1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); goToPage(currentPage - 1); }
+});
+
+// ═══════════════════════════════════════════════════
+// CHAIN RPC POLLING
+// ═══════════════════════════════════════════════════
+const RPC = 'http://127.0.0.1:8545';
+
+async function pollChain() {
+  try {
+    const numRes = await fetch(RPC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 })
+    });
+    const numData = await numRes.json();
+    const blockNum = parseInt(numData.result, 16);
+
+    const blockRes = await fetch(RPC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_getBlockByNumber', params: [numData.result, false], id: 2 })
+    });
+    const blockData = await blockRes.json();
+    const hash = blockData.result?.hash || '0x0000';
+
+    latestBlock = blockNum;
+    latestHash = hash;
+    chainConnected = true;
+
+    // Modulation from block hash bytes
+    const hashBytes = hash.slice(2);
+    let sum = 0;
+    for (let i = 0; i < Math.min(hashBytes.length, 8); i++) {
+      sum += parseInt(hashBytes.substr(i * 2, 2), 16);
+    }
+    blockModulation = (sum % 256) / 256;
+
+    document.getElementById('chainLed').classList.add('connected');
+    document.getElementById('chainBlock').textContent = `BLOCK #${blockNum}`;
+    document.getElementById('chainHash').textContent = hash.slice(0, 6) + '...' + hash.slice(-4);
+
+    // Update page 3 live fields
+    document.getElementById('p3Block').textContent = '#' + blockNum;
+    document.getElementById('p3Hash').textContent = hash.slice(0, 8) + '...' + hash.slice(-4);
+    document.getElementById('p3AttestDesc').innerHTML = `Ed25519 &rarr; block #${blockNum}`;
+
+  } catch {
+    chainConnected = false;
+    document.getElementById('chainLed').classList.remove('connected');
+  }
+}
+
+setInterval(pollChain, 500);
+pollChain();
+
+// ═══════════════════════════════════════════════════
+// THREE.JS — PAGE 1 PARTICLE CLOUD
+// ═══════════════════════════════════════════════════
+const canvas3d = document.getElementById('threeBg');
+const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);
+
+const scene1 = new THREE.Scene();
+const camera1 = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera1.position.z = 18;
+
+// Particle cloud
+const PARTICLE_COUNT = 400;
+const p1Positions = new Float32Array(PARTICLE_COUNT * 3);
+const p1Colors = new Float32Array(PARTICLE_COUNT * 3);
+const p1Sizes = new Float32Array(PARTICLE_COUNT);
+const p1Velocities = [];
+
+const roseCol = new THREE.Color(0xaa7088);
+const boneCol = new THREE.Color(0xc8b890);
+const dreamCol = new THREE.Color(0x585878);
+const palette = [roseCol, boneCol, dreamCol, new THREE.Color(0x7a5060), new THREE.Color(0x8a7a5a)];
+
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  const i3 = i * 3;
+  p1Positions[i3] = (Math.random() - 0.5) * 30;
+  p1Positions[i3 + 1] = (Math.random() - 0.5) * 20;
+  p1Positions[i3 + 2] = (Math.random() - 0.5) * 16 - 3;
+
+  const col = palette[Math.floor(Math.random() * palette.length)];
+  p1Colors[i3] = col.r;
+  p1Colors[i3 + 1] = col.g;
+  p1Colors[i3 + 2] = col.b;
+
+  p1Sizes[i] = Math.random() * 40 + 8;
+  p1Velocities.push({
+    x: (Math.random() - 0.5) * 0.003,
+    y: (Math.random() - 0.5) * 0.002,
+    z: (Math.random() - 0.5) * 0.001
+  });
+}
+
+const p1Geometry = new THREE.BufferGeometry();
+p1Geometry.setAttribute('position', new THREE.BufferAttribute(p1Positions, 3));
+p1Geometry.setAttribute('color', new THREE.BufferAttribute(p1Colors, 3));
+p1Geometry.setAttribute('size', new THREE.BufferAttribute(p1Sizes, 1));
+
+const p1Material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uModulation: { value: 0 },
+    uPixelRatio: { value: renderer.getPixelRatio() }
+  },
+  vertexShader: `
+    attribute float size;
+    attribute vec3 color;
+    varying vec3 vColor;
+    varying float vAlpha;
+    uniform float uTime;
+    uniform float uModulation;
+    uniform float uPixelRatio;
+    void main() {
+      vColor = color;
+      vec3 pos = position;
+      pos.x += sin(uTime * 0.3 + position.y * 0.5) * 0.15;
+      pos.y += cos(uTime * 0.2 + position.x * 0.3) * 0.1;
+      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+      float dist = -mvPos.z;
+      vAlpha = smoothstep(20.0, 2.0, dist) * (0.3 + uModulation * 0.15);
+      gl_PointSize = size * uPixelRatio * (6.0 / dist);
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `,
+  fragmentShader: `
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      float d = length(gl_PointCoord - vec2(0.5));
+      if (d > 0.5) discard;
+      float alpha = smoothstep(0.5, 0.1, d) * vAlpha;
+      gl_FragColor = vec4(vColor, alpha);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const p1Points = new THREE.Points(p1Geometry, p1Material);
+scene1.add(p1Points);
+
+// Ambient scene for other pages (fewer dimmer particles)
+const sceneAmbient = new THREE.Scene();
+const AMBIENT_COUNT = 50;
+const ambPositions = new Float32Array(AMBIENT_COUNT * 3);
+const ambColors = new Float32Array(AMBIENT_COUNT * 3);
+const ambSizes = new Float32Array(AMBIENT_COUNT);
+
+for (let i = 0; i < AMBIENT_COUNT; i++) {
+  const i3 = i * 3;
+  ambPositions[i3] = (Math.random() - 0.5) * 30;
+  ambPositions[i3 + 1] = (Math.random() - 0.5) * 20;
+  ambPositions[i3 + 2] = (Math.random() - 0.5) * 10 - 5;
+  const col = palette[Math.floor(Math.random() * palette.length)];
+  ambColors[i3] = col.r; ambColors[i3 + 1] = col.g; ambColors[i3 + 2] = col.b;
+  ambSizes[i] = Math.random() * 20 + 6;
+}
+
+const ambGeo = new THREE.BufferGeometry();
+ambGeo.setAttribute('position', new THREE.BufferAttribute(ambPositions, 3));
+ambGeo.setAttribute('color', new THREE.BufferAttribute(ambColors, 3));
+ambGeo.setAttribute('size', new THREE.BufferAttribute(ambSizes, 1));
+
+const ambMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uModulation: { value: 0 },
+    uPixelRatio: { value: renderer.getPixelRatio() }
+  },
+  vertexShader: `
+    attribute float size;
+    attribute vec3 color;
+    varying vec3 vColor;
+    varying float vAlpha;
+    uniform float uTime;
+    uniform float uPixelRatio;
+    void main() {
+      vColor = color;
+      vec3 pos = position;
+      pos.x += sin(uTime * 0.15 + position.y * 0.3) * 0.2;
+      pos.y += cos(uTime * 0.1 + position.x * 0.2) * 0.15;
+      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+      float dist = -mvPos.z;
+      vAlpha = smoothstep(18.0, 3.0, dist) * 0.12;
+      gl_PointSize = size * uPixelRatio * (4.0 / dist);
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `,
+  fragmentShader: `
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      float d = length(gl_PointCoord - vec2(0.5));
+      if (d > 0.5) discard;
+      float alpha = smoothstep(0.5, 0.15, d) * vAlpha;
+      gl_FragColor = vec4(vColor, alpha);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const ambPoints = new THREE.Points(ambGeo, ambMat);
+sceneAmbient.add(ambPoints);
+
+// ═══════════════════════════════════════════════════
+// PAGE 2 — PRISM LATTICE (Canvas 2D for reliability)
+// ═══════════════════════════════════════════════════
+const p2Canvas = document.getElementById('p2Canvas');
+const p2Ctx = p2Canvas.getContext('2d');
+let p2Nodes = [];
+let p2FlowParticles = [];
+let p2Time = 0;
+
+function initP2() {
+  const rect = p2Canvas.getBoundingClientRect();
+  p2Canvas.width = rect.width * 2;
+  p2Canvas.height = rect.height * 2;
+  p2Ctx.setTransform(2, 0, 0, 2, 0, 0);
+
+  const w = rect.width, h = rect.height;
+  p2Nodes = [];
+  p2FlowParticles = [];
+
+  // Three layers of nodes
+  const layers = [
+    { y: h * 0.18, color: 'rgba(170,112,136,', label: 'Application' },
+    { y: h * 0.48, color: 'rgba(200,184,144,', label: 'HDC Knowledge' },
+    { y: h * 0.78, color: 'rgba(88,88,120,', label: 'Consensus' }
+  ];
+
+  layers.forEach((layer, li) => {
+    const count = 8 + li * 2;
+    for (let i = 0; i < count; i++) {
+      const x = (w * 0.1) + (w * 0.8) * (i / (count - 1));
+      p2Nodes.push({
+        x, y: layer.y + (Math.random() - 0.5) * 20,
+        layer: li, color: layer.color,
+        size: 3 + Math.random() * 3,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+  });
+
+  // Flow particles between layers
+  for (let i = 0; i < 30; i++) {
+    p2FlowParticles.push({
+      x: Math.random() * w,
+      fromLayer: Math.floor(Math.random() * 2),
+      progress: Math.random(),
+      speed: 0.003 + Math.random() * 0.005
+    });
+  }
+}
+
+function drawP2() {
+  const w = p2Canvas.width / 2, h = p2Canvas.height / 2;
+  p2Ctx.clearRect(0, 0, w, h);
+  p2Time += 0.016;
+
+  const layerYs = [h * 0.18, h * 0.48, h * 0.78];
+  const layerColors = ['rgba(170,112,136,', 'rgba(200,184,144,', 'rgba(88,88,120,'];
+
+  // Draw layer planes (semi-transparent)
+  layerColors.forEach((col, i) => {
+    const y = layerYs[i];
+    p2Ctx.fillStyle = col + '0.04)';
+    p2Ctx.beginPath();
+    // Perspective trapezoid
+    const skew = i * 15;
+    p2Ctx.moveTo(w * 0.05 + skew, y - 15);
+    p2Ctx.lineTo(w * 0.95 - skew, y - 15);
+    p2Ctx.lineTo(w * 0.92 - skew, y + 15);
+    p2Ctx.lineTo(w * 0.08 + skew, y + 15);
+    p2Ctx.closePath();
+    p2Ctx.fill();
+
+    // Layer border
+    p2Ctx.strokeStyle = col + '0.15)';
+    p2Ctx.lineWidth = 1;
+    p2Ctx.stroke();
+  });
+
+  // Draw connections between nearby nodes
+  for (let i = 0; i < p2Nodes.length; i++) {
+    for (let j = i + 1; j < p2Nodes.length; j++) {
+      const a = p2Nodes[i], b = p2Nodes[j];
+      if (a.layer === b.layer) {
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < 80) {
+          const alpha = (1 - d / 80) * 0.08;
+          p2Ctx.strokeStyle = a.color + alpha + ')';
+          p2Ctx.lineWidth = 0.5;
+          p2Ctx.beginPath();
+          p2Ctx.moveTo(a.x, a.y);
+          p2Ctx.lineTo(b.x, b.y);
+          p2Ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // Draw nodes (octahedra simplified as diamonds)
+  for (const n of p2Nodes) {
+    const pulse = Math.sin(p2Time * 1.5 + n.phase) * 0.15 + 0.85;
+    const alpha = 0.5 * pulse;
+    p2Ctx.fillStyle = n.color + alpha + ')';
+    p2Ctx.save();
+    p2Ctx.translate(n.x, n.y);
+    p2Ctx.rotate(Math.PI / 4);
+    const s = n.size * pulse;
+    p2Ctx.fillRect(-s, -s, s * 2, s * 2);
+    p2Ctx.restore();
+
+    // Glow
+    p2Ctx.fillStyle = n.color + (alpha * 0.2) + ')';
+    p2Ctx.beginPath();
+    p2Ctx.arc(n.x, n.y, n.size * 3, 0, Math.PI * 2);
+    p2Ctx.fill();
+  }
+
+  // Flow particles between layers
+  for (const p of p2FlowParticles) {
+    p.progress += p.speed + blockModulation * 0.002;
+    if (p.progress > 1) {
+      p.progress = 0;
+      p.x = w * 0.15 + Math.random() * w * 0.7;
+      p.fromLayer = Math.floor(Math.random() * 2);
+    }
+    const fromY = layerYs[p.fromLayer];
+    const toY = layerYs[p.fromLayer + 1];
+    const y = fromY + (toY - fromY) * p.progress;
+    const drift = Math.sin(p2Time * 2 + p.x * 0.02) * 8;
+    const alpha = Math.sin(p.progress * Math.PI) * 0.4;
+
+    p2Ctx.fillStyle = `rgba(220,165,189,${alpha})`;
+    p2Ctx.beginPath();
+    p2Ctx.arc(p.x + drift, y, 1.5, 0, Math.PI * 2);
+    p2Ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 3 — STEP ANIMATION
+// ═══════════════════════════════════════════════════
+let p3StepIdx = 0;
+let p3Timer = null;
+
+function startP3Animation() {
+  if (p3Timer) clearInterval(p3Timer);
+  p3StepIdx = 0;
+  const steps = document.querySelectorAll('.p3-step');
+  steps.forEach(s => s.classList.remove('lit'));
+
+  p3Timer = setInterval(() => {
+    steps.forEach(s => s.classList.remove('lit'));
+    steps[p3StepIdx].classList.add('lit');
+    p3StepIdx = (p3StepIdx + 1) % steps.length;
+  }, 1200);
+}
+
+function stopP3Animation() {
+  if (p3Timer) { clearInterval(p3Timer); p3Timer = null; }
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 4 — HDC RIBBONS
+// ═══════════════════════════════════════════════════
+function initP4Ribbons() {
+  const container = document.getElementById('p4Ribbons');
+  const components = [
+    { label: 'PROTOCOL', desc: 'encode("uniswap_v3")' },
+    { label: 'PAIR', desc: 'encode("ETH/USDC")' },
+    { label: 'ACTION', desc: 'encode("swap")' },
+    { label: 'GAS', desc: 'encode("182419")' },
+    { label: 'CHAIN', desc: 'encode("mainnet")' }
+  ];
+
+  // Deterministic seed for each
+  const seeds = [0xDEAD, 0xBEEF, 0xCAFE, 0xFACE, 0xBABE];
+
+  components.forEach((comp, ci) => {
+    const row = document.createElement('div');
+    row.className = 'p4-ribbon-row';
+
+    const label = document.createElement('span');
+    label.className = 'p4-ribbon-label';
+    label.textContent = comp.label;
+
+    const ribbon = document.createElement('div');
+    ribbon.className = 'p4-ribbon';
+
+    let seed = seeds[ci];
+    for (let i = 0; i < 28; i++) {
+      const bit = document.createElement('div');
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      bit.className = 'bit ' + ((seed % 3 !== 0) ? 'on' : 'off');
+      ribbon.appendChild(bit);
+    }
+
+    const desc = document.createElement('span');
+    desc.className = 'p4-ribbon-desc';
+    desc.textContent = comp.desc;
+
+    row.appendChild(label);
+    row.appendChild(ribbon);
+    row.appendChild(desc);
+    container.appendChild(row);
+  });
+
+  // Query row
+  const qr = document.createElement('div');
+  qr.className = 'p4-query-row';
+  const ql = document.createElement('span');
+  ql.className = 'p4-ribbon-label';
+  ql.textContent = 'QUERY';
+  ql.style.color = 'var(--rose-neon)';
+  const qd = document.createElement('span');
+  qd.className = 'p4-ribbon-desc';
+  qd.textContent = 'Bind(all) \u2192 XOR merge \u2192 single 10,000-bit vector';
+  qd.style.color = 'var(--rose-hot)';
+  qd.style.fontSize = '10px';
+  qr.appendChild(ql);
+  qr.appendChild(qd);
+  container.appendChild(qr);
+}
+
+function animateP4Bars() {
+  setTimeout(() => { document.getElementById('barHDC').style.width = '98%'; }, 100);
+  setTimeout(() => { document.getElementById('barSQL').style.width = '95%'; }, 200);
+  setTimeout(() => { document.getElementById('barQD').style.width = '15%'; }, 300);
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 5 — ISFR AGENT FLOW
+// ═══════════════════════════════════════════════════
+const p5ACanvas = document.getElementById('p5AgentCanvas');
+const p5Ctx = p5ACanvas.getContext('2d');
+let p5Agents = [];
+let p5FlowLines = [];
+let p5Time = 0;
+
+const baseRates = [4.21, 3.84, 12.10, 8.54, 3.10];
+const rateEls = ['r1', 'r2', 'r3', 'r4', 'r5'];
+const woEls = ['wo1', 'wo2', 'wo3', 'wo4'];
+const weights = [0.6, 0.25, 0.1, 0.05];
+const agentLabels = ['\u03b1 Lending', '\u03b2 Structured', '\u03b3 Funding', '\u03b4 Staking', '\u03b5 Cross-val'];
+
+function initP5() {
+  const rect = p5ACanvas.getBoundingClientRect();
+  p5ACanvas.width = rect.width * 2;
+  p5ACanvas.height = rect.height * 2;
+
+  p5Agents = agentLabels.map((label, i) => ({
+    x: rect.width * 0.5,
+    y: 20 + (rect.height - 40) * (i / 4),
+    label,
+    phase: Math.random() * Math.PI * 2
+  }));
+
+  p5FlowLines = [];
+  for (let i = 0; i < 20; i++) {
+    p5FlowLines.push({
+      fromIdx: Math.floor(Math.random() * 5),
+      side: Math.random() < 0.5 ? 'left' : 'right',
+      progress: Math.random(),
+      speed: 0.005 + Math.random() * 0.008
+    });
+  }
+}
+
+function drawP5Agents() {
+  const rect = p5ACanvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  const ctx = p5Ctx;
+  ctx.save();
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  p5Time += 0.016;
+
+  // Draw flow particles
+  for (const fl of p5FlowLines) {
+    fl.progress += fl.speed;
+    if (fl.progress > 1) {
+      fl.progress = 0;
+      fl.fromIdx = Math.floor(Math.random() * 5);
+      fl.side = Math.random() < 0.5 ? 'left' : 'right';
+    }
+    const agent = p5Agents[fl.fromIdx];
+    if (!agent) continue;
+
+    let sx, sy, ex, ey;
+    if (fl.side === 'left') {
+      sx = 0; sy = agent.y;
+      ex = agent.x - 12; ey = agent.y;
+    } else {
+      sx = agent.x + 12; sy = agent.y;
+      ex = w; ey = agent.y;
+    }
+    const px = sx + (ex - sx) * fl.progress;
+    const py = sy + (ey - sy) * fl.progress + Math.sin(fl.progress * Math.PI * 3) * 3;
+    const alpha = Math.sin(fl.progress * Math.PI) * 0.5;
+
+    ctx.fillStyle = fl.side === 'left' ? `rgba(200,184,144,${alpha})` : `rgba(220,165,189,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Draw agent nodes (diamonds)
+  for (const a of p5Agents) {
+    const pulse = Math.sin(p5Time * 1.8 + a.phase) * 0.2 + 0.8;
+
+    // Glow
+    ctx.fillStyle = `rgba(170,112,136,${0.08 * pulse})`;
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 16, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Diamond
+    ctx.fillStyle = `rgba(220,165,189,${0.7 * pulse})`;
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-5, -5, 10, 10);
+    ctx.restore();
+
+    // Label
+    ctx.font = '8px "JetBrains Mono", monospace';
+    ctx.fillStyle = 'rgba(152,128,144,0.7)';
+    ctx.fillText(a.label, a.x + 14, a.y + 3);
+  }
+
+  ctx.restore();
+}
+
+let p5JitterTimer = 0;
+
+function jitterRates() {
+  const rates = baseRates.map(r => r + (Math.random() - 0.5) * 0.4);
+  rateEls.forEach((id, i) => {
+    document.getElementById(id).textContent = rates[i].toFixed(2) + '%';
+  });
+
+  // Weighted outputs
+  const lendAvg = (rates[0] + rates[1]) / 2;
+  const woRates = [lendAvg, rates[2], rates[3], rates[4]];
+  woEls.forEach((id, i) => {
+    document.getElementById(id).textContent = woRates[i].toFixed(2) + '%';
+  });
+
+  // Composite
+  let composite = 0;
+  weights.forEach((w, i) => composite += w * woRates[i]);
+  document.getElementById('isfrVal').textContent = composite.toFixed(2) + '%';
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE 6 — SWARM
+// ═══════════════════════════════════════════════════
+const p6Canvas = document.getElementById('p6Canvas');
+const p6Ctx = p6Canvas.getContext('2d');
+let p6NetworkSize = 5;
+let p6Agents = [];
+let p6Particles = [];
+let p6Time = 0;
+
+function initP6Agents(count) {
+  resizeP6Canvas();
+  const w = p6Canvas.width / 2, h = p6Canvas.height / 2;
+  if (w <= 0 || h <= 0) return;
+  p6Agents = [];
+
+  const maxShow = Math.min(count, 300);
+  for (let i = 0; i < maxShow; i++) {
+    const colors = [
+      { r: 170, g: 112, b: 136 },
+      { r: 200, g: 184, b: 144 },
+      { r: 88, g: 88, b: 120 }
+    ];
+    const col = colors[Math.floor(Math.random() * colors.length)];
+    p6Agents.push({
+      x: 20 + Math.random() * (w - 40),
+      y: 10 + Math.random() * (h - 30),
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: (Math.random() - 0.5) * 0.3,
+      brightness: 0.3 + Math.random() * 0.5,
+      size: 2 + Math.random() * 2,
+      col
+    });
+  }
+
+  p6Particles = [];
+  const particleCount = Math.min(count * 2, 200);
+  for (let i = 0; i < particleCount; i++) {
+    p6Particles.push({
+      fromIdx: Math.floor(Math.random() * maxShow),
+      toIdx: Math.floor(Math.random() * maxShow),
+      progress: Math.random(),
+      speed: 0.005 + Math.random() * 0.01
+    });
+  }
+
+  // Update stats
+  const insights = Math.round(count * 2.3 * Math.pow(count / 1000, 0.15));
+  const gatePass = 68 + Math.min(count / 1000, 1) * 23;
+  const cost = 0.14 * Math.pow(1000 / Math.max(count, 1), 0.35);
+
+  document.getElementById('p6ActiveCount').textContent = count;
+  document.getElementById('p6InsightCount').textContent = insights.toLocaleString();
+  document.getElementById('p6GatePass').textContent = gatePass.toFixed(1) + '%';
+  document.getElementById('p6Cost').textContent = '$' + Math.max(cost, 0.04).toFixed(2);
+}
+
+function resizeP6Canvas() {
+  const rect = p6Canvas.getBoundingClientRect();
+  p6Canvas.width = rect.width * 2;
+  p6Canvas.height = rect.height * 2;
+}
+
+function drawP6Swarm() {
+  const w = p6Canvas.width / 2, h = p6Canvas.height / 2;
+  if (w <= 0 || h <= 0) return;
+  const ctx = p6Ctx;
+  ctx.save();
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  p6Time += 0.016;
+
+  // Substrate bar
+  const density = Math.min(p6NetworkSize / 500, 1);
+  const grad = ctx.createLinearGradient(0, h - 20, 0, h);
+  grad.addColorStop(0, `rgba(220,165,189,${0.02 + density * 0.12})`);
+  grad.addColorStop(1, `rgba(58,32,48,${0.05 + density * 0.2})`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, h - 20, w, 20);
+
+  // Connections
+  if (p6Agents.length < 100) {
+    for (let i = 0; i < p6Agents.length; i++) {
+      for (let j = i + 1; j < Math.min(p6Agents.length, i + 8); j++) {
+        const a = p6Agents[i], b = p6Agents[j];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < 80) {
+          const alpha = (1 - d / 80) * 0.06;
+          ctx.strokeStyle = `rgba(170,112,136,${alpha})`;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // Flow particles
+  for (const p of p6Particles) {
+    p.progress += p.speed;
+    if (p.progress > 1) {
+      p.progress = 0;
+      p.fromIdx = Math.floor(Math.random() * p6Agents.length);
+      p.toIdx = Math.floor(Math.random() * p6Agents.length);
+    }
+    if (p.fromIdx >= p6Agents.length || p.toIdx >= p6Agents.length) continue;
+    const a = p6Agents[p.fromIdx], b = p6Agents[p.toIdx];
+    const px = a.x + (b.x - a.x) * p.progress;
+    const py = a.y + (b.y - a.y) * p.progress;
+    const alpha = Math.sin(p.progress * Math.PI) * 0.3;
+
+    ctx.fillStyle = `rgba(220,165,189,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, 1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Agents
+  for (const a of p6Agents) {
+    a.x += a.vx; a.y += a.vy;
+    if (a.x < 10 || a.x > w - 10) a.vx *= -1;
+    if (a.y < 10 || a.y > h - 25) a.vy *= -1;
+    a.x = Math.max(5, Math.min(w - 5, a.x));
+    a.y = Math.max(5, Math.min(h - 25, a.y));
+
+    const pulse = a.brightness + Math.sin(p6Time * 2 + a.x * 0.01) * 0.1;
+    ctx.fillStyle = `rgba(${a.col.r},${a.col.g},${a.col.b},${pulse})`;
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, a.size, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Diamond knowledge deposit
+    if (Math.random() < 0.002 * Math.min(p6NetworkSize / 50, 2)) {
+      ctx.fillStyle = 'rgba(200,184,144,0.35)';
+      ctx.save();
+      ctx.translate(a.x, a.y + 6);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-1.5, -1.5, 3, 3);
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+}
+
+// Slider
+const p6Slider = document.getElementById('p6Slider');
+const p6SliderVal = document.getElementById('p6SliderVal');
+const p6Phase = document.getElementById('p6Phase');
+
+p6Slider.addEventListener('input', () => {
+  p6NetworkSize = parseInt(p6Slider.value);
+  p6SliderVal.textContent = p6NetworkSize.toLocaleString();
+
+  if (p6NetworkSize <= 1) p6Phase.textContent = 'isolated';
+  else if (p6NetworkSize <= 10) p6Phase.textContent = 'isolated';
+  else if (p6NetworkSize <= 100) p6Phase.textContent = 'collaborative';
+  else if (p6NetworkSize <= 500) p6Phase.textContent = 'collective intelligence';
+  else p6Phase.textContent = 'emergent civilization';
+
+  initP6Agents(p6NetworkSize);
+});
+
+// ═══════════════════════════════════════════════════
+// PAGE ENTER HOOKS
+// ═══════════════════════════════════════════════════
+function onPageEnter(idx) {
+  if (idx === 1) initP2();
+  if (idx === 2) startP3Animation();
+  else stopP3Animation();
+  if (idx === 3) animateP4Bars();
+  if (idx === 4) initP5();
+  if (idx === 5) initP6Agents(p6NetworkSize);
+}
+
+// ═══════════════════════════════════════════════════
+// MAIN RENDER LOOP
+// ═══════════════════════════════════════════════════
+let time = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  time += 0.016;
+
+  // Three.js scenes
+  if (currentPage === 0) {
+    // Full particle cloud
+    p1Material.uniforms.uTime.value = time;
+    p1Material.uniforms.uModulation.value = blockModulation;
+    camera1.position.x = Math.sin(time * 0.05) * 0.5;
+    camera1.position.y = Math.cos(time * 0.03) * 0.3;
+
+    // Update particle velocities with block modulation
+    const pos = p1Geometry.attributes.position;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const v = p1Velocities[i];
+      const speed = 1 + blockModulation * 0.5;
+      pos.array[i * 3] += v.x * speed;
+      pos.array[i * 3 + 1] += v.y * speed;
+      pos.array[i * 3 + 2] += v.z;
+
+      // Wrap
+      if (pos.array[i * 3] > 16) pos.array[i * 3] = -16;
+      if (pos.array[i * 3] < -16) pos.array[i * 3] = 16;
+      if (pos.array[i * 3 + 1] > 11) pos.array[i * 3 + 1] = -11;
+      if (pos.array[i * 3 + 1] < -11) pos.array[i * 3 + 1] = 11;
+    }
+    pos.needsUpdate = true;
+
+    renderer.render(scene1, camera1);
+  } else {
+    // Ambient particles for other pages
+    ambMat.uniforms.uTime.value = time;
+    renderer.render(sceneAmbient, camera1);
+  }
+
+  // Canvas-based page renders
+  if (currentPage === 1) drawP2();
+
+  if (currentPage === 4) {
+    drawP5Agents();
+    p5JitterTimer++;
+    if (p5JitterTimer > 120) {
+      jitterRates();
+      p5JitterTimer = 0;
+    }
+  }
+
+  if (currentPage === 5) drawP6Swarm();
+}
+
+// ═══════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════
+function onResize() {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera1.aspect = window.innerWidth / window.innerHeight;
+  camera1.updateProjectionMatrix();
+  if (currentPage === 1) initP2();
+  if (currentPage === 4) initP5();
+  if (currentPage === 5) { resizeP6Canvas(); initP6Agents(p6NetworkSize); }
+}
+
+window.addEventListener('resize', onResize);
+
+document.fonts.ready.then(() => {
+  initP4Ribbons();
+  initP6Agents(5);
+  animate();
+  onPageEnter(0);
+});
+</script>
+</body>
+</html>

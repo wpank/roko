@@ -1,0 +1,80 @@
+# Batch {{BATCH_ID}}: {{SECTION_NUM}}-{{SECTION_SLUG}} — Phase 2+ stubs
+
+**Section**: {{DOCS_DIR}} ({{DOCS_FILE_COUNT}} sub-documents)
+**Target crate(s)**: {{CRATES_DISPLAY}}
+**Priority**: {{PRIORITY}} (Phase 2+)
+**Group**: {{GROUP}}
+**Dependencies**: {{DEPS_DISPLAY}}
+
+## Context
+
+This section describes **Phase 2+** functionality. The goal is NOT to implement
+full logic, but to ensure the crate has:
+
+1. **Type stubs** matching doc descriptions (struct/enum/trait with fields but `todo!()` method bodies)
+2. **Doc comments** explaining what each type will do when fully implemented
+3. **Module tree** properly connected (no dead code)
+4. **Compilation** clean with no warnings
+
+## Read These Files First
+
+### Documentation (source of truth for what types should exist)
+
+{{DOCS_FILE_LIST}}
+
+### Existing parity analysis
+
+{{PARITY_FILE_LIST}}
+
+### Code files to inspect
+
+{{CODE_FILE_LIST}}
+
+## Types To Stub
+
+These identifiers appear in the docs and should exist as stubs in the crate:
+
+{{DOC_IDENTIFIERS}}
+
+## What The Code Currently Has
+
+{{PUBLIC_API}}
+
+## Implementation Requirements
+
+1. Read all documentation files to understand the intended type landscape
+2. For each documented type that doesn't exist in code:
+   - Create the struct/enum/trait with correct fields
+   - Add `///` doc comments describing purpose and future behavior
+   - Implement trait methods with `todo!("Phase 2+: <description>")` bodies
+   - Mark the type as `#[allow(dead_code)]` if needed for compilation
+3. Wire into `mod.rs` exports
+4. Do NOT implement real logic — stubs only
+5. Do NOT add dependencies on external crates unless already in Cargo.toml
+
+## Write Scope
+
+Only modify files under:
+
+{{WRITE_SCOPE}}
+
+## Verification
+
+```bash
+{{VERIFY_COMMANDS}}
+```
+
+## Rules
+
+1. **Stubs, not implementations.** Method bodies should be `todo!()` or trivial defaults.
+2. **Doc comments are mandatory.** Every stub type needs `///` explaining what it represents.
+3. **Compile clean.** All verify commands must pass.
+4. **No new dependencies.** Don't add crates to Cargo.toml.
+5. **Naming conventions.** Use `Korai` (not styx), `fleet` (not clade). No death/mortality language.
+
+## Done When
+
+- All verify commands pass
+- Every documented type has a corresponding stub in code
+- All stubs have doc comments
+- Module tree is connected

@@ -1,0 +1,10 @@
+Updated `roko-gate` to close the doc-facing API mismatches inside the allowed write scope.
+
+In [rung_selector.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-gate/src/rung_selector.rs:25), `PlanComplexity` now matches the documented rung ladder: `Trivial` is compile-only, `Simple` is compile+lint, `Standard` is compile+lint+test+symbol, and `Complex` stays full-rung. In [gate_pipeline.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-gate/src/gate_pipeline.rs:33), `GatePipeline` now supports the documented builder style via `GatePipeline::new(vec![...])`, `with_name(...)`, and `with_short_circuit(bool)` while preserving the existing named-constructor path. I also added the doc-named `ArtifactStore::get` / `contains` aliases in [artifact_store.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-gate/src/artifact_store.rs:90), made `feedback_for_agent` surface unclassified non-noise output as an actionable error in [feedback.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-gate/src/feedback.rs:202), and widened the crate-root docs/re-exports in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-gate/src/lib.rs:1).
+
+Verification passed:
+- `cargo check -p roko-gate`
+- `cargo test -p roko-gate --lib --no-run`
+- `cargo clippy -p roko-gate --no-deps -- -D warnings`
+
+One remaining seam is outside this batch’s write scope: the CLI/orchestrator runtime still has higher-rung wiring limitations, but the `roko-gate` crate itself now matches the documented selector/pipeline/artifact/feedback surface more closely.

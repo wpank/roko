@@ -1,0 +1,8 @@
+Added a new coordination surface in [coordination.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-orchestrator/src/coordination.rs:1) and re-exported it from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-orchestrator/src/lib.rs:15). This covers the missing foundation types and helpers the docs name directly: `SubnetId`, `PheromoneKind`, `PheromoneScope`, `Pheromone`, custom-kind and subnet validation, decay/confirmation/promotion helpers, `ResponseThresholds`, `MorphogeneticState`, `MorphogeneticParams`, `specialization_index`, `CohortMetrics`, `CohortWeights`, `c_factor`, and `WisdomGate`.
+
+Verification passed:
+- `cargo check -p roko-orchestrator`
+- `cargo test -p roko-orchestrator --lib --no-run`
+- `cargo clippy -p roko-orchestrator --no-deps -- -D warnings`
+
+This batch does not yet wire the larger runtime pieces the coordination docs also describe, such as mesh transport/state-sync types and behavior, morphogenetic broadcast/conflict/vacancy flows, or cohort-learning loops. The crate now has the core doc-facing primitives to build those on.

@@ -1,0 +1,9 @@
+`roko agent serve` is wired as a first-class CLI path now. The binary exposes the new `Agent` subtree in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/main.rs:232), uses `roko-agent-server` as a normal runtime dependency in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/Cargo.toml:20), and starts the server through [agent_serve.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/agent_serve.rs:1). That wrapper exposes `--agent-id`, `--bind`, `--relay-url`, `--chain-rpc-url`, `--identity-registry`, `--passport-id`, and `--wallet-key`, enables the existing feature surfaces, and leaves relay/chain startup hooks captured for later batches rather than routing through `roko-serve`.
+
+I also kept the previous failure mode from recurring under strict warning settings by suppressing the existing crate-wide `missing_docs` backlog in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/src/lib.rs:11) and the shared test-helper `dead_code` noise in [tests/common/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/tests/common/mod.rs:1). Integration coverage lives in [tests/agent_serve.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-cli/tests/agent_serve.rs:1) and exercises both flag exposure and a live `/health` response from a spawned agent server.
+
+Verified:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli --test agent_serve`
+- `RUSTFLAGS='-Dwarnings' cargo check -p roko-cli`
+- `RUSTFLAGS='-Dwarnings' cargo test -p roko-cli --test agent_serve`

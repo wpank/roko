@@ -1,0 +1,16 @@
+Implemented the AR05 runtime shape.
+
+`mirage-rs` now fronts relay on the same origin in [apps/mirage-rs/src/rpc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/src/rpc.rs:394): it explicitly serves `/relay/agents/ws`, `/relay/events/ws`, and forwards the rest of `/relay/*` to the loopback `agent-relay` process, then mounts that router before the JSON-RPC fallback. I also exposed a small test hook there for proxy coverage, and added real proxy tests in [apps/mirage-rs/tests/http_api.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/tests/http_api.rs:1168) covering relay GET, relay POST, and non-relay routing on the same origin.
+
+The default container/runtime path is now the mirage image itself: [docker/mirage.Dockerfile](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/docker/mirage.Dockerfile:17) builds both `mirage-rs` and `agent-relay`, [docker/start-mirage-with-relay.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/docker/start-mirage-with-relay.sh:1) launches relay on `127.0.0.1:9011` and mirage on the public port, [docker/docker-compose.yml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/docker/docker-compose.yml:39) uses that same shape locally with a relay-aware healthcheck, and [railway.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/railway.toml:3) now points Railway at the mirage image with `/relay/health` as the healthcheck.
+
+Verification passed:
+- `cargo check -p mirage-rs --features "binary,chain"`
+- `cargo test -p mirage-rs --test http_api relay_proxy`
+- `docker compose -f docker/docker-compose.yml config`
+- `bash -n docker/start-mirage-with-relay.sh`
+- `docker build -f docker/mirage.Dockerfile .`
+
+Notes:
+- The referenced `tmp/agent-registry/...` context-pack files were not present in this worktree, so I used the embedded batch prompt as the source of truth.
+- I had to move the mirage image builder to `rust:1.88-slim-bookworm`; the previous `1.85` image could not build current deps.

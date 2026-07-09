@@ -1,0 +1,8 @@
+Added Phase 2 identity-economy stubs to `roko-chain` and wired them into the crate via [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/lib.rs:12). The new surfaces live in [identity_economy_identity.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/identity_economy_identity.rs:1) and [identity_economy_markets.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/identity_economy_markets.rs:1). They add the missing doc-named public stubs for passports, DID/VC identity, Sybil/trust analysis, marketplace/pricing, delegated payments, tokenomics, job-market types, ISFR settlement, knowledge-futures markets, forensic Engram lineage, and compliance templates. I kept the older `phase2.rs` placeholders intact and added the new exact doc-facing names alongside them.
+
+Verification passed:
+`cargo check -p roko-chain`
+`cargo test -p roko-chain --lib --no-run`
+`cargo clippy -p roko-chain --no-deps -- -D warnings`
+
+One deliberate scope choice: I added the section 14 stubs as new modules instead of restructuring the existing `phase2.rs` bucket, to keep this batch contained and compile-clean.

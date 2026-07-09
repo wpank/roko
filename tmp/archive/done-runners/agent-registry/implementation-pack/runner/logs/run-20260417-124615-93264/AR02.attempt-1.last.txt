@@ -1,0 +1,19 @@
+Implemented the standalone relay app at [apps/agent-relay/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/agent-relay/src/lib.rs:29), with in-memory live state in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/agent-relay/src/state.rs:32), protocol types in [protocol.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/agent-relay/src/protocol.rs:1), and a thin binary bootstrap in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/agent-relay/src/main.rs:1). It exposes:
+- `GET /relay/health` -> `ok`
+- `GET /relay/agents`
+- `GET /relay/cards/{id}`
+- `POST /relay/messages`
+- agent websocket at `GET /relay/agents/ws`
+- optional dashboard event stream at `GET /relay/events/ws`
+
+The relay only tracks live reachability. Agents connect with a websocket `hello`, can push/update cards, and receive opaque forwarded JSON messages with correlated responses and timeouts. I also added focused integration coverage in [tests/integration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/agent-relay/tests/integration.rs:115) and wired the new workspace member in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/Cargo.toml:1).
+
+Verification passed:
+- `cargo check -p agent-relay --all-targets`
+- `cargo test -p agent-relay`
+
+Acceptance criteria covered by tests:
+- health endpoint returns `ok`
+- connected agents appear in `/relay/agents`
+- pushed cards are served from `/relay/cards/{id}`
+- message forwarding works end to end over the agent websocket

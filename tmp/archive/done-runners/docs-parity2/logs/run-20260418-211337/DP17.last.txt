@@ -1,0 +1,14 @@
+Implemented DP17 lifecycle parity surface in the scoped crates.
+
+Changes:
+- Added [roko-agent lifecycle module](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/lifecycle.rs:1) with manifest/config types, provisioning typestate wrapper, budget records, backup/restore records, restore confidence decay, Ebbinghaus helpers, demurrage helpers, Mesh knowledge-sharing records, GitOps config, and focused unit tests.
+- Wired it from [roko-agent/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/lib.rs:57) with public exports.
+- Added [roko-runtime lifecycle module](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/lifecycle.rs:1) with lifecycle states, degradation stages, transition records, hooks, probes, restart backoff, GitOps drift records, and a runtime typestate provisioning shell.
+- Wired runtime exports from [roko-runtime/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/lib.rs:29) and added `RokoEvent::AgentLifecycleTransition` in [event_bus.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/event_bus.rs:150).
+
+One intentional stub remains: `verify_backup()` establishes the public API and error contract, but archive reading/checksum parsing is left as `todo!()` because the docs describe a full portable archive format and no concrete archive storage implementation exists in the scoped crates.
+
+Verification passed:
+- `cargo check -p roko-agent -p roko-runtime`
+- `cargo test -p roko-agent -p roko-runtime --lib --no-run`
+- `cargo clippy -p roko-agent -p roko-runtime --no-deps -- -D warnings`

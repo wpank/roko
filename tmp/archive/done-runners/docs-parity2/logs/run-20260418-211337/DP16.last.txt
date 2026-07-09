@@ -1,0 +1,19 @@
+Implemented DP16 runtime heartbeat parity under `crates/roko-runtime/src/`.
+
+**What Changed**
+Added a runtime heartbeat surface in [heartbeat.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/heartbeat.rs:1): `HeartbeatPolicy`, `CorticalState`, `HeartbeatTick`, `CognitiveSignal`, adaptive interval helpers, tier gating, `DecisionCycleRecord`, meta-cognition, and EFE/POMDP support shells.
+
+Added the documented T0 probe surface in [heartbeat_probes.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/heartbeat_probes.rs:1): `Probe`, `ProbeRegistry`, `EngineState`, probe results, and all 16 default probes.
+
+Added the VCG context-allocation surface in [heartbeat_attention.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/heartbeat_attention.rs:1): attention candidates, allocations, `AuctionRound`, carryover `AttentionBudget`, `run_attention_auction`, and `ContextGovernor`.
+
+Wired the modules into [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/lib.rs:23), and extended [event_bus.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-runtime/src/event_bus.rs:105) so `RokoEvent` can carry heartbeat ticks, wakeups, and cognitive signals.
+
+**Verification**
+All required commands passed:
+
+```bash
+cargo check -p roko-runtime
+cargo test -p roko-runtime --lib --no-run
+cargo clippy -p roko-runtime --no-deps -- -D warnings
+```

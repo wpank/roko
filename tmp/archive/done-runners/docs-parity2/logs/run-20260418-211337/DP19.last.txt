@@ -1,0 +1,17 @@
+Implemented DP19 deployment parity updates in `roko-cli`.
+
+Key changes:
+- Added Linux systemd daemon support with unit generation, install, and uninstall in [systemd.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/daemon/systemd.rs:1), wired through platform-aware `daemon_install` / `daemon_uninstall` in [daemon.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/daemon.rs:387).
+- Added public `SigstoreVerifier` for cosign/Sigstore release verification in [deployment.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/deployment.rs:13), exported from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/lib.rs:40).
+- Wired documented top-level `roko secret ...`, `roko update`, and `roko completions <shell>` command surfaces in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/main.rs:237).
+- Extended `SecretsCmd` so docs-style dotted names like `roko secret get anthropic.api_key` work alongside the old namespace/key form in [secrets.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/secrets.rs:15).
+- Fixed a narrow compile blocker in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/orchestrate.rs:4791) by handling the newer runtime event variants.
+- Cleaned two test warnings that would fail `-D warnings`: missing `#[test]` in [input.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/tui/input.rs:1433) and an unused test import in `phase_compact.rs`.
+
+Verification passed:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli --lib --no-run`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`
+- `git diff --check`
+
+One caveat: `roko update` is wired as a conservative source-build surface because adding `axoupdater` requires a `Cargo.toml` dependency change outside the DP19 write scope.

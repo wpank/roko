@@ -1,0 +1,30 @@
+run_id: run-20260411-224508
+started: 2026-04-11T22:45:08+02:00
+model: claude-opus-4-6
+parallel: 3
+dry_run: 0
+force: 0
+verify_only: 0
+topics:
+  - 00-architecture
+  - 01-orchestration
+  - 02-agents
+  - 03-composition
+  - 04-verification
+  - 05-learning
+  - 06-neuro
+  - 07-conductor
+  - 08-chain
+  - 09-daimon
+  - 10-dreams
+  - 11-safety
+  - 12-interfaces
+  - 13-coordination
+  - 14-identity-economy
+  - 15-code-intelligence
+  - 16-heartbeat
+  - 17-lifecycle
+  - 18-tools
+  - 19-deployment
+  - 20-technical-analysis
+  - 21-references

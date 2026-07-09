@@ -1,0 +1,82 @@
+# Batch {{BATCH_ID}}: {{SECTION_NUM}}-{{SECTION_SLUG}} — Make code match docs
+
+**Section**: {{DOCS_DIR}} ({{DOCS_FILE_COUNT}} sub-documents)
+**Target crate(s)**: {{CRATES_DISPLAY}}
+**Priority**: {{PRIORITY}}
+**Group**: {{GROUP}}
+**Dependencies**: {{DEPS_DISPLAY}}
+
+## Read These Files First
+
+### Documentation (source of truth for what should exist)
+
+{{DOCS_FILE_LIST}}
+
+### Existing parity analysis (gap data from prior audit)
+
+{{PARITY_FILE_LIST}}
+
+### Code files to inspect (current implementation)
+
+{{CODE_FILE_LIST}}
+
+## What The Docs Describe
+
+These are the key Rust types, traits, and functions referenced across the
+documentation for this section. Each represents something that should exist
+in the target crate(s):
+
+{{DOC_IDENTIFIERS}}
+
+## What The Code Currently Has
+
+Public API declarations found in the target crate(s):
+
+{{PUBLIC_API}}
+
+## Specific Gaps To Close
+
+Items found in docs but not (or only partially) in the code:
+
+{{GAP_ITEMS}}
+
+## Implementation Requirements
+
+1. Read **ALL** documentation files listed above
+2. Read the corresponding code files to understand what exists
+3. For each gap: implement the minimum viable version that satisfies the doc description
+4. Add `///` doc comments on all new public types, explaining purpose
+5. Wire new code into `mod.rs` exports — no dead code islands
+6. Ensure features are reachable from the runtime (wired, not just built)
+7. Do NOT delete or rename existing public API unless docs explicitly say to
+8. If a doc describes something too large for this batch, add a stub with a `todo!()` body and a doc comment explaining what it should do
+
+## Write Scope
+
+Only modify files under:
+
+{{WRITE_SCOPE}}
+
+## Verification
+
+```bash
+{{VERIFY_COMMANDS}}
+```
+
+## Rules
+
+1. **Search before writing.** `grep -rn 'TypeName' crates/ --include='*.rs' | grep -v target/` — this codebase has duplicates from parallel development.
+2. **Wire, don't build.** If existing code just needs to be called, call it. Don't rebuild.
+3. **Compile clean.** Every verify command must pass. `-D warnings` means fix the warning, don't `#[allow]` it unless the rule is genuinely wrong.
+4. **Write-scope discipline.** Stay inside the listed write scope. If you need a 1-line fix in an adjacent crate for compilation, make it and document it.
+5. **Naming conventions.** Use `neuro` (not grimoire), `Korai` (not styx/Styx), `fleet` (not clade). No death/mortality concepts.
+6. **No destructive git.** Never force-push, reset, or rm outside the worktree. The runner handles branch lifecycle.
+7. **Phase 2+ stubs.** If a doc describes chain/daimon/dreams functionality, add a stub type with doc comment — no full logic.
+
+## Done When
+
+- All verify commands pass
+- New types match doc descriptions (names, fields, methods)
+- Module tree is connected (no orphaned `mod` declarations or dead files)
+- Public types have `///` doc comments explaining purpose
+- No new `unwrap()` calls on hot paths

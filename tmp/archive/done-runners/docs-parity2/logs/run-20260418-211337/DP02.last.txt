@@ -1,0 +1,15 @@
+Implemented the concrete `roko-agent` parity gaps and kept the patch additive.
+
+The main runtime fixes are:
+- MCP discovery now passes configured server `env` into spawned MCP processes and `find_mcp_config` now falls back to `~/.mcp.json`.
+- Translator selection now supports capability/profile-based routing for Gemini native models via `GeminiTranslator`, while preserving the existing slug-based entrypoint.
+- Tool-loop checkpoints now persist and restore `SessionState`, so resumed runs keep provider conversation/session IDs.
+- Added the doc-compat `AgentResult::all_engrams()` alias.
+- Exposed the pool/task-runner surfaces the docs name at the crate root, made `WarmEntry` public, added `MultiAgentPool` alias methods (`evict_stale_warm`, `kill_by_plan`, `kill_by_role`), and added `AgentTask.priority` with a `with_priority` builder.
+
+Verification passed:
+- `cargo check -p roko-agent`
+- `cargo test -p roko-agent --lib --no-run`
+- `cargo clippy -p roko-agent --no-deps -- -D warnings`
+
+I did not try to force code to match doc examples that are clearly documentation-only or broader cross-crate ownership issues, such as the stale provider-registry/writeup drift identified in the sidecar review.

@@ -1,0 +1,13 @@
+Implemented AR04 in `roko-agent-server`.
+
+The main changes are in [relay_client.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-agent-server/src/features/relay_client.rs), [registration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-agent-server/src/registration.rs), and [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-agent-server/src/state.rs). `AgentRegistration` now has an explicit relay-backed publication path and a separate optional chain-update path, so wallet-backed agents submit `updateAgentCardUri(uint256,string)` while wallet-free agents skip chain writes cleanly and still complete registration. The new relay client handles outbound websocket connect/hello, publishes relay-hosted cards with absolute relay URIs, and answers relay-delivered messages through the same dispatch seam used by direct `/message`.
+
+I also added end-to-end coverage in [tests/relay_registration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/crates/roko-agent-server/tests/relay_registration.rs) for:
+- wallet-free relay registration and relay-hosted card publication
+- wallet-backed registration with calldata assertions for `updateAgentCardUri(uint256,string)`
+- relay message forwarding
+- direct `/health` and `/message` still working
+
+Verified:
+- `cargo check -p roko-agent-server`
+- `cargo test -p roko-agent-server --tests`

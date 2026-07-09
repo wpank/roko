@@ -1,0 +1,44 @@
+
+=== PREFLIGHT CHECKS ===
+
+[OK]    preflight          claude CLI: /Users/will/.local/bin/claude (2.1.63 (Claude Code))
+[WARN]  preflight          CLAUDECODE is set ('1'). The runner unsets it automatically via env -u.
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/roko
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/refactoring-prd
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/bardo-backup
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/roko/tmp/prd-migration
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/roko/tmp/prd-migration/context-pack
+[OK]    preflight          dir: /Users/will/dev/nunchi/roko/roko/tmp/prd-migration/prompts
+[OK]    preflight          context-pack: all 7 files present
+[OK]    preflight          prompts: all 1 files present
+[OK]    preflight          key source files: all present
+[OK]    preflight          binaries: grep, wc, find, stat all available
+[OK]    preflight          all checks passed — ready to run
+
+[INFO]  runner             Run manifest: /Users/will/dev/nunchi/roko/roko/tmp/prd-migration/logs/run-20260411-224255/manifest.yaml
+
+=== RUNNING 1 TOPICS (parallel=1, run_id=run-20260411-224255) ===
+
+[INFO]  test-smoke         Launched (pid=56733, slot=1/1)
+[INFO]  runner             Waiting for 1 remaining agents...
+[INFO]  test-smoke         Spawning Opus agent (timeout 5m 0s)...
+[OK]    test-smoke         Agent completed in 2m 0s
+[INFO]  test-smoke         Verifying output at /Users/will/dev/nunchi/roko/roko/docs/test-smoke
+[INFO]  test-smoke           sub-docs: 3
+[INFO]  test-smoke           total lines: 304
+[INFO]  test-smoke           citations: ~5
+[OK]    test-smoke         PASSED all quality checks
+[OK]    runner             All agents finished
+
+=== RUN SUMMARY: run-20260411-224255 ===
+
+  ✓  test-smoke             passed
+
+  SUCCESS: 1  WARN: 0  FAILED: 0  SKIPPED: 0  DRY: 0
+
+  Logs: /Users/will/dev/nunchi/roko/roko/tmp/prd-migration/logs/run-20260411-224255/
+  Output: /Users/will/dev/nunchi/roko/roko/docs/
+
+[INFO]  runner             Total duration: 2m 0s
+[INFO]  runner             Generating master index at /Users/will/dev/nunchi/roko/roko/docs/INDEX.md
+[OK]    runner             Master index written

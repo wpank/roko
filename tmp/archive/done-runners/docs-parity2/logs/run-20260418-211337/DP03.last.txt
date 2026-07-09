@@ -1,0 +1,8 @@
+Added a small docs-parity API layer to `roko-compose` for the advanced composition surfaces that were named in the docs but missing from the crate: position-aware attention, predictive foraging, and auction learning/diagnostics. The new public modules are [attention.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-compose/src/attention.rs), [foraging.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-compose/src/foraging.rs), and [auction.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-compose/src/auction.rs), all exported from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-compose/src/lib.rs). They include lightweight real behavior plus tests, rather than empty placeholders.
+
+Verification passed:
+`cargo check -p roko-compose`
+`cargo test -p roko-compose --lib --no-run`
+`cargo clippy -p roko-compose --no-deps -- -D warnings`
+
+Residual note: several composition docs still describe older shipped APIs in areas like `SystemPromptBuilder`, `RoleSystemPromptSpec`, and enrichment selection. I did not try to revert the live crate to those obsolete shapes because that would be a larger breaking change; the patch stayed additive and compile-safe.

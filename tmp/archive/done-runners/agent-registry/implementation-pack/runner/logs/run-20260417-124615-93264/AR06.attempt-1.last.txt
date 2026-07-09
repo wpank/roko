@@ -1,0 +1,13 @@
+Updated the in-repo demo to use merged ERC-8004 identity plus relay reachability instead of the old `/api/agents` registry path. The main static changes are in [api.js](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/api.js), [state.js](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/state.js), [polling.js](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/polling.js), [main.js](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/main.js), and [index.html](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/index.html). I added [agent_registry.js](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/agent_registry.js) for shared normalization/merge/transport logic and [agent_registry_smoke.mjs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/js/agent_registry_smoke.mjs) for browserless smoke checks.
+
+The UI now accepts a remote mirage base URL, derives `/api` and `/relay` from it, lists merged agents, and exposes explicit `AUTO` / `DIRECT` / `RELAY` message-path selection. `quickstart.sh` now also starts `agent-relay` in local mode and supports a remote-static mode via `MIRAGE_DASHBOARD_RPC_URL` / `MIRAGE_RPC_URL`; see [quickstart.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/agent-registry-run-20260417-124615-93264/apps/mirage-rs/static/quickstart.sh).
+
+Verification passed:
+- `bash -n apps/mirage-rs/static/quickstart.sh`
+- `node --experimental-default-type=module --check apps/mirage-rs/static/js/api.js`
+- `node --experimental-default-type=module --check apps/mirage-rs/static/js/polling.js`
+- `node --experimental-default-type=module --check apps/mirage-rs/static/js/state.js`
+- `node --experimental-default-type=module --check apps/mirage-rs/static/js/main.js`
+- `node apps/mirage-rs/static/js/agent_registry_smoke.mjs --check`
+
+Residual risk: the local quickstart now brings up mirage plus relay, but it still does not auto-spawn a demo relay-backed agent runtime. For a full local message round-trip, you still need to start an agent separately against the relay.

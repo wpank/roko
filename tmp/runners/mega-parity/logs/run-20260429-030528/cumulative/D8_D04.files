@@ -1,0 +1,2 @@
+.local-bin/cargo
+demo/demo-app/src/lib/scenarios.ts

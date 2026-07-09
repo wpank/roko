@@ -1,0 +1,25 @@
+You are executing batch M1 of the docs-parity project for Roko.
+
+## Task: Lock in trigger/scheduling/runtime ownership and correct manual/scheduled trigger drift
+
+Read these files for full context:
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/00-INDEX.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/BATCHES.md (find the "M1" section)
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/SOURCE-INDEX.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/context-pack/agent-runbook.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/context-pack/carry-forward-map.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/context-pack/repo-map.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/context-pack/dreams-summary.md
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/context-pack/gaps-summary.md
+
+Also read these batch-specific files:
+- /Users/will/dev/nunchi/roko/roko/tmp/docs-parity/10/A-vision-and-cycle.md
+
+Execution rules:
+1. Search before changing docs.
+2. Stay inside the batch scope from BATCHES.md.
+3. If a discovered task is out of scope, record it as deferred and do not expand the batch.
+4. After changes, run the verify command and fix issues if practical.
+5. Report: files changed, commands run, pass/fail status, and intentional deferrals.
+
+Verify command: rg -n "scheduled|manual trigger|DreamTrigger|scheduled_cron|dream run|DreamHeartbeatPolicy" docs/10-dreams/00-*.md docs/10-dreams/01-*.md docs/10-dreams/13-*.md crates/roko-dreams crates/roko-cli

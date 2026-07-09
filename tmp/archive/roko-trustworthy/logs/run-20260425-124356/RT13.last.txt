@@ -1,0 +1,21 @@
+Implemented RT13’s audit path.
+
+Added a serializable `CognitiveWorkspace` model in [cognitive_workspace.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/cognitive_workspace.rs:15) covering task contract, role/prompt/context policy refs, included/rejected context, model choice, capabilities, parse result, gates, and reward observations.
+
+Wired compose-side construction in [cognitive_workspace.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/cognitive_workspace.rs:37), preserving context provenance/budgets/rejection reasons without storing raw context text. `ContextProvider` audit rows now include stable source IDs in [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:431).
+
+Added an orchestrator event path via `EventKind::CognitiveWorkspaceRecorded` and `EventLog::append_cognitive_workspace` in [event_log.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-orchestrator/src/event_log.rs:35).
+
+Verification passed:
+
+```bash
+cargo check -p roko-compose -p roko-core -p roko-orchestrator
+cargo test -p roko-compose --lib --no-run
+cargo test -p roko-core --lib --no-run
+cargo test -p roko-core cognitive_workspace --lib
+cargo test -p roko-compose cognitive_workspace --lib
+cargo test -p roko-orchestrator appends_cognitive_workspace_event_payload --lib
+cargo fmt --all --check
+```
+
+Note: `tmp/architecture-plans/generalized-cybernetic-agent-architecture-gaps.md` was not present in this worktree, so I used the batch context plus the RT11 manifest/code surfaces in the repo.

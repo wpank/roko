@@ -1,0 +1,20 @@
+Implemented RT02.
+
+Changes:
+- Added structured gate failure classification in `roko-gate` for syntax, import, type, missing dependency/feature, borrow/lifetime, test expectation, external/environment, and unknown failures.
+- Wired compile/test/clippy failures to attach classification JSON through `Verdict.error_digest`.
+- Updated cargo compile gate to request `--message-format=json` for better diagnostic parsing.
+- Added pre-agent remediation in `roko-cli` AutoFix:
+  - runs scoped `cargo fix`;
+  - runs scoped `rustfmt` only on declared task `.rs` files;
+  - reruns scoped `cargo check --message-format=json`;
+  - records commands, changed files, classification, status, and whether agent retry is still needed in `.roko/learn/pre-agent-remediation.jsonl`;
+  - skips unsafe classes such as missing dependency, external/environment, borrow/lifetime, test failure, and unknown.
+
+Verification passed:
+- `cargo check -p roko-gate -p roko-agent -p roko-cli`
+- `cargo test -p roko-gate --test compile_real_project --no-run`
+- `cargo test -p roko-cli --test e2e_self_host --no-run`
+- `cargo test -p roko-gate compile_errors --lib`
+- `cargo test -p roko-cli pre_agent_remediation --lib`
+- `git diff --check`

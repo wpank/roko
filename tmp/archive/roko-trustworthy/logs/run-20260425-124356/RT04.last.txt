@@ -1,0 +1,15 @@
+Implemented RT04 in `roko-learn`.
+
+Key changes:
+- Added structured post-gate reflection storage in [post_gate_reflection.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/post_gate_reflection.rs:1): bounded records, trigger gate, outcome, failure/pass evidence, lesson, confidence, evidence count, and admission status.
+- Added `Episode::reflection` for durable reflection text in [episode_logger.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/episode_logger.rs:239).
+- Wired `LearningRuntime::record_completed_run` to persist `post-gate-reflections.json` from gate outcomes in [runtime_feedback.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/runtime_feedback.rs:831).
+- Added reflection-derived playbook candidates and explicit admission gates in [playbook_rules.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/playbook_rules.rs:103). Low-evidence candidates are rejected without mutating active rules.
+
+Verification passed:
+- `cargo test -p roko-learn post_gate_reflection --lib`
+- `cargo check -p roko-learn -p roko-conductor -p roko-orchestrator`
+- `cargo test -p roko-conductor --lib --no-run`
+- `cargo test -p roko-learn --lib --no-run`
+
+Existing unrelated warnings remain in `roko-learn` and `roko-conductor` tests. I did not add a parity ledger row because this worktree does not contain a `.roko/parity` ledger surface.

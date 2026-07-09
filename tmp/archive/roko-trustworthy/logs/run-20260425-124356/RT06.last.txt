@@ -1,0 +1,16 @@
+Implemented RT06 kernel changes.
+
+Changed:
+- [crates/roko-agent/src/session.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-agent/src/session.rs): added typed warm reuse policy, invocation metadata, resume validation, prompt/context fingerprinting.
+- [crates/roko-agent/src/multi_pool.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-agent/src/multi_pool.rs): warm entries now carry reuse policy; added checked `promote_warm_for`; recycled completed agents are not implicitly reusable.
+- [crates/roko-runtime/src/process.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-runtime/src/process.rs): added process session metadata ledger with started/succeeded/failed/timed_out/cancelled states and resume validation.
+- [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs): self-host dispatch now writes `.roko/state/agent-invocations.jsonl` before and after agent execution, so interruption leaves an `in_progress` structured record with scope and fingerprints.
+
+Verification:
+- `cargo check -p roko-agent -p roko-runtime -p roko-cli` passed.
+- `cargo test -p roko-runtime --test process_supervisor --no-run` passed.
+- `cargo test -p roko-agent --test process_integration --no-run` passed.
+- `cargo test -p roko-runtime --test process_supervisor` passed.
+- `cargo test -p roko-agent multi_pool_` passed, with existing unrelated missing-doc warnings in test crates.
+
+Note: the exact `tmp/architecture-plans/...` docs named in the batch prompt were not present in this worktree, so I used the shared context pack and local crate/docs surfaces.

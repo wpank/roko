@@ -1,0 +1,16 @@
+Implemented RT11.
+
+Added manifest contracts in [policy_manifest.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/policy_manifest.rs:23): `RolePolicyManifest`, `RoleProfile`, `PromptPolicy`, sections, inclusion rules, budgets, provenance, experiments, fallback behavior, output schemas, gate expectations, and fail-closed validation with actionable field paths.
+
+Wired compatibility without migrating all built-ins yet:
+- [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/role_prompts.rs:635) now exposes built-in role/profile/prompt-policy manifest shims.
+- [schema.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-core/src/config/schema.rs:1976) adds `agent.policy_manifests`.
+- [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-agent/src/lib.rs:124) re-exports manifest-facing contracts under non-conflicting names.
+
+Verification passed:
+- `cargo check -p roko-core -p roko-compose -p roko-agent`
+- `cargo test -p roko-core --lib --no-run`
+- `cargo test -p roko-compose --lib --no-run`
+- Focused manifest/config/compose tests passed.
+
+Note: the referenced `tmp/architecture-plans/...` source docs were not present in this worktree, so I used the provided context pack, RT10 commit, and local role/prompt/config code as the source of truth.

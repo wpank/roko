@@ -1,0 +1,22 @@
+Implemented RT14 in `roko-compose`.
+
+Changed:
+- Added `ContextBidder`, `ContextBidderRegistry`, and cold-start static bidders in [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:390):
+  - `TaskRequirementsBidder`
+  - `DocsSourceMapBidder`
+  - `RecentFailurePatternsBidder`
+  - `RolePromptPolicyBidder`
+- Routed `ContextProvider::resolve` through the registry via `resolve_with_policies` instead of one hardcoded assembly path: [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:1109)
+- Kept selected/rejected context flowing through `ResolvedContext`, so RT13 `CognitiveWorkspace` audit still records provenance, budgets, and rejection reasons.
+- Exported the registry and static bidders from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/lib.rs:59)
+- Added tests for registry ordering, budget rejection, and provenance: [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:2462)
+
+Verification:
+- `cargo check -p roko-compose -p roko-learn -p roko-orchestrator` passed.
+- `cargo test -p roko-compose --lib --no-run` passed.
+- `cargo test -p roko-learn --lib --no-run` passed with existing unrelated warnings in `roko-learn`.
+- Focused compose tests passed:
+  - `cargo test -p roko-compose bidder_registry --lib`
+  - `cargo test -p roko-compose cold_start_static_bidders_emit_structured_provenance --lib`
+
+Note: the requested `tmp/architecture-plans/...` docs were not present in this worktree, so I aligned against the existing RT13/RT05 code surfaces instead.

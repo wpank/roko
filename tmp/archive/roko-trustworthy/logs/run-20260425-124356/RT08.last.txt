@@ -1,0 +1,18 @@
+Implemented RT08 provider/model telemetry.
+
+What changed:
+- Added structured provider/model outcome records in [provider_model_outcome.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/provider_model_outcome.rs:102), including stable `action_id`, provider, model, task type, optional role, gate outcomes, retry count, latency, tokens, and cost.
+- Persisted outcomes from `LearningRuntime::record_completed_run` to `.roko/learn/provider-model-outcomes.jsonl` in [runtime_feedback.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/runtime_feedback.rs:924).
+- Added rolling pass-rate aggregation in [provider_model_outcome.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/provider_model_outcome.rs:412).
+- Exposed summaries via `GET /api/learning/provider-model-pass-rates` and `/api/learn/provider-model-pass-rates` in [learning.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/learning.rs:103).
+- Kept this observational only: no routing policy, static table, or experiment mutation was added.
+
+Verification passed:
+- `cargo check -p roko-learn -p roko-agent -p roko-serve`
+- `cargo test -p roko-learn --lib --no-run`
+- `cargo test -p roko-agent --test provider_integration --no-run`
+- `cargo test -p roko-learn provider_model_outcome --lib`
+- `cargo test -p roko-learn completed_run_updates_episode_cost_provider_and_skill --lib`
+- `cargo test -p roko-serve provider_model_pass_rates_exposes_rolling_outcome_summary`
+
+The named `tmp/architecture-plans/...` docs were not present in this worktree, so I used the existing crate surfaces and available docs context.

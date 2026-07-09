@@ -1,0 +1,17 @@
+Implemented RT05 scoped context controls in `roko-compose`.
+
+Changed:
+- Added structured context metadata in [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:166): `ContextPurpose`, `ContextScope`, per-section budget metadata, inclusion reasons, and rejection records.
+- Added a future bidder seam: `ContextRequest`, `ContextCandidate`, `ContextBidder`, and `ContextProvider::select_candidates()` in [context_provider.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/context_provider.rs:1324).
+- Updated `ContextProvider::resolve()` to return both included and rejected context, including rejected token estimates.
+- Added policy rejection for oversized sections, low relevance, and cross-task/cross-plan/global context without an explicit reason.
+- Re-exported the new public context types from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-compose/src/lib.rs:55).
+- Added focused tests for budget enforcement, provenance/manifest retention, low relevance rejection, oversized rejection, and missing cross-task reason rejection.
+
+Verification:
+- `cargo check -p roko-compose -p roko-orchestrator -p roko-core` passed.
+- `cargo test -p roko-compose --lib --no-run` passed.
+- `cargo test -p roko-orchestrator --lib --no-run` passed, with two pre-existing `unused_mut` warnings in `resource_budget.rs`.
+- `cargo test -p roko-compose --lib` passed: 373 tests.
+
+I did not add a parity ledger row because this worktree does not contain an existing docs parity ledger surface.

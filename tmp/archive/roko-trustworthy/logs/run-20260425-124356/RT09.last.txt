@@ -1,0 +1,19 @@
+Implemented RT09 in `roko-neuro`.
+
+Added [admission.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-neuro/src/admission.rs:1) with:
+- typed `KnowledgeCandidateRecord`, evidence records, scope, gate outcomes, admission decisions, and policy thresholds;
+- separate JSONL logs for raw candidates and admission decisions;
+- conservative admission before writing to `KnowledgeStore`;
+- anti-knowledge admission from repeated negative evidence and failed gates;
+- safe queries for admitted knowledge and action suppressions for future context bidders.
+
+Exported the API from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-neuro/src/lib.rs:1325).
+
+Verification:
+- `cargo test -p roko-neuro admission --lib` passed.
+- `cargo check -p roko-neuro -p roko-learn -p roko-core` passed.
+- `cargo test -p roko-neuro --lib --no-run` passed.
+- `cargo test -p roko-learn --lib --no-run` passed with existing `roko-learn` warnings.
+- `cargo clippy -p roko-neuro --lib` passed; it emitted existing warnings in `roko-learn`, not this new code.
+
+The named `tmp/architecture-plans/*` files were not present in this worktree, so I used the supplied context pack and the local code surfaces.

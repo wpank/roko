@@ -1,0 +1,17 @@
+Implemented RT03 failure memory and sharing.
+
+Changes:
+- Added normalized gate failure pattern extraction in [error_patterns.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-gate/src/error_patterns.rs), including compile keys by `error_code::file_path`, bounded digests, and review verdict pattern records.
+- Extended [error_pattern_store.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-learn/src/error_pattern_store.rs) with `GateFailureObservation`, keyed dedupe, repeated-vs-one-off evidence counts, and bounded retry prompt summaries.
+- Wired CLI gate failures to persist `.roko/learn/discovered-patterns.json` and prepend relevant bounded failure memory to normal task dispatch and conductor retry prompts in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-cli/src/orchestrate.rs).
+- Added `GateResult::is_mostly_passing` with test-count support in [plan_state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-orchestrator/src/executor/plan_state.rs).
+
+Verification run:
+- `cargo check -p roko-orchestrator -p roko-gate -p roko-learn`
+- `cargo test -p roko-learn --lib --no-run`
+- `cargo test -p roko-orchestrator --lib --no-run`
+- `cargo test -p roko-gate --lib --no-run`
+- `cargo check -p roko-cli`
+- Targeted tests for `error_pattern_store`, `error_patterns`, and `mostly_passing`
+
+All passed. Existing warnings remain in unrelated areas: unused test imports/vars in `roko-learn`, and unused `mut` in `roko-orchestrator` tests.

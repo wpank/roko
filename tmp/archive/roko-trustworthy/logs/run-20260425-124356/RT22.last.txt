@@ -1,0 +1,15 @@
+Implemented RT22’s backend projection hardening in `roko-serve`.
+
+Changed:
+- Added stable dashboard projection contracts for `agent_state`, `plan_state`, `gate_state`, and `learning_policy_state` in [projection_contract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/projection_contract.rs:87).
+- Updated projection responses to include versioned metadata: `canonical_name`, `version`, `computed_at`, `recovered`, `freshness`, and stable `state` payloads in [projections.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/projections.rs:105).
+- Added explicit missing/empty state handling for learning/policy data instead of faking unavailable StateHub data, with stable fallback endpoints in [projections.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/src/routes/projections.rs:205).
+- Documented dashboard projection usage in [README.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/README.md:119).
+- Added API integration coverage for catalog serialization and missing-state behavior in [api_integration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/roko-trustworthy-run-20260425-124356/crates/roko-serve/tests/api_integration.rs:564).
+
+Verification passed:
+- `cargo check -p roko-serve -p roko-agent-server -p roko-cli`
+- `cargo test -p roko-serve --test api_integration --no-run`
+- `cargo test -p roko-agent-server --test relay_registration --no-run`
+- `cargo test -p roko-serve --test api_integration projection`
+- `cargo test -p roko-serve projection_contract`

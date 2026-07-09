@@ -1,0 +1,19 @@
+Implemented RT15 telemetry without adding adaptive mutation.
+
+What changed:
+- Added raw-content-free prompt section audit rows to `CognitiveWorkspace`, plus review verdict joins.
+- Added stable prompt/context section ids and action ids, including source/provenance and optional experiment id metadata.
+- Added `roko-learn::section_outcome` JSONL telemetry with gate/review joins and aggregation by section, role, provider/model, and task type.
+- Added `/api/learning/section-outcomes` and `/api/learn/section-outcomes` summary endpoints in `roko-serve`.
+- Added focused tests for metadata recording, no raw prompt leakage, outcome joins, aggregation, JSONL roundtrip, and API exposure.
+
+Verification passed:
+- `cargo check -p roko-learn -p roko-compose -p roko-serve`
+- `cargo test -p roko-learn --lib --no-run`
+- `cargo test -p roko-serve --test job_lifecycle --no-run`
+- `cargo test -p roko-learn section_outcome --lib`
+- `cargo test -p roko-compose prompt_section_records_stable_action_ids_without_content`
+- `cargo test -p roko-compose assembly_drops_low_priority_under_budget`
+- `cargo test -p roko-serve section_outcomes_exposes_section_level_summary`
+
+Note: the requested `tmp/architecture-plans/generalized-cybernetic-agent-architecture-gaps.md` file was not present in this worktree, so I proceeded from the RT13 workspace and local compose/learn/serve implementations. `roko-learn` still emits three pre-existing test warnings unrelated to this change.

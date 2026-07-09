@@ -1,0 +1,854 @@
+diff --git a/crates/roko-cli/src/orchestrate.rs b/crates/roko-cli/src/orchestrate.rs
+index 144fb13f..b73231ba 100644
+--- a/crates/roko-cli/src/orchestrate.rs
++++ b/crates/roko-cli/src/orchestrate.rs
+@@ -86,7 +86,7 @@ use roko_learn::episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage};
+ use roko_learn::events::{AgentEvent, EventBus as LearningEventBus};
+ use roko_learn::latency::LatencyRegistry;
+ use roko_learn::model_experiment::ModelExperimentStore;
+-use roko_learn::playbook::{Playbook, PlaybookStep, PlaybookStore};
++use roko_learn::playbook::{Playbook, PlaybookStep, PlaybookStore, QueryContext};
+ use roko_learn::prediction::CalibrationTracker;
+ use roko_learn::prompt_experiment::DEFAULT_STATIC_OVERRIDES_PATH;
+ use roko_learn::routing_log::{
+@@ -1916,65 +1916,6 @@ fn build_strategy_fragment_context(
+     }
+ }
+ 
+-fn render_playbook_context(playbook: &Playbook) -> String {
+-    let mut parts = vec![
+-        format!("Name: {}", playbook.name),
+-        format!("Goal: {}", playbook.goal),
+-        format!(
+-            "Success rate: {:.0}%",
+-            (playbook.success_rate().unwrap_or(0.0).clamp(0.0, 1.0) * 100.0).round()
+-        ),
+-    ];
+-
+-    if !playbook.steps.is_empty() {
+-        let mut steps = String::from("Steps:\n");
+-        for step in &playbook.steps {
+-            steps.push_str(&format!(
+-                "- {}. [{}] {}\n",
+-                step.index, step.action_kind, step.description
+-            ));
+-            if !step.expected_signals.is_empty() {
+-                steps.push_str(&format!(
+-                    "  Signals: {}\n",
+-                    step.expected_signals.join(", ")
+-                ));
+-            }
+-        }
+-        parts.push(steps.trim_end().to_string());
+-    }
+-
+-    parts.join("\n\n")
+-}
+-
+-fn render_playbook_contexts(playbooks: &[Playbook]) -> String {
+-    playbooks
+-        .iter()
+-        .map(render_playbook_context)
+-        .collect::<Vec<_>>()
+-        .join("\n\n---\n\n")
+-}
+-
+-fn playbook_query(
+-    task: &str,
+-    task_text: &str,
+-    task_def: Option<&crate::task_parser::TaskDef>,
+-) -> String {
+-    let mut parts = vec![task.to_string(), task_text.to_string()];
+-    if let Some(task_def) = task_def {
+-        parts.push(task_def.title.clone());
+-        if let Some(description) = &task_def.description {
+-            parts.push(description.clone());
+-        }
+-        if !task_def.files.is_empty() {
+-            parts.push(task_def.files.join(" "));
+-        }
+-        if !task_def.acceptance.is_empty() {
+-            parts.push(task_def.acceptance.join(" "));
+-        }
+-    }
+-    parts.join("\n")
+-}
+-
+ fn build_task_playbook(task_def: &crate::task_parser::TaskDef) -> Playbook {
+     let goal = task_def
+         .description
+@@ -10584,25 +10525,26 @@ impl PlanRunner {
+         // ── Dispatch-time skill hint from successful prior tasks ──────
+         let prior_skills =
+             select_prompt_skills(&self.skill_library, task_def.as_ref(), &task_text, 5);
+-        let playbook_query = playbook_query(task, &task_text, task_def.as_ref());
+-        let playbook_context_section = match self.playbook.relevant(&playbook_query, 3).await {
+-            Ok(playbooks) if !playbooks.is_empty() => {
+-                let playbook_text = render_playbook_contexts(&playbooks);
+-                let playbook_text_len = playbook_text.len();
+-                Some((
+-                    PromptSection::new("playbook", playbook_text)
+-                        .with_priority(SectionPriority::Low)
+-                        .with_placement(Placement::Middle)
+-                        .with_hard_cap(1024),
+-                    playbook_text_len,
+-                ))
+-            }
+-            Ok(_) => None,
++        let playbook_query = QueryContext::new(
++            task,
++            task_def.as_ref().map_or_else(
++                || task_text.clone(),
++                |task_def| match &task_def.description {
++                    Some(description) => format!("{}\n{description}", task_def.title),
++                    None => task_def.title.clone(),
++                },
++            ),
++            role.label(),
++            10,
++            3,
++        );
++        let relevant_playbooks = match self.playbook.query(&playbook_query).await {
++            Ok(playbooks) => playbooks,
+             Err(err) => {
+                 tracing::warn!(
+                     "[orchestrate] failed to lookup relevant playbooks for task {task}: {err}"
+                 );
+-                None
++                Vec::new()
+             }
+         };
+ 
+@@ -10912,6 +10854,7 @@ impl PlanRunner {
+                 Some(task_affect_state),
+                 task_def.as_ref(),
+                 &prior_skills,
++                &relevant_playbooks,
+                 context_window_tokens,
+                 Some(&section_effectiveness),
+             )?
+@@ -10943,23 +10886,6 @@ impl PlanRunner {
+             );
+         }
+ 
+-        if let Some((playbook_section, playbook_text_len)) = playbook_context_section {
+-            sections.push(
+-                apply_section_effectiveness_to_prompt_section(
+-                    playbook_section,
+-                    &role_key,
+-                    &section_effectiveness,
+-                )
+-                .with_bidder(AttentionBidder::PlaybookRules)
+-                .into_signal()
+-                .map_err(|e| anyhow!("playbook section: {e}"))?,
+-            );
+-            tracing::info!(
+-                "[orchestrate] injected playbook context ({} chars)",
+-                playbook_text_len
+-            );
+-        }
+-
+         if let Some((search_section, search_text_len)) = search_context_section {
+             sections.push(
+                 apply_section_effectiveness_to_prompt_section(
+@@ -13412,6 +13338,7 @@ fn build_system_prompt_with_context_validated(
+     affect_state: Option<PadState>,
+     task_def: Option<&crate::task_parser::TaskDef>,
+     relevant_skills: &[Skill],
++    relevant_playbooks: &[Playbook],
+     context_window_tokens: usize,
+     section_effectiveness: Option<&SectionEffectivenessRegistry>,
+ ) -> Result<String> {
+@@ -13429,6 +13356,7 @@ fn build_system_prompt_with_context_validated(
+             affect_state,
+             extra_conventions: task_dispatch_conventions(task_def),
+             relevant_skills: relevant_skills.to_vec(),
++            relevant_playbooks: relevant_playbooks.to_vec(),
+             ..PromptBuildOptions::default()
+         },
+         context_window_tokens,
+@@ -13807,6 +13735,7 @@ impl PlanRunner {
+                     "Do not skip read_files: if a task declares context files, they must be reflected in the enrichment summary.".to_string(),
+                 ],
+                 relevant_skills: Vec::new(),
++                relevant_playbooks: Vec::new(),
+             },
+         )
+     }
+diff --git a/crates/roko-cli/src/prompting.rs b/crates/roko-cli/src/prompting.rs
+index ca9c53b0..8297a409 100644
+--- a/crates/roko-cli/src/prompting.rs
++++ b/crates/roko-cli/src/prompting.rs
+@@ -3,6 +3,7 @@
+ use anyhow::Result;
+ use roko_compose::{PadState, RoleSystemPromptSpec, TaskContext};
+ use roko_core::AgentRole;
++use roko_learn::playbook::Playbook;
+ use roko_learn::section_effect::SectionEffectivenessRegistry;
+ use roko_learn::skill_library::Skill;
+ 
+@@ -17,6 +18,8 @@ pub struct PromptBuildOptions {
+     pub extra_anti_patterns: Vec<String>,
+     /// Optional relevant skills injected into the system prompt.
+     pub relevant_skills: Vec<Skill>,
++    /// Optional relevant playbooks injected into the system prompt.
++    pub relevant_playbooks: Vec<Playbook>,
+ }
+ 
+ fn build_spec(
+@@ -36,6 +39,9 @@ fn build_spec(
+     if !options.relevant_skills.is_empty() {
+         spec = spec.with_relevant_skills(&options.relevant_skills);
+     }
++    if !options.relevant_playbooks.is_empty() {
++        spec = spec.with_relevant_playbooks(&options.relevant_playbooks);
++    }
+     spec
+ }
+ 
+diff --git a/crates/roko-compose/src/role_prompts.rs b/crates/roko-compose/src/role_prompts.rs
+index 35df55b1..0641b81e 100644
+--- a/crates/roko-compose/src/role_prompts.rs
++++ b/crates/roko-compose/src/role_prompts.rs
+@@ -22,6 +22,7 @@ use crate::templates::strategist::StrategistTemplate;
+ use crate::templates::task_impl::TaskImplTemplate;
+ use roko_core::error::{Result, RokoError};
+ use roko_core::{AgentRole, Budget, Composer, Context, Scorer};
++use roko_learn::playbook::Playbook;
+ use roko_learn::section_effect::SectionEffectivenessRegistry;
+ use roko_learn::skill_library::Skill;
+ use tracing::warn;
+@@ -166,6 +167,8 @@ pub struct RoleSystemPromptSpec {
+     pub extra_anti_patterns: Vec<String>,
+     /// Optional relevant skills injected into the system prompt.
+     pub relevant_skills: Vec<Skill>,
++    /// Optional relevant playbooks injected into the system prompt.
++    pub relevant_playbooks: Vec<Playbook>,
+     /// Optional pheromone / active-signal chunks injected into the prompt.
+     pub pheromones: Vec<ContextChunk>,
+     /// Optional affect state used to tune tone and focus.
+@@ -186,6 +189,7 @@ impl RoleSystemPromptSpec {
+             extra_conventions: None,
+             extra_anti_patterns: Vec::new(),
+             relevant_skills: Vec::new(),
++            relevant_playbooks: Vec::new(),
+             pheromones: Vec::new(),
+             affect_state: None,
+             cache_markers: false,
+@@ -220,6 +224,13 @@ impl RoleSystemPromptSpec {
+         self
+     }
+ 
++    /// Attach relevant learned playbooks to the prompt.
++    #[must_use]
++    pub fn with_relevant_playbooks(mut self, playbooks: &[Playbook]) -> Self {
++        self.relevant_playbooks = playbooks.to_vec();
++        self
++    }
++
+     /// Attach active pheromone/context signals to the prompt.
+     #[must_use]
+     pub fn with_pheromones(mut self, pheromones: &[ContextChunk]) -> Self {
+@@ -282,6 +293,9 @@ impl RoleSystemPromptSpec {
+         if !self.relevant_skills.is_empty() {
+             builder = builder.with_skills(&self.relevant_skills);
+         }
++        if !self.relevant_playbooks.is_empty() {
++            builder = builder.with_playbooks(&self.relevant_playbooks);
++        }
+         if !self.pheromones.is_empty() {
+             builder = builder.with_pheromones(&self.pheromones);
+         }
+@@ -521,6 +535,7 @@ pub fn role_identity_for(role: AgentRole) -> String {
+ mod tests {
+     use super::*;
+     use crate::prompt::SectionPriority;
++    use roko_learn::playbook::Playbook;
+     use roko_learn::skill_library::Skill;
+     use std::collections::HashSet;
+ 
+@@ -606,6 +621,20 @@ mod tests {
+         assert!(prompt.contains("Use fixup commits"));
+     }
+ 
++    #[test]
++    fn relevant_playbooks_are_forwarded_into_the_prompt_builder() {
++        let ctx = TaskContext::new("Implement API wiring");
++        let mut playbook = Playbook::new("pb-api", "Implement API wiring");
++        playbook.name = "API implementation".to_string();
++
++        let prompt = RoleSystemPromptSpec::new(AgentRole::Implementer, ctx, "Read,Edit")
++            .with_relevant_playbooks(&[playbook])
++            .build();
++
++        assert!(prompt.contains("## Relevant Techniques"));
++        assert!(prompt.contains("### Playbook `pb-api`: API implementation"));
++    }
++
+     #[test]
+     fn compose_with_budget_keeps_critical_sections() {
+         let ctx = TaskContext::new("Implement prompt wiring")
+diff --git a/crates/roko-compose/src/system_prompt_builder.rs b/crates/roko-compose/src/system_prompt_builder.rs
+index f3a3af12..35f249a1 100644
+--- a/crates/roko-compose/src/system_prompt_builder.rs
++++ b/crates/roko-compose/src/system_prompt_builder.rs
+@@ -34,6 +34,7 @@ use crate::prompt::{CacheLayer, Placement, PromptSection, SectionPriority};
+ use crate::token_counter::TokenCounter;
+ use crate::{ContextChunk, PadState};
+ use roko_core::tool::ToolDef;
++use roko_learn::playbook::Playbook;
+ use roko_learn::section_effect::{PriorityChange, SectionEffectivenessRegistry};
+ use roko_learn::skill_library::Skill;
+ 
+@@ -66,6 +67,8 @@ pub struct SystemPromptBuilder {
+     tools: Option<String>,
+     /// Layer 6: Relevant skills — learned techniques to prefer for this task.
+     relevant_skills: Vec<Skill>,
++    /// Optional layer 6 memory entries — playbooks relevant to the current task.
++    playbooks: Vec<Playbook>,
+     /// Layer 7: Anti-patterns — things the agent must NOT do.
+     anti_patterns: Vec<String>,
+     /// Layer 8: Affect guidance — current emotional tone and focus.
+@@ -85,6 +88,7 @@ struct SectionEffectivenessConfig {
+ }
+ 
+ const RELEVANT_TECHNIQUES_TOKEN_BUDGET: usize = 500;
++const MAX_PLAYBOOKS_PER_PROMPT: usize = 3;
+ 
+ /// Normalize prompt text so logically-identical content yields identical bytes.
+ #[must_use]
+@@ -124,6 +128,7 @@ impl SystemPromptBuilder {
+             task: None,
+             tools: None,
+             relevant_skills: Vec::new(),
++            playbooks: Vec::new(),
+             anti_patterns: Vec::new(),
+             affect_state: None,
+             cache_markers: false,
+@@ -181,6 +186,13 @@ impl SystemPromptBuilder {
+         self
+     }
+ 
++    /// Set layer 6: relevant playbooks (task-specific memory entries).
++    #[must_use]
++    pub fn with_playbooks(mut self, playbooks: &[Playbook]) -> Self {
++        self.playbooks = playbooks.to_vec();
++        self
++    }
++
+     /// Set layer 7: anti-patterns (things the agent must NOT do).
+     #[must_use]
+     pub fn with_anti_patterns(mut self, patterns: Vec<String>) -> Self {
+@@ -469,7 +481,7 @@ impl SystemPromptBuilder {
+         if self.tools.as_ref().is_some_and(|s| !s.is_empty()) {
+             count += 1;
+         }
+-        if !self.relevant_skills.is_empty() {
++        if !self.relevant_skills.is_empty() || !self.playbooks.is_empty() {
+             count += 1;
+         }
+         if !self.anti_patterns.is_empty() {
+@@ -549,14 +561,27 @@ impl SystemPromptBuilder {
+     }
+ 
+     fn relevant_techniques_section(&self) -> Option<PromptSection> {
+-        if self.relevant_skills.is_empty() {
++        if self.relevant_skills.is_empty() && self.playbooks.is_empty() {
+             return None;
+         }
+ 
+         let mut rendered = String::from("## Relevant Techniques");
+-        let mut kept = 0usize;
++        let mut kept_playbooks = 0usize;
++        let mut kept_skills = 0usize;
+         let mut total_tokens = estimate_tokens(&rendered);
+ 
++        for playbook in self.playbooks.iter().take(MAX_PLAYBOOKS_PER_PROMPT) {
++            let block = render_playbook(playbook);
++            let candidate = format!("{rendered}\n\n{block}");
++            let candidate_tokens = estimate_tokens(&candidate);
++            if candidate_tokens > RELEVANT_TECHNIQUES_TOKEN_BUDGET {
++                break;
++            }
++            rendered = candidate;
++            kept_playbooks += 1;
++            total_tokens = candidate_tokens;
++        }
++
+         for skill in &self.relevant_skills {
+             let block = render_skill(skill);
+             let candidate = format!("{rendered}\n\n{block}");
+@@ -565,24 +590,30 @@ impl SystemPromptBuilder {
+                 break;
+             }
+             rendered = candidate;
+-            kept += 1;
++            kept_skills += 1;
+             total_tokens = candidate_tokens;
+         }
+ 
+-        if kept < self.relevant_skills.len() {
++        if kept_playbooks < self.playbooks.len().min(MAX_PLAYBOOKS_PER_PROMPT)
++            || self.playbooks.len() > MAX_PLAYBOOKS_PER_PROMPT
++            || kept_skills < self.relevant_skills.len()
++        {
+             tracing::info!(
+-                kept,
+-                dropped = self.relevant_skills.len() - kept,
++                kept_playbooks,
++                kept_skills,
++                dropped_playbooks = self.playbooks.len().saturating_sub(kept_playbooks),
++                dropped_skills = self.relevant_skills.len().saturating_sub(kept_skills),
+                 token_budget = RELEVANT_TECHNIQUES_TOKEN_BUDGET,
+                 used_tokens = total_tokens,
+-                "trimmed relevant skills to fit the prompt budget"
++                "trimmed relevant techniques to fit the prompt budget"
+             );
+         } else {
+             tracing::info!(
+-                kept,
++                kept_playbooks,
++                kept_skills,
+                 token_budget = RELEVANT_TECHNIQUES_TOKEN_BUDGET,
+                 used_tokens = total_tokens,
+-                "included relevant skills in the prompt"
++                "included relevant techniques in the prompt"
+             );
+         }
+ 
+@@ -730,6 +761,61 @@ fn render_skill(skill: &Skill) -> String {
+     )
+ }
+ 
++fn render_playbook(playbook: &Playbook) -> String {
++    let title = if playbook.name.trim().is_empty() {
++        playbook.id.as_str()
++    } else {
++        playbook.name.trim()
++    };
++    let mut rendered = format!("### Playbook `{}`: {title}", playbook.id);
++
++    if !playbook.goal.trim().is_empty() {
++        rendered.push_str(&format!("\nGoal: {}", playbook.goal.trim()));
++    }
++
++    if let Some(success_rate) = playbook.success_rate() {
++        rendered.push_str(&format!(
++            "\nSuccess rate: {:.0}%",
++            success_rate.clamp(0.0, 1.0) * 100.0
++        ));
++    }
++
++    if playbook.success_count > 0 || playbook.failure_count > 0 {
++        rendered.push_str(&format!(
++            "\nTrack record: {} success, {} failure",
++            playbook.success_count, playbook.failure_count
++        ));
++    }
++
++    if !playbook.steps.is_empty() {
++        rendered.push_str("\nSteps:");
++        for step in playbook.steps.iter().take(3) {
++            let description = step.description.trim();
++            if description.is_empty() {
++                continue;
++            }
++
++            if step.action_kind.trim().is_empty() {
++                rendered.push_str(&format!("\n- {}. {}", step.index + 1, description));
++            } else {
++                rendered.push_str(&format!(
++                    "\n- {}. {} ({})",
++                    step.index + 1,
++                    description,
++                    step.action_kind.trim()
++                ));
++            }
++        }
++
++        if playbook.steps.len() > 3 {
++            rendered.push_str(&format!("\n- ... {} more steps", playbook.steps.len() - 3));
++        }
++    }
++
++    rendered.push('\n');
++    rendered
++}
++
+ #[derive(Clone)]
+ struct RenderedSection {
+     section: PromptSection,
+@@ -978,6 +1064,7 @@ const fn cache_marker(layer: CacheLayer) -> Option<&'static str> {
+ mod tests {
+     use super::*;
+     use roko_core::tool::{ToolCategory, ToolPermission};
++    use roko_learn::playbook::{Playbook, PlaybookStep};
+     use roko_learn::section_effect::SectionEffectivenessRegistry;
+     use roko_learn::skill_library::Skill;
+ 
+@@ -990,6 +1077,21 @@ mod tests {
+         )
+     }
+ 
++    fn test_playbook(id: &str, goal: &str) -> Playbook {
++        let mut playbook = Playbook::new(id, goal);
++        playbook.name = format!("{id}-name");
++        playbook.steps = vec![
++            PlaybookStep::new(
++                0,
++                "Inspect the current task",
++                "read",
++                vec!["context".into()],
++            ),
++            PlaybookStep::new(1, "Apply the known fix", "edit", vec!["change".into()]),
++        ];
++        playbook
++    }
++
+     #[test]
+     fn build_with_all_layers() {
+         let prompt = SystemPromptBuilder::new("You are an implementer.")
+@@ -1528,6 +1630,37 @@ mod tests {
+         assert!(prompt.contains("How to apply: Use `git commit --fixup`"));
+     }
+ 
++    #[test]
++    fn relevant_playbooks_are_rendered_in_input_order_and_capped() {
++        let prompt = SystemPromptBuilder::new("You are an implementer.")
++            .with_task("Implement REST API")
++            .with_playbooks(&[
++                test_playbook("api-core", "Implement REST API"),
++                test_playbook("api-cache", "Implement REST API caching"),
++                test_playbook("api-docs", "Implement REST API docs"),
++                test_playbook("api-tests", "Implement REST API tests"),
++            ])
++            .build();
++
++        assert!(prompt.contains("## Relevant Techniques"));
++        assert!(prompt.contains("### Playbook `api-core`"));
++        assert!(prompt.contains("### Playbook `api-cache`"));
++        assert!(prompt.contains("### Playbook `api-docs`"));
++        assert!(!prompt.contains("### Playbook `api-tests`"));
++
++        let core = prompt.find("api-core").unwrap();
++        let cache = prompt.find("api-cache").unwrap();
++        let docs = prompt.find("api-docs").unwrap();
++        assert!(core < cache);
++        assert!(cache < docs);
++    }
++
++    #[test]
++    fn relevant_playbooks_do_not_create_a_section_when_empty() {
++        let prompt = SystemPromptBuilder::new("Role").with_playbooks(&[]).build();
++        assert!(!prompt.contains("## Relevant Techniques"));
++    }
++
+     #[test]
+     fn prompt_normalization_whitespace_variants_produce_identical_output() {
+         let prompt_a = SystemPromptBuilder::new("Role\tIdentity  \r\n")
+diff --git a/crates/roko-learn/src/playbook.rs b/crates/roko-learn/src/playbook.rs
+index ebf346d2..2dcbf354 100644
+--- a/crates/roko-learn/src/playbook.rs
++++ b/crates/roko-learn/src/playbook.rs
+@@ -150,6 +150,43 @@ pub struct PlaybookStore {
+     id_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+ }
+ 
++/// Prompt-time lookup context for playbook retrieval.
++///
++/// The query seam uses the task identity and role to rank playbooks before
++/// they are injected into the system prompt memory layer.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct QueryContext {
++    /// Stable identifier for the current task.
++    pub task_id: String,
++    /// Human-readable task title.
++    pub task_title: String,
++    /// Current agent role.
++    pub role: String,
++    /// Number of recent episodes to consider when biasing recall.
++    pub recent_episodes: usize,
++    /// Maximum number of results requested by the caller.
++    pub max_results: usize,
++}
++
++impl QueryContext {
++    /// Construct a new query context.
++    pub fn new(
++        task_id: impl Into<String>,
++        task_title: impl Into<String>,
++        role: impl Into<String>,
++        recent_episodes: usize,
++        max_results: usize,
++    ) -> Self {
++        Self {
++            task_id: task_id.into(),
++            task_title: task_title.into(),
++            role: role.into(),
++            recent_episodes,
++            max_results,
++        }
++    }
++}
++
+ impl PlaybookStore {
+     /// Create a store rooted at `path`. The directory is not created
+     /// eagerly — it is created on the first write.
+@@ -253,6 +290,67 @@ impl PlaybookStore {
+         self.load(task_type).await
+     }
+ 
++    /// Return up to `max_results` playbooks ranked for the supplied query
++    /// context.
++    ///
++    /// The ranking prefers direct matches on task id, task title, and role,
++    /// then applies a light recency bias. If no textual match is found, the
++    /// store falls back to the most recently used playbooks so prompt-time
++    /// retrieval still has something useful to render.
++    pub async fn query(&self, ctx: &QueryContext) -> io::Result<Vec<Playbook>> {
++        let limit = ctx.max_results.min(3);
++        if limit == 0 {
++            return Ok(Vec::new());
++        }
++
++        let task_id = normalize_query(&ctx.task_id);
++        let task_id_terms = tokenize(&task_id);
++        let task_title = normalize_query(&ctx.task_title);
++        let task_title_terms = tokenize(&task_title);
++        let role = normalize_query(&ctx.role);
++        let role_terms = tokenize(&role);
++        let now_ms = Utc::now().timestamp_millis();
++
++        let mut scored: Vec<(f64, String, Playbook)> = self
++            .list()
++            .await?
++            .into_iter()
++            .map(|playbook| {
++                let text_score = query_text_score(
++                    &playbook,
++                    &task_id,
++                    &task_id_terms,
++                    &task_title,
++                    &task_title_terms,
++                    &role,
++                    &role_terms,
++                );
++                let rank = if text_score > 0.0 {
++                    text_score.mul_add(
++                        1_000.0,
++                        query_recency_bonus(&playbook, now_ms, ctx.recent_episodes),
++                    )
++                } else {
++                    recency_score(&playbook, now_ms)
++                };
++                (rank, playbook.id.clone(), playbook)
++            })
++            .collect();
++
++        scored.sort_by(|(rank_a, id_a, _), (rank_b, id_b, _)| {
++            rank_b
++                .partial_cmp(rank_a)
++                .unwrap_or(Ordering::Equal)
++                .then_with(|| id_a.cmp(id_b))
++        });
++        scored.truncate(limit);
++        Ok(scored
++            .into_iter()
++            .filter(|(rank, _, _)| *rank > 0.0)
++            .map(|(_, _, playbook)| playbook)
++            .collect())
++    }
++
+     /// Return up to `limit` playbooks ranked by textual relevance to `query`
+     /// and recency.
+     ///
+@@ -423,9 +521,7 @@ fn normalize_query(text: &str) -> String {
+ }
+ 
+ fn tokenize(text: &str) -> Vec<String> {
+-    text.split_whitespace()
+-        .map(|token| token.to_string())
+-        .collect()
++    text.split_whitespace().map(ToString::to_string).collect()
+ }
+ 
+ fn relevance_score(playbook: &Playbook, query: &str, query_terms: &[String]) -> f64 {
+@@ -442,6 +538,38 @@ fn relevance_score(playbook: &Playbook, query: &str, query_terms: &[String]) ->
+     best
+ }
+ 
++fn query_text_score(
++    playbook: &Playbook,
++    task_id: &str,
++    task_id_terms: &[String],
++    task_title: &str,
++    task_title_terms: &[String],
++    role: &str,
++    role_terms: &[String],
++) -> f64 {
++    let mut score = 0.0;
++    if !task_id.is_empty() {
++        score += relevance_score(playbook, task_id, task_id_terms) * 1.05;
++    }
++    if !task_title.is_empty() {
++        score += relevance_score(playbook, task_title, task_title_terms) * 1.0;
++    }
++    if !role.is_empty() {
++        score += relevance_score(playbook, role, role_terms) * 0.75;
++    }
++    score
++}
++
++fn query_recency_bonus(playbook: &Playbook, now_ms: i64, recent_episodes: usize) -> f64 {
++    if recent_episodes == 0 {
++        return 0.0;
++    }
++
++    let window =
++        u32::try_from(recent_episodes.min(10)).map_or_else(|_| f64::from(u32::MAX), f64::from);
++    recency_score(playbook, now_ms) * (0.05 + window * 0.01)
++}
++
+ fn score_field(field: &str, query: &str, query_terms: &[String]) -> f64 {
+     let normalized = normalize_query(field);
+     if normalized.is_empty() || query.is_empty() {
+@@ -470,7 +598,10 @@ fn score_field(field: &str, query: &str, query_terms: &[String]) -> f64 {
+     if overlap == 0 {
+         0.0
+     } else {
+-        overlap as f64 / query_terms.len() as f64
++        let overlap = u32::try_from(overlap).map_or_else(|_| f64::from(u32::MAX), f64::from);
++        let total =
++            u32::try_from(query_terms.len()).map_or_else(|_| f64::from(u32::MAX), f64::from);
++        overlap / total
+     }
+ }
+ 
+@@ -480,7 +611,8 @@ fn playbook_anchor_ms(playbook: &Playbook) -> i64 {
+ 
+ fn recency_score(playbook: &Playbook, now_ms: i64) -> f64 {
+     let age_ms = now_ms.saturating_sub(playbook_anchor_ms(playbook)).max(0);
+-    let age_days = age_ms as f64 / 86_400_000.0;
++    let age_ms = u64::try_from(age_ms).unwrap_or(u64::MAX);
++    let age_days = std::time::Duration::from_millis(age_ms).as_secs_f64() / 86_400.0;
+     1.0 / (1.0 + age_days)
+ }
+ 
+@@ -630,6 +762,117 @@ mod tests {
+         assert_eq!(ranked[1].id, "older");
+     }
+ 
++    #[tokio::test]
++    async fn query_ranks_by_task_and_role_then_breaks_ties_by_id() {
++        let tmp = TempDir::new().expect("tempdir");
++        let store = PlaybookStore::new(tmp.path());
++
++        let mut alpha = sample_playbook("alpha");
++        alpha.id = "alpha".to_string();
++        alpha.name = "Implement REST API".to_string();
++        alpha.goal = "Implement REST API for the implementer role".to_string();
++        alpha.created_at_ms = 1_700_000_000_000;
++
++        let mut beta = sample_playbook("beta");
++        beta.id = "beta".to_string();
++        beta.name = "Implement REST API".to_string();
++        beta.goal = "Implement REST API for the implementer role".to_string();
++        beta.created_at_ms = 1_700_000_000_000;
++
++        let mut role_only = sample_playbook("role-only");
++        role_only.id = "role-only".to_string();
++        role_only.name = "Reviewer checklist".to_string();
++        role_only.goal = "Operate as reviewer".to_string();
++        role_only.created_at_ms = 1_700_000_000_000;
++
++        store.save(&beta).await.expect("save beta");
++        store.save(&role_only).await.expect("save role-only");
++        store.save(&alpha).await.expect("save alpha");
++
++        let ranked = store
++            .query(&QueryContext::new(
++                "task-001",
++                "Implement REST API",
++                "implementer",
++                8,
++                3,
++            ))
++            .await
++            .expect("query");
++
++        assert_eq!(ranked.len(), 3);
++        assert_eq!(ranked[0].id, "alpha");
++        assert_eq!(ranked[1].id, "beta");
++        assert_eq!(ranked[2].id, "role-only");
++    }
++
++    #[tokio::test]
++    async fn query_caps_results_at_three() {
++        let tmp = TempDir::new().expect("tempdir");
++        let store = PlaybookStore::new(tmp.path());
++
++        for id in ["one", "two", "three", "four", "five"] {
++            let mut pb = sample_playbook(id);
++            pb.id = id.to_string();
++            pb.name = "Implement REST API".to_string();
++            pb.goal = "Implement REST API".to_string();
++            store.save(&pb).await.expect("save");
++        }
++
++        let ranked = store
++            .query(&QueryContext::new(
++                "task-002",
++                "Implement REST API",
++                "implementer",
++                4,
++                10,
++            ))
++            .await
++            .expect("query");
++
++        assert_eq!(ranked.len(), 3);
++    }
++
++    #[tokio::test]
++    async fn query_matches_task_and_role_fields() {
++        let tmp = TempDir::new().expect("tempdir");
++        let store = PlaybookStore::new(tmp.path());
++
++        let mut task_match = sample_playbook("task-match");
++        task_match.id = "task-match".to_string();
++        task_match.name = "Implement REST API".to_string();
++        task_match.goal = "Implement REST API".to_string();
++
++        let mut role_match = sample_playbook("role-match");
++        role_match.id = "role-match".to_string();
++        role_match.name = "Implementer checklist".to_string();
++        role_match.goal = "Support the implementer role".to_string();
++
++        let mut off_topic = sample_playbook("off-topic");
++        off_topic.id = "off-topic".to_string();
++        off_topic.name = "Docs cleanup".to_string();
++        off_topic.goal = "Refresh docs".to_string();
++
++        store.save(&off_topic).await.expect("save off-topic");
++        store.save(&role_match).await.expect("save role-match");
++        store.save(&task_match).await.expect("save task-match");
++
++        let ranked = store
++            .query(&QueryContext::new(
++                "task-003",
++                "Implement REST API",
++                "implementer",
++                6,
++                3,
++            ))
++            .await
++            .expect("query");
++
++        assert_eq!(ranked.len(), 3);
++        assert_eq!(ranked[0].id, "task-match");
++        assert_eq!(ranked[1].id, "role-match");
++    }
++
+     #[tokio::test]
+     async fn record_success_increments_success_count() {
+         let tmp = TempDir::new().expect("tempdir");

@@ -1,0 +1,600 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 49685772..24e2657f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5779,6 +5779,7 @@ name = "roko-learn"
+ version = "0.1.0"
+ dependencies = [
+  "async-trait",
++ "base64 0.22.1",
+  "chrono",
+  "globset",
+  "parking_lot",
+diff --git a/crates/roko-cli/src/orchestrate.rs b/crates/roko-cli/src/orchestrate.rs
+index 144fb13f..601b171a 100644
+--- a/crates/roko-cli/src/orchestrate.rs
++++ b/crates/roko-cli/src/orchestrate.rs
+@@ -189,6 +189,55 @@ fn cfactor_history_path(workdir: &Path) -> PathBuf {
+         .join("c-factor.jsonl")
+ }
+ 
++fn episode_fingerprint_prompt(
++    prompt: Option<&str>,
++    plan_id: &str,
++    task_id: &str,
++    role: &str,
++    model: &str,
++) -> String {
++    prompt
++        .map(str::trim)
++        .filter(|text| !text.is_empty())
++        .map(str::to_owned)
++        .unwrap_or_else(|| format!("plan_id={plan_id}\ntask_id={task_id}\nrole={role}\nmodel={model}"))
++}
++
++fn episode_fingerprint_outcome(episode: &Episode, outcome: Option<&str>) -> String {
++    outcome
++        .map(str::trim)
++        .filter(|text| !text.is_empty())
++        .map(str::to_owned)
++        .unwrap_or_else(|| {
++            if episode.success {
++                "success".to_string()
++            } else {
++                episode
++                    .failure_reason
++                    .clone()
++                    .unwrap_or_else(|| "failure".to_string())
++            }
++        })
++}
++
++fn agent_output_text(result: &AgentResult) -> Option<&str> {
++    result.output.body.as_text().ok().map(str::trim)
++}
++
++fn stamp_episode_hdc_fingerprint(
++    episode: &mut Episode,
++    prompt: Option<&str>,
++    outcome: Option<&str>,
++    plan_id: &str,
++    task_id: &str,
++    role: &str,
++    model: &str,
++) {
++    let prompt = episode_fingerprint_prompt(prompt, plan_id, task_id, role, model);
++    let outcome = episode_fingerprint_outcome(episode, outcome);
++    episode.attach_hdc_fingerprint(&prompt, &outcome);
++}
++
+ #[derive(Debug, Clone, Copy)]
+ struct HeartbeatCounts {
+     active_tasks: usize,
+@@ -5752,6 +5801,12 @@ impl PlanRunner {
+                             .and_then(|tracker| tracker.last_impl_output_hash)
+                             .map(|hash| hash.to_string())
+                             .unwrap_or_else(|| plan_id.clone());
++                        let gate_prompt = format!("plan_id={plan_id}\nrung={rung}\ngate=run");
++                        let gate_outcome = serde_json::json!({
++                            "passed": passed,
++                            "gate_verdicts": ep.gate_verdicts,
++                        })
++                        .to_string();
+                         let gate_input = self.enrich_completed_run(
+                             ep,
+                             &plan_id,
+@@ -5760,6 +5815,8 @@ impl PlanRunner {
+                             "n/a",
+                             Some(passed),
+                             1,
++                            Some(&gate_prompt),
++                            Some(&gate_outcome),
+                         );
+                         self.apply_knowledge_tier_feedback(&plan_id);
+                         self.record_and_check_learning(gate_input, &plan_id).await;
+@@ -6200,8 +6257,17 @@ impl PlanRunner {
+                 ep.input_signal_hash = plan_id.to_string();
+                 ep.output_signal_hash = result.output.id.to_string();
+                 let model = self.effective_model();
+-                let input =
+-                    self.enrich_completed_run(ep, plan_id, "enrich", "Strategist", &model, None, 1);
++                let input = self.enrich_completed_run(
++                    ep,
++                    plan_id,
++                    "enrich",
++                    "Strategist",
++                    &model,
++                    None,
++                    1,
++                    Some(&enrichment_user_prompt),
++                    agent_output_text(&result),
++                );
+                 self.record_and_check_learning(input, plan_id).await;
+ 
+                 if let Some(tracker) = self.task_trackers.get(plan_id) {
+@@ -6516,6 +6582,16 @@ impl PlanRunner {
+ 
+             let prompt_override = retry_prompt_override.take();
+             let model_override = prompt_override.as_ref().map(|_| retry_model.clone());
++            let task_prompt = prompt_override.clone().unwrap_or_else(|| {
++                task_def
++                    .as_ref()
++                    .map(|task| task.build_prompt(plan_id, &self.workdir))
++                    .unwrap_or_else(|| {
++                        format!(
++                            "Plan: {plan_id}\nTask: {task_id}\n\nImplement the task described above."
++                        )
++                    })
++            });
+             total_dispatches += 1;
+ 
+             match self
+@@ -6545,7 +6621,7 @@ impl PlanRunner {
+                         self.record_task_failure(
+                             plan_id,
+                             task_id,
+-                            None,
++                            Some(task_prompt.as_str()),
+                             Some(retry_model.as_str()),
+                             &e,
+                             &started,
+@@ -6564,7 +6640,7 @@ impl PlanRunner {
+                         break;
+                     }
+                     match self
+-                        .record_task_success(plan_id, task_id, &result, &started)
++                        .record_task_success(plan_id, task_id, &task_prompt, &result, &started)
+                         .await
+                     {
+                         Ok(()) => {
+@@ -7040,7 +7116,13 @@ impl PlanRunner {
+                     continue;
+                 }
+                 if let Err(e) = self
+-                    .record_task_success(plan_id, tid, &task_result.result, &started)
++                    .record_task_success(
++                        plan_id,
++                        tid,
++                        &task_result.prompt_text,
++                        &task_result.result,
++                        &started,
++                    )
+                     .await
+                 {
+                     tracing::error!("[orchestrate] task {tid} aborted by plan budget: {e}");
+@@ -7059,7 +7141,7 @@ impl PlanRunner {
+                 self.record_task_failure(
+                     plan_id,
+                     tid,
+-                    None,
++                    Some(task_result.prompt_text.as_str()),
+                     Some(task_result.model.as_str()),
+                     &err,
+                     &started,
+@@ -7110,6 +7192,8 @@ impl PlanRunner {
+         model: &str,
+         gate_passed: Option<bool>,
+         iteration: u32,
++        prompt: Option<&str>,
++        outcome: Option<&str>,
+     ) -> CompletedRunInput {
+         if ep.agent_template.trim().is_empty() {
+             ep.agent_template = role.to_string();
+@@ -7117,6 +7201,7 @@ impl PlanRunner {
+         if ep.model.trim().is_empty() {
+             ep.model = model.to_string();
+         }
++        stamp_episode_hdc_fingerprint(&mut ep, prompt, outcome, plan_id, task_id, role, model);
+         ep.extra
+             .entry("plan_id".to_string())
+             .or_insert_with(|| serde_json::json!(plan_id));
+@@ -7662,6 +7747,7 @@ impl PlanRunner {
+         &mut self,
+         plan_id: &str,
+         task_id: &str,
++        task_prompt: &str,
+         result: &AgentResult,
+         started: &std::time::Instant,
+     ) -> Result<()> {
+@@ -7839,7 +7925,17 @@ impl PlanRunner {
+             );
+         }
+         let model = self.effective_model();
+-        let input = self.enrich_completed_run(ep, plan_id, task_id, "Implementer", &model, None, 1);
++        let input = self.enrich_completed_run(
++            ep,
++            plan_id,
++            task_id,
++            "Implementer",
++            &model,
++            None,
++            1,
++            Some(task_prompt),
++            agent_output_text(result),
++        );
+         self.record_and_check_learning(input, plan_id).await;
+         self.record_crate_familiarity(plan_id, task_id, task_def.as_ref(), true);
+         let success_entry = build_success_knowledge_entry(
+@@ -8065,6 +8161,31 @@ impl PlanRunner {
+                     .collect::<Vec<_>>()
+             ),
+         );
++        let replan_prompt = original_task
++            .map(|task| task.build_prompt(plan_id, &self.workdir))
++            .unwrap_or_else(|| {
++                format!(
++                    "plan_id={plan_id}\ntask_id={original_task_id}\nstrategy={strategy}\nattempt={attempt_number}"
++                )
++            });
++        let replan_outcome = serde_json::json!({
++            "success": success,
++            "failure_reason": ep.failure_reason,
++            "resulting_subtasks": resulting_subtasks
++                .iter()
++                .map(|task| serde_json::json!({"id": &task.id, "title": &task.title}))
++                .collect::<Vec<_>>(),
++        })
++        .to_string();
++        stamp_episode_hdc_fingerprint(
++            &mut ep,
++            Some(&replan_prompt),
++            Some(&replan_outcome),
++            plan_id,
++            original_task_id,
++            "Strategist",
++            "n/a",
++        );
+ 
+         if let Err(e) = self.learning.append_episode(&ep).await {
+             tracing::error!(
+@@ -8795,6 +8916,8 @@ impl PlanRunner {
+                     &current_model,
+                     None,
+                     failure_count,
++                    Some(&failure_summary),
++                    Some(&skip_reason),
+                 );
+                 self.record_and_check_learning(input, plan_id).await;
+ 
+@@ -9390,7 +9513,18 @@ impl PlanRunner {
+         let model = selected_model
+             .map(str::to_owned)
+             .unwrap_or_else(|| self.effective_model());
+-        let input = self.enrich_completed_run(ep, plan_id, task_id, "Implementer", &model, None, 1);
++        let error_text = error.to_string();
++        let input = self.enrich_completed_run(
++            ep,
++            plan_id,
++            task_id,
++            "Implementer",
++            &model,
++            None,
++            1,
++            task_text,
++            Some(&error_text),
++        );
+         self.record_and_check_learning(input, plan_id).await;
+         self.emit_failure_efficiency_event(
+             plan_id,
+@@ -9605,7 +9739,7 @@ impl PlanRunner {
+                 plan_id,
+                 AgentRole::AutoFixer,
+                 "fix",
+-                Some(fix_prompt),
++                Some(fix_prompt.clone()),
+                 Some(fix_model),
+                 None,
+                 None,
+@@ -9629,8 +9763,17 @@ impl PlanRunner {
+                 ep.input_signal_hash = plan_id.to_string();
+                 ep.output_signal_hash = result.output.id.to_string();
+                 let model = self.effective_model();
+-                let input =
+-                    self.enrich_completed_run(ep, plan_id, "fix", "AutoFixer", &model, None, 1);
++                let input = self.enrich_completed_run(
++                    ep,
++                    plan_id,
++                    "fix",
++                    "AutoFixer",
++                    &model,
++                    None,
++                    1,
++                    Some(&fix_prompt),
++                    agent_output_text(&result),
++                );
+                 self.record_and_check_learning(input, plan_id).await;
+ 
+                 // Reset for retry: increment iteration, clear gate results
+@@ -9686,6 +9829,8 @@ impl PlanRunner {
+                     &model,
+                     None,
+                     1,
++                    Some(&format!("plan_id={plan_id}\ntask=regen-verify")),
++                    agent_output_text(&result),
+                 );
+                 self.record_and_check_learning(input, plan_id).await;
+ 
+@@ -9790,7 +9935,7 @@ impl PlanRunner {
+                 plan_id,
+                 AgentRole::Auditor,
+                 "review",
+-                Some(review_prompt),
++                Some(review_prompt.clone()),
+                 None,
+                 None,
+                 None,
+@@ -9842,8 +9987,17 @@ impl PlanRunner {
+                 ep.input_signal_hash = plan_id.to_string();
+                 ep.output_signal_hash = result.output.id.to_string();
+                 let model = self.effective_model();
+-                let input =
+-                    self.enrich_completed_run(ep, plan_id, "review", "Auditor", &model, None, 1);
++                let input = self.enrich_completed_run(
++                    ep,
++                    plan_id,
++                    "review",
++                    "Auditor",
++                    &model,
++                    None,
++                    1,
++                    Some(&review_prompt),
++                    Some(&output_text),
++                );
+                 self.record_and_check_learning(input, plan_id).await;
+ 
+                 if approved {
+@@ -9896,7 +10050,7 @@ impl PlanRunner {
+                 plan_id,
+                 AgentRole::Scribe,
+                 "docs",
+-                Some(doc_prompt),
++                Some(doc_prompt.clone()),
+                 None,
+                 None,
+                 None,
+@@ -9920,8 +10074,17 @@ impl PlanRunner {
+                 ep.input_signal_hash = plan_id.to_string();
+                 ep.output_signal_hash = result.output.id.to_string();
+                 let model = self.effective_model();
+-                let input =
+-                    self.enrich_completed_run(ep, plan_id, "docs", "Scribe", &model, None, 1);
++                let input = self.enrich_completed_run(
++                    ep,
++                    plan_id,
++                    "docs",
++                    "Scribe",
++                    &model,
++                    None,
++                    1,
++                    Some(&doc_prompt),
++                    agent_output_text(&result),
++                );
+                 self.record_and_check_learning(input, plan_id).await;
+             }
+             Err(e) => {
+@@ -9982,6 +10145,7 @@ impl PlanRunner {
+                     ep.output_signal_hash = result.output.id.to_string();
+                     let model = self.effective_model();
+                     let role_str = format!("{role:?}");
++                    let generic_prompt = format!("plan_id={plan_id}\nrole={role_str}\ntask={task}");
+                     let input = self.enrich_completed_run(
+                         ep,
+                         plan_id,
+@@ -9990,6 +10154,8 @@ impl PlanRunner {
+                         &model,
+                         None,
+                         attempt + 1,
++                        Some(&generic_prompt),
++                        agent_output_text(result),
+                     );
+                     if let Err(e) = self.learning.record_completed_run(input).await {
+                         tracing::error!("[orchestrate] episode log failed: {e}");
+@@ -10017,6 +10183,9 @@ impl PlanRunner {
+                         ep.input_signal_hash = plan_id.to_string();
+                         let model = self.effective_model();
+                         let role_str = format!("{role:?}");
++                        let generic_prompt =
++                            format!("plan_id={plan_id}\nrole={role_str}\ntask={task}");
++                        let failure_text = e.to_string();
+                         let input = self.enrich_completed_run(
+                             ep,
+                             plan_id,
+@@ -10025,6 +10194,8 @@ impl PlanRunner {
+                             &model,
+                             None,
+                             attempt + 1,
++                            Some(&generic_prompt),
++                            Some(&failure_text),
+                         );
+                         self.record_and_check_learning(input, plan_id).await;
+                         self.event_log.append(
+diff --git a/crates/roko-learn/Cargo.toml b/crates/roko-learn/Cargo.toml
+index f57cb69e..4216139e 100644
+--- a/crates/roko-learn/Cargo.toml
++++ b/crates/roko-learn/Cargo.toml
+@@ -16,6 +16,7 @@ roko-agent = { path = "../roko-agent" }
+ roko-daimon = { path = "../roko-daimon" }
+ roko-primitives = { path = "../roko-primitives" }
+ async-trait = { workspace = true }
++base64 = { workspace = true }
+ serde = { workspace = true, features = ["derive"] }
+ serde_json = { workspace = true }
+ thiserror = { workspace = true }
+diff --git a/crates/roko-learn/src/episode_logger.rs b/crates/roko-learn/src/episode_logger.rs
+index af12b240..b5e9ecf9 100644
+--- a/crates/roko-learn/src/episode_logger.rs
++++ b/crates/roko-learn/src/episode_logger.rs
+@@ -41,6 +41,10 @@ use tokio::fs::OpenOptions;
+ use tokio::io::AsyncWriteExt;
+ use tokio::sync::Mutex as AsyncMutex;
+ 
++use crate::hdc_fingerprint::{
++    DecodeHdcFingerprintError, encode_fingerprint, fingerprint_episode,
++};
++
+ /// Maximum serialized size (in bytes) of a single episode's `extra`
+ /// field. Enforced in [`EpisodeLogger::append`] so that a runaway
+ /// optimizer cannot blow up the log.
+@@ -243,6 +247,10 @@ pub struct Episode {
+     /// pruned by [`EpisodeLogger::compact`], regardless of age or count.
+     #[serde(default)]
+     pub headline: bool,
++    /// Base64-encoded HDC fingerprint derived from the episode's
++    /// `(prompt, outcome)` pair.
++    #[serde(default)]
++    pub hdc_fingerprint: Option<String>,
+     /// Forward-compat extension bag. Must serialize to ≤
+     /// [`MAX_EXTRA_BYTES`].
+     #[serde(default)]
+@@ -287,6 +295,7 @@ impl Episode {
+             reasoning_summary: None,
+             emotional_tag: None,
+             headline: false,
++            hdc_fingerprint: None,
+             extra: HashMap::new(),
+         }
+     }
+@@ -347,6 +356,20 @@ impl Episode {
+         self.attach_metadata_fingerprint();
+     }
+ 
++    /// Attach the episode fingerprint in base64 form.
++    pub fn attach_hdc_fingerprint(&mut self, prompt: &str, outcome: &str) {
++        let fingerprint = fingerprint_episode(prompt, outcome);
++        self.hdc_fingerprint = Some(encode_fingerprint(&fingerprint));
++    }
++
++    /// Decode the stored HDC fingerprint if present.
++    pub fn decode_hdc_fingerprint(&self) -> Result<Option<HdcVector>, DecodeHdcFingerprintError> {
++        self.hdc_fingerprint
++            .as_deref()
++            .map(crate::hdc_fingerprint::decode_fingerprint)
++            .transpose()
++    }
++
+     fn completion_fingerprint_text(&self) -> String {
+         let actions =
+             serde_json::to_string(&self.external_actions).unwrap_or_else(|_| "[]".to_string());
+@@ -544,13 +567,22 @@ pub fn prioritize_by_importance<'a>(
+ }
+ 
+ fn episode_fingerprint(episode: &Episode) -> Option<HdcVector> {
+-    // Prefer the text fingerprint; fall back to metadata fingerprint.
+     episode
+-        .extra
+-        .get(TEXT_FINGERPRINT_KEY)
+-        .or_else(|| episode.extra.get(METADATA_FINGERPRINT_KEY))
+-        .cloned()
+-        .and_then(|value| serde_json::from_value(value).ok())
++        .hdc_fingerprint
++        .as_deref()
++        .map(crate::hdc_fingerprint::decode_fingerprint)
++        .transpose()
++        .ok()
++        .flatten()
++        .or_else(|| {
++            // Prefer the text fingerprint; fall back to metadata fingerprint.
++            episode
++                .extra
++                .get(TEXT_FINGERPRINT_KEY)
++                .or_else(|| episode.extra.get(METADATA_FINGERPRINT_KEY))
++                .cloned()
++                .and_then(|value| serde_json::from_value(value).ok())
++        })
+ }
+ 
+ fn normalized_template(template: &str) -> Option<String> {
+@@ -1808,6 +1840,40 @@ mod tests {
+         );
+     }
+ 
++    #[tokio::test]
++    async fn episode_hdc_fingerprint_round_trips_after_write() {
++        let (_dir, path) = tmp_log();
++        let logger = EpisodeLogger::new(&path);
++        let mut ep = Episode::new("agent-a", "task-a");
++        ep.attach_hdc_fingerprint("hello", "world");
++
++        logger.append(&ep).await.expect("append");
++
++        let all = EpisodeLogger::read_all(&path).await.expect("read");
++        assert_eq!(all.len(), 1);
++        assert!(all[0].hdc_fingerprint.is_some());
++        let decoded = all[0]
++            .decode_hdc_fingerprint()
++            .expect("decode fingerprint")
++            .expect("stored fingerprint");
++        assert_eq!(decoded, fingerprint_episode("hello", "world"));
++    }
++
++    #[test]
++    fn episode_hdc_string_round_trips_through_serde() {
++        let mut ep = Episode::new("agent-a", "task-a");
++        ep.attach_hdc_fingerprint("prompt", "success");
++
++        let json = serde_json::to_string(&ep).expect("serialize episode");
++        let decoded: Episode = serde_json::from_str(&json).expect("deserialize episode");
++
++        assert_eq!(decoded.hdc_fingerprint, ep.hdc_fingerprint);
++        assert_eq!(
++            decoded.decode_hdc_fingerprint().expect("decode"),
++            ep.decode_hdc_fingerprint().expect("decode")
++        );
++    }
++
+     #[tokio::test]
+     async fn suggest_template_falls_back_to_metadata_fingerprint() {
+         let (_dir, path) = tmp_log();
+diff --git a/crates/roko-learn/src/lib.rs b/crates/roko-learn/src/lib.rs
+index 2926f521..f0231c9d 100644
+--- a/crates/roko-learn/src/lib.rs
++++ b/crates/roko-learn/src/lib.rs
+@@ -48,6 +48,8 @@ pub mod error_enrichment;
+ pub mod event_subscriber;
+ /// Unified learning events emitted by routing, evaluation, and runtime feedback.
+ pub mod events;
++/// Episode-level HDC fingerprint helpers for nearest-neighbour retrieval.
++pub mod hdc_fingerprint;
+ pub mod hdc_clustering;
+ /// Rolling latency EMAs and percentiles for routing feedback.
+ pub mod latency;
+diff --git a/crates/roko-mcp-stdio/src/lib.rs b/crates/roko-mcp-stdio/src/lib.rs
+index e9a83bc2..3c50251b 100644
+--- a/crates/roko-mcp-stdio/src/lib.rs
++++ b/crates/roko-mcp-stdio/src/lib.rs
+@@ -119,7 +119,7 @@ where
+             Err(err) => {
+                 write_response(
+                     &mut writer,
+-                    JsonRpcResponse {
++                    &JsonRpcResponse {
+                         jsonrpc: "2.0",
+                         result: None,
+                         error: Some(JsonRpcError::parse_error(err.to_string())),
+@@ -137,7 +137,7 @@ where
+             Err(err) => {
+                 write_response(
+                     &mut writer,
+-                    JsonRpcResponse {
++                    &JsonRpcResponse {
+                         jsonrpc: "2.0",
+                         result: None,
+                         error: Some(JsonRpcError::invalid_request(err.to_string())),
+@@ -151,7 +151,7 @@ where
+         if request.jsonrpc != "2.0" {
+             write_response(
+                 &mut writer,
+-                JsonRpcResponse {
++                &JsonRpcResponse {
+                     jsonrpc: "2.0",
+                     result: None,
+                     error: Some(JsonRpcError::invalid_request(
+@@ -183,7 +183,7 @@ where
+             },
+         };
+ 
+-        write_response(&mut writer, response)?;
++        write_response(&mut writer, &response)?;
+     }
+ 
+     writer.flush().context("flush JSON-RPC output")?;

@@ -1,0 +1,6 @@
+ M crates/roko-cli/src/orchestrate.rs
+ M crates/roko-cli/src/prompting.rs
+ M crates/roko-compose/src/role_prompts.rs
+ M crates/roko-compose/src/system_prompt_builder.rs
+ M crates/roko-learn/src/playbook.rs
+?? .cargo-home/

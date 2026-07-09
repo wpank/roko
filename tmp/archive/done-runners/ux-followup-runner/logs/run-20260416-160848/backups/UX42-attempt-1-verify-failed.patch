@@ -1,0 +1,3465 @@
+diff --git a/apps/mirage-rs/src/chain/knowledge.rs b/apps/mirage-rs/src/chain/knowledge.rs
+index 77b2c77f..4ddc43c2 100644
+--- a/apps/mirage-rs/src/chain/knowledge.rs
++++ b/apps/mirage-rs/src/chain/knowledge.rs
+@@ -190,6 +190,13 @@ impl KnowledgeStore {
+     }
+ 
+     /// Records a confirmation from `confirmer` on entry `id`. Updates indices.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`KnowledgeError::NotFound`] if the entry does not exist,
++    /// [`KnowledgeError::Immutable`] if the entry is terminal, or
++    /// [`KnowledgeError::DuplicateConfirmation`] if the confirmer has already
++    /// been recorded.
+     pub fn confirm(&mut self, id: InsightId, confirmer: Vec<u8>) -> Result<(), KnowledgeError> {
+         let entry = self
+             .entries
+@@ -210,6 +217,13 @@ impl KnowledgeStore {
+     }
+ 
+     /// Records a challenge against entry `id`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`KnowledgeError::NotFound`] if the entry does not exist,
++    /// [`KnowledgeError::Immutable`] if the entry is terminal, or
++    /// [`KnowledgeError::DuplicateChallenge`] if the challenger has already
++    /// been recorded.
+     pub fn challenge(&mut self, id: InsightId, challenger: Vec<u8>) -> Result<(), KnowledgeError> {
+         let entry = self
+             .entries
+diff --git a/apps/mirage-rs/src/chain/prediction.rs b/apps/mirage-rs/src/chain/prediction.rs
+index 754f2849..e866696c 100644
+--- a/apps/mirage-rs/src/chain/prediction.rs
++++ b/apps/mirage-rs/src/chain/prediction.rs
+@@ -191,6 +191,16 @@ impl PredictionStore {
+     }
+ 
+     #[allow(clippy::too_many_arguments)]
++    /// Submits a prediction claim for a session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PredictionError::Validation`] if the numeric inputs are not
++    /// finite or the confidence/interval constraints are violated,
++    /// [`PredictionError::SessionNotFound`] if the session is missing,
++    /// [`PredictionError::InvalidSessionState`] if the session is already
++    /// resolved, or [`PredictionError::DuplicateClaim`] if the same agent
++    /// has already claimed the session.
+     pub fn submit_claim(
+         &mut self,
+         session_id: &str,
+@@ -288,6 +298,15 @@ impl PredictionStore {
+         Ok(claim_id)
+     }
+ 
++    /// Resolves a prediction session against the supplied actual value.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PredictionError::Validation`] if `actual_value` is not
++    /// finite, [`PredictionError::SessionNotFound`] if the session is missing,
++    /// [`PredictionError::InvalidSessionState`] if the session is already
++    /// resolved, or [`PredictionError::ClaimNotFound`] if the session contains
++    /// an inconsistent claim reference.
+     pub fn resolve_session(
+         &mut self,
+         session_id: &str,
+diff --git a/apps/mirage-rs/src/chain/task.rs b/apps/mirage-rs/src/chain/task.rs
+index 6fcd2e30..f597f626 100644
+--- a/apps/mirage-rs/src/chain/task.rs
++++ b/apps/mirage-rs/src/chain/task.rs
+@@ -323,6 +323,13 @@ impl TaskStore {
+     }
+ 
+     /// Create a follow-up improvement task for a completed parent task.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the parent task is missing,
++    /// [`TaskError::InvalidState`] if the parent task is not completed, or
++    /// [`TaskError::ImprovementTargetUnassigned`] if the completed parent has
++    /// no assignee to reuse.
+     pub fn create_improvement(
+         &mut self,
+         parent_id: TaskId,
+@@ -378,6 +385,12 @@ impl TaskStore {
+     }
+ 
+     /// Assign a task to an agent. Task must be in `Open` state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the task is missing,
++    /// [`TaskError::InvalidState`] if the task is not open, or
++    /// [`TaskError::AlreadyAssigned`] if the task already has an assignee.
+     pub fn assign(&mut self, id: TaskId, assignee: String, now: u64) -> Result<(), TaskError> {
+         let entry = self.tasks.get_mut(&id).ok_or(TaskError::NotFound(id))?;
+         if entry.state != TaskState::Open {
+@@ -397,6 +410,11 @@ impl TaskStore {
+     }
+ 
+     /// Mark a task as in-progress. Task must be in `Assigned` state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the task is missing or
++    /// [`TaskError::InvalidState`] if the task is not assigned.
+     pub fn start(&mut self, id: TaskId, now: u64) -> Result<(), TaskError> {
+         let entry = self.tasks.get_mut(&id).ok_or(TaskError::NotFound(id))?;
+         if entry.state != TaskState::Assigned {
+@@ -415,6 +433,11 @@ impl TaskStore {
+     /// Complete a task, optionally linking a result insight. Returns the reward (wei).
+     ///
+     /// Task must be in `InProgress` state. The reward is set to equal the stake.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the task is missing or
++    /// [`TaskError::InvalidState`] if the task is not in progress.
+     pub fn complete(
+         &mut self,
+         id: TaskId,
+@@ -446,6 +469,11 @@ impl TaskStore {
+     ///
+     /// If the task has not exceeded `max_attempts`, it is returned to `Open` state
+     /// so it can be reassigned. Otherwise it stays in `Failed`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the task is missing or
++    /// [`TaskError::InvalidState`] if the task is not in progress.
+     pub fn fail(&mut self, id: TaskId, _reason: String, now: u64) -> Result<(), TaskError> {
+         let entry = self.tasks.get_mut(&id).ok_or(TaskError::NotFound(id))?;
+         if entry.state != TaskState::InProgress {
+@@ -469,6 +497,11 @@ impl TaskStore {
+     }
+ 
+     /// Cancel a task. Task must be in `Open`, `Assigned`, or `InProgress` state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`TaskError::NotFound`] if the task is missing or
++    /// [`TaskError::InvalidState`] if the task is already in a terminal state.
+     pub fn cancel(&mut self, id: TaskId, _reason: String) -> Result<(), TaskError> {
+         let entry = self.tasks.get_mut(&id).ok_or(TaskError::NotFound(id))?;
+         match entry.state {
+diff --git a/apps/mirage-rs/src/chain_rpc.rs b/apps/mirage-rs/src/chain_rpc.rs
+index 04d8eb3d..68e7b887 100644
+--- a/apps/mirage-rs/src/chain_rpc.rs
++++ b/apps/mirage-rs/src/chain_rpc.rs
+@@ -353,6 +353,11 @@ pub struct PostInsightResult {
+ }
+ 
+ /// Handler for `chain_postInsight`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if the knowledge layer is disabled,
++/// the kind is unknown, or any `enabled_by` id is malformed.
+ pub fn handle_post_insight(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: PostInsightParams,
+@@ -442,6 +447,11 @@ const fn default_k() -> usize {
+ }
+ 
+ /// Handler for `chain_searchInsights`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if the HDC layer is disabled, the
++/// query payload is malformed, or `queryVector` is not 1280 bytes long.
+ pub fn handle_search_insights(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: SearchInsightsParams,
+@@ -505,6 +515,12 @@ pub struct ConfirmInsightParams {
+ }
+ 
+ /// Handler for `chain_confirmInsight`.
++///
++/// # Errors
++///
++/// Returns `INVALID`, `NOT_FOUND`, `DUPLICATE`, or `IMMUTABLE` JSON-RPC
++/// errors when the knowledge layer is disabled, the id is malformed, or the
++/// store rejects the confirmation.
+ pub fn handle_confirm_insight(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: ConfirmInsightParams,
+@@ -557,6 +573,12 @@ pub struct ChallengeInsightParams {
+ }
+ 
+ /// Handler for `chain_challengeInsight`.
++///
++/// # Errors
++///
++/// Returns `INVALID`, `NOT_FOUND`, `DUPLICATE`, or `IMMUTABLE` JSON-RPC
++/// errors when the knowledge layer is disabled, the id is malformed, or the
++/// store rejects the challenge.
+ pub fn handle_challenge_insight(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: ChallengeInsightParams,
+@@ -600,6 +622,10 @@ pub fn handle_challenge_insight(
+ }
+ 
+ /// Handler for `chain_getInsight`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if `id` is missing or malformed.
+ pub fn handle_get_insight(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: JsonValue,
+@@ -632,6 +658,11 @@ pub fn handle_get_insight(
+ }
+ 
+ /// Handler for `chain_applyDecay`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if the knowledge layer is disabled or
++/// the request payload cannot be interpreted.
+ pub fn handle_apply_decay(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: JsonValue,
+@@ -708,6 +739,11 @@ const fn default_intensity() -> f32 {
+ }
+ 
+ /// Handler for `chain_depositPheromone`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if the stigmergy layer is disabled or
++/// the pheromone kind is unknown.
+ pub fn handle_deposit_pheromone(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: DepositPheromoneParams,
+@@ -742,6 +778,11 @@ pub fn handle_deposit_pheromone(
+ }
+ 
+ /// Handler for `chain_queryPheromones`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if the stigmergy layer is disabled or
++/// the query payload is malformed.
+ pub fn handle_query_pheromones(
+     chain: &Arc<RwLock<ChainContext>>,
+     params: JsonValue,
+@@ -1108,6 +1149,11 @@ pub fn handle_list_kinds() -> JsonValue {
+ /// Takes `{"method": "chain_postInsight"}` and returns a small JSON-Schema-ish
+ /// document describing the request params and response shape. Returns
+ /// [`err_code::NOT_FOUND`] if `method` is not a known `chain_*` method.
++///
++/// # Errors
++///
++/// Returns `INVALID` if `method` is missing from `params`, or `NOT_FOUND` if
++/// the method name is unknown.
+ pub fn handle_method_schema(params: JsonValue) -> Result<JsonValue, ErrorObjectOwned> {
+     let method = params
+         .get("method")
+@@ -1429,6 +1475,10 @@ static METHOD_SCHEMAS: LazyLock<HashMap<&'static str, JsonValue>> = LazyLock::ne
+ // ─── Agent registry handlers ────────────────────────────────────────────────
+ 
+ /// Handle `chain_registerAgent(id, address_hex, role)`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if `address_hex` is not valid hex.
+ pub fn handle_register_agent(
+     chain: &Arc<RwLock<ChainContext>>,
+     id: String,
+@@ -1473,6 +1523,11 @@ pub fn handle_agent_heartbeat(
+ }
+ 
+ /// Handle `chain_agentTrace(id, phase, reads, reasoning, action)`.
++///
++/// # Errors
++///
++/// Returns an `INVALID` JSON-RPC error if `phase` is not one of `retrieve`,
++/// `reason`, `act`, or `verify`.
+ pub fn handle_agent_trace(
+     chain: &Arc<RwLock<ChainContext>>,
+     id: String,
+diff --git a/apps/mirage-rs/src/fork.rs b/apps/mirage-rs/src/fork.rs
+index c5e6eae6..10c68fc2 100644
+--- a/apps/mirage-rs/src/fork.rs
++++ b/apps/mirage-rs/src/fork.rs
+@@ -290,6 +290,10 @@ impl DirtyStore {
+     }
+ 
+     /// Restores a previously taken snapshot and invalidates later snapshots.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::SnapshotNotFound`] if `id` is no longer live.
+     pub fn revert(&mut self, id: u64) -> Result<(u64, u64)> {
+         let snapshot = self
+             .snapshots
+@@ -425,6 +429,11 @@ impl DiffClassifier {
+     }
+ 
+     /// Applies classifier output to the watch list.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::WatchListFull`] if the diff promotes more
++    /// protocol contracts than the configured watch-list capacity allows.
+     pub fn apply(&self, store: &mut DirtyStore, diff: &StateDiff, block_number: u64) -> Result<()> {
+         for (address, classification) in self.classify(diff) {
+             if store.unwatch_list.contains(&address) {
+@@ -546,6 +555,12 @@ impl HybridDB {
+     }
+ 
+     /// Returns the ERC-20 balance slot used for `owner`.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream storage or account-read errors while probing candidate
++    /// slots, or [`MirageError::SlotDetectionFailed`] if no slot can be
++    /// inferred.
+     pub fn erc20_balance_slot(&mut self, token: Address, owner: Address) -> Result<U256> {
+         if let Some(slot) = self
+             .dirty
+@@ -579,6 +594,13 @@ impl HybridDB {
+     }
+ 
+     /// Reads a token balance using the detected ERC-20 balance slot.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream storage, account-read, or call errors while resolving
++    /// the slot or fetching the balance. Returns
++    /// [`MirageError::SlotDetectionFailed`] if the token cannot be identified
++    /// as ERC-20-like from local or upstream state.
+     pub fn erc20_balance_of(&mut self, token: Address, owner: Address) -> Result<U256> {
+         if let Some(balance) = self
+             .dirty
+@@ -620,6 +642,11 @@ impl HybridDB {
+     }
+ 
+     /// Writes a token balance using the detected or default ERC-20 balance slot.
++    ///
++    /// # Errors
++    ///
++    /// This helper does not currently return an error; it falls back to slot
++    /// `0` when the balance slot or total supply cannot be resolved.
+     pub fn set_erc20_balance(
+         &mut self,
+         token: Address,
+@@ -676,6 +703,11 @@ impl HybridDB {
+ 
+ impl HybridDB {
+     /// Reads basic account info.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream account-fetching or parsing errors when the account is
++    /// not already satisfied by the dirty layer or read cache.
+     pub fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>> {
+         if let Some(dirty) = self.dirty.accounts.get(&address) {
+             let needs_upstream =
+@@ -706,6 +738,11 @@ impl HybridDB {
+     }
+ 
+     /// Reads bytecode by hash.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream bytecode-fetching or parsing errors, or
++    /// [`MirageError::Upstream`] if the hash cannot be resolved.
+     pub fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode> {
+         let cached = self.bytecode_cache.lock().get(&code_hash);
+         if let Some(bytecode) = cached {
+@@ -729,6 +766,11 @@ impl HybridDB {
+     }
+ 
+     /// Reads storage.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream storage-fetching or parsing errors when the slot is
++    /// not already satisfied by the dirty layer or read cache.
+     pub fn storage(&mut self, address: Address, index: U256) -> Result<U256> {
+         if let Some(dirty) = self.dirty.accounts.get(&address) {
+             if let Some(value) = dirty.storage.get(&index) {
+@@ -746,6 +788,11 @@ impl HybridDB {
+     }
+ 
+     /// Reads a block hash.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream block-hash fetching or parsing errors when the hash is
++    /// not already cached locally.
+     pub fn block_hash(&mut self, number: u64) -> Result<B256> {
+         if let Some(hash) = self.read_cache.block_hashes.get(&number).copied() {
+             return Ok(hash);
+@@ -1011,6 +1058,11 @@ impl ForkState {
+     }
+ 
+     /// Restores a previously captured snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::SnapshotNotFound`] if the snapshot ID no longer
++    /// exists.
+     pub fn revert(&mut self, id: u64) -> Result<bool> {
+         let (block_number, _) = self.db.dirty.revert(id)?;
+         self.local_block_number = block_number;
+@@ -1467,6 +1519,12 @@ pub struct EvmExecutor;
+ impl EvmExecutor {
+     /// Executes a read-only `eth_call`-style invocation.
+     ///
++    /// # Errors
++    ///
++    /// Returns validation, upstream lookup, or EVM execution errors while
++    /// resolving the call, including missing ERC-20 balance slots and malformed
++    /// transaction environment construction.
++    ///
+     /// Uses [`HybridDB::clone_for_readonly`], so the live fork's [`DirtyStore`] is never updated
+     /// (no committed state changes from this path). Shared bytecode LRU state may still be
+     /// populated for cache hits across calls.
+@@ -1524,6 +1582,12 @@ impl EvmExecutor {
+     }
+ 
+     /// Executes a local state-changing transaction.
++    ///
++    /// # Errors
++    ///
++    /// Returns validation, upstream lookup, or execution errors from the
++    /// selected transaction path, including invalid sender data, malformed
++    /// calldata, and replay/execution failures.
+     pub fn transact(
+         state: &mut ForkState,
+         from: Address,
+diff --git a/apps/mirage-rs/src/http_api/agent.rs b/apps/mirage-rs/src/http_api/agent.rs
+index b161fb38..d31aa8ca 100644
+--- a/apps/mirage-rs/src/http_api/agent.rs
++++ b/apps/mirage-rs/src/http_api/agent.rs
+@@ -174,6 +174,11 @@ pub struct RegisterAgentRequest {
+ }
+ 
+ /// `POST /api/agents` — register a new agent.
++///
++/// # Errors
++///
++/// Returns `400` if the id or role is empty, or `409` if the agent already
++/// exists.
+ pub async fn register_agent(
+     State(state): State<ApiState>,
+     Json(req): Json<RegisterAgentRequest>,
+@@ -238,6 +243,10 @@ pub struct HeartbeatRequest {
+ }
+ 
+ /// `POST /api/agents/:id/heartbeat` — send a heartbeat for an agent.
++///
++/// # Errors
++///
++/// Returns `404` if the agent does not exist.
+ pub async fn agent_heartbeat(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -283,6 +292,10 @@ pub async fn agent_heartbeat(
+ // ---------------------------------------------------------------------------
+ 
+ /// `POST /api/agents/:id/trace` — record a cognitive trace for an agent.
++///
++/// # Errors
++///
++/// Returns `404` if the agent does not exist.
+ pub async fn post_agent_trace(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+diff --git a/apps/mirage-rs/src/http_api/isfr.rs b/apps/mirage-rs/src/http_api/isfr.rs
+index 4236878c..aaef6cb9 100644
+--- a/apps/mirage-rs/src/http_api/isfr.rs
++++ b/apps/mirage-rs/src/http_api/isfr.rs
+@@ -13,6 +13,11 @@ use super::{ApiError, ApiState};
+ const DEFAULT_ISFR_SERVICE_URL: &str = "http://localhost:8546";
+ 
+ /// `GET /api/isfr/current` — proxy latest ISFR data from the upstream service.
++///
++/// # Errors
++///
++/// Returns `502` if the upstream ISFR service is unavailable, returns a
++/// non-success status, or returns malformed JSON.
+ pub async fn isfr_current(
+     State(_state): State<ApiState>,
+     Query(query): Query<HashMap<String, String>>,
+@@ -21,6 +26,11 @@ pub async fn isfr_current(
+ }
+ 
+ /// `GET /api/isfr/history` — proxy ISFR history from the upstream service.
++///
++/// # Errors
++///
++/// Returns `502` if the upstream ISFR service is unavailable, returns a
++/// non-success status, or returns malformed JSON.
+ pub async fn isfr_history(
+     State(_state): State<ApiState>,
+     Query(query): Query<HashMap<String, String>>,
+diff --git a/apps/mirage-rs/src/http_api/knowledge.rs b/apps/mirage-rs/src/http_api/knowledge.rs
+index 9c338688..189b1944 100644
+--- a/apps/mirage-rs/src/http_api/knowledge.rs
++++ b/apps/mirage-rs/src/http_api/knowledge.rs
+@@ -452,6 +452,12 @@ pub struct PostInsightRequest {
+ }
+ 
+ /// `POST /api/knowledge/entries` — post a new insight entry.
++///
++/// # Errors
++///
++/// Returns `400` if the knowledge kind is unknown, the content is empty, or
++/// any enabled-by id is malformed, and `503` if the knowledge subsystem is
++/// disabled.
+ pub async fn post_insight(
+     State(state): State<ApiState>,
+     Json(req): Json<PostInsightRequest>,
+@@ -561,6 +567,12 @@ pub struct ConfirmRequest {
+ }
+ 
+ /// `POST /api/knowledge/entries/:id/confirm` — confirm an insight entry.
++///
++/// # Errors
++///
++/// Returns `400` if the id is malformed, `404` if the entry is missing, `409`
++/// if the entry is immutable or the confirmer is already recorded, and `503`
++/// if the knowledge subsystem is disabled.
+ pub async fn confirm_entry(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -617,6 +629,12 @@ pub struct ChallengeRequest {
+ }
+ 
+ /// `POST /api/knowledge/entries/:id/challenge` — challenge an insight entry.
++///
++/// # Errors
++///
++/// Returns `400` if the id is malformed, `404` if the entry is missing, `409`
++/// if the entry is immutable or the challenger is already recorded, and `503`
++/// if the knowledge subsystem is disabled.
+ pub async fn challenge_entry(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -673,6 +691,10 @@ pub struct DecayRequest {
+ }
+ 
+ /// `POST /api/knowledge/decay` — trigger a decay sweep on the knowledge store.
++///
++/// # Errors
++///
++/// Returns `503` if the knowledge subsystem is disabled.
+ pub async fn trigger_decay(
+     State(state): State<ApiState>,
+     Json(req): Json<DecayRequest>,
+diff --git a/apps/mirage-rs/src/http_api/pheromone.rs b/apps/mirage-rs/src/http_api/pheromone.rs
+index 8805017e..46d0a6de 100644
+--- a/apps/mirage-rs/src/http_api/pheromone.rs
++++ b/apps/mirage-rs/src/http_api/pheromone.rs
+@@ -237,6 +237,11 @@ pub struct PheromoneQueryResponse {
+     pub timestamp: u64,
+ }
+ 
++/// `POST /api/pheromones/query` — score a natural-language pheromone query.
++///
++/// # Errors
++///
++/// Returns `400` if the query field is missing.
+ pub async fn query_pheromones(
+     State(state): State<ApiState>,
+     Json(req): Json<PheromoneQueryRequest>,
+@@ -392,6 +397,11 @@ pub struct DepositRequest {
+ }
+ 
+ /// `POST /api/pheromones` — deposit a new pheromone.
++///
++/// # Errors
++///
++/// Returns `400` if the kind is unknown or the content is empty, or `503` if
++/// the stigmergy subsystem is disabled.
+ pub async fn deposit_pheromone(
+     State(state): State<ApiState>,
+     Json(req): Json<DepositRequest>,
+@@ -464,6 +474,10 @@ pub struct ProjectionQuery {
+ }
+ 
+ /// `GET /api/pheromones/:id/projection` — project decay over time for a pheromone.
++///
++/// # Errors
++///
++/// Returns `404` if the pheromone does not exist.
+ pub async fn pheromone_projection(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+diff --git a/apps/mirage-rs/src/http_api/prediction.rs b/apps/mirage-rs/src/http_api/prediction.rs
+index 2b73822e..12802d0a 100644
+--- a/apps/mirage-rs/src/http_api/prediction.rs
++++ b/apps/mirage-rs/src/http_api/prediction.rs
+@@ -81,6 +81,10 @@ fn default_metric() -> String {
+ }
+ 
+ /// `POST /api/predictions/sessions` — create a prediction session.
++///
++/// # Errors
++///
++/// Returns `400` if the question or creator is empty.
+ pub async fn create_session(
+     State(state): State<ApiState>,
+     Json(req): Json<CreateSessionRequest>,
+@@ -145,6 +149,10 @@ pub async fn list_sessions(
+ }
+ 
+ /// `GET /api/predictions/sessions/{id}` — fetch a session and its claims.
++///
++/// # Errors
++///
++/// Returns `404` if the session does not exist.
+ pub async fn get_session(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -167,6 +175,11 @@ pub async fn get_session(
+ }
+ 
+ /// `POST /api/predictions/sessions/{id}/resolve` — resolve a prediction session.
++///
++/// # Errors
++///
++/// Returns `400` if the actual value is not finite, `404` if the session does
++/// not exist, or `409` if the session is already resolved.
+ pub async fn resolve_session(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -195,6 +208,12 @@ pub async fn resolve_session(
+ }
+ 
+ /// `POST /api/predictions/claims` — submit a prediction claim.
++///
++/// # Errors
++///
++/// Returns `400` if `session_id` or `agent_id` is empty, `404` if the session
++/// does not exist, `409` if the claim is duplicated or the session state is
++/// incompatible, or `400` if the numeric fields are invalid.
+ pub async fn submit_claim(
+     State(state): State<ApiState>,
+     Json(req): Json<SubmitClaimRequest>,
+diff --git a/apps/mirage-rs/src/http_api/skills.rs b/apps/mirage-rs/src/http_api/skills.rs
+index a8b8a2d2..58187ed5 100644
+--- a/apps/mirage-rs/src/http_api/skills.rs
++++ b/apps/mirage-rs/src/http_api/skills.rs
+@@ -12,6 +12,10 @@ use super::{ApiError, ApiState};
+ use crate::chain::agent::{AgentStats, SkillConfig};
+ 
+ /// `GET /api/agents/{id}/skills` — return all configured skills for an agent.
++///
++/// # Errors
++///
++/// Returns `404` if the agent does not exist.
+ pub async fn get_agent_skills(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -34,6 +38,11 @@ pub async fn get_agent_skills(
+ }
+ 
+ /// `PUT /api/agents/{id}/skills` — replace all skill configs for an agent.
++///
++/// # Errors
++///
++/// Returns `422` if any skill config is invalid, or `404` if the agent does
++/// not exist.
+ pub async fn update_agent_skills(
+     State(state): State<ApiState>,
+     Path(id): Path<String>,
+@@ -56,6 +65,11 @@ pub async fn update_agent_skills(
+ }
+ 
+ /// `PUT /api/agents/{id}/skills/{skill}` — upsert a single skill config.
++///
++/// # Errors
++///
++/// Returns `422` if the supplied config is invalid, or `404` if the agent
++/// does not exist.
+ pub async fn update_single_skill(
+     State(state): State<ApiState>,
+     Path((id, skill)): Path<(String, String)>,
+diff --git a/apps/mirage-rs/src/http_api/task.rs b/apps/mirage-rs/src/http_api/task.rs
+index ee69bb00..7514f3f5 100644
+--- a/apps/mirage-rs/src/http_api/task.rs
++++ b/apps/mirage-rs/src/http_api/task.rs
+@@ -92,6 +92,10 @@ pub async fn task_stats(State(state): State<ApiState>) -> impl IntoResponse {
+ // ---------------------------------------------------------------------------
+ 
+ /// `GET /api/tasks/{id}` — get a single task by ID.
++///
++/// # Errors
++///
++/// Returns `404` if the task does not exist.
+ pub async fn get_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -138,6 +142,10 @@ fn default_priority() -> TaskPriority {
+ }
+ 
+ /// `POST /api/tasks` — create a new task.
++///
++/// # Errors
++///
++/// Returns `400` if `title`, `kind`, or `creator` is empty.
+ pub async fn create_task(
+     State(state): State<ApiState>,
+     Json(req): Json<CreateTaskRequest>,
+@@ -202,6 +210,11 @@ pub struct AssignTaskRequest {
+ }
+ 
+ /// `POST /api/tasks/{id}/assign` — assign a task to an agent.
++///
++/// # Errors
++///
++/// Returns `400` if `assignee` is empty, `404` if the task does not exist,
++/// or `409` if the task is not assignable.
+ pub async fn assign_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -239,6 +252,10 @@ pub async fn assign_task(
+ // ---------------------------------------------------------------------------
+ 
+ /// `POST /api/tasks/{id}/start` — mark a task as in-progress.
++///
++/// # Errors
++///
++/// Returns `404` if the task does not exist or `409` if it is not assigned.
+ pub async fn start_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -288,6 +305,11 @@ pub struct CompleteTaskRequest {
+ }
+ 
+ /// `POST /api/tasks/{id}/complete` — complete a task with optional result insight.
++///
++/// # Errors
++///
++/// Returns `404` if the task does not exist or `409` if it is not in
++/// progress.
+ pub async fn complete_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -339,6 +361,10 @@ pub async fn complete_task(
+ }
+ 
+ /// `GET /api/tasks/{id}/artifacts` — list completion artifacts for a task.
++///
++/// # Errors
++///
++/// Returns `404` if the task does not exist.
+ pub async fn get_task_artifacts(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -372,6 +398,11 @@ pub struct ImproveTaskRequest {
+ }
+ 
+ /// `POST /api/tasks/{id}/improve` — create a child improvement task.
++///
++/// # Errors
++///
++/// Returns `400` if `feedback` or `creator` is empty, `404` if the parent task
++/// does not exist, or `409` if the parent task cannot be improved.
+ pub async fn improve_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -424,6 +455,11 @@ pub struct FailTaskRequest {
+ }
+ 
+ /// `POST /api/tasks/{id}/fail` — fail a task with a reason.
++///
++/// # Errors
++///
++/// Returns `400` if `reason` is empty, `404` if the task does not exist, or
++/// `409` if it is not in progress.
+ pub async fn fail_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+@@ -495,6 +531,11 @@ pub struct CancelTaskRequest {
+ }
+ 
+ /// `POST /api/tasks/{id}/cancel` — cancel a task with a reason.
++///
++/// # Errors
++///
++/// Returns `400` if `reason` is empty, `404` if the task does not exist, or
++/// `409` if it is already terminal.
+ pub async fn cancel_task(
+     State(state): State<ApiState>,
+     Path(id): Path<u64>,
+diff --git a/apps/mirage-rs/src/integration.rs b/apps/mirage-rs/src/integration.rs
+index 5bb580b9..0cb34536 100644
+--- a/apps/mirage-rs/src/integration.rs
++++ b/apps/mirage-rs/src/integration.rs
+@@ -156,6 +156,10 @@ pub struct MirageClient {
+ impl MirageClient {
+     /// Builds a new JSON-RPC HTTP client using [`MirageConfig::url`] as the POST endpoint and
+     /// [`MirageConfig::timeout`] as the per-request timeout.
++    ///
++    /// # Errors
++    ///
++    /// Returns any `reqwest` client-construction error.
+     pub async fn new(config: MirageConfig) -> Result<Self> {
+         tokio::task::yield_now().await;
+         let inner = reqwest::Client::builder().timeout(config.timeout).build()?;
+@@ -163,6 +167,11 @@ impl MirageClient {
+     }
+ 
+     /// Executes `eth_call`.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn eth_call(&self, req: TransactionRequest) -> Result<Bytes> {
+         let response: String = self
+             .rpc_call("eth_call", serde_json::json!([req, "latest"]))
+@@ -172,24 +181,44 @@ impl MirageClient {
+ 
+     /// Executes `eth_sendTransaction` with params `[req]` (single-object array), matching the server
+     /// JSON-RPC contract.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn eth_send_transaction(&self, req: TransactionRequest) -> Result<B256> {
+         self.rpc_call("eth_sendTransaction", serde_json::json!([req]))
+             .await
+     }
+ 
+     /// Captures an `evm_snapshot`.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn evm_snapshot(&self) -> Result<u64> {
+         let raw: String = self.rpc_call("evm_snapshot", serde_json::json!([])).await?;
+         parse_hex_u64(&raw)
+     }
+ 
+     /// Restores an `evm_revert` snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn evm_revert(&self, id: u64) -> Result<bool> {
+         self.rpc_call("evm_revert", serde_json::json!([format!("0x{id:x}")]))
+             .await
+     }
+ 
+     /// Adds a contract to the watch list.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_watch_contract(&self, addr: Address) -> Result<()> {
+         let _: bool = self
+             .rpc_call(MIRAGE_WATCH_CONTRACT_METHOD, serde_json::json!([addr]))
+@@ -198,24 +227,44 @@ impl MirageClient {
+     }
+ 
+     /// Reads a position helper snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_get_position(&self, req: PositionRequest) -> Result<PositionSnapshot> {
+         self.rpc_call(MIRAGE_GET_POSITION_METHOD, serde_json::json!([req]))
+             .await
+     }
+ 
+     /// Reads the current status snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_status(&self) -> Result<MirageStatus> {
+         self.rpc_call(MIRAGE_STATUS_METHOD, serde_json::json!([]))
+             .await
+     }
+ 
+     /// Reads current resource usage.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_get_resource_usage(&self) -> Result<ResourceUsage> {
+         self.rpc_call(MIRAGE_GET_RESOURCE_USAGE_METHOD, serde_json::json!([]))
+             .await
+     }
+ 
+     /// Creates a new scenario set.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_begin_scenario_set(&self, baseline: &str) -> Result<String> {
+         self.rpc_call(
+             MIRAGE_BEGIN_SCENARIO_SET_METHOD,
+@@ -225,6 +274,11 @@ impl MirageClient {
+     }
+ 
+     /// Adds a scenario to an existing set.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_define_scenario(
+         &self,
+         set_id: &str,
+@@ -238,6 +292,11 @@ impl MirageClient {
+     }
+ 
+     /// Starts scenario execution.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_run_scenario_set(&self, set_id: &str, mode: RunMode) -> Result<String> {
+         self.rpc_call(
+             MIRAGE_RUN_SCENARIO_SET_METHOD,
+@@ -247,6 +306,11 @@ impl MirageClient {
+     }
+ 
+     /// Polls scenario results.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn mirage_get_scenario_results(&self, job_id: &str) -> Result<ScenarioJob> {
+         self.rpc_call(
+             MIRAGE_GET_SCENARIO_RESULTS_METHOD,
+@@ -257,6 +321,12 @@ impl MirageClient {
+ 
+     /// Waits until the sidecar reports `ready`, polling [`MIRAGE_STATUS_METHOD`] every
+     /// [`WAIT_READY_POLL_INTERVAL`] until `timeout` elapses.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::Timeout`] if readiness is not reported before
++    /// `timeout`, or any transport/JSON-RPC error when the sidecar request
++    /// fails before the timeout is reached.
+     pub async fn wait_ready(&self, timeout: Duration) -> Result<()> {
+         let started = Instant::now();
+         loop {
+@@ -277,6 +347,11 @@ impl MirageClient {
+     }
+ 
+     /// Returns a stream of currently known local events matching the filter.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors while creating
++    /// the subscription or connecting to the event stream.
+     pub async fn subscribe_events(
+         &self,
+         filter: EventFilter,
+@@ -334,6 +409,11 @@ impl MirageClient {
+     }
+ 
+     /// Sends a shutdown request to the sidecar.
++    ///
++    /// # Errors
++    ///
++    /// Returns transport, timeout, or JSON-RPC decode errors from the sidecar
++    /// request.
+     pub async fn shutdown(&self) -> Result<bool> {
+         self.rpc_call(MIRAGE_SHUTDOWN_METHOD, serde_json::json!([]))
+             .await
+@@ -411,6 +491,11 @@ impl MirageTestInstance {
+     /// Asks the sidecar to shut down via [`MIRAGE_SHUTDOWN_METHOD`], waits for exit, then on Unix
+     /// sends `SIGTERM` via `/bin/kill`, and finally calls [`Child::kill`](tokio::process::Child::kill)
+     /// if the child is still alive.
++    ///
++    /// # Errors
++    ///
++    /// Returns process-management or wait errors from killing and reaping the
++    /// child process.
+     pub async fn shutdown(&mut self) -> Result<()> {
+         let client = MirageClient::new(self.config()).await?;
+         let _ = client.shutdown().await;
+@@ -436,6 +521,11 @@ impl MirageTestInstance {
+ }
+ 
+ /// Spawns a new test instance and waits for readiness.
++///
++/// # Errors
++///
++/// Returns process-spawn, filesystem, startup-artifact, or readiness-polling
++/// errors encountered while bringing the instance up.
+ pub async fn spawn_mirage_test_instance(
+     rpc_url: Option<&str>,
+     port: Option<u16>,
+diff --git a/apps/mirage-rs/src/lib.rs b/apps/mirage-rs/src/lib.rs
+index 16cab9c9..4c298ffc 100644
+--- a/apps/mirage-rs/src/lib.rs
++++ b/apps/mirage-rs/src/lib.rs
+@@ -6,6 +6,8 @@
+ #![deny(unsafe_code)]
+ #![warn(missing_docs)]
+ #![cfg_attr(clippy, allow(missing_docs))]
++// TODO(UX42-followup): remove `missing_panics_doc` once the remaining
++// public Mirage APIs have accurate panic documentation.
+ #![allow(
+     clippy::double_must_use,
+     clippy::expect_used,
+diff --git a/apps/mirage-rs/src/provider.rs b/apps/mirage-rs/src/provider.rs
+index 196aa2c9..b3841e6b 100644
+--- a/apps/mirage-rs/src/provider.rs
++++ b/apps/mirage-rs/src/provider.rs
+@@ -257,6 +257,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns the upstream block number.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream RPC, transport, or response-parsing errors when the
++    /// block number is not satisfied by the mock adapter.
+     pub fn get_block_number(&self) -> Result<u64> {
+         if self.http_url.is_none() {
+             self.maybe_delay_mock();
+@@ -267,6 +272,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns upstream account info.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream balance, nonce, code, transport, or parsing errors
++    /// when the account is not satisfied by the mock adapter.
+     pub fn get_account_info(
+         &self,
+         address: Address,
+@@ -312,6 +322,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns upstream storage.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream storage, transport, or parsing errors when the slot is
++    /// not satisfied by the mock adapter.
+     pub fn get_storage_at(&self, address: Address, slot: U256, block: BlockTag) -> Result<U256> {
+         if self.http_url.is_none() {
+             self.maybe_delay_mock();
+@@ -331,6 +346,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Executes an upstream `eth_call`.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream call, transport, or parsing errors when the call is
++    /// not satisfied by the mock adapter.
+     pub fn eth_call(
+         &self,
+         from: Address,
+@@ -354,6 +374,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns a block payload with optional full transaction bodies.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream block-fetch, transport, or parsing errors when the
++    /// block is not satisfied by the mock adapter.
+     pub fn get_block_by_number(
+         &self,
+         block: BlockTag,
+@@ -404,6 +429,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns a transaction payload by hash.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream transaction-fetch, transport, or parsing errors when
++    /// the transaction is not satisfied by the mock adapter.
+     pub fn get_transaction_by_hash(&self, tx_hash: B256) -> Result<Option<Value>> {
+         if self.http_url.is_none() {
+             self.maybe_delay_mock();
+@@ -422,6 +452,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns upstream bytecode by code hash.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream code-fetch, transport, or parsing errors. Returns
++    /// [`MirageError::Upstream`] when the bytecode hash cannot be resolved.
+     pub fn get_code_by_hash(&self, code_hash: B256, block: BlockTag) -> Result<Bytecode> {
+         if let Some(code) = self.code_by_hash.read().get(&code_hash).cloned() {
+             return Ok(code);
+@@ -461,6 +496,11 @@ impl UpstreamRpc {
+     }
+ 
+     /// Returns a deterministic or upstream-provided block hash.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream block-fetch, transport, missing-field, or parsing
++    /// errors when the hash is not satisfied by the mock adapter.
+     pub fn get_block_hash(&self, number: u64) -> Result<B256> {
+         if self.http_url.is_none() {
+             self.maybe_delay_mock();
+@@ -484,11 +524,20 @@ impl UpstreamRpc {
+     }
+ 
+     /// Performs a basic connectivity check.
++    ///
++    /// # Errors
++    ///
++    /// Returns the same errors as [`Self::get_block_number`].
+     pub fn health_check(&self) -> Result<u64> {
+         self.get_block_number()
+     }
+ 
+     /// Subscribes to `newHeads` notifications from the WebSocket upstream.
++    ///
++    /// # Errors
++    ///
++    /// Returns WebSocket connect, subscribe, read, text-frame, JSON decode, or
++    /// subscription-id errors while establishing the stream.
+     pub async fn subscribe_new_heads(
+         &self,
+     ) -> Result<Pin<Box<dyn Stream<Item = Result<u64>> + Send>>> {
+diff --git a/apps/mirage-rs/src/replay.rs b/apps/mirage-rs/src/replay.rs
+index 3dad2303..a5814bf1 100644
+--- a/apps/mirage-rs/src/replay.rs
++++ b/apps/mirage-rs/src/replay.rs
+@@ -184,6 +184,11 @@ impl TargetedFollower {
+     }
+ 
+     /// Runs the follower until shutdown or upstream stream exhaustion.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream block-fetch, WebSocket, or replay-validation errors
++    /// encountered while consuming heads or falling back to polling.
+     #[allow(clippy::cognitive_complexity)]
+     pub async fn run(mut self, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
+         if self.is_proxy_mode() {
+@@ -624,6 +629,11 @@ pub struct TxReplay {
+ 
+ impl TxReplay {
+     /// Attempts to replay a specific transaction.
++    ///
++    /// # Errors
++    ///
++    /// Returns upstream transaction lookup, JSON decode, missing-sender, or
++    /// execution errors while rebuilding the transaction.
+     pub fn execute(
+         &self,
+         upstream: &UpstreamRpc,
+@@ -683,6 +693,11 @@ pub struct SpeculativeExecutor {
+ impl SpeculativeExecutor {
+     /// Executes a transaction request without mutating the base state.
+     ///
++    /// # Errors
++    ///
++    /// Returns missing-sender, decode, or execution errors while preparing and
++    /// simulating the speculative transaction.
++    ///
+     /// Forks the current dirty storage into a [`CowState`] branch so the
+     /// shared baseline is never deep-cloned for repeated speculative runs
+     /// against the same block.
+diff --git a/apps/mirage-rs/src/resources.rs b/apps/mirage-rs/src/resources.rs
+index 062d9d74..60f4128f 100644
+--- a/apps/mirage-rs/src/resources.rs
++++ b/apps/mirage-rs/src/resources.rs
+@@ -131,6 +131,11 @@ impl ResourceModel {
+     }
+ 
+     /// Checks whether the process should be allowed to start.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::Unsupported`] if the available memory is known
++    /// and does not satisfy the configured memory budget plus headroom.
+     pub fn ensure_spawn_budget(&self) -> Result<()> {
+         let mut system = System::new();
+         system.refresh_memory();
+diff --git a/apps/mirage-rs/src/rpc.rs b/apps/mirage-rs/src/rpc.rs
+index 9564a882..6941fb40 100644
+--- a/apps/mirage-rs/src/rpc.rs
++++ b/apps/mirage-rs/src/rpc.rs
+@@ -1,5 +1,7 @@
+ //! JSON-RPC server surface for `mirage-rs`.
+ 
++// TODO(UX42-followup): remove `missing_panics_doc` once the remaining
++// RPC handlers have accurate panic documentation.
+ #![allow(
+     clippy::default_trait_access,
+     clippy::missing_panics_doc,
+@@ -88,6 +90,12 @@ struct StagedErc20Mint {
+ 
+ /// Starts a JSON-RPC server on the provided address.
+ ///
++/// # Errors
++///
++/// Returns address-resolution errors, [`MirageError::Unsupported`] if the RPC
++/// module cannot be built, or [`MirageError::BindFailed`] if the listener
++/// cannot bind the chosen port.
++///
+ /// When the `chain` feature is enabled, use [`start_rpc_server_with_chain`] to
+ /// attach an [`crate::chain_rpc::ChainContext`] that exposes `chain_*` methods.
+ pub async fn start_rpc_server(
+@@ -117,6 +125,12 @@ pub async fn start_rpc_server(
+ 
+ /// Starts a JSON-RPC server with an attached chain substrate.
+ ///
++/// # Errors
++///
++/// Returns address-resolution errors, [`MirageError::Unsupported`] if the RPC
++/// module cannot be built, or [`MirageError::BindFailed`] if the listener
++/// cannot bind the chosen port.
++///
+ /// Registers all `chain_*` methods described in [`crate::chain_rpc`] on top
+ /// of the standard `eth_*` / `mirage_*` surface.
+ #[cfg(feature = "chain")]
+@@ -281,6 +295,10 @@ async fn finish_start_rpc_server(
+ }
+ 
+ /// Starts an ephemeral server for tests.
++///
++/// # Errors
++///
++/// Returns the same errors as [`start_rpc_server`].
+ pub async fn spawn_rpc_server_for_tests() -> Result<(String, ServerHandle)> {
+     let upstream = Arc::new(UpstreamRpc::mock(1));
+     let db = HybridDB::new(upstream, 64, Duration::from_secs(12), NonZeroUsize::MIN, 1);
+@@ -2118,6 +2136,10 @@ pub fn from_sqrt_price_x96(sqrt_price_x96: U256) -> f64 {
+ 
+ /// Spawns a Mirage test child process for integration tests.
+ ///
++/// # Errors
++///
++/// Returns any error from [`crate::spawn_mirage_test_instance`].
++///
+ /// Reads the listening port from the `MIRAGE_TEST_PORT` environment variable when set to a valid
+ /// `u16`. If unset or unparsable, binds **18552**.
+ pub async fn mirage_instance_or_env() -> crate::Result<crate::MirageTestInstance> {
+diff --git a/apps/mirage-rs/src/scenario.rs b/apps/mirage-rs/src/scenario.rs
+index db189b76..c1307f05 100644
+--- a/apps/mirage-rs/src/scenario.rs
++++ b/apps/mirage-rs/src/scenario.rs
+@@ -544,6 +544,10 @@ fn execute_scenario_set(fork_in: ForkState, set: &ScenarioSet) -> (Vec<ScenarioR
+ 
+ impl Scenario {
+     /// Parses a built-in TOML scenario fixture.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::Toml`] if `input` is not valid fixture TOML.
+     pub fn from_toml(id: impl Into<String>, input: &str) -> Result<Self, MirageError> {
+         let fixture: ScenarioFixture = toml::from_str(input)?;
+         let mut track_addresses = fixture.scenario.track_addresses;
+@@ -584,6 +588,12 @@ impl Scenario {
+     }
+ 
+     /// Evaluates the fixture assertions against the current fork state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MirageError::Unsupported`] if a watch-list or token-balance
++    /// assertion fails, or propagates any underlying [`MirageError`] from the
++    /// balance lookup.
+     pub fn evaluate_assertions(
+         &self,
+         state: &mut crate::fork::ForkState,
+diff --git a/crates/roko-agent-server/src/features/logs.rs b/crates/roko-agent-server/src/features/logs.rs
+index c4976e76..c055f9ac 100644
+--- a/crates/roko-agent-server/src/features/logs.rs
++++ b/crates/roko-agent-server/src/features/logs.rs
+@@ -111,6 +111,14 @@ mod tests {
+     use crate::features::messaging;
+     use crate::state::{DispatchError, DispatchLike};
+ 
++    fn scaled_test_timeout_ms(ms: u64) -> u64 {
++        if std::env::var("CI").is_ok_and(|value| value == "true") {
++            ms.saturating_mul(10)
++        } else {
++            ms
++        }
++    }
++
+     fn log_path_for(agent_id: &str) -> std::path::PathBuf {
+         std::env::temp_dir()
+             .join("roko-agent-server-tests")
+@@ -237,9 +245,10 @@ mod tests {
+             .expect("message response");
+         assert_eq!(message_response.status(), StatusCode::OK);
+ 
+-        let logs_response = tokio::time::timeout(Duration::from_millis(100), async move {
+-            app.oneshot(logs_request("/logs?tail=50")).await
+-        })
++        let logs_response = tokio::time::timeout(
++            Duration::from_millis(scaled_test_timeout_ms(100)),
++            async move { app.oneshot(logs_request("/logs?tail=50")).await },
++        )
+         .await
+         .expect("logs response within 100ms")
+         .expect("logs response");
+diff --git a/crates/roko-agent-server/src/lib.rs b/crates/roko-agent-server/src/lib.rs
+index 028748e2..c8fe74ae 100644
+--- a/crates/roko-agent-server/src/lib.rs
++++ b/crates/roko-agent-server/src/lib.rs
+@@ -110,6 +110,13 @@ impl AgentServer {
+     }
+ 
+     /// Bind the configured address and serve until shutdown.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the bind address cannot be resolved or the TCP
++    /// listener cannot be created, if the bound address cannot be read back,
++    /// if optional registration or start hooks fail, or if serving the Axum
++    /// router fails.
+     pub async fn serve(self) -> Result<()> {
+         let bind = resolve_addr(&self.bind)?;
+         let listener = TcpListener::bind(bind)
+@@ -299,6 +306,10 @@ impl AgentServerBuilder {
+     }
+ 
+     /// Finish building the server definition.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if `agent_id` was not configured.
+     pub fn build(self) -> Result<AgentServer> {
+         let agent_id = self
+             .agent_id
+diff --git a/crates/roko-agent-server/src/registration.rs b/crates/roko-agent-server/src/registration.rs
+index 925bf64b..6927b172 100644
+--- a/crates/roko-agent-server/src/registration.rs
++++ b/crates/roko-agent-server/src/registration.rs
+@@ -132,6 +132,12 @@ impl AgentRegistration {
+     }
+ 
+     /// Publish the card and optionally submit an `updateAgentCardUri` transaction.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the card cannot be published, if the optional
++    /// on-chain transaction cannot be signed or submitted, or if the optional
++    /// discovery callback fails.
+     pub async fn register(
+         &self,
+         state: &AgentState,
+diff --git a/crates/roko-agent/src/codex_agent.rs b/crates/roko-agent/src/codex_agent.rs
+index fa1f63ea..c5fa317a 100644
+--- a/crates/roko-agent/src/codex_agent.rs
++++ b/crates/roko-agent/src/codex_agent.rs
+@@ -429,6 +429,15 @@ mod tests {
+     use tokio::sync::Notify;
+     use tokio::time::{Duration, sleep, timeout};
+ 
++    fn test_wait(ms: u64) -> Duration {
++        let scaled = if std::env::var("CI").map(|v| v == "true").unwrap_or(false) {
++            ms * 10
++        } else {
++            ms
++        };
++        Duration::from_millis(scaled)
++    }
++
+     // A mock HttpPoster that returns canned responses and records calls.
+     struct MockPoster {
+         response: Mutex<Result<String, HttpPostError>>,
+@@ -894,7 +903,7 @@ mod tests {
+         let first =
+             tokio::spawn(async move { first_agent.run(&first_prompt, &Context::now()).await });
+ 
+-        timeout(Duration::from_secs(1), poster.first_call_entered.notified())
++        timeout(test_wait(1_000), poster.first_call_entered.notified())
+             .await
+             .expect("first request should reach the poster");
+ 
+@@ -903,16 +912,16 @@ mod tests {
+         let second =
+             tokio::spawn(async move { second_agent.run(&second_prompt, &Context::now()).await });
+ 
+-        sleep(Duration::from_millis(50)).await;
++        sleep(test_wait(50)).await;
+         assert_eq!(poster.entered_calls.load(Ordering::SeqCst), 1);
+ 
+         poster.release_first_call.notify_waiters();
+ 
+-        let first_result = timeout(Duration::from_secs(1), first)
++        let first_result = timeout(test_wait(1_000), first)
+             .await
+             .expect("first request should finish")
+             .expect("first task should join");
+-        let second_result = timeout(Duration::from_secs(1), second)
++        let second_result = timeout(test_wait(1_000), second)
+             .await
+             .expect("second request should finish")
+             .expect("second task should join");
+diff --git a/crates/roko-agent/src/dispatcher/timeout.rs b/crates/roko-agent/src/dispatcher/timeout.rs
+index 1413e472..2fe8a778 100644
+--- a/crates/roko-agent/src/dispatcher/timeout.rs
++++ b/crates/roko-agent/src/dispatcher/timeout.rs
+@@ -47,13 +47,16 @@ mod tests {
+     use super::*;
+     use roko_core::tool::ToolResult;
+ 
+-    #[tokio::test]
++    #[tokio::test(start_paused = true)]
+     async fn with_timeout_expires_when_future_slow() {
+         let slow = async {
+             tokio::time::sleep(Duration::from_millis(200)).await;
+             ToolResult::text("done")
+         };
+-        let out = with_timeout(Duration::from_millis(50), slow).await;
++        let out = tokio::spawn(with_timeout(Duration::from_millis(50), slow));
++        tokio::task::yield_now().await;
++        tokio::time::advance(Duration::from_millis(50)).await;
++        let out = out.await.expect("timeout task should join");
+         match out {
+             ToolResult::Err(ToolError::Timeout { after_ms }) => {
+                 // Elapsed should be close to 50 ms (the cap).
+diff --git a/crates/roko-agent/src/exec.rs b/crates/roko-agent/src/exec.rs
+index 44edb703..00eea8dc 100644
+--- a/crates/roko-agent/src/exec.rs
++++ b/crates/roko-agent/src/exec.rs
+@@ -506,10 +506,15 @@ mod tests {
+         );
+     }
+ 
+-    #[tokio::test]
++    #[tokio::test(start_paused = true)]
+     async fn timeout_fails_result() {
+         let agent = ExecAgent::new("sleep", vec!["10".into()]).with_timeout_ms(100);
+-        let result = agent.run(&prompt("x"), &Context::now()).await;
++        let input = prompt("x");
++        let ctx = Context::now();
++        let run = tokio::spawn(async move { agent.run(&input, &ctx).await });
++        tokio::task::yield_now().await;
++        tokio::time::advance(Duration::from_millis(100)).await;
++        let result = run.await.expect("exec task should join");
+         assert!(!result.success);
+         assert!(result.output.body.as_text().unwrap().contains("timed out"));
+     }
+diff --git a/crates/roko-agent/src/openai_compat_backend.rs b/crates/roko-agent/src/openai_compat_backend.rs
+index 05f86ee5..75d1557d 100644
+--- a/crates/roko-agent/src/openai_compat_backend.rs
++++ b/crates/roko-agent/src/openai_compat_backend.rs
+@@ -439,6 +439,15 @@ mod tests {
+ 
+     use crate::http::HttpPostError;
+ 
++    fn test_timeout(ms: u64) -> Duration {
++        let scaled = if std::env::var("CI").map(|v| v == "true").unwrap_or(false) {
++            ms * 10
++        } else {
++            ms
++        };
++        Duration::from_millis(scaled)
++    }
++
+     #[derive(Clone, Debug)]
+     struct RecordedRequest {
+         url: String,
+@@ -955,7 +964,7 @@ mod tests {
+                 .await
+         });
+ 
+-        let first_chunk = timeout(Duration::from_millis(500), event_rx.recv())
++        let first_chunk = timeout(test_timeout(500), event_rx.recv())
+             .await
+             .expect("stream should emit before completion")
+             .expect("stream channel open");
+diff --git a/crates/roko-agent/src/provider/mod.rs b/crates/roko-agent/src/provider/mod.rs
+index 96b4d345..15e0416c 100644
+--- a/crates/roko-agent/src/provider/mod.rs
++++ b/crates/roko-agent/src/provider/mod.rs
+@@ -1042,7 +1042,7 @@ mod tests {
+         );
+     }
+ 
+-    #[tokio::test]
++    #[tokio::test(start_paused = true)]
+     async fn provider_semaphore_blocks_fourth_request_when_limit_is_three() {
+         let mut configs = HashMap::new();
+         configs.insert(
+@@ -1061,23 +1061,28 @@ mod tests {
+             },
+         );
+ 
+-        let semaphores = ProviderSemaphores::new(&configs);
++        let semaphores = Arc::new(ProviderSemaphores::new(&configs));
+         let permit_one = semaphores.acquire("zai").await;
+         let permit_two = semaphores.acquire("zai").await;
+         let permit_three = semaphores.acquire("zai").await;
+ 
++        let blocked_semaphores = Arc::clone(&semaphores);
++        let blocked = tokio::spawn(async move {
++            timeout(
++                Duration::from_millis(50),
++                blocked_semaphores.acquire("zai"),
++            )
++            .await
++        });
++        tokio::time::advance(Duration::from_millis(50)).await;
+         assert!(
+-            timeout(Duration::from_millis(50), semaphores.acquire("zai"))
+-                .await
+-                .is_err(),
++            blocked.await.expect("blocked acquisition task should join").is_err(),
+             "fourth request should block while all permits are held"
+         );
+ 
+         drop(permit_one);
+ 
+-        let permit_four = timeout(Duration::from_millis(50), semaphores.acquire("zai"))
+-            .await
+-            .expect("fourth request should acquire after a permit is released");
++        let permit_four = semaphores.acquire("zai").await;
+ 
+         drop(permit_two);
+         drop(permit_three);
+diff --git a/crates/roko-chain/src/alloy_impl.rs b/crates/roko-chain/src/alloy_impl.rs
+index 6ec59baa..69d402cd 100644
+--- a/crates/roko-chain/src/alloy_impl.rs
++++ b/crates/roko-chain/src/alloy_impl.rs
+@@ -67,6 +67,10 @@ pub struct AlloyChainClient {
+ 
+ impl AlloyChainClient {
+     /// Construct an HTTP-backed client pointing at `rpc_url`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`ChainError::Rpc`] if `rpc_url` is not a valid HTTP RPC URL.
+     pub fn http(rpc_url: &str) -> ChainResult<Self> {
+         let url = reqwest::Url::parse(rpc_url)
+             .map_err(|e| ChainError::Rpc(format!("invalid rpc url {rpc_url}: {e}")))?;
+@@ -210,6 +214,11 @@ pub struct AlloyChainWallet {
+ 
+ impl AlloyChainWallet {
+     /// Build a wallet from a hex-encoded private key.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`ChainError::Rpc`] if `rpc_url` is invalid or `key_hex` is not
++    /// a valid private key for an Ethereum signer.
+     pub fn from_hex_key(rpc_url: &str, key_hex: &str, chain_id: u64) -> ChainResult<Self> {
+         let url = reqwest::Url::parse(rpc_url)
+             .map_err(|e| ChainError::Rpc(format!("invalid rpc url {rpc_url}: {e}")))?;
+diff --git a/crates/roko-chain/src/witness.rs b/crates/roko-chain/src/witness.rs
+index 7ead1edd..618c80f3 100644
+--- a/crates/roko-chain/src/witness.rs
++++ b/crates/roko-chain/src/witness.rs
+@@ -37,6 +37,11 @@ impl ChainWitnessEngine {
+ 
+     /// Submit a witness transaction for `attestation` and attach chain
+     /// metadata if the receipt is available.
++    ///
++    /// # Errors
++    ///
++    /// Returns a [`ChainError::Rpc`] if the wallet or client RPC calls fail,
++    /// or if the backend returns an invalid transaction hash.
+     pub async fn witness_on_chain(
+         self,
+         attestation: &mut Attestation,
+@@ -67,6 +72,11 @@ impl ChainWitnessEngine {
+ 
+     /// Check that `attestation` was witnessed on-chain and the mined receipt
+     /// contains the expected witness payload.
++    ///
++    /// # Errors
++    ///
++    /// Returns a [`ChainError::Rpc`] if the client RPC call fails or if the
++    /// stored transaction hash is malformed.
+     pub async fn verify_on_chain(
+         self,
+         attestation: &Attestation,
+@@ -91,6 +101,11 @@ impl ChainWitnessEngine {
+ }
+ 
+ /// Anchor an attestation on-chain using the default witness engine.
++///
++/// # Errors
++///
++/// Returns a [`ChainError::Rpc`] if the wallet or client RPC calls fail,
++/// or if the backend returns an invalid transaction hash.
+ pub async fn witness_on_chain(
+     attestation: &mut Attestation,
+     wallet: &dyn ChainWallet,
+@@ -102,6 +117,11 @@ pub async fn witness_on_chain(
+ }
+ 
+ /// Verify an on-chain witness using the default witness engine.
++///
++/// # Errors
++///
++/// Returns a [`ChainError::Rpc`] if the client RPC call fails or if the
++/// stored transaction hash is malformed.
+ pub async fn verify_on_chain(
+     attestation: &Attestation,
+     client: &dyn ChainClient,
+diff --git a/crates/roko-conductor/src/lib.rs b/crates/roko-conductor/src/lib.rs
+index 6459ff12..fc8469a2 100644
+--- a/crates/roko-conductor/src/lib.rs
++++ b/crates/roko-conductor/src/lib.rs
+@@ -26,7 +26,6 @@
+     clippy::expect_used,
+     clippy::manual_let_else,
+     clippy::missing_const_for_fn,
+-    clippy::missing_panics_doc,
+     clippy::redundant_closure_for_method_calls,
+     clippy::single_match,
+     clippy::uninlined_format_args,
+diff --git a/crates/roko-conductor/src/stuck_detection.rs b/crates/roko-conductor/src/stuck_detection.rs
+index 5c1d051c..b1cd43e1 100644
+--- a/crates/roko-conductor/src/stuck_detection.rs
++++ b/crates/roko-conductor/src/stuck_detection.rs
+@@ -520,6 +520,11 @@ pub struct MetaCognitionAssessment {
+ 
+ impl MetaCognitionAssessment {
+     /// Convert the assessment into a structured signal when action is needed.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the assessment cannot be serialized into JSON for the signal
++    /// body payload.
+     #[must_use]
+     pub fn to_signal(&self) -> Option<Engram> {
+         match self.action {
+@@ -564,6 +569,10 @@ impl MetaCognitionHook {
+ 
+     /// Override the number of consecutive no-progress iterations required to
+     /// trigger a strategy adjustment.
++    ///
++    /// # Panics
++    ///
++    /// Panics if `threshold` is zero.
+     #[must_use]
+     pub fn with_no_progress_iterations_threshold(mut self, threshold: usize) -> Self {
+         assert!(threshold > 0, "no-progress threshold must be positive");
+diff --git a/crates/roko-daimon/src/lib.rs b/crates/roko-daimon/src/lib.rs
+index e690d420..a6190455 100644
+--- a/crates/roko-daimon/src/lib.rs
++++ b/crates/roko-daimon/src/lib.rs
+@@ -17,7 +17,6 @@
+     clippy::map_unwrap_or,
+     clippy::match_same_arms,
+     clippy::missing_const_for_fn,
+-    clippy::missing_panics_doc,
+     clippy::option_if_let_else,
+     clippy::ref_option,
+     clippy::suboptimal_flops,
+@@ -1547,6 +1546,12 @@ impl DaimonState {
+     ///
+     /// When the definition changes, previously stored markers are discarded so
+     /// incompatible domains do not silently share the same coordinate system.
++    ///
++    /// # Panics
++    ///
++    /// Panics if `strategy_space` fails validation. Call
++    /// [`StrategySpaceDefinition::validate`] first when the input may be
++    /// malformed.
+     pub fn configure_strategy_space(&mut self, strategy_space: StrategySpaceDefinition) {
+         let strategy_space = strategy_space
+             .validate()
+@@ -1648,6 +1653,11 @@ pub trait AffectEngine {
+     /// Modulate dispatch parameters in place.
+     fn modulate(&self, params: &mut DispatchParams);
+     /// Persist the current engine state to `path`.
++    ///
++    /// # Errors
++    ///
++    /// Returns any persistence error encountered while serializing or writing
++    /// the engine state to disk.
+     fn persist(&self, path: &Path) -> Result<()>;
+ }
+ 
+diff --git a/crates/roko-demo/src/autonomous.rs b/crates/roko-demo/src/autonomous.rs
+index e753120b..ec1bac7b 100644
+--- a/crates/roko-demo/src/autonomous.rs
++++ b/crates/roko-demo/src/autonomous.rs
+@@ -26,6 +26,11 @@ pub struct AutonomousReport {
+ }
+ 
+ /// Prepare the autonomous loop state.
++///
++/// # Errors
++///
++/// Returns an error if scenario preparation fails, including missing contract
++/// addresses, prompt loading, participant setup, or baseline seeding.
+ pub async fn prepare_autonomous(
+     ctx: Arc<ChainCtx>,
+     runtime_dir: PathBuf,
+@@ -36,6 +41,11 @@ pub async fn prepare_autonomous(
+ }
+ 
+ /// Run an autonomous poster/agent loop for `jobs` rounds.
++///
++/// # Errors
++///
++/// Returns an error if any round helper fails, a round exceeds the timeout,
++/// or reputation persistence fails at the end of the run.
+ pub async fn run_autonomous(
+     prepared: &PreparedYieldRouting,
+     llm: Arc<dyn LlmProvider>,
+diff --git a/crates/roko-demo/src/benchmark.rs b/crates/roko-demo/src/benchmark.rs
+index aedaaf0c..2d5f57ac 100644
+--- a/crates/roko-demo/src/benchmark.rs
++++ b/crates/roko-demo/src/benchmark.rs
+@@ -33,6 +33,11 @@ pub struct CFactorReport {
+ }
+ 
+ /// Prepare the chain for a C-factor benchmark.
++///
++/// # Errors
++///
++/// Returns an error if scenario preparation fails, including missing deployed
++/// contract addresses, prompt loading, or participant setup.
+ pub async fn prepare_benchmark(
+     ctx: Arc<ChainCtx>,
+     runtime_dir: PathBuf,
+@@ -43,6 +48,11 @@ pub async fn prepare_benchmark(
+ }
+ 
+ /// Run the benchmark and optionally reuse a prepared scenario state.
++///
++/// # Errors
++///
++/// Returns an error if either benchmark round fails or if the underlying
++/// scenario helpers report an error.
+ pub async fn run_benchmark(
+     prepared: &PreparedYieldRouting,
+     llm: Arc<dyn LlmProvider>,
+diff --git a/crates/roko-demo/src/chain_ctx.rs b/crates/roko-demo/src/chain_ctx.rs
+index 51448384..ac52417a 100644
+--- a/crates/roko-demo/src/chain_ctx.rs
++++ b/crates/roko-demo/src/chain_ctx.rs
+@@ -27,6 +27,11 @@ pub struct ChainCtx {
+ 
+ impl ChainCtx {
+     /// Build an alloy provider that signs as the named wallet.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the RPC URL is invalid, the wallet is unknown, or
++    /// the wallet private key cannot be parsed.
+     pub fn wallet_provider(&self, wallet_name: &str) -> anyhow::Result<Arc<DynProvider>> {
+         let entry = self
+             .wallets
+@@ -46,6 +51,10 @@ impl ChainCtx {
+     }
+ 
+     /// Build a read-only provider (no signer).
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the RPC URL is invalid.
+     pub fn read_provider(&self) -> anyhow::Result<Arc<DynProvider>> {
+         let url = reqwest::Url::parse(&self.rpc_url)?;
+         let provider = ProviderBuilder::new().connect_http(url).erased();
+@@ -53,6 +62,11 @@ impl ChainCtx {
+     }
+ 
+     /// Look up a contract's deployed address.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the contract is unknown or the stored address is
++    /// not valid hex.
+     pub fn address_of(&self, contract: &str) -> anyhow::Result<Address> {
+         let hex = self
+             .addresses
+@@ -63,6 +77,11 @@ impl ChainCtx {
+     }
+ 
+     /// Derive the address of the named wallet.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the wallet is unknown or the private key cannot be
++    /// parsed into a signer.
+     pub fn wallet_address(&self, name: &str) -> anyhow::Result<Address> {
+         let entry = self
+             .wallets
+diff --git a/crates/roko-demo/src/deploy.rs b/crates/roko-demo/src/deploy.rs
+index b25e5463..4125328a 100644
+--- a/crates/roko-demo/src/deploy.rs
++++ b/crates/roko-demo/src/deploy.rs
+@@ -51,6 +51,11 @@ pub struct ContractArtifact {
+ 
+ impl ContractArtifact {
+     /// Load `contracts/out/<Name>.sol/<Name>.json`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the artifact cannot be read, parsed, decoded, or if
++    /// the bytecode is empty.
+     pub fn load(contracts_dir: &Path, name: &str) -> anyhow::Result<Self> {
+         let path = contracts_dir
+             .join("out")
+@@ -95,6 +100,10 @@ impl ContractArtifact {
+ }
+ 
+ /// Ensure `forge build` has produced artifacts; run it if out/ is empty.
++///
++/// # Errors
++///
++/// Returns an error if `forge build` cannot be spawned or exits unsuccessfully.
+ pub fn ensure_artifacts_built(contracts_dir: &Path) -> anyhow::Result<()> {
+     let out = contracts_dir.join("out");
+     let needs_build =
+@@ -137,6 +146,11 @@ pub struct DeployedSuite {
+ /// Advance the chain by one block (via `evm_mine`) if the tip is still at
+ /// genesis. Works around mirage-rs's lazy local block initialization so
+ /// alloy's `eth_getBlockByNumber("latest")` sees a real block.
++///
++/// # Errors
++///
++/// Returns an error if the JSON-RPC probe request fails or if the probe
++/// response body cannot be decoded.
+ pub async fn warmup_chain(rpc_url: &str) -> anyhow::Result<()> {
+     let client = reqwest::Client::new();
+     let resp = client
+@@ -170,6 +184,12 @@ pub async fn warmup_chain(rpc_url: &str) -> anyhow::Result<()> {
+ }
+ 
+ /// Deploy the full suite in order.
++///
++/// # Errors
++///
++/// Returns an error if warming up the chain, building artifacts, loading an
++/// artifact, submitting a deployment transaction, waiting for the receipt, or
++/// decoding the deployed contract address fails.
+ pub async fn deploy_suite(ctx: &DeployCtx, deploy: &DeployStep) -> anyhow::Result<DeployedSuite> {
+     warmup_chain(&ctx.rpc_url).await?;
+     ensure_artifacts_built(&ctx.contracts_dir)?;
+@@ -292,6 +312,12 @@ fn coerce_arg(
+ }
+ 
+ /// Public wrapper for fixture use (uses zero deployer — `$deployer` refs not supported here).
++///
++/// # Errors
++///
++/// Returns an error if the Solidity type is unsupported, the TOML value is of
++/// the wrong shape, a reference cannot be resolved, or a value cannot be
++/// parsed into the requested ABI type.
+ pub fn coerce_toml_public(
+     sol_type: &str,
+     value: &toml::Value,
+@@ -408,6 +434,12 @@ fn resolve_ref(
+ 
+ impl LoadedManifest {
+     /// Build a `DeployCtx` from the manifest + env overrides.
++    /// Build a deployment context from the loaded manifest.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the manifest is missing required defaults, the RPC
++    /// endpoint cannot be determined, or the contracts directory is invalid.
+     pub fn build_deploy_ctx(&self, override_rpc: Option<String>) -> anyhow::Result<DeployCtx> {
+         let defaults = &self.manifest.defaults;
+         let rpc_url = override_rpc
+diff --git a/crates/roko-demo/src/events.rs b/crates/roko-demo/src/events.rs
+index c7b71b10..9be1aef9 100644
+--- a/crates/roko-demo/src/events.rs
++++ b/crates/roko-demo/src/events.rs
+@@ -191,6 +191,11 @@ impl ChannelEmitter {
+ }
+ 
+ /// Factory for requested event mode.
++///
++/// # Errors
++///
++/// Returns an error if the requested mode is unknown or the WebSocket server
++/// cannot be started.
+ pub async fn create_emitter(mode: &str, ws_port: u16) -> anyhow::Result<Arc<dyn EventEmitter>> {
+     match mode {
+         "none" => Ok(Arc::new(NullEmitter)),
+diff --git a/crates/roko-demo/src/fixtures.rs b/crates/roko-demo/src/fixtures.rs
+index b717149f..185d6c50 100644
+--- a/crates/roko-demo/src/fixtures.rs
++++ b/crates/roko-demo/src/fixtures.rs
+@@ -80,6 +80,11 @@ struct RustCfg {
+ }
+ 
+ /// Execute all fixtures in sequence.
++///
++/// # Errors
++///
++/// Returns an error if any fixture step fails, including configuration
++/// decoding, wallet lookup, spawned processes, or RPC calls.
+ pub async fn run_fixtures(
+     ctx: &ChainCtx,
+     registry: &FixtureRegistry,
+diff --git a/crates/roko-demo/src/manifest.rs b/crates/roko-demo/src/manifest.rs
+index ee4414bc..1b726afb 100644
+--- a/crates/roko-demo/src/manifest.rs
++++ b/crates/roko-demo/src/manifest.rs
+@@ -234,6 +234,11 @@ pub struct LoadedManifest {
+ 
+ impl LoadedManifest {
+     /// Load the manifest from `demo/manifest.toml`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the manifest file cannot be read, parsed, or if the
++    /// schema version is unsupported.
+     pub fn load(demo_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
+         let demo_dir = demo_dir.as_ref().to_path_buf();
+         let path = demo_dir.join("manifest.toml");
+@@ -251,6 +256,11 @@ impl LoadedManifest {
+     }
+ 
+     /// Resolve a scenario by name and load its full definition.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the scenario name is unknown, the scenario file
++    /// cannot be read or parsed, or the file's name does not match the entry.
+     pub fn load_scenario(&self, name: &str) -> anyhow::Result<Scenario> {
+         let entry = self
+             .manifest
+@@ -273,6 +283,10 @@ impl LoadedManifest {
+     }
+ 
+     /// Load wallets.toml (path defaults to `<demo>/wallets.toml`).
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the wallet file cannot be read or parsed.
+     pub fn load_wallets(&self) -> anyhow::Result<Wallets> {
+         let rel = self
+             .manifest
+@@ -323,6 +337,11 @@ pub struct ExpandedAgent {
+ }
+ 
+ /// Write the post-deploy address registry.
++///
++/// # Errors
++///
++/// Returns an error if the output directory cannot be created or the JSON
++/// registry cannot be written.
+ pub fn write_deployments(
+     runtime_dir: impl AsRef<Path>,
+     scenario: &str,
+diff --git a/crates/roko-demo/src/scenarios/llm.rs b/crates/roko-demo/src/scenarios/llm.rs
+index 1d73d3f6..8be40ee5 100644
+--- a/crates/roko-demo/src/scenarios/llm.rs
++++ b/crates/roko-demo/src/scenarios/llm.rs
+@@ -84,6 +84,10 @@ pub struct ClaudeApiProvider {
+ 
+ impl ClaudeApiProvider {
+     /// Construct from environment variables.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if `ANTHROPIC_API_KEY` is missing.
+     pub fn from_env() -> anyhow::Result<Self> {
+         let api_key = env::var("ANTHROPIC_API_KEY")
+             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY is required for claude backend"))?;
+@@ -128,6 +132,10 @@ pub struct MultiProvider {
+ 
+ impl MultiProvider {
+     /// Create a new round-robin provider set.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if `providers` is empty.
+     pub fn new(providers: Vec<Arc<dyn LlmProvider>>) -> anyhow::Result<Self> {
+         if providers.is_empty() {
+             return Err(anyhow::anyhow!(
+@@ -142,6 +150,11 @@ impl MultiProvider {
+ }
+ 
+ /// Factory for configured providers.
++///
++/// # Errors
++///
++/// Returns an error if the requested backend is unknown or any configured
++/// backend cannot be constructed.
+ pub fn create_provider(backend: &str) -> anyhow::Result<Arc<dyn LlmProvider>> {
+     match backend {
+         "stub" => Ok(Arc::new(StubLlm::new())),
+diff --git a/crates/roko-demo/src/scenarios/yield_routing.rs b/crates/roko-demo/src/scenarios/yield_routing.rs
+index 4242c5d0..d756210c 100644
+--- a/crates/roko-demo/src/scenarios/yield_routing.rs
++++ b/crates/roko-demo/src/scenarios/yield_routing.rs
+@@ -197,6 +197,12 @@ impl Scenario for YieldRouting {
+     }
+ }
+ 
++/// Prepare the yield-routing scenario state.
++///
++/// # Errors
++///
++/// Returns an error if any contract address lookup, participant setup,
++/// reputation restore, or baseline seeding step fails.
+ pub async fn prepare(
+     ctx: Arc<ChainCtx>,
+     runtime_dir: PathBuf,
+@@ -227,6 +233,12 @@ pub async fn prepare(
+     Ok(prepared)
+ }
+ 
++/// Run one yield-routing round end to end.
++///
++/// # Errors
++///
++/// Returns an error if posting the job, collecting bids, or finalizing the
++/// round fails.
+ pub async fn run_round(
+     prepared: &PreparedYieldRouting,
+     round: u32,
+@@ -238,6 +250,12 @@ pub async fn run_round(
+     finalize_round(prepared, posted, bids, llm, events).await
+ }
+ 
++/// Post the round's job to the bounty market and snapshot current insights.
++///
++/// # Errors
++///
++/// Returns an error if the insight query, wallet lookup, job posting, or job
++/// id lookup fails.
+ pub async fn post_round_job(
+     prepared: &PreparedYieldRouting,
+     round: u32,
+@@ -284,6 +302,12 @@ pub async fn post_round_job(
+     })
+ }
+ 
++/// Ask one agent to produce a route proposal for the current round.
++///
++/// # Errors
++///
++/// Returns an error if the LLM backend call fails or if route normalization
++/// cannot complete after the response is received.
+ pub async fn generate_agent_bid(
+     prepared: &PreparedYieldRouting,
+     llm: Arc<dyn LlmProvider>,
+@@ -343,6 +367,12 @@ pub async fn generate_agent_bid(
+     })
+ }
+ 
++/// Finalize a round by assigning the job, collecting validation, and paying out.
++///
++/// # Errors
++///
++/// Returns an error if assigning, submitting, validating, distributing fees,
++/// or posting the winner insight fails.
+ pub async fn finalize_round(
+     prepared: &PreparedYieldRouting,
+     posted: PostedJob,
+@@ -474,6 +504,12 @@ pub async fn finalize_round(
+     Ok(outcome)
+ }
+ 
++/// Post the winning agent's insight and gather confirmations.
++///
++/// # Errors
++///
++/// Returns an error if the LLM call, insight post, confirmation loop, or
++/// wallet lookup fails.
+ pub async fn post_winner_insight(
+     prepared: &PreparedYieldRouting,
+     llm: Arc<dyn LlmProvider>,
+@@ -546,6 +582,12 @@ pub async fn post_winner_insight(
+     Ok(insight_id)
+ }
+ 
++/// Query the on-chain insight board and return sorted insight records.
++///
++/// # Errors
++///
++/// Returns an error if the read provider cannot be built or any chain query
++/// fails while reading the board.
+ pub async fn query_insights(prepared: &PreparedYieldRouting) -> anyhow::Result<Vec<InsightRecord>> {
+     let board = InsightBoard::new(prepared.board_addr, prepared.ctx.read_provider()?);
+     let total = board.nextInsightId().call().await?;
+@@ -573,6 +615,12 @@ pub async fn query_insights(prepared: &PreparedYieldRouting) -> anyhow::Result<V
+     Ok(out)
+ }
+ 
++/// Run the adversarial slashing phase for the yield-routing demo.
++///
++/// # Errors
++///
++/// Returns an error if any of the slashing, committee, voting, or wallet
++/// lookup steps fail.
+ pub async fn run_adversarial_phase(
+     prepared: &PreparedYieldRouting,
+     events: Arc<dyn EventEmitter>,
+@@ -733,6 +781,12 @@ pub async fn run_adversarial_phase(
+     Ok(slash)
+ }
+ 
++/// Persist the current reputation snapshot to disk.
++///
++/// # Errors
++///
++/// Returns an error if the chain queries fail, the output directory cannot be
++/// created, or the reputation file cannot be written.
+ pub async fn save_reputation(prepared: &PreparedYieldRouting) -> anyhow::Result<PathBuf> {
+     let registry = WorkerRegistry::new(prepared.registry_addr, prepared.ctx.read_provider()?);
+     let mut workers = Vec::new();
+diff --git a/crates/roko-demo/src/tournament.rs b/crates/roko-demo/src/tournament.rs
+index 3bdb70cd..5ac87250 100644
+--- a/crates/roko-demo/src/tournament.rs
++++ b/crates/roko-demo/src/tournament.rs
+@@ -38,6 +38,11 @@ pub struct TournamentReport {
+ }
+ 
+ /// Prepare the tournament scenario state once.
++///
++/// # Errors
++///
++/// Returns an error if scenario preparation fails, including contract lookups,
++/// prompt loading, or participant setup.
+ pub async fn prepare_tournament(
+     ctx: Arc<ChainCtx>,
+     runtime_dir: PathBuf,
+@@ -48,6 +53,11 @@ pub async fn prepare_tournament(
+ }
+ 
+ /// Run a multi-round tournament on top of a prepared scenario state.
++///
++/// # Errors
++///
++/// Returns an error if any round fails or the underlying scenario helpers
++/// report an error.
+ pub async fn run_tournament(
+     prepared: &PreparedYieldRouting,
+     llm: Arc<dyn LlmProvider>,
+diff --git a/crates/roko-demo/src/tui.rs b/crates/roko-demo/src/tui.rs
+index fad418ed..fc9c7abc 100644
+--- a/crates/roko-demo/src/tui.rs
++++ b/crates/roko-demo/src/tui.rs
+@@ -175,6 +175,11 @@ impl TuiState {
+ }
+ 
+ /// Run a TUI while a demo future emits events into the supplied emitter.
++///
++/// # Errors
++///
++/// Returns an error if terminal setup fails, the scenario future fails, or
++/// event loop teardown fails.
+ pub async fn run_tui<F, Fut>(title: &str, scenario_future: F) -> anyhow::Result<()>
+ where
+     F: FnOnce(Arc<dyn EventEmitter>) -> Fut,
+diff --git a/crates/roko-demo/src/verify.rs b/crates/roko-demo/src/verify.rs
+index 8e579736..7dfe05dd 100644
+--- a/crates/roko-demo/src/verify.rs
++++ b/crates/roko-demo/src/verify.rs
+@@ -28,6 +28,10 @@ pub struct Deployments {
+ 
+ impl Deployments {
+     /// Load from a file.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the deployments file cannot be read or parsed.
+     pub fn load(path: &Path) -> anyhow::Result<Self> {
+         let text = std::fs::read_to_string(path)
+             .map_err(|e| anyhow::anyhow!("read deployments {}: {e}", path.display()))?;
+@@ -44,6 +48,12 @@ pub struct VerifyReport {
+ }
+ 
+ /// Run all checks. Never panics — returns a report.
++///
++/// # Errors
++///
++/// Returns an error if the read provider cannot be built, a deployed address
++/// cannot be parsed, a contract artifact cannot be loaded, or a required chain
++/// query fails.
+ pub async fn verify(
+     ctx: &ChainCtx,
+     scenario: &Scenario,
+diff --git a/crates/roko-demo/src/ws_server.rs b/crates/roko-demo/src/ws_server.rs
+index 34b57404..598a46ac 100644
+--- a/crates/roko-demo/src/ws_server.rs
++++ b/crates/roko-demo/src/ws_server.rs
+@@ -6,6 +6,11 @@ use tokio::sync::broadcast;
+ use tokio_tungstenite::{accept_async, tungstenite::Message};
+ 
+ /// Start a background WebSocket server and return its broadcast sender.
++///
++/// # Errors
++///
++/// Returns an error if the TCP listener cannot bind or the local address
++/// cannot be queried.
+ pub async fn start_ws_server(port: u16) -> anyhow::Result<broadcast::Sender<String>> {
+     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+     let local_addr = listener.local_addr()?;
+diff --git a/crates/roko-dreams/src/cycle.rs b/crates/roko-dreams/src/cycle.rs
+index 96058771..71ed72ea 100644
+--- a/crates/roko-dreams/src/cycle.rs
++++ b/crates/roko-dreams/src/cycle.rs
+@@ -395,6 +395,13 @@ impl DreamCycle {
+     /// The budget is consumed using the actual episode data that gets replayed
+     /// during the cycle. When the budget is exhausted, the cycle stops after
+     /// the already-processed clusters and records a note in the report.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the episode log cannot be read, if the replay
++    /// analysis or regression summaries fail, if the knowledge or playbook
++    /// stores reject an update, if the review dispatcher fails, or if the
++    /// final report cannot be written.
+     pub async fn run_budgeted(
+         &mut self,
+         budget: &mut Option<DreamBudget>,
+diff --git a/crates/roko-dreams/src/runner.rs b/crates/roko-dreams/src/runner.rs
+index 1d6cc109..c177e699 100644
+--- a/crates/roko-dreams/src/runner.rs
++++ b/crates/roko-dreams/src/runner.rs
+@@ -536,6 +536,10 @@ impl DreamRunner {
+ 
+     /// Replay the supplied episodes into durable insights without mutating the
+     /// workspace.
++    ///
++    /// # Errors
++    ///
++    /// This method is currently infallible and always returns `Ok`.
+     #[allow(clippy::needless_pass_by_value)]
+     #[must_use]
+     pub fn replay_insights(&self, episodes: &[Episode]) -> Result<Vec<Insight>> {
+@@ -552,11 +556,21 @@ impl DreamRunner {
+     }
+ 
+     /// Load the latest persisted dream report from `.roko/dreams/`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the report directory cannot be scanned, if the
++    /// newest report cannot be read, or if the report contents are invalid
++    /// JSON.
+     pub fn latest_report(&self) -> Result<Option<DreamReport>> {
+         load_latest_dream_report(&self.report_dir())
+     }
+ 
+     /// Summarize the current heartbeat and delta-loop status.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the episode log cannot be read.
+     pub fn heartbeat_report(&self) -> Result<DreamHeartbeatReport> {
+         let episodes_path = self.workdir.join(".roko").join("episodes.jsonl");
+         let episodes = block_on(EpisodeLogger::read_all_lossy(&episodes_path))
+@@ -566,6 +580,12 @@ impl DreamRunner {
+     }
+ 
+     /// Run a full dream consolidation cycle against the workspace.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying dream cycle fails while reading the
++    /// episode log, synthesizing insights, writing knowledge, or producing the
++    /// consolidated report.
+     pub fn consolidate_now(&mut self) -> Result<DreamReport> {
+         block_on(self.consolidate_async())
+     }
+@@ -656,8 +676,16 @@ impl Default for DreamRunner {
+ /// Trait for dream engines that can replay, consolidate, and schedule.
+ pub trait DreamEngine {
+     /// Replay a batch of episodes into insights.
++    ///
++    /// # Errors
++    ///
++    /// Returns the same errors as [`DreamRunner::replay_insights`].
+     fn replay(&mut self, episodes: &[Episode]) -> Result<Vec<Insight>>;
+     /// Consolidate the workspace into a persisted dream report.
++    ///
++    /// # Errors
++    ///
++    /// Returns the same errors as [`DreamRunner::consolidate_now`].
+     fn consolidate(&mut self) -> Result<DreamReport>;
+     /// Schedule the next dream fire time.
+     fn schedule(&self) -> Option<Duration>;
+@@ -793,6 +821,11 @@ fn default_idle_grace_mins() -> u64 {
+ /// Load the latest persisted dream report from a report directory.
+ ///
+ /// Returns `Ok(None)` when the directory has no report yet.
++///
++/// # Errors
++///
++/// Returns an error if the report directory cannot be scanned, if the newest
++/// report cannot be read, or if the report contents are invalid JSON.
+ pub fn load_latest_dream_report(report_dir: &Path) -> Result<Option<DreamReport>> {
+     let Some(path) = latest_dream_report_path(report_dir)? else {
+         return Ok(None);
+@@ -850,6 +883,11 @@ where
+ }
+ 
+ /// Build the dream review dispatcher from the configured agent backend.
++///
++/// # Errors
++///
++/// Returns an error if the routing config cannot be loaded, if a routed model
++/// cannot be determined, or if the agent backend cannot be constructed.
+ pub fn build_dream_review_dispatcher(
+     workdir: &Path,
+     config: &DreamAgentConfig,
+diff --git a/crates/roko-gate/src/adaptive_threshold.rs b/crates/roko-gate/src/adaptive_threshold.rs
+index 6ce8d15d..a6375b0e 100644
+--- a/crates/roko-gate/src/adaptive_threshold.rs
++++ b/crates/roko-gate/src/adaptive_threshold.rs
+@@ -62,6 +62,12 @@ impl AdaptiveThresholds {
+     ///
+     /// Returns `NotFound` if the file does not exist and `InvalidData` if the
+     /// file exists but does not contain valid adaptive-threshold JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns any filesystem error from opening `path`, or
++    /// [`io::ErrorKind::InvalidData`] if the file contents are not valid
++    /// adaptive-threshold JSON.
+     pub fn load(path: &Path) -> Result<Self, io::Error> {
+         let file = std::fs::File::open(path)?;
+         serde_json::from_reader(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+@@ -73,6 +79,12 @@ impl AdaptiveThresholds {
+     }
+ 
+     /// Save to a JSON file (atomic write).
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the snapshot cannot be serialized, the parent
++    /// directory cannot be created, or the temporary/output files cannot be
++    /// written and renamed atomically.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let json = serde_json::to_string_pretty(self)
+             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+diff --git a/crates/roko-gate/src/generated.rs b/crates/roko-gate/src/generated.rs
+index 6eef7bfb..a8954856 100644
+--- a/crates/roko-gate/src/generated.rs
++++ b/crates/roko-gate/src/generated.rs
+@@ -21,6 +21,11 @@ pub type GateError = roko_core::RokoError;
+ /// Produces verifier artifacts from acceptance criteria and task context.
+ pub trait GateGenerator: Send + Sync {
+     /// Generate verification artifacts from acceptance criteria.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GateError`] if the acceptance criteria cannot be translated
++    /// into verifier artifacts for this generator.
+     fn generate(
+         &self,
+         acceptance_criteria: &str,
+diff --git a/crates/roko-gate/src/integration_gate.rs b/crates/roko-gate/src/integration_gate.rs
+index 935182b7..b3cc4e5b 100644
+--- a/crates/roko-gate/src/integration_gate.rs
++++ b/crates/roko-gate/src/integration_gate.rs
+@@ -520,6 +520,14 @@ mod tests {
+     use roko_core::{Body, Kind};
+     use std::sync::atomic::{AtomicU32, Ordering};
+ 
++    fn scaled_test_timeout_ms(ms: u64) -> u64 {
++        if std::env::var("CI").is_ok_and(|value| value == "true") {
++            ms.saturating_mul(10)
++        } else {
++            ms
++        }
++    }
++
+     fn empty_signal() -> Engram {
+         Engram::builder(Kind::Task).body(Body::empty()).build()
+     }
+@@ -686,7 +694,7 @@ test foo::c ... ok";
+             Verdict::pass("never")
+         })
+         .with_warmup_ms(0)
+-        .with_timeout_ms(80);
++        .with_timeout_ms(scaled_test_timeout_ms(80));
+         let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+         assert!(!v.passed);
+         assert!(v.reason.contains("timed out"), "reason was: {}", v.reason);
+diff --git a/crates/roko-gate/src/shell.rs b/crates/roko-gate/src/shell.rs
+index 63b70da7..22e41f4c 100644
+--- a/crates/roko-gate/src/shell.rs
++++ b/crates/roko-gate/src/shell.rs
+@@ -122,6 +122,14 @@ mod tests {
+     use super::*;
+     use roko_core::{Body, Kind};
+ 
++    fn scaled_test_timeout_ms(ms: u64) -> u64 {
++        if std::env::var("CI").is_ok_and(|value| value == "true") {
++            ms.saturating_mul(10)
++        } else {
++            ms
++        }
++    }
++
+     fn empty_signal() -> Engram {
+         Engram::builder(Kind::Task).body(Body::empty()).build()
+     }
+@@ -161,7 +169,8 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn timeout_causes_failure() {
+-        let gate = ShellGate::new("sleep", vec!["10".into()]).with_timeout_ms(100);
++        let gate =
++            ShellGate::new("sleep", vec!["10".into()]).with_timeout_ms(scaled_test_timeout_ms(100));
+         let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+         assert!(!v.passed);
+         assert!(v.reason.contains("timed out"));
+diff --git a/crates/roko-gate/src/verify_chain_gate.rs b/crates/roko-gate/src/verify_chain_gate.rs
+index 155f5ce9..ee179d70 100644
+--- a/crates/roko-gate/src/verify_chain_gate.rs
++++ b/crates/roko-gate/src/verify_chain_gate.rs
+@@ -518,6 +518,14 @@ mod tests {
+     use std::os::unix::fs::PermissionsExt;
+     use tempfile::TempDir;
+ 
++    fn scaled_test_timeout_ms(ms: u64) -> u64 {
++        if std::env::var("CI").is_ok_and(|value| value == "true") {
++            ms.saturating_mul(10)
++        } else {
++            ms
++        }
++    }
++
+     fn signal_with_script(dir: &std::path::Path, script: &str) -> Engram {
+         let payload = GatePayload::in_dir(dir);
+         let body = Body::from_json(&payload).expect("serialize payload");
+@@ -758,7 +766,7 @@ mod tests {
+         let sig = signal_with_script(tmp.path(), "verify.sh");
+         let gate = VerifyChainGate::strict()
+             .with_retry(false)
+-            .with_timeout_ms(150);
++            .with_timeout_ms(scaled_test_timeout_ms(150));
+         let v = gate.verify(&sig, &Context::at(0)).await;
+         assert!(!v.passed);
+         assert!(v.reason.contains("timed out"), "reason: {}", v.reason);
+diff --git a/crates/roko-index/src/lib.rs b/crates/roko-index/src/lib.rs
+index fbc1a35d..8afa5bd5 100644
+--- a/crates/roko-index/src/lib.rs
++++ b/crates/roko-index/src/lib.rs
+@@ -13,7 +13,6 @@
+ #![allow(
+     clippy::expect_used,
+     clippy::map_unwrap_or,
+-    clippy::missing_panics_doc,
+     clippy::needless_pass_by_value,
+     clippy::similar_names,
+     clippy::too_many_lines
+diff --git a/crates/roko-index/src/workspace.rs b/crates/roko-index/src/workspace.rs
+index f93245d4..5aa661cb 100644
+--- a/crates/roko-index/src/workspace.rs
++++ b/crates/roko-index/src/workspace.rs
+@@ -101,6 +101,11 @@ pub struct WorkspaceIndex {
+ 
+ impl WorkspaceIndex {
+     /// Build an index from a workspace root.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the workspace root cannot be canonicalized or its
++    /// source files cannot be collected and parsed.
+     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
+         let root = std::fs::canonicalize(root.as_ref())
+             .with_context(|| format!("resolve workspace root {}", root.as_ref().display()))?;
+@@ -119,6 +124,11 @@ impl WorkspaceIndex {
+     }
+ 
+     /// Return the imports for a file.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if `file` cannot be resolved to a file tracked by this
++    /// workspace index.
+     pub fn imports_for_file(&self, file: &str) -> Result<Vec<Import>> {
+         let key = self.resolve_file_key(file)?;
+         Ok(self.imports_by_file.get(&key).cloned().unwrap_or_default())
+@@ -159,6 +169,12 @@ impl WorkspaceIndex {
+     }
+ 
+     /// Perform HDC-powered semantic search.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the index is internally inconsistent and a symbol is missing
++    /// its cached file or symbol fingerprint. That indicates a broken
++    /// `WorkspaceIndex::from_source_files_with_root` construction path.
+     pub fn semantic_search(&self, query: &str, limit: u32) -> Vec<SearchResult> {
+         let limit = limit as usize;
+         if limit == 0 || self.symbols_by_id.is_empty() {
+diff --git a/crates/roko-learn/src/aggregate.rs b/crates/roko-learn/src/aggregate.rs
+index 7665ef93..d960b5c6 100644
+--- a/crates/roko-learn/src/aggregate.rs
++++ b/crates/roko-learn/src/aggregate.rs
+@@ -38,6 +38,11 @@ impl JsonlCursor {
+     /// Read and return lines appended since the last successful tick.
+     ///
+     /// Missing files and truncation reset the cursor to the beginning.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the path metadata, open, seek, or read operation
++    /// fails for reasons other than the file being missing.
+     pub fn read_new_lines(&mut self) -> io::Result<Vec<String>> {
+         self.read_new_lines_with_status().map(|read| read.lines)
+     }
+@@ -188,6 +193,11 @@ impl Default for CFactorBucket {
+ ///
+ /// Missing files return an empty-count series of `n_buckets` buckets. Malformed
+ /// lines are skipped.
++///
++/// # Errors
++///
++/// Returns an error if `bucket` is not positive or if the file cannot be
++/// read.
+ pub fn efficiency_trend(
+     path: &Path,
+     bucket: Duration,
+@@ -200,6 +210,11 @@ pub fn efficiency_trend(
+ ///
+ /// Missing files return an empty-count series of `n_buckets` buckets.
+ /// Malformed lines are skipped.
++///
++/// # Errors
++///
++/// Returns an error if `bucket` is not positive or if the file cannot be
++/// read.
+ pub fn cfactor_trend(
+     path: &Path,
+     bucket: Duration,
+@@ -213,6 +228,11 @@ pub fn cfactor_trend(
+ /// The caller supplies the prior `existing` bucket series so the function can
+ /// preserve in-window data without rescanning the full file. If the file was
+ /// truncated or recreated, the function falls back to a full rescan.
++///
++/// # Errors
++///
++/// Returns an error if the cursor cannot read the tracked file or if `bucket`
++/// is not positive.
+ pub fn efficiency_trend_with_cursor(
+     cursor: &mut JsonlCursor,
+     existing: &[EfficiencyBucket],
+diff --git a/crates/roko-learn/src/cascade_router.rs b/crates/roko-learn/src/cascade_router.rs
+index c0d961ad..fb0418f7 100644
+--- a/crates/roko-learn/src/cascade_router.rs
++++ b/crates/roko-learn/src/cascade_router.rs
+@@ -1223,6 +1223,10 @@ impl CascadeRouter {
+     ///
+     /// Preference order is premium > standard > fast. Within the same tier,
+     /// the first slug wins so the choice stays stable.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the router was constructed without any configured model slugs.
+     #[must_use]
+     pub fn strongest_model(&self) -> ModelSpec {
+         let mut best_slug = self
+@@ -1247,6 +1251,10 @@ impl CascadeRouter {
+     ///
+     /// Preference order is fast < standard < premium. Within the same tier,
+     /// the first slug wins so the choice stays stable.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the router was constructed without any configured model slugs.
+     #[must_use]
+     pub fn cheapest_model(&self) -> ModelSpec {
+         let mut best_slug = self
+@@ -1557,6 +1565,11 @@ impl CascadeRouter {
+     /// Load static routing overrides from a JSON map of role labels to model slugs.
+     ///
+     /// Returns the number of overrides applied.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the override file cannot be read or if its
++    /// contents are not valid JSON.
+     pub fn load_static_overrides(&self, path: &Path) -> std::io::Result<usize> {
+         let contents = match std::fs::read_to_string(path) {
+             Ok(contents) => contents,
+@@ -2254,6 +2267,11 @@ impl CascadeRouter {
+     /// Confidence stats represent the accumulated pass-rate history needed for
+     /// stage-2 routing, and the total observation count determines which cascade
+     /// stage is active after reload.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the snapshot cannot be serialized or if any
++    /// filesystem operation needed to write the snapshot fails.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let stage_transitions = self.stage_tracking.lock().transitions.clone();
+         let snapshot = CascadeSnapshot {
+diff --git a/crates/roko-learn/src/conductor.rs b/crates/roko-learn/src/conductor.rs
+index b6b98d39..bffdfd8d 100644
+--- a/crates/roko-learn/src/conductor.rs
++++ b/crates/roko-learn/src/conductor.rs
+@@ -172,6 +172,11 @@ impl ConductorBandit {
+     }
+ 
+     /// Persist the current conductor policy as JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the policy cannot be serialized or if the target
++    /// file cannot be created, written, or renamed.
+     pub fn save(&self, path: &Path) -> io::Result<()> {
+         let snapshot = ConductorBanditSnapshot {
+             arms: self
+diff --git a/crates/roko-learn/src/context_pack_cache.rs b/crates/roko-learn/src/context_pack_cache.rs
+index 85796678..32b88f39 100644
+--- a/crates/roko-learn/src/context_pack_cache.rs
++++ b/crates/roko-learn/src/context_pack_cache.rs
+@@ -307,6 +307,12 @@ impl ContextPackCache {
+     /// tempfile + rename so a crash mid-write cannot corrupt a previous
+     /// snapshot. Intended for best-effort warm-up snapshots — callers
+     /// should not rely on this for strict durability guarantees.
++    ///
++    /// # Errors
++    ///
++    /// Returns `RokoError::Json` if the snapshot cannot be serialized and
++    /// `RokoError::Io` if creating the parent directory, writing the
++    /// tempfile, or renaming the snapshot fails.
+     pub async fn persist(&self) -> Result<()> {
+         let snapshot = {
+             let inner = self.inner.lock();
+@@ -356,6 +362,11 @@ impl ContextPackCache {
+     /// A missing file yields an empty cache — this is the "cold start" case
+     /// and is not an error. Malformed JSON is surfaced as
+     /// [`RokoError::Json`].
++    ///
++    /// # Errors
++    ///
++    /// Returns `RokoError::Io` if the snapshot file cannot be read, and
++    /// `RokoError::Json` if the stored snapshot is not valid JSON.
+     pub async fn load(path: impl Into<PathBuf>, fallback_capacity: usize) -> Result<Self> {
+         let path = path.into();
+         let bytes = match tokio::fs::read(&path).await {
+diff --git a/crates/roko-learn/src/costs_log.rs b/crates/roko-learn/src/costs_log.rs
+index 5883b393..b15ea128 100644
+--- a/crates/roko-learn/src/costs_log.rs
++++ b/crates/roko-learn/src/costs_log.rs
+@@ -134,6 +134,10 @@ impl CostsLog {
+     }
+ 
+     /// Return the total recorded cost in USD.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn total_cost(&self) -> io::Result<f64> {
+         Ok(self
+             .read_all()
+@@ -144,6 +148,10 @@ impl CostsLog {
+     }
+ 
+     /// Aggregate recorded cost by model slug.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn cost_by_model(&self) -> io::Result<HashMap<String, f64>> {
+         Ok(aggregate_costs(self.read_all().await?, |record| {
+             record.model.clone()
+@@ -151,6 +159,10 @@ impl CostsLog {
+     }
+ 
+     /// Aggregate recorded cost by plan id.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn cost_by_plan(&self) -> io::Result<HashMap<String, f64>> {
+         Ok(aggregate_costs(self.read_all().await?, |record| {
+             record.plan_id.clone()
+@@ -159,6 +171,10 @@ impl CostsLog {
+ 
+     /// Return a zero-filled daily cost breakdown for the most recent `days`
+     /// calendar days, ordered oldest-to-newest.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn daily_cost(&self, days: usize) -> io::Result<Vec<(String, f64)>> {
+         if days == 0 {
+             return Ok(Vec::new());
+@@ -187,6 +203,10 @@ impl CostsLog {
+     /// Return the recent cost rate for the last `window` of wall-clock time.
+     ///
+     /// The result is expressed in USD/minute.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn recent_cost_rate(&self, window: Duration) -> io::Result<f64> {
+         let records = self.read_all().await?;
+         Ok(recent_cost_rate_from_records(&records, window))
+@@ -195,6 +215,10 @@ impl CostsLog {
+     /// Return `true` when the recent cost rate exceeds `threshold`.
+     ///
+     /// Uses a conservative 15-minute window by default.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying log cannot be read.
+     pub async fn is_cost_spike(&self, threshold: f64) -> io::Result<bool> {
+         Ok(self.recent_cost_rate(DEFAULT_COST_SPIKE_WINDOW).await? > threshold)
+     }
+diff --git a/crates/roko-learn/src/episode_logger.rs b/crates/roko-learn/src/episode_logger.rs
+index 63437e52..4ef22c37 100644
+--- a/crates/roko-learn/src/episode_logger.rs
++++ b/crates/roko-learn/src/episode_logger.rs
+@@ -318,6 +318,11 @@ impl Episode {
+     }
+ 
+     /// Attach a deterministic fingerprint of the completed episode text.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the computed fingerprint cannot be serialized into JSON for
++    /// storage in the episode metadata map.
+     pub fn attach_text_fingerprint(&mut self) {
+         let text = self.completion_fingerprint_text();
+         let fingerprint = text_fingerprint(&text);
+@@ -335,6 +340,11 @@ impl Episode {
+     /// what model, which gates fired, did it succeed) rather than the
+     /// textual content. It enables similarity search across episodes with
+     /// structurally similar execution profiles.
++    ///
++    /// # Panics
++    ///
++    /// Panics if the computed metadata fingerprint cannot be serialized into
++    /// JSON for storage in the episode metadata map.
+     pub fn attach_metadata_fingerprint(&mut self) {
+         let text = self.metadata_fingerprint_text();
+         let fingerprint = text_fingerprint(&text);
+diff --git a/crates/roko-learn/src/latency.rs b/crates/roko-learn/src/latency.rs
+index d2378659..3f61a99a 100644
+--- a/crates/roko-learn/src/latency.rs
++++ b/crates/roko-learn/src/latency.rs
+@@ -210,6 +210,11 @@ impl LatencyRegistry {
+     }
+ 
+     /// Persist the registry to `path` as JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the registry snapshot cannot be serialized or if
++    /// the snapshot cannot be written to disk.
+     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+         let mut entries: Vec<_> = self
+             .stats
+@@ -320,6 +325,10 @@ impl LatencyTracker {
+     }
+ 
+     /// Persist the tracker to `path`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the underlying registry snapshot cannot be saved.
+     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+         self.registry.save(path)
+     }
+diff --git a/crates/roko-learn/src/lib.rs b/crates/roko-learn/src/lib.rs
+index d5821a33..b73896e8 100644
+--- a/crates/roko-learn/src/lib.rs
++++ b/crates/roko-learn/src/lib.rs
+@@ -43,7 +43,6 @@
+     clippy::map_unwrap_or,
+     clippy::match_same_arms,
+     clippy::missing_const_for_fn,
+-    clippy::missing_panics_doc,
+     clippy::needless_borrow,
+     clippy::needless_continue,
+     clippy::needless_pass_by_value,
+diff --git a/crates/roko-learn/src/model_experiment.rs b/crates/roko-learn/src/model_experiment.rs
+index 294e874b..af3fef08 100644
+--- a/crates/roko-learn/src/model_experiment.rs
++++ b/crates/roko-learn/src/model_experiment.rs
+@@ -221,6 +221,12 @@ impl ModelExperimentStore {
+     }
+ 
+     /// Save the store to disk using an atomic rename.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the store cannot be serialized, if the target
++    /// directory or snapshot file cannot be written, or if syncing the
++    /// cascade-router mirror fails.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let json = serde_json::to_string_pretty(self)
+             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+diff --git a/crates/roko-learn/src/playbook.rs b/crates/roko-learn/src/playbook.rs
+index ebf346d2..f08e5eb9 100644
+--- a/crates/roko-learn/src/playbook.rs
++++ b/crates/roko-learn/src/playbook.rs
+@@ -249,6 +249,10 @@ impl PlaybookStore {
+     ///
+     /// This is a thin alias for [`PlaybookStore::load`] used by the
+     /// orchestrator's pre-dispatch learning hook.
++    ///
++    /// # Errors
++    ///
++    /// Returns any I/O error raised by [`PlaybookStore::load`].
+     pub async fn lookup(&self, task_type: &str) -> io::Result<Option<Playbook>> {
+         self.load(task_type).await
+     }
+@@ -263,6 +267,11 @@ impl PlaybookStore {
+     /// If the query yields no textual matches, the store falls back to the
+     /// most recently used playbooks so callers still get a best-effort prompt
+     /// injection candidate list.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if any persisted playbook file cannot be read or
++    /// deserialized.
+     pub async fn relevant(
+         &self,
+         query: impl AsRef<str>,
+@@ -387,6 +396,10 @@ impl PlaybookStore {
+     /// This is a convenience wrapper around [`PlaybookStore::record_outcome`]
+     /// for call sites that already have the originating task definition and
+     /// only need to persist the success/failure result.
++    ///
++    /// # Errors
++    ///
++    /// Returns any I/O error raised while loading or updating the playbook.
+     pub async fn record(&self, id: &str, success: bool) -> io::Result<bool> {
+         self.record_outcome(id, success).await
+     }
+diff --git a/crates/roko-learn/src/prompt_experiment.rs b/crates/roko-learn/src/prompt_experiment.rs
+index 6e8c970e..1f724ec6 100644
+--- a/crates/roko-learn/src/prompt_experiment.rs
++++ b/crates/roko-learn/src/prompt_experiment.rs
+@@ -413,6 +413,11 @@ impl ExperimentStore {
+     }
+ 
+     /// Save to a JSON file (atomic write).
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the store cannot be serialized or if the output
++    /// file cannot be created, written, or renamed.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let json = serde_json::to_string_pretty(self)
+             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+@@ -492,11 +497,20 @@ impl ExperimentStore {
+     }
+ 
+     /// Write concluded winners to the static-overrides file.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the static-overrides file cannot be written.
+     pub fn apply_winners(&self, winners: &[ExperimentWinner]) -> io::Result<()> {
+         self.apply_winners_to(winners, Path::new(DEFAULT_STATIC_OVERRIDES_PATH))
+     }
+ 
+     /// Write concluded winners to `path`.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the existing overrides cannot be parsed, or if the
++    /// new overrides cannot be serialized, written, or renamed.
+     pub fn apply_winners_to(&self, winners: &[ExperimentWinner], path: &Path) -> io::Result<()> {
+         if winners.is_empty() {
+             return Ok(());
+diff --git a/crates/roko-learn/src/provider_health.rs b/crates/roko-learn/src/provider_health.rs
+index f63a7ec3..9bd9e2b8 100644
+--- a/crates/roko-learn/src/provider_health.rs
++++ b/crates/roko-learn/src/provider_health.rs
+@@ -293,6 +293,11 @@ impl ProviderHealthRegistry {
+     }
+ 
+     /// Persist the registry to `path` as JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the registry snapshot cannot be serialized or if
++    /// any filesystem step needed to write it fails.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let snapshot = ProviderHealthRegistrySnapshot {
+             providers: self.providers.lock().clone(),
+diff --git a/crates/roko-learn/src/runtime_feedback.rs b/crates/roko-learn/src/runtime_feedback.rs
+index a05b779c..51769205 100644
+--- a/crates/roko-learn/src/runtime_feedback.rs
++++ b/crates/roko-learn/src/runtime_feedback.rs
+@@ -689,6 +689,11 @@ impl LearningRuntime {
+     /// Read all persisted efficiency events from the JSONL log.
+     ///
+     /// Returns an empty vec if the file does not exist.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the log cannot be opened or read, or if a line
++    /// read from the log fails unexpectedly.
+     pub async fn read_efficiency_events(
+         &self,
+     ) -> Result<Vec<AgentEfficiencyEvent>, LearningRuntimeError> {
+@@ -696,6 +701,10 @@ impl LearningRuntime {
+     }
+ 
+     /// Read the latest persisted C-Factor snapshot, if one exists.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the snapshot file cannot be read.
+     pub async fn latest_cfactor(&self) -> Result<Option<CFactor>, LearningRuntimeError> {
+         let contents = match tokio::fs::read_to_string(&self.paths.cfactor_jsonl).await {
+             Ok(contents) => contents,
+@@ -714,6 +723,10 @@ impl LearningRuntime {
+     }
+ 
+     /// Save cascade router observations to disk.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the cascade router snapshot cannot be written.
+     pub fn save_cascade_router(&self) -> Result<(), LearningRuntimeError> {
+         self.cascade_router.save(&self.paths.cascade_router_json)?;
+         Ok(())
+@@ -746,6 +759,11 @@ impl LearningRuntime {
+     }
+ 
+     /// Append one raw episode record without triggering any learning updates.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the episode cannot be appended to the persisted
++    /// log.
+     pub async fn append_episode(&self, episode: &Episode) -> Result<(), LearningRuntimeError> {
+         let mut episode = episode.clone();
+         self.apply_affect_signature(&mut episode);
+@@ -1380,6 +1398,11 @@ fn compute_regression_report(
+ }
+ 
+ /// Read efficiency events from a JSONL file. Returns empty vec if file missing.
++///
++/// # Errors
++///
++/// Returns an error if the file cannot be opened or if any read operation
++/// fails unexpectedly.
+ pub async fn read_efficiency_events(
+     path: &Path,
+ ) -> Result<Vec<AgentEfficiencyEvent>, LearningRuntimeError> {
+@@ -1406,6 +1429,11 @@ pub async fn read_efficiency_events(
+ /// history log.
+ ///
+ /// Returns the snapshot that was persisted.
++///
++/// # Errors
++///
++/// Returns an error if the snapshot cannot be computed or if the history log
++/// cannot be updated.
+ pub async fn refresh_cfactor_snapshot(
+     learn_root: impl AsRef<Path>,
+ ) -> Result<CFactor, LearningRuntimeError> {
+diff --git a/crates/roko-learn/src/section_effect.rs b/crates/roko-learn/src/section_effect.rs
+index 3eb6bed5..ff77664f 100644
+--- a/crates/roko-learn/src/section_effect.rs
++++ b/crates/roko-learn/src/section_effect.rs
+@@ -136,6 +136,11 @@ impl SectionEffectivenessRegistry {
+     }
+ 
+     /// Save the registry to `path` using an atomic rename.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the registry cannot be serialized or if the
++    /// snapshot cannot be written to disk.
+     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
+         let snapshot = self.snapshot();
+         let json = serde_json::to_string_pretty(&snapshot)
+diff --git a/crates/roko-learn/src/skill_library.rs b/crates/roko-learn/src/skill_library.rs
+index 6e2685b6..71e20f4f 100644
+--- a/crates/roko-learn/src/skill_library.rs
++++ b/crates/roko-learn/src/skill_library.rs
+@@ -1017,6 +1017,11 @@ impl SkillLibrary {
+     /// Open (or create) a skill library at `path`. If the file exists it is
+     /// deserialized; if it does not, an empty library is returned and will
+     /// be created on the next mutating call.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SkillLibraryError::Io`] if the file cannot be read and
++    /// [`SkillLibraryError::Serde`] if an existing snapshot is not valid JSON.
+     pub async fn new(path: impl AsRef<Path>) -> Result<Self, SkillLibraryError> {
+         let path = path.as_ref().to_path_buf();
+         let skills = match tokio::fs::read(&path).await {
+@@ -1042,6 +1047,11 @@ impl SkillLibrary {
+ 
+     /// Register a new skill. Returns [`SkillLibraryError::Duplicate`] if a
+     /// skill with the same name is already present.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SkillLibraryError::Duplicate`] if the skill already exists,
++    /// or any error from persisting the updated library.
+     pub async fn register(&self, skill: &Skill) -> Result<(), SkillLibraryError> {
+         let mut skill = skill.clone();
+         skill.normalize();
+@@ -1079,6 +1089,11 @@ impl SkillLibrary {
+     /// outcome into a rolling mean `success_rate`.
+     ///
+     /// Returns [`SkillLibraryError::NotFound`] if `name` is not registered.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SkillLibraryError::NotFound`] if the skill is missing, or
++    /// any error from persisting the updated library.
+     #[allow(clippy::significant_drop_tightening)]
+     pub async fn record_use(&self, name: &str, success: bool) -> Result<(), SkillLibraryError> {
+         {
+@@ -1584,6 +1599,11 @@ impl SkillLibrary {
+     /// Record that a skill was injected into a prompt and whether the
+     /// subsequent gate check passed. Increments `match_count` (always) and
+     /// `validated_count` (if `gate_passed`), and updates `last_matched`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SkillLibraryError::NotFound`] if the skill is missing, or
++    /// any error from persisting the updated library.
+     #[allow(clippy::significant_drop_tightening)]
+     pub async fn record_validation(
+         &self,
+@@ -1603,6 +1623,11 @@ impl SkillLibrary {
+     /// Record that a skill was injected into a prompt and whether the
+     /// subsequent gate check passed. Increments `match_count` (always) and
+     /// `validated_count` (if `gate_passed`), and updates `last_matched`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SkillLibraryError::NotFound`] if the skill is missing, or
++    /// any error from persisting the updated library.
+     #[allow(clippy::significant_drop_tightening)]
+     pub async fn record_outcome(
+         &self,
+diff --git a/crates/roko-mcp-code/src/lib.rs b/crates/roko-mcp-code/src/lib.rs
+index bbcf96eb..1c3d0d57 100644
+--- a/crates/roko-mcp-code/src/lib.rs
++++ b/crates/roko-mcp-code/src/lib.rs
+@@ -41,6 +41,11 @@ struct SemanticSearchArguments {
+ }
+ 
+ /// Run the MCP server over stdio.
++///
++/// # Errors
++///
++/// Returns an error if the workspace index cannot be loaded or if the stdio
++/// JSON-RPC loop fails to read, handle, or write requests.
+ pub fn run() -> Result<()> {
+     tracing_subscriber::fmt()
+         .with_env_filter("roko_mcp_code=info")
+diff --git a/crates/roko-mcp-stdio/src/lib.rs b/crates/roko-mcp-stdio/src/lib.rs
+index 3c50251b..908539a4 100644
+--- a/crates/roko-mcp-stdio/src/lib.rs
++++ b/crates/roko-mcp-stdio/src/lib.rs
+@@ -102,6 +102,11 @@ struct JsonRpcResponse {
+ /// Requests and responses are serialized as single newline-delimited JSON
+ /// objects. Notifications are handled by calling the handler and discarding
+ /// any returned value.
++///
++/// # Errors
++///
++/// Returns an error if reading a request line from `reader`, serializing a
++/// JSON-RPC response, writing to `writer`, or flushing `writer` fails.
+ pub fn serve_stdio<R, W, F>(reader: R, mut writer: W, mut handler: F) -> anyhow::Result<()>
+ where
+     R: BufRead,
+diff --git a/crates/roko-neuro/src/knowledge_store.rs b/crates/roko-neuro/src/knowledge_store.rs
+index 27783eb1..619de98f 100644
+--- a/crates/roko-neuro/src/knowledge_store.rs
++++ b/crates/roko-neuro/src/knowledge_store.rs
+@@ -446,6 +446,11 @@ impl KnowledgeStore {
+     }
+ 
+     /// Read all knowledge entries from the store.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the store file cannot be read or any stored entry
++    /// cannot be decoded from JSON.
+     pub fn read_all(&self) -> Result<Vec<KnowledgeEntry>> {
+         let file = match File::open(&self.path) {
+             Ok(file) => file,
+diff --git a/crates/roko-neuro/src/lib.rs b/crates/roko-neuro/src/lib.rs
+index 5d41ef0e..5cc4a518 100644
+--- a/crates/roko-neuro/src/lib.rs
++++ b/crates/roko-neuro/src/lib.rs
+@@ -378,18 +378,42 @@ impl KnowledgeEntry {
+ /// Single entry point for durable knowledge storage backends.
+ pub trait NeuroStore: Sized {
+     /// Initialize a store at the given path.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the backend cannot initialize or load its durable
++    /// state from `path`.
+     fn init(path: &Path) -> Result<Self>;
+ 
+     /// Query a topic for relevant knowledge entries.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the backend cannot read or decode the stored
++    /// knowledge entries needed to answer the query.
+     fn query(&self, topic: &str, limit: usize) -> Result<Vec<KnowledgeEntry>>;
+ 
+     /// Ingest a batch of knowledge entries.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the backend cannot persist the provided entries.
+     fn ingest(&mut self, entries: Vec<KnowledgeEntry>) -> Result<()>;
+ 
+     /// Apply decay and return the number of entries processed.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the backend cannot load or persist the decayed
++    /// entries.
+     fn decay(&mut self) -> Result<usize>;
+ 
+     /// Garbage-collect low-confidence entries and return the number removed.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the backend cannot load or persist the filtered
++    /// entries.
+     fn gc(&mut self, min_confidence: f64) -> Result<usize>;
+ }
+ 
+diff --git a/crates/roko-orchestrator/src/dag.rs b/crates/roko-orchestrator/src/dag.rs
+index 4c252132..0cfc6569 100644
+--- a/crates/roko-orchestrator/src/dag.rs
++++ b/crates/roko-orchestrator/src/dag.rs
+@@ -609,6 +609,14 @@ impl UnifiedTaskDag {
+     ///
+     /// The mutation is validated against the current graph and rejected if
+     /// it would introduce a cycle or touch a completed task.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`DagMutationError::UnknownTask`] if the target task does
++    /// not exist, [`DagMutationError::CompletedTask`] if the mutation
++    /// touches a completed task, [`DagMutationError::InvalidMutation`] if
++    /// the payload is structurally invalid, or [`DagMutationError::Cycle`]
++    /// if the mutation introduces a cycle.
+     #[allow(clippy::too_many_lines)]
+     pub fn apply_mutation(&mut self, mutation: DagMutation) -> Result<(), DagMutationError> {
+         let mut next = self.clone();
+@@ -991,6 +999,12 @@ impl IncrementalDag {
+     }
+ 
+     /// Apply a mutation and mark the touched subtree dirty.
++    ///
++    /// # Errors
++    ///
++    /// Returns the same [`DagMutationError`] variants as
++    /// [`UnifiedTaskDag::apply_mutation`] when the mutation cannot be
++    /// applied.
+     pub fn apply_mutation(&mut self, mutation: DagMutation) -> Result<(), DagMutationError> {
+         let touched = mutation_touched_ids(&mutation);
+         self.dag.apply_mutation(mutation)?;
+diff --git a/crates/roko-orchestrator/src/event_log.rs b/crates/roko-orchestrator/src/event_log.rs
+index 710d3d59..76198011 100644
+--- a/crates/roko-orchestrator/src/event_log.rs
++++ b/crates/roko-orchestrator/src/event_log.rs
+@@ -236,6 +236,11 @@ impl EventLog {
+     /// Verify the hash chain is intact. Returns `Ok(())` if every entry's
+     /// content hash matches a recomputation from scratch, or an
+     /// [`IntegrityError`] at the first broken link.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`IntegrityError`] when an entry hash or the stored tail
++    /// hash does not match a recomputation from scratch.
+     #[allow(clippy::significant_drop_tightening)]
+     pub fn verify_integrity(&self) -> Result<(), IntegrityError> {
+         let guard = self.inner.lock();
+diff --git a/crates/roko-orchestrator/src/progress.rs b/crates/roko-orchestrator/src/progress.rs
+index 7cc1f2fa..99be454b 100644
+--- a/crates/roko-orchestrator/src/progress.rs
++++ b/crates/roko-orchestrator/src/progress.rs
+@@ -83,6 +83,13 @@ impl ProgressTracker {
+     /// - the transition violates the [`valid_transitions`] table.
+     ///
+     /// [`valid_transitions`]: roko_core::valid_transitions
++    ///
++    /// # Errors
++    ///
++    /// Returns [`ProgressError`] if the plan is untracked and the first
++    /// transition is not from [`PhaseKind::Queued`], if the caller's
++    /// `from` phase does not match the current phase, or if the requested
++    /// transition is not monotonic.
+     pub fn try_transition(
+         &mut self,
+         plan_id: &str,
+@@ -192,6 +199,11 @@ fn required_keys(schema: &str) -> Option<&'static [&'static str]> {
+ /// intentionally permissive so that new schemas can be introduced
+ /// without blocking the pipeline. Callers should log a warning for
+ /// unknown schemas.
++///
++/// # Errors
++///
++/// Returns [`ValidationError`] when `data` is not a JSON object or when
++/// it is missing one or more keys required by a known schema.
+ pub fn validate_enrichment(data: &serde_json::Value, schema: &str) -> Result<(), ValidationError> {
+     let Some(keys) = required_keys(schema) else {
+         return Ok(()); // unknown schema: pass through
+diff --git a/crates/roko-orchestrator/src/worktree.rs b/crates/roko-orchestrator/src/worktree.rs
+index 175791d4..54a91447 100644
+--- a/crates/roko-orchestrator/src/worktree.rs
++++ b/crates/roko-orchestrator/src/worktree.rs
+@@ -162,6 +162,15 @@ impl WorktreeManager {
+     /// does not already exist. Rejects duplicate ids, invalid id
+     /// strings (empty, containing `/`, `\`, NUL, or leading `.`), and
+     /// requests that would exceed [`WorktreeConfig::max_live`].
++    ///
++    /// # Errors
++    ///
++    /// Returns [`WorktreeError::InvalidId`] if `id` fails validation,
++    /// [`WorktreeError::AlreadyExists`] if the id is already tracked,
++    /// [`WorktreeError::BudgetExhausted`] if the live-worktree limit would
++    /// be exceeded, [`WorktreeError::GitFailed`] if `git worktree add`
++    /// exits unsuccessfully, or [`WorktreeError::IoError`] if preparing the
++    /// worktree directory fails.
+     pub async fn create(&self, id: &str, branch: &str) -> Result<WorktreeHandle, WorktreeError> {
+         validate_id(id)?;
+         let _ = self.clear_stale_locks();
+@@ -242,6 +251,11 @@ impl WorktreeManager {
+ 
+     /// Convenience: create a worktree using the canonical branch naming
+     /// convention (`roko/plan/<plan_id>`). §15.3
++    ///
++    /// # Errors
++    ///
++    /// Returns the same [`WorktreeError`] variants as
++    /// [`WorktreeManager::create`].
+     pub async fn create_for_plan(&self, plan_id: &str) -> Result<WorktreeHandle, WorktreeError> {
+         let branch = format_branch_name(plan_id);
+         self.create(plan_id, &branch).await
+@@ -257,6 +271,13 @@ impl WorktreeManager {
+     ///
+     /// If the worktree is already tracked, this touches and returns it.
+     /// Otherwise a new canonical plan worktree is created.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`WorktreeError::NotFound`] if the tracked handle is
++    /// removed between the initial lookup and the final fetch, or any
++    /// [`WorktreeError`] that can be produced by
++    /// [`WorktreeManager::create_for_plan`].
+     pub async fn ensure_for_plan(&self, plan_id: &str) -> Result<WorktreeHandle, WorktreeError> {
+         if let Some(existing) = self.get(plan_id) {
+             self.touch(plan_id);
+@@ -277,6 +298,13 @@ impl WorktreeManager {
+     /// tracked. The underlying git directory is removed via
+     /// `git worktree remove --force` so uncommitted files are cleaned up
+     /// along with the metadata.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`WorktreeError::NotFound`] if the id is not tracked,
++    /// [`WorktreeError::GitFailed`] if `git worktree remove` exits
++    /// unsuccessfully, or [`WorktreeError::IoError`] if invoking `git`
++    /// fails.
+     pub async fn remove(&self, id: &str) -> Result<(), WorktreeError> {
+         let _ = self.clear_stale_locks();
+         let handle = {
+@@ -298,6 +326,12 @@ impl WorktreeManager {
+     /// Snapshot of every worktree currently tracked by the manager.
+     /// Does **not** consult `git worktree list` — it reports the
+     /// in-memory registry only.
++    ///
++    /// # Errors
++    ///
++    /// This function is currently infallible and always returns
++    /// `Ok(...)`; the `Result` wrapper is kept for API symmetry with the
++    /// rest of the manager surface.
+     pub fn list(&self) -> Result<Vec<WorktreeHandle>, WorktreeError> {
+         let mut out: Vec<WorktreeHandle> = {
+             let guard = self.active.lock();
+@@ -329,6 +363,13 @@ impl WorktreeManager {
+     /// Returns [`WorktreeHealth::Ok`] when the directory exists and the
+     /// expected branch is checked out; other variants describe the
+     /// specific failure mode.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`WorktreeError::NotFound`] if `id` is not tracked,
++    /// [`WorktreeError::GitFailed`] if the `git rev-parse` probe exits
++    /// unsuccessfully, or [`WorktreeError::IoError`] if the git process
++    /// cannot be spawned.
+     pub async fn check_health(&self, id: &str) -> Result<WorktreeHealth, WorktreeError> {
+         let handle = {
+             let guard = self.active.lock();
+@@ -370,6 +411,12 @@ impl WorktreeManager {
+     /// Evict worktrees whose `last_active_ms` is older than
+     /// [`WorktreeConfig::idle_ttl`], oldest first. Returns the ids
+     /// that were successfully reclaimed (§15.6).
++    ///
++    /// # Errors
++    ///
++    /// This function is currently infallible and returns `Ok(...)` after
++    /// best-effort reclamation; individual removal failures are skipped so
++    /// one bad worktree does not block the rest.
+     pub async fn reclaim_idle(&self) -> Result<Vec<String>, WorktreeError> {
+         let now_ms = chrono::Utc::now().timestamp_millis();
+         let ttl_ms = i64::try_from(self.config.idle_ttl.as_millis()).unwrap_or(i64::MAX);
+@@ -400,6 +447,11 @@ impl WorktreeManager {
+     /// Remove all currently tracked worktrees.
+     ///
+     /// Returns the ids that were successfully removed.
++    ///
++    /// # Errors
++    ///
++    /// This function is currently infallible and returns `Ok(...)` after
++    /// best-effort removal; per-worktree failures are ignored.
+     pub async fn remove_all(&self) -> Result<Vec<String>, WorktreeError> {
+         let ids: Vec<String> = self.active.lock().keys().cloned().collect();
+         let mut removed = Vec::new();
+@@ -414,6 +466,12 @@ impl WorktreeManager {
+ 
+     /// Remove stale `.git/index.lock` files (older than 60 seconds)
+     /// across the main repo and all git-tracked worktrees (§15.7).
++    ///
++    /// # Errors
++    ///
++    /// This function is currently infallible and returns `Ok(...)` after
++    /// best-effort cleanup; unreadable or non-stale lock files are simply
++    /// skipped.
+     pub fn clear_stale_locks(&self) -> Result<Vec<PathBuf>, WorktreeError> {
+         let mut cleared = Vec::new();
+ 
+@@ -445,6 +503,12 @@ impl WorktreeManager {
+ 
+     /// Run `git worktree prune` to clean up stale git worktree metadata
+     /// that no longer corresponds to on-disk directories (§15.9).
++    ///
++    /// # Errors
++    ///
++    /// Returns [`WorktreeError::GitFailed`] if `git worktree prune`
++    /// exits unsuccessfully or [`WorktreeError::IoError`] if the `git`
++    /// process cannot be spawned.
+     pub async fn prune(&self) -> Result<String, WorktreeError> {
+         let _ = self.clear_stale_locks();
+         let output = Command::new("git")
+diff --git a/crates/roko-plugin/src/lib.rs b/crates/roko-plugin/src/lib.rs
+index 408cddbc..18c75c95 100644
+--- a/crates/roko-plugin/src/lib.rs
++++ b/crates/roko-plugin/src/lib.rs
+@@ -217,6 +217,10 @@ impl CronEventSource {
+     }
+ 
+     /// Return a snapshot of the configured schedules and their next fire times.
++    ///
++    /// # Errors
++    ///
++    /// Returns a configuration error if any cron expression cannot be parsed.
+     #[must_use]
+     pub fn schedules(&self) -> Result<Vec<CronScheduleStatus>> {
+         Ok(self
+diff --git a/crates/roko-runtime/src/metrics.rs b/crates/roko-runtime/src/metrics.rs
+index aa1fe53c..ce5cbe2c 100644
+--- a/crates/roko-runtime/src/metrics.rs
++++ b/crates/roko-runtime/src/metrics.rs
+@@ -54,6 +54,11 @@ pub struct MetricRecorder {
+ 
+ impl MetricRecorder {
+     /// Open (or create) a JSONL metric file at `path`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MetricError::Io`] if the parent directory cannot be created
++    /// or the JSONL file cannot be opened for append.
+     pub fn open(path: impl AsRef<Path>) -> Result<Self, MetricError> {
+         let path = path.as_ref().to_path_buf();
+         if let Some(parent) = path.parent() {
+@@ -68,6 +73,12 @@ impl MetricRecorder {
+     }
+ 
+     /// Record a single metric. Serialises as JSON, appends newline, flushes.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`MetricError::Serialize`] if `metric` cannot be encoded as
++    /// JSON, or [`MetricError::Io`] if appending or flushing the JSONL file
++    /// fails.
+     pub fn record<M: Serialize>(&self, metric: &M) -> Result<(), MetricError> {
+         let line = MetricLine {
+             ts: Utc::now().to_rfc3339(),
+diff --git a/crates/roko-runtime/src/process.rs b/crates/roko-runtime/src/process.rs
+index 5e1d1941..ee898453 100644
+--- a/crates/roko-runtime/src/process.rs
++++ b/crates/roko-runtime/src/process.rs
+@@ -286,11 +286,21 @@ impl ProcessHandle {
+     }
+ 
+     /// Check if the process has exited without blocking.
++    ///
++    /// # Errors
++    ///
++    /// Returns any I/O error reported by the underlying child-process handle
++    /// while querying its exit status.
+     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+         self.child.try_wait()
+     }
+ 
+     /// Wait for the process to exit.
++    ///
++    /// # Errors
++    ///
++    /// Returns any I/O error reported by the underlying child-process handle
++    /// while waiting for the process to exit.
+     pub async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+         self.child.wait().await
+     }
+@@ -394,6 +404,10 @@ impl ProcessSupervisor {
+ 
+     /// Spawn a new managed process.
+     #[allow(clippy::unused_async)] // Preserve the existing async API for callers across crates.
++    ///
++    /// # Errors
++    ///
++    /// Returns any I/O error from configuring or spawning the child process.
+     pub async fn spawn(&self, config: SpawnConfig) -> std::io::Result<ProcessId> {
+         let id = ProcessId::next();
+         let child_cancel = self.cancel.child();
+diff --git a/crates/roko-std/src/tool/builtin/sandbox.rs b/crates/roko-std/src/tool/builtin/sandbox.rs
+index 237e2440..6cc6b731 100644
+--- a/crates/roko-std/src/tool/builtin/sandbox.rs
++++ b/crates/roko-std/src/tool/builtin/sandbox.rs
+@@ -25,6 +25,11 @@ use roko_core::tool::ToolError;
+ 
+ /// Resolve `rel` against `worktree` and ensure the result stays inside
+ /// the worktree. Returns the absolute, normalized path on success.
++///
++/// # Errors
++///
++/// Returns [`ToolError::PathOutsideWorktree`] if the resolved path escapes the
++/// supplied worktree.
+ pub fn require_within_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, ToolError> {
+     let candidate = Path::new(rel);
+     let joined = if candidate.is_absolute() {
+@@ -41,6 +46,11 @@ pub fn require_within_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, To
+ }
+ 
+ /// Extract a required string field from a JSON arguments object.
++///
++/// # Errors
++///
++/// Returns [`ToolError::SchemaInvalid`] if `key` is missing or is not a JSON
++/// string.
+ pub fn require_string(args: &serde_json::Value, key: &str) -> Result<String, ToolError> {
+     args.get(key)
+         .and_then(serde_json::Value::as_str)

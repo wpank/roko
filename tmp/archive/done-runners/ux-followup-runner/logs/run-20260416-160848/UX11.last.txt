@@ -1,0 +1,15 @@
+Updated the TUI backpressure path and made dashboard generation durable.
+
+In the current tree, the stale `data_tx/data_rx` and `git_tx/git_rx` sites from the batch brief were already gone, and FS/git refreshes were already bounded. I changed the remaining unbounded app-local channel in [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/app.rs) from `std::sync::mpsc::channel` to `tokio::sync::watch`, so sys metrics are now latest-wins with no unbounded backlog. I also replaced the process-local generation map in [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/dashboard.rs) with a durable counter module in [dashboard_gen.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/dashboard_gen.rs), persisted at `.roko/state/dashboard-gen.json`, and wired it through [mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/mod.rs).
+
+Chosen primitives:
+- Sys metrics: `tokio::sync::watch` in `tui/app.rs`
+- FS refresh: existing `std::sync::mpsc::sync_channel(4)` kept
+- Git refresh: existing `std::sync::mpsc::sync_channel(4)` kept
+- Durable generation state path: `.roko/state/dashboard-gen.json`
+
+Verification passed:
+- `cargo check -p roko-cli`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`
+- `cargo test -p roko-cli dashboard_gen --lib`
+- Grep for `std::sync::mpsc::channel|mpsc::channel(` in `crates/roko-cli/src/tui/app.rs`: no hits

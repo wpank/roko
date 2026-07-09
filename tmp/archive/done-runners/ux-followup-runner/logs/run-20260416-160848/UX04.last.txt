@@ -1,0 +1,25 @@
+Implemented `roko plan validate` as a real preflight linter.
+
+The new command lives through [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/main.rs), with validation/reporting in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/plan_validate.rs). Cycle detection was extracted to [dag.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-orchestrator/src/dag.rs:29) and reused from the task parser via [task_parser.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/task_parser.rs). Integration coverage is in [plan_validate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/tests/plan_validate.rs:1).
+
+Verified:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli --lib --no-run -- plan::validate`
+- `cargo test -p roko-cli --test plan_validate`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`
+- `roko plan validate --help` shows `--strict` and `--json`
+
+On this repo’s `plans/` tree, `roko plan validate plans/` is deterministic and exits `1`; it reports 20 diagnostics across 3 plans, mostly `PLAN_003` missing `role` fields plus `PLAN_009` model warnings in `plans/P07-autofix-retry/tasks.toml`.
+
+Rule IDs implemented:
+- `PLAN_001`
+- `PLAN_002`
+- `PLAN_003`
+- `PLAN_004`
+- `PLAN_005`
+- `PLAN_006`
+- `PLAN_007`
+- `PLAN_008`
+- `PLAN_009`
+- `PLAN_010`
+- `PLAN_011`

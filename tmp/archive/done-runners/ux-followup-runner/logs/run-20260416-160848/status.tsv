@@ -1,0 +1,546 @@
+2026-04-16T16:08:48+02:00	UX01	1	attempt_started	Gate-failure → plan-revision feedback loop (self-hosting P0)
+2026-04-16T16:08:48+02:00	UX01	1	spawn_started	codex exec started
+2026-04-16T16:40:59+02:00	UX01	1	spawn_succeeded	codex exec completed
+2026-04-16T16:40:59+02:00	UX01	1	verify_running	cargo check -p roko-cli -p roko-orchestrator -p roko-runtime -p roko-learn
+2026-04-16T16:41:48+02:00	UX01	1	verify_running	cargo test -p roko-orchestrator --lib --no-run
+2026-04-16T16:42:12+02:00	UX01	1	verify_running	cargo clippy -p roko-cli -p roko-orchestrator --no-deps -- -D warnings
+2026-04-16T16:42:31+02:00	UX01	1	verify_succeeded	all verification commands passed
+2026-04-16T16:42:32+02:00	UX01	1	commit_succeeded	41cc6817
+2026-04-16T16:42:32+02:00	UX01	1	attempt_succeeded	verified and committed
+2026-04-16T16:42:32+02:00	UX02	1	attempt_started	PRD-publish event → orchestrator auto-trigger (self-hosting P0)
+2026-04-16T16:42:32+02:00	UX02	1	spawn_started	codex exec started
+2026-04-16T17:02:36+02:00	UX02	1	spawn_succeeded	codex exec completed
+2026-04-16T17:02:36+02:00	UX02	1	verify_running	cargo check -p roko-cli -p roko-orchestrator -p roko-runtime -p roko-learn
+2026-04-16T17:03:24+02:00	UX02	1	verify_running	cargo test -p roko-orchestrator --lib --no-run
+2026-04-16T17:03:49+02:00	UX02	1	verify_running	cargo clippy -p roko-cli -p roko-orchestrator --no-deps -- -D warnings
+2026-04-16T17:04:08+02:00	UX02	1	verify_succeeded	all verification commands passed
+2026-04-16T17:04:08+02:00	UX02	1	commit_succeeded	6fb4a22c
+2026-04-16T17:04:08+02:00	UX02	1	attempt_succeeded	verified and committed
+2026-04-16T17:04:08+02:00	UX04	1	attempt_started	roko plan validate CLI command
+2026-04-16T17:04:08+02:00	UX04	1	spawn_started	codex exec started
+2026-04-16T17:18:43+02:00	UX04	1	spawn_succeeded	codex exec completed
+2026-04-16T17:18:43+02:00	UX04	1	verify_running	cargo check -p roko-cli
+2026-04-16T17:19:32+02:00	UX04	1	verify_running	cargo test -p roko-cli --lib --no-run -- plan::validate
+2026-04-16T17:21:14+02:00	UX04	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T17:21:32+02:00	UX04	1	verify_succeeded	all verification commands passed
+2026-04-16T17:21:32+02:00	UX04	1	commit_succeeded	58b49c53
+2026-04-16T17:21:32+02:00	UX04	1	attempt_succeeded	verified and committed
+2026-04-16T17:21:32+02:00	UX05	1	attempt_started	Standalone TUI: in-process StateHub + delete polling fallback
+2026-04-16T17:21:33+02:00	UX05	1	spawn_started	codex exec started
+2026-04-16T17:41:19+02:00	UX05	1	spawn_succeeded	codex exec completed
+2026-04-16T17:41:19+02:00	UX05	1	verify_running	cargo check -p roko-cli
+2026-04-16T17:42:07+02:00	UX05	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T17:42:25+02:00	UX05	1	verify_succeeded	all verification commands passed
+2026-04-16T17:42:26+02:00	UX05	1	commit_succeeded	121ec5d4
+2026-04-16T17:42:26+02:00	UX05	1	attempt_succeeded	verified and committed
+2026-04-16T17:42:26+02:00	UX06	1	attempt_started	Notify file-watcher replaces 500 ms .roko/ polling thread
+2026-04-16T17:42:26+02:00	UX06	1	spawn_started	codex exec started
+2026-04-16T18:02:24+02:00	UX06	1	spawn_succeeded	codex exec completed
+2026-04-16T18:02:24+02:00	UX06	1	verify_running	cargo check -p roko-cli
+2026-04-16T18:03:15+02:00	UX06	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T18:03:33+02:00	UX06	1	verify_succeeded	all verification commands passed
+2026-04-16T18:03:33+02:00	UX06	1	commit_succeeded	a7ceff27
+2026-04-16T18:03:33+02:00	UX06	1	attempt_succeeded	verified and committed
+2026-04-16T18:03:34+02:00	UX07	1	attempt_started	Incremental tailers for signals / episodes / events
+2026-04-16T18:03:34+02:00	UX07	1	spawn_started	codex exec started
+2026-04-16T18:19:28+02:00	UX07	1	spawn_succeeded	codex exec completed
+2026-04-16T18:19:28+02:00	UX07	1	verify_running	cargo check -p roko-cli
+2026-04-16T18:20:16+02:00	UX07	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T18:20:36+02:00	UX07	1	verify_succeeded	all verification commands passed
+2026-04-16T18:20:36+02:00	UX07	1	commit_succeeded	0b5c2d86
+2026-04-16T18:20:36+02:00	UX07	1	attempt_succeeded	verified and committed
+2026-04-16T18:20:36+02:00	UX08	1	attempt_started	Task-output directory watcher + per-file incremental tail
+2026-04-16T18:20:36+02:00	UX08	1	spawn_started	codex exec started
+2026-04-16T18:31:42+02:00	UX08	1	spawn_succeeded	codex exec completed
+2026-04-16T18:31:42+02:00	UX08	1	verify_running	cargo check -p roko-cli
+2026-04-16T18:32:44+02:00	UX08	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T18:33:10+02:00	UX08	1	verify_succeeded	all verification commands passed
+2026-04-16T18:33:10+02:00	UX08	1	commit_succeeded	0fffdb2c
+2026-04-16T18:33:10+02:00	UX08	1	attempt_succeeded	verified and committed
+2026-04-16T18:33:10+02:00	UX09	1	attempt_started	Agent sidecar /stream WebSocket consumer on Agents tab
+2026-04-16T18:33:10+02:00	UX09	1	spawn_started	codex exec started
+2026-04-16T18:47:23+02:00	UX09	1	spawn_failed	codex exec exited with 101
+2026-04-16T18:47:23+02:00	UX09	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:47:23+02:00	UX09	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T18:47:23+02:00	UX09	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T18:47:23+02:00	UX09	2	spawn_started	codex exec started
+2026-04-16T18:54:57+02:00	UX09	2	spawn_succeeded	codex exec completed
+2026-04-16T18:54:57+02:00	UX09	2	verify_running	cargo check -p roko-cli
+2026-04-16T18:54:58+02:00	UX09	2	verify_failed	cargo check -p roko-cli
+2026-04-16T18:54:58+02:00	UX09	2	attempt_failed	verification failed
+2026-04-16T18:54:58+02:00	UX10	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T18:54:58+02:00	UX10	1	attempt_started	Git view fs-watch replaces 3 s git CLI polling
+2026-04-16T18:54:58+02:00	UX10	1	spawn_started	codex exec started
+2026-04-16T18:54:58+02:00	UX10	1	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:58+02:00	UX10	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:54:58+02:00	UX10	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T18:54:58+02:00	UX10	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T18:54:58+02:00	UX10	2	spawn_started	codex exec started
+2026-04-16T18:54:58+02:00	UX10	2	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:58+02:00	UX10	2	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:54:58+02:00	UX11	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T18:54:58+02:00	UX11	1	attempt_started	TUI channel backpressure + durable dashboard-gen counter
+2026-04-16T18:54:58+02:00	UX11	1	spawn_started	codex exec started
+2026-04-16T18:54:58+02:00	UX11	1	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:58+02:00	UX11	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:54:58+02:00	UX11	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T18:54:58+02:00	UX11	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T18:54:58+02:00	UX11	2	spawn_started	codex exec started
+2026-04-16T18:54:58+02:00	UX11	2	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:58+02:00	UX11	2	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:54:58+02:00	UX12	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T18:54:58+02:00	UX12	1	attempt_started	ExecutorSnapshot schema_version + migration framework
+2026-04-16T18:54:58+02:00	UX12	1	spawn_started	codex exec started
+2026-04-16T18:54:58+02:00	UX12	1	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:58+02:00	UX12	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T18:54:59+02:00	UX12	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T18:54:59+02:00	UX12	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T18:54:59+02:00	UX12	2	spawn_started	codex exec started
+2026-04-16T18:54:59+02:00	UX12	2	spawn_failed	codex exec exited with 1
+2026-04-16T18:54:59+02:00	UX12	2	attempt_failed	codex exited unsuccessfully
+2026-04-16T19:04:25+02:00	UX03	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T19:04:25+02:00	UX03	1	attempt_started	End-to-end self-hosting smoke test
+2026-04-16T19:04:25+02:00	UX03	1	spawn_started	codex exec started
+2026-04-16T19:38:42+02:00	UX03	1	spawn_succeeded	codex exec completed
+2026-04-16T19:38:42+02:00	UX03	1	verify_running	cargo check -p roko-cli
+2026-04-16T19:39:33+02:00	UX03	1	verify_running	cargo test -p roko-cli --test e2e_self_host --no-run
+2026-04-16T19:41:15+02:00	UX03	1	verify_succeeded	all verification commands passed
+2026-04-16T19:41:15+02:00	UX03	1	commit_succeeded	39e8fec5
+2026-04-16T19:41:20+02:00	UX03	1	attempt_succeeded	verified and committed
+2026-04-16T19:41:20+02:00	UX09	1	attempt_started	Agent sidecar /stream WebSocket consumer on Agents tab
+2026-04-16T19:41:48+02:00	UX09	1	spawn_started	codex exec started
+2026-04-16T19:58:18+02:00	UX09	1	spawn_succeeded	codex exec completed
+2026-04-16T19:58:18+02:00	UX09	1	verify_running	cargo check -p roko-cli
+2026-04-16T19:59:07+02:00	UX09	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T19:59:27+02:00	UX09	1	verify_succeeded	all verification commands passed
+2026-04-16T19:59:28+02:00	UX09	1	commit_succeeded	73f3d97b
+2026-04-16T19:59:30+02:00	UX09	1	attempt_succeeded	verified and committed
+2026-04-16T19:59:30+02:00	UX10	1	attempt_started	Git view fs-watch replaces 3 s git CLI polling
+2026-04-16T19:59:30+02:00	UX10	1	spawn_started	codex exec started
+2026-04-16T20:11:37+02:00	UX10	1	spawn_succeeded	codex exec completed
+2026-04-16T20:11:37+02:00	UX10	1	verify_running	cargo check -p roko-cli
+2026-04-16T20:12:27+02:00	UX10	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T20:12:46+02:00	UX10	1	verify_succeeded	all verification commands passed
+2026-04-16T20:12:46+02:00	UX10	1	commit_succeeded	461ba33b
+2026-04-16T20:12:47+02:00	UX10	1	attempt_succeeded	verified and committed
+2026-04-16T20:12:47+02:00	UX11	1	attempt_started	TUI channel backpressure + durable dashboard-gen counter
+2026-04-16T20:12:47+02:00	UX11	1	spawn_started	codex exec started
+2026-04-16T20:18:50+02:00	UX11	1	spawn_succeeded	codex exec completed
+2026-04-16T20:18:50+02:00	UX11	1	verify_running	cargo check -p roko-cli
+2026-04-16T20:19:41+02:00	UX11	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T20:20:01+02:00	UX11	1	verify_succeeded	all verification commands passed
+2026-04-16T20:20:01+02:00	UX11	1	commit_succeeded	c908b879
+2026-04-16T20:20:04+02:00	UX11	1	attempt_succeeded	verified and committed
+2026-04-16T20:20:04+02:00	UX12	1	attempt_started	ExecutorSnapshot schema_version + migration framework
+2026-04-16T20:20:04+02:00	UX12	1	spawn_started	codex exec started
+2026-04-16T20:29:12+02:00	UX12	1	spawn_succeeded	codex exec completed
+2026-04-16T20:29:12+02:00	UX12	1	verify_running	cargo check -p roko-cli
+2026-04-16T20:30:03+02:00	UX12	1	verify_running	cargo test -p roko-cli --lib --no-run -- snapshot
+2026-04-16T20:31:50+02:00	UX12	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T20:32:10+02:00	UX12	1	verify_succeeded	all verification commands passed
+2026-04-16T20:32:10+02:00	UX12	1	commit_succeeded	66ef84f4
+2026-04-16T20:32:13+02:00	UX12	1	attempt_succeeded	verified and committed
+2026-04-16T20:32:13+02:00	UX13	1	attempt_started	Resume: validate plan-discovery vs snapshot consistency
+2026-04-16T20:32:13+02:00	UX13	1	spawn_started	codex exec started
+2026-04-16T20:42:14+02:00	UX13	1	spawn_succeeded	codex exec completed
+2026-04-16T20:42:14+02:00	UX13	1	verify_running	cargo check -p roko-cli
+2026-04-16T20:43:11+02:00	UX13	1	verify_running	cargo test -p roko-cli --lib --no-run -- snapshot
+2026-04-16T20:45:07+02:00	UX13	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T20:45:27+02:00	UX13	1	verify_succeeded	all verification commands passed
+2026-04-16T20:45:27+02:00	UX13	1	commit_succeeded	60a1afb5
+2026-04-16T20:45:30+02:00	UX13	1	attempt_succeeded	verified and committed
+2026-04-16T20:45:30+02:00	UX14	1	attempt_started	ProcessSupervisor SIGTERM escalation + Drop + CancellationToken
+2026-04-16T20:45:30+02:00	UX14	1	spawn_started	codex exec started
+2026-04-16T21:03:49+02:00	UX14	1	spawn_succeeded	codex exec completed
+2026-04-16T21:03:49+02:00	UX14	1	verify_running	cargo check -p roko-runtime -p roko-cli
+2026-04-16T21:04:42+02:00	UX14	1	verify_running	cargo test -p roko-runtime --lib --no-run
+2026-04-16T21:04:53+02:00	UX14	1	verify_running	cargo clippy -p roko-runtime -p roko-cli --no-deps -- -D warnings
+2026-04-16T21:05:12+02:00	UX14	1	verify_succeeded	all verification commands passed
+2026-04-16T21:05:12+02:00	UX14	1	commit_succeeded	933508c0
+2026-04-16T21:05:13+02:00	UX14	1	attempt_succeeded	verified and committed
+2026-04-16T21:05:13+02:00	UX16	1	attempt_started	Conductor diagnosis TUI panel + HTTP endpoint
+2026-04-16T21:05:13+02:00	UX16	1	spawn_started	codex exec started
+2026-04-16T21:22:15+02:00	UX16	1	spawn_succeeded	codex exec completed
+2026-04-16T21:22:15+02:00	UX16	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-16T21:23:02+02:00	UX16	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-16T21:23:22+02:00	UX16	1	verify_succeeded	all verification commands passed
+2026-04-16T21:23:22+02:00	UX16	1	commit_succeeded	bce81367
+2026-04-16T21:23:25+02:00	UX16	1	attempt_succeeded	verified and committed
+2026-04-16T21:23:25+02:00	UX17	1	attempt_started	Efficiency-events trend aggregator + Learning sparkline
+2026-04-16T21:23:25+02:00	UX17	1	spawn_started	codex exec started
+2026-04-16T21:44:15+02:00	UX17	1	spawn_succeeded	codex exec completed
+2026-04-16T21:44:15+02:00	UX17	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-16T21:45:03+02:00	UX17	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-16T21:45:23+02:00	UX17	1	verify_succeeded	all verification commands passed
+2026-04-16T21:45:23+02:00	UX17	1	commit_succeeded	4648db01
+2026-04-16T21:45:27+02:00	UX17	1	attempt_succeeded	verified and committed
+2026-04-16T21:45:27+02:00	UX18	1	attempt_started	Metrics schema alignment: roko-core vs roko-agent-server
+2026-04-16T21:45:27+02:00	UX18	1	spawn_started	codex exec started
+2026-04-16T21:54:33+02:00	UX18	1	spawn_succeeded	codex exec completed
+2026-04-16T21:54:33+02:00	UX18	1	verify_running	cargo check -p roko-core -p roko-agent-server -p roko-serve
+2026-04-16T21:55:15+02:00	UX18	1	verify_running	cargo test -p roko-core --lib --no-run -- obs::metrics
+2026-04-16T21:55:43+02:00	UX18	1	verify_running	cargo clippy -p roko-core -p roko-agent-server -p roko-serve --no-deps -- -D warnings
+2026-04-16T21:55:48+02:00	UX18	1	verify_failed	cargo clippy -p roko-core -p roko-agent-server -p roko-serve --no-deps -- -D warnings
+2026-04-16T21:55:48+02:00	UX18	1	attempt_failed	verification failed
+2026-04-16T21:55:48+02:00	UX18	1	attempt_backed_up	saved failed verify state for retry
+2026-04-16T21:55:48+02:00	UX18	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T21:55:48+02:00	UX18	2	spawn_started	codex exec started
+2026-04-16T22:04:43+02:00	UX18	2	spawn_succeeded	codex exec completed
+2026-04-16T22:04:43+02:00	UX18	2	verify_running	cargo check -p roko-core -p roko-agent-server -p roko-serve
+2026-04-16T22:05:25+02:00	UX18	2	verify_running	cargo test -p roko-core --lib --no-run -- obs::metrics
+2026-04-16T22:05:54+02:00	UX18	2	verify_running	cargo clippy -p roko-core -p roko-agent-server -p roko-serve --no-deps -- -D warnings
+2026-04-16T22:06:08+02:00	UX18	2	verify_succeeded	all verification commands passed
+2026-04-16T22:06:09+02:00	UX18	2	commit_succeeded	7e646f2b
+2026-04-16T22:06:11+02:00	UX18	2	attempt_succeeded	verified and committed
+2026-04-16T22:06:11+02:00	UX19	1	attempt_started	Prompt experiment winners on Learning tab
+2026-04-16T22:06:11+02:00	UX19	1	spawn_started	codex exec started
+2026-04-16T22:22:10+02:00	UX19	1	spawn_succeeded	codex exec completed
+2026-04-16T22:22:10+02:00	UX19	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-16T22:22:58+02:00	UX19	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-16T22:23:18+02:00	UX19	1	verify_succeeded	all verification commands passed
+2026-04-16T22:23:18+02:00	UX19	1	commit_succeeded	339a6e54
+2026-04-16T22:23:22+02:00	UX19	1	attempt_succeeded	verified and committed
+2026-04-16T22:23:22+02:00	UX20	1	attempt_started	Agent topology TUI widget
+2026-04-16T22:23:22+02:00	UX20	1	spawn_started	codex exec started
+2026-04-16T22:42:01+02:00	UX20	1	spawn_succeeded	codex exec completed
+2026-04-16T22:42:01+02:00	UX20	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-16T22:42:47+02:00	UX20	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-16T22:43:07+02:00	UX20	1	verify_succeeded	all verification commands passed
+2026-04-16T22:43:07+02:00	UX20	1	commit_succeeded	87176fae
+2026-04-16T22:43:10+02:00	UX20	1	attempt_succeeded	verified and committed
+2026-04-16T22:43:10+02:00	UX21	1	attempt_started	Sidecar /logs endpoint + aggregator proxy
+2026-04-16T22:43:10+02:00	UX21	1	spawn_started	codex exec started
+2026-04-16T22:54:38+02:00	UX21	1	spawn_succeeded	codex exec completed
+2026-04-16T22:54:38+02:00	UX21	1	verify_running	cargo check -p roko-agent-server -p roko-serve
+2026-04-16T22:55:15+02:00	UX21	1	verify_running	cargo clippy -p roko-agent-server -p roko-serve --no-deps -- -D warnings
+2026-04-16T22:55:28+02:00	UX21	1	verify_succeeded	all verification commands passed
+2026-04-16T22:55:28+02:00	UX21	1	commit_succeeded	afe28444
+2026-04-16T22:55:30+02:00	UX21	1	attempt_succeeded	verified and committed
+2026-04-16T22:55:31+02:00	UX22	1	attempt_started	GET /api/c-factor/trend endpoint + trend widget
+2026-04-16T22:55:31+02:00	UX22	1	spawn_started	codex exec started
+2026-04-16T23:14:04+02:00	UX22	1	spawn_succeeded	codex exec completed
+2026-04-16T23:14:04+02:00	UX22	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-16T23:14:50+02:00	UX22	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-16T23:15:10+02:00	UX22	1	verify_succeeded	all verification commands passed
+2026-04-16T23:15:10+02:00	UX22	1	commit_succeeded	79f6b1b0
+2026-04-16T23:15:13+02:00	UX22	1	attempt_succeeded	verified and committed
+2026-04-16T23:15:13+02:00	UX23	1	attempt_started	Gate pipeline: wire remaining 4 rungs in run_gate_rung
+2026-04-16T23:15:13+02:00	UX23	1	spawn_started	codex exec started
+2026-04-16T23:28:00+02:00	UX23	1	spawn_succeeded	codex exec completed
+2026-04-16T23:28:00+02:00	UX23	1	verify_running	cargo check -p roko-cli -p roko-gate
+2026-04-16T23:28:49+02:00	UX23	1	verify_running	cargo test -p roko-gate --lib --no-run
+2026-04-16T23:29:18+02:00	UX23	1	verify_running	cargo clippy -p roko-cli -p roko-gate --no-deps -- -D warnings
+2026-04-16T23:29:38+02:00	UX23	1	verify_succeeded	all verification commands passed
+2026-04-16T23:29:38+02:00	UX23	1	commit_succeeded	c3b15a9d
+2026-04-16T23:29:39+02:00	UX23	1	attempt_succeeded	verified and committed
+2026-04-16T23:29:40+02:00	UX24	1	attempt_started	Playbook store query seam (dispatch / prompt builder)
+2026-04-16T23:29:40+02:00	UX24	1	spawn_started	codex exec started
+2026-04-16T23:45:01+02:00	UX24	1	spawn_succeeded	codex exec completed
+2026-04-16T23:45:01+02:00	UX24	1	verify_running	cargo check -p roko-cli -p roko-learn -p roko-compose
+2026-04-16T23:45:47+02:00	UX24	1	verify_running	cargo test -p roko-learn --lib --no-run -- playbook
+2026-04-16T23:46:24+02:00	UX24	1	verify_running	cargo clippy -p roko-cli -p roko-learn -p roko-compose --no-deps -- -D warnings
+2026-04-16T23:46:33+02:00	UX24	1	verify_failed	cargo clippy -p roko-cli -p roko-learn -p roko-compose --no-deps -- -D warnings
+2026-04-16T23:46:33+02:00	UX24	1	attempt_failed	verification failed
+2026-04-16T23:46:34+02:00	UX24	2	attempt_started	Playbook store query seam (dispatch / prompt builder)
+2026-04-16T23:46:36+02:00	UX24	2	spawn_started	codex exec started
+2026-04-17T00:00:28+02:00	UX24	2	spawn_succeeded	codex exec completed
+2026-04-17T00:00:28+02:00	UX24	2	verify_running	cargo check -p roko-cli -p roko-learn -p roko-compose
+2026-04-17T00:01:16+02:00	UX24	2	verify_running	cargo test -p roko-learn --lib --no-run -- playbook
+2026-04-17T00:01:54+02:00	UX24	2	verify_running	cargo clippy -p roko-cli -p roko-learn -p roko-compose --no-deps -- -D warnings
+2026-04-17T00:02:03+02:00	UX24	2	verify_failed	cargo clippy -p roko-cli -p roko-learn -p roko-compose --no-deps -- -D warnings
+2026-04-17T00:02:03+02:00	UX24	2	attempt_failed	verification failed
+2026-04-17T00:02:03+02:00	UX25	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T00:02:03+02:00	UX25	1	attempt_started	HDC fingerprint per-episode
+2026-04-17T00:02:03+02:00	UX25	1	spawn_started	codex exec started
+2026-04-17T00:17:17+02:00	UX25	1	spawn_succeeded	codex exec completed
+2026-04-17T00:17:17+02:00	UX25	1	verify_running	cargo check -p roko-learn -p roko-primitives
+2026-04-17T00:17:43+02:00	UX25	1	verify_running	cargo test -p roko-learn --lib --no-run -- episode_logger
+2026-04-17T00:18:20+02:00	UX25	1	verify_running	cargo clippy -p roko-learn -p roko-primitives --no-deps -- -D warnings
+2026-04-17T00:18:29+02:00	UX25	1	verify_failed	cargo clippy -p roko-learn -p roko-primitives --no-deps -- -D warnings
+2026-04-17T00:18:29+02:00	UX25	1	attempt_failed	verification failed
+2026-04-17T00:18:29+02:00	UX25	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T00:18:29+02:00	UX25	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T00:18:30+02:00	UX25	2	spawn_started	codex exec started
+2026-04-17T00:24:20+02:00	UX25	2	spawn_succeeded	codex exec completed
+2026-04-17T00:24:20+02:00	UX25	2	verify_running	cargo check -p roko-learn -p roko-primitives
+2026-04-17T00:24:45+02:00	UX25	2	verify_running	cargo test -p roko-learn --lib --no-run -- episode_logger
+2026-04-17T00:25:22+02:00	UX25	2	verify_running	cargo clippy -p roko-learn -p roko-primitives --no-deps -- -D warnings
+2026-04-17T00:25:32+02:00	UX25	2	verify_failed	cargo clippy -p roko-learn -p roko-primitives --no-deps -- -D warnings
+2026-04-17T00:25:32+02:00	UX25	2	attempt_failed	verification failed
+2026-04-17T00:25:32+02:00	UX26	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T00:25:32+02:00	UX26	1	attempt_started	Safety contract enforcement wiring
+2026-04-17T00:25:32+02:00	UX26	1	spawn_started	codex exec started
+2026-04-17T00:38:45+02:00	UX26	1	spawn_succeeded	codex exec completed
+2026-04-17T00:38:45+02:00	UX26	1	verify_running	cargo check -p roko-agent
+2026-04-17T00:39:08+02:00	UX26	1	verify_running	cargo test -p roko-agent --lib --no-run -- safety
+2026-04-17T00:39:57+02:00	UX26	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T00:40:04+02:00	UX26	1	verify_failed	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T00:40:04+02:00	UX26	1	attempt_failed	verification failed
+2026-04-17T00:40:04+02:00	UX26	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T00:40:04+02:00	UX26	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T00:40:04+02:00	UX26	2	spawn_started	codex exec started
+2026-04-17T00:48:02+02:00	UX26	2	spawn_succeeded	codex exec completed
+2026-04-17T00:48:02+02:00	UX26	2	verify_running	cargo check -p roko-agent
+2026-04-17T00:48:24+02:00	UX26	2	verify_running	cargo test -p roko-agent --lib --no-run -- safety
+2026-04-17T00:49:12+02:00	UX26	2	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T00:49:19+02:00	UX26	2	verify_succeeded	all verification commands passed
+2026-04-17T00:49:19+02:00	UX26	2	commit_succeeded	920eb885
+2026-04-17T00:49:22+02:00	UX26	2	attempt_succeeded	verified and committed
+2026-04-17T00:49:22+02:00	UX27	1	attempt_started	Role-based tool whitelist enforcement
+2026-04-17T00:49:22+02:00	UX27	1	spawn_started	codex exec started
+2026-04-17T01:02:52+02:00	UX27	1	spawn_succeeded	codex exec completed
+2026-04-17T01:02:52+02:00	UX27	1	verify_running	cargo check -p roko-agent
+2026-04-17T01:03:15+02:00	UX27	1	verify_running	cargo test -p roko-agent --lib --no-run -- safety
+2026-04-17T01:04:03+02:00	UX27	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T01:04:09+02:00	UX27	1	verify_succeeded	all verification commands passed
+2026-04-17T01:04:09+02:00	UX27	1	commit_succeeded	646e6f45
+2026-04-17T01:04:11+02:00	UX27	1	attempt_succeeded	verified and committed
+2026-04-17T01:04:11+02:00	UX28	1	attempt_started	Enrichment pipeline Enriching-phase wiring
+2026-04-17T01:04:11+02:00	UX28	1	spawn_started	codex exec started
+2026-04-17T01:19:02+02:00	UX28	1	spawn_succeeded	codex exec completed
+2026-04-17T01:19:02+02:00	UX28	1	verify_running	cargo check -p roko-compose -p roko-cli
+2026-04-17T01:19:51+02:00	UX28	1	verify_running	cargo test -p roko-compose --lib --no-run -- enrichment
+2026-04-17T01:20:35+02:00	UX28	1	verify_running	cargo clippy -p roko-compose -p roko-cli --no-deps -- -D warnings
+2026-04-17T01:20:45+02:00	UX28	1	verify_failed	cargo clippy -p roko-compose -p roko-cli --no-deps -- -D warnings
+2026-04-17T01:20:45+02:00	UX28	1	attempt_failed	verification failed
+2026-04-17T01:20:45+02:00	UX28	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T01:20:45+02:00	UX28	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T01:20:45+02:00	UX28	2	spawn_started	codex exec started
+2026-04-17T01:26:45+02:00	UX28	2	spawn_succeeded	codex exec completed
+2026-04-17T01:26:45+02:00	UX28	2	verify_running	cargo check -p roko-compose -p roko-cli
+2026-04-17T01:27:34+02:00	UX28	2	verify_running	cargo test -p roko-compose --lib --no-run -- enrichment
+2026-04-17T01:28:17+02:00	UX28	2	verify_running	cargo clippy -p roko-compose -p roko-cli --no-deps -- -D warnings
+2026-04-17T01:28:37+02:00	UX28	2	verify_succeeded	all verification commands passed
+2026-04-17T01:28:37+02:00	UX28	2	commit_succeeded	b210c806
+2026-04-17T01:28:43+02:00	UX28	2	attempt_succeeded	verified and committed
+2026-04-17T01:28:43+02:00	UX29	1	attempt_started	Phase-2 build-surface reality check + MCP audit
+2026-04-17T01:28:43+02:00	UX29	1	spawn_started	codex exec started
+2026-04-17T01:46:19+02:00	UX29	1	spawn_succeeded	codex exec completed
+2026-04-17T01:46:19+02:00	UX29	1	verify_running	cargo check
+2026-04-17T01:47:08+02:00	UX29	1	verify_running	cargo check --workspace
+2026-04-17T01:48:04+02:00	UX29	1	verify_running	cargo clippy --workspace --no-deps -- -D warnings
+2026-04-17T01:48:09+02:00	UX29	1	verify_failed	cargo clippy --workspace --no-deps -- -D warnings
+2026-04-17T01:48:09+02:00	UX29	1	attempt_failed	verification failed
+2026-04-17T01:48:09+02:00	UX29	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T01:48:09+02:00	UX29	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T01:48:09+02:00	UX29	2	spawn_started	codex exec started
+2026-04-17T02:08:04+02:00	UX29	2	spawn_succeeded	codex exec completed
+2026-04-17T02:08:04+02:00	UX29	2	verify_running	cargo check
+2026-04-17T02:08:51+02:00	UX29	2	verify_running	cargo check --workspace
+2026-04-17T02:09:45+02:00	UX29	2	verify_running	cargo clippy --workspace --no-deps -- -D warnings
+2026-04-17T02:10:08+02:00	UX29	2	verify_running	test -s tmp/ux-followup-runner/mcp-audit.md
+2026-04-17T02:10:09+02:00	UX29	2	verify_succeeded	all verification commands passed
+2026-04-17T02:10:09+02:00	UX29	2	commit_succeeded	f874a25e
+2026-04-17T02:10:12+02:00	UX29	2	attempt_succeeded	verified and committed
+2026-04-17T02:10:12+02:00	UX30	1	attempt_started	Codex backend conformance test harness
+2026-04-17T02:10:12+02:00	UX30	1	spawn_started	codex exec started
+2026-04-17T02:21:43+02:00	UX30	1	spawn_succeeded	codex exec completed
+2026-04-17T02:21:43+02:00	UX30	1	verify_running	cargo check -p roko-agent
+2026-04-17T02:22:04+02:00	UX30	1	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-17T02:22:50+02:00	UX30	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T02:22:56+02:00	UX30	1	verify_succeeded	all verification commands passed
+2026-04-17T02:22:56+02:00	UX30	1	commit_succeeded	77677847
+2026-04-17T02:22:58+02:00	UX30	1	attempt_succeeded	verified and committed
+2026-04-17T02:22:58+02:00	UX31	1	attempt_started	Cursor backend streaming path wiring
+2026-04-17T02:22:58+02:00	UX31	1	spawn_started	codex exec started
+2026-04-17T02:31:33+02:00	UX31	1	spawn_succeeded	codex exec completed
+2026-04-17T02:31:33+02:00	UX31	1	verify_running	cargo check -p roko-agent
+2026-04-17T02:31:55+02:00	UX31	1	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-17T02:32:41+02:00	UX31	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T02:32:48+02:00	UX31	1	verify_succeeded	all verification commands passed
+2026-04-17T02:32:48+02:00	UX31	1	commit_succeeded	782056ad
+2026-04-17T02:32:50+02:00	UX31	1	attempt_succeeded	verified and committed
+2026-04-17T02:32:50+02:00	UX32	1	attempt_started	Backend test parity (happy/stream/tool/error/session)
+2026-04-17T02:32:50+02:00	UX32	1	spawn_started	codex exec started
+2026-04-17T02:50:08+02:00	UX32	1	spawn_succeeded	codex exec completed
+2026-04-17T02:50:08+02:00	UX32	1	verify_running	cargo check -p roko-agent
+2026-04-17T02:50:30+02:00	UX32	1	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-17T02:51:17+02:00	UX32	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T02:51:24+02:00	UX32	1	verify_succeeded	all verification commands passed
+2026-04-17T02:51:24+02:00	UX32	1	commit_succeeded	f91dfcaf
+2026-04-17T02:51:26+02:00	UX32	1	attempt_succeeded	verified and committed
+2026-04-17T02:51:26+02:00	UX33	1	attempt_started	ExecAgent vs ClaudeCliAgent consolidation + backend dir cleanup
+2026-04-17T02:51:27+02:00	UX33	1	spawn_started	codex exec started
+2026-04-17T02:58:32+02:00	UX33	1	spawn_succeeded	codex exec completed
+2026-04-17T02:58:32+02:00	UX33	1	verify_running	cargo check -p roko-agent
+2026-04-17T02:58:54+02:00	UX33	1	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-17T02:59:42+02:00	UX33	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T02:59:49+02:00	UX33	1	verify_succeeded	all verification commands passed
+2026-04-17T02:59:49+02:00	UX33	1	commit_succeeded	02c0725e
+2026-04-17T02:59:50+02:00	UX33	1	attempt_succeeded	verified and committed
+2026-04-17T02:59:51+02:00	UX34	1	attempt_started	Cascade router + model router integration tests
+2026-04-17T02:59:51+02:00	UX34	1	spawn_started	codex exec started
+2026-04-17T03:11:19+02:00	UX34	1	spawn_succeeded	codex exec completed
+2026-04-17T03:11:19+02:00	UX34	1	verify_running	cargo check -p roko-agent
+2026-04-17T03:11:41+02:00	UX34	1	verify_running	cargo test -p roko-agent --lib --no-run
+2026-04-17T03:12:27+02:00	UX34	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-17T03:12:34+02:00	UX34	1	verify_succeeded	all verification commands passed
+2026-04-17T03:12:34+02:00	UX34	1	commit_succeeded	024f16c0
+2026-04-17T03:12:35+02:00	UX34	1	attempt_succeeded	verified and committed
+2026-04-17T03:12:35+02:00	UX35	1	attempt_started	Adaptive gate thresholds load-path audit + wiring
+2026-04-17T03:12:35+02:00	UX35	1	spawn_started	codex exec started
+2026-04-17T03:19:27+02:00	UX35	1	spawn_succeeded	codex exec completed
+2026-04-17T03:19:27+02:00	UX35	1	verify_running	cargo check -p roko-gate -p roko-cli
+2026-04-17T03:20:17+02:00	UX35	1	verify_running	cargo test -p roko-gate --lib --no-run -- adaptive_threshold
+2026-04-17T03:20:46+02:00	UX35	1	verify_running	cargo clippy -p roko-gate -p roko-cli --no-deps -- -D warnings
+2026-04-17T03:21:06+02:00	UX35	1	verify_succeeded	all verification commands passed
+2026-04-17T03:21:06+02:00	UX35	1	commit_succeeded	30b02551
+2026-04-17T03:21:08+02:00	UX35	1	attempt_succeeded	verified and committed
+2026-04-17T03:21:08+02:00	UX36	1	attempt_started	roko.toml unused keys: consume or remove
+2026-04-17T03:21:08+02:00	UX36	1	spawn_started	codex exec started
+2026-04-17T03:43:12+02:00	UX36	1	spawn_succeeded	codex exec completed
+2026-04-17T03:43:12+02:00	UX36	1	verify_running	cargo check -p roko-cli -p roko-core
+2026-04-17T03:44:02+02:00	UX36	1	verify_running	cargo test -p roko-cli --lib --no-run -- agent_config
+2026-04-17T03:45:49+02:00	UX36	1	verify_running	cargo clippy -p roko-cli -p roko-core --no-deps -- -D warnings
+2026-04-17T03:46:09+02:00	UX36	1	verify_succeeded	all verification commands passed
+2026-04-17T03:46:09+02:00	UX36	1	commit_succeeded	6642ad7f
+2026-04-17T03:46:13+02:00	UX36	1	attempt_succeeded	verified and committed
+2026-04-17T03:46:13+02:00	UX38	1	attempt_started	Top-10 unwrap() cleanup
+2026-04-17T03:46:13+02:00	UX38	1	spawn_started	codex exec started
+2026-04-17T03:52:07+02:00	UX38	1	spawn_succeeded	codex exec completed
+2026-04-17T03:52:07+02:00	UX38	1	verify_running	cargo check -p roko-compose -p roko-serve -p roko-gate -p roko-runtime
+2026-04-17T03:52:44+02:00	UX38	1	verify_running	cargo clippy -p roko-compose -p roko-serve -p roko-gate -p roko-runtime --no-deps -- -D warnings
+2026-04-17T03:52:58+02:00	UX38	1	verify_succeeded	all verification commands passed
+2026-04-17T03:52:58+02:00	UX38	1	commit_succeeded	e4299e9d
+2026-04-17T03:53:01+02:00	UX38	1	attempt_succeeded	verified and committed
+2026-04-17T03:53:01+02:00	UX39	1	attempt_started	HTTP route validation + OpenAPI surface
+2026-04-17T03:53:01+02:00	UX39	1	spawn_started	codex exec started
+2026-04-17T04:11:04+02:00	UX39	1	spawn_succeeded	codex exec completed
+2026-04-17T04:11:04+02:00	UX39	1	verify_running	cargo check -p roko-serve
+2026-04-17T04:11:48+02:00	UX39	1	verify_running	cargo test -p roko-serve --lib --no-run
+2026-04-17T04:13:17+02:00	UX39	1	verify_running	cargo clippy -p roko-serve --no-deps -- -D warnings
+2026-04-17T04:13:31+02:00	UX39	1	verify_succeeded	all verification commands passed
+2026-04-17T04:13:31+02:00	UX39	1	commit_succeeded	5526aba6
+2026-04-17T04:13:35+02:00	UX39	1	attempt_succeeded	verified and committed
+2026-04-17T04:13:35+02:00	UX40	1	attempt_started	Episode struct: explicit backend dispatcher field
+2026-04-17T04:13:35+02:00	UX40	1	spawn_started	codex exec started
+2026-04-17T04:41:26+02:00	UX40	1	spawn_succeeded	codex exec completed
+2026-04-17T04:41:26+02:00	UX40	1	verify_running	cargo check -p roko-learn -p roko-agent
+2026-04-17T04:41:51+02:00	UX40	1	verify_running	cargo test -p roko-learn --lib --no-run -- episode_logger
+2026-04-17T04:42:29+02:00	UX40	1	verify_running	cargo clippy -p roko-learn -p roko-agent --no-deps -- -D warnings
+2026-04-17T04:42:39+02:00	UX40	1	verify_succeeded	all verification commands passed
+2026-04-17T04:42:39+02:00	UX40	1	commit_succeeded	8a905535
+2026-04-17T04:42:42+02:00	UX40	1	attempt_succeeded	verified and committed
+2026-04-17T04:42:42+02:00	UX41	1	attempt_started	cargo llvm-cov coverage scaffold
+2026-04-17T04:42:42+02:00	UX41	1	spawn_started	codex exec started
+2026-04-17T04:56:52+02:00	UX41	1	spawn_succeeded	codex exec completed
+2026-04-17T04:56:52+02:00	UX41	1	verify_running	test -f .github/workflows/coverage.yml
+2026-04-17T04:56:52+02:00	UX41	1	verify_running	grep -q "cargo llvm-cov" .github/workflows/coverage.yml
+2026-04-17T04:56:52+02:00	UX41	1	verify_running	test -x tools/coverage.sh
+2026-04-17T04:56:52+02:00	UX41	1	verify_running	grep -q "cargo llvm-cov" tools/coverage.sh
+2026-04-17T04:56:52+02:00	UX41	1	verify_succeeded	all verification commands passed
+2026-04-17T04:56:53+02:00	UX41	1	commit_succeeded	82cda6fe
+2026-04-17T04:56:54+02:00	UX41	1	attempt_succeeded	verified and committed
+2026-04-17T04:56:54+02:00	UX42	1	attempt_started	clippy missing_* doc sweep + timeout-flake audit
+2026-04-17T04:56:54+02:00	UX42	1	spawn_started	codex exec started
+2026-04-17T05:17:44+02:00	UX42	1	spawn_succeeded	codex exec completed
+2026-04-17T05:17:44+02:00	UX42	1	verify_running	cargo clippy --workspace --no-deps -- -D warnings -D clippy::missing_errors_doc -D clippy::missing_panics_doc
+2026-04-17T05:18:59+02:00	UX42	1	verify_failed	cargo clippy --workspace --no-deps -- -D warnings -D clippy::missing_errors_doc -D clippy::missing_panics_doc
+2026-04-17T05:18:59+02:00	UX42	1	attempt_failed	verification failed
+2026-04-17T05:19:00+02:00	UX42	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T05:19:00+02:00	UX42	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T05:19:00+02:00	UX42	2	spawn_started	codex exec started
+2026-04-17T05:33:47+02:00	UX42	2	spawn_succeeded	codex exec completed
+2026-04-17T05:33:47+02:00	UX42	2	verify_running	cargo clippy --workspace --no-deps -- -D warnings -D clippy::missing_errors_doc -D clippy::missing_panics_doc
+2026-04-17T05:35:08+02:00	UX42	2	verify_running	cargo test --workspace --no-run
+2026-04-17T05:38:43+02:00	UX42	2	verify_succeeded	all verification commands passed
+2026-04-17T05:38:43+02:00	UX42	2	commit_succeeded	bc5bd7ac
+2026-04-17T05:38:59+02:00	UX42	2	attempt_succeeded	verified and committed
+2026-04-17T05:38:59+02:00	UX43	1	attempt_started	MORI-PARITY-CHECKLIST mechanical regeneration tool
+2026-04-17T05:38:59+02:00	UX43	1	spawn_started	codex exec started
+2026-04-17T05:50:25+02:00	UX43	1	spawn_succeeded	codex exec completed
+2026-04-17T05:50:25+02:00	UX43	1	verify_running	test -x tools/mori-parity-check/mori-parity-check.sh || test -x tmp/ux-followup-runner/tools/mori-parity.sh
+2026-04-17T05:50:25+02:00	UX43	1	verify_failed	test -x tools/mori-parity-check/mori-parity-check.sh || test -x tmp/ux-followup-runner/tools/mori-parity.sh
+2026-04-17T05:50:25+02:00	UX43	1	attempt_failed	verification failed
+2026-04-17T05:50:25+02:00	UX43	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T05:50:25+02:00	UX43	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T05:50:25+02:00	UX43	2	spawn_started	codex exec started
+2026-04-17T05:54:09+02:00	UX43	2	spawn_succeeded	codex exec completed
+2026-04-17T05:54:09+02:00	UX43	2	verify_running	test -x tools/mori-parity-check/mori-parity-check.sh || test -x tmp/ux-followup-runner/tools/mori-parity.sh
+2026-04-17T05:54:09+02:00	UX43	2	verify_succeeded	all verification commands passed
+2026-04-17T05:54:09+02:00	UX43	2	commit_succeeded	cebf84a4
+2026-04-17T05:54:09+02:00	UX43	2	attempt_succeeded	verified and committed
+2026-04-17T05:54:09+02:00	UX44	1	attempt_started	Smoke tests for CLAUDE.md 'What to work on' items 1-9
+2026-04-17T05:54:10+02:00	UX44	1	spawn_started	codex exec started
+2026-04-17T06:16:20+02:00	UX44	1	spawn_succeeded	codex exec completed
+2026-04-17T06:16:20+02:00	UX44	1	verify_running	cargo check -p roko-cli
+2026-04-17T06:17:11+02:00	UX44	1	verify_running	cargo test -p roko-cli --test smoke --no-run || cargo test -p roko-cli --test smoke_claude_md --no-run
+2026-04-17T06:18:58+02:00	UX44	1	verify_succeeded	all verification commands passed
+2026-04-17T06:18:59+02:00	UX44	1	commit_succeeded	3d182a6d
+2026-04-17T06:19:03+02:00	UX44	1	attempt_succeeded	verified and committed
+2026-04-17T06:19:03+02:00	UX45	1	attempt_started	Terminology sweep + stale-snapshot sidecar
+2026-04-17T06:19:03+02:00	UX45	1	spawn_started	codex exec started
+2026-04-17T06:25:09+02:00	UX45	1	spawn_succeeded	codex exec completed
+2026-04-17T06:25:09+02:00	UX45	1	verify_running	bash -c 'hits=$(grep -rn "grimoire\\|styx\\|clade\\|mortal\\|death\\|reincarnation" CLAUDE.md README.md tmp/implementation-plans tmp/tui-parity --include="*.md" || true); test -z "$hits"'
+2026-04-17T06:25:09+02:00	UX45	1	verify_running	test -s tmp/ux-followup-runner/bardo-backup-stale-snapshot.md
+2026-04-17T06:25:09+02:00	UX45	1	verify_running	grep -q "Historical snapshot" tmp/ux-followup-runner/bardo-backup-stale-snapshot.md
+2026-04-17T06:25:10+02:00	UX45	1	verify_succeeded	all verification commands passed
+2026-04-17T06:25:10+02:00	UX45	1	commit_noop	no staged changes after verify
+2026-04-17T06:25:10+02:00	UX45	1	attempt_succeeded	verified with no new changes
+2026-04-17T06:25:10+02:00	UX46	1	attempt_started	tmp/implementation-plans status refresh + MORI paths audit
+2026-04-17T06:25:10+02:00	UX46	1	spawn_started	codex exec started
+2026-04-17T06:37:15+02:00	UX46	1	spawn_succeeded	codex exec completed
+2026-04-17T06:37:15+02:00	UX46	1	verify_running	test -s tmp/MORI-PARITY-CHECKLIST-CURRENT.md
+2026-04-17T06:37:15+02:00	UX46	1	verify_running	grep -q "Path mapping" tmp/MORI-PARITY-CHECKLIST-CURRENT.md
+2026-04-17T06:37:15+02:00	UX46	1	verify_running	grep -q "Last refreshed" tmp/implementation-plans/00-INDEX.md
+2026-04-17T06:37:15+02:00	UX46	1	verify_succeeded	all verification commands passed
+2026-04-17T06:37:16+02:00	UX46	1	commit_succeeded	a88c76dc
+2026-04-17T06:37:16+02:00	UX46	1	attempt_succeeded	verified and committed
+2026-04-17T06:37:16+02:00	UX47	1	attempt_started	tui-parity runner hardening + CI dry-run + log retention
+2026-04-17T06:37:16+02:00	UX47	1	spawn_started	codex exec started
+2026-04-17T06:47:56+02:00	UX47	1	spawn_succeeded	codex exec completed
+2026-04-17T06:47:56+02:00	UX47	1	verify_running	bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9 >/dev/null
+2026-04-17T06:47:56+02:00	UX47	1	verify_failed	bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9 >/dev/null
+2026-04-17T06:47:56+02:00	UX47	1	attempt_failed	verification failed
+2026-04-17T06:47:56+02:00	UX47	1	attempt_backed_up	saved failed verify state for retry
+2026-04-17T06:47:56+02:00	UX47	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-17T06:47:56+02:00	UX47	2	spawn_started	codex exec started
+2026-04-17T06:52:23+02:00	UX47	2	spawn_succeeded	codex exec completed
+2026-04-17T06:52:23+02:00	UX47	2	verify_running	bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9 >/dev/null
+2026-04-17T06:52:23+02:00	UX47	2	verify_failed	bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9 >/dev/null
+2026-04-17T06:52:23+02:00	UX47	2	attempt_failed	verification failed
+2026-04-17T07:50:19+02:00	UX24	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-17T07:50:19+02:00	UX24	1	attempt_started	Playbook store query seam (dispatch / prompt builder)
+2026-04-17T07:50:21+02:00	UX24	1	spawn_started	codex exec started
+2026-04-17T08:04:12+02:00	UX24	1	spawn_succeeded	codex exec completed
+2026-04-17T08:04:12+02:00	UX24	1	verify_running	cargo check -p roko-cli -p roko-learn -p roko-compose
+2026-04-17T08:05:07+02:00	UX24	1	verify_running	cargo test -p roko-learn --lib --no-run -- playbook
+2026-04-17T08:05:48+02:00	UX24	1	verify_running	cargo clippy -p roko-cli -p roko-learn -p roko-compose --no-deps -- -D warnings
+2026-04-17T08:06:10+02:00	UX24	1	verify_succeeded	all verification commands passed
+2026-04-17T08:06:10+02:00	UX24	1	commit_succeeded	511cdb45
+2026-04-17T08:06:15+02:00	UX24	1	attempt_succeeded	verified and committed
+2026-04-17T08:06:15+02:00	UX25	1	attempt_started	HDC fingerprint per-episode
+2026-04-17T08:06:16+02:00	UX25	1	spawn_started	codex exec started
+2026-04-17T08:21:42+02:00	UX25	1	spawn_succeeded	codex exec completed
+2026-04-17T08:21:42+02:00	UX25	1	verify_running	cargo check -p roko-learn -p roko-primitives
+2026-04-17T08:22:10+02:00	UX25	1	verify_running	cargo test -p roko-learn --lib --no-run -- episode_logger
+2026-04-17T08:22:52+02:00	UX25	1	verify_running	cargo clippy -p roko-learn -p roko-primitives --no-deps -- -D warnings
+2026-04-17T08:23:01+02:00	UX25	1	verify_succeeded	all verification commands passed
+2026-04-17T08:23:01+02:00	UX25	1	commit_succeeded	404b4a32
+2026-04-17T08:23:07+02:00	UX25	1	attempt_succeeded	verified and committed
+2026-04-17T08:23:07+02:00	UX37	1	attempt_started	SystemPromptBuilder 6-layer snapshot tests
+2026-04-17T08:23:07+02:00	UX37	1	spawn_started	codex exec started
+2026-04-17T08:32:53+02:00	UX37	1	spawn_succeeded	codex exec completed
+2026-04-17T08:32:53+02:00	UX37	1	verify_running	cargo check -p roko-compose
+2026-04-17T08:33:24+02:00	UX37	1	verify_running	cargo test -p roko-compose --lib --no-run -- system_prompt_builder
+2026-04-17T08:34:17+02:00	UX37	1	verify_running	cargo clippy -p roko-compose --no-deps -- -D warnings
+2026-04-17T08:34:27+02:00	UX37	1	verify_succeeded	all verification commands passed
+2026-04-17T08:34:28+02:00	UX37	1	commit_succeeded	18b95664
+2026-04-17T08:34:30+02:00	UX37	1	attempt_succeeded	verified and committed
+2026-04-17T08:34:30+02:00	UX47	1	attempt_started	tui-parity runner hardening + CI dry-run + log retention
+2026-04-17T08:34:30+02:00	UX47	1	spawn_started	codex exec started
+2026-04-17T08:40:31+02:00	UX47	1	spawn_succeeded	codex exec completed
+2026-04-17T08:40:31+02:00	UX47	1	verify_running	bash tmp/tui-parity/run-tui-parity.sh --dry-run --only T9 >/dev/null
+2026-04-17T08:40:32+02:00	UX47	1	verify_running	grep -q "TUI_PARITY_MAX_BATCHES" tmp/tui-parity/lib/common.sh
+2026-04-17T08:40:32+02:00	UX47	1	verify_running	grep -q "TUI_PARITY_MAX_RETRIES" tmp/tui-parity/lib/common.sh
+2026-04-17T08:40:32+02:00	UX47	1	verify_succeeded	all verification commands passed
+2026-04-17T08:40:32+02:00	UX47	1	commit_succeeded	fc2f1909
+2026-04-17T08:40:32+02:00	UX47	1	attempt_succeeded	verified and committed
+2026-04-17T08:58:13+02:00	UX15	1	attempt_started	Verdicts substrate reader + per-gate trend widget
+2026-04-17T08:58:13+02:00	UX15	1	spawn_started	codex exec started
+2026-04-17T09:19:50+02:00	UX15	1	spawn_succeeded	codex exec completed
+2026-04-17T09:19:50+02:00	UX15	1	verify_running	cargo check -p roko-cli -p roko-serve
+2026-04-17T09:20:52+02:00	UX15	1	verify_running	cargo clippy -p roko-cli -p roko-serve --no-deps -- -D warnings
+2026-04-17T09:21:14+02:00	UX15	1	verify_succeeded	all verification commands passed
+2026-04-17T09:21:14+02:00	UX15	1	commit_succeeded	7e2aff86
+2026-04-17T09:21:18+02:00	UX15	1	attempt_succeeded	verified and committed

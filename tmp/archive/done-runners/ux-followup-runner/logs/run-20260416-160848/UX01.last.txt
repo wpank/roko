@@ -1,0 +1,12 @@
+Implemented the gate-failure → plan-revision loop across [`crates/roko-runtime/src/event_bus.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-runtime/src/event_bus.rs), [`crates/roko-cli/src/orchestrate.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs), [`crates/roko-cli/src/prd.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/prd.rs), and the config schema in [`crates/roko-core/src/config/schema.rs`](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/config/schema.rs). `RokoEvent::PlanRevision` now exists, gate-failure exhaustion emits it, replan episodes are appended to `.roko/episodes.jsonl`, and the generator prompt can be augmented with failure context. The replan seam is `PlanRunner::handle_runtime_event -> replan_plan(...)` inside `orchestrate.rs`.
+
+The dedupe key is `"{plan_id}:{task_id}:{failure_hash}"`, where `failure_hash` is `ContentHash` over JSON containing `reason`, `failing_verdicts`, and `log_tail`. The default cap is `replan_max_per_plan = 2`, with `replan_gate_attempts = 3` and `replan_on_gate_failure = true`. The termination proof is `gate_failure_plan_revision_dedupes_and_caps_replans`, which asserts: first failure regenerates, identical failure is deduped, second distinct failure regenerates, third distinct failure hits the cap, `.roko/episodes.jsonl` contains exactly two `kind="replan"` entries, and `.roko/learn/replans.json` records `"plan-1": 2`.
+
+Verification passed:
+- `cargo check -p roko-cli -p roko-orchestrator -p roko-runtime -p roko-learn`
+- `cargo test -p roko-orchestrator --lib --no-run`
+- `cargo clippy -p roko-cli -p roko-orchestrator --no-deps -- -D warnings`
+- `cargo test -p roko-cli gate_failure_plan_revision_dedupes_and_caps_replans -- --nocapture`
+- `cargo test -p roko-core learning_section_parses -- --nocapture`
+
+I also had to clear pre-existing `roko-orchestrator` clippy blockers so the required clippy command would pass on the current tree.

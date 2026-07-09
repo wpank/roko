@@ -1,0 +1,8 @@
+Added resume-time snapshot reconciliation before executor restore. The new helper in [snapshot_reconcile.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/snapshot_reconcile.rs:1) compares snapshot plan IDs against the discovered plan set, preserves additive plans, and raises a typed error with snapshot path, plans root, missing IDs, and discovered IDs. The `plan run --resume-plan` path in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/main.rs:3190) now does `upgrade -> discover -> reconcile -> restore`, and [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/lib.rs:51) exports the new module for integration tests.
+
+Added the three requested tests in [snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/tests/snapshot.rs:101): match, missing, and superset. Manual CLI check also confirmed a stale snapshot now fails immediately with the intended operator-facing message, e.g. `resume snapshot references plans [foo] ... Rename or prune the snapshot before resuming.` I did not add `--allow-snapshot-drift`; that escape hatch is still deferred per batch scope.
+
+Verified:
+- `cargo test -p roko-cli --test snapshot`
+- `cargo check -p roko-cli`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`

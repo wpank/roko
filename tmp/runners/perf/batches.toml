@@ -1,0 +1,391 @@
+# =============================================================================
+# perf runner — batches.toml
+# 21 batches translating tmp/solutions/perf/implementation/*.md into runnable
+# codex prompts. See README.md for the wave schedule and dependency DAG.
+# =============================================================================
+
+# =============================================================================
+# Phase 0 — Low-hanging fruit (5 batches, all parallel, no deps)
+# =============================================================================
+
+[[batch]]
+id = "PERF_01"
+title = "Shared config cache (B02): load roko.toml once per run"
+group = "P0"
+deps = []
+scope = [
+  "crates/roko-cli/src/config.rs",
+  "crates/roko-cli/src/run.rs",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = [
+  "crates/roko-core/src/config/mod.rs",
+  "crates/roko-core/src/config/provider.rs",
+  "tmp/solutions/perf/implementation/01-shared-config-cache.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_02"
+title = "LearningRuntime single-open (B03): thread runtime through to episode log"
+group = "P0"
+deps = []
+scope = ["crates/roko-cli/src/run.rs"]
+also_read = [
+  "crates/roko-learn/src/runtime_feedback.rs",
+  "crates/roko-cli/src/learning_helpers.rs",
+  "tmp/solutions/perf/implementation/02-learning-runtime-single-open.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_03"
+title = "Contract cache audit (B05): regression test + doc comment"
+group = "P0"
+deps = []
+scope = ["crates/roko-agent/src/safety/contract.rs"]
+also_read = [
+  "crates/roko-agent/src/safety/mod.rs",
+  "tmp/solutions/perf/implementation/03-contract-cache-audit.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_04"
+title = "Buffered JSONL event logger (B11+B13): remove per-event flush"
+group = "P0"
+deps = []
+scope = [
+  "crates/roko-runtime/src/jsonl_logger.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/event_bus.rs",
+  "crates/roko-core/src/runtime_event.rs",
+  "crates/roko-fs/src/file_substrate.rs",
+  "tmp/solutions/perf/implementation/04-buffered-jsonl-logger.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_05"
+title = "Adopt FileSubstrate::put_batch everywhere (B10): audit + convert remaining puts"
+group = "P0"
+deps = []
+scope = [
+  "crates/roko-cli/src/run.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-fs/src/file_substrate.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/effect_driver.rs",
+  "tmp/solutions/perf/implementation/05-batch-substrate-writes.md",
+]
+verify = "quick"
+
+# =============================================================================
+# Phase 1 — Prompt assembly cache (1 batch)
+# =============================================================================
+
+[[batch]]
+id = "PERF_06"
+title = "PromptAssemblyService convention cache (B12+B14): mtime-keyed LRU"
+group = "P1"
+deps = []
+scope = [
+  "crates/roko-compose/src/prompt_assembly_service.rs",
+  "crates/roko-compose/Cargo.toml",
+]
+also_read = [
+  "crates/roko-compose/src/conventions.rs",
+  "crates/roko-compose/src/lib.rs",
+  "crates/roko-runtime/src/effect_driver.rs",
+  "tmp/solutions/perf/implementation/06-prompt-assembly-cache.md",
+]
+verify = "quick"
+
+# =============================================================================
+# Phase 2 — Routing + warm pool (5 batches; warm pool split into 3 deps chain)
+# =============================================================================
+
+[[batch]]
+id = "PERF_07"
+title = "Routing decision cache (B06): efficiency signals memo + decision LRU"
+group = "P2"
+deps = []
+scope = [
+  "crates/roko-learn/src/cascade/mod.rs",
+  "crates/roko-learn/src/cascade/routing_cache.rs",
+  "crates/roko-learn/Cargo.toml",
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = [
+  "crates/roko-learn/src/efficiency.rs",
+  "crates/roko-learn/src/cascade_router.rs",
+  "tmp/solutions/perf/implementation/07-routing-cache.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_08"
+title = "Parallel per-dispatch enrichment (B07): tokio::join! independent IO; pipeline stays sequential"
+group = "P2"
+deps = []
+scope = [
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-compose/src/enrichment/pipeline.rs",
+]
+also_read = [
+  "crates/roko-compose/src/enrichment/step.rs",
+  "crates/roko-compose/src/enrichment/inputs.rs",
+  "tmp/solutions/perf/implementation/08-parallel-enrichment.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_09"
+title = "WarmDispatchPool module (B15 part 1): struct, factory, acquire/release, metrics"
+group = "P2"
+deps = []
+scope = [
+  "crates/roko-runtime/src/warm_dispatch_pool.rs",
+  "crates/roko-runtime/src/lib.rs",
+  "crates/roko-runtime/Cargo.toml",
+]
+also_read = [
+  "crates/roko-agent/src/multi_pool.rs",
+  "crates/roko-agent/src/session.rs",
+  "crates/roko-core/src/foundation.rs",
+  "tmp/solutions/perf/WARM-POOL-DESIGN.md",
+  "tmp/solutions/perf/implementation/09-warm-dispatch-pool.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_10"
+title = "Wire warm pool into EffectDriver + run.rs (B15 part 2)"
+group = "P2"
+deps = ["PERF_09"]
+scope = [
+  "crates/roko-runtime/src/effect_driver.rs",
+  "crates/roko-cli/src/run.rs",
+  "crates/roko-agent/src/provider/mod.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/warm_dispatch_pool.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+  "crates/roko-agent/src/model_call_service.rs",
+  "tmp/solutions/perf/implementation/09-warm-dispatch-pool.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_11"
+title = "Warm pool config schema + serve startup + metrics route (B15 part 3)"
+group = "P2"
+deps = ["PERF_10"]
+scope = [
+  "crates/roko-core/src/config/schema.rs",
+  "crates/roko-core/src/config/mod.rs",
+  "crates/roko-serve/src/lib.rs",
+  "crates/roko-serve/src/routes/mod.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/warm_dispatch_pool.rs",
+  "crates/roko-cli/src/run.rs",
+  "tmp/solutions/perf/implementation/09-warm-dispatch-pool.md",
+]
+verify = "quick"
+
+# =============================================================================
+# Phase 3 — Gate pipeline (4 batches, all parallel)
+# =============================================================================
+
+[[batch]]
+id = "PERF_12"
+title = "Express gate mode + auto-detect (B08-a)"
+group = "P3"
+deps = []
+scope = [
+  "crates/roko-runtime/src/pipeline_state.rs",
+  "crates/roko-core/src/foundation.rs",
+  "crates/roko-gate/src/gate_service.rs",
+  "crates/roko-cli/src/main.rs",
+  "crates/roko-cli/src/run.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+]
+also_read = [
+  "crates/roko-gate/src/adaptive_threshold.rs",
+  "tmp/solutions/perf/implementation/10-express-gate-mode.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_13"
+title = "Source-hash gate skip (B08-b): cache compile/test verdicts by source SHA"
+group = "P3"
+deps = []
+scope = [
+  "crates/roko-gate/src/source_hash.rs",
+  "crates/roko-gate/src/gate_service.rs",
+  "crates/roko-gate/src/lib.rs",
+  "crates/roko-gate/Cargo.toml",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = [
+  "crates/roko-gate/src/compile.rs",
+  "crates/roko-gate/src/test_gate.rs",
+  "crates/roko-fs/src/atomic.rs",
+  "tmp/solutions/perf/implementation/11-source-hash-gate-skip.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_14"
+title = "Parallel gate rungs (B08-c): compile + fmt concurrent"
+group = "P3"
+deps = []
+scope = ["crates/roko-gate/src/gate_service.rs"]
+also_read = [
+  "crates/roko-gate/src/compile.rs",
+  "crates/roko-gate/src/format_check_gate.rs",
+  "crates/roko-gate/src/clippy_gate.rs",
+  "crates/roko-runtime/src/event_bus.rs",
+  "tmp/solutions/perf/implementation/12-parallel-gate-rungs.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_15"
+title = "Git diff cache for gate phase (B09): one diff per phase, shared by all consumers"
+group = "P3"
+deps = []
+scope = [
+  "crates/roko-cli/src/git_diff_snapshot.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+  "crates/roko-cli/src/lib.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/effect_driver.rs",
+  "crates/roko-gate/src/gate_service.rs",
+  "tmp/solutions/perf/implementation/13-git-diff-cache.md",
+]
+verify = "quick"
+
+# =============================================================================
+# Phase 4 — Advanced (3 batches; PERF_16 deps PERF_11)
+# =============================================================================
+
+[[batch]]
+id = "PERF_16"
+title = "Speculative reviewer pre-warm (deps PERF_11)"
+group = "P4"
+deps = ["PERF_11"]
+scope = [
+  "crates/roko-runtime/src/warm_dispatch_pool.rs",
+  "crates/roko-runtime/src/effect_driver.rs",
+  "crates/roko-runtime/src/workflow_engine.rs",
+]
+also_read = [
+  "crates/roko-runtime/src/pipeline_state.rs",
+  "tmp/solutions/perf/implementation/14-speculative-execution.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_17"
+title = "Plan executor parallel dispatch (Feature A of plan 15)"
+group = "P4"
+deps = []
+scope = [
+  "crates/roko-cli/src/dispatch/parallel.rs",
+  "crates/roko-cli/src/dispatch/mod.rs",
+  "crates/roko-cli/src/orchestrate.rs",
+]
+also_read = [
+  "crates/roko-agent/src/model_call_service.rs",
+  "crates/roko-agent/src/provider/mod.rs",
+  "crates/roko-cli/src/plan.rs",
+  "tmp/solutions/perf/implementation/15-batch-inference.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_18"
+title = "PGO release build pipeline"
+group = "P4"
+deps = []
+scope = [
+  "scripts/pgo-train.sh",
+  "scripts/pgo-build.sh",
+  "fixtures/pgo-workdir/roko.toml",
+  "fixtures/pgo-workdir/plans/test/plan.md",
+  "crates/roko-cli/benches/cli_overhead.rs",
+  "crates/roko-cli/Cargo.toml",
+  ".github/workflows/release.yml",
+]
+also_read = [
+  "Cargo.toml",
+  "Dockerfile",
+  "tmp/solutions/perf/implementation/16-pgo-build.md",
+]
+verify = "quick"
+
+# =============================================================================
+# External — Eval (3 batches; PERF_21 deps PERF_20)
+# =============================================================================
+
+[[batch]]
+id = "PERF_19"
+title = "HAL agent wrapper + nightly CI"
+group = "EX"
+deps = []
+scope = [
+  "hal/roko_agent/main.py",
+  "hal/roko_agent/requirements.txt",
+  "hal/roko_agent/tests/test_main.py",
+  "hal/README.md",
+  ".github/workflows/hal-bench.yml",
+  "crates/roko-cli/src/output_format.rs",
+  "crates/roko-cli/src/main.rs",
+]
+also_read = [
+  "tmp/solutions/perf/HAL-BENCHMARK-INTEGRATION.md",
+  "tmp/solutions/perf/HAL-AND-AGENT-BENCHMARKS.md",
+  "tmp/solutions/perf/implementation/17-hal-integration.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_20"
+title = "Bench K-trial trials + cost wiring (plan 18 §1-3)"
+group = "EX"
+deps = []
+scope = [
+  "crates/roko-cli/src/bench.rs",
+  "crates/roko-serve/src/bench.rs",
+]
+also_read = [
+  "crates/roko-learn/src/costs_db.rs",
+  "crates/roko-learn/src/runtime_feedback.rs",
+  "tmp/solutions/perf/implementation/18-bench-suite-extension.md",
+]
+verify = "quick"
+
+[[batch]]
+id = "PERF_21"
+title = "Bench compare subcommand + stable result layout (plan 18 §4-5)"
+group = "EX"
+deps = ["PERF_20"]
+scope = [
+  "crates/roko-cli/src/commands/bench_compare.rs",
+  "crates/roko-cli/src/commands/mod.rs",
+  "crates/roko-cli/src/main.rs",
+  "crates/roko-cli/src/bench.rs",
+]
+also_read = [
+  "crates/roko-fs/src/atomic.rs",
+  "tmp/solutions/perf/implementation/18-bench-suite-extension.md",
+]
+verify = "quick"

@@ -1,0 +1,9 @@
+Implemented the theme cleanup around a single canonical type in [theme.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/theme.rs). [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/dashboard.rs) now re-exports that `Theme`, [widgets/rosedust.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/widgets/rosedust.rs) is only a compatibility shim (`type MoriTheme = Theme`), and the former `MoriTheme::...` call sites were switched over to the canonical `Theme::...` helpers. Color values are unchanged.
+
+The dead-widget audit found no safe deletions in this worktree: the prompt’s candidate files are not present, and every current widget module has an active caller. Atmosphere was already effectively consolidated before this batch: ownership is only in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/state.rs), and [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/app.rs) already ticks `self.tui_state.atmosphere`. I also removed one adjacent dead helper in [dashboard_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/views/dashboard_view.rs) so clippy would pass.
+
+Verification passed:
+- `cargo check -p roko-cli`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`
+
+One batch target was not achievable from repo reality: `git diff --stat` is about `-355 LOC` on tracked files, and roughly `-5 LOC` including the new untracked `theme.rs`, not `>= 1500` net deletion, because there were no deletable widget files left in this branch.

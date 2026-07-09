@@ -1,0 +1,458 @@
+diff --git a/crates/roko-cli/src/tui/app.rs b/crates/roko-cli/src/tui/app.rs
+index 5d168781..163382b6 100644
+--- a/crates/roko-cli/src/tui/app.rs
++++ b/crates/roko-cli/src/tui/app.rs
+@@ -666,6 +666,15 @@ impl App {
+ 
+         // Responsive outer margin on large terminals
+         let content_area = super::layout::responsive_outer_margin(full_area);
++        let show_input_bar = self.tui_state.is_text_input();
++        let outer_layout = Layout::default()
++            .direction(Direction::Vertical)
++            .constraints([
++                Constraint::Min(0),
++                Constraint::Length(if show_input_bar { 1 } else { 0 }),
++            ])
++            .split(content_area);
++        let main_area = outer_layout[0];
+ 
+         // Main layout: header (1 line) + wave row (1 line) + content + footer (1 line)
+         let has_waves = !self.tui_state.execution_waves.is_empty();
+@@ -678,7 +687,7 @@ impl App {
+                 Constraint::Min(0),                  // Content area
+                 Constraint::Length(1),               // Status footer
+             ])
+-            .split(content_area);
++            .split(main_area);
+ 
+         // Header: Mori header bar
+         self.render_tab_header(frame, main_layout[0], &theme);
+@@ -712,41 +721,14 @@ impl App {
+         // Footer: status line
+         self.render_status_footer(frame, main_layout[footer_idx], &theme);
+ 
+-        if matches!(
+-            self.tui_state.input_mode,
+-            InputMode::Inject | InputMode::Filter
+-        ) && content_area.height > 0
+-        {
+-            let input_area = Rect::new(
+-                content_area.x,
+-                content_area.bottom().saturating_sub(1),
+-                content_area.width,
+-                1,
+-            );
+-            frame.render_widget(Clear, input_area);
+-
+-            let (label, buf) = match self.tui_state.input_mode {
+-                InputMode::Inject => ("inject> ", self.tui_state.message_input.as_str()),
+-                InputMode::Filter => ("filter> ", self.tui_state.filter_text.as_str()),
+-                _ => unreachable!(),
+-            };
+-            let input = Paragraph::new(Line::from(vec![
+-                Span::styled(label, theme.accent_bold()),
+-                Span::styled(buf, theme.text()),
+-            ]));
+-            frame.render_widget(input, input_area);
+-
+-            let cursor_x = input_area
+-                .x
+-                .saturating_add((label.chars().count() + buf.chars().count()) as u16)
+-                .min(input_area.right().saturating_sub(1));
+-            frame.set_cursor_position((cursor_x, input_area.y));
++        if show_input_bar {
++            self.render_input_bar(frame, outer_layout[1], &theme);
+         }
+ 
+         // Dim overlay before modals
+         if self.active_modal.is_some() {
+             let buf = frame.buffer_mut();
+-            super::postfx::dim_overlay(content_area, buf, 0.45);
++            super::postfx::dim_overlay(main_area, buf, 0.45);
+         }
+ 
+         // Modal rendering
+@@ -766,7 +748,7 @@ impl App {
+             let buf = frame.buffer_mut();
+             super::postfx_pipeline::apply_pipeline(
+                 self.tui_state.active_tab as usize,
+-                content_area,
++                main_area,
+                 buf,
+                 self.tui_state.atmosphere.elapsed,
+                 self.tui_state.atmosphere.frame_count,
+@@ -1204,6 +1186,8 @@ impl App {
+                     self.tui_state.message_input.push(c);
+                 } else if self.tui_state.input_mode == InputMode::Filter {
+                     self.tui_state.filter_text.push(c);
++                    self.tui_state.filter = self.tui_state.filter_text.clone();
++                    self.tui_state.filter_active = !self.tui_state.filter_text.is_empty();
+                 }
+             }
+             TuiAction::InputBackspace => {
+@@ -1213,21 +1197,25 @@ impl App {
+                     self.tui_state.message_input.pop();
+                 } else if self.tui_state.input_mode == InputMode::Filter {
+                     self.tui_state.filter_text.pop();
++                    self.tui_state.filter = self.tui_state.filter_text.clone();
++                    self.tui_state.filter_active = !self.tui_state.filter_text.is_empty();
+                 }
+             }
+             TuiAction::StartFilter => {
+                 self.tui_state.input_mode = InputMode::Filter;
+                 self.tui_state.filter_text.clear();
++                self.tui_state.filter.clear();
++                self.tui_state.filter_active = false;
+             }
+             TuiAction::AcceptFilter => {
+-                self.tui_state.filter = self.tui_state.filter_text.clone();
+-                self.tui_state.input_mode = InputMode::Normal;
+                 self.tui_state.filter = self.tui_state.filter_text.clone();
+                 self.tui_state.filter_active = !self.tui_state.filter_text.is_empty();
++                self.tui_state.input_mode = InputMode::Normal;
+             }
+             TuiAction::CancelFilter => {
+                 self.tui_state.input_mode = InputMode::Normal;
+                 self.tui_state.filter_text.clear();
++                self.tui_state.filter.clear();
+                 self.tui_state.filter_active = false;
+             }
+             TuiAction::RequestConfirm(action) => {
+@@ -1811,16 +1799,16 @@ impl App {
+         let mut merged = Vec::with_capacity(samples.len());
+ 
+         for sample in samples {
+-            let mut metric = if let Some(index) = existing.iter().position(|entry| entry.pid == sample.pid)
+-            {
+-                existing.swap_remove(index)
+-            } else {
+-                super::state::ProcessMetrics {
+-                    pid: sample.pid,
+-                    role: sample.role.clone(),
+-                    ..Default::default()
+-                }
+-            };
++            let mut metric =
++                if let Some(index) = existing.iter().position(|entry| entry.pid == sample.pid) {
++                    existing.swap_remove(index)
++                } else {
++                    super::state::ProcessMetrics {
++                        pid: sample.pid,
++                        role: sample.role.clone(),
++                        ..Default::default()
++                    }
++                };
+ 
+             metric.pid = sample.pid;
+             metric.role = sample.role;
+@@ -1828,8 +1816,16 @@ impl App {
+             metric.mem_bytes = sample.mem_bytes;
+             metric.state = sample.state;
+             metric.uptime_secs = sample.uptime_secs;
+-            push_bounded_history(&mut metric.cpu_history, sample.cpu_pct, PROCESS_HISTORY_LIMIT);
+-            push_bounded_history(&mut metric.mem_history, sample.mem_bytes, PROCESS_HISTORY_LIMIT);
++            push_bounded_history(
++                &mut metric.cpu_history,
++                sample.cpu_pct,
++                PROCESS_HISTORY_LIMIT,
++            );
++            push_bounded_history(
++                &mut metric.mem_history,
++                sample.mem_bytes,
++                PROCESS_HISTORY_LIMIT,
++            );
+             merged.push(metric);
+         }
+ 
+@@ -1960,6 +1956,31 @@ impl App {
+         super::widgets::status_bar::render_status_bar(frame, area, &self.tui_state);
+     }
+ 
++    fn render_input_bar(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
++        if area.width == 0 || area.height == 0 {
++            return;
++        }
++
++        let buffer = match self.tui_state.input_mode {
++            InputMode::Inject => self.tui_state.message_input.as_str(),
++            InputMode::Filter => self.tui_state.filter_text.as_str(),
++            _ => return,
++        };
++
++        let input = Paragraph::new(Line::from(vec![
++            Span::styled(
++                format!("[{}]", self.tui_state.input_mode_label()),
++                theme.accent_bold(),
++            ),
++            Span::styled(" > ", theme.muted()),
++            Span::styled(buffer, theme.text()),
++            Span::styled("│", theme.selection()),
++        ]));
++
++        frame.render_widget(Clear, area);
++        frame.render_widget(input, area);
++    }
++
+     fn expire_notifications(&mut self) {
+         self.notifications
+             .retain(|notification| notification.created.elapsed() < Duration::from_secs(5));
+@@ -2481,9 +2502,22 @@ fn snapshot_has_content(snapshot: &roko_core::DashboardSnapshot) -> bool {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use ratatui::Terminal;
++    use ratatui::backend::TestBackend;
+     use roko_core::config::RokoConfig;
+     use tempfile::tempdir;
+ 
++    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
++        let buffer = terminal.backend().buffer();
++        let width = buffer.area.width as usize;
++        buffer
++            .content
++            .chunks(width)
++            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
++            .collect::<Vec<_>>()
++            .join("\n")
++    }
++
+     #[test]
+     fn app_starts_on_requested_page() {
+         let dir = tempdir().unwrap();
+@@ -2849,6 +2883,71 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn filter_actions_keep_live_filter_synced() {
++        let dir = tempdir().unwrap();
++        let mut app = App::new(dir.path());
++
++        app.dispatch_action(TuiAction::StartFilter);
++        assert_eq!(app.tui_state.input_mode, InputMode::Filter);
++        assert!(app.tui_state.filter_text.is_empty());
++        assert!(app.tui_state.filter.is_empty());
++        assert!(!app.tui_state.filter_active);
++
++        app.dispatch_action(TuiAction::InputChar('e'));
++        app.dispatch_action(TuiAction::InputChar('r'));
++        assert_eq!(app.tui_state.filter_text, "er");
++        assert_eq!(app.tui_state.filter, "er");
++        assert!(app.tui_state.filter_active);
++
++        app.dispatch_action(TuiAction::InputBackspace);
++        assert_eq!(app.tui_state.filter_text, "e");
++        assert_eq!(app.tui_state.filter, "e");
++        assert!(app.tui_state.filter_active);
++
++        app.dispatch_action(TuiAction::AcceptFilter);
++        assert_eq!(app.tui_state.input_mode, InputMode::Normal);
++        assert_eq!(app.tui_state.filter, "e");
++        assert!(app.tui_state.filter_active);
++
++        app.dispatch_action(TuiAction::StartFilter);
++        app.dispatch_action(TuiAction::InputChar('x'));
++        app.dispatch_action(TuiAction::CancelFilter);
++        assert_eq!(app.tui_state.input_mode, InputMode::Normal);
++        assert!(app.tui_state.filter_text.is_empty());
++        assert!(app.tui_state.filter.is_empty());
++        assert!(!app.tui_state.filter_active);
++    }
++
++    #[test]
++    fn inject_mode_renders_bottom_input_bar_with_cursor() {
++        let dir = tempdir().unwrap();
++        let mut app = App::new(dir.path());
++        app.tui_state.input_mode = InputMode::Inject;
++        app.tui_state.message_input = "ping".to_string();
++
++        let backend = TestBackend::new(80, 12);
++        let mut terminal = Terminal::new(backend).unwrap();
++        terminal.draw(|frame| app.draw(frame)).unwrap();
++
++        let rendered = rendered_text(&terminal);
++        assert!(rendered.contains("[INJECT] > ping│"));
++    }
++
++    #[test]
++    fn normal_mode_does_not_render_input_bar() {
++        let dir = tempdir().unwrap();
++        let app = App::new(dir.path());
++
++        let backend = TestBackend::new(80, 12);
++        let mut terminal = Terminal::new(backend).unwrap();
++        terminal.draw(|frame| app.draw(frame)).unwrap();
++
++        let rendered = rendered_text(&terminal);
++        assert!(!rendered.contains("[INJECT] > "));
++        assert!(!rendered.contains("[FILTER] > "));
++    }
++
+     #[test]
+     fn config_save_reloads_screen_postfx_immediately() {
+         let dir = tempdir().unwrap();
+@@ -2888,8 +2987,8 @@ mod tests {
+ 
+     #[test]
+     fn v_cycles_effects_presets_and_persists_without_touching_screen_postfx() {
+-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+         use super::super::effects_config::EffectsPreset;
++        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+ 
+         let dir = tempdir().unwrap();
+         std::fs::write(
+diff --git a/crates/roko-cli/src/tui/input.rs b/crates/roko-cli/src/tui/input.rs
+index 0d1ce0f1..3c6477af 100644
+--- a/crates/roko-cli/src/tui/input.rs
++++ b/crates/roko-cli/src/tui/input.rs
+@@ -324,9 +324,18 @@ pub enum TuiAction {
+     WavePrev,
+ 
+     // -- mouse events --
+-    MouseClick { x: u16, y: u16 },
+-    MouseScrollUp { x: u16, y: u16 },
+-    MouseScrollDown { x: u16, y: u16 },
++    MouseClick {
++        x: u16,
++        y: u16,
++    },
++    MouseScrollUp {
++        x: u16,
++        y: u16,
++    },
++    MouseScrollDown {
++        x: u16,
++        y: u16,
++    },
+ 
+     // -- refresh --
+     Refresh,
+@@ -900,6 +909,18 @@ mod tests {
+         assert_eq!(action, TuiAction::InputChar('x'));
+     }
+ 
++    #[test]
++    fn inject_mode_escape_cancels() {
++        let action = handle_key(
++            key(KeyCode::Esc),
++            InputMode::Inject,
++            Tab::Agents,
++            FocusZone::AgentOutput,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::CancelInject);
++    }
++
+     #[test]
+     fn filter_mode_enter_accepts() {
+         let action = handle_key(
+@@ -912,6 +933,39 @@ mod tests {
+         assert_eq!(action, TuiAction::AcceptFilter);
+     }
+ 
++    #[test]
++    fn filter_mode_escape_cancels() {
++        let action = handle_key(
++            key(KeyCode::Esc),
++            InputMode::Filter,
++            Tab::Logs,
++            FocusZone::PlanTree,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::CancelFilter);
++    }
++
++    #[test]
++    fn text_input_modes_ignore_arrow_keys() {
++        let inject_action = handle_key(
++            key(KeyCode::Left),
++            InputMode::Inject,
++            Tab::Agents,
++            FocusZone::AgentOutput,
++            &modals(),
++        );
++        assert_eq!(inject_action, TuiAction::None);
++
++        let filter_action = handle_key(
++            key(KeyCode::Right),
++            InputMode::Filter,
++            Tab::Logs,
++            FocusZone::PlanTree,
++            &modals(),
++        );
++        assert_eq!(filter_action, TuiAction::None);
++    }
++
+     #[test]
+     fn logs_tab_number_keys_toggle_expected_level() {
+         let action = handle_key(
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 72197a49..946708c1 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -17,9 +17,9 @@ use roko_core::OperatingFrequency;
+ use super::atmosphere::Atmosphere;
+ use super::dashboard::{DashboardData, GateResultSummary, PlanTaskListSnapshot, Theme};
+ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
+-use super::segment::{output_byte_len, render_cached_output, CachedRender};
++use super::segment::{CachedRender, output_byte_len, render_cached_output};
+ use super::tabs::Tab;
+-use crate::plan::{plans_dir, PlanSummary};
++use crate::plan::{PlanSummary, plans_dir};
+ use crate::task_parser::{TaskDef, TasksFile};
+ 
+ // ---------------------------------------------------------------------------
+@@ -570,12 +570,7 @@ pub struct LogEntry {
+ impl LogEntry {
+     /// Construct a display-ready log entry.
+     #[must_use]
+-    pub fn new(
+-        timestamp: String,
+-        level: LogEntryLevel,
+-        source: String,
+-        message: String,
+-    ) -> Self {
++    pub fn new(timestamp: String, level: LogEntryLevel, source: String, message: String) -> Self {
+         Self {
+             timestamp,
+             level,
+@@ -1748,6 +1743,16 @@ impl TuiState {
+         matches!(self.input_mode, InputMode::Inject | InputMode::Filter)
+     }
+ 
++    /// Compact label for the active input mode bar.
++    #[must_use]
++    pub fn input_mode_label(&self) -> &'static str {
++        match self.input_mode {
++            InputMode::Inject => "INJECT",
++            InputMode::Filter => "FILTER",
++            InputMode::Normal | InputMode::Confirm | InputMode::ConfigEdit => "",
++        }
++    }
++
+     /// Reset all scroll positions to zero.
+     pub fn reset_scrolls(&mut self) {
+         self.agent_scroll = None;
+@@ -2837,6 +2842,22 @@ mod tests {
+         assert!(state.log_level_visible(LogFilterLevel::Warn));
+     }
+ 
++    #[test]
++    fn input_mode_label_matches_text_modes() {
++        let mut state = TuiState::default();
++
++        assert_eq!(state.input_mode_label(), "");
++
++        state.input_mode = InputMode::Inject;
++        assert_eq!(state.input_mode_label(), "INJECT");
++
++        state.input_mode = InputMode::Filter;
++        assert_eq!(state.input_mode_label(), "FILTER");
++
++        state.input_mode = InputMode::Confirm;
++        assert_eq!(state.input_mode_label(), "");
++    }
++
+     #[test]
+     fn elapsed_secs_zero_when_not_started() {
+         let state = TuiState::default();

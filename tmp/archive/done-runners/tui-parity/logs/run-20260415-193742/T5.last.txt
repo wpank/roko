@@ -1,0 +1,15 @@
+Implemented T5.
+
+- The parallel pool now renders directly from live `TuiState::agents` in `dashboard_view.rs`/`parallel_pool.rs`, with agent ID, role, model, current task, a status/progress pill, and an inline context gauge from `input_tokens/context_limit`.
+- `state.rs` now derives plan waves from real plan dependency metadata in `tasks.toml` (`depends_on_plan` plus cross-plan `plan:task` refs), rebuilds `execution_waves`, preserves `Wave.expanded` across refreshes, and clamps `selected_wave_idx`. In connected mode, snapshot refreshes preserve prior wave assignments when direct wave data is absent.
+- `input.rs` now maps `Shift+Left`/`Shift+Right` to wave navigation in both Dashboard and Plans tabs, while keeping `[` and `]`.
+- I made one small adjacent change in `widgets/plan_tree.rs` so selecting a wave visibly tints that wave’s plans, not just the currently selected row.
+
+The dashboard bottom ribbon was already wired to `wave_progress`, so no extra ribbon plumbing was needed once the wave state became real.
+
+Verification:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli shift_arrow_keys_navigate_waves --lib`
+- `cargo test -p roko-cli derive_plan_waves_uses_cross_plan_dependencies --lib`
+
+All passed. The output still includes pre-existing warning noise elsewhere in the workspace.

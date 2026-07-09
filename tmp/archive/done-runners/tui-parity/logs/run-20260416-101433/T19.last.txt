@@ -1,0 +1,14 @@
+Added the T19 coverage in [messaging.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/features/messaging.rs), with the minimal server-side seam in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/state.rs) and builder wiring in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/lib.rs). The routes now dispatch through a mockable `DispatchLike` abstraction backed by the real `LlmBackend`, and `MessageContext` now round-trips arbitrary JSON so `context.thread` is preserved.
+
+The five requested tests are in the library test module:
+- `message_with_mock_dispatcher_returns_real_content`
+- `message_without_dispatcher_returns_503`
+- `message_dispatch_error_returns_502`
+- `stream_with_mock_dispatcher_streams_chunks`
+- `message_preserves_context`
+
+I also added `tokio-tungstenite` as a dev-dependency in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/Cargo.toml) and updated `Cargo.lock`.
+
+Verification:
+- `cargo test -p roko-agent-server --lib` passed
+- `cargo clippy -p roko-agent-server --no-deps -- -D warnings` passed

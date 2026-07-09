@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-cli --no-deps -- -D warnings
+
+Recent log tail:
+20 |     pub context_pct: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a variant
+  --> crates/roko-cli/src/tui/widgets/parallel_pool.rs:26:5
+   |
+26 |     Active,
+   |     ^^^^^^
+
+error: missing documentation for a variant
+  --> crates/roko-cli/src/tui/widgets/parallel_pool.rs:27:5
+   |
+27 |     Idle,
+   |     ^^^^
+
+error: missing documentation for a variant
+  --> crates/roko-cli/src/tui/widgets/parallel_pool.rs:28:5
+   |
+28 |     Done,
+   |     ^^^^
+
+error: missing documentation for a variant
+  --> crates/roko-cli/src/tui/widgets/parallel_pool.rs:29:5
+   |
+29 |     Failed,
+   |     ^^^^^^
+
+error: missing documentation for an associated function
+  --> crates/roko-cli/src/serve_runtime.rs:23:5
+   |
+23 |     pub fn new(config: Config, repo_registry: RepoRegistry) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> crates/roko-cli/src/serve_runtime.rs:30:5
+   |
+30 |     pub fn into_arc(self) -> Arc<dyn CliRuntime> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `roko-cli` (lib) due to 1751 previous errors

@@ -1,0 +1,7 @@
+ M crates/roko-cli/src/tui/app.rs
+ M crates/roko-cli/src/tui/dashboard.rs
+ M crates/roko-cli/src/tui/state.rs
+ M crates/roko-cli/src/tui/views/agents_view.rs
+ M crates/roko-cli/src/tui/views/dashboard_view.rs
+ M crates/roko-cli/src/tui/views/logs_view.rs
+ M crates/roko-cli/src/tui/views/plans_view.rs

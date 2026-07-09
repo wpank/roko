@@ -1,0 +1,865 @@
+diff --git a/crates/roko-cli/src/tui/input.rs b/crates/roko-cli/src/tui/input.rs
+index e9bfed04..f12bbef5 100644
+--- a/crates/roko-cli/src/tui/input.rs
++++ b/crates/roko-cli/src/tui/input.rs
+@@ -549,6 +549,12 @@ fn handle_global_key(key: KeyEvent) -> Option<TuiAction> {
+         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+             Some(TuiAction::Refresh)
+         }
++        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
++            Some(TuiAction::WavePrev)
++        }
++        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
++            Some(TuiAction::WaveNext)
++        }
+         // Ctrl-a: approve all pending
+         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+             Some(TuiAction::ApproveAll)
+@@ -1012,6 +1018,27 @@ mod tests {
+         assert_eq!(action, TuiAction::ScrollPageDown);
+     }
+ 
++    #[test]
++    fn shift_arrow_keys_navigate_waves() {
++        let action = handle_key(
++            key_with_mod(KeyCode::Left, KeyModifiers::SHIFT),
++            InputMode::Normal,
++            Tab::Dashboard,
++            FocusZone::PlanTree,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::WavePrev);
++
++        let action = handle_key(
++            key_with_mod(KeyCode::Right, KeyModifiers::SHIFT),
++            InputMode::Normal,
++            Tab::Plans,
++            FocusZone::RightPanel,
++            &modals(),
++        );
++        assert_eq!(action, TuiAction::WaveNext);
++    }
++
+     #[test]
+     fn logs_tab_slash_starts_filter() {
+         let action = handle_key(
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 8c19d8ae..06985346 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -17,7 +17,8 @@ use super::dashboard::{DashboardData, PlanTaskListSnapshot, Theme};
+ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
+ use super::segment::{CachedRender, output_byte_len, render_cached_output};
+ use super::tabs::Tab;
+-use crate::plan::PlanSummary;
++use crate::plan::{PlanSummary, plans_dir};
++use crate::task_parser::TasksFile;
+ 
+ // ---------------------------------------------------------------------------
+ // Supporting types
+@@ -945,6 +946,7 @@ impl TuiState {
+                 }
+             })
+             .collect();
++        apply_workspace_wave_assignments(&mut self.plans);
+ 
+         // Agents
+         self.agents.clear();
+@@ -1074,6 +1076,7 @@ impl TuiState {
+                 wave.expanded = exp;
+             }
+         }
++        clamp_selected_wave_idx(&self.execution_waves, &mut self.selected_wave_idx);
+ 
+         // Sync filter alias
+         self.filter = self.filter_text.clone();
+@@ -1260,6 +1263,7 @@ impl TuiState {
+                 tasks,
+             });
+         }
++        apply_workspace_wave_assignments(&mut self.plans);
+ 
+         let mut agent_ids: Vec<String> = snap.agents.keys().cloned().collect();
+         agent_ids.sort_by(|lhs, rhs| {
+@@ -1337,6 +1341,7 @@ impl TuiState {
+                 wave.expanded = expanded;
+             }
+         }
++        clamp_selected_wave_idx(&self.execution_waves, &mut self.selected_wave_idx);
+ 
+         self.orchestrator_state = if snap.stats.plans_active > 0 {
+             String::from("running")
+@@ -1917,6 +1922,102 @@ fn build_execution_waves(plans: &[PlanEntry]) -> Vec<Wave> {
+         .collect()
+ }
+ 
++fn apply_workspace_wave_assignments(plans: &mut [PlanEntry]) {
++    let Ok(root) = std::env::current_dir() else {
++        return;
++    };
++    let derived = derive_plan_waves(&root, plans);
++    if derived.is_empty() {
++        return;
++    }
++
++    for plan in plans {
++        if let Some(wave) = derived.get(&plan.id).copied() {
++            plan.wave = Some(wave);
++        }
++    }
++}
++
++fn derive_plan_waves(root: &std::path::Path, plans: &[PlanEntry]) -> HashMap<String, usize> {
++    if plans.is_empty() {
++        return HashMap::new();
++    }
++
++    let plan_ids: HashSet<String> = plans.iter().map(|plan| plan.id.clone()).collect();
++    let mut deps_by_plan: HashMap<String, HashSet<String>> = HashMap::new();
++    let mut found_plan_deps = false;
++
++    for plan in plans {
++        let tasks_path = plans_dir(root).join(&plan.id).join("tasks.toml");
++        let Ok(tasks_file) = TasksFile::parse(&tasks_path) else {
++            continue;
++        };
++
++        let deps: HashSet<String> = tasks_file
++            .tasks
++            .iter()
++            .flat_map(|task| task.depends_on_plan.iter())
++            .map(|dep| dep.trim())
++            .filter(|dep| !dep.is_empty())
++            .filter(|dep| plan_ids.contains(*dep))
++            .map(ToOwned::to_owned)
++            .collect();
++
++        found_plan_deps |= !deps.is_empty();
++        if !deps.is_empty() {
++            deps_by_plan.insert(plan.id.clone(), deps);
++        }
++    }
++
++    if !found_plan_deps {
++        return HashMap::new();
++    }
++
++    let mut assigned: HashMap<String, usize> = HashMap::new();
++    let mut remaining: HashSet<String> = plan_ids;
++    let mut wave_idx = 0usize;
++
++    while !remaining.is_empty() {
++        let mut ready: Vec<String> = remaining
++            .iter()
++            .filter(|plan_id| {
++                deps_by_plan
++                    .get(*plan_id)
++                    .into_iter()
++                    .flatten()
++                    .all(|dep| !remaining.contains(dep) || assigned.contains_key(dep))
++            })
++            .cloned()
++            .collect();
++        ready.sort();
++
++        if ready.is_empty() {
++            let mut unresolved: Vec<String> = remaining.drain().collect();
++            unresolved.sort();
++            for plan_id in unresolved {
++                assigned.insert(plan_id, wave_idx);
++            }
++            break;
++        }
++
++        for plan_id in ready {
++            remaining.remove(&plan_id);
++            assigned.insert(plan_id, wave_idx);
++        }
++        wave_idx += 1;
++    }
++
++    assigned
++}
++
++fn clamp_selected_wave_idx(waves: &[Wave], selected_wave_idx: &mut usize) {
++    if waves.is_empty() {
++        *selected_wave_idx = 0;
++    } else if *selected_wave_idx >= waves.len() {
++        *selected_wave_idx = waves.len() - 1;
++    }
++}
++
+ /// Extract output text from an episode's extra fields.
+ fn extract_episode_output(episode: &roko_learn::episode_logger::Episode) -> String {
+     for key in [
+@@ -2912,6 +3013,77 @@ tier = "focused"
+         assert_eq!(state.phase_pipeline[2].status, PhaseStatus::Active);
+     }
+ 
++    #[test]
++    fn derive_plan_waves_uses_cross_plan_dependencies() {
++        let tmpdir = tempdir().expect("tempdir");
++        let plans_root = tmpdir.path().join("plans");
++        fs::create_dir_all(plans_root.join("plan-a")).expect("create plan-a");
++        fs::create_dir_all(plans_root.join("plan-b")).expect("create plan-b");
++        fs::create_dir_all(plans_root.join("plan-c")).expect("create plan-c");
++
++        fs::write(
++            plans_root.join("plan-a").join("tasks.toml"),
++            r#"
++[meta]
++plan = "plan-a"
++
++[[task]]
++id = "T1"
++title = "A"
++depends_on = []
++"#,
++        )
++        .expect("write plan-a tasks");
++        fs::write(
++            plans_root.join("plan-b").join("tasks.toml"),
++            r#"
++[meta]
++plan = "plan-b"
++
++[[task]]
++id = "T1"
++title = "B"
++depends_on = []
++depends_on_plan = ["plan-a"]
++"#,
++        )
++        .expect("write plan-b tasks");
++        fs::write(
++            plans_root.join("plan-c").join("tasks.toml"),
++            r#"
++[meta]
++plan = "plan-c"
++
++[[task]]
++id = "T1"
++title = "C"
++depends_on = []
++depends_on_plan = ["plan-b"]
++"#,
++        )
++        .expect("write plan-c tasks");
++
++        let plans = vec![
++            PlanEntry {
++                id: "plan-a".into(),
++                ..PlanEntry::default()
++            },
++            PlanEntry {
++                id: "plan-b".into(),
++                ..PlanEntry::default()
++            },
++            PlanEntry {
++                id: "plan-c".into(),
++                ..PlanEntry::default()
++            },
++        ];
++
++        let derived = derive_plan_waves(tmpdir.path(), &plans);
++        assert_eq!(derived.get("plan-a"), Some(&0));
++        assert_eq!(derived.get("plan-b"), Some(&1));
++        assert_eq!(derived.get("plan-c"), Some(&2));
++    }
++
+     #[test]
+     fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
+         let mut state = TuiState::default();
+diff --git a/crates/roko-cli/src/tui/views/dashboard_view.rs b/crates/roko-cli/src/tui/views/dashboard_view.rs
+index 5d69a8aa..acf1c132 100644
+--- a/crates/roko-cli/src/tui/views/dashboard_view.rs
++++ b/crates/roko-cli/src/tui/views/dashboard_view.rs
+@@ -22,7 +22,7 @@ use crate::config::Config;
+ use crate::tui::ansi::parse_ansi_line;
+ use crate::tui::dashboard::{DashboardData, Theme};
+ use crate::tui::input::FocusZone;
+-use crate::tui::state::{AgentStatus, TuiState, model_context_limit};
++use crate::tui::state::{AgentStatus, TuiState};
+ use crate::tui::widgets;
+ 
+ // ---------------------------------------------------------------------------
+@@ -201,54 +201,18 @@ fn render_sub_agents(
+     let sections =
+         Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
+ 
+-    // Build pool entries once.
+-    let activity =
+-        crate::tui::dashboard::build_agent_activity_snapshot(&data.agents, &data.efficiency_events);
+-
+-    let pool: Vec<widgets::parallel_pool::ParallelAgentState> = data
++    let pool: Vec<widgets::parallel_pool::ParallelPoolRow> = tui_state
+         .agents
+         .iter()
+-        .map(|agent| {
+-            let row = activity
+-                .as_ref()
+-                .and_then(|s| s.active_agents.iter().find(|r| r.agent_id == agent.id));
+-            let state = match AgentStatus::from(agent.status.as_str()) {
+-                AgentStatus::Active => widgets::parallel_pool::AgentRunState::Active,
+-                AgentStatus::Done => widgets::parallel_pool::AgentRunState::Done,
+-                AgentStatus::Failed => widgets::parallel_pool::AgentRunState::Failed,
+-                AgentStatus::Idle => widgets::parallel_pool::AgentRunState::Idle,
+-            };
+-            let used = row.map_or(0, |r| r.tokens_used);
+-            let total = tui_state
+-                .agents
+-                .iter()
+-                .find(|state_agent| state_agent.id == agent.id)
+-                .map(|state_agent| state_agent.context_limit)
+-                .filter(|limit| *limit > 0)
+-                .or_else(|| row.map(|r| model_context_limit(&r.model)))
+-                .unwrap_or_else(|| model_context_limit(""));
+-            widgets::parallel_pool::ParallelAgentState {
+-                role: agent.label.clone(),
+-                model: row.map_or_else(|| "-".to_string(), |r| r.model.clone()),
+-                task: agent.plan_id.as_deref().unwrap_or("-").to_string(),
+-                tokens_used: used,
+-                tokens_total: total,
+-                state,
+-                context_pct: if total > 0 {
+-                    used as f64 / total as f64
+-                } else {
+-                    0.0
+-                },
+-            }
+-        })
++        .map(widgets::parallel_pool::ParallelPoolRow::from_agent_row)
+         .collect();
+ 
+-    widgets::parallel_pool::render_parallel_pool(
++    widgets::parallel_pool::render_parallel_pool_rows(
+         frame,
+         sections[0],
+         &pool,
+         tui_state
+-            .selected_agent_tab
++            .selected_agent
+             .min(pool.len().saturating_sub(1)),
+         theme,
+     );
+@@ -903,20 +867,16 @@ fn render_bottom_ribbon(
+     tui_state: &TuiState,
+     _theme: &Theme,
+ ) {
+-    // Use the Mori wave_progress + token_sparkline + sys_metrics widgets
+-    let sections = Layout::horizontal([
+-        Constraint::Percentage(40),
+-        Constraint::Percentage(40),
+-        Constraint::Percentage(20),
+-    ])
+-    .split(area);
+-
+-    // Wave progress: use the real widget
++    // Give the wave ribbon the full footer width, then keep the existing
++    // token/system summaries on the remaining lines.
++    let sections = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+     widgets::wave_progress::render_wave_progress(frame, sections[0], tui_state);
+-    // Token sparkline: use the real widget
+-    widgets::token_sparkline::render_token_sparkline(frame, sections[1], data, tui_state);
+-    // Sys metrics: use the real widget
+-    widgets::sys_metrics::render_sys_metrics(frame, sections[2], tui_state);
++
++    let metrics = Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
++        .split(sections[1]);
++
++    widgets::token_sparkline::render_token_sparkline(frame, metrics[0], data, tui_state);
++    widgets::sys_metrics::render_sys_metrics(frame, metrics[1], tui_state);
+ }
+ 
+ // ===========================================================================
+diff --git a/crates/roko-cli/src/tui/widgets/parallel_pool.rs b/crates/roko-cli/src/tui/widgets/parallel_pool.rs
+index 1d1ceda1..d2a18f22 100644
+--- a/crates/roko-cli/src/tui/widgets/parallel_pool.rs
++++ b/crates/roko-cli/src/tui/widgets/parallel_pool.rs
+@@ -1,10 +1,12 @@
+ //! Parallel agent roster table widget.
+ 
+ use ratatui::Frame;
+-use ratatui::layout::{Alignment, Constraint, Rect};
++use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+ use ratatui::style::{Color, Modifier, Style};
+-use ratatui::text::Span;
+-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
++use ratatui::text::{Line, Span};
++use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
++
++use crate::tui::state::AgentRow;
+ 
+ use super::super::dashboard::Theme;
+ 
+@@ -20,6 +22,66 @@ pub(crate) struct ParallelAgentState {
+     pub(crate) context_pct: f64,
+ }
+ 
++/// Live row data for the parallel pool widget.
++///
++/// This is the preferred shape for callers that already have `AgentRow`-style
++/// data in hand.
++#[derive(Debug, Clone)]
++pub(crate) struct ParallelPoolRow {
++    pub(crate) id: String,
++    pub(crate) role: String,
++    pub(crate) model: String,
++    pub(crate) task: String,
++    pub(crate) progress_pct: f64,
++    pub(crate) tokens_used: u64,
++    pub(crate) context_limit: u64,
++    pub(crate) state: AgentRunState,
++}
++
++impl ParallelPoolRow {
++    /// Build a live row from `TuiState::agents`.
++    pub(crate) fn from_agent_row(agent: &AgentRow) -> Self {
++        Self {
++            id: agent.id.clone(),
++            role: agent.role.clone(),
++            model: agent.model.clone(),
++            task: agent.current_task.clone(),
++            progress_pct: if agent.context_limit == 0 {
++                0.0
++            } else {
++                (agent.input_tokens as f64 / agent.context_limit as f64).clamp(0.0, 1.0)
++            },
++            tokens_used: agent.input_tokens,
++            context_limit: agent.context_limit,
++            state: if agent.active {
++                AgentRunState::Active
++            } else {
++                match agent.status {
++                    crate::tui::state::AgentStatus::Done => AgentRunState::Done,
++                    crate::tui::state::AgentStatus::Failed => AgentRunState::Failed,
++                    _ => AgentRunState::Idle,
++                }
++            },
++        }
++    }
++
++    fn context_ratio(&self) -> f64 {
++        if self.context_limit == 0 {
++            0.0
++        } else {
++            (self.tokens_used as f64 / self.context_limit as f64).clamp(0.0, 1.0)
++        }
++    }
++
++    fn context_label(&self) -> String {
++        format!(
++            "{}k/{}k",
++            self.tokens_used / 1_000,
++            self.context_limit / 1_000
++        )
++    }
++}
++
+ /// Running state of an agent.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum AgentRunState {
+@@ -58,6 +120,31 @@ pub(crate) fn render_parallel_pool(
+     agents: &[ParallelAgentState],
+     selected: usize,
+     theme: &Theme,
++) {
++    let rows: Vec<ParallelPoolRow> = agents
++        .iter()
++        .map(|agent| ParallelPoolRow {
++            id: agent.role.clone(),
++            role: agent.role.clone(),
++            model: agent.model.clone(),
++            task: agent.task.clone(),
++            progress_pct: agent.context_pct.clamp(0.0, 1.0),
++            tokens_used: agent.tokens_used,
++            context_limit: agent.tokens_total,
++            state: agent.state,
++        })
++        .collect();
++
++    render_parallel_pool_rows(frame, area, &rows, selected, theme);
++}
++
++/// Render a parallel agent roster from live row data.
++pub(crate) fn render_parallel_pool_rows(
++    frame: &mut Frame<'_>,
++    area: Rect,
++    rows: &[ParallelPoolRow],
++    selected: usize,
++    theme: &Theme,
+ ) {
+     let block = Block::default()
+         .borders(Borders::ALL)
+@@ -70,7 +157,7 @@ pub(crate) fn render_parallel_pool(
+         return;
+     }
+ 
+-    if agents.is_empty() {
++    if rows.is_empty() {
+         let empty = Paragraph::new("no parallel agents")
+             .style(theme.muted())
+             .alignment(Alignment::Center);
+@@ -79,79 +166,198 @@ pub(crate) fn render_parallel_pool(
+     }
+ 
+     // Sort: active first, then by role.
+-    let mut sorted: Vec<(usize, &ParallelAgentState)> = agents.iter().enumerate().collect();
++    let mut sorted: Vec<(usize, &ParallelPoolRow)> = rows.iter().enumerate().collect();
+     sorted.sort_by(|(_, a), (_, b)| {
+         let a_active = a.state == AgentRunState::Active;
+         let b_active = b.state == AgentRunState::Active;
+-        b_active.cmp(&a_active).then_with(|| a.role.cmp(&b.role))
++        b_active
++            .cmp(&a_active)
++            .then_with(|| a.role.cmp(&b.role))
++            .then_with(|| a.id.cmp(&b.id))
+     });
+ 
+-    let rows: Vec<Row<'_>> = sorted
+-        .iter()
+-        .map(|(orig_idx, agent)| {
+-            let is_selected = *orig_idx == selected;
+-            let row_style = if is_selected {
+-                theme.selection()
+-            } else {
+-                Style::default()
+-            };
+-
+-            let state_color = agent.state.color(theme);
+-            let ctx_pct = format!("{:.0}%", agent.context_pct * 100.0);
+-            let tokens = format!("{}/{}", agent.tokens_used, agent.tokens_total);
+-
+-            Row::new(vec![
+-                Cell::from(truncate(&agent.role, 12)),
+-                Cell::from(truncate(&agent.model, 14)),
+-                Cell::from(truncate(&agent.task, 20)),
+-                Cell::from(tokens),
+-                Cell::from(Span::styled(
+-                    agent.state.label().to_string(),
+-                    Style::default()
+-                        .fg(state_color)
+-                        .add_modifier(Modifier::BOLD),
+-                )),
+-                Cell::from(ctx_pct),
+-            ])
+-            .style(row_style)
++    let header_height = 1;
++    if inner.height <= header_height {
++        return;
++    }
++
++    let header_area = Rect {
++        x: inner.x,
++        y: inner.y,
++        width: inner.width,
++        height: header_height,
++    };
++    render_header(frame, header_area, theme);
++
++    let body_area = Rect {
++        x: inner.x,
++        y: inner.y + header_height,
++        width: inner.width,
++        height: inner.height - header_height,
++    };
++
++    let row_height = 1;
++    let visible_rows = (body_area.height / row_height) as usize;
++    for (row_idx, (orig_idx, agent)) in sorted.iter().take(visible_rows).enumerate() {
++        let row_area = Rect {
++            x: body_area.x,
++            y: body_area.y + (row_idx as u16 * row_height),
++            width: body_area.width,
++            height: row_height,
++        };
++        render_row(frame, row_area, agent, *orig_idx == selected, theme);
++    }
++}
++
++fn render_header(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
++    let columns = split_columns(area);
++    let header = Style::default()
++        .fg(Color::Gray)
++        .add_modifier(Modifier::BOLD);
++
++    render_text_cell(frame, columns[0], "agent", header, Alignment::Left);
++    render_text_cell(frame, columns[1], "role", header, Alignment::Left);
++    render_text_cell(frame, columns[2], "model", header, Alignment::Left);
++    render_text_cell(frame, columns[3], "task", header, Alignment::Left);
++    render_text_cell(frame, columns[4], "progress", header, Alignment::Left);
++    render_text_cell(frame, columns[5], "context", theme.accent_bold(), Alignment::Left);
++}
++
++fn render_row(
++    frame: &mut Frame<'_>,
++    area: Rect,
++    agent: &ParallelPoolRow,
++    selected: bool,
++    theme: &Theme,
++) {
++    let columns = split_columns(area);
++    let row_style = if selected { theme.selection() } else { theme.text() };
++    let state_style = Style::default()
++        .fg(agent.state.color(theme))
++        .add_modifier(Modifier::BOLD);
++    let label_style = if selected {
++        row_style.add_modifier(Modifier::BOLD)
++    } else {
++        row_style
++    };
++
++    render_text_cell(
++        frame,
++        columns[0],
++        &truncate(&agent.id, 12),
++        label_style,
++        Alignment::Left,
++    );
++    render_text_cell(
++        frame,
++        columns[1],
++        &truncate(&agent.role, 14),
++        row_style,
++        Alignment::Left,
++    );
++    render_text_cell(
++        frame,
++        columns[2],
++        &truncate(&agent.model, 14),
++        row_style,
++        Alignment::Left,
++    );
++    render_text_cell(
++        frame,
++        columns[3],
++        &truncate(&agent.task, 20),
++        row_style,
++        Alignment::Left,
++    );
++    render_text_cell(
++        frame,
++        columns[4],
++        &format!("{} {:.0}%", agent.state.label(), agent.progress_pct * 100.0),
++        state_style,
++        Alignment::Left,
++    );
++    render_context_gauge(frame, columns[5], agent, selected, theme);
++}
++
++fn render_text_cell(
++    frame: &mut Frame<'_>,
++    area: Rect,
++    text: &str,
++    style: Style,
++    alignment: Alignment,
++) {
++    if area.width == 0 || area.height == 0 {
++        return;
++    }
++
++    let paragraph = Paragraph::new(Line::from(Span::raw(text.to_string())))
++        .style(style)
++        .wrap(Wrap { trim: true })
++        .alignment(alignment);
++    frame.render_widget(paragraph, area);
++}
++
++fn render_context_gauge(
++    frame: &mut Frame<'_>,
++    area: Rect,
++    agent: &ParallelPoolRow,
++    selected: bool,
++    theme: &Theme,
++) {
++    if area.width == 0 || area.height == 0 {
++        return;
++    }
++
++    let ratio = agent.context_ratio();
++    let label = agent.context_label();
++    let mut gauge = Gauge::default()
++        .ratio(ratio)
++        .label(label)
++        .style(if selected {
++            theme.selection()
++        } else {
++            theme.text()
+         })
+-        .collect();
++        .gauge_style(Style::default().fg(theme.accent))
++        .use_unicode(true);
+ 
+-    let table = Table::new(
+-        rows,
+-        [
++    if selected {
++        gauge = gauge.gauge_style(Style::default().fg(theme.selection_foreground));
++    }
++
++    frame.render_widget(gauge, area);
++}
++
++fn split_columns(area: Rect) -> [Rect; 6] {
++    let chunks = Layout::default()
++        .direction(Direction::Horizontal)
++        .constraints([
+             Constraint::Length(12),
+             Constraint::Length(14),
+-            Constraint::Min(16),
++            Constraint::Length(14),
++            Constraint::Min(18),
++            Constraint::Length(10),
+             Constraint::Length(16),
+-            Constraint::Length(8),
+-            Constraint::Length(6),
+-        ],
+-    )
+-    .header(
+-        Row::new(vec![
+-            Cell::from("role"),
+-            Cell::from("model"),
+-            Cell::from("task"),
+-            Cell::from("tokens"),
+-            Cell::from("state"),
+-            Cell::from("ctx"),
+         ])
+-        .style(
+-            Style::default()
+-                .fg(Color::Gray)
+-                .add_modifier(Modifier::BOLD),
+-        ),
+-    )
+-    .column_spacing(1);
+-
+-    frame.render_widget(table, inner);
++        .split(area);
++    [
++        chunks[0],
++        chunks[1],
++        chunks[2],
++        chunks[3],
++        chunks[4],
++        chunks[5],
++    ]
+ }
+ 
+ fn truncate(s: &str, max: usize) -> String {
+-    if s.len() <= max {
++    let chars: Vec<char> = s.chars().collect();
++    if chars.len() <= max {
+         s.to_string()
++    } else if max <= 3 {
++        ".".repeat(max)
+     } else {
+-        format!("{}...", &s[..max.saturating_sub(3)])
++        let head: String = chars.into_iter().take(max - 3).collect();
++        format!("{head}...")
+     }
+ }
+diff --git a/crates/roko-cli/src/tui/widgets/plan_tree.rs b/crates/roko-cli/src/tui/widgets/plan_tree.rs
+index a0f9ba25..6472779c 100644
+--- a/crates/roko-cli/src/tui/widgets/plan_tree.rs
++++ b/crates/roko-cli/src/tui/widgets/plan_tree.rs
+@@ -213,6 +213,7 @@ fn render_wave_tree(
+     filter_lower: Option<&str>,
+ ) {
+     for wave in &state.execution_waves {
++        let wave_selected = wave.index == state.current_wave();
+         let wave_plans: Vec<&PlanEntry> = wave
+             .plans
+             .iter()
+@@ -255,22 +256,32 @@ fn render_wave_tree(
+             "\u{25b8}"
+         }; // ▾ / ▸
+ 
++        let wave_label_style = if wave_selected {
++            Style::default()
++                .fg(MoriTheme::BONE)
++                .bg(MoriTheme::BG_HIGHLIGHT)
++                .add_modifier(Modifier::BOLD)
++        } else {
++            Style::default()
++                .fg(MoriTheme::BONE_DIM)
++                .add_modifier(Modifier::BOLD)
++        };
++        let wave_meta_style = if wave_selected {
++            Style::default()
++                .fg(MoriTheme::ROSE_BRIGHT)
++                .bg(MoriTheme::BG_HIGHLIGHT)
++        } else {
++            Style::default().fg(MoriTheme::FG_DIM)
++        };
++
+         let mut wave_spans = vec![
+             Span::styled(
+                 format!(" {collapse_icon} "),
+-                Style::default().fg(MoriTheme::FG_DIM),
++                wave_meta_style,
+             ),
+             Span::styled(format!("{wave_icon} "), wave_style),
+-            Span::styled(
+-                format!("Wave {} ", wave.index),
+-                Style::default()
+-                    .fg(MoriTheme::BONE_DIM)
+-                    .add_modifier(Modifier::BOLD),
+-            ),
+-            Span::styled(
+-                format!("({}/{}) ", wave.done, wave.total),
+-                Style::default().fg(MoriTheme::FG_DIM),
+-            ),
++            Span::styled(format!("Wave {} ", wave.index), wave_label_style),
++            Span::styled(format!("({}/{}) ", wave.done, wave.total), wave_meta_style),
+         ];
+ 
+         // Wave progress bar (8-char gradient bar)
+@@ -309,7 +320,13 @@ fn render_wave_tree(
+         if avail > used + 1 {
+             wave_spans.push(Span::styled(
+                 format!(" {}", "\u{2500}".repeat(avail - used - 1)),
+-                Style::default().fg(MoriTheme::TEXT_GHOST),
++                if wave_selected {
++                    Style::default()
++                        .fg(MoriTheme::TEXT_GHOST)
++                        .bg(MoriTheme::BG_HIGHLIGHT)
++                } else {
++                    Style::default().fg(MoriTheme::TEXT_GHOST)
++                },
+             ));
+         }
+         lines.push(Line::from(wave_spans));
+@@ -320,7 +337,7 @@ fn render_wave_tree(
+ 
+         // Plans within wave
+         for plan in wave_plans {
+-            render_plan_line(lines, plan, focused, area, true, selected_plan_id);
++            render_plan_line(lines, plan, focused, area, true, selected_plan_id, wave_selected);
+         }
+     }
+ }
+@@ -339,7 +356,7 @@ fn render_flat_plans(
+ ) {
+     for plan in &state.plans {
+         if matches_filter(plan, filter_lower) {
+-            render_plan_line(lines, plan, focused, area, false, selected_plan_id);
++            render_plan_line(lines, plan, focused, area, false, selected_plan_id, false);
+         }
+     }
+ }
+@@ -355,6 +372,7 @@ fn render_plan_line(
+     area: Rect,
+     indented: bool,
+     selected_plan_id: Option<&str>,
++    selected_wave: bool,
+ ) {
+     let is_selected = focused && selected_plan_id == Some(plan.id.as_str());
+ 
+@@ -375,6 +393,8 @@ fn render_plan_line(
+ 
+     let bg = if is_selected {
+         MoriTheme::BG_HIGHLIGHT
++    } else if selected_wave {
++        MoriTheme::BG_SECONDARY
+     } else {
+         MoriTheme::BG
+     };

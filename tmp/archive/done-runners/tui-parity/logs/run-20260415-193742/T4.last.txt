@@ -1,0 +1,11 @@
+Added live process supervision metrics to the dashboard. `TuiState` now carries `process_metrics`, the background `sysinfo` sampler in [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/app.rs) collects per-PID CPU, memory, state, uptime, and bounded history every 2s, and [dashboard_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/views/dashboard_view.rs) now renders a real `P:Procs` table with braille CPU/MEM sparklines plus a graceful `No process data` state when no supervisor is available. [process.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-runtime/src/process.rs) exposes `ProcessSupervisor::active_pids()` for the sampler.
+
+I made one small adjacent wiring change outside the original write scope: `PlanRunner` now holds the supervisor behind `Arc` and the connected approval TUI path passes that handle into `App`, so connected runs get live process data while standalone mode still shows the empty-state message as intended.
+
+Verification passed:
+- `cargo check -p roko-cli -p roko-runtime`
+- `cargo test -p roko-runtime active_pids_reports_spawned_processes`
+- `cargo test -p roko-cli dashboard_subtab_keybindings_include_procs`
+- `cargo test -p roko-cli all_tabs_render_without_panic`
+
+There are still many pre-existing warning-level docs/unused warnings in the workspace, but no new compile failures.

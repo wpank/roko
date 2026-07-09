@@ -1,0 +1,8 @@
+Updated [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/dashboard.rs) and [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/state.rs) so plan snapshots now load real ordered task rows from each `tasks.toml`, carry task runtime metadata, and compute per-plan `elapsed_ms`, `failed_count`, and `wave`. Parse failures are logged and skipped without panicking. In the state bridge, plan rows now use the snapshot’s failure count, elapsed time, wave, and nested tasks instead of the old empty/zero defaults, while keeping T10’s `tasks_done` path intact.
+
+Verification:
+- `cargo check -p roko-cli` passed
+- `cargo test -p roko-cli plan_task_snapshots -- --nocapture` passed
+- `cargo test -p roko-cli from_dashboard_data_populates_plan_tasks_from_tracker_and_episodes -- --nocapture` passed
+
+I did not run the interactive TUI manually, so the visual “expand a plan tree” behavior is verified through the snapshot/state tests rather than a live terminal check.

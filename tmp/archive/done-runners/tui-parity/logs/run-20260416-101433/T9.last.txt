@@ -1,0 +1,8 @@
+Implemented real agent-server message dispatch in [messaging.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/features/messaging.rs), plus dispatcher plumbing in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/state.rs) and [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/lib.rs). `POST /message` now calls the configured backend and returns real `response`, `reasoning`, `usage`, `session`, `finish_reason`, and `context`; `/stream` now forwards real streaming chunks and ends with a terminal `done` payload. Missing dispatcher returns 503, backend failure returns 502, and the echo stub is gone.
+
+One repo-reality inference was necessary: `roko_agent::dispatcher::ToolDispatcher` in this codebase is only a tool-call dispatcher, not a chat dispatcher. I kept the new dispatcher handle and the required 503 gating, but the actual model I/O goes through the agent’s configured `LlmBackend`, which is the real chat execution surface here. I also added tests for 200/503/502 in `messaging.rs`, a test-only `roko-core` dev-dependency in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/Cargo.toml), and small clippy fixes in [tasks.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-agent-server/src/features/tasks.rs).
+
+Verified:
+- `cargo check -p roko-agent-server`
+- `cargo clippy -p roko-agent-server --no-deps -- -D warnings`
+- `cargo test -p roko-agent-server`

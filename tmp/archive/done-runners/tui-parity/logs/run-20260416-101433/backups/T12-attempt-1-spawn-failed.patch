@@ -1,0 +1,44 @@
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 72197a49..b5ba37b0 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -1748,6 +1748,16 @@ impl TuiState {
+         matches!(self.input_mode, InputMode::Inject | InputMode::Filter)
+     }
+ 
++    /// Compact label for the active input mode bar.
++    #[must_use]
++    pub fn input_mode_label(&self) -> &'static str {
++        match self.input_mode {
++            InputMode::Inject => "INJECT",
++            InputMode::Filter => "FILTER",
++            InputMode::Normal | InputMode::Confirm | InputMode::ConfigEdit => "",
++        }
++    }
++
+     /// Reset all scroll positions to zero.
+     pub fn reset_scrolls(&mut self) {
+         self.agent_scroll = None;
+@@ -2837,6 +2847,22 @@ mod tests {
+         assert!(state.log_level_visible(LogFilterLevel::Warn));
+     }
+ 
++    #[test]
++    fn input_mode_label_matches_text_modes() {
++        let mut state = TuiState::default();
++
++        assert_eq!(state.input_mode_label(), "");
++
++        state.input_mode = InputMode::Inject;
++        assert_eq!(state.input_mode_label(), "INJECT");
++
++        state.input_mode = InputMode::Filter;
++        assert_eq!(state.input_mode_label(), "FILTER");
++
++        state.input_mode = InputMode::Confirm;
++        assert_eq!(state.input_mode_label(), "");
++    }
++
+     #[test]
+     fn elapsed_secs_zero_when_not_started() {
+         let state = TuiState::default();

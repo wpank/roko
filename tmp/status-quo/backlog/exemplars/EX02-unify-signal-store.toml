@@ -1,0 +1,155 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXEMPLAR — proves the backlog tasks.toml format (drop-in, `roko plan validate`-clean).
+#
+# One of three reference plans under tmp/status-quo/backlog/exemplars/. Every
+# line:number and verify command was checked against HEAD 5852c93c05.
+#
+# WHAT THIS FIXES (storage split-brain — dashboards show empty gate panels):
+# The runner PERSISTS gate verdicts to `.roko/signals.jsonl` with kind
+# "GateVerdict" (event_loop.rs:1147-1168, via config.layout.signals_path()).
+# The dashboard READS gate verdicts from `.roko/engrams.jsonl` via
+# read_signal_gates (dashboard_snapshot.rs:1276), which only accepts records
+# whose `kind` is "gate_verdict" / "gate:" / "gate_" (is_gate_result_kind,
+# line 2447) and extracts ids from `/tags/*` or `/body/*`. Three mismatches —
+# file path, kind spelling, and field shape — so `GET /api/plans/:id/gates`
+# (plans.rs:437 → snapshot.gates) always returns an empty list.
+#
+# FIX: repoint the writer to the reader's file + schema so writer path == reader
+# path. RokoLayout already exposes engrams_path() (roko-fs/layout.rs:204).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[meta]
+plan = "EX02-unify-signal-store"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# T1: Write gate verdicts where the dashboard reads them
+# ────────────────────────────────────────────────────────────────────
+# In the gate-completion handler (event_loop.rs:1147-1168) the runner opens
+# `config.layout.signals_path()` (.roko/signals.jsonl) and appends a JSON blob
+# with "kind": "GateVerdict" and flat top-level plan_id/task_id/gate_kind fields.
+# The reader (roko-core read_signal_gates) never sees it because it reads
+# engrams.jsonl, filters on kind == "gate_verdict" (or gate:/gate_ prefix), and
+# pulls plan_id/task_id/gate from `/tags/*`.
+#
+# Change the write block to:
+#   1. open `config.layout.engrams_path()` instead of `signals_path()`
+#   2. emit `"kind": "gate_verdict"`
+#   3. nest identifiers under a `tags` object: { plan_id, task_id, gate }
+#      where `gate` = format!("rung-{}", completion.rung)
+# Keep passed/duration_ms/timestamp so the audit content is preserved.
+
+[[task]]
+id = "T1"
+title = "Repoint runner gate-verdict writer to engrams.jsonl with reader-compatible schema"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1147-1168", why = "The writer block: builds a GateVerdict JSON and appends it to config.layout.signals_path(). This is the code to change." },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "2001-2058", why = "read_signal_gates — the reader. Shows required kind, and that plan_id/task_id come from /tags/* (then /body/data/*, /body/*) and gate name from extract_gate_name." },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "2447-2470", why = "is_gate_result_kind accepts only \"gate_verdict\", \"gate:\"*, \"gate_\"*; extract_gate_name reads /tags/gate first" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1255-1288", why = "load_from_workdir wires read_signal_gates(&engrams_path) into snapshot.gates — proving the reader uses engrams.jsonl, not signals.jsonl" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "202-221", why = "RokoLayout::engrams_path() -> .roko/engrams.jsonl vs signals_path() -> .roko/signals.jsonl; both exist on the same layout the writer already holds" },
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "423-460", why = "The reader endpoint GET /api/plans/:id/gates returns snapshot.gates — the panel that stays empty today" },
+]
+symbols = [
+    "RokoLayout::engrams_path — pub fn engrams_path(&self) -> PathBuf (roko-fs/layout.rs:204)",
+    "read_signal_gates — fn(path: &Path) -> Result<Vec<GateVerdict>> (dashboard_snapshot.rs:2001)",
+    "is_gate_result_kind — fn(kind: &str) -> bool (dashboard_snapshot.rs:2447)",
+]
+anti_patterns = [
+    "Do NOT remove the audit fields (passed, duration_ms, timestamp) — keep them, just change path + kind + nesting.",
+    "Do NOT delete the existing `tui.gate_result(...)` publish at event_loop.rs:1016 — that feeds the in-process TUI; this task fixes the durable/cross-process path.",
+    "Do NOT write to BOTH signals.jsonl and engrams.jsonl for the same record — repoint the single writer, don't fan out to a second orphan file.",
+    "Do NOT change read_signal_gates or is_gate_result_kind — make the writer match the reader, not the reverse.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'engrams_path()' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "The gate-verdict writer must target config.layout.engrams_path() (where the dashboard reads)"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"gate_verdict\"' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "The record kind must be \"gate_verdict\" so is_gate_result_kind accepts it"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q '\"kind\": \"GateVerdict\"' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "The old PascalCase \"GateVerdict\" kind (unreadable by the dashboard) must be gone"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"tags\"' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "plan_id/task_id/gate must be nested under a tags object so read_signal_gates can extract them"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after repointing the writer"
+
+# ────────────────────────────────────────────────────────────────────
+# T2: Prove writer path == reader path with a round-trip test
+# ────────────────────────────────────────────────────────────────────
+# Add an integration test that writes a gate-verdict record (in the shape T1
+# now emits) to `RokoLayout::for_project(tmp).engrams_path()`, then calls
+# roko_core::dashboard_snapshot::DashboardSnapshot::load_from_workdir(tmp) and
+# asserts snapshot.gates is non-empty and carries the expected plan_id/passed.
+# This freezes the contract: the file the runner writes IS the file the
+# dashboard materializes gate panels from.
+
+[[task]]
+id = "T2"
+title = "Add round-trip test: engrams gate record -> load_from_workdir -> snapshot.gates"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-cli/tests/gate_verdict_dashboard.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1255-1300", why = "DashboardSnapshot::load_from_workdir signature and how it populates .gates from engrams_path" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "2001-2058", why = "The exact record shape read_signal_gates expects (kind + /tags/plan_id + /tags/task_id + /tags/gate + passed)" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "69-90", why = "RokoLayout constructors (for_project / new) to derive the engrams_path under a tempdir" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "202-206", why = "engrams_path() = <root>/engrams.jsonl — the file the test writes to" },
+]
+symbols = [
+    "DashboardSnapshot::load_from_workdir — pub fn(root: &Path) -> io::Result<DashboardSnapshot> (dashboard_snapshot.rs)",
+    "DashboardSnapshot.gates — pub gates: Vec<GateVerdict> (dashboard_snapshot.rs:767)",
+    "GateVerdict — { plan_id, task_id, gate, passed, ts_millis } (dashboard_snapshot.rs:290)",
+    "RokoLayout::engrams_path — .roko/engrams.jsonl accessor",
+]
+anti_patterns = [
+    "Do NOT test the private read_signal_gates directly — go through the public DashboardSnapshot::load_from_workdir so the test also guards the wiring.",
+    "Do NOT hardcode a home-dir path — use tempfile::tempdir() for an isolated .roko workspace.",
+    "Do NOT assert an empty gates list — the test must prove population (len >= 1 with the written plan_id).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'load_from_workdir' crates/roko-cli/tests/gate_verdict_dashboard.rs"
+fail_msg = "The test must exercise DashboardSnapshot::load_from_workdir"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'engrams' crates/roko-cli/tests/gate_verdict_dashboard.rs && grep -q 'gate_verdict' crates/roko-cli/tests/gate_verdict_dashboard.rs"
+fail_msg = "The test must write a gate_verdict record into engrams.jsonl (the reader's file)"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test gate_verdict_dashboard 2>&1"
+fail_msg = "The writer/reader round-trip test must compile and pass"

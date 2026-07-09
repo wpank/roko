@@ -1,0 +1,167 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXEMPLAR — proves the backlog tasks.toml format (drop-in, `roko plan validate`-clean).
+#
+# This is one of three reference plans under tmp/status-quo/backlog/exemplars/.
+# Every field, line:number, and verify command was checked against the codebase
+# at HEAD 5852c93c05. Copy this shape when authoring real backlog plans.
+#
+# WHAT THIS FIXES (M0 bootstrap — the single highest-value task in the backlog):
+# `roko plan run` defaults to the legacy Graph engine even though the streaming
+# event-loop executor (RunnerV2) is the intended runtime. The enum already marks
+# RunnerV2 as #[default] (main.rs:1301), but the clap arg overrides it with
+# `default_value = "graph"` (main.rs:1361), and `roko resume` hardcodes
+# PlanEngine::Graph (main.rs:2699). Flip both to RunnerV2 and lock it with a test.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[meta]
+plan = "EX01-flip-engine-default"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# T1: Flip the clap default for `roko plan run --engine` to runner-v2
+# ────────────────────────────────────────────────────────────────────
+# main.rs:1361 declares `#[arg(long, default_value = "graph", value_enum)]`.
+# This clap default overrides the enum's own #[default] (RunnerV2, line 1301),
+# so every `roko plan run` invocation silently uses the legacy Graph engine.
+# Change the literal to "runner-v2" and fix the now-wrong after_help hint on
+# line 1351 that still reads "(Graph Engine, default)".
+
+[[task]]
+id = "T1"
+title = "Change plan-run engine clap default from graph to runner-v2"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 6
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1294-1304", why = "PlanEngine enum: RunnerV2 is already #[default]; Graph and RunnerV2 value names are 'graph' and 'runner-v2'" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1348-1362", why = "The `Run` subcommand: after_help block (line 1351 says 'Graph Engine, default') and the `engine` arg with `default_value = \"graph\"` on line 1361" },
+]
+symbols = [
+    "PlanEngine — #[derive(ValueEnum)] enum with #[value(name = \"graph\")] Graph and #[default] #[value(name = \"runner-v2\")] RunnerV2 (main.rs:1295)",
+]
+anti_patterns = [
+    "Do NOT remove `value_enum` or change the PlanEngine enum — only change the clap `default_value` string literal.",
+    "Do NOT touch the resume handler (main.rs:2699) — that is T2's job.",
+    "Do NOT leave the after_help hint stale: line 1351 must no longer claim Graph is the default.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'default_value = \"runner-v2\"' crates/roko-cli/src/main.rs"
+fail_msg = "The engine arg must default to \"runner-v2\""
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'default_value = \"graph\"' crates/roko-cli/src/main.rs"
+fail_msg = "The old default_value = \"graph\" must be removed"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'Graph Engine, default' crates/roko-cli/src/main.rs"
+fail_msg = "The after_help hint must no longer advertise Graph as the default engine"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after flipping the default"
+
+# ────────────────────────────────────────────────────────────────────
+# T2: Stop `roko resume` from hardcoding the legacy Graph engine
+# ────────────────────────────────────────────────────────────────────
+# The resume path (main.rs:2697-2708) builds `PlanCmd::Run { engine:
+# PlanEngine::Graph, .. }`, so resuming a run always drops back to the legacy
+# engine regardless of how the run started. Replace the hardcoded variant with
+# PlanEngine::RunnerV2 (equivalently PlanEngine::default(), which is RunnerV2).
+
+[[task]]
+id = "T2"
+title = "Use RunnerV2 (not hardcoded Graph) in the resume handler"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 4
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "2696-2709", why = "The resume handler builds PlanCmd::Run with `engine: PlanEngine::Graph` on line 2699 — the only `PlanEngine::Graph` usage in the file" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1294-1304", why = "PlanEngine::RunnerV2 is #[default], so PlanEngine::default() == RunnerV2" },
+]
+symbols = [
+    "PlanCmd::Run — struct-variant with an `engine: PlanEngine` field (main.rs:1357)",
+]
+anti_patterns = [
+    "Do NOT change any other field of the PlanCmd::Run built in the resume handler.",
+    "Do NOT introduce a new engine flag on `roko resume` — just default it to RunnerV2.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'engine: PlanEngine::Graph' crates/roko-cli/src/main.rs"
+fail_msg = "The resume handler must no longer hardcode PlanEngine::Graph"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -Eq 'engine: PlanEngine::(RunnerV2|default\\(\\))' crates/roko-cli/src/main.rs"
+fail_msg = "The resume handler must build the run with PlanEngine::RunnerV2 (or PlanEngine::default())"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after fixing the resume engine"
+
+# ────────────────────────────────────────────────────────────────────
+# T3: Regression test locking the default engine to runner-v2
+# ────────────────────────────────────────────────────────────────────
+# Add a unit test in the existing `#[cfg(test)] mod tests` block in main.rs
+# (next to `effort_value_enum_all_variants`, line 3778) that parses
+# `roko plan run plans/` and asserts the resolved engine is PlanEngine::RunnerV2.
+# This freezes the fix so a future clap edit can't silently reintroduce Graph.
+
+[[task]]
+id = "T3"
+title = "Add regression test asserting default plan-run engine is RunnerV2"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "3777-3797", why = "Existing test style: `effort_value_enum_all_variants` uses Cli::try_parse_from; add the new test alongside it in the same mod tests block" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1356-1362", why = "The `Run` variant shape (engine field) the test must destructure after parsing" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1294-1304", why = "PlanEngine::RunnerV2 is the expected value" },
+]
+symbols = [
+    "Cli::try_parse_from — clap parse entry used by sibling tests",
+    "Command::Plan / PlanCmd::Run { engine, .. } — destructure to read the parsed engine",
+]
+anti_patterns = [
+    "Do NOT put the test in a new file — add it to the existing `mod tests` in main.rs.",
+    "Do NOT assert on Graph — the whole point is that the default is now RunnerV2.",
+    "Do NOT call the real orchestrator — parse the CLI only and inspect the engine field.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PlanEngine::RunnerV2' crates/roko-cli/src/main.rs"
+fail_msg = "The regression test must reference PlanEngine::RunnerV2"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --bin roko -- plan_run 2>&1 || cargo test -p roko-cli -- plan_run 2>&1"
+fail_msg = "The new default-engine regression test must compile and pass"

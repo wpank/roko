@@ -1,0 +1,125 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXEMPLAR — proves the backlog tasks.toml format (drop-in, `roko plan validate`-clean).
+#
+# One of three reference plans under tmp/status-quo/backlog/exemplars/. Every
+# line:number and verify command was checked against HEAD 5852c93c05.
+#
+# WHAT THIS FIXES (dead code — an orphan duplicate module):
+# `crates/roko-core/src/state_hub.rs` (533 lines) is NOT declared in any mod
+# tree: there is no `mod state_hub;` anywhere in roko-core, and the *live*
+# StateHub lives in roko-runtime (`crates/roko-runtime/src/state_hub.rs`), which
+# roko-cli re-exports (`pub mod state_hub { pub use roko_runtime::state_hub::*; }`).
+# The roko-core copy is never compiled — only two stale doc-comment intra-links
+# in dashboard_snapshot.rs (lines 5 and 755) still point at `super::state_hub::`.
+# Delete the orphan and repair the dangling doc references.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[meta]
+plan = "EX03-delete-orphan-statehub"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# T1: Delete the orphan module and fix its dangling doc references
+# ────────────────────────────────────────────────────────────────────
+# 1. Remove crates/roko-core/src/state_hub.rs entirely (prefer `git rm`).
+# 2. In crates/roko-core/src/dashboard_snapshot.rs, the module doc (line ~5) and
+#    the DashboardSnapshot doc (line ~755) reference
+#    `[`StateHub`](super::state_hub::StateHub)`. Since roko-core never declared
+#    that module, these intra-doc links already dangle; rewrite them to point at
+#    the real type (`roko_runtime::state_hub::StateHub`) or drop the link and
+#    keep plain prose.
+
+[[task]]
+id = "T1"
+title = "Delete orphan roko-core state_hub.rs and repair dangling doc links"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 8
+files = [
+    "crates/roko-core/src/state_hub.rs",
+    "crates/roko-core/src/dashboard_snapshot.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-8", why = "Module doc-comment references `super::state_hub::StateHub` (line 5) — must be repointed or delinked" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "753-758", why = "DashboardSnapshot doc references `super::state_hub::StateHub` (line 755) — the second dangling link" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "1-38", why = "The REAL, live StateHub (roko-runtime). Confirms the roko-core copy is a duplicate and where doc links should point instead" },
+]
+symbols = [
+    "roko_runtime::state_hub::StateHub — the canonical StateHub (keep this one)",
+    "roko-core/src/state_hub.rs — orphan duplicate, not in any mod tree (delete this one)",
+]
+anti_patterns = [
+    "Do NOT delete roko-runtime/src/state_hub.rs — that is the live module; only the roko-core copy is orphaned.",
+    "Do NOT add `mod state_hub;` to roko-core to 'fix' the links — the module is redundant; remove it.",
+    "Do NOT edit any code outside the two doc-comment references — this is a pure dead-code removal.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! test -f crates/roko-core/src/state_hub.rs"
+fail_msg = "The orphan crates/roko-core/src/state_hub.rs must be deleted"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -rn 'super::state_hub' crates/roko-core/src"
+fail_msg = "No dangling `super::state_hub` doc/code references may remain in roko-core"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-core 2>&1"
+fail_msg = "roko-core must still build after deleting the orphan module"
+
+# ────────────────────────────────────────────────────────────────────
+# T2: Confirm nothing in the workspace depended on the orphan
+# ────────────────────────────────────────────────────────────────────
+# Prove the deletion is safe workspace-wide: no crate imported the roko-core
+# copy (all `state_hub` users go through roko_runtime), and a full build passes.
+# `roko_runtime::state_hub` and `roko_core::dashboard_snapshot` references are
+# expected and fine — only a `roko_core::state_hub` path would be a problem.
+
+[[task]]
+id = "T2"
+title = "Workspace-wide audit that no crate referenced roko_core::state_hub"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 2
+files = ["crates/roko-core/src/lib.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/lib.rs", lines = "34-39", why = "roko-cli re-exports the roko_runtime StateHub (`pub mod state_hub { pub use roko_runtime::state_hub::*; }`) — the canonical path every consumer uses" },
+    { path = "crates/roko-core/src/lib.rs", lines = "1-40", why = "Confirm there is no `mod state_hub;` / `pub use ...state_hub` in roko-core's module tree" },
+]
+symbols = [
+    "roko_core::state_hub — the path that must have ZERO references anywhere (proves the module was orphaned)",
+]
+anti_patterns = [
+    "Do NOT add or restore a state_hub module in roko-core to make a grep pass — the invariant is that nobody used it.",
+    "Do NOT modify code — this task only audits and runs the full build; if the audit fails it means the deletion was NOT safe and T1 needs revisiting.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -rn 'roko_core::state_hub' crates/ --include='*.rs'"
+fail_msg = "No crate may reference roko_core::state_hub (confirms the deleted module was truly orphaned)"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -rn 'mod state_hub' crates/roko-core/src"
+fail_msg = "roko-core must not declare a state_hub module"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build --workspace 2>&1"
+fail_msg = "The full workspace must build after removing the orphan module"

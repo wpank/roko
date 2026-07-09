@@ -1,0 +1,15 @@
+Implemented DP20’s highest-dependency cross-cutting surface.
+
+Changes:
+- Added the universal oracle API and prediction lifecycle types in [crates/roko-core/src/prediction.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/prediction.rs:14):
+  `Oracle`, `OracleQuery`, `OracleDomain`, domain payloads, `Prediction`, `PredictedValue`, `PredictionInterval`, `PredictionAccuracy`, `PredictionOutcome`, `PredictionStore`, `ResidualCorrector`, `CalibrationTracker`, and EMA-backed calibration stats.
+- Re-exported the new public surface from [crates/roko-core/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/lib.rs:120).
+- Added DP20 doc-compatible HDC aliases in [crates/roko-primitives/src/hdc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-primitives/src/hdc.rs:121): `xor()` and `hamming_similarity()`.
+- Made small workspace-gate cleanup fixes in `apps/agent-relay` and `apps/mirage-rs` for pre-existing clippy failures surfaced by the required `--workspace -D warnings` command.
+
+Verification passed:
+- `cargo check --workspace`
+- `cargo clippy --workspace --no-deps -- -D warnings`
+- `cargo fmt --all`
+
+Remaining DP20 depth not implemented in this batch: concrete chain/coding/research oracle implementations, generalized witness surfaces, and the deeper Phase 2 research modules for spectral manifolds, signal metabolism, causal discovery, somatic markers, TDA, adversarial robustness, and sheaf/tropical geometry. The shared API those pieces depend on is now present and exported.

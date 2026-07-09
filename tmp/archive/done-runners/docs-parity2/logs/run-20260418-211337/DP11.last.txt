@@ -1,0 +1,14 @@
+Implemented a runtime-facing DP11 slice in [`crates/roko-agent/src/safety/mod.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/safety/mod.rs:1>) plus three new safety modules: [`authz.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/safety/authz.rs:1>), [`provenance.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/safety/provenance.rs:1>), and [`risk.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/safety/risk.rs:1>). The main additions are:
+
+- Unified authorization surface: `AuthzDecision`, `AuthorizationEvidence`, and `SafetyLayer::{authorize_call, authorize_exec_command}`.
+- Provenance-facing records: `Taint`, `AttestationLevel`, and `Custody`.
+- Adaptive-risk primitives: `OperationalConfidenceTracker`, `SafetyBudget`, `SafetyBudgetTracker`, scoring helpers, and live budget enforcement wired into both `check_pre_execution()` and `check_exec_command()`.
+- New tests covering authorization denial, budget exhaustion, and the new risk helpers.
+
+This keeps the work on the current runtime path rather than trying to stub every deferred temporal / witness-DAG / cognitive-kernel surface from the docs in one batch.
+
+Verification passed:
+
+- `cargo check -p roko-agent`
+- `cargo test -p roko-agent --lib --no-run`
+- `cargo clippy -p roko-agent --no-deps -- -D warnings`

@@ -1,0 +1,12 @@
+Implemented the highest-leverage DP12 parity fixes in the allowed crates.
+
+In `roko-cli`, `roko config wizard` now resolves to the existing config-init flow, and `roko chat` now handles both `/api/agents/{id}/message` contracts: background-run replies with `run_id` and direct sidecar replies with inline `response`/`reasoning`. The CLI changes are in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/main.rs) and [chat.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-cli/src/chat.rs).
+
+In `roko-serve`, I hardened the documented live-state path: `StateHub` now bootstraps from the workspace and receives bridged `ServerEvent -> DashboardEvent` updates, the missing projection surface now exists at `/api/projections/{name}` and `/api/projections/{name}/stream`, SSE now has an `/api/sse` alias plus `Last-Event-ID` replay, and the root WebSocket transport now uses the same API-key middleware as the `/api` router. Those changes are in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-serve/src/lib.rs), [routes/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-serve/src/routes/mod.rs), [routes/sse.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-serve/src/routes/sse.rs), and [routes/projections.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-serve/src/routes/projections.rs). I also made a minimal adjacent clippy fix in [dispatch.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-serve/src/dispatch.rs).
+
+Verification passed:
+`cargo check -p roko-cli -p roko-serve -p roko-agent-server`
+`cargo test -p roko-cli -p roko-serve -p roko-agent-server --lib --no-run`
+`cargo clippy -p roko-cli -p roko-serve -p roko-agent-server --no-deps -- -D warnings`
+
+Not completed in this slice: the full interactive `roko init` onboarding flow, the documented bare-`roko`/`repl` experience, and ACP/IDE surfaces. I left unrelated pre-existing worktree changes outside the batch scope untouched.

@@ -1,0 +1,8 @@
+Added the DP09 stub surface in [phase2_stubs.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-daimon/src/phase2_stubs.rs:1) and re-exported it from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-daimon/src/lib.rs:39). That module now carries the documented Phase 2+ Daimon types for octants/modulation, hysteresis and tier thresholds, contrarian retrieval, domain registration and transfer, emotional provenance, coding-agent error/fatigue tracking, and collective contagion/somatic-field stubs. I also extended [DaimonState](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-daimon/src/lib.rs:1483) with defaulted stub state for crate confidence, contrarian tracking, error/fatigue tracking, and borrowed affect so the new APIs have a place to live without breaking restore compatibility.
+
+I left the future `AffectEvent` trigger variants alone because the docs name them but do not define stable payload shapes. The concrete named public types and helper surfaces are now present.
+
+Verified:
+`cargo check -p roko-daimon`
+`cargo test -p roko-daimon --lib --no-run`
+`cargo clippy -p roko-daimon --no-deps -- -D warnings`

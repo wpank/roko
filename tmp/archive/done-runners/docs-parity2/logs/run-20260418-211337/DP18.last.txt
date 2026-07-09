@@ -1,0 +1,18 @@
+Implemented DP18 parity fixes in `roko-agent` and kept the changes inside the requested write scope.
+
+**What changed**
+- Added MCP protocol/version and annotation support in [client.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/mcp/client.rs:16):
+  `MCP_PROTOCOL_VERSION = "2025-11-25"`, `McpToolAnnotations`, annotation parsing, sampling/roots initialize capabilities, and `${ENV_VAR}` resolution for MCP server env values.
+- Updated MCP tool conversion in [to_tool_def.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/mcp/to_tool_def.rs:13):
+  names now use docs-style `server.tool`, MCP tools default to write permission, and `readOnly/openWorld/idempotent` annotations map into `ToolPermission` and metadata.
+- Updated MCP handler/dedup/registry exports so dotted MCP tool names dispatch correctly, and added the docs-described `MergedToolRegistry` alias.
+- Extended MCP config in [config.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/mcp/config.rs:10) with `McpTransportConfig`, `endpoint`, and `auth_token`. HTTP transport is represented in config; the current discovery bridge still returns a clear unsupported-transport error until an HTTP MCP client exists.
+- Added safety-hook and tainted-data primitives in [hooks.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-agent/src/safety/hooks.rs:10):
+  `DataSink`, `TaintLabel`, `TaintedString`, `HookDecision`, `SafetyAuditRecord`, and `SafetyHook`, with module and crate-root re-exports.
+
+`roko-std` already matched the docs for the 16 built-in tools and static registry, so I did not change it.
+
+**Verification**
+- `cargo check -p roko-std -p roko-agent` passed
+- `cargo test -p roko-std -p roko-agent --lib --no-run` passed
+- `cargo clippy -p roko-std -p roko-agent --no-deps -- -D warnings` passed

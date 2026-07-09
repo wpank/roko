@@ -1,0 +1,8 @@
+`roko-dreams` now has a namespaced Phase 2 stub surface under [crates/roko-dreams/src/phase2/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-dreams/src/phase2/mod.rs), wired from [crates/roko-dreams/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-dreams/src/lib.rs). I kept the shipped runtime types where they already live and added doc-commented stub modules for the documented frontier surfaces: cycle/state, replay, imagination, hypnagogia, evolution, HDC synthesis, divergence, hauntology, rendering, sleep-time compute, oneirography, integration/sharing, advanced monitoring/journals/nightmares, and threat analysis.
+
+The new stubs use real workspace types where possible (`ModelTier`, `HdcVector`, `InsightRecord`, `DreamTrigger`) and keep behavior minimal or explicitly deferred. Support types that only existed in docs were added in [crates/roko-dreams/src/phase2/shared.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-dreams/src/phase2/shared.rs) so the public structs compile cleanly without widening the live runtime.
+
+Verification passed:
+- `cargo check -p roko-dreams`
+- `cargo test -p roko-dreams --lib --no-run`
+- `cargo clippy -p roko-dreams --no-deps -- -D warnings`

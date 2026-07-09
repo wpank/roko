@@ -1,0 +1,8 @@
+Added a new Phase 2 stub surface in [phase2.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/phase2.rs:1) and re-exported it from [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/lib.rs:11). That file now carries the deferred `docs/08-chain` type landscape: Korai interop/config types, passport and reputation stubs, gossip/message schemas, marketplace and payment structs, witness/triage types, mirage simulation shells, and supporting placeholders needed to compile cleanly.
+
+I also made the existing [LogEntry](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-chain/src/types.rs:104) comparable so the new normalized receipt stubs can derive equality without changing behavior.
+
+Verification passed:
+`cargo check -p roko-chain`
+`cargo test -p roko-chain --lib --no-run`
+`cargo clippy -p roko-chain --no-deps -- -D warnings`

@@ -1,0 +1,8 @@
+Implemented the highest-leverage DP00 parity slice in `roko-core`: `Engram` now carries a first-class HDC fingerprint sidecar via [`HdcFingerprint` and `Engram::fingerprint`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/engram.rs:17>), the builder threads it through, serde round-trips it, and the content hash still ignores it. I also added the documented `Substrate::query_similar` hook with a safe default in [`traits.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/traits.rs:35>) and re-exported the new HDC types from [`lib.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/lib.rs:107>). Two small test-only warning fixes in [`metric.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/metric.rs:490>) and [`task.rs`](</Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-core/src/task.rs:684>) were needed to satisfy `-D warnings`.
+
+Verification passed:
+`cargo check -p roko-core`
+`cargo test -p roko-core --lib --no-run`
+`cargo clippy -p roko-core --no-deps -- -D warnings`
+
+Broader section-00 deltas still remain outside this narrow ship-now slice, especially the larger config/schema mismatches, typed taint / richer attestation shape, and compound-kind semantics.

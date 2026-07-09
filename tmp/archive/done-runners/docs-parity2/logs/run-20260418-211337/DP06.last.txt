@@ -1,0 +1,10 @@
+Added the missing low-level HDC primitives and a real similarity-query surface.
+
+`roko-primitives` now exports `BundleAccumulator`, `DecayingBundleAccumulator`, `ItemMemory`, plus `HDC_BITS`/`HDC_BYTES` in [hdc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-primitives/src/hdc.rs) and [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-primitives/src/lib.rs). `roko-neuro` now exposes `NeuroStore::query_similar`, a public `KnowledgeSimilarityHit`, and `KnowledgeStore::query_similar` in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-neuro/src/lib.rs) and [knowledge_store.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/docs-parity2-run-20260418-211337/crates/roko-neuro/src/knowledge_store.rs). I also added unit coverage for the new accumulator/codebook behavior and the fingerprint-ranking path.
+
+Verification passed:
+`cargo check -p roko-neuro -p roko-primitives`
+`cargo test -p roko-neuro -p roko-primitives --lib --no-run`
+`cargo clippy -p roko-neuro -p roko-primitives --no-deps -- -D warnings`
+
+Remaining doc/code gaps still not closed in this batch: backup/restore/publish flows, challenge/refutation APIs, public encoder trait surfaces, and the first-class `fingerprint` field rename on `KnowledgeEntry`.

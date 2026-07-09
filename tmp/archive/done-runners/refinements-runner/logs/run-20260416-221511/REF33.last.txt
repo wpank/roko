@@ -1,0 +1,31 @@
+REF33 is propagated into the docs and stays within `docs/` only. The main change is a new deployment chapter, [14-observability-and-telemetry.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/14-observability-and-telemetry.md), plus targeted updates to architecture/test docs so observability, telemetry, replay, and cost visibility are part of the canonical story rather than scattered mentions.
+
+Files changed:
+- [docs/19-deployment/14-observability-and-telemetry.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/14-observability-and-telemetry.md) `new`
+- [docs/19-deployment/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/INDEX.md)
+- [docs/19-deployment/12-production-hardening.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/12-production-hardening.md)
+- [docs/00-architecture/21-performance-numerical-stability.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/21-performance-numerical-stability.md)
+- [docs/00-architecture/32-comprehensive-test-strategy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/32-comprehensive-test-strategy.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+New files added:
+- [docs/19-deployment/14-observability-and-telemetry.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/14-observability-and-telemetry.md)
+
+Retired disclaimers removed:
+- None directly. I avoided introducing retired vocabulary and kept the glossary’s retirement table intact.
+
+Cross-references added:
+- Every touched file now points to `tmp/refinements/33-observability-telemetry.md`.
+- The deployment chapter and architecture/testing docs now cross-link through the new observability chapter and the glossary.
+
+Checks:
+- `git diff --check -- docs` passed.
+- No tests were run; this was a docs-only batch.
+
+Follow-ups identified:
+- Implementation-side follow-ups called out in the docs remain: wiring the full Roko-specific metric families, shipping default dashboards and alert rules, exposing telemetry-focused `StateHub` projections, and completing replay-with-override/operator audit flows.
+
+Commit-ready message:
+- `refinements(REF33): Observability + telemetry across deployment + architecture`

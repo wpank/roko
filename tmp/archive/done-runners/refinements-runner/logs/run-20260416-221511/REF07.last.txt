@@ -1,0 +1,9 @@
+Updated [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md:1) and [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md:1). No new files were added.
+
+The glossary now treats `Pulse`, `Bus`, `Topic`, `TopicFilter`, `Datum`, and `PulseSource` as the canonical vocabulary, puts the retired-term table front and center, and removes the stale `Signal = Engram` guidance from active prose. The retired table now explicitly covers `Signal` as both the old durable name and the rejected ephemeral candidate, plus `EventBus<E>`, `Envelope<E>`, `Event`, `Message`, `Grimoire`, `Styx`, `Clade`, `Bardo`, `Golem`, `Mori`, and the retired mortal/death/reincarnation framing.
+
+The architecture index now uses the REF07 one-liner and abstract framing, including the two-mediums/two-fabrics story, Bus sequence ordering, Engram lineage, and Pulse graduation. Both touched docs now point to `tmp/refinements/07-naming.md`.
+
+No automated runner verify script was executed here; I did diff-level checks for scope and required vocabulary. This is ready for commit as `refinements(REF07): Naming decisions: Pulse/Bus/Topic/Datum across glossary + docs`.
+
+Follow-up: REF34 should treat this glossary table as the canonical retired→current naming source.

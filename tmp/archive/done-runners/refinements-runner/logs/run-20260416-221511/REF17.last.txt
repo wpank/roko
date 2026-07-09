@@ -1,0 +1,17 @@
+REF17 is propagated and commit-ready as `refinements(REF17): Plugin/extension five-tier SPI across tools + interfaces`.
+
+**Changed**
+- Tools SPI rewrite: [14-plugin-sdk.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/18-tools/14-plugin-sdk.md), [16-plugin-loading.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/18-tools/16-plugin-loading.md), [18-tools/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/18-tools/INDEX.md). These now frame the extension architecture around a manifest-first five-tier plugin SPI, discovery-not-configuration, tier-matched sandboxes, Tier 3 declarative tools/MCPs, Tier 4 native ABI loading, Tier 5 WASM hosting, and the `roko plugin` CLI.
+- Interface updates: [00-cli-overview.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/00-cli-overview.md), [01-cli-command-reference.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/01-cli-command-reference.md), [04-configuration-layered-resolution.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/04-configuration-layered-resolution.md), [12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md). These now expose plugins as a first-class operator workflow instead of hidden config-only wiring.
+- Architecture and glossary: [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md), [15-crate-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/15-crate-map.md), [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md). These now add `roko-spi`, `roko-extension-abi`, `roko-wasm-host`, and the minimal new SPI vocabulary.
+
+No new files were added. No retired disclaimers were removed in this batch.
+
+**Verification**
+- `git diff --check -- docs` passed.
+- `git diff --name-only` shows only `docs/**` changes.
+- Required vocabulary is present across the changed set: `plugin`, `five-tier`, `SPI`.
+- Every touched doc includes a cross-reference to `tmp/refinements/17-plugin-extension-architecture.md`.
+
+**Follow-ups**
+- Downstream docs for REF25, REF29, REF31, and REF32 should now consume this five-tier SPI framing rather than the older three-mechanism plugin story.

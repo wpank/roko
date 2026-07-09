@@ -1,0 +1,37 @@
+REF10 is propagated and docs-only scope was preserved. The batch is ready to commit with `refinements(REF10): Self-learning cybernetic loops across learning + heartbeat`.
+
+Changed files:
+- [docs/05-learning/18-self-learning-cybernetic-loops.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/18-self-learning-cybernetic-loops.md)
+- [docs/05-learning/16-predictive-foraging.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/16-predictive-foraging.md)
+- [docs/05-learning/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/INDEX.md)
+- [docs/00-architecture/11-dual-process-and-active-inference.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/11-dual-process-and-active-inference.md)
+- [docs/00-architecture/16-autocatalytic-and-cybernetics.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/16-autocatalytic-and-cybernetics.md)
+- [docs/16-heartbeat/11-active-inference-state-space.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/16-heartbeat/11-active-inference-state-space.md)
+- [docs/00-architecture/00-vision-and-thesis.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/00-vision-and-thesis.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/16-heartbeat/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/16-heartbeat/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+New file added:
+- [docs/05-learning/18-self-learning-cybernetic-loops.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/05-learning/18-self-learning-cybernetic-loops.md)
+
+What changed:
+- Learning now has a canonical REF10 chapter for the predict-publish-correct loop, per-operator calibration, `CalibrationPolicy`, and `prediction.error.*`.
+- Active inference is now described as a literal Bus-driven implementation in architecture and heartbeat docs, not just a metaphor for routing.
+- The glossary and indexes now include the new topic families: `prediction.*`, `outcome.*`, `prediction.error.*`, and `calibration.*`.
+- Cross-references to `tmp/refinements/10-self-learning-cybernetic-loops.md` were added in every touched doc.
+
+Retired/stale wording removed:
+- Removed the stale Engram/Signal wording from the learning index.
+- Removed stale “active inference is only conceptual” framing in the architecture thesis.
+- Remaining retired names in touched files are confined to explicit legacy/retired contexts.
+
+Follow-up I’d flag:
+- [docs/16-heartbeat/08-dual-process-t0-t1-t2.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/16-heartbeat/08-dual-process-t0-t1-t2.md) and [docs/16-heartbeat/10-active-inference-compute-allocation.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/16-heartbeat/10-active-inference-compute-allocation.md) still lean on the older scalar prediction-error framing and would benefit from the same topic-family language in a later batch.
+
+Verification:
+- Docs-only scope preserved.
+- Required vocabulary present: `prediction.error` and `active inference`.
+- Every changed doc includes the REF10 pointer.
+- No tests were run; this was a docs-only batch.

@@ -1,0 +1,26 @@
+Updated the REF27 propagation under `docs/` only. The main change is a full reframing of [06-websocket-streaming.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/06-websocket-streaming.md) into the canonical realtime surface chapter: one protocol across `WebSocket`, `SSE`, and optional `gRPC`, with `query` / `subscribe` / `publish`, channel taxonomy, cursors, auth, back-pressure, client guidance, and StateHub alignment.
+
+Files changed:
+- [docs/12-interfaces/06-websocket-streaming.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/06-websocket-streaming.md)
+- [docs/12-interfaces/05-http-api-roko-serve.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/05-http-api-roko-serve.md)
+- [docs/12-interfaces/13-web-portal.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/13-web-portal.md)
+- [docs/12-interfaces/22-statehub-projection-layer.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/22-statehub-projection-layer.md)
+- [docs/12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/INDEX.md)
+- [docs/19-deployment/11-remote-orchestrator.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/11-remote-orchestrator.md)
+- [docs/19-deployment/12-production-hardening.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/12-production-hardening.md)
+- [docs/19-deployment/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/INDEX.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+No new files were added. I also removed a few stale terms in touched docs, mainly older `signal`/socket-centric wording in the remote-orchestrator and portal material. Each touched chapter now includes a `tmp/refinements/27-realtime-event-surface.md` cross-reference.
+
+Verification:
+- `git diff --check -- docs` passes.
+- Only `docs/` files were modified.
+- Required vocabulary is present, including `WebSocket`, `SSE`, and `subscribe` with `channel`.
+
+Follow-ups I did not land:
+- [docs/19-deployment/06-cloud-fly-io.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/19-deployment/06-cloud-fly-io.md) could later add explicit proxy guidance for `SSE` buffering and `WebSocket` upgrade handling.
+- [docs/12-interfaces/19-rust-sdk-developer-ux.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/12-interfaces/19-rust-sdk-developer-ux.md) could later mention first-party typed realtime clients.
+
+Commit-ready message: `refinements(REF27): Realtime event surface (WS/SSE/gRPC) across interfaces`

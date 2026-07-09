@@ -1,0 +1,329 @@
+diff --git a/docs/00-architecture/01-naming-and-glossary.md b/docs/00-architecture/01-naming-and-glossary.md
+index a0426bb2..b6a7db2d 100644
+--- a/docs/00-architecture/01-naming-and-glossary.md
++++ b/docs/00-architecture/01-naming-and-glossary.md
+@@ -5,6 +5,7 @@
+ > Roko-specific term, abbreviation, and architectural concept used across the PRD suite.
+ > When any other document disagrees with a definition here, this glossary is authoritative.
+ > This serves as a quick-reference companion to the full architecture documentation.
++> For the durable-vs-ephemeral medium split, see `tmp/refinements/02-engram-vs-pulse.md`.
+ 
+ 
+ > **Implementation**: Shipping
+@@ -28,14 +29,9 @@ parenthetical notes when quoting legacy sources).
+ | Korai | **Korai** | Dedicated EVM chain for agent coordination. Mainnet. |
+ | Daeji | **Daeji** | Testnet for the Korai chain. |
+ | Clade | **Collective** / **Mesh** | Groups of cooperating agents. **Never use "fleet"** — this was an incorrect interim rename. |
+-| Signal (code) | **Engram** (docs) | The universal data type. In Rust code it is `Signal` (`roko-core`). In PRD docs it is "Engram." These are **the same concept** — see note below. |
+-
+-> **Signal ↔ Engram:** The Rust codebase uses `Signal` as the struct name for the
+-> universal datum (defined in `crates/roko-core/src/signal.rs`). The PRD documentation
+-> calls the same concept an **Engram**, emphasizing its neuroscience roots (Semon 1904).
+-> Whenever you see `Signal` in code, read it as "Engram." Whenever you see "Engram" in
+-> docs, the corresponding Rust type is `Signal`. The six verb traits (`Substrate`,
+-> `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) all operate on `Signal` / Engram.
++| Signal (legacy code name) | **Engram** (docs) | The durable record type. `Signal` remains the shipping Rust identifier in `roko-core`; PRD docs should use `Engram` when they mean the durable, content-addressed medium. |
++| Pulse (transport) | **Pulse** (docs) | The ephemeral, topic-addressed message type carried on the Bus. Use `Pulse` for in-flight events, not for durable storage. |
++| Datum (generic) | **Datum** (docs) | The operator-facing umbrella term when a component accepts either medium. Use it only where the distinction between Engram and Pulse is intentionally abstracted. |
+ 
+ ---
+ 
+@@ -82,7 +78,8 @@ After dissolution, `roko-golem` is removed from workspace members in `Cargo.toml
+ 
+ **Composability principle**: Any subsystem can pipe to any other. Daimon emits Engrams →
+ Neuro stores them. Dreams reads from Neuro → produces new Engrams. Chain posts Engrams
+-on-chain. Everything flows through the six Synapse traits.
++on-chain. Live coordination moves as Pulses on the Bus, and durable state flows as
++Engrams through Substrate. Everything is still mediated by the six Synapse traits.
+ 
+ ---
+ 
+@@ -90,9 +87,9 @@ on-chain. Everything flows through the six Synapse traits.
+ 
+ | Old Name | New Name | Notes |
+ |---|---|---|
+-| `Signal` (as architectural noun) | **Engram** | The canonical architectural term. Used in all documentation. |
+-| `Signal` (as Rust type name) | `Signal` (for now) | The Rust type is still named `Signal` in the current codebase. Rename to `Engram` is Tier 0D in the implementation plan. Documentation uses "Engram" with a note about the current code name. |
+-| `SignalBuilder` | **EngramBuilder** | Builder pattern for Engram construction. Code currently uses `SignalBuilder`. |
++| `Signal` (legacy Rust type name) | `Signal` (for now) | The shipping Rust identifier for the durable medium. Documentation uses `Engram` for the durable record and `Pulse` for transport messages. |
++| `Signal` (retired architectural noun) | **Engram** | The durable, content-addressed, lineage-bearing medium stored in Substrate. |
++| `SignalBuilder` (legacy code name) | **EngramBuilder** | Builder pattern for Engram construction. Code currently uses `SignalBuilder`. |
+ | `signal.rs` | `engram.rs` | Source file rename. |
+ | "1 noun, 6 verbs" | **Synapse Architecture** | Architecture branding. The six traits are the "synapses" through which Engrams flow. |
+ 
+@@ -152,7 +149,12 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ 
+ | Term | Definition |
+ |---|---|
+-| **Engram** | The core data type — a content-addressed, scored, decaying, lineage-tracked unit of cognition. Replaces "Signal" as the architectural noun. |
++| **Engram** | The durable medium — a content-addressed, scored, decaying, lineage-tracked record stored in Substrate. It is the canonical architectural noun for persisted cognition. |
++| **Pulse** | The ephemeral medium — a typed, sequenced, topic-addressed message on the Bus. Pulses deliver once, can be replayed while they remain in the ring buffer, and graduate into Engrams when they need to become durable. |
++| **Datum** | The umbrella term for an operator input or output when the medium does not matter. A Datum may be either a Pulse or an Engram. |
++| **Topic** | The namespaced routing string for a Pulse channel, such as `agent.msg.chunk` or `gate.verdict.emitted`. Topics are the stable subscription surface of the Bus. |
++| **TopicFilter** | A declarative subscription matcher over Topics. Use it for exact, glob, set-based, and boolean topic selection. |
++| **PulseSource** | Lightweight origin metadata for a Pulse, typically component name plus optional agent identity. |
+ | **Synapse Architecture** | The 6-trait composition model. Replaces "1 noun, 6 verbs." |
+ | **Five Layers** | Runtime (L0) / Framework (L1) / Scaffold (L2) / Harness (L3) / Orchestration (L4). |
+ | **Cognitive Cross-Cuts** | Neuro / Daimon / Dreams — subsystems injected across multiple layers. |
+@@ -211,6 +213,7 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ |---|---|
+ | **Daimon** | Motivation and focus subsystem (`roko-daimon`). Maintains PAD (Pleasure-Arousal-Dominance) vectors, six behavioral states, and somatic markers. The agent's self-model. |
+ | **Decay** | Time-based weight reduction for Engrams. Variants: None (permanent), HalfLife (exponential), Ttl (hard cutoff), Ebbinghaus (psychological forgetting curve). |
++| **Datum** | Operator-facing umbrella term for either an Engram or a Pulse. Use when the medium is intentionally abstracted away. |
+ | **Delta** | Consolidation cognitive speed. Hours timescale. Dreams: replay, synthesis, pruning. Knowledge tier promotion. |
+ | **Dreams** | Offline learning subsystem (`roko-dreams`). Three-phase cycle: NREM replay + REM imagination + integration staging. |
+ | **Dual-Process** | Kahneman's System 1/System 2 mapped to Roko: T0 (direct tool call, no LLM) / T1 (fast model) / T2 (full model, deep reasoning). |
+@@ -220,8 +223,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | Term | Definition |
+ |---|---|
+ | **EFE** | Expected Free Energy. `G(π) = −Pragmatic Value − Epistemic Value`. Drives tier routing without hyperparameters. |
+-| **Engram** | The universal data type of Roko. Content-addressed (BLAKE3), scored (7-axis), decaying, lineage-tracked. Every piece of information in the system is an Engram. Currently named `Signal` in code; rename is Tier 0D. |
+-| **EngramBuilder** | Builder pattern for constructing Engrams. Currently named `SignalBuilder` in code. |
++| **Engram** | The durable medium of Roko. Content-addressed (BLAKE3), scored (7-axis), decaying, lineage-tracked, and persisted in Substrate. Current legacy code name is `Signal`; docs should use `Engram` for the durable record, while `Pulse` covers ephemeral transport. |
++| **EngramBuilder** | Builder pattern for constructing Engrams. Current legacy code name is `SignalBuilder`. |
+ | **Episode** | A recorded sequence of agent actions and their outcomes. Stored as Engrams with `Kind::Episode`. |
+ | **EvoSkills** | Self-evolving skill libraries via adversarial surrogate verification (Zhao et al. 2024). |
+ 
+@@ -257,7 +260,9 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ |---|---|
+ | **Outcome** | Feedback about a prior Router selection. Carries success/failure, reward, cost, and latency. Used by Routers to learn via bandit algorithms. |
+ | **Pheromone** | A stigmergic signal with time-based decay. Three types: THREAT (2h half-life), OPPORTUNITY (4h), WISDOM (24h). Agents communicate indirectly by reading and writing pheromones to shared Substrates. |
+-| **Policy** | Synapse trait. Watches Engram streams and emits new Engrams in response (interventions, reactions). Synchronous. Batch input. |
++| **Pulse** | An ephemeral, sequenced message on the Bus. It is topic-addressed, delivered to subscribers that match, and dropped when the ring buffer no longer retains it. |
++| **PulseSource** | Lightweight origin metadata for a Pulse, typically a component name plus optional agent id or process id. |
++| **Policy** | Synapse trait. Watches Datum streams and emits new Datum in response (interventions, reactions). Synchronous. Batch input. In the two-medium model, Policies often emit Pulses and may graduate selected results into Engrams. |
+ | **Provenance** | Who produced an Engram and how trustworthy they are. Fields: author (String), trust ([0,1]), tainted (bool), session (Option). |
+ 
+ ### Q-R
+@@ -277,13 +282,15 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **Selection** | Output of a Router: the chosen Engram's ContentHash, confidence, router name, and optional reasoning. |
+ | **Spectre** | Procedurally generated dot-cloud creature per agent. Body encodes cognitive state; eyes encode emotion; clarity encodes prediction accuracy. |
+ | **Substrate** | Synapse trait. Stores and queries Engrams. Asynchronous. Multiple backends: MemorySubstrate (testing), FileSubstrate (JSONL persistence), HdcSubstrate (semantic search), ChainSubstrate (on-chain state). |
+-| **Synapse Architecture** | The compositional model underlying Roko: one noun (Engram) + six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy). |
++| **Synapse Architecture** | The compositional model underlying Roko: one durable noun (Engram), one ephemeral transport noun (Pulse), and six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy). |
+ 
+ ### T-V
+ 
+ | Term | Definition |
+ |---|---|
+ | **T0 / T1 / T2** | Inference tiers. T0: no LLM call (direct tool call, ~80% of ticks). T1: fast model, shallow reasoning (~15%). T2: full model, deep reasoning (~5%). Routing emerges from active inference (EFE). |
++| **Topic** | The routing name for a Pulse channel. Topics are hierarchical strings and should be namespaced by subsystem so subscriptions stay precise and composable. |
++| **TopicFilter** | A declarative matcher over Topics used by the Bus for subscription and replay. Supports exact, glob, set, and boolean composition. |
+ | **Theta** | Reflective cognitive speed. ~75 second timescale. Summarize recent work, update Daimon state, check predictions. |
+ | **TickOutcome** | The result of one `loop_tick` invocation. Contains: candidates_examined, composed Engram, Verdict, emitted Engrams, written ContentHashes. |
+ | **Verdict** | Output of a Gate. Contains: passed (bool), reason (String), gate name, score [0,1], optional detail, optional TestCount, optional error_digest, duration_ms. |
+@@ -302,6 +309,9 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ 5. **File paths**: All `bardo-*` → `roko-*`, all `mori-*` → `roko-*`.
+ 6. **Never say**: "Golem SDK" → say "Agent SDK" or "Roko SDK".
+ 7. **Never say**: "Mori + Golem" → say "Roko framework with coding and chain domain plugins."
++8. **When introducing Pulse vocabulary**: Link back to this glossary and to
++   `tmp/refinements/02-engram-vs-pulse.md` so readers can jump between the durable and
++   ephemeral medium definitions.
+ 
+ ---
+ 
+@@ -325,5 +335,6 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ 
+ - [00-vision-and-thesis.md](00-vision-and-thesis.md) — Why the architecture exists
+ - [02-engram-data-type.md](02-engram-data-type.md) — Full Engram specification
++- [02-engram-vs-pulse.md](../../tmp/refinements/02-engram-vs-pulse.md) — Canonical durable-vs-ephemeral refinement
+ - [03-score-7-axis-appraisal.md](03-score-7-axis-appraisal.md) — Score details
+ - [06-synapse-traits.md](06-synapse-traits.md) — The six Synapse traits
+diff --git a/docs/00-architecture/02-engram-data-type.md b/docs/00-architecture/02-engram-data-type.md
+index f9e2a6b1..2dba36c5 100644
+--- a/docs/00-architecture/02-engram-data-type.md
++++ b/docs/00-architecture/02-engram-data-type.md
+@@ -1,38 +1,43 @@
+ # The Engram Data Type
+ 
+-> **Abstract:** The Engram is the universal datum of the Roko system. Every event, every
+-> piece of data, every agent output, every gate verdict, every knowledge entry, every
+-> prediction, every tool trace — is an Engram. Engrams are content-addressed (BLAKE3),
+-> scored (7-axis appraisal), decaying (four decay models), lineage-tracked (audit DAG),
+-> and provenance-stamped (author + trust + taint). This document specifies the Engram
+-> struct in full detail, explains each field, describes the content-addressing scheme,
+-> and shows how Engrams flow through the Synapse Architecture.
++> **Abstract:** The Engram is the durable record medium of the Roko system. It stores
++> the facts that must survive beyond a live bus delivery: verified outputs, durable
++> knowledge, lineage-bearing decisions, predictions, and tool traces. Engrams are
++> content-addressed (BLAKE3), scored (7-axis appraisal), decaying (four decay models),
++> lineage-tracked (audit DAG), provenance-stamped (author + trust + taint), and may
++> carry optional attestation. The ephemeral sibling medium, Pulse, is documented in
++> [02b-pulse-ephemeral-event.md](./02b-pulse-ephemeral-event.md) and the source
++> refinement note is [tmp/refinements/02-engram-vs-pulse.md](../../tmp/refinements/02-engram-vs-pulse.md).
++> This document specifies the Engram struct in full detail, explains each field,
++> describes the content-addressing scheme, and shows how durable Engrams flow through
++> the Synapse Architecture.
+ 
+ 
+ > **Implementation**: Shipping
+ 
+-> **Code ↔ Docs Naming:** In the Rust codebase (`roko-core`), the universal data type is
+-> called **`Signal`** (struct `Signal` in `crates/roko-core/src/signal.rs`). In these PRD
+-> documents, the same concept is called **Engram**. The names are synonymous — "Engram"
+-> emphasizes the cognitive/neuroscience framing, while "Signal" is the Rust identifier.
+-> When reading code, `Signal` = Engram. When reading docs, Engram = `Signal`. The six
+-> verb traits (`Substrate`, `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) operate on
+-> `Signal` in code and on "Engram" in documentation.
++> **Code ↔ Docs Naming:** In the Rust codebase (`roko-core`), the current struct name is
++> `Signal` (`crates/roko-core/src/signal.rs`). In these architecture docs, the durable
++> record is called **Engram**. This is legacy code naming, not a semantic distinction; the
++> rename to `Engram` remains Tier 0D in the implementation plan. See the glossary for the
++> full naming map: [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+ ---
+ 
+-## 1. Why One Universal Type
++## 1. Engram as the Durable Record
+ 
+ Classical software architectures use many types: tasks, events, messages, requests, responses,
+ records, logs. Each type has its own schema, its own storage, its own lifecycle. Adding a new
+ capability means adding a new type, a new store, a new API.
+ 
+-Roko takes a different approach. There is exactly one data type — the **Engram** — and six
+-traits that operate on it. This design choice has three consequences:
++Roko takes a different approach to persistence: it separates live transport from durable
++record. Pulse is the ephemeral bus message; Engram is the durable, content-addressed record
++that lands in a Substrate when something must be preserved, audited, or replayed.
+ 
+-1. **Universal composability**: Any Scorer can score any Engram. Any Substrate can store any
+-   Engram. Any Gate can verify any Engram. Components compose freely because they all speak
+-   the same language.
++This design choice has three consequences:
++
++1. **Durable composability**: Any Scorer can score any Engram. Any Substrate can store any
++   Engram. Any Gate can verify any Engram. Components compose freely because durable records
++   all share the same content-addressed language.
+ 
+ 2. **Full audit trails**: Every Engram carries lineage — the ContentHashes of the parent
+    Engrams it was derived from. This forms a directed acyclic graph (DAG) that can be
+@@ -43,20 +48,29 @@ traits that operate on it. This design choice has three consequences:
+    Context becomes stale. The system's "memory" is not a static database — it is a living
+    substrate where information has weight that changes over time.
+ 
++An Engram remains an Engram only when it preserves the durable-record invariants:
++it is durable, content-addressed, lineage-bearing, decayed, provenance-stamped, and may
++optionally carry attestation. Those invariants define the durable medium; they do not apply
++to transient Pulses until a Pulse is graduated.
++
+ The name "Engram" comes from neuroscience: a hypothetical means by which memories are stored
+ as biophysical changes in the brain (Semon 1904; Lashley 1950; Tonegawa et al. 2015, Science
+ 348(6238)). In Roko, an Engram is the digital equivalent — a content-addressed unit of
+ cognition that persists, decays, and can be retrieved by similarity or query.
+ 
++For the Pulse sibling medium and the graduation boundary between live transport and durable
++record, see [02b-pulse-ephemeral-event.md](./02b-pulse-ephemeral-event.md).
++
+ ---
+ 
+ ## 2. The Engram Struct
+ 
+-The target Engram struct (the architectural specification). The current Rust type is named
+-`Signal`; rename to `Engram` is Tier 0D in the implementation plan.
++The target Engram struct is the architectural specification for the durable medium. The
++current legacy Rust type name is `Signal`; rename to `Engram` is Tier 0D in the implementation
++plan.
+ 
+ ```rust
+-/// The universal datum of the Roko system.
++/// The durable content-addressed record of the Roko system.
+ ///
+ /// See crate-level docs for the architectural role of Engram.
+ ///
+@@ -89,7 +103,7 @@ pub struct Signal { // will be renamed to Engram in Tier 0D
+ }
+ ```
+ 
+-The extended Engram includes an attestation field in the current code:
++The extended Engram specification includes an attestation field:
+ 
+ ```rust
+ pub struct Engram {
+@@ -783,14 +797,14 @@ impl Signal { // will be renamed to Engram
+ 
+ ## Current Status and Gaps
+ 
+-- **Shipping code**: The `Signal` struct, `SignalBuilder`, `ContentHash`, `Kind`, `Body`,
+-  `Score`, `Decay`, and `Provenance` are all implemented and tested in `roko-core`
+-  (376 tests passing).
+-- **Rename pending**: `Signal` → `Engram`, `SignalBuilder` → `EngramBuilder` is Tier 0D.
++- **Shipping code**: The legacy `Signal` struct, legacy `SignalBuilder`, `ContentHash`,
++  `Kind`, `Body`, `Score`, `Decay`, and `Provenance` are all implemented and tested in
++  `roko-core` (376 tests passing).
++- **Rename pending**: legacy `Signal` → `Engram`, legacy `SignalBuilder` → `EngramBuilder` is Tier 0D.
+ - **Extended score axes**: Precision, salience, and coherence are specified but not yet in
+   the Score struct.
+ - **Attestation field**: The `attestation: Option<Attestation>` field is specified in the
+-  architecture but not yet present in the current Signal struct. See
++  architecture but not yet present in the current legacy `Signal` struct. See
+   [05-provenance-and-attestation.md](05-provenance-and-attestation.md).
+ 
+ ---
+diff --git a/docs/00-architecture/INDEX.md b/docs/00-architecture/INDEX.md
+index b5e8df28..5d630ebb 100644
+--- a/docs/00-architecture/INDEX.md
++++ b/docs/00-architecture/INDEX.md
+@@ -7,9 +7,10 @@
+ > covers the complete architectural specification from the core data type through the
+ > layer taxonomy, cognitive cross-cuts, collective intelligence metrics, crate map, cybernetic
+ > foundations, and the frontier innovations that distinguish Roko from every other agent
+-> framework. For the phased refactoring plan and rollout ordering, see
+-> `tmp/refinements/06-refactoring-plan.md`. For the rewrite-track alternative and from-scratch
+-> sequencing, see `tmp/refinements/21-from-scratch-redesigns.md`.
++> framework. See also `tmp/refinements/02-engram-vs-pulse.md` for the Engram/Pulse split,
++> `tmp/refinements/06-refactoring-plan.md` for the phased refactoring plan and rollout
++> ordering, and `tmp/refinements/21-from-scratch-redesigns.md` for the rewrite-track
++> alternative and from-scratch sequencing.
+ 
+ **Part of**: [Roko PRD](../INDEX.md)
+ **Status**: Written
+@@ -46,7 +47,8 @@ loop, and the frontier innovations that emerge from the architecture.
+ |---|---|---|
+ | 00 | [Vision and Core Thesis](./00-vision-and-thesis.md) | "The scaffold IS the product" thesis, empirical evidence, modern agent-systems mapping, active inference foundations, design principles overview |
+ | 01 | [Naming and Glossary](./01-naming-and-glossary.md) | Complete retired→current naming map, crate dissolution, glossary of all terms |
+-| 02 | [Engram Data Type](./02-engram-data-type.md) | The universal content-addressed data unit: struct fields, ContentHash (BLAKE3), Kind enum (28 variants), Body enum, lineage DAG, builder pattern |
++| 02 | [Engram Data Type](./02-engram-data-type.md) | The durable content-addressed record medium: struct fields, ContentHash (BLAKE3), Kind enum, Body enum, lineage DAG, and builder pattern |
++| 02b | [Pulse Ephemeral Event Medium](./02b-pulse-ephemeral-event.md) | The durable-versus-ephemeral medium split: Pulse, graduation rules, and the storage/stream boundary between Substrate and Bus |
+ | 03 | [Score: 7-Axis Appraisal](./03-score-7-axis-appraisal.md) | 4 stable axes (confidence, novelty, utility, reputation) + 3 extended (precision, salience, coherence), effective formula, arithmetic, constants |
+ | 04 | [Decay Variants](./04-decay-variants.md) | Four decay variants (None, HalfLife, Ttl, Ebbinghaus), formulas, pheromone constants, knowledge tier interaction, selection guidelines |
+ | 05 | [Provenance and Attestation](./05-provenance-and-attestation.md) | Provenance struct (author, trust, tainted, session), four constructors, taint analysis, planned Attestation (Ed25519 + chain), extended fields |
+@@ -90,7 +92,7 @@ mediums, the six operators, the two fabrics, and the five-layer taxonomy.
+ **Recommended reading order within this topic**:
+ 1. Start with [00-vision-and-thesis](./00-vision-and-thesis.md) for the high-level thesis
+ 2. Read [01-naming-and-glossary](./01-naming-and-glossary.md) for terminology
+-3. Read [02-engram-data-type](./02-engram-data-type.md) through [05-provenance-and-attestation](./05-provenance-and-attestation.md) for the core data types
++3. Read [02-engram-data-type](./02-engram-data-type.md) and [02b-pulse-ephemeral-event](./02b-pulse-ephemeral-event.md) through [05-provenance-and-attestation](./05-provenance-and-attestation.md) for the core data types and medium split
+ 4. Read [06-synapse-traits](./06-synapse-traits.md) through [08-scorer-gate-router-composer-policy](./08-scorer-gate-router-composer-policy.md) for the trait system
+ 5. Read [09-universal-cognitive-loop](./09-universal-cognitive-loop.md) through [11-dual-process-and-active-inference](./11-dual-process-and-active-inference.md) for the cognitive loop
+ 6. Read [12-five-layer-taxonomy](./12-five-layer-taxonomy.md) through [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) for the architectural layers
+diff --git a/docs/INDEX.md b/docs/INDEX.md
+index cfde5c43..0fa83de1 100644
+--- a/docs/INDEX.md
++++ b/docs/INDEX.md
+@@ -10,11 +10,11 @@ has its own folder with multiple sub-docs. For naming conventions, reframe rules
+ and the authoritative source of truth, see `tmp/prd-migration/README.md` and
+ `/Users/will/dev/nunchi/roko/refactoring-prd/`.
+ 
+-See also `tmp/refinements/01-critique-one-noun.md`; REF02-REF05 and REF07 continue the
+-reframing from the retired "one noun, six verbs" mnemonic into the current two-medium,
+-two-fabric architecture story, and `tmp/refinements/06-refactoring-plan.md` records the
+-phased landing sequence now summarized in
+-[`00-architecture/33-refactor-plan-phases.md`](00-architecture/33-refactor-plan-phases.md).
++See also `tmp/refinements/01-critique-one-noun.md` and `tmp/refinements/02-engram-vs-pulse.md`;
++REF02-REF05 and REF07 continue the reframing from the retired "one noun, six verbs"
++mnemonic into the current two-medium, two-fabric architecture story, and
++`tmp/refinements/06-refactoring-plan.md` records the phased landing sequence now summarized
++in [`00-architecture/33-refactor-plan-phases.md`](00-architecture/33-refactor-plan-phases.md).
+ 
+ ## Start Here
+ 
+@@ -28,7 +28,8 @@ phased landing sequence now summarized in
+ > **Kernel framing:** Roko's architecture is best read as two mediums (durable Engram and
+ > ephemeral Pulse) moving through two fabrics (Substrate and Bus), acted on by six operators.
+ > See [`00-architecture/01-naming-and-glossary.md`](00-architecture/01-naming-and-glossary.md)
+-> for the canonical terminology map and retired-code guidance.
++> for the canonical terminology map and [`00-architecture/02b-pulse-ephemeral-event.md`](00-architecture/02b-pulse-ephemeral-event.md)
++> for the medium split.
+ 
+ ## Topics
+ 

@@ -1,0 +1,866 @@
+diff --git a/docs/00-architecture/01-naming-and-glossary.md b/docs/00-architecture/01-naming-and-glossary.md
+index a0426bb2..abf6d5d5 100644
+--- a/docs/00-architecture/01-naming-and-glossary.md
++++ b/docs/00-architecture/01-naming-and-glossary.md
+@@ -4,7 +4,9 @@
+ > terminology, mapping legacy names to their current equivalents and defining every
+ > Roko-specific term, abbreviation, and architectural concept used across the PRD suite.
+ > When any other document disagrees with a definition here, this glossary is authoritative.
+-> This serves as a quick-reference companion to the full architecture documentation.
++> This serves as a quick-reference companion to the full architecture documentation. See also
++> `tmp/refinements/03-bus-as-first-class.md` for the Bus promotion that makes the transport
++> fabric a first-class kernel surface beside Substrate.
+ 
+ 
+ > **Implementation**: Shipping
+@@ -27,15 +29,19 @@ parenthetical notes when quoting legacy sources).
+ | GNOS (token) | **KORAI** (mainnet) / **DAEJI** (testnet) | Token names. KORAI is the mainnet token on the Korai chain. DAEJI is the testnet equivalent on the Daeji testnet. |
+ | Korai | **Korai** | Dedicated EVM chain for agent coordination. Mainnet. |
+ | Daeji | **Daeji** | Testnet for the Korai chain. |
+-| Clade | **Collective** / **Mesh** | Groups of cooperating agents. **Never use "fleet"** — this was an incorrect interim rename. |
+-| Signal (code) | **Engram** (docs) | The universal data type. In Rust code it is `Signal` (`roko-core`). In PRD docs it is "Engram." These are **the same concept** — see note below. |
+-
+-> **Signal ↔ Engram:** The Rust codebase uses `Signal` as the struct name for the
+-> universal datum (defined in `crates/roko-core/src/signal.rs`). The PRD documentation
+-> calls the same concept an **Engram**, emphasizing its neuroscience roots (Semon 1904).
+-> Whenever you see `Signal` in code, read it as "Engram." Whenever you see "Engram" in
+-> docs, the corresponding Rust type is `Signal`. The six verb traits (`Substrate`,
+-> `Scorer`, `Gate`, `Router`, `Composer`, `Policy`) all operate on `Signal` / Engram.
++| Clade | **Fleet** / **Mesh** | Legacy name for cooperating agents. Use **Fleet** for a roster and **Mesh** for the network topology. |
++| Signal (legacy code identifier) | **Engram** | Legacy code name still appears in some Rust paths; documentation uses **Engram** for the durable medium and does not keep the old equivalence disclaimer. |
++| EventBus<E> (legacy transport name) | **Bus** / `BroadcastBus` | Legacy generic naming. User-facing docs use **Bus** for the kernel trait and `BroadcastBus` for the in-process backend. |
++| Envelope<E> (legacy transport wrapper) | **Pulse** | Legacy wrapper name retained only as an implementation detail during migration. |
++| Event / Message (legacy transport nouns) | **Pulse** | Use **Pulse** for the ephemeral wire medium. Use `ChatMessage` only for LLM transcript payloads. |
++| Channel / Subject (legacy routing nouns) | **Topic** | Use **Topic** for the dot-separated routing handle on the Bus. |
++
++> **Legacy code note:** some Rust identifiers still use `Signal`, but that is a migration
++> detail rather than an architectural synonym. The durable medium is **Engram**; the
++> ephemeral medium is **Pulse**; the two fabrics are **Substrate** and **Bus**. See
++> [06-synapse-traits.md](./06-synapse-traits.md),
++> [07-substrate-trait.md](./07-substrate-trait.md), and
++> `tmp/refinements/03-bus-as-first-class.md`.
+ 
+ ---
+ 
+@@ -90,11 +96,14 @@ on-chain. Everything flows through the six Synapse traits.
+ 
+ | Old Name | New Name | Notes |
+ |---|---|---|
+-| `Signal` (as architectural noun) | **Engram** | The canonical architectural term. Used in all documentation. |
+-| `Signal` (as Rust type name) | `Signal` (for now) | The Rust type is still named `Signal` in the current codebase. Rename to `Engram` is Tier 0D in the implementation plan. Documentation uses "Engram" with a note about the current code name. |
+-| `SignalBuilder` | **EngramBuilder** | Builder pattern for Engram construction. Code currently uses `SignalBuilder`. |
++| `Signal` (legacy architectural noun) | **Engram** | The canonical architectural term is **Engram**. Use the legacy code name only when pointing at current source identifiers. |
++| `Signal` (legacy Rust type name) | `Signal` (for now) | Legacy type name still exists in code. The architectural term remains **Engram** until the code rename lands. |
++| `SignalBuilder` (legacy builder name) | **EngramBuilder** | Builder pattern for Engram construction. Code currently uses the legacy builder identifier. |
+ | `signal.rs` | `engram.rs` | Source file rename. |
+-| "1 noun, 6 verbs" | **Synapse Architecture** | Architecture branding. The six traits are the "synapses" through which Engrams flow. |
++| `EventBus<E>` (legacy trait name) | **Bus** | The transport fabric is documented as the **Bus** trait; `BroadcastBus` is the default in-process backend. |
++| `Envelope<E>` (legacy wire type) | **Pulse** | The transport datum is a **Pulse**, not a user-facing envelope type. |
++| `channel` / `subject` (legacy routing nouns) | **Topic** | Bus routing uses dot-separated **Topic** strings and `TopicFilter` expressions. |
++| "1 noun, 6 verbs" | **Synapse Architecture** | The current architecture story is two mediums, two fabrics, and six operators rather than a single-medium mnemonic. |
+ 
+ ---
+ 
+@@ -153,7 +162,11 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | Term | Definition |
+ |---|---|
+ | **Engram** | The core data type — a content-addressed, scored, decaying, lineage-tracked unit of cognition. Replaces "Signal" as the architectural noun. |
+-| **Synapse Architecture** | The 6-trait composition model. Replaces "1 noun, 6 verbs." |
++| **Pulse** | The ephemeral medium. A typed, topic-addressed, sequence-numbered wire record carried on a Bus and graduated to an Engram only when durable lineage matters. |
++| **Bus** | The transport fabric. Kernel trait for publishing, subscribing, and replaying Pulses across topic streams. |
++| **Topic** | Dot-separated routing handle for Pulses on a Bus, such as `gate.verdict.emitted` or `agent.msg.chunk`. |
++| **TopicFilter** | Declarative Bus subscription filter with `Exact`, `Glob`, `AnyOf`, `All`, `And`, `Or`, and `Not` forms. |
++| **Synapse Architecture** | Roko's architectural story: two mediums (Engram and Pulse), two fabrics (Substrate and Bus), and six operators. Replaces the older single-medium mnemonic. |
+ | **Five Layers** | Runtime (L0) / Framework (L1) / Scaffold (L2) / Harness (L3) / Orchestration (L4). |
+ | **Cognitive Cross-Cuts** | Neuro / Daimon / Dreams — subsystems injected across multiple layers. |
+ | **C-Factor** | Collective intelligence ratio metric (Woolley et al. 2010, Science 330). |
+@@ -190,6 +203,7 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | Term | Definition |
+ |---|---|
+ | **Body** | The typed payload of an Engram. Variants: Empty (marker), Text (UTF-8), Json (structured), Bytes (binary). |
++| **Bus** | Kernel transport trait for Pulses. Exposes publish, subscribe, replay, sequencing, and ring-buffer health without becoming a persistence surface. See also [07-substrate-trait.md](./07-substrate-trait.md) and `tmp/refinements/03-bus-as-first-class.md`. |
+ | **Budget** | Resource constraints for Composer operations: max_tokens, max_signals, max_bytes, max_wall_ms. |
+ 
+ ### C
+@@ -258,6 +272,7 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **Outcome** | Feedback about a prior Router selection. Carries success/failure, reward, cost, and latency. Used by Routers to learn via bandit algorithms. |
+ | **Pheromone** | A stigmergic signal with time-based decay. Three types: THREAT (2h half-life), OPPORTUNITY (4h), WISDOM (24h). Agents communicate indirectly by reading and writing pheromones to shared Substrates. |
+ | **Policy** | Synapse trait. Watches Engram streams and emits new Engrams in response (interventions, reactions). Synchronous. Batch input. |
++| **Pulse** | Ephemeral medium carried by the Bus. Pulses are topic-addressed, sequence-numbered, ring-buffered for short replay, and not persisted by default. |
+ | **Provenance** | Who produced an Engram and how trustworthy they are. Fields: author (String), trust ([0,1]), tainted (bool), session (Option). |
+ 
+ ### Q-R
+@@ -276,8 +291,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **Scorer** | Synapse trait. Rates an Engram along multiple axes, producing a Score. Synchronous. Pure function of (Engram, Context). |
+ | **Selection** | Output of a Router: the chosen Engram's ContentHash, confidence, router name, and optional reasoning. |
+ | **Spectre** | Procedurally generated dot-cloud creature per agent. Body encodes cognitive state; eyes encode emotion; clarity encodes prediction accuracy. |
+-| **Substrate** | Synapse trait. Stores and queries Engrams. Asynchronous. Multiple backends: MemorySubstrate (testing), FileSubstrate (JSONL persistence), HdcSubstrate (semantic search), ChainSubstrate (on-chain state). |
+-| **Synapse Architecture** | The compositional model underlying Roko: one noun (Engram) + six verb traits (Substrate, Scorer, Gate, Router, Composer, Policy). |
++| **Substrate** | Storage fabric and kernel trait for durable Engrams. Multiple backends include MemorySubstrate, FileSubstrate, HdcSubstrate, and ChainSubstrate. |
++| **Synapse Architecture** | The compositional model underlying Roko: two mediums moving through two fabrics, coordinated by six operators across five layers. |
+ 
+ ### T-V
+ 
+@@ -286,6 +301,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ | **T0 / T1 / T2** | Inference tiers. T0: no LLM call (direct tool call, ~80% of ticks). T1: fast model, shallow reasoning (~15%). T2: full model, deep reasoning (~5%). Routing emerges from active inference (EFE). |
+ | **Theta** | Reflective cognitive speed. ~75 second timescale. Summarize recent work, update Daimon state, check predictions. |
+ | **TickOutcome** | The result of one `loop_tick` invocation. Contains: candidates_examined, composed Engram, Verdict, emitted Engrams, written ContentHashes. |
++| **Topic** | Dot-separated routing handle for Pulses. Topics name transport intent rather than storage identity. |
++| **TopicFilter** | Declarative matcher for Bus subscriptions and replay queries. Supports exact, glob, set, and boolean composition. |
+ | **Verdict** | Output of a Gate. Contains: passed (bool), reason (String), gate name, score [0,1], optional detail, optional TestCount, optional error_digest, duration_ms. |
+ 
+ ---
+@@ -325,5 +342,8 @@ These terms are introduced in the new architecture and do not appear in legacy d
+ 
+ - [00-vision-and-thesis.md](00-vision-and-thesis.md) — Why the architecture exists
+ - [02-engram-data-type.md](02-engram-data-type.md) — Full Engram specification
++- [02b-pulse-ephemeral-event.md](02b-pulse-ephemeral-event.md) — Pulse as the ephemeral medium
+ - [03-score-7-axis-appraisal.md](03-score-7-axis-appraisal.md) — Score details
+ - [06-synapse-traits.md](06-synapse-traits.md) — The six Synapse traits
++- [07-substrate-trait.md](07-substrate-trait.md) — Substrate as the storage fabric beside Bus
++- [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md) — Bus trait, Topics, and replay semantics
+diff --git a/docs/00-architecture/07-substrate-trait.md b/docs/00-architecture/07-substrate-trait.md
+index 4cc31363..2514d58a 100644
+--- a/docs/00-architecture/07-substrate-trait.md
++++ b/docs/00-architecture/07-substrate-trait.md
+@@ -1,11 +1,10 @@
+ # The Substrate Trait
+ 
+-> **Abstract:** The Substrate trait is the persistence layer of the Synapse Architecture —
+-> every Engram in Roko is stored in and retrieved from a Substrate. This document provides
+-> the full trait specification, describes each method with its semantics, lists all current
+-> and planned implementations, explains the query model, and covers pruning, idempotence,
+-> and concurrency guarantees.
+-
++> **Abstract:** The Substrate trait is the storage fabric of the kernel. It persists,
++> retrieves, queries, and prunes durable Engrams. It is one half of the two-fabric
++> kernel story; the other half is the Bus transport fabric in [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md).
++> See `tmp/refinements/03-bus-as-first-class.md` for the load-bearing proposal and
++> [01-naming-and-glossary.md](01-naming-and-glossary.md) for the authoritative naming map.
+ 
+ > **Implementation**: Shipping
+ 
+@@ -13,18 +12,23 @@
+ 
+ ## 1. Role in the Architecture
+ 
+-Substrate is the foundational trait — it provides the "ground" that all other traits operate
+-over. Without Substrate, there is nowhere to store Engrams, nowhere to query for candidates,
+-and no way to persist results. It maps to **System 1 (Operations)** in Beer's Viable System
+-Model (Beer 1972) and to the **working memory** and **episodic memory** components of CoALA
+-(Sumers et al. 2023, arXiv:2309.02427).
++Substrate is the durable storage fabric at L0. It provides the ground for Engrams:
++content-addressed persistence, query-by-filter, and pruning by effective weight. Every
++subsystem that needs durable state depends on it.
++
++Bus is its sibling fabric, not a replacement. Substrate stores Engrams; Bus moves Pulses.
++Together they form the complete kernel interface for Roko's runtime. The two fabrics are
++separate because the system needs two different semantics:
++
++- Substrate favors durability, idempotence, and retrieval of records.
++- Bus favors fan-out, topic routing, and bounded replay of ephemeral messages.
+ 
+-Substrate is the only async trait that appears in step 1 (PERCEIVE) and step 7 (PERSIST) of
+-the universal cognitive loop — it bookends the entire cycle.
++Substrate remains the trait for long-lived records and storage backends. The Bus chapter
++describes the transport side of the same kernel story.
+ 
+ ---
+ 
+-## 2. Full Trait Specification
++## 2. Trait Surface
+ 
+ From `roko-core/src/traits.rs`:
+ 
+@@ -32,17 +36,15 @@ From `roko-core/src/traits.rs`:
+ #[async_trait]
+ pub trait Substrate: Send + Sync {
+     /// Store an Engram. Returns its content hash. Idempotent on content.
+-    async fn put(&self, signal: Signal) -> Result<ContentHash>;
++    async fn put(&self, engram: Engram) -> Result<ContentHash>;
+ 
+     /// Retrieve an Engram by content hash. Does not apply decay.
+-    async fn get(&self, id: &ContentHash) -> Result<Option<Signal>>;
++    async fn get(&self, id: &ContentHash) -> Result<Option<Engram>>;
+ 
+-    /// Query for Engrams matching the given filter. Impls may apply decay
+-    /// when evaluating min_weight and when ordering results.
+-    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Signal>>;
++    /// Query for Engrams matching the given filter.
++    async fn query(&self, q: &Query, ctx: &Context) -> Result<Vec<Engram>>;
+ 
+-    /// Remove Engrams whose effective weight (score × decay) has fallen
+-    /// below threshold at ctx.now_ms. Returns count of pruned Engrams.
++    /// Remove Engrams whose effective weight has fallen below threshold.
+     async fn prune(&self, threshold: f32, ctx: &Context) -> Result<usize>;
+ 
+     /// Optional: total count of stored Engrams.
+@@ -56,48 +58,49 @@ pub trait Substrate: Send + Sync {
+ }
+ ```
+ 
+-### 2.1 put() — Store
++The shape is intentionally narrow. Substrate owns persistent state and retrieval by
++filter; it does not absorb transport concerns, topic routing, or replay windows. Those
++belong to the Bus fabric.
+ 
+-Stores an Engram and returns its ContentHash. Idempotent — storing the same Engram twice
+-(same ContentHash) is a no-op. This follows from content-addressed storage: identity IS
+-content.
++### 2.1 `put()` - Store
+ 
+-### 2.2 get() — Retrieve
++Stores an Engram and returns its `ContentHash`. The operation is idempotent: storing the
++same Engram twice is a no-op because identity is content.
+ 
+-Retrieves a single Engram by its ContentHash. Returns `None` if the Engram is not found
+-(either never stored or pruned). Does NOT apply decay — the raw Engram is returned as stored.
+-Decay is applied at query time, not at retrieval time.
++### 2.2 `get()` - Retrieve
+ 
+-### 2.3 query() — Filter and Retrieve
++Retrieves a single Engram by its `ContentHash`. Returns `None` if the Engram is not found
++or has been pruned. `get()` returns the raw stored record, not a decay-adjusted view.
+ 
+-The primary read path. The `Query` struct provides filters:
++### 2.3 `query()` - Filter and Retrieve
++
++The primary read path. Queries combine all filters:
+ 
+ ```rust
+ pub struct Query {
+-    pub kinds: Option<Vec<Kind>>,     // filter by Engram kind
+-    pub author: Option<String>,        // filter by author
+-    pub session: Option<String>,       // filter by session
+-    pub since_ms: Option<i64>,         // created after this timestamp
+-    pub until_ms: Option<i64>,         // created before this timestamp
+-    pub min_weight: Option<f32>,       // minimum effective weight (score × decay)
+-    pub tags: Vec<(String, String)>,   // all tags must match
+-    pub limit: Option<usize>,          // maximum results
++    pub kinds: Option<Vec<Kind>>,
++    pub author: Option<String>,
++    pub session: Option<String>,
++    pub since_ms: Option<i64>,
++    pub until_ms: Option<i64>,
++    pub min_weight: Option<f32>,
++    pub tags: Vec<(String, String)>,
++    pub limit: Option<usize>,
+ }
+ ```
+ 
+-All filters AND together. An empty `Query::all()` matches everything. Implementations may
+-apply decay when evaluating `min_weight` and when ordering results.
++Implementations may apply decay when evaluating `min_weight` and when ordering results.
+ 
+-### 2.4 prune() — Garbage Collection
++### 2.4 `prune()` - Garbage Collection
+ 
+ Removes Engrams whose effective weight has fallen below the threshold:
+ 
+-```
++```text
+ weight = score.effective() × decay.apply(ctx.now_ms - created_at_ms)
+ ```
+ 
+-Returns the count of pruned Engrams. This is automatic memory management — the system
+-forgets information that has decayed below the threshold of relevance.
++Pruning is an explicit storage concern. It is not a transport concern and does not affect
++Bus replay semantics.
+ 
+ ---
+ 
+@@ -105,32 +108,32 @@ forgets information that has decayed below the threshold of relevance.
+ 
+ ### 3.1 MemorySubstrate
+ 
+-In-memory HashMap backend for testing. Fast, ephemeral, single-process.
++In-memory `HashMap` backend for testing. Fast, ephemeral, single-process.
+ 
+ ```rust
+ pub struct MemorySubstrate {
+-    signals: RwLock<HashMap<ContentHash, Signal>>,
++    engrams: RwLock<HashMap<ContentHash, Engram>>,
+ }
+ ```
+ 
+ ### 3.2 FileSubstrate (roko-fs)
+ 
+-JSONL file backend for default persistence. Each Engram is one line in `.roko/signals.jsonl`.
+-Provides append-only writes for crash safety and periodic compaction via `prune()`.
++JSONL file backend for default persistence. It uses append-only writes for crash safety
++and periodic compaction via `prune()`.
+ 
+ Located in `roko-fs`. This is the default Substrate for all Roko agents.
+ 
+ ### 3.3 HdcSubstrate (Planned)
+ 
+ Hyperdimensional Computing substrate for semantic similarity queries. Engrams are encoded
+-as 10,240-bit HDC vectors using XOR bind and majority bundle (Kanerva 2009, Cognitive
+-Computation 1(2)). Queries use Hamming distance for O(1) similarity comparison.
++as 10,240-bit HDC vectors using XOR bind and majority bundle. Queries use Hamming distance
++for O(1) similarity comparison.
+ 
+ ### 3.4 ChainSubstrate (Planned)
+ 
+-On-chain Substrate on the Korai chain. Engram ContentHashes are posted on-chain for
+-attestation and shared state. Full Engram bodies are stored off-chain (IPFS or similar)
+-with on-chain pointers.
++On-chain Substrate on the Korai chain. Engram `ContentHash` values are posted on-chain for
++attestation and shared state. Full Engram bodies are stored off-chain with on-chain
++pointers.
+ 
+ ---
+ 
+@@ -142,8 +145,21 @@ All Substrates are `Send + Sync`. Implementations must handle concurrent access
+ - `FileSubstrate` uses append-only writes with periodic compaction
+ - Future network Substrates use message passing or distributed locks
+ 
+-The three cognitive speeds (Gamma/Theta/Delta) run on separate async tasks and may access
+-the same Substrate concurrently. The `Send + Sync` bounds ensure this is safe.
++Multiple cognitive speeds can access the same Substrate concurrently. The `Send + Sync`
++bounds ensure that callers can share a substrate handle across tasks without adding
++external locking.
++
++---
++
++## 5. Architectural Summary
++
++The two-fabric kernel story is:
++
++- `Substrate` persists durable Engrams.
++- `Bus` transports ephemeral Pulses.
++
++This chapter defines the storage side. The Bus chapter defines the transport side, including
++topics, topic filters, replay, and bounded ring semantics.
+ 
+ ---
+ 
+@@ -151,22 +167,25 @@ the same Substrate concurrently. The `Send + Sync` bounds ensure this is safe.
+ 
+ | Citation | Contribution |
+ |---|---|
+-| Beer 1972, Brain of the Firm | VSM System 1 (Operations): the operational substrate. |
++| Beer 1972, *Brain of the Firm* | VSM System 1 (Operations): the operational storage fabric. |
+ | Sumers et al. 2023 (arXiv:2309.02427) | CoALA: working memory and episodic memory components. |
+-| Kanerva 2009, Cognitive Computation 1(2) | HDC: hyperdimensional computing for similarity search. |
++| Kanerva 2009, *Cognitive Computation* 1(2) | HDC: hyperdimensional computing for similarity search. |
+ 
+ ---
+ 
+ ## Current Status and Gaps
+ 
+-- **Implemented**: `MemorySubstrate` in `roko-std`, `FileSubstrate` in `roko-fs` (37 tests).
++- **Implemented**: `MemorySubstrate` in `roko-std`, `FileSubstrate` in `roko-fs`.
+ - **Not implemented**: `HdcSubstrate`, `ChainSubstrate`.
+ 
+ ---
+ 
+ ## Cross-References
+ 
+-- [02-engram-data-type.md](02-engram-data-type.md) — What Substrates store
+-- [04-decay-variants.md](04-decay-variants.md) — How pruning uses decay
+-- [06-synapse-traits.md](06-synapse-traits.md) — Substrate in the trait overview
+-- [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) — Substrate in steps 1 and 7
++- [01-naming-and-glossary.md](01-naming-and-glossary.md) - Canonical names for Substrate, Bus, Engram, and Pulse
++- [02-engram-data-type.md](02-engram-data-type.md) - What Substrates store
++- [04-decay-variants.md](04-decay-variants.md) - How pruning uses decay
++- [06-synapse-traits.md](06-synapse-traits.md) - Substrate in the trait overview
++- [07b-bus-transport-fabric.md](07b-bus-transport-fabric.md) - The Bus sibling fabric
++- [09-universal-cognitive-loop.md](09-universal-cognitive-loop.md) - Substrate in the loop
++- `see tmp/refinements/03-bus-as-first-class.md`
+diff --git a/docs/00-architecture/12-five-layer-taxonomy.md b/docs/00-architecture/12-five-layer-taxonomy.md
+index d0704971..4dd6ca4b 100644
+--- a/docs/00-architecture/12-five-layer-taxonomy.md
++++ b/docs/00-architecture/12-five-layer-taxonomy.md
+@@ -3,8 +3,11 @@
+ > **Abstract:** Roko's crates are organized into five architectural layers with strictly
+ > downward dependencies. This document specifies each layer, maps the six Synapse traits
+ > to their layer assignments, describes the dependency rules, and provides the complete
+-> layer diagram. The five layers map to Beer's Viable System Model (Beer 1972) and provide
+-> the structural skeleton for all 18+ crates.
++> layer diagram. L0 is the two-fabric runtime/kernel surface: `Substrate` stores durable
++> Engrams and the `Bus` fabric transports ephemeral Pulses. The five layers map to Beer's Viable
++> System Model (Beer 1972) and provide the structural skeleton for all 18+ crates. See
++> also [03-bus-as-first-class.md](../../tmp/refinements/03-bus-as-first-class.md) and
++> [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+ 
+ > **Implementation**: Shipping
+@@ -31,7 +34,7 @@
+ │  Connections, roles, tools, model routing, safety    │
+ ├──────────────────────────────────────────────────────┤
+ │  Layer 0: RUNTIME                                    │
+-│  Process lifecycle, events, supervision, I/O, clock  │
++│  Process lifecycle, Substrate, Bus, I/O, clock       │
+ └──────────────────────────────────────────────────────┘
+ 
+   COGNITIVE CROSS-CUTS (injected into multiple layers):
+@@ -41,26 +44,30 @@
+ 
+ **Dependencies flow STRICTLY downward.** Layer 4 may depend on Layer 3, never the reverse.
+ Cross-cutting concerns are injected via trait objects, never via direct imports of higher
+-layers.
++layers. Higher-layer communication should flow through `Substrate` and/or `Bus`, not
++through direct crate coupling.
+ 
+ ---
+ 
+ ## 2. Layer 0: Runtime
+ 
+-**Purpose**: Process lifecycle, event bus, supervision, cancellation, I/O, adaptive clock.
++**Purpose**: Process lifecycle, the two-fabric kernel surface, supervision, cancellation,
++I/O, adaptive clock.
+ 
+ **Key Crates**:
++- `roko-core` — `Substrate`, `Bus`, `Topic`, `TopicFilter`, and shared kernel traits
+ - `roko-primitives` — HDC vectors, Hamming similarity, inference tiers, shared primitive types
+-- `roko-runtime` — Event bus, process supervision, cancellation tokens, adaptive clock
++- `roko-runtime` — process supervision, cancellation tokens, adaptive clock, Bus-backed lifecycle
+ 
+ **What Lives Here**:
+ - Process spawning and lifecycle management (`ProcessSupervisor`)
+-- Event bus for inter-component communication
++- `Substrate` for durable Engram persistence and query
++- `Bus` for topic-addressed Pulse transport and replay
+ - Cancellation tokens and graceful shutdown
+ - The adaptive clock that manages Gamma/Theta/Delta frequencies
+ - Basic I/O primitives
+ 
+-**Synapse Traits at L0**: `Substrate` (persistence is a runtime concern)
++**Synapse Traits at L0**: `Substrate`, `Bus` (persistence and transport are runtime concerns)
+ 
+ **Beer VSM Mapping**: System 1 (Operations) — the primary activities of the organization.
+ 
+@@ -169,7 +176,8 @@ level. They are provided as trait objects, never as direct imports:
+ 
+ | Trait | L0 Runtime | L1 Framework | L2 Scaffold | L3 Harness | L4 Orchestration |
+ |---|---|---|---|---|---|
+-| **Substrate** | FileSubstrate, MemorySubstrate | — | — | — | — |
++| **Substrate** | FileSubstrate, MemorySubstrate, HdcSubstrate, ChainSubstrate | — | — | — | — |
++| **Bus** | BroadcastBus, MemoryBus | — | — | — | — |
+ | **Scorer** | — | ToolRelevanceScorer | RelevanceScorer, RecencyScorer | — | — |
+ | **Gate** | — | — | — | CompileGate, TestGate, etc. | — |
+ | **Router** | — | CascadeRouter, LinUCBRouter | — | — | — |
+@@ -195,23 +203,24 @@ L0 depends on → (nothing above)
+ Cross-cutting crates are NOT layer-bound. They are injected as `&dyn Trait` objects:
+ 
+ ```rust
+-// Example: Neuro knowledge injected into Composer via trait object
++// Example: higher-layer knowledge and live coordination injected through fabrics.
+ fn compose_with_knowledge(
+     composer: &dyn Composer,
+-    knowledge: &dyn Substrate, // Neuro's Substrate implementation
+-    signals: &[Signal],
++    knowledge: &dyn Substrate,
++    bus: &dyn Bus,
+     budget: &Budget,
+     scorer: &dyn Scorer,
+     ctx: &Context,
+-) -> Result<Signal> {
+-    // Retrieve relevant knowledge
+-    let knowledge_signals = knowledge.query(
+-        &Query::of_kind(Kind::Insight).limit(5),
+-        ctx,
+-    ).await?;
+-    // Combine task signals with knowledge
+-    let all = [signals, &knowledge_signals].concat();
+-    composer.compose(&all, budget, scorer, ctx)
++) -> Result<Engram> {
++    // Retrieve relevant durable knowledge.
++    let knowledge_engrams = knowledge
++        .query(&Query::of_kind(Kind::Insight).limit(5), ctx)
++        .await?;
++    // Retrieve live coordination without importing a higher layer directly.
++    let recent_pulses = bus
++        .replay_since(ctx.checkpoint_seq, &TopicFilter::Glob("gate.verdict.*".into()))
++        .await?;
++    composer.compose_with(knowledge_engrams, recent_pulses, budget, scorer, ctx)
+ }
+ ```
+ 
+@@ -219,7 +228,9 @@ fn compose_with_knowledge(
+ 
+ Strict layering prevents circular dependencies, ensures each layer can be tested
+ independently, and allows layer-level replacement. A team could replace the entire L1
+-Framework (e.g., switching LLM backends) without touching L0, L2, L3, or L4.
++Framework (e.g., switching LLM backends) without touching L0, L2, L3, or L4. When a
++higher layer needs durable state or live coordination, it should talk through
++`Substrate` and/or `Bus`, not by importing peer or lower-layer crates directly.
+ 
+ ---
+ 
+@@ -227,9 +238,9 @@ Framework (e.g., switching LLM backends) without touching L0, L2, L3, or L4.
+ 
+ | Layer | Crate | Status | Purpose |
+ |---|---|---|---|
++| **Runtime (L0)** | `roko-core` | Built (376 tests) | Engram, Substrate, Bus, and 6 Synapse traits |
+ | **Runtime (L0)** | `roko-primitives` | Built | HDC vectors, Hamming similarity, shared types |
+-| **Runtime (L0)** | `roko-runtime` | Built | Event bus, supervision, cancellation, adaptive clock |
+-| **Kernel** | `roko-core` | Built (376 tests) | Engram + 6 Synapse traits |
++| **Runtime (L0)** | `roko-runtime` | Built | Process supervision, cancellation, Bus-backed lifecycle, adaptive clock |
+ | **Framework (L1)** | `roko-std` | Built (96 tests) | Default trait impls, 19 built-in tools |
+ | **Framework (L1)** | `roko-agent` | Built (346 tests) | LLM backends, tool dispatch, MCP client |
+ | **Scaffold (L2)** | `roko-compose` | Built (23 tests) | Prompt assembly, context engineering |
+@@ -258,7 +269,7 @@ layer violations:
+ 
+ | Violation | Severity | Description |
+ |---|---|---|
+-| `roko-conductor` (L3/L4) → `roko-learn` (L2/Cross-cut) | **Medium** | Conductor imports learning types for circuit breaker state tracking. Should use trait object injection instead of direct dependency. |
++| `roko-conductor` (L3/L4) → `roko-learn` (L2/Cross-cut) | **Medium** | Conductor imports learning types for circuit breaker state tracking. It should subscribe to Bus topics such as `gate.failure.rate` and use trait object injection instead of direct dependency. |
+ | `roko-agent` (L1) → `roko-learn` (L2/Cross-cut) [dev-dependency] | **Low** | Framework layer test code depends on Scaffold layer. Move tests to integration test crate. |
+ 
+ ### 11.2 Unclassified Crates
+@@ -269,15 +280,16 @@ Six crates exist outside the formal 5-layer taxonomy and need official classific
+ |---|---|---|
+ | `roko-neuro` | roko-core (L0), roko-fs (L0), roko-agent (L1), roko-learn (L2) | **Cross-cut** (bridges L0-L2; inject via trait objects) |
+ | `roko-daimon` | roko-core (L0) | **Cross-cut** (inject via trait objects; no violations) |
+-| `roko-dreams` | roko-golem, roko-neuro, roko-learn, roko-agent | **Cross-cut** (depends on multiple layers; inject via trait objects) |
+-| `roko-golem` | roko-core (L0) | **Phase 2+** (umbrella for future subsystems) |
++| `roko-dreams` | roko-agent, roko-neuro, roko-learn | **Cross-cut** (depends on multiple layers; inject via trait objects) |
++| `agent session runtime` | roko-core (L0) | **Phase 2+** (umbrella for future agent subsystems) |
+ | `roko-chain` | roko-core (L0) | **Domain plugin** (L1 equivalent for chain domain) |
+ | `roko-plugin` | roko-core (L0) | **L1 Framework** (plugin SDK) |
+ 
+ ### 11.3 Remediation Plan
+ 
+-1. **Immediate**: Extract an interface trait from `roko-learn` that `roko-conductor` can
+-   depend on, placed in `roko-core` (L0). This removes the L3→L2 violation.
++1. **Immediate**: Move the shared failure-rate stream onto `Bus` topics in `roko-core`
++   (L0), so `roko-conductor` can subscribe without importing `roko-learn` directly.
++   This removes the L3→L2 violation.
+ 2. **Short-term**: Move `roko-agent` dev-dependency tests into a dedicated integration
+    test crate at L4 (where cross-layer dependencies are expected).
+ 3. **Medium-term**: Add all unclassified crates to this document's layer map with explicit
+@@ -285,7 +297,7 @@ Six crates exist outside the formal 5-layer taxonomy and need official classific
+ 
+ ### 11.4 Healthy Patterns Observed
+ 
+-- **L0 crates** (`roko-core`, `roko-fs`, `roko-std`, `bardo-runtime`, `bardo-primitives`):
++- **L0 crates** (`roko-core`, `roko-runtime`, `roko-primitives`, `roko-fs`, `roko-std`):
+   Zero upward dependencies. Clean.
+ - **L1 crates** (`roko-agent`, `roko-index`, `roko-lang-*`): Depend only on L0. Clean
+   (except dev-dependency noted above).
+@@ -312,6 +324,7 @@ All layers have built crates with passing tests. The primary gaps are:
+ - **Cognitive cross-cuts**: `roko-dreams` is scaffold-only.
+ - **Chain layer**: Not yet integrated into the main cognitive loop.
+ - **Layer violation**: `roko-conductor` (L3/L4) has a direct dependency on `roko-learn` (L2/Cross-cut).
++  It should be dissolved by moving the shared state onto Bus topics rather than direct imports.
+   See Section 11 for remediation plan.
+ - **Unclassified crates**: Six crates need formal layer assignment (Section 11.2).
+ 
+@@ -320,7 +333,10 @@ All layers have built crates with passing tests. The primary gaps are:
+ ## Cross-References
+ 
+ - [00-vision-and-thesis.md](00-vision-and-thesis.md) — Why five layers
++- [01-naming-and-glossary.md](./01-naming-and-glossary.md) — Canonical naming map and glossary
+ - [06-synapse-traits.md](06-synapse-traits.md) — Traits distributed across layers
++- [07-substrate-trait.md](07-substrate-trait.md) — Substrate deep dive and kernel fabric details
+ - [13-cognitive-cross-cuts.md](13-cognitive-cross-cuts.md) — Cross-cuts injected into layers
+ - [15-crate-map.md](15-crate-map.md) — Full crate inventory
+ - [23-architectural-analysis-improvements.md](23-architectural-analysis-improvements.md) — Full architectural analysis
++- [03-bus-as-first-class.md](../../tmp/refinements/03-bus-as-first-class.md) — Refinement source for the Bus kernel fabric
+diff --git a/docs/00-architecture/23-architectural-analysis-improvements.md b/docs/00-architecture/23-architectural-analysis-improvements.md
+index 2bc0f5b6..5329a484 100644
+--- a/docs/00-architecture/23-architectural-analysis-improvements.md
++++ b/docs/00-architecture/23-architectural-analysis-improvements.md
+@@ -9,6 +9,7 @@
+ > (Free Energy Principle, VERSES Genius). This document identifies architectural strengths,
+ > coherence gaps, layer violations, rewrite boundaries, and proposes improvements grounded in
+ > academic literature. See also `tmp/refinements/01-critique-one-noun.md`,
++> `tmp/refinements/03-bus-as-first-class.md`,
+ > `tmp/refinements/21-from-scratch-redesigns.md`, and
+ > [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+@@ -40,8 +41,11 @@ Key findings:
+ 1. **The current operator set is coherent, but v2 planning changes the question.** The
+    from-scratch kernel rewrite in REF21 is the clean path once Pulse and Bus semantics are
+    first-class.
+-2. **One dependency violation exists.** `roko-conductor` → `roko-learn` breaks the L3→L2 rule.
+-   Fixable by extracting an interface trait into L0.
++2. **One dependency violation exists, and the Bus story dissolves it.** `roko-conductor` →
++   `roko-learn` breaks the L3→L2 rule only because circuit-breaker state was modeled as a direct
++   learning dependency. The Bus-first fix routes that state through `gate.verdict.emitted` and
++   `gate.failure.rate` topics on the kernel `Bus` trait, so `roko-conductor` and `roko-learn`
++   stay decoupled at compile time.
+ 3. **Category theory provides formal grounding.** The pipeline is a composition of morphisms;
+    Score is a monoid; cross-cuts are endofunctors. These aren't metaphors — they're structural
+    properties that guarantee composability.
+@@ -151,26 +155,25 @@ Full Cargo.toml analysis across all 28 crates:
+ 
+ ### 3.2 The roko-conductor Violation
+ 
+-**Root cause**: `roko-conductor` imports learning types for circuit breaker state tracking.
+-The Conductor needs to know about historical failure rates (a learning concern) to make
+-circuit breaker decisions (a harness concern).
++**Root cause**: `roko-conductor` imports learning types for circuit-breaker state tracking.
++The Conductor needs to react to failure-rate signals, but the current implementation reaches
++across into `roko-learn` instead of consuming a shared transport primitive.
+ 
+-**Fix**: Extract a `HealthMetrics` trait into `roko-core` (L0):
++**Bus-first fix**: publish the circuit-breaker facts on the kernel `Bus` as topics and let both
++subsystems subscribe to the same live stream:
+ 
+-```rust
+-// In roko-core/src/traits.rs
+-pub trait HealthMetrics: Send + Sync {
+-    fn failure_rate(&self, gate: &str, window: Duration) -> f32;
+-    fn avg_latency(&self, gate: &str, window: Duration) -> Duration;
+-}
+-```
++- `gate.verdict.emitted` carries the gate result from the verification path.
++- `gate.failure.rate` carries the learned failure-rate summary that `roko-conductor` needs.
+ 
+-Then `roko-conductor` depends on `&dyn HealthMetrics` (L0 trait), and `roko-learn` implements
+-it. The dependency flows downward.
++That dissolves the layer violation without introducing a separate `HealthMetrics` trait in
++`roko-core`. `roko-conductor` depends on the `Bus` trait and a `TopicFilter`; `roko-learn`
++publishes the learned rate as a Pulse. The compile-time dependency between `roko-conductor`
++and `roko-learn` disappears because the shared contract is now the Bus fabric, not a direct
++trait object.
+ 
+-REF01 uses this violation as the second load-bearing data point for the reframing: the conductor
+-problem is not just a misplaced import, it is evidence that the architecture already contains
+-distinct durable and live-message paths that the old single-medium story does not describe cleanly.
++REF03 is the load-bearing reframing for this section: the architecture already contains two
++fabrics, Substrate for durable Engrams and Bus for ephemeral Pulses, so the conductor problem
++belongs in topic routing rather than in a bespoke health interface.
+ 
+ ### 3.3 Unclassified Crates
+ 
+diff --git a/docs/00-architecture/24-cross-section-integration-map.md b/docs/00-architecture/24-cross-section-integration-map.md
+index dbd8e025..1993a4c5 100644
+--- a/docs/00-architecture/24-cross-section-integration-map.md
++++ b/docs/00-architecture/24-cross-section-integration-map.md
+@@ -5,6 +5,7 @@
+ > This document is the architectural X-ray — it shows how the system's subsystems actually
+ > connect, where they should connect but don't, and what new connections would produce the
+ > highest leverage improvement.
++> See also `tmp/refinements/03-bus-as-first-class.md` and [01-naming-and-glossary.md](./01-naming-and-glossary.md).
+ 
+ > **Implementation**: Reference
+ 
+@@ -209,8 +210,9 @@ Every inter-section data flow carries Engrams of specific Kinds. The complete Ki
+ 
+ ## 4. Trait Usage Map
+ 
+-The six Synapse traits (Substrate, Scorer, Gate, Router, Composer, Policy) are implemented
+-across sections and consumed by other sections. This creates a compile-time dependency graph.
++The six Synapse traits plus the kernel `Bus` fabric are implemented across sections and
++consumed by other sections. This creates a compile-time dependency graph for storage and
++transport alike.
+ 
+ ### 4.1 Trait Implementations by Section
+ 
+@@ -220,6 +222,7 @@ across sections and consumed by other sections. This creates a compile-time depe
+ | **Substrate** | 06-Neuro | `NeuroStore` (as `FileSubstrate`) | Wired |
+ | **Substrate** | 08-Chain | `ChainSubstrate` | Scaffold |
+ | **Substrate** | 15-Code Intel | `SymbolSubstrate` | Missing |
++| **Bus** | 00-Architecture | `BroadcastBus` | Wired |
+ | **Scorer** | 00-Architecture | `RecencyScorer` | Wired |
+ | **Scorer** | 03-Composition | `RelevanceScorer` | Wired |
+ | **Scorer** | 06-Neuro | `KnowledgeScorer` (multi-factor) | Missing |
+@@ -252,6 +255,7 @@ across sections and consumed by other sections. This creates a compile-time depe
+ | 05-Learning | Scorer, Policy (self) | 00, 05 |
+ | 12-Interfaces | Substrate (read-only) | 00, 06 |
+ | 16-Heartbeat | All six traits | 00, 03, 04, 05, 06, 07 |
++| 07-Conductor | Bus, Policy | 00, 05, 07 |
+ 
+ ### 4.3 Trait Composition Chains
+ 
+@@ -541,59 +545,58 @@ budget-fitted to the token limit.
+ 
+ ## 7. Proposed New Connections
+ 
+-### 7.1 Event Bus as Universal Dependency Inverter
++### 7.1 Bus as Universal Dependency Inverter
+ 
+ **Research basis:** Zylos Research 2026 (Event-driven agent architectures), AutoGen v0.4
+ (actor model), arXiv:2601.12560 (Agentic AI taxonomies).
+ 
+ **Problem:** Currently, cross-section dependencies are implemented as direct function calls
+-in `orchestrate.rs`. This creates a monolithic coordinator that must know about every
+-subsystem. Adding a new cross-section connection requires modifying `orchestrate.rs`.
++in `orchestrate.rs`. That makes the coordinator the only place that knows how sections
++couple, which is exactly the compile-time coupling we want to remove.
+ 
+-**Proposal:** Introduce an `EngineEventBus` with typed topic channels that subsystems
+-publish to and subscribe from. The event bus inverts dependencies — subsystems do not
+-import each other, they subscribe to event topics.
++**Proposal:** Promote the kernel `Bus` trait as the transport fabric for cross-section
++coordination. Subsystems publish and subscribe by `Topic` and `TopicFilter`; they do not
++import each other for live-state exchange.
+ 
+ ```rust
+-/// Typed event topics for cross-section communication
+-pub enum EventTopic {
+-    TaskDispatched,         // 01 → 02, 05, 07, 09
+-    AgentTurnCompleted,     // 02 → 04, 05, 11
+-    GateVerdictEmitted,     // 04 → 01, 05, 06, 09
+-    KnowledgeUpdated,       // 06 → 03, 10
+-    AffectStateChanged,     // 09 → 01, 03, 16
+-    DreamCycleCompleted,    // 10 → 06, 09
+-    PheromoneEmitted,       // 13 → 01, 06
+-    ConductorIntervention,  // 07 → 01
+-    BudgetWarning,          // 05 → 01, 02
+-    PredictionResolved,     // 20 → 05, 16
+-}
+-
+-/// Engine event bus with typed subscriptions
+-pub struct EngineEventBus {
+-    subscribers: HashMap<EventTopic, Vec<Box<dyn EventHandler>>>,
+-}
+-
+-impl EngineEventBus {
+-    pub fn publish(&self, topic: EventTopic, engram: Engram) {
+-        if let Some(handlers) = self.subscribers.get(&topic) {
+-            for handler in handlers {
+-                handler.handle(&engram);
+-            }
+-        }
+-    }
+-
+-    pub fn subscribe(&mut self, topic: EventTopic, handler: Box<dyn EventHandler>) {
+-        self.subscribers.entry(topic).or_default().push(handler);
+-    }
++pub const TASK_DISPATCHED: &str = "task.dispatched";
++pub const AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
++pub const GATE_VERDICT_EMITTED: &str = "gate.verdict.emitted";
++pub const GATE_FAILURE_RATE: &str = "gate.failure.rate";
++pub const KNOWLEDGE_UPDATED: &str = "knowledge.updated";
++pub const AFFECT_STATE_CHANGED: &str = "affect.state.changed";
++pub const DREAM_CYCLE_COMPLETED: &str = "dream.cycle.completed";
++pub const PHEROMONE_EMITTED: &str = "pheromone.emitted";
++pub const CONDUCTOR_INTERVENTION: &str = "conductor.intervention";
++pub const BUDGET_WARNING: &str = "budget.warning";
++pub const PREDICTION_RESOLVED: &str = "prediction.resolved";
++
++pub trait Bus {
++    async fn publish(&self, pulse: Pulse) -> Result<u64>;
++    async fn subscribe(&self, filter: TopicFilter) -> Result<BusReceiver>;
++    async fn replay_since(
++        &self,
++        since_seq: u64,
++        filter: &TopicFilter,
++    ) -> Result<Vec<Pulse>>;
+ }
+ ```
+ 
++**Bus-first wiring:**
++- `roko-gate` publishes `gate.verdict.emitted` on the Bus after verification.
++- `roko-learn` publishes `gate.failure.rate` on the Bus from rolling gate history.
++- `roko-conductor` subscribes to those topics and adjusts circuit-breaker state.
++- `roko-conductor` no longer imports learning types, so the `roko-conductor` → `roko-learn`
++  layer violation dissolves without a separate side trait.
++
+ **Benefits:**
+-- Adding M1-M20 becomes: register a subscriber, don't modify `orchestrate.rs`.
+-- The event bus IS the cross-section integration map — `bus.subscribers` is inspectable.
+-- Aligns with the Blackboard architecture pattern (arXiv:2507.01701).
+-- The existing `signals.jsonl` becomes the durable backing store for the event bus.
++- Adding M1-M20 becomes: publish a topic and add a subscriber, not a coordinator import.
++- The Bus fabric is inspectable through topics and subscriptions, so the integration map
++  becomes executable rather than implicit.
++- Topic-driven decoupling keeps live coordination in `Bus`, while durable state still lives
++  in `Substrate`.
++- This matches the Blackboard-style indirect coordination pattern without inventing another
++  interface surface.
+ 
+ **Estimated LOC:** ~200 for the bus infrastructure, then each missing integration (M1-M20)
+ becomes ~20-40 LOC instead of the current 40-200 LOC estimates.
+@@ -689,8 +692,8 @@ can be validated:
+ /// The dependency graph is checked at build time.
+ pub struct CrateManifest {
+     pub section: Section,
+-    pub produces: &'static [EventTopic],
+-    pub consumes: &'static [EventTopic],
++    pub produces: &'static [&'static str],
++    pub consumes: &'static [&'static str],
+     pub trait_impls: &'static [SynapseTrait],
+     pub trait_deps: &'static [SynapseTrait],
+ }
+@@ -698,8 +701,8 @@ pub struct CrateManifest {
+ // In roko-gate/src/lib.rs:
+ pub const MANIFEST: CrateManifest = CrateManifest {
+     section: Section::Verification,
+-    produces: &[EventTopic::GateVerdictEmitted],
+-    consumes: &[EventTopic::AgentTurnCompleted],
++    produces: &[GATE_VERDICT_EMITTED],
++    consumes: &[AGENT_TURN_COMPLETED],
+     trait_impls: &[SynapseTrait::Gate],
+     trait_deps: &[SynapseTrait::Substrate],
+ };
+@@ -707,7 +710,8 @@ pub const MANIFEST: CrateManifest = CrateManifest {
+ 
+ A build script or test can then verify that every consumed topic has at least one producer,
+ and every trait dependency has at least one implementation. This makes the dependency matrix
+-in Section 2 executable rather than documentary.
++in Section 2 executable rather than documentary. For the Bus-specific pieces, `TopicFilter`
++describes the subscriber's routing contract and the Bus ring provides bounded replay.
+ 
+ ---
+ 
+@@ -886,7 +890,7 @@ read, but Dreams does not yet have a cursor-based catch-up mechanism (see Propos
+ | M9: Conductor→Routing (direct) | 07→05 | ~45 | SystemLoadSnapshot exists |
+ | M10: Experiments→Static | 05→00 | ~90 | ExperimentStore exists |
+ | M11: Orchestration→Daimon | 01→09 | ~40 | Needs M1 first |
+-| Event Bus infrastructure | All | ~200 | Enables all future M-items |
++| Bus infrastructure | All | ~200 | Enables all future M-items |
+ | **Tier 2 Total** | | **~620** | |
+ 
+ ### Tier 3: Full Cognitive Loop (enables Dreams and meta-cognition)
+@@ -914,7 +918,7 @@ read, but Dreams does not yet have a cursor-based catch-up mechanism (see Propos
+ ### Grand Total: ~2,070 LOC to wire all 20 missing integrations
+ 
+ This is approximately 1.2% of the current codebase (~177K LOC). The highest-leverage
+-investments are Tier 1 (~310 LOC) and the Event Bus infrastructure (~200 LOC), which together
++investments are Tier 1 (~310 LOC) and the Bus infrastructure (~200 LOC), which together
+ would unlock 5 missing connections and make all remaining connections cheaper to wire.
+ 
+ ---
+@@ -973,12 +977,12 @@ Total expected zero-dependency pairs: ~180 (39% of the 462-pair space).
+ | arXiv:2509.13978 | Workflow provenance: four dimensions (dataflow, control, telemetry, scheduling) inform Section 7.2 |
+ | arXiv:2604.05150 (Compiled AI) | Compiled dependency graph: build-time validation of cross-section wiring (Section 7.4) |
+ | arXiv:2505.07087 | Cognitive design patterns: catalog of cross-cutting patterns from classical architectures |
+-| Zylos Research 2026 | Event-driven agent architecture: blackboard + event sourcing combination (Section 7.1) |
++| Zylos Research 2026 | Event-driven agent architecture: blackboard + Bus topic routing combination (Section 7.1) |
+ | arXiv:2507.01701 | Blackboard architecture for multi-agent LLM systems |
+ | Conant & Ashby 1970 | Good Regulator Theorem: the dependency map must be a model of the system it regulates |
+-| Ashby 1956 | Law of Requisite Variety: the event bus must have at least as many topic types as there are distinct cross-section interaction modes |
++| Ashby 1956 | Law of Requisite Variety: the Bus must have at least as many topic types as there are distinct cross-section interaction modes |
+ | Beer 1972 | Viable System Model: the conductor (System 3*) must have monitoring channels to every operational subsystem |
+-| Grassé 1959 | Stigmergy: indirect coordination through shared state (the event bus IS the stigmergic medium) |
++| Grassé 1959 | Stigmergy: indirect coordination through shared state (the Bus fabric is the stigmergic medium) |
+ 
+ ---
+ 
+diff --git a/docs/00-architecture/INDEX.md b/docs/00-architecture/INDEX.md
+index 5d630ebb..4eda569c 100644
+--- a/docs/00-architecture/INDEX.md
++++ b/docs/00-architecture/INDEX.md
+@@ -8,6 +8,7 @@
+ > layer taxonomy, cognitive cross-cuts, collective intelligence metrics, crate map, cybernetic
+ > foundations, and the frontier innovations that distinguish Roko from every other agent
+ > framework. See also `tmp/refinements/02-engram-vs-pulse.md` for the Engram/Pulse split,
++> `tmp/refinements/03-bus-as-first-class.md` for the Bus promotion and two-fabric kernel,
+ > `tmp/refinements/06-refactoring-plan.md` for the phased refactoring plan and rollout
+ > ordering, and `tmp/refinements/21-from-scratch-redesigns.md` for the rewrite-track
+ > alternative and from-scratch sequencing.
+@@ -53,7 +54,8 @@ loop, and the frontier innovations that emerge from the architecture.
+ | 04 | [Decay Variants](./04-decay-variants.md) | Four decay variants (None, HalfLife, Ttl, Ebbinghaus), formulas, pheromone constants, knowledge tier interaction, selection guidelines |
+ | 05 | [Provenance and Attestation](./05-provenance-and-attestation.md) | Provenance struct (author, trust, tainted, session), four constructors, taint analysis, planned Attestation (Ed25519 + chain), extended fields |
+ | 06 | [Synapse Traits](./06-synapse-traits.md) | Six operators across two mediums and two fabrics, the trait composition model, all six trait signatures, trait × layer map, composability example via loop_tick |
+-| 07 | [Substrate Trait (Deep Dive)](./07-substrate-trait.md) | Full Substrate specification: 7 methods, async rationale, implementations (Memory, File, HDC, Chain), concurrency, idempotence, pruning |
++| 07 | [Substrate Trait (Deep Dive)](./07-substrate-trait.md) | The durable storage fabric: Substrate's trait surface, backends, concurrency, pruning, and its relationship to the Bus sibling fabric |
++| 07b | [Bus Transport Fabric](./07b-bus-transport-fabric.md) | The transport fabric: Bus trait, Topic and TopicFilter routing, replay/ring semantics, backend families, and topic-driven decoupling |
+ | 08 | [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md) | Detailed specs for the five non-Substrate operators: Scorer composition, 11-gate pipeline, CascadeRouter feedback, Composer budget, Policy batch model |
+ | 09 | [Universal Cognitive Loop](./09-universal-cognitive-loop.md) | 9-step loop specification with trait mappings, shipping loop_tick code, TickOutcome struct, loop at three speeds, universality |
+ | 10 | [Three Cognitive Speeds](./10-three-cognitive-speeds.md) | Gamma (~5-15s), Theta (~75s), Delta (hours): frequency selection, adaptive clock, turn limits, neuroscience inspiration |
+@@ -93,7 +95,7 @@ mediums, the six operators, the two fabrics, and the five-layer taxonomy.
+ 1. Start with [00-vision-and-thesis](./00-vision-and-thesis.md) for the high-level thesis
+ 2. Read [01-naming-and-glossary](./01-naming-and-glossary.md) for terminology
+ 3. Read [02-engram-data-type](./02-engram-data-type.md) and [02b-pulse-ephemeral-event](./02b-pulse-ephemeral-event.md) through [05-provenance-and-attestation](./05-provenance-and-attestation.md) for the core data types and medium split
+-4. Read [06-synapse-traits](./06-synapse-traits.md) through [08-scorer-gate-router-composer-policy](./08-scorer-gate-router-composer-policy.md) for the trait system
++4. Read [06-synapse-traits](./06-synapse-traits.md) through [08-scorer-gate-router-composer-policy](./08-scorer-gate-router-composer-policy.md) for the trait system, including the Substrate/Bus fabric split
+ 5. Read [09-universal-cognitive-loop](./09-universal-cognitive-loop.md) through [11-dual-process-and-active-inference](./11-dual-process-and-active-inference.md) for the cognitive loop
+ 6. Read [12-five-layer-taxonomy](./12-five-layer-taxonomy.md) through [13-cognitive-cross-cuts](./13-cognitive-cross-cuts.md) for the architectural layers
+ 7. Read [14-c-factor-collective-intelligence](./14-c-factor-collective-intelligence.md) through [17-design-principles-and-frontier-summary](./17-design-principles-and-frontier-summary.md) for metrics, crates, theory, and innovations

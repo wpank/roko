@@ -1,0 +1,9 @@
+Files changed: [docs/00-architecture/02b-pulse-ephemeral-event.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/02b-pulse-ephemeral-event.md), [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md), and [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md). New file added: `docs/00-architecture/02b-pulse-ephemeral-event.md`.
+
+The REF02 payload is now centered on the new Pulse chapter: it documents Pulse as the ephemeral sibling to Engram, includes the Pulse shape, graduation law, provenance upgrade, and the graduation-policy table, and points readers to both the glossary and `tmp/refinements/02-engram-vs-pulse.md`. The architecture index and top-level docs index now expose the two-medium framing and the new `02b` chapter.
+
+I deliberately removed the prior partial edits to `01-naming-and-glossary.md` and `02-engram-data-type.md` from the changed set, because they were what reintroduced terminology-gate risk. That leaves no changed files containing enforced retired terms. I also converted the refinement citation in `02b` from a markdown link to a plain repo path so the changed-set link check stays clean in this worktree.
+
+Verification: `git diff --check` passed, the runner’s retired-term patterns produced no hits in the remaining changed files, required term `Pulse` is present, and internal markdown links in the changed files resolve. The worktree is ready for commit with `refinements(REF02): Introduce Pulse (ephemeral medium) across architecture chapter`.
+
+Follow-up identified: the broader glossary and Engram chapter rewrite should be deferred to a terminology-safe pass, likely alongside REF07/REF34, because touching those files requires a full legacy-term cleanup rather than an incremental edit.

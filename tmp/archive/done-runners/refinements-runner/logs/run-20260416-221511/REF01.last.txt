@@ -1,0 +1,9 @@
+Changed [06-synapse-traits.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/06-synapse-traits.md) and [23-architectural-analysis-improvements.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/23-architectural-analysis-improvements.md).
+
+`06-synapse-traits.md` was rewritten to stop teaching the historical “one noun, six verbs” mnemonic as the full architecture story. It now leads with `two mediums`, `two fabrics`, and `six operators`, adds a prominent `See also` block for REF01-REF04 plus the glossary, and explicitly points forward to REF04 for signature generalization. That rewrite also removed the stale Engram-only / `Signal`-centric trait framing from the body.
+
+`23-architectural-analysis-improvements.md` now links REF01 near the top and explicitly ties two audit findings back to the critique: the awkward `Policy::decide(&[], ctx)` telemetry fit in §2.2 and the `roko-conductor -> roko-learn` violation in §3.2. The conclusion now names those as the strongest evidence for the two-medium / two-fabric reframing.
+
+`docs/INDEX.md` and `docs/00-architecture/INDEX.md` were checked and already satisfied REF01, so they were left unchanged.
+
+Verification: `git diff --check` passed, only `docs/` files were modified, and the changed set contains the required `two mediums`, `two fabrics`, and `six operators` vocabulary. Commit message ready: `refinements(REF01): critique one-noun framing across architecture docs`

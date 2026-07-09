@@ -1,0 +1,382 @@
+diff --git a/docs/00-architecture/06-synapse-traits.md b/docs/00-architecture/06-synapse-traits.md
+index e5f21432..bc530fbb 100644
+--- a/docs/00-architecture/06-synapse-traits.md
++++ b/docs/00-architecture/06-synapse-traits.md
+@@ -1,15 +1,24 @@
+ # The Six Synapse Traits
+ 
+-> **Abstract:** The Synapse Architecture is built from six composable traits — the "verbs"
+-> that operate on Engrams. Every capability in Roko — agent spawning, gate verification,
+-> prompt assembly, model routing, memory retrieval, pheromone reaction, chain participation —
+-> is an implementation of one of these six traits. This document introduces the trait model,
+-> explains how traits compose across layers, and provides the complete Rust signatures from
+-> shipping code.
++> **Abstract:** The Synapse Architecture still centers six composable operators, but REF01
++> widens the framing around them: Roko now has two mediums (durable Engram, ephemeral Pulse)
++> moving through two fabrics (Substrate and Bus). This document covers the six operators that
++> assess, select, compose, verify, persist, and react across that kernel, while noting where
++> the currently shipping trait signatures still describe the durable Engram path more clearly
++> than the live Pulse path.
+ 
+ 
+ > **Implementation**: Shipping
+ 
++## See Also
++
++- `tmp/refinements/01-critique-one-noun.md` — why the old mnemonic became too narrow once live runtime traffic mattered
++- `tmp/refinements/02-engram-vs-pulse.md` — durable Engram vs ephemeral Pulse
++- `tmp/refinements/03-bus-as-first-class.md` — Bus as the transport fabric beside Substrate
++- `tmp/refinements/04-operators-generalized.md` — signature generalization over `Datum`
++- `tmp/refinements/05-loop-retold.md` — the seven-step loop that makes PERSIST and BROADCAST co-equal
++- [01-naming-and-glossary.md](./01-naming-and-glossary.md) — canonical terminology and retired-name guidance
++
+ ---
+ 
+ ## 1. The Composition Model
+@@ -19,21 +28,25 @@ registries. A "coding agent" might inherit from "BaseAgent" and override methods
+ plugin" might register with a "gate manager." Each new capability requires understanding
+ the framework's extension points.
+ 
+-Roko takes a fundamentally different approach: **there are exactly six operations the system
+-can perform on Engrams**, and every capability is one of those six operations. The six
+-traits are:
++Roko takes a fundamentally different approach: there are exactly six operator roles that do
++the kernel's durable cognitive work. The retired mnemonic described them as "verbs" acting on
++Engrams alone; REF01 keeps the operator set but expands the architecture around it to two
++mediums, two fabrics, and six operators. The six operators documented here are:
+ 
+ | Trait | Role | Async? | Primary Layer |
+ |---|---|---|---|
+-| **Substrate** | Persist and query Engrams | async | L0 Runtime |
+-| **Scorer** | Rate Engrams along multiple axes | sync | L2 Scaffold |
+-| **Gate** | Check Engrams against ground truth (returns Verdict) | async | L3 Harness |
+-| **Router** | Choose best Engram from candidates (+ `feedback()`) | sync | L1 Framework |
+-| **Composer** | Combine Engrams under budget constraints (takes `&dyn Scorer`) | sync | L2 Scaffold |
+-| **Policy** | Observe Engram streams, emit new Engrams (batch input) | sync | L3-L4 |
++| **Substrate** | Persist and query durable Engrams | async | L0 Runtime |
++| **Scorer** | Rate candidates along multiple axes | sync | L2 Scaffold |
++| **Gate** | Check produced artifacts against ground truth (returns Verdict) | async | L3 Harness |
++| **Router** | Choose a candidate or next action (+ `feedback()`) | sync | L1 Framework |
++| **Composer** | Combine retrieved material under budget constraints (takes `&dyn Scorer`) | sync | L2 Scaffold |
++| **Policy** | React to recent activity and emit follow-on Engrams | sync | L3-L4 |
+ 
+ These traits are **distributed across layers** — they do not all live at one level. The
+ architecture works because traits compose across layers rather than competing with them.
++REF03 promotes the Bus to L0 beside Substrate, and REF04 generalizes several operator
++signatures over `Datum` so live Pulses can pass through the same story without first being
++forced into durable storage.
+ 
+ ### 1.1 Why Six
+ 
+@@ -54,6 +67,10 @@ This analysis is documented in detail in the original unified primitives design
+ context assembly, verification, conductor watchers, learning, chain participation, and
+ observability all map to exactly these six trait interfaces.
+ 
++The critique in `tmp/refinements/01-critique-one-noun.md` does not argue for a seventh
++operator. It argues that the older mnemonic hid the second medium and the transport fabric.
++The operator count survives; the framing expands.
++
+ ### 1.2 Why Traits (Not Objects, Not Functions)
+ 
+ Rust traits provide three properties essential to Roko's design:
+@@ -409,11 +426,17 @@ pub trait Policy: Send + Sync {
+ }
+ ```
+ 
++The shipping signature still batches durable records, but many real policies are motivated by
++live runtime activity: heartbeats, cancellation, gate verdicts in flight, token chunks, and
++health signals. That pressure is why REF02 introduces Pulse and REF04 generalizes operator
++inputs over `Datum` instead of forcing every reactive path to materialize as an Engram first.
++
+ ### 7.1 Batch Input
+ 
+ Unlike Scorers (which operate on a single Engram) or Gates (which verify a single Engram),
+-Policies receive a batch of recent Engrams — the "stream." This enables pattern detection
+-across multiple Engrams:
++Policies currently receive a batch of recent Engrams — the "stream." Architecturally, many of
++those batches are snapshots of a livelier Pulse stream on the Bus, which is why the reactive
++boundary feels tighter in the two-medium framing than in the original durable-only story:
+ 
+ - **CircuitBreakerPolicy**: Monitors for repeated gate failures, emits a pause Engram
+ - **EpisodeLogPolicy**: Collects agent turns and gate results, emits Episode Engrams
+@@ -447,6 +470,10 @@ Key insight: the same trait can have implementations at different layers. A Scor
+ assembly), but both implement the same `Scorer` trait. This is how composition works across
+ layers.
+ 
++In the two-fabric framing, L0 also contains the Bus, the co-equal transport fabric that
++carries Pulses between these operators. This chapter stays focused on the six operators;
++REF03 adds the missing Bus chapter beside the Substrate deep dive.
++
+ ---
+ 
+ ## 9. Composability Example
+@@ -497,6 +524,10 @@ Different agents use different implementations of each trait, but the loop struc
+ universal. This is the Synapse Architecture: one loop, six extension points, infinite
+ combinations.
+ 
++This code sample shows the durable path through the kernel. The live path runs beside it via
++Bus subscriptions and publishes; REF03 and REF05 make that broadcast path first-class instead
++of treating it as an implementation detail.
++
+ ---
+ 
+ ## 10. Categorical Analysis: Traits as Morphisms
+@@ -568,13 +599,13 @@ feed into a Theta tick.
+ ### 10.5 Implications for a 7th Trait
+ 
+ Category theory suggests that the six traits are sufficient if and only if every morphism
+-in **Eng** factors through them. The analysis in Section 23 (architectural-analysis-improvements)
+-identifies two candidate operations — **Transform** (Signal → Signal mapping without budget)
+-and **Observe** (read-only projection for telemetry) — that currently piggyback on existing
+-traits. Both can be expressed as degenerate cases of Composer and Policy respectively, so the
+-six traits remain sufficient. However, if the system grows a class of Signal-to-Signal
+-transformations that are neither budget-constrained (Composer) nor stream-reactive (Policy),
+-a dedicated `Transform` trait may become warranted.
++in **Eng** factors through them. The analysis in Section 23 identifies two candidate
++operations — **Transform** (Engram-to-Engram mapping without budget) and **Observe**
++(read-only projection for telemetry) — that currently piggyback on existing traits. Both can
++be expressed as degenerate cases of Composer and Policy respectively, so the six traits
++remain sufficient. If REF04's `Datum` generalization eventually produces a large class of
++budget-free transformations that are neither composition nor reaction, a dedicated
++`Transform` trait may become warranted.
+ 
+ **References**:
+ - Milewski, B. (2014). "Category Theory for Programmers." [bartoszmilewski.com](https://bartoszmilewski.com/2014/10/28/category-theory-for-programmers-the-preface/)
+@@ -592,21 +623,22 @@ edge cases cleanly? Analysis reveals three boundary areas:
+ 
+ | Operation | Current Trait | Awkwardness |
+ |---|---|---|
+-| Signal transformation (e.g., summarize) | Composer with budget=∞ | Budget parameter is meaningless for 1:1 transforms |
+-| Telemetry/observability emission | Policy with empty input | Policy signature expects a stream; observability just emits |
+-| Batch verification (multiple signals) | Gate called in loop | Gate verifies one signal; batch verification requires external loop |
++| Engram transformation (e.g., summarize) | Composer with budget=∞ | Budget parameter is meaningless for 1:1 transforms |
++| Telemetry/observability emission | Policy with empty input | Policy signature expects a stream; live runtime data wants Bus and `Datum` generalization |
++| Batch verification (multiple candidates) | Gate called in loop | Gate verifies one candidate; batch verification requires external loop |
+ 
+ ### 11.2 Why Not a 7th Trait?
+ 
+-A `Transform` trait (`Signal → Signal`, no budget, no stream) would capture 1:1 signal
++A `Transform` trait (Engram → Engram, no budget, no stream) would capture 1:1
+ transformations cleanly. However:
+ 
+ 1. **Parsimony**: Every additional trait multiplies the composition surface. Six traits
+    produce 6! = 720 ordering permutations; seven produce 5,040.
+-2. **Degenerate Composer**: `Composer::compose(&[single_signal], &Budget::UNLIMITED, ...)` is
++2. **Degenerate Composer**: `Composer::compose(&[single], &Budget::UNLIMITED, ...)` is
+    functionally identical to a Transform. The budget parameter is unused but causes no harm.
+-3. **Cognitive simplicity**: "One noun, six verbs" is a powerful mnemonic. Adding a seventh
+-   verb dilutes the conceptual model.
++3. **Historical simplicity**: the retired "one noun, six verbs" shorthand was concise, but
++   the broader two mediums / two fabrics / six operators story is the correct architectural
++   frame now. Adding a seventh operator would still dilute the compositional model.
+ 
+ **Decision**: Keep six. The awkward cases are minor and the parsimony benefit is substantial.
+ If a future domain produces a large class of budget-free, stream-free Signal transformations,
+@@ -649,6 +681,8 @@ distinctions justify keeping each trait separate.
+ - **Implemented**: SystemPromptBuilder as a Composer in `roko-compose`.
+ - **Gap**: CompositeScorer for combining multiple Scorers (specified, partially implemented).
+ - **Gap**: ChainSubstrate for on-chain Engram storage (specified, not built).
++- **Gap**: The shipping trait signatures still describe the durable Engram path more clearly
++  than the live Pulse path; REF02 through REF05 close that documentation and kernel gap.
+ - **Analysis**: Six traits are sufficient for all current and foreseeable operations.
+   See [23-architectural-analysis-improvements.md](23-architectural-analysis-improvements.md).
+ 
+@@ -656,6 +690,8 @@ distinctions justify keeping each trait separate.
+ 
+ ## Cross-References
+ 
++- `tmp/refinements/01-critique-one-noun.md` — diagnosis of why the older mnemonic became too narrow
++- `tmp/refinements/04-operators-generalized.md` — planned `Datum` generalization for these signatures
+ - [02-engram-data-type.md](02-engram-data-type.md) — The Engrams these traits operate on
+ - [07-substrate-trait.md](07-substrate-trait.md) — Substrate in depth
+ - [08-scorer-gate-router-composer-policy.md](08-scorer-gate-router-composer-policy.md) — Other five traits in depth
+diff --git a/docs/00-architecture/23-architectural-analysis-improvements.md b/docs/00-architecture/23-architectural-analysis-improvements.md
+index df9c81bc..69cd1f66 100644
+--- a/docs/00-architecture/23-architectural-analysis-improvements.md
++++ b/docs/00-architecture/23-architectural-analysis-improvements.md
+@@ -10,6 +10,8 @@
+ 
+ > **Implementation**: Analysis (informing future architectural decisions)
+ 
++Refinement note: Read this audit alongside `tmp/refinements/01-critique-one-noun.md` and downstream refinements REF02-REF05 and REF07. Together they move the architecture story from a single-medium mnemonic to the two-medium / two-fabric framing.
++
+ **Date**: 2026-04-12
+ **Methodology**: Read all 24 architecture docs, all 22 section INDEX files, STATUS/QUICKSTART/COMPARISON,
+ analyzed actual Cargo.toml dependency graphs across all 28 crates, read trait definitions in code
+@@ -19,17 +21,21 @@ analyzed actual Cargo.toml dependency graphs across all 28 crates, read trait de
+ 
+ ## 1. Executive Summary
+ 
+-Roko's Synapse Architecture is **remarkably coherent**. The "one noun, six verbs" model holds
+-up under scrutiny: all 131 trait implementations across the codebase fit cleanly into the six
+-traits, with only minor awkwardness at the boundaries. The five-layer taxonomy has **one
+-confirmed dependency violation** (roko-conductor L3/L4 → roko-learn L2/Cross-cut) and **six
+-unclassified crates**. The three cognitive speeds map cleanly to all three primary domains
+-(coding, chain, research). The Engram type is genuinely universal, with edge cases that are
+-handled by existing extension mechanisms (`Kind::Custom`, `Body::Json`, `tags`).
++Roko's Synapse Architecture is **remarkably coherent**. The six operators remain sufficient,
++but the retired "one noun, six verbs" mnemonic is too narrow: it hides the second medium and the
++Bus fabric that the runtime already uses. The better framing is two mediums moving through two
++fabrics, with the same six operators, five layers, three cognitive speeds, and three cross-cuts.
++All 131 trait implementations across the codebase still fit cleanly into that operator set, with
++only minor awkwardness at the boundaries. The five-layer taxonomy has **one confirmed dependency
++violation** (roko-conductor L3/L4 → roko-learn L2/Cross-cut) and **six unclassified crates**.
++The three cognitive speeds map cleanly to all three primary domains (coding, chain, research).
++The Engram type is genuinely universal, with edge cases that are handled by existing extension
++mechanisms (`Kind::Custom`, `Body::Json`, `tags`).
+ 
+ Key findings:
+-1. **Six traits are sufficient.** No 7th trait is needed. Two boundary operations (signal
+-   transformation, telemetry emission) can be expressed as degenerate Composer and Policy.
++1. **Six operators are sufficient.** No 7th operator is needed. Two boundary operations
++   (live-message transformation, telemetry emission) can be expressed as degenerate Composer and
++   Policy, which is evidence of a narrow boundary rather than an incomplete operator set.
+ 2. **One dependency violation exists.** `roko-conductor` → `roko-learn` breaks the L3→L2 rule.
+    Fixable by extracting an interface trait into L0.
+ 3. **Category theory provides formal grounding.** The pipeline is a composition of morphisms;
+@@ -81,10 +87,11 @@ semantics. Examples: summarize text, translate language, extract structured data
+ **Arguments against:**
+ - Parsimony: 6 traits → 720 orderings; 7 traits → 5,040 orderings. Combinatorial explosion.
+ - Degenerate Composer handles it: `Composer::compose(&[x], &Budget::UNLIMITED, ...)` works.
+-- Cognitive load: "one noun, six verbs" is a powerful mnemonic.
++- Cognitive load: the retired "one noun, six verbs" mnemonic is still powerful shorthand.
+ 
+ **Verdict: Keep six.** The benefit of parsimony outweighs the API awkwardness. The mnemonic
+-is valuable for onboarding and architectural reasoning. If a future domain produces dozens of
++is valuable for onboarding and architectural reasoning, but it should be treated as shorthand for
++the operator set, not as the complete architecture story. If a future domain produces dozens of
+ budget-free, stream-free transforms, reconsider.
+ 
+ ### 2.4 Could Traits Be Merged?
+@@ -729,7 +736,8 @@ persistent storage of Engrams, which is the canonical L0 responsibility.
+ ## 12. Conclusion
+ 
+ Roko's Synapse Architecture is architecturally sound and theoretically well-grounded. The
+-six-trait model handles all current operations with only minor boundary awkwardness. The
++six-operator model handles all current operations with only minor boundary awkwardness, but the
++broader architecture story needs the second medium and the Bus fabric to be complete. The
+ five-layer taxonomy is clean with one fixable dependency violation. The three cognitive speeds
+ are a genuine innovation extending classical dual-process theory. The Engram type is truly
+ universal, validated by comparison to the Agent Data Protocol.
+@@ -743,3 +751,13 @@ The most impactful improvement would be **gradient gate feedback** (Section 8.2)
+ connects Roko's existing Gate pipeline to active inference's prediction-error minimization
+ framework, enabling continuous learning from every verification attempt rather than binary
+ pass/fail signals.
++
++### 12.1 Why This Audit Points Beyond One Noun
++
++Section 2.2 already shows the limit of the old mnemonic: "Telemetry emission" fits only by leaning
++on `Policy::decide(&[], ctx)`, and that awkward-but-functional boundary is exactly what you expect
++when a live transport medium is being squeezed into a durable-record abstraction. Section 3.2
++adds the other half of the diagnosis: the `roko-conductor` → `roko-learn` dependency violation is
++the architectural symptom you get when Bus concerns are not named as first-class. Taken together,
++those two sections motivate the two-medium / two-fabric reframing that REF02-REF05 and REF07
++develop in detail.
+diff --git a/docs/00-architecture/INDEX.md b/docs/00-architecture/INDEX.md
+index 4f975016..77e866fe 100644
+--- a/docs/00-architecture/INDEX.md
++++ b/docs/00-architecture/INDEX.md
+@@ -1,11 +1,13 @@
+ # Architecture
+ 
+-> The Synapse Architecture is Roko's compositional foundation: one noun (Engram) and six verb
+-> traits (Substrate, Scorer, Gate, Router, Composer, Policy) that compose to express every
+-> capability in the system. This topic covers the complete architectural specification — from
+-> the core data type through the five-layer taxonomy, cognitive cross-cuts, collective
+-> intelligence metrics, crate map, cybernetic foundations, and the fourteen frontier innovations
+-> that distinguish Roko from every other agent framework.
++> The Synapse Architecture is Roko's compositional foundation: two mediums, two fabrics, six
++> operators, five layers, three speeds, and three cross-cuts. See also
++> `tmp/refinements/01-critique-one-noun.md`; REF02-REF05 and REF07 continue the reframing from
++> the retired "one noun, six verbs" mnemonic into the current architecture story. This topic
++> covers the complete architectural specification from the core data type through the
++> layer taxonomy, cognitive cross-cuts, collective intelligence metrics, crate map, cybernetic
++> foundations, and the frontier innovations that distinguish Roko from every other agent
++> framework.
+ 
+ **Part of**: [Roko PRD](../INDEX.md)
+ **Status**: Written
+@@ -17,10 +19,11 @@
+ ## Abstract
+ 
+ Roko is a Rust toolkit for building cognitive agents that build themselves. Its architecture
+-— the Synapse Architecture — is built from a single universal data type (the Engram) and six
+-composable traits that process Engrams. Every capability in the system, from code generation
+-to chain transaction execution to knowledge consolidation, is an implementation of one of
+-these six traits operating on Engrams.
++— the Synapse Architecture — is built around two mediums: durable Engram and ephemeral Pulse.
++Those mediums move through two fabrics, Substrate and Bus, with six operators coordinating the
++system across five layers, three speeds, and three cross-cuts. Every capability in the system,
++from code generation to chain transaction execution to knowledge consolidation, is an
++implementation of that operator/fabric stack.
+ 
+ The architecture is organized into five layers (Runtime, Framework, Scaffold, Harness,
+ Orchestration) with strictly downward dependencies. Three cognitive cross-cuts (Neuro for
+@@ -30,7 +33,7 @@ a static framework.
+ 
+ This topic is the entry point for understanding Roko. It covers the theoretical foundations
+ (cybernetics, active inference, autocatalytic improvement), the concrete data structures
+-(Engram, Score, Decay, Provenance, ContentHash), the trait composition model, the cognitive
++(Engram, Score, Decay, Provenance, ContentHash), the operator composition model, the cognitive
+ loop, and the frontier innovations that emerge from the architecture.
+ 
+ ---
+@@ -45,13 +48,13 @@ loop, and the frontier innovations that emerge from the architecture.
+ | 03 | [Score: 7-Axis Appraisal](./03-score-7-axis-appraisal.md) | 4 stable axes (confidence, novelty, utility, reputation) + 3 extended (precision, salience, coherence), effective formula, arithmetic, constants |
+ | 04 | [Decay Variants](./04-decay-variants.md) | Four decay variants (None, HalfLife, Ttl, Ebbinghaus), formulas, pheromone constants, knowledge tier interaction, selection guidelines |
+ | 05 | [Provenance and Attestation](./05-provenance-and-attestation.md) | Provenance struct (author, trust, tainted, session), four constructors, taint analysis, planned Attestation (Ed25519 + chain), extended fields |
+-| 06 | [Synapse Traits](./06-synapse-traits.md) | Why six traits, the trait composition model, all six trait signatures, trait × layer map, composability example via loop_tick |
++| 06 | [Synapse Traits](./06-synapse-traits.md) | Six operators across two mediums and two fabrics, the trait composition model, all six trait signatures, trait × layer map, composability example via loop_tick |
+ | 07 | [Substrate Trait (Deep Dive)](./07-substrate-trait.md) | Full Substrate specification: 7 methods, async rationale, implementations (Memory, File, HDC, Chain), concurrency, idempotence, pruning |
+-| 08 | [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md) | Detailed specs for all 5 non-Substrate traits: Scorer composition, 11-gate pipeline, CascadeRouter feedback, Composer budget, Policy batch model |
++| 08 | [Scorer, Gate, Router, Composer, Policy](./08-scorer-gate-router-composer-policy.md) | Detailed specs for the five non-Substrate operators: Scorer composition, 11-gate pipeline, CascadeRouter feedback, Composer budget, Policy batch model |
+ | 09 | [Universal Cognitive Loop](./09-universal-cognitive-loop.md) | 9-step loop specification with trait mappings, shipping loop_tick code, TickOutcome struct, loop at three speeds, universality |
+ | 10 | [Three Cognitive Speeds](./10-three-cognitive-speeds.md) | Gamma (~5-15s), Theta (~75s), Delta (hours): frequency selection, adaptive clock, turn limits, neuroscience inspiration |
+ | 11 | [Dual-Process and Active Inference](./11-dual-process-and-active-inference.md) | T0/T1/T2 tiers, EFE formula, 16 T0 probes, Kahneman mapping, classical architectures (ACT-R, SOAR, CLARION, GWT, CoALA), LLM-era architectures |
+-| 12 | [Five-Layer Taxonomy](./12-five-layer-taxonomy.md) | L0-L4 detailed specifications, cognitive cross-cuts table, trait × layer map, dependency rules, 18-crate map by layer |
++| 12 | [Five-Layer Taxonomy](./12-five-layer-taxonomy.md) | L0-L4 detailed specifications, cognitive cross-cuts table, operator × layer map, dependency rules, 18-crate map by layer |
+ | 13 | [Cognitive Cross-Cuts](./13-cognitive-cross-cuts.md) | Neuro (6 knowledge types, 4 tiers, HDC), Daimon (PAD, 6 states, somatic markers), Dreams (NREM/REM/Integration, hypnagogia), cross-cut interactions |
+ | 14 | [C-Factor: Collective Intelligence](./14-c-factor-collective-intelligence.md) | Two-level metric (C-Factor ratio + C-Score composite), four diagnostic signals, 31.6× collective calibration, network flywheel |
+ | 15 | [Crate Map](./15-crate-map.md) | 18+ crates by layer with status, test counts, dependency graph, roko-golem dissolution, legacy naming |
+@@ -78,7 +81,7 @@ loop, and the frontier innovations that emerge from the architecture.
+ 
+ This is the foundational topic. No prerequisites are required. All other topics in the Roko
+ PRD assume familiarity with the concepts introduced here — particularly the Engram data type,
+-the six Synapse traits, and the five-layer taxonomy.
++the six operators, and the five-layer taxonomy.
+ 
+ **Recommended reading order within this topic**:
+ 1. Start with [00-vision-and-thesis](./00-vision-and-thesis.md) for the high-level thesis
+diff --git a/docs/INDEX.md b/docs/INDEX.md
+index 7d55deae..f46a718b 100644
+--- a/docs/INDEX.md
++++ b/docs/INDEX.md
+@@ -10,6 +10,10 @@ has its own folder with multiple sub-docs. For naming conventions, reframe rules
+ and the authoritative source of truth, see `tmp/prd-migration/README.md` and
+ `/Users/will/dev/nunchi/roko/refactoring-prd/`.
+ 
++See also `tmp/refinements/01-critique-one-noun.md`; REF02-REF05 and REF07 continue the
++reframing from the retired "one noun, six verbs" mnemonic into the current two-medium,
++two-fabric architecture story.
++
+ ## Start Here
+ 
+ - **[EXECUTIVE-SUMMARY.md](EXECUTIVE-SUMMARY.md)** — 10-minute overview: thesis, section summaries, innovations, roadmap
+@@ -17,12 +21,12 @@ and the authoritative source of truth, see `tmp/prd-migration/README.md` and
+ - **[STATUS.md](STATUS.md)** — Implementation status matrix (what's shipping vs. specified)
+ - **[COMPARISON.md](COMPARISON.md)** — How Roko compares to LangChain, CrewAI, SWE-Agent, AutoGPT
+ 
+-## Signal / Engram Naming
++## Current Framing
+ 
+-> **Code ↔ Docs:** The universal data type is called **`Signal`** in the Rust codebase
+-> (`crates/roko-core/src/signal.rs`) and **Engram** in these PRD documents. They are the
+-> same concept. `Signal` = Engram. See [`00-architecture/01-naming-and-glossary.md`](00-architecture/01-naming-and-glossary.md)
+-> for the full naming map including all legacy-to-current renames.
++> **Code ↔ Docs:** The universal data type is **Engram** in these PRD documents, and the
++> legacy `Signal` name remains only as a retired code reference. See
++> [`00-architecture/01-naming-and-glossary.md`](00-architecture/01-naming-and-glossary.md) for
++> the full naming map, including retired and legacy terms.
+ 
+ ## Topics
+ 

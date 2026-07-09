@@ -1,0 +1,43 @@
+Terminology gate failed: retired terms present in changed files.
+
+Recent log tail:
+=== Duration: 6m 18s ===
+=== Exit code: 0 ===
+[verify] diff_gate: 5 changed path(s) under docs/
+[verify] terminology: scanning 5 file(s)
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 23:| Bardo | **Roko** | Overall framework/project name. "Bardo" was the umbrella name for the original ecosystem. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 55:| `bardo-terminal` | `roko-cli` | The terminal UI is in `roko-cli`, with a separate TUI scaffold. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 102:| Bardo Sanctum | **Roko Portal** (web dashboard) |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 103:| bardo-terminal / Bardo | **Roko TUI** (terminal dashboard) |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 309:5. **File paths**: All `bardo-*` → `roko-*`, all `mori-*` → `roko-*`.
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 25:| Golem / Golems | **Agent / Agents** | The autonomous entity. "Agent" is the generic term; "Roko agent" when disambiguation is needed. The framework is Roko; individual entities are agents. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 42:| `golem.toml` | `roko.toml` |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 50:| All `golem-*` | `roko-*` | Mechanical rename. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 56:| `roko-golem` | **DISSOLVED** | See Crate Dissolution section below. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 60:## 4. Crate Dissolution: `roko-golem`
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 62:The `roko-golem` crate has been dissolved. Its subsystems are redistributed to standalone
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 68:| Daimon (972 lines, fully implemented) | `roko-golem/daimon.rs` | `roko-daimon` | Full PAD vector implementation, behavioral states, somatic markers. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 69:| Dreams (43 lines, placeholder) | `roko-golem/dreams.rs` | `roko-dreams` | Placeholder deleted; `roko-dreams` is the expanded implementation. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 70:| Grimoire (44 lines, placeholder) | `roko-golem/grimoire.rs` | `roko-neuro` | Placeholder deleted; `roko-neuro` is the replacement with tier-based knowledge management. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 71:| Chain Witness (43 lines, placeholder) | `roko-golem/chain_witness.rs` | `roko-chain` as `chain_witness` module | Moved. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 72:| Mortality (44 lines, placeholder) | `roko-golem/mortality.rs` | **DELETED ENTIRELY** | No mortality system in the new architecture. Resource constraints (budget, confidence, time) replace mortality clocks. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 73:| Hypnagogia (42 lines, placeholder) | `roko-golem/hypnagogia.rs` | `roko-dreams` as `hypnagogia` module | Moved to the Dreams crate. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 74:| `ScaffoldEngine` trait | `roko-golem/lib.rs` | **DELETED** | Each subsystem defines its own trait. No umbrella needed. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 75:| `GolemScaffold` aggregator | `roko-golem/lib.rs` | **DELETED** | Composition happens at the application layer via configuration. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 77:After dissolution, `roko-golem` is removed from workspace members in `Cargo.toml`.
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 116:"DAEJI token" if explicitly about testnet). When it mentions "golem chain," the correct
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 310:6. **Never say**: "Golem SDK" → say "Agent SDK" or "Roko SDK".
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 311:7. **Never say**: "Mori + Golem" → say "Roko framework with coding and chain domain plugins."
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 24:| Mori | **Roko Orchestrator** | Build/coding orchestration. Often just "orchestrator." The original Mori was a 108K-LOC TypeScript/Rust application for coding agent orchestration. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 52:| `mori-index` | `roko-index` | Code parsing, symbol graphs, HDC fingerprints. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 53:| `mori-context` | `roko-compose` + `roko-index` | Context features moved to `roko-compose`; code intelligence moved to `roko-index`. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 54:| `mori-mcp` | `roko-mcp-{stdio,github,slack,scripts}` | Split into per-transport MCP server crates. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 104:| Mori TUI | **Roko TUI** |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 309:5. **File paths**: All `bardo-*` → `roko-*`, all `mori-*` → `roko-*`.
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 311:7. **Never say**: "Mori + Golem" → say "Roko framework with coding and chain domain plugins."
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 26:| Grimoire | **Neuro** / `roko-neuro` / **NeuroStore** | Knowledge management subsystem. Persists insights, heuristics, warnings with tier-based decay. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 70:| Grimoire (44 lines, placeholder) | `roko-golem/grimoire.rs` | `roko-neuro` | Placeholder deleted; `roko-neuro` is the replacement with tier-based knowledge management. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 27:| Styx | **Agent Mesh** / **Mesh** | P2P relay and permissioned subnets for inter-agent communication and knowledge sharing. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 187:| **Agent Mesh** | P2P communication and knowledge sharing between Roko agents. Replaces "Styx." |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 31:| Clade | **Collective** / **Mesh** | Groups of cooperating agents. **Never use "fleet"** — this was an incorrect interim rename. |
+[verify] terminology violation in docs/00-architecture/01-naming-and-glossary.md: 205:| **Collective** | A group of cooperating agents. Replaces "Clade." |

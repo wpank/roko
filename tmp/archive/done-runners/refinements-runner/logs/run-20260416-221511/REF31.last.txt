@@ -1,0 +1,29 @@
+REF31 is landed in the docs tree.
+
+Files changed:
+- [34-synergy-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/34-synergy-integration-map.md) — new integrator chapter for the 10-primitive synergy matrix, named synergies, seven-step loop composition, non-synergies, and the interaction-density moat.
+- [24-cross-section-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/24-cross-section-integration-map.md) — added the REF31 bridge and clarified section-level vs primitive-level mapping.
+- [17-design-principles-and-frontier-summary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/17-design-principles-and-frontier-summary.md) — added a direct pointer from the moat/composition section to the new synergy map.
+- [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md) — indexed the new chapter and updated reading order/framing.
+- [INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md) — surfaced REF31 in the top-level index and current framing.
+
+New files added:
+- [34-synergy-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/34-synergy-integration-map.md)
+
+Retired disclaimers removed:
+- None.
+
+Cross-references added:
+- Every touched doc now points to `tmp/refinements/31-synergy-integration-map.md`.
+- The new chapter links back to [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md).
+- [24-cross-section-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/24-cross-section-integration-map.md) now links to the new synergy chapter.
+- [17-design-principles-and-frontier-summary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/17-design-principles-and-frontier-summary.md) now points to the explicit REF31 matrix as the concrete moat artifact.
+
+Follow-ups identified:
+- No blocking follow-up for this batch.
+- REF35 can now reference the new architecture chapter directly.
+
+Verification:
+- `git diff --check` passed for the touched docs.
+- Scope stayed within `docs/`.
+- I also checked the new chapter for retired-term leakage after normalizing link labels.

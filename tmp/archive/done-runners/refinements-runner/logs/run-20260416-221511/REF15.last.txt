@@ -1,0 +1,33 @@
+Updated REF15 into the canonical docs set and kept the diff scoped to `docs/`.
+
+Changed files:
+- [16-autocatalytic-and-cybernetics.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/16-autocatalytic-and-cybernetics.md)
+- [10-exponential-flywheel.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/13-coordination/10-exponential-flywheel.md)
+- [00-vision-ta-generalized.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/00-vision-ta-generalized.md)
+- [01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [13-coordination/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/13-coordination/INDEX.md)
+- [20-technical-analysis/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/20-technical-analysis/INDEX.md)
+
+What landed:
+- `16-autocatalytic-and-cybernetics` now centers REF15’s seven compounding loops, ties them to the two-medium/two-fabric and seven-step loop framing, and adds KPIs, anti-metrics, failure modes, and kill-switch guidance.
+- `10-exponential-flywheel` now uses the REF15 seven-loop coordination framing instead of the older ten-mechanism catalog, with Phase 2 amplifiers and measurement guidance.
+- `00-vision-ta-generalized` and the technical-analysis index now make the superlinear claim measurable via dashboards, anti-metrics, and cross-session eval rules.
+- The glossary now defines `Compounding loop`, `Superlinear return`, and `Heuristic commons`.
+- Cross-references to [tmp/refinements/15-exponential-scaling.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/tmp/refinements/15-exponential-scaling.md) and the glossary were added in the substantive docs.
+
+New files added: none.
+
+Retired disclaimers removed: none explicitly; the batch instead replaced stale framing (old 9-step / old ten-mechanism summaries) with the current REF15 story.
+
+Follow-up identified:
+- I deliberately left `docs/00-architecture/30-cross-pollination-innovations.md` unchanged. That file contains older legacy-heavy samples outside REF15’s core path, and keeping a partial edit there would have turned this into a broader terminology cleanup.
+
+Verification:
+- `git diff --check -- docs` is clean.
+- Diff scope is docs-only.
+- Required vocabulary (`compounding|superlinear|exponential`) is present across the changed set.
+- A word-boundary terminology grep over changed files found no unmarked retired-term violations.
+
+Commit-ready message:
+`refinements(REF15): Exponential scaling loops across autocatalytic + technical-analysis`

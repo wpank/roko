@@ -1,0 +1,107 @@
+2026-04-18T13:06:06+02:00	PU00	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:06:06+02:00	PU00	1	attempt_started	Refresh docs-parity/00 (architecture) with audit-refined docs
+2026-04-18T13:06:06+02:00	PU00	1	spawn_started	codex exec started
+2026-04-18T13:13:56+02:00	PU00	1	spawn_succeeded	codex completed
+2026-04-18T13:13:56+02:00	PU00	1	verify_running	scope+diff (main repo)
+2026-04-18T13:13:59+02:00	PU00	1	verify_succeeded	changes found in tmp/docs-parity/00/
+2026-04-18T13:13:59+02:00	PU00	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:13:59+02:00	PU00	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:14:31+02:00	PU01	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:14:31+02:00	PU01	1	attempt_started	Refresh docs-parity/01 (orchestration) with audit-refined docs
+2026-04-18T13:14:31+02:00	PU01	1	spawn_started	codex exec started
+2026-04-18T13:21:52+02:00	PU01	1	spawn_succeeded	codex completed
+2026-04-18T13:21:52+02:00	PU01	1	verify_running	scope+diff (main repo)
+2026-04-18T13:21:55+02:00	PU01	1	verify_succeeded	changes found in tmp/docs-parity/01/
+2026-04-18T13:21:55+02:00	PU01	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:21:55+02:00	PU01	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:21:57+02:00	PU02	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:21:57+02:00	PU02	1	attempt_started	Refresh docs-parity/02 (agents) with audit-refined docs
+2026-04-18T13:21:57+02:00	PU02	1	spawn_started	codex exec started
+2026-04-18T13:31:07+02:00	PU02	1	spawn_succeeded	codex completed
+2026-04-18T13:31:07+02:00	PU02	1	verify_running	scope+diff (main repo)
+2026-04-18T13:31:09+02:00	PU02	1	verify_succeeded	changes found in tmp/docs-parity/02/
+2026-04-18T13:31:09+02:00	PU02	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:31:09+02:00	PU02	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:31:12+02:00	PU03	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:31:12+02:00	PU03	1	attempt_started	Refresh docs-parity/03 (composition) with audit-refined docs
+2026-04-18T13:31:12+02:00	PU03	1	spawn_started	codex exec started
+2026-04-18T13:39:09+02:00	PU03	1	spawn_succeeded	codex completed
+2026-04-18T13:39:09+02:00	PU03	1	verify_running	scope+diff (main repo)
+2026-04-18T13:39:12+02:00	PU03	1	verify_succeeded	changes found in tmp/docs-parity/03/
+2026-04-18T13:39:12+02:00	PU03	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:39:12+02:00	PU03	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:39:15+02:00	PU04	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:39:15+02:00	PU04	1	attempt_started	Refresh docs-parity/04 (verification) with audit-refined docs
+2026-04-18T13:39:15+02:00	PU04	1	spawn_started	codex exec started
+2026-04-18T13:46:58+02:00	PU04	1	spawn_succeeded	codex completed
+2026-04-18T13:46:58+02:00	PU04	1	verify_running	scope+diff (main repo)
+2026-04-18T13:47:00+02:00	PU04	1	verify_succeeded	changes found in tmp/docs-parity/04/
+2026-04-18T13:47:00+02:00	PU04	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:47:00+02:00	PU04	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:47:03+02:00	PU05	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:47:03+02:00	PU05	1	attempt_started	Refresh docs-parity/05 (learning) with audit-refined docs
+2026-04-18T13:47:03+02:00	PU05	1	spawn_started	codex exec started
+2026-04-18T13:53:36+02:00	PU05	1	spawn_succeeded	codex completed
+2026-04-18T13:53:36+02:00	PU05	1	verify_running	scope+diff (main repo)
+2026-04-18T13:53:39+02:00	PU05	1	verify_succeeded	changes found in tmp/docs-parity/05/
+2026-04-18T13:53:39+02:00	PU05	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T13:53:39+02:00	PU05	1	attempt_succeeded	verified, no new changes
+2026-04-18T13:53:41+02:00	PU06	1	attempt_baselined	captured parity section baseline
+2026-04-18T13:53:42+02:00	PU06	1	attempt_started	Refresh docs-parity/06 (neuro) with audit-refined docs
+2026-04-18T13:53:42+02:00	PU06	1	spawn_started	codex exec started
+2026-04-18T13:59:43+02:00	PU06	1	attempt_backed_up	saved dirty state
+2026-04-18T13:59:43+02:00	PU06	1	attempt_started	Refresh docs-parity/06 (neuro) with audit-refined docs
+2026-04-18T13:59:43+02:00	PU06	1	spawn_started	codex exec started
+2026-04-18T14:05:30+02:00	PU06	1	spawn_succeeded	codex completed
+2026-04-18T14:05:30+02:00	PU06	1	verify_running	scope+diff (main repo)
+2026-04-18T14:05:33+02:00	PU06	1	verify_succeeded	changes found in tmp/docs-parity/06/
+2026-04-18T14:05:33+02:00	PU06	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:05:33+02:00	PU06	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:05:35+02:00	PU07	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:05:35+02:00	PU07	1	attempt_started	Refresh docs-parity/07 (conductor) with audit-refined docs
+2026-04-18T14:05:35+02:00	PU07	1	spawn_started	codex exec started
+2026-04-18T14:13:01+02:00	PU07	1	spawn_succeeded	codex completed
+2026-04-18T14:13:01+02:00	PU07	1	verify_running	scope+diff (main repo)
+2026-04-18T14:13:04+02:00	PU07	1	verify_succeeded	changes found in tmp/docs-parity/07/
+2026-04-18T14:13:04+02:00	PU07	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:13:04+02:00	PU07	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:13:07+02:00	PU08	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:13:07+02:00	PU08	1	attempt_started	Refresh docs-parity/08 (chain) with audit-refined docs
+2026-04-18T14:13:07+02:00	PU08	1	spawn_started	codex exec started
+2026-04-18T14:19:28+02:00	PU08	1	spawn_succeeded	codex completed
+2026-04-18T14:19:28+02:00	PU08	1	verify_running	scope+diff (main repo)
+2026-04-18T14:19:30+02:00	PU08	1	verify_succeeded	changes found in tmp/docs-parity/08/
+2026-04-18T14:19:30+02:00	PU08	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:19:30+02:00	PU08	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:19:33+02:00	PU09	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:19:33+02:00	PU09	1	attempt_started	Refresh docs-parity/09 (daimon) with audit-refined docs
+2026-04-18T14:19:33+02:00	PU09	1	spawn_started	codex exec started
+2026-04-18T14:26:17+02:00	PU09	1	spawn_succeeded	codex completed
+2026-04-18T14:26:17+02:00	PU09	1	verify_running	scope+diff (main repo)
+2026-04-18T14:26:20+02:00	PU09	1	verify_succeeded	changes found in tmp/docs-parity/09/
+2026-04-18T14:26:20+02:00	PU09	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:26:20+02:00	PU09	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:26:22+02:00	PU10	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:26:22+02:00	PU10	1	attempt_started	Refresh docs-parity/10 (dreams) with audit-refined docs
+2026-04-18T14:26:23+02:00	PU10	1	spawn_started	codex exec started
+2026-04-18T14:40:57+02:00	PU10	1	spawn_succeeded	codex completed
+2026-04-18T14:40:57+02:00	PU10	1	verify_running	scope+diff (main repo)
+2026-04-18T14:41:00+02:00	PU10	1	verify_succeeded	changes found in tmp/docs-parity/10/
+2026-04-18T14:41:00+02:00	PU10	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:41:00+02:00	PU10	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:41:02+02:00	PU11	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:41:02+02:00	PU11	1	attempt_started	Refresh docs-parity/11 (safety) with audit-refined docs
+2026-04-18T14:41:03+02:00	PU11	1	spawn_started	codex exec started
+2026-04-18T14:47:55+02:00	PU11	1	spawn_succeeded	codex completed
+2026-04-18T14:47:55+02:00	PU11	1	verify_running	scope+diff (main repo)
+2026-04-18T14:47:58+02:00	PU11	1	verify_succeeded	changes found in tmp/docs-parity/11/
+2026-04-18T14:47:58+02:00	PU11	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:47:58+02:00	PU11	1	attempt_succeeded	verified, no new changes
+2026-04-18T14:48:01+02:00	PU12	1	attempt_baselined	captured parity section baseline
+2026-04-18T14:48:01+02:00	PU12	1	attempt_started	Refresh docs-parity/12 (interfaces) with audit-refined docs
+2026-04-18T14:48:01+02:00	PU12	1	spawn_started	codex exec started
+2026-04-18T14:54:51+02:00	PU12	1	spawn_succeeded	codex completed
+2026-04-18T14:54:51+02:00	PU12	1	verify_running	scope+diff (main repo)
+2026-04-18T14:54:54+02:00	PU12	1	verify_succeeded	changes found in tmp/docs-parity/12/
+2026-04-18T14:54:54+02:00	PU12	1	commit_skipped	tmp/docs-parity is gitignored; keeping verified local files
+2026-04-18T14:54:54+02:00	PU12	1	attempt_succeeded	verified, no new changes

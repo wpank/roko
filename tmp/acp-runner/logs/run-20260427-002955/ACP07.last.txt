@@ -1,0 +1,9 @@
+The ACP07 wiring is already present in the current worktree, so I didn’t need to add new edits.
+
+`roko acp` is defined with the requested `--workdir`, `--profile`, `--config`, and `--log-file` args in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-cli/src/main.rs:444), and it constructs `roko_acp::AcpConfig` then calls `roko_acp::run_acp_server(...)` in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-cli/src/main.rs:1989). The CLI dependency is present in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-cli/Cargo.toml:36), and `roko-acp` re-exports both `AcpConfig` and `run_acp_server` in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/lib.rs:23).
+
+Verification:
+- `cargo check -p roko-cli` passed
+- `cargo clippy -p roko-acp --no-deps -- -D warnings` passed
+
+`cargo check` did emit unrelated pre-existing warnings in other crates/modules, but ACP07 compiles and the required ACP entrypoint wiring is in place.

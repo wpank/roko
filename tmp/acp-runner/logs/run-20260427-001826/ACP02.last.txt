@@ -1,0 +1,8 @@
+Current worktree already contains the complete ACP type implementation in [types.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-001826/crates/roko-acp/src/types.rs:1). It includes the inline JSON-RPC/ACP catalog, protocol and error constants, serde tagging/renaming, and the three required round-trip unit tests. I did not need to make additional edits in this attempt.
+
+Verification is clean with the correct commands:
+- `cargo check -p roko-acp`
+- `cargo clippy -p roko-acp --no-deps -- -D warnings`
+- `cargo test -p roko-acp`
+
+The earlier runner failure was the malformed verification invocation that passed `' -p roko-acp'` as one unexpected argument; the crate itself compiles and passes checks.

@@ -1,0 +1,5 @@
+Implemented the ACP03 stdio transport in [transport.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/acp-run-20260427-002955/crates/roko-acp/src/transport.rs). The stub is now a real JSON-RPC transport with newline-delimited read/write, response/error/notification helpers, outbound request tracking via a pending oneshot map, and response routing through `handle_incoming_response`. I also added a small `TransportError` type, a mockable `from_io` constructor for tests, and `Default` for the stdio-backed transport.
+
+Verification passed on the final state:
+- `cargo test -p roko-acp --lib`
+- `cargo clippy -p roko-acp --no-deps -- -D warnings`

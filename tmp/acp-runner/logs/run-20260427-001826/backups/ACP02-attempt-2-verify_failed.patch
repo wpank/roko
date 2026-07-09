@@ -1,0 +1,938 @@
+diff --git a/crates/roko-acp/src/types.rs b/crates/roko-acp/src/types.rs
+index 08bd05d7..9401c984 100644
+--- a/crates/roko-acp/src/types.rs
++++ b/crates/roko-acp/src/types.rs
+@@ -1,3 +1,931 @@
+-//! ACP protocol types (JSON-RPC messages, session types, update types)
++//! ACP protocol types (JSON-RPC messages, session types, update types).
+ 
+-// Stubbed — implementation in batch ACPnn
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++use std::collections::HashMap;
++
++/// The ACP protocol version implemented by this crate.
++pub const ACP_PROTOCOL_VERSION: u32 = 1;
++
++/// The ACP specification version implemented by this crate.
++pub const ACP_SPEC_VERSION: &str = "0.12.2";
++
++/// JSON-RPC parse error code.
++pub const PARSE_ERROR: i32 = -32700;
++
++/// JSON-RPC invalid request error code.
++pub const INVALID_REQUEST: i32 = -32600;
++
++/// JSON-RPC method not found error code.
++pub const METHOD_NOT_FOUND: i32 = -32601;
++
++/// JSON-RPC invalid params error code.
++pub const INVALID_PARAMS: i32 = -32602;
++
++/// JSON-RPC internal error code.
++pub const INTERNAL_ERROR: i32 = -32603;
++
++/// ACP session-not-found error code.
++pub const SESSION_NOT_FOUND: i32 = -32000;
++
++/// ACP session-busy error code.
++pub const SESSION_BUSY: i32 = -32001;
++
++/// A JSON-RPC 2.0 message.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(untagged)]
++pub enum JsonRpcMessage {
++    /// A JSON-RPC request.
++    Request(JsonRpcRequest),
++    /// A JSON-RPC response.
++    Response(JsonRpcResponse),
++    /// A JSON-RPC notification.
++    Notification(JsonRpcNotification),
++}
++
++/// A JSON-RPC request message.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct JsonRpcRequest {
++    /// The JSON-RPC version string.
++    pub jsonrpc: String,
++    /// The request identifier.
++    pub id: JsonRpcId,
++    /// The invoked method name.
++    pub method: String,
++    /// Optional request parameters.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub params: Option<Value>,
++}
++
++/// A JSON-RPC request or response identifier.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(untagged)]
++pub enum JsonRpcId {
++    /// A numeric identifier.
++    Number(u64),
++    /// A string identifier.
++    String(String),
++}
++
++/// A JSON-RPC response message.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct JsonRpcResponse {
++    /// The JSON-RPC version string.
++    pub jsonrpc: String,
++    /// The response identifier.
++    pub id: JsonRpcId,
++    /// Optional successful result payload.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub result: Option<Value>,
++    /// Optional error payload.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<JsonRpcError>,
++}
++
++/// A JSON-RPC error object.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct JsonRpcError {
++    /// The numeric error code.
++    pub code: i32,
++    /// The human-readable error message.
++    pub message: String,
++    /// Optional structured error data.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub data: Option<Value>,
++}
++
++/// A JSON-RPC notification message.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct JsonRpcNotification {
++    /// The JSON-RPC version string.
++    pub jsonrpc: String,
++    /// The notification method name.
++    pub method: String,
++    /// Optional notification parameters.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub params: Option<Value>,
++}
++
++/// Parameters for the `initialize` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct InitializeParams {
++    /// The protocol version requested by the client.
++    pub protocol_version: u32,
++    /// The capabilities advertised by the client.
++    #[serde(default)]
++    pub client_capabilities: ClientCapabilities,
++    /// Optional client identity information.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub client_info: Option<ClientInfo>,
++}
++
++/// Capabilities exposed by the ACP client.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ClientCapabilities {
++    /// File-system bridge capabilities.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub fs: Option<FsCapabilities>,
++    /// Whether the client supports terminal bridging.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub terminal: Option<bool>,
++    /// Whether the client supports MCP server configuration.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub mcp_servers: Option<bool>,
++}
++
++/// File-system capabilities exposed by the ACP client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct FsCapabilities {
++    /// Whether `fs/read_text_file` is supported.
++    #[serde(default)]
++    pub read_text_file: bool,
++    /// Whether `fs/write_text_file` is supported.
++    #[serde(default)]
++    pub write_text_file: bool,
++}
++
++/// Client identity metadata.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ClientInfo {
++    /// The client name.
++    pub name: String,
++    /// Optional client version.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub version: Option<String>,
++    /// Optional human-readable client title.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub title: Option<String>,
++}
++
++/// Result payload for the `initialize` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct InitializeResult {
++    /// The negotiated ACP protocol version.
++    pub protocol_version: u32,
++    /// Agent capabilities advertised to the client.
++    pub agent_capabilities: AgentCapabilities,
++    /// Agent identity metadata.
++    pub agent_info: AgentInfo,
++    /// Supported authentication methods, if any.
++    #[serde(default)]
++    pub auth_methods: Vec<Value>,
++}
++
++/// Capabilities exposed by the ACP agent.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct AgentCapabilities {
++    /// Whether prior sessions can be loaded.
++    #[serde(default)]
++    pub load_session: bool,
++    /// Prompt-related capabilities.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub prompt_capabilities: Option<PromptCapabilities>,
++    /// MCP transport capabilities.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub mcp_capabilities: Option<McpCapabilities>,
++}
++
++/// Prompt capability flags exposed by the ACP agent.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PromptCapabilities {
++    /// Whether image input is accepted.
++    pub image: bool,
++    /// Whether audio input is accepted.
++    pub audio: bool,
++    /// Whether embedded context blocks are accepted.
++    pub embedded_context: bool,
++}
++
++/// MCP capability flags exposed by the ACP agent.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct McpCapabilities {
++    /// Whether MCP over HTTP is supported.
++    pub http: bool,
++    /// Whether MCP over SSE is supported.
++    pub sse: bool,
++}
++
++/// Agent identity metadata.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct AgentInfo {
++    /// The agent name.
++    pub name: String,
++    /// The human-readable agent title.
++    pub title: String,
++    /// The agent version string.
++    pub version: String,
++}
++
++/// Parameters for the `session/new` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionNewParams {
++    /// Optional client-supplied session name.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub session_name: Option<String>,
++    /// Optional per-session client capabilities override.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub client_capabilities: Option<ClientCapabilities>,
++    /// MCP servers configured for this session.
++    #[serde(default)]
++    pub mcp_servers: Vec<McpServerConfig>,
++}
++
++/// MCP server configuration supplied by the client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct McpServerConfig {
++    /// The server display name.
++    pub name: String,
++    /// The transport used to connect to the server.
++    pub transport: McpTransport,
++}
++
++/// MCP transport configuration.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", tag = "type")]
++pub enum McpTransport {
++    /// An MCP server exposed over HTTP.
++    Http { url: String },
++    /// An MCP server started as a child process.
++    Stdio { command: String, args: Vec<String> },
++}
++
++/// Result payload for the `session/new` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionNewResult {
++    /// The new session identifier.
++    pub session_id: String,
++    /// Mutable configuration options exposed to the client.
++    pub config_options: Vec<ConfigOption>,
++    /// Optional mode metadata for the session.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub modes: Option<ModesInfo>,
++}
++
++/// Available session mode metadata.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ModesInfo {
++    /// The active mode identifier.
++    pub current_mode_id: String,
++    /// All modes available in the current session.
++    pub available_modes: Vec<ModeInfo>,
++}
++
++/// A single available session mode.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ModeInfo {
++    /// The mode identifier.
++    pub id: String,
++    /// The mode name.
++    pub name: String,
++    /// A short mode description.
++    pub description: String,
++}
++
++/// Parameters for the `session/prompt` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionPromptParams {
++    /// The target session identifier.
++    pub session_id: String,
++    /// Prompt content blocks.
++    pub prompt: Vec<ContentBlock>,
++    /// Whether the agent should include additional context automatically.
++    #[serde(default)]
++    pub include_context: bool,
++}
++
++/// Result payload for the `session/prompt` request.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionPromptResult {
++    /// The session identifier that handled the prompt.
++    pub session_id: String,
++    /// The reason prompt generation stopped.
++    pub stop_reason: StopReason,
++    /// Optional usage information.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub usage: Option<UsageInfo>,
++}
++
++/// Final prompt stop reason.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum StopReason {
++    /// The agent finished the turn normally.
++    EndTurn,
++    /// The model hit its max-token limit.
++    MaxTokens,
++    /// The prompt was cancelled.
++    Cancelled,
++    /// The prompt terminated with an error.
++    Error,
++}
++
++/// A content block exchanged between the client and agent.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", tag = "type")]
++pub enum ContentBlock {
++    /// Plain text content.
++    Text { text: String },
++    /// A structured resource reference.
++    Resource { resource: ResourceRef },
++    /// A diff payload associated with a file path.
++    Diff { path: String, diff: String },
++}
++
++/// A structured resource reference.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", tag = "type")]
++pub enum ResourceRef {
++    /// A file URI reference.
++    File { uri: String },
++}
++
++/// A `session/update` notification payload.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case", tag = "sessionUpdate")]
++pub enum SessionUpdate {
++    /// A streamed chunk of assistant-facing content.
++    AgentMessageChunk {
++        /// The streamed content block.
++        content: ContentBlock,
++        /// Optional metadata for the streamed chunk.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        _meta: Option<Value>,
++    },
++    /// A streamed chunk of thought content.
++    ThoughtMessageChunk {
++        /// The streamed content block.
++        content: ContentBlock,
++    },
++    /// A new tool-call card.
++    ToolCall {
++        /// The tool-call identifier.
++        #[serde(rename = "toolCallId")]
++        tool_call_id: String,
++        /// The user-facing tool-call title.
++        title: String,
++        /// The tool-call kind.
++        kind: ToolCallKind,
++        /// The current tool-call status.
++        status: ToolCallStatus,
++        /// Tool-call details rendered as content blocks.
++        #[serde(default)]
++        content: Vec<ContentBlock>,
++    },
++    /// An update to an existing tool-call card.
++    ToolCallUpdate {
++        /// The tool-call identifier.
++        #[serde(rename = "toolCallId")]
++        tool_call_id: String,
++        /// The current tool-call status.
++        status: ToolCallStatus,
++        /// Additional tool-call details rendered as content blocks.
++        #[serde(default)]
++        content: Vec<ContentBlock>,
++    },
++    /// A plan update.
++    Plan {
++        /// The current plan entries.
++        entries: Vec<PlanEntry>,
++    },
++    /// An update to the available slash commands.
++    AvailableCommandsUpdate {
++        /// All available slash commands.
++        available_commands: Vec<SlashCommand>,
++    },
++    /// An update to the exposed configuration options.
++    ConfigOptionsUpdate {
++        /// All mutable configuration options.
++        config_options: Vec<ConfigOption>,
++    },
++    /// An update to current token and cost usage.
++    UsageUpdate {
++        /// Used tokens.
++        used: u64,
++        /// Available context size.
++        size: u64,
++        /// Optional cost information.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        cost: Option<CostInfo>,
++    },
++    /// Session identity metadata.
++    SessionInfoUpdate {
++        /// The session identifier.
++        session_id: String,
++        /// Optional session name.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        session_name: Option<String>,
++    },
++}
++
++/// High-level classification for a tool call.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ToolCallKind {
++    /// An edit operation.
++    Edit,
++    /// A file creation operation.
++    Create,
++    /// A file deletion operation.
++    Delete,
++    /// A terminal command.
++    Terminal,
++    /// Any other operation.
++    Other,
++}
++
++/// Tool-call lifecycle status.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ToolCallStatus {
++    /// The tool call is queued.
++    Pending,
++    /// The tool call is currently running.
++    InProgress,
++    /// The tool call finished successfully.
++    Completed,
++    /// The tool call failed.
++    Failed,
++}
++
++/// A user-configurable ACP option.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConfigOption {
++    /// The stable option identifier.
++    pub id: String,
++    /// The user-facing option name.
++    pub name: String,
++    /// The option UI type.
++    #[serde(rename = "type")]
++    pub option_type: ConfigOptionType,
++    /// The option category label.
++    pub category: String,
++    /// The current option value.
++    pub current_value: Value,
++    /// Optional option description.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub description: Option<String>,
++    /// Optional set of allowed values.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub options: Option<Vec<ConfigOptionValue>>,
++}
++
++/// The UI control type used to render a config option.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ConfigOptionType {
++    /// A select input.
++    Select,
++    /// A toggle input.
++    Toggle,
++}
++
++/// A single selectable config-option value.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConfigOptionValue {
++    /// The serialized option value.
++    pub value: String,
++    /// The user-facing value label.
++    pub name: String,
++    /// Optional value description.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub description: Option<String>,
++}
++
++/// A single plan entry rendered in the client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PlanEntry {
++    /// The plan entry content.
++    pub content: String,
++    /// The entry priority.
++    pub priority: Priority,
++    /// The entry status.
++    pub status: PlanStatus,
++}
++
++/// Plan-entry priority level.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum Priority {
++    /// High-priority work.
++    High,
++    /// Medium-priority work.
++    Medium,
++    /// Low-priority work.
++    Low,
++}
++
++/// Plan-entry execution status.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PlanStatus {
++    /// The work has not started.
++    Pending,
++    /// The work is in progress.
++    InProgress,
++    /// The work is complete.
++    Completed,
++}
++
++/// A slash command exposed to the ACP client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SlashCommand {
++    /// The slash command name.
++    pub name: String,
++    /// The slash command description.
++    pub description: String,
++    /// Optional input metadata.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub input: Option<CommandInput>,
++}
++
++/// Metadata describing slash-command input.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct CommandInput {
++    /// Optional hint shown in the client.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub hint: Option<String>,
++}
++
++/// Token-usage information for a completed prompt.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct UsageInfo {
++    /// Total consumed tokens.
++    pub total_tokens: u64,
++    /// Consumed input tokens.
++    pub input_tokens: u64,
++    /// Consumed output tokens.
++    pub output_tokens: u64,
++    /// Optional internal reasoning token count.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub thought_tokens: Option<u64>,
++    /// Optional cached-read token count.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub cached_read_tokens: Option<u64>,
++    /// Optional cached-write token count.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub cached_write_tokens: Option<u64>,
++}
++
++/// Monetary usage information.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct CostInfo {
++    /// The cost amount.
++    pub amount: f64,
++    /// The ISO currency code.
++    pub currency: String,
++}
++
++/// A permission prompt initiated by the ACP agent.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PermissionRequest {
++    /// The target session identifier.
++    pub session_id: String,
++    /// The tool-call preview shown to the user.
++    pub tool_call: ToolCallPreview,
++    /// The allowed permission response options.
++    pub options: Vec<PermissionOption>,
++}
++
++/// Tool-call data shown in a permission prompt.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ToolCallPreview {
++    /// The tool-call identifier.
++    pub tool_call_id: String,
++    /// The tool-call title.
++    pub title: String,
++    /// The tool-call kind.
++    pub kind: ToolCallKind,
++    /// The current tool-call status.
++    pub status: ToolCallStatus,
++    /// Tool-call details rendered as content blocks.
++    #[serde(default)]
++    pub content: Vec<ContentBlock>,
++}
++
++/// A single selectable permission decision.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PermissionOption {
++    /// The stable option identifier.
++    pub option_id: String,
++    /// The user-facing option name.
++    pub name: String,
++    /// The decision kind.
++    pub kind: PermissionKind,
++}
++
++/// The kind of permission decision offered to the user.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PermissionKind {
++    /// Allow this operation once.
++    AllowOnce,
++    /// Always allow this operation.
++    AllowAlways,
++    /// Reject this operation once.
++    RejectOnce,
++    /// Always reject this operation.
++    RejectAlways,
++}
++
++/// A permission decision returned by the client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct PermissionResponse {
++    /// The selected option identifier.
++    pub selected_option: String,
++}
++
++/// A structured elicitation request sent to the client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ElicitationRequest {
++    /// The target session identifier.
++    pub session_id: String,
++    /// The elicitation mode, such as `form`.
++    pub mode: String,
++    /// The user-facing prompt message.
++    pub message: String,
++    /// The requested JSON schema.
++    pub requested_schema: Value,
++}
++
++/// A structured elicitation response returned by the client.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ElicitationResponse {
++    /// The elicitation outcome, such as `accept` or `reject`.
++    pub outcome: String,
++    /// Optional structured response payload.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub data: Option<Value>,
++}
++
++/// Parameters for `terminal/create`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct TerminalCreateParams {
++    /// The command to run.
++    pub command: String,
++    /// Command-line arguments.
++    #[serde(default)]
++    pub args: Vec<String>,
++    /// Optional working directory.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub cwd: Option<String>,
++    /// Optional environment overrides.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub env: Option<HashMap<String, String>>,
++}
++
++/// Result payload for `terminal/create`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct TerminalCreateResult {
++    /// The created terminal identifier.
++    pub terminal_id: String,
++}
++
++/// Parameters for `terminal/output`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct TerminalOutputParams {
++    /// The terminal identifier.
++    pub terminal_id: String,
++}
++
++/// Result payload for `terminal/output`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct TerminalOutputResult {
++    /// Captured stdout text.
++    #[serde(default)]
++    pub stdout: String,
++    /// Captured stderr text.
++    #[serde(default)]
++    pub stderr: String,
++    /// Optional terminal exit code.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub exit_code: Option<i32>,
++}
++
++/// Parameters for `session/config/update`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConfigUpdateParams {
++    /// The target session identifier.
++    pub session_id: String,
++    /// The option identifier being updated.
++    pub option_id: String,
++    /// The new serialized option value.
++    pub new_value: Value,
++}
++
++/// Result payload for `session/config/update`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConfigUpdateResult {
++    /// The full set of updated config options.
++    pub config_options: Vec<ConfigOption>,
++}
++
++/// Parameters for `session/cancel`.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionCancelParams {
++    /// The target session identifier.
++    pub session_id: String,
++}
++
++/// Result payload for listing sessions.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionListResult {
++    /// All known sessions.
++    pub sessions: Vec<SessionInfo>,
++}
++
++/// Summary information about a persisted ACP session.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionInfo {
++    /// The session identifier.
++    pub session_id: String,
++    /// Optional session name.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub session_name: Option<String>,
++    /// RFC 3339 creation timestamp.
++    pub created_at: String,
++}
++
++/// Parameters for loading a prior session.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionLoadParams {
++    /// The session identifier to load.
++    pub session_id: String,
++}
++
++/// Parameters for setting a legacy session mode.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct SessionSetModeParams {
++    /// The target session identifier.
++    pub session_id: String,
++    /// The requested mode identifier.
++    pub mode_id: String,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    #[test]
++    fn json_rpc_request_round_trips() {
++        let request = JsonRpcRequest {
++            jsonrpc: "2.0".to_owned(),
++            id: JsonRpcId::Number(1),
++            method: "initialize".to_owned(),
++            params: Some(json!({
++                "protocolVersion": ACP_PROTOCOL_VERSION,
++            })),
++        };
++
++        let value = serde_json::to_value(&request).expect("request should serialize");
++        assert_eq!(
++            value,
++            json!({
++                "jsonrpc": "2.0",
++                "id": 1,
++                "method": "initialize",
++                "params": {
++                    "protocolVersion": 1
++                }
++            })
++        );
++
++        let decoded: JsonRpcRequest =
++            serde_json::from_value(value).expect("request should deserialize");
++        match decoded.id {
++            JsonRpcId::Number(id) => assert_eq!(id, 1),
++            JsonRpcId::String(id) => panic!("unexpected string id: {id}"),
++        }
++        assert_eq!(decoded.jsonrpc, "2.0");
++        assert_eq!(decoded.method, "initialize");
++        assert_eq!(
++            decoded.params.expect("params should be present"),
++            json!({ "protocolVersion": 1 })
++        );
++    }
++
++    #[test]
++    fn session_update_agent_message_chunk_round_trips() {
++        let update = SessionUpdate::AgentMessageChunk {
++            content: ContentBlock::Text {
++                text: "hello".to_owned(),
++            },
++            _meta: None,
++        };
++
++        let value = serde_json::to_value(&update).expect("update should serialize");
++        assert_eq!(
++            value,
++            json!({
++                "sessionUpdate": "agent_message_chunk",
++                "content": {
++                    "type": "text",
++                    "text": "hello"
++                }
++            })
++        );
++
++        let decoded: SessionUpdate =
++            serde_json::from_value(value).expect("update should deserialize");
++        match decoded {
++            SessionUpdate::AgentMessageChunk { content, .. } => match content {
++                ContentBlock::Text { text } => assert_eq!(text, "hello"),
++                other => panic!("unexpected content block: {other:?}"),
++            },
++            other => panic!("unexpected session update: {other:?}"),
++        }
++    }
++
++    #[test]
++    fn config_option_round_trips() {
++        let option = ConfigOption {
++            id: "approval_policy".to_owned(),
++            name: "Approval Policy".to_owned(),
++            option_type: ConfigOptionType::Select,
++            category: "permissions".to_owned(),
++            current_value: json!("on-request"),
++            description: Some("Controls when the agent asks for approval.".to_owned()),
++            options: Some(vec![ConfigOptionValue {
++                value: "on-request".to_owned(),
++                name: "On Request".to_owned(),
++                description: None,
++            }]),
++        };
++
++        let value = serde_json::to_value(&option).expect("config option should serialize");
++        assert_eq!(
++            value,
++            json!({
++                "id": "approval_policy",
++                "name": "Approval Policy",
++                "type": "select",
++                "category": "permissions",
++                "currentValue": "on-request",
++                "description": "Controls when the agent asks for approval.",
++                "options": [
++                    {
++                        "value": "on-request",
++                        "name": "On Request"
++                    }
++                ]
++            })
++        );
++
++        let decoded: ConfigOption =
++            serde_json::from_value(value).expect("config option should deserialize");
++        assert_eq!(decoded.id, "approval_policy");
++        assert_eq!(decoded.name, "Approval Policy");
++        assert!(matches!(decoded.option_type, ConfigOptionType::Select));
++        assert_eq!(decoded.category, "permissions");
++        assert_eq!(decoded.current_value, json!("on-request"));
++        assert_eq!(
++            decoded.description.as_deref(),
++            Some("Controls when the agent asks for approval.")
++        );
++        assert_eq!(decoded.options.expect("options should be present").len(), 1);
++    }
++}

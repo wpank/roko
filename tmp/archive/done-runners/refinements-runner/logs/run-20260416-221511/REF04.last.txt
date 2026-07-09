@@ -1,0 +1,30 @@
+`HEAD` is already the REF04 commit: `6a4e4fdb refinements(REF04): Generalize six operators over Datum (Engram|Pulse)`. The worktree is clean.
+
+Primary REF04 docs in that commit:
+- [docs/00-architecture/06-synapse-traits.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/06-synapse-traits.md)
+- [docs/00-architecture/08-scorer-gate-router-composer-policy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/08-scorer-gate-router-composer-policy.md)
+- [docs/00-architecture/23-architectural-analysis-improvements.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/23-architectural-analysis-improvements.md)
+
+Supporting updates in the same commit:
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- Existing changed chain/dreams/coordination/heartbeat docs were cleaned so legacy terms are either removed or explicitly marked as legacy on the same line.
+
+No new files were added.
+
+Retired/stale framing removed:
+- Old Engram-only operator framing was replaced with `Datum` / Pulse-aware operator boundaries.
+- Old Policy batch framing was replaced with Pulse-stream reaction plus `PolicyOutputs`.
+- Unmarked retired crate/project names in already-touched ancillary docs were converted to current terms or explicit legacy references.
+
+Cross-references added:
+- Primary architecture docs point to `tmp/refinements/04-operators-generalized.md`.
+- Glossary/index entries now cover `Datum`, `PolicyOutputs`, and the two-medium / two-fabric framing.
+
+Verification:
+- `git show --check HEAD` is clean.
+- Required terms are present in the committed files: `Datum`, `two mediums`, `two fabrics`.
+- Terminology scan over the committed changed files is clean, excluding the glossary/naming file that the batch verifier explicitly skips.
+
+Follow-up:
+- REF05 should retell [docs/00-architecture/09-universal-cognitive-loop.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/09-universal-cognitive-loop.md) on top of this operator model.

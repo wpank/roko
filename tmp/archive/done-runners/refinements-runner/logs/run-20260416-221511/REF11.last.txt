@@ -1,0 +1,30 @@
+REF11 is propagated and the diff is scoped to `docs/` only. The docs now treat the HDC fingerprint as a first-class Engram field, make `query_similar` part of the Substrate story, and extend Neuro and temporal topology around fingerprint-driven similarity, clustering, consensus, analogy, and tier progression.
+
+Changed files:
+- `docs/00-architecture/01-naming-and-glossary.md`
+- `docs/00-architecture/02-engram-data-type.md`
+- `docs/00-architecture/07-substrate-trait.md`
+- `docs/00-architecture/27-temporal-knowledge-topology.md`
+- `docs/00-architecture/INDEX.md`
+- `docs/06-neuro/04-hdc-vsa-foundations.md`
+- `docs/06-neuro/06-hdc-knowledge-encoding.md`
+- `docs/06-neuro/10-knowledge-query-api.md`
+- `docs/06-neuro/12-4-tier-distillation-pipeline.md`
+- `docs/06-neuro/INDEX.md`
+- `docs/INDEX.md`
+
+Notes:
+- No new files added.
+- Removed the stale `Signal = Engram` equivalence framing from the Engram doc and replaced it with explicitly historical wording where needed.
+- Added `tmp/refinements/11-hyperdimensional-substrate.md` cross-references throughout the touched docs.
+- Added glossary coverage for `HDC fingerprint`.
+
+Verification:
+- `git diff --check -- docs` passed.
+- `git diff --name-only` shows only `docs/**` paths changed.
+
+Commit-ready message:
+- `refinements(REF11): HDC as first-class substrate field across neuro + architecture`
+
+Follow-ups:
+- None required for this batch beyond any later code-level alignment to the new doc contract.

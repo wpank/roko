@@ -1,0 +1,19 @@
+Updated REF08 into the three target architecture docs and kept scope to `docs/` only.
+
+Files changed:
+- [06-synapse-traits.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/06-synapse-traits.md:14) adds the REF08 cross-reference, an illustrative `Bus` / `Pulse` / `Datum` Rust sketch at [§2.1](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/06-synapse-traits.md:83), and a migration note at [§11.4](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/06-synapse-traits.md:307).
+- [07-substrate-trait.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/07-substrate-trait.md:113) adds an illustrative REF08 section for `query_similar(...)` and the best-effort `substrate.engram.stored` Bus bridge after `put()`.
+- [08-scorer-gate-router-composer-policy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/08-scorer-gate-router-composer-policy.md:8) adds the REF08 cross-reference and a new [§6](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/08-scorer-gate-router-composer-policy.md:244) with illustrative `PolicyOutputs`, `PlanRevisionPolicy`, `CircuitBreaker`, and `Engram::to_pulse(...)` sketches.
+
+No new files were added. No index updates were needed. No retired-term cleanup was required in these files.
+
+Cross-references added:
+- Each touched doc now points to `tmp/refinements/08-code-sketches.md`.
+
+Verification:
+- `git status` shows only the three `docs/00-architecture/*.md` files modified.
+- Required REF08 vocabulary is present via `rust`, `pub trait`, and `pub struct`.
+- A retired-terminology grep on the edited files returned no matches.
+
+Follow-up identified:
+- None inside REF08 scope; the docs are ready for commit with `refinements(REF08): Code sketches appendix + inline snippets in trait chapters`.

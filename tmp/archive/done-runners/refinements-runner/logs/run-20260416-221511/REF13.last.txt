@@ -1,0 +1,21 @@
+Updated REF13 under `docs/` only. The c-factor story now matches the refinement: it is described as a continuously measured cohort diagnostic derived from Bus/Substrate statistics, with five-axis `CohortMetrics`, online `CohortWeightsLearner`, conditional Policy interventions, WisdomGate checks, anti-groupthink controls, and dashboard/API/Prometheus surfacing.
+
+Files changed:
+- [docs/00-architecture/14-c-factor-collective-intelligence.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/14-c-factor-collective-intelligence.md)
+- [docs/13-coordination/11-collective-intelligence-metrics.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/13-coordination/11-collective-intelligence-metrics.md)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md)
+- [docs/13-coordination/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/13-coordination/INDEX.md)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md)
+
+No new files were added. The rewrite removed the stale ratio/composite and pheromone-era metric framing from the two main chapters. Each touched file now includes an REF13 pointer, and the glossary now defines `c-factor`.
+
+Verification:
+- Scope is clean: only `docs/` files changed.
+- Required vocabulary is present.
+- `git diff --check` passes.
+- No retired-term leakage was introduced in the two rewritten chapter docs.
+
+Follow-ups identified:
+- Old C-Factor/C-Score references still exist outside this batch in files like `docs/13-coordination/12-current-status-and-gaps.md`, `docs/00-architecture/16-autocatalytic-and-cybernetics.md`, and `docs/00-architecture/17-design-principles-and-frontier-summary.md`.
+- This worktree is ready for commit with `refinements(REF13): c-factor continuous measurement across coordination + architecture`.

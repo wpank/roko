@@ -1,0 +1,36 @@
+Updated the REF03 docs to make Bus a first-class kernel fabric across the architecture set.
+
+Files changed:
+- [docs/00-architecture/07-substrate-trait.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/07-substrate-trait.md:1)
+- [docs/00-architecture/07b-bus-transport-fabric.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/07b-bus-transport-fabric.md:1) new file in this worktree
+- [docs/00-architecture/12-five-layer-taxonomy.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/12-five-layer-taxonomy.md:1)
+- [docs/00-architecture/24-cross-section-integration-map.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/24-cross-section-integration-map.md:1)
+- [docs/00-architecture/01-naming-and-glossary.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/01-naming-and-glossary.md:1)
+- [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/INDEX.md:1)
+- [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/INDEX.md:1)
+
+What changed:
+- Reframed `Substrate` and `Bus` as the two L0 kernel fabrics, with explicit storage-vs-transport semantics.
+- Tightened the Bus chapter to document the Bus trait surface, `Topic`, `TopicFilter`, `BusReceiver`, replay/ring behavior, and backend families.
+- Updated the five-layer taxonomy so L0 is explicitly the two-fabric runtime/kernel surface.
+- Replaced the older event-bus proposal in the integration map with the promoted kernel `Bus` trait framing.
+- Explicitly documented that the `roko-conductor -> roko-learn` layer violation is dissolved by `gate.verdict.emitted` and `gate.failure.rate` Bus topics.
+- Updated glossary and indexes to point readers at REF03 and the new `07b` chapter.
+
+Retired disclaimers removed:
+- Removed the stale `Signal ↔ Engram` equivalence disclaimer from the glossary.
+- Replaced older `EngineEventBus` / generic event-bus wording with Bus-trait language where it mattered.
+
+Cross-references added:
+- Added or kept `tmp/refinements/03-bus-as-first-class.md` pointers in the touched docs.
+- Added top-level index links to the Substrate and Bus deep dives.
+
+Follow-ups:
+- [docs/00-architecture/23-architectural-analysis-improvements.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/refinements-run-20260416-221511/docs/00-architecture/23-architectural-analysis-improvements.md:1) already had compatible Bus-first language and had pre-existing worktree edits, so I left it untouched.
+
+Verification:
+- `git diff --check -- docs` passed.
+- Required Bus vocabulary is present in the changed docs.
+- No tests run; this was docs-only.
+
+Ready for commit message: `refinements(REF03): Promote Bus to kernel fabric across architecture + subsystem docs`

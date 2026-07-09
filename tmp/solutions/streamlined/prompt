@@ -1,0 +1,371 @@
+# Mega-Runner Generation Prompt
+
+You are creating a **single unified parallel runner** called `mega-parity` that implements
+Runners 2-7 from the Roko work plan. This runner will execute ~123 batches via the parallel
+runner template at `tmp/runners/parallel-template/`.
+
+Your output is a complete runner directory at `tmp/runners/mega-parity/`.
+
+## Reference Files
+
+Read these files in this order before generating anything:
+
+### Architecture & Rules
+1. `tmp/solutions/streamlined/FULL-WORK-PLAN.md` — master plan, architecture target, anti-patterns, review vetoes
+2. `tmp/runners/parallel-template/README.md` — runner format, batches.toml schema, prompt format
+
+### Runner Specifications (ALL required — do not skip any)
+3. `tmp/solutions/streamlined/RUNNER-2-EXECUTION-CONTRACT.md` — 30 batches: config/init, model selection, gates, CLI failure, learn paths, noise
+4. `tmp/solutions/streamlined/RUNNER-3-AGENT-SESSION-PARITY.md` — 22 batches: ChatAgentSession, Claude CLI turns, streaming, REPL/one-shot wiring
+5. `tmp/solutions/streamlined/RUNNER-4-PLAN-GROUNDING.md` — 24 batches: RepoContextPack, PRD grounding, plan validation, learning gates
+6. `tmp/solutions/streamlined/RUNNER-5-TELEMETRY-LEARNING.md` — 21 batches: UsageObservation, cost semantics, router feedback, model cleanup
+7. `tmp/solutions/streamlined/RUNNER-6-SECURITY-POSTURE.md` — 12 batches: bind/serve defaults, terminal security, CORS/share
+8. `tmp/solutions/streamlined/RUNNER-7-MORI-POLISH.md` — 14 batches: slash commands, tool rendering, demo seeding, API provider chat
+
+### Existing Codebase (READ — do not modify these directly, batches will modify them)
+9. `CLAUDE.md` — crate map, CLI commands, architecture overview
+10. `crates/roko-cli/src/lib.rs` — CLI crate module declarations
+11. `crates/roko-core/src/foundation.rs` — core types (GateConfig, GateVerdict, etc.)
+12. `crates/roko-core/src/config.rs` — Config struct
+13. `crates/roko-agent/src/claude_cli_agent.rs` — existing Claude CLI agent
+14. `crates/roko-agent/src/provider/anthropic_api.rs` — existing Anthropic adapter
+15. `crates/roko-agent/src/provider/openai_compat.rs` — existing OpenAI adapter
+16. `crates/roko-cli/src/chat_inline.rs` — current chat (to be replaced)
+17. `crates/roko-cli/src/dispatch_direct.rs` — current dispatch (to be deprecated)
+18. `crates/roko-cli/src/unified.rs` — entry point routing
+19. `crates/roko-cli/src/orchestrate.rs` — main orchestrator
+20. `crates/roko-cli/src/commands/init.rs` — init command
+21. `crates/roko-cli/src/commands/config_cmd.rs` — config commands
+22. `crates/roko-cli/src/commands/prd.rs` — PRD commands
+23. `crates/roko-cli/src/commands/plan.rs` — plan commands
+24. `crates/roko-cli/src/commands/learn.rs` — learn commands
+25. `crates/roko-cli/src/commands/status.rs` — status command
+26. `crates/roko-cli/src/run.rs` — workflow run
+27. `crates/roko-cli/src/prd.rs` — PRD logic
+28. `crates/roko-cli/src/plan_generate.rs` — plan generation
+29. `crates/roko-cli/src/explain.rs` — explain command
+30. `crates/roko-gate/src/gate_service.rs` — gate execution
+31. `crates/roko-learn/src/cascade_router.rs` — model router
+32. `crates/roko-learn/src/runtime_feedback.rs` — feedback service
+33. `crates/roko-serve/src/routes/mod.rs` — route registration
+34. `crates/roko-serve/src/routes/middleware.rs` — CORS config
+35. `crates/roko-serve/src/terminal.rs` — terminal sessions
+36. `crates/roko-serve/src/lib.rs` — server startup
+37. `crates/roko-core/src/config/serve.rs` — serve config
+38. `crates/roko-cli/src/share.rs` — share logic
+39. `crates/roko-serve/src/routes/shared_runs.rs` — shared run access
+40. `crates/roko-compose/src/system_prompt_builder.rs` — prompt assembly
+41. `crates/roko-agent/src/safety/` — tool policy / agent contracts
+
+---
+
+## Output Structure
+
+Create this exact directory structure:
+
+```
+tmp/runners/mega-parity/
+├── run.sh                          # Thin wrapper (see template)
+├── batches.toml                    # ALL ~123 batches with cross-runner deps
+├── prompts/                        # One .prompt.md per batch
+│   ├── R2_A01.prompt.md           # Runner 2, Group A, Batch 01
+│   ├── R2_A02.prompt.md
+│   ├── ... (every batch)
+│   ├── R7_E03.prompt.md
+├── context-pack/                   # Shared context for all batches
+│   ├── 00-RULES.md                # Universal + all runner-specific anti-patterns
+│   ├── 01-ARCHITECTURE-TARGET.md  # Core architecture target from FULL-WORK-PLAN.md
+│   ├── 02-CRATE-MAP.md           # Key crate paths and what they own
+│   └── 03-REVIEW-VETOES.md       # Combined review vetoes from all runners
+```
+
+---
+
+## Batch ID Convention
+
+Use `R{runner}_{group}{number}` format to keep IDs unique across runners:
+
+- Runner 2: `R2_A01` through `R2_F02`
+- Runner 3: `R3_Z01` through `R3_E01`
+- Runner 4: `R4_Z01` through `R4_E03`
+- Runner 5: `R5_Z01` through `R5_E04`
+- Runner 6: `R6_Z01` through `R6_D02`
+- Runner 7: `R7_Z01` through `R7_E03`
+
+---
+
+## Cross-Runner Dependencies (CRITICAL)
+
+The runners have inter-dependencies. Map them precisely in the `deps` field:
+
+### Runner 2 → Runner 3
+- R3_A01 (ChatAgentSession struct) depends on R2_B02 (EffectiveModelSelection module)
+- R3_A05 (slash command `/model`) depends on R2_B02
+- R3_D01 (wire REPL) depends on R2_B03 (selection in `roko run`)
+
+### Runner 2 → Runner 4
+- R4_C02 (normalize model aliases) depends on R2_B02 (knows configured model names)
+- R4_C06 (separate artifact/process) depends on R2_C04 (skipped verdicts in gate)
+
+### Runner 2 → Runner 5
+- R5_A03 (thread usage into efficiency) depends on R2_E02 (learn path alignment)
+- R5_D01 (eliminate unknown-model) depends on R2_B02 (model is always resolved)
+- R5_C01 (feed cascade router) depends on R2_B05 (selection in plan run)
+
+### Runner 3 → Runner 7
+- R7_A01-A04 (slash commands) depend on R3_A05 (slash command framework)
+- R7_B01-B02 (tool rendering) depend on R3_B03 (tool output capture)
+- R7_D01-D02 (API provider chat) depend on R3_E01 (API stub)
+
+### Runner 4 → Runner 5
+- R5_C04 (exclude bad artifacts from learning) depends on R4_C06 (artifact_valid field)
+- R5_C01 (feed router) uses artifact_valid from R4_C06
+
+### Runner 2 → Runner 6
+- R6_A01 (bind local) may touch serve config also touched by R2 — serialize carefully
+- R6_A03 (disable auto-serve) depends on R2_D01 (failure semantics established)
+
+### Within-Runner Dependencies
+Copy ALL `deps` arrays from each RUNNER-*.md spec verbatim, then add the prefix.
+Example: RUNNER-2 says B03 deps = ["B02"]. In mega-runner: R2_B03 deps = ["R2_B02"].
+
+---
+
+## Parallelism Maximization Strategy
+
+The goal is MAXIMUM parallelism. Here's how to achieve it:
+
+### 1. Context-only batches run first, ALL in parallel
+All Z-prefixed batches produce documentation only (no code changes):
+- R2_A01, R2_B01, R2_C01, R2_E01 (Runner 2 audits)
+- R3_Z01, R3_Z02 (Runner 3 audits)
+- R4_Z01, R4_Z02, R4_Z03 (Runner 4 audits)
+- R5_Z01, R5_Z02 (Runner 5 audits)
+- R6_Z01, R6_Z02 (Runner 6 audits)
+- R7_Z01 (Runner 7 audit)
+
+That's **14 batches in the first wave** — all parallel, zero code conflicts.
+
+### 2. Cross-runner parallel where files don't overlap
+Batches from different runners that touch different crates can run in parallel:
+- R2_A02 (init.rs) ∥ R6_A01 (serve.rs) ∥ R4_A01 (repo_context.rs NEW)
+- R2_C02 (gate_service.rs) ∥ R3_A01 (chat_session.rs NEW) ∥ R5_A01 (claude_cli_agent.rs)
+- R6_B01 (routes/mod.rs) ∥ R4_B01 (prd.rs) — different files
+
+### 3. Same-file batches are serialized via deps
+Batches touching the same file MUST have explicit deps even across runners:
+- `orchestrate.rs` is a hotspot: R2_B05, R2_C03, R2_C05, R5_A03, R5_A04, R5_B02, R5_C01, R5_C04
+  → These MUST be serialized. Chain them: R2_C03 → R2_C05 → R2_B05 → R5_A03 → R5_A04 → R5_B02 → R5_C01 → R5_C04
+- `chat_session.rs` is owned by Runner 3: R3_A01 → R3_A02 → R3_A03 → R3_A04 → R3_A05 → R3_B01...
+  → These are sequential within Runner 3 (same file)
+- `prd.rs` is shared by Runner 4: R4_B01 → R4_B02 → R4_B03 → R4_B04 → R4_C06
+
+### 4. Group letters become the `group` field for wave gates
+Map runner groups to mega-runner groups for wave gating:
+- Group "2A" = Runner 2 Group A (config/init)
+- Group "3A" = Runner 3 Group A (session core)
+- etc.
+
+This means wave gates (cargo check + clippy) run after each runner-group completes, not
+after individual batches — reducing gate overhead.
+
+---
+
+## batches.toml Generation Rules
+
+For every batch in every RUNNER spec, generate a `[[batch]]` entry:
+
+```toml
+[[batch]]
+id = "R2_A01"
+title = "Document current init template and config data flow"
+group = "2A"
+deps = []
+scope = []                          # Context-only batches have empty scope
+also_read = [
+    "crates/roko-cli/src/commands/init.rs",
+    "crates/roko-core/src/config.rs",
+    "crates/roko-cli/src/commands/config_cmd.rs",
+    "crates/roko-cli/src/run.rs"
+]
+verify = "quick"
+```
+
+Rules:
+- `scope` = the "Write scope" from the runner spec (files the batch MODIFIES)
+  - For context-only batches (Type: Context-only): scope = `[]` but add the write target to also_read
+    since context-only batches write to `tmp/runners/` not to source code
+- `also_read` = the "Read" files from the runner spec
+- `deps` = within-runner deps (prefixed) PLUS cross-runner deps from the dependency map above
+- `verify` = `"quick"` for most batches
+- `group` = `"{runner_number}{group_letter}"` (e.g., "2A", "3B", "6C")
+
+---
+
+## Prompt File Generation Rules
+
+For every batch, create `prompts/{id}.prompt.md` following this EXACT template:
+
+```markdown
+## Task
+
+{title from runner spec}
+
+## Runner Context
+
+You are working in runner `mega-parity`, batch {id}.
+This batch is part of Runner {N}: {runner name} — {runner goal sentence}.
+
+## Problem
+
+{What's wrong currently — from the "Goal" and evidence in the runner spec}
+
+## Architecture Contract
+
+{The architectural contract from the runner spec's header section}
+
+## Changes Required
+
+{Exact changes from the runner spec batch definition, including:}
+1. In `{file path}`:
+   - {specific change with struct definitions, field names, function signatures}
+   - {reference line numbers from the runner spec when given}
+
+## Write Scope (files you may modify)
+
+- {exact file paths from "Write scope" in the runner spec}
+
+## Read-Only Context (do not modify these)
+
+- {exact file paths from "Read" in the runner spec}
+
+## Acceptance Criteria
+
+{Exact criteria from the runner spec, as checkboxes}
+- [ ] {criterion 1}
+- [ ] {criterion 2}
+
+## Verification
+
+{Exact verify command from the runner spec}
+
+## Do NOT
+
+{Exact "DO NOT" list from the runner spec}
+- {forbidden thing 1}
+- {forbidden thing 2}
+
+## Evidence
+
+{Issue references from the runner spec if present}
+```
+
+**CRITICAL prompt rules:**
+- Copy ALL struct definitions, function signatures, and code blocks from the runner spec verbatim
+- Copy ALL "DO NOT" constraints verbatim — these prevent agents from creating anti-patterns
+- Copy ALL "Required behavior" bullets verbatim
+- Include line number references where the runner spec provides them
+- For batches that depend on other batches, mention what the dependency produces:
+  "This batch uses `EffectiveModelSelection` from R2_B02 (in `crates/roko-cli/src/model_selection.rs`)"
+
+---
+
+## context-pack/ Generation Rules
+
+### 00-RULES.md
+Combine ALL anti-pattern rules from ALL runner specs into one file:
+- Universal anti-patterns from FULL-WORK-PLAN.md
+- EC-1 through EC-7 (Runner 2)
+- CP-1 through CP-4 (Runner 3)
+- PG-1 through PG-5 (Runner 4)
+- TL-1 through TL-5 (Runner 5)
+- SP-1 through SP-4 (Runner 6)
+- MP-1 through MP-4 (Runner 7)
+
+Include the EXISTING ANTI-PATTERN examples — they are essential for agents to recognize
+the patterns they must avoid.
+
+### 01-ARCHITECTURE-TARGET.md
+Copy the "Core Architecture Target" table from FULL-WORK-PLAN.md.
+Add the key struct definitions:
+- `EffectiveModelSelection` (Runner 2)
+- `ChatAgentSession` (Runner 3)
+- `RepoContextPack` + `ArtifactValidationReport` (Runner 4)
+- `UsageObservation` (Runner 5)
+
+### 02-CRATE-MAP.md
+Extract from CLAUDE.md:
+- All crate paths and their purposes
+- Key file paths and what they own
+- The "hotspot" files from FULL-WORK-PLAN.md's Shared File Rules table
+
+### 03-REVIEW-VETOES.md
+Copy the "Review Vetoes" section from FULL-WORK-PLAN.md verbatim.
+Add the "Batch Size Rules" section.
+
+---
+
+## run.sh
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export RUNNER_NAME="mega-parity"
+export RUNNER_ROOT="$SCRIPT_DIR"
+export LOG_ROOT="$SCRIPT_DIR/logs"
+export PROMPTS_DIR="$SCRIPT_DIR/prompts"
+export CONTEXT_DIR="$SCRIPT_DIR/context-pack"
+exec bash "$SCRIPT_DIR/../parallel-template/run-parallel.sh" "$@"
+```
+
+---
+
+## Validation Checklist (verify your output)
+
+Before you finish, verify:
+
+1. **Every batch from every RUNNER spec is in batches.toml.** Count them:
+   - Runner 2: 30 batches (A01-A06, B01-B07, C01-C06, D01-D06, E01-E03, F01-F02)
+   - Runner 3: 22 batches (Z01-Z02, A01-A05, B01-B05, C01-C04, D01-D05, E01)
+   - Runner 4: 24 batches (Z01-Z03, A01-A06, B01-B04, C01-C06, D01-D02, E01-E03)
+   - Runner 5: 21 batches (Z01-Z02, A01-A05, B01-B04, C01-C05, D01, E01-E04)
+   - Runner 6: 12 batches (Z01-Z02, A01-A03, B01-B02, C01-C03, D01-D02)
+   - Runner 7: 14 batches (Z01, A01-A04, B01-B02, C01-C02, D01-D02, E01-E03)
+   - Total: 123 batches
+
+2. **Every batch has a matching prompt file.** 123 files in `prompts/`.
+
+3. **Cross-runner deps are mapped.** Check that:
+   - No R3 batch starts before R2_B02 (EffectiveModelSelection)
+   - No R5_D01 starts before R2_B02
+   - No R7 slash command starts before R3_A05
+   - orchestrate.rs batches are serialized
+
+4. **No two parallel batches modify the same file.** Check `scope` arrays:
+   - If batch X and batch Y can run in parallel (no dep chain between them),
+     their `scope` arrays must not overlap.
+
+5. **Context-only batches have `scope = []`.** They write to `tmp/runners/` only.
+
+6. **Prompts include ALL struct definitions and code blocks from the runner specs.**
+
+7. **Anti-pattern rules include ALL examples from ALL runner specs.**
+
+---
+
+## Execution Expectations
+
+With `--parallel 8`, the expected execution shape is roughly:
+
+```
+Wave 1: 14 context-only batches (ALL parallel)                          ~10 min
+Wave 2: R2_A02, R2_A03, R4_A01, R5_A01, R5_A02, R6_A01, R6_A03       ~15 min
+Wave 3: R2_A04-A06, R2_B02, R3_A01, R4_A02, R5_A03, R6_B01           ~15 min
+Wave 4: R2_B03-B06, R3_A02-A04, R4_A03-A05, R5_A04-A05, R6_B02       ~20 min
+Wave 5: R2_B07, R2_C02-C03, R3_A05, R4_A06, R5_B02, R6_C01           ~15 min
+...continuing with maximum parallelism...
+Final: proof batches, integration tests                                  ~10 min
+```
+
+Total: ~85-100 minutes wall clock at 8x parallelism, vs ~6+ hours sequential.

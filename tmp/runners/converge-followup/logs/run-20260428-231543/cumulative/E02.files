@@ -1,0 +1,8 @@
+crates/roko-cli/src/chat_inline.rs
+crates/roko-cli/src/dispatch_direct.rs
+crates/roko-cli/src/dispatch_v2.rs
+crates/roko-cli/src/knowledge_helpers.rs
+crates/roko-cli/src/learning_helpers.rs
+crates/roko-cli/src/lib.rs
+crates/roko-cli/src/run.rs
+crates/roko-cli/src/unified.rs

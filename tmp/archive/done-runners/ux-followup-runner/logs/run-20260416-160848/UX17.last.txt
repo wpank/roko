@@ -1,0 +1,15 @@
+Implemented UX17.
+
+`roko-learn` now has a new incremental-aware aggregator in [aggregate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/aggregate.rs:16) with `JsonlCursor`, hourly/daily bucket support, and a hard cap of 168 buckets. The TUI refresh path now loads `efficiency_trend(path, 1h, 24)` in [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/dashboard.rs:440), and the Learning tab renders `ratatui::Sparkline` charts in [dashboard_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/views/dashboard_view.rs:1030). The snapshot schema also carries the new trend field in [dashboard_snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/dashboard_snapshot.rs:262).
+
+Cadence and units:
+- Tokens: hourly buckets over the last 24h, shown as `tok/h`
+- Latency: hourly buckets over the last 24h, shown as `ms`
+- Cost: hourly buckets over the last 24h, shown as USD cents (`c`)
+
+Verification:
+- `cargo check -p roko-cli -p roko-learn -p roko-serve` passed
+- `cargo test -p roko-learn aggregate` passed
+- `cargo test -p roko-cli dashboard_subtab_keybindings_include_learning_and_procs` passed
+- `cargo test -p roko-cli learning_page_renders_learning_system_status` passed
+- `CARGO_HOME=/tmp/cargo-home-ux17 cargo clippy --no-deps -- -D warnings` failed on pre-existing workspace lint debt outside UX17 scope, first in `crates/roko-mcp-stdio/src/lib.rs` and `crates/roko-core/src/*`

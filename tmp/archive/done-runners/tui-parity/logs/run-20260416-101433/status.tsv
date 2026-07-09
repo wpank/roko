@@ -1,0 +1,121 @@
+2026-04-16T10:14:34+02:00	T9	1	attempt_started	Agent-server messaging: real LLM dispatch
+2026-04-16T10:14:34+02:00	T9	1	spawn_started	codex exec started
+2026-04-16T10:24:45+02:00	T9	1	spawn_succeeded	codex exec completed
+2026-04-16T10:24:45+02:00	T9	1	verify_running	cargo check -p roko-agent-server
+2026-04-16T10:25:13+02:00	T9	1	verify_running	cargo clippy -p roko-agent-server --no-deps -- -D warnings
+2026-04-16T10:25:21+02:00	T9	1	verify_succeeded	all verification commands passed
+2026-04-16T10:25:21+02:00	T9	1	commit_succeeded	dcd06257
+2026-04-16T10:25:21+02:00	T9	1	attempt_succeeded	verified and committed
+2026-04-16T10:25:21+02:00	T15	1	attempt_started	TUI dead widgets + dual theme/atmosphere merge
+2026-04-16T10:25:21+02:00	T15	1	spawn_started	codex exec started
+2026-04-16T10:34:49+02:00	T15	1	spawn_succeeded	codex exec completed
+2026-04-16T10:34:49+02:00	T15	1	verify_running	cargo check -p roko-cli
+2026-04-16T10:35:36+02:00	T15	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T10:35:55+02:00	T15	1	verify_succeeded	all verification commands passed
+2026-04-16T10:35:55+02:00	T15	1	commit_succeeded	0dc01e21
+2026-04-16T10:35:55+02:00	T15	1	attempt_succeeded	verified and committed
+2026-04-16T10:35:55+02:00	T18	1	attempt_started	Route tests: deployments/templates/mcp-code + learning test refactor
+2026-04-16T10:35:55+02:00	T18	1	spawn_started	codex exec started
+2026-04-16T10:46:30+02:00	T18	1	spawn_succeeded	codex exec completed
+2026-04-16T10:46:30+02:00	T18	1	verify_running	cargo check -p roko-serve -p roko-mcp-code
+2026-04-16T10:47:08+02:00	T18	1	verify_running	cargo test -p roko-serve --lib --no-run
+2026-04-16T10:48:32+02:00	T18	1	verify_running	cargo test -p roko-mcp-code --lib --no-run
+2026-04-16T10:48:52+02:00	T18	1	verify_running	cargo clippy -p roko-serve -p roko-mcp-code --no-deps -- -D warnings
+2026-04-16T10:49:05+02:00	T18	1	verify_failed	cargo clippy -p roko-serve -p roko-mcp-code --no-deps -- -D warnings
+2026-04-16T10:49:05+02:00	T18	1	attempt_failed	verification failed
+2026-04-16T10:49:05+02:00	T18	1	attempt_backed_up	saved failed verify state for retry
+2026-04-16T10:49:05+02:00	T18	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T10:49:05+02:00	T18	2	spawn_started	codex exec started
+2026-04-16T10:55:47+02:00	T18	2	spawn_succeeded	codex exec completed
+2026-04-16T10:55:47+02:00	T18	2	verify_running	cargo check -p roko-serve -p roko-mcp-code
+2026-04-16T10:56:23+02:00	T18	2	verify_running	cargo test -p roko-serve --lib --no-run
+2026-04-16T10:57:45+02:00	T18	2	verify_running	cargo test -p roko-mcp-code --lib --no-run
+2026-04-16T10:58:03+02:00	T18	2	verify_running	cargo clippy -p roko-serve -p roko-mcp-code --no-deps -- -D warnings
+2026-04-16T10:58:16+02:00	T18	2	verify_succeeded	all verification commands passed
+2026-04-16T10:58:17+02:00	T18	2	commit_succeeded	552a7cd0
+2026-04-16T10:58:17+02:00	T18	2	attempt_succeeded	verified and committed
+2026-04-16T10:58:17+02:00	T10	1	attempt_started	TUI snapshot bridging (gates, tokens, orch state, partial progress)
+2026-04-16T10:58:17+02:00	T10	1	spawn_started	codex exec started
+2026-04-16T11:06:16+02:00	T10	1	spawn_succeeded	codex exec completed
+2026-04-16T11:06:16+02:00	T10	1	verify_running	cargo check -p roko-cli
+2026-04-16T11:07:06+02:00	T10	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T11:07:25+02:00	T10	1	verify_succeeded	all verification commands passed
+2026-04-16T11:07:25+02:00	T10	1	commit_succeeded	fafbdbfd
+2026-04-16T11:07:25+02:00	T10	1	attempt_succeeded	verified and committed
+2026-04-16T11:07:25+02:00	T11	1	attempt_started	TUI plan nested tasks + failures population
+2026-04-16T11:07:25+02:00	T11	1	spawn_started	codex exec started
+2026-04-16T11:17:54+02:00	T11	1	spawn_succeeded	codex exec completed
+2026-04-16T11:17:54+02:00	T11	1	verify_running	cargo check -p roko-cli
+2026-04-16T11:18:49+02:00	T11	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T11:19:14+02:00	T11	1	verify_succeeded	all verification commands passed
+2026-04-16T11:19:14+02:00	T11	1	commit_succeeded	8d547899
+2026-04-16T11:19:14+02:00	T11	1	attempt_succeeded	verified and committed
+2026-04-16T11:19:14+02:00	T16	1	attempt_started	TUI duplicate fields + types consolidation
+2026-04-16T11:19:14+02:00	T16	1	spawn_started	codex exec started
+2026-04-16T11:26:57+02:00	T16	1	spawn_succeeded	codex exec completed
+2026-04-16T11:26:57+02:00	T16	1	verify_running	cargo check -p roko-cli
+2026-04-16T11:27:54+02:00	T16	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T11:28:21+02:00	T16	1	verify_succeeded	all verification commands passed
+2026-04-16T11:28:21+02:00	T16	1	commit_succeeded	498d6ed6
+2026-04-16T11:28:21+02:00	T16	1	attempt_succeeded	verified and committed
+2026-04-16T11:28:21+02:00	T12	1	attempt_started	TUI inject/filter input line visibility
+2026-04-16T11:28:22+02:00	T12	1	spawn_started	codex exec started
+2026-04-16T11:31:21+02:00	T12	1	spawn_failed	codex exec exited with 101
+2026-04-16T11:31:21+02:00	T12	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T11:31:21+02:00	T12	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T11:31:21+02:00	T12	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T11:31:21+02:00	T12	2	spawn_started	codex exec started
+2026-04-16T11:37:53+02:00	T12	2	spawn_failed	codex exec exited with 101
+2026-04-16T11:37:53+02:00	T12	2	attempt_failed	codex exited unsuccessfully
+2026-04-16T11:37:53+02:00	T13	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T11:37:53+02:00	T13	1	attempt_started	TUI modal data + PlanDetail + key intercepts
+2026-04-16T11:37:53+02:00	T13	1	spawn_started	codex exec started
+2026-04-16T11:37:53+02:00	T13	1	spawn_failed	codex exec exited with 1
+2026-04-16T11:37:53+02:00	T13	1	attempt_failed	codex exited unsuccessfully
+2026-04-16T11:37:53+02:00	T13	1	attempt_backed_up	saved failed spawn state for retry
+2026-04-16T11:37:53+02:00	T13	2	attempt_preserved_retry	reusing dirty worktree state from failed prior attempt
+2026-04-16T11:37:53+02:00	T13	2	spawn_started	codex exec started
+2026-04-16T11:37:53+02:00	T13	2	spawn_failed	codex exec exited with 1
+2026-04-16T11:37:53+02:00	T13	2	attempt_failed	codex exited unsuccessfully
+2026-04-16T11:52:49+02:00	T12	1	attempt_backed_up	saved dirty worktree before reset
+2026-04-16T11:52:49+02:00	T12	1	attempt_started	TUI inject/filter input line visibility
+2026-04-16T11:52:54+02:00	T12	1	spawn_started	codex exec started
+2026-04-16T12:01:44+02:00	T12	1	spawn_succeeded	codex exec completed
+2026-04-16T12:01:44+02:00	T12	1	verify_running	cargo check -p roko-cli
+2026-04-16T12:02:38+02:00	T12	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T12:02:57+02:00	T12	1	verify_succeeded	all verification commands passed
+2026-04-16T12:02:57+02:00	T12	1	commit_succeeded	fc1c1452
+2026-04-16T12:02:57+02:00	T12	1	attempt_succeeded	verified and committed
+2026-04-16T12:02:57+02:00	T13	1	attempt_started	TUI modal data + PlanDetail + key intercepts
+2026-04-16T12:02:57+02:00	T13	1	spawn_started	codex exec started
+2026-04-16T12:10:34+02:00	T13	1	spawn_succeeded	codex exec completed
+2026-04-16T12:10:34+02:00	T13	1	verify_running	cargo check -p roko-cli
+2026-04-16T12:11:26+02:00	T13	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T12:11:44+02:00	T13	1	verify_succeeded	all verification commands passed
+2026-04-16T12:11:45+02:00	T13	1	commit_succeeded	2940ede3
+2026-04-16T12:11:45+02:00	T13	1	attempt_succeeded	verified and committed
+2026-04-16T12:11:45+02:00	T14	1	attempt_started	TUI modal system consolidation
+2026-04-16T12:11:45+02:00	T14	1	spawn_started	codex exec started
+2026-04-16T12:18:58+02:00	T14	1	spawn_succeeded	codex exec completed
+2026-04-16T12:18:58+02:00	T14	1	verify_running	cargo check -p roko-cli
+2026-04-16T12:19:55+02:00	T14	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T12:20:15+02:00	T14	1	verify_succeeded	all verification commands passed
+2026-04-16T12:20:15+02:00	T14	1	commit_succeeded	1f40e3d6
+2026-04-16T12:20:15+02:00	T14	1	attempt_succeeded	verified and committed
+2026-04-16T12:20:15+02:00	T17	1	attempt_started	TUI scroll + PageUp/Down + ScrollAccel + tab-aware nav
+2026-04-16T12:20:15+02:00	T17	1	spawn_started	codex exec started
+2026-04-16T12:34:37+02:00	T17	1	spawn_succeeded	codex exec completed
+2026-04-16T12:34:37+02:00	T17	1	verify_running	cargo check -p roko-cli
+2026-04-16T12:35:31+02:00	T17	1	verify_running	cargo clippy -p roko-cli --no-deps -- -D warnings
+2026-04-16T12:35:51+02:00	T17	1	verify_succeeded	all verification commands passed
+2026-04-16T12:35:51+02:00	T17	1	commit_succeeded	0ac99938
+2026-04-16T12:35:51+02:00	T17	1	attempt_succeeded	verified and committed
+2026-04-16T12:35:51+02:00	T19	1	attempt_started	Agent-server messaging integration tests
+2026-04-16T12:35:51+02:00	T19	1	spawn_started	codex exec started
+2026-04-16T12:47:25+02:00	T19	1	spawn_succeeded	codex exec completed
+2026-04-16T12:47:25+02:00	T19	1	verify_running	cargo check -p roko-agent-server
+2026-04-16T12:47:53+02:00	T19	1	verify_running	cargo test -p roko-agent-server --lib --no-run
+2026-04-16T12:48:35+02:00	T19	1	verify_running	cargo clippy -p roko-agent-server --no-deps -- -D warnings
+2026-04-16T12:48:45+02:00	T19	1	verify_succeeded	all verification commands passed
+2026-04-16T12:48:45+02:00	T19	1	commit_succeeded	c9029e20
+2026-04-16T12:48:45+02:00	T19	1	attempt_succeeded	verified and committed

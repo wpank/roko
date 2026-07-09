@@ -1,0 +1,9 @@
+Implemented the `.roko/` watcher replacement in [fs_watch.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/fs_watch.rs), wired it into [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/app.rs), exported it from [mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/mod.rs), and added the new deps in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/Cargo.toml). The new path uses `notify = { version = "6", default-features = false, features = ["macos_fsevent"] }` plus `notify-debouncer-full = "0.3"`, debounces `.roko/` changes at 200 ms, and falls back to an explicit 1 s poller with a startup `tracing::warn!` if notify init fails.
+
+The old 500 ms polling thread is gone. `App` now keeps the watcher handle alive, drains `FsRefresh::Coalesced` events, and routes both filesystem-triggered and manual refreshes through the same `refresh_snapshot()` path, including `StateHub` re-bootstrap.
+
+Validation:
+- `cargo check -p roko-cli` passed
+- `cargo clippy -p roko-cli --no-deps -- -D warnings` passed
+- targeted unit test passed: `watch_roko_dir_emits_refresh_within_500ms`
+- `rg -n "sleep\\(Duration::from_millis\\(500\\)\\)" crates/roko-cli/src/tui/app.rs` returned no hits

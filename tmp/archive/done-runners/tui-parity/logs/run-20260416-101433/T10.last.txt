@@ -1,0 +1,15 @@
+Wired the dead TUI snapshot fields in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/state.rs:1017).
+
+`update_from_snapshot()` now:
+- maps `DashboardData.gate_results` through a small `GateResultSummary -> GateResultEntry` adapter,
+- rebuilds bounded per-agent `token_history` and sets `token_rate` from the selected agent’s recent 60-sample window, with episode fallback when efficiency events are missing,
+- keeps using the existing `executor_summary()` bridge for orchestrator state / iteration / phase,
+- computes partial plan progress from actual task statuses when snapshot task rows exist instead of trusting stale aggregate counts.
+
+I also added focused regression tests for token history/rate and partial task progress in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/state.rs:3177).
+
+Verification:
+- `cargo check -p roko-cli` passed
+- `cargo clippy -p roko-cli --no-deps -- -D warnings` passed
+
+No `dashboard.rs` changes were needed on this branch because `DashboardData::executor_summary()` already exposed the orchestrator metadata.

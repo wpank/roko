@@ -1,0 +1,16 @@
+UX30 is in place. I added the replay fixture at [ten-turn-basic.jsonl](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/testdata/codex/sessions/ten-turn-basic.jsonl:1) and the harness at [codex_conformance.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/tests/codex_conformance.rs:1). Repo reality is that the protocol-rich Codex path runs through the shared streaming OpenAI-compatible backend, so the harness replays a 10-turn JSONL transcript into that seam, derives expected content/reasoning/tool calls/session data from the fixture, and asserts the request replay preserves assistant reasoning and `tool_call_id`-matched tool results on later turns.
+
+I also tightened [openai_compat_backend.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/openai_compat_backend.rs:1) so streamed responses retain top-level `id` / `session_id` / `thread_id` when they are folded back into the final JSON response. Without that, the conformance harness could not verify session extraction on streamed Codex turns.
+
+Verification passed:
+- `cargo check -p roko-agent`
+- `cargo test -p roko-agent --lib --no-run`
+- `cargo test -p roko-agent --test codex_conformance`
+
+Fixture path: [ten-turn-basic.jsonl](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/testdata/codex/sessions/ten-turn-basic.jsonl:1)
+Fixture size: `6611` bytes
+
+Future follow-ups:
+- `streaming-basic.jsonl`
+- `tool-call-multi.jsonl`
+- `error-after-reasoning.jsonl`

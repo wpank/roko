@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+ )
+ 
+ declare -A BATCH_VERIFY=(
+-  [O1]="rg -n \"17,087|carry-forward|PARTIAL|Petri|resource-aware|Adapton|Salsa|target-state\" tmp/docs-parity/01/00-INDEX.md tmp/docs-parity/01/A-core-orchestration.md tmp/docs-parity/01/SOURCE-INDEX.md"
+-  [O2]="rg -n \"DONE|WorktreeManager|MergeQueue|carry-forward|orchestrate.rs\" tmp/docs-parity/01/B-isolation-merge.md tmp/docs-parity/01/SOURCE-INDEX.md tmp/docs-parity/01/context-pack/carry-forward-map.md"
++  [O1]="rg -n \"17,087|carry-forward|TaskTracker|UnifiedTaskDag|PARTIAL|Petri|resource-aware|Adapton|Salsa|target-state\" tmp/docs-parity/01/00-INDEX.md tmp/docs-parity/01/A-core-orchestration.md tmp/docs-parity/01/SOURCE-INDEX.md"
++  [O2]="rg -n \"WorktreeManager|MergeQueue|direct merge|carry-forward|orchestrate.rs|PARTIAL|DONE\" tmp/docs-parity/01/B-isolation-merge.md tmp/docs-parity/01/SOURCE-INDEX.md tmp/docs-parity/01/context-pack/carry-forward-map.md"
+   [O3]="rg -n \"PlanRevision|PrdPublished|EventLog|CRDT|Merkle|incremental snapshots|PARTIAL\" tmp/docs-parity/01/C-persistence-recovery.md tmp/docs-parity/01/SOURCE-INDEX.md tmp/docs-parity/01/context-pack/gaps-summary.md"
+   [O4]="rg -n \"Continue \\| Restart \\| Fail|WatcherRunner|run_conductor_check|DashboardEvent|PARTIAL\" tmp/docs-parity/01/D-monitoring-conductor.md tmp/docs-parity/01/SOURCE-INDEX.md tmp/docs-parity/01/context-pack/repo-map.md"
+   [O5]="rg -n \"DEFERRED|theory|not a self-hosting requirement|stigmergy\" tmp/docs-parity/01/E-coordination-domains.md tmp/docs-parity/01/context-pack/carry-forward-map.md tmp/docs-parity/01/context-pack/gaps-summary.md"
+@@ -113,7 +120,13 @@
+ $(for f in ${BATCH_SOURCE_DOCS[$batch]}; do echo "- $WORKTREE_ROOT/$f"; done)
+ 
+ Also read these audit docs:
+-$(for f in "${AUDIT_DOCS[@]}"; do echo "- $f"; done)
++$(if [ "${#AVAILABLE_AUDIT_DOCS[@]}" -gt 0 ]; then
++    for f in "${AVAILABLE_AUDIT_DOCS[@]}"; do
++      echo "- $f"
++    done
++  else
++    echo "- (not present in this worktree snapshot; use the shared batch context and refreshed context-pack instead)"
++  fi)
+ 
+ Also read these batch-specific parity files:
+ $(for f in ${BATCH_FILES[$batch]}; do echo "- $PARITY_DIR/$f"; done)
+
+tokens used
+192,570
+Updated the full `tmp/docs-parity/01/` pack and kept the write scope inside that directory.
+
+The main recalibration is now explicit in [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/01/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/01/BATCHES.md), and [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/01/SOURCE-INDEX.md): core orchestration is shipped, `crates/roko-cli/src/orchestrate.rs` at `17,087` LOC is the real carry-forward tech debt, the live CLI path is still `TaskTracker`-driven, and `UnifiedTaskDag`/`MergeQueue` are real module surfaces but not the whole hot path. That moved doc `08` to `PARTIAL`, kept docs `12` and `13` explicitly `DEFERRED`, and tightened the top-level status mix to `4 DONE / 8 PARTIAL / 2 DEFERRED`.
+
+The detail files and context pack now consistently separate the local orchestrator `EventLog` from the runtime/global `RokoEvent` bus with exactly `PlanRevision` and `PrdPublished`, keep conductor parity grounded in the real `Continue | Restart | Fail` API, and narrow recovery/DAG/cross-domain material to future-facing or theory where appropriate. [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/01/run-docs-parity.sh) was updated to match the revised batch contract and to fall back cleanly when repo-root audit files are absent in this worktree snapshot.
+
+Verification: ran `bash -n tmp/docs-parity/01/run-docs-parity.sh` and the refreshed `rg` checks from the updated batch contract. No tests were run because this was a docs-only pass.
+
+=== Finished: 2026-04-18T10:28:35+02:00 ===
+=== Duration: 10m 51s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/01/

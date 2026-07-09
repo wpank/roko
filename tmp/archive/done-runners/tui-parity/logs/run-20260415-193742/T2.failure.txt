@@ -1,0 +1,43 @@
+Codex exited unsuccessfully.
+
+Recent log tail:
++        }
++
++        cached.styled_lines.clone()
++    }
++
+     fn update_efficiency_rates(&mut self) {
+         let now = Instant::now();
+         let token_total = self.token_total;
+@@ -1423,6 +1463,17 @@
+     pub fn log_level_visible(&self, level: LogFilterLevel) -> bool {
+         self.log_filter_levels.contains(&level)
+     }
++
++    fn prune_agent_output_cache(&self) {
++        let valid_ids = self
++            .agents
++            .iter()
++            .map(|agent| agent.id.as_str())
++            .collect::<HashSet<_>>();
++        self.agent_output_cache.borrow_mut().retain(|key, _| {
++            key == "__agent-output__" || valid_ids.contains(key.as_str())
++        });
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+
+exec
+/bin/zsh -lc "nl -ba crates/roko-cli/src/tui/views/agents_view.rs | sed -n '1,520p'" in /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742
+ succeeded in 0ms:
+
+thread 'main' (103191780) panicked at library/std/src/io/stdio.rs:1165:9:
+failed printing to stderr: No space left on device (os error 28)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-04-15T18:35:27.698993Z ERROR codex_rollout::recorder: rollout writer failed for /Users/will/.codex/sessions/2026/04/15/rollout-2026-04-15T20-27-34-019d9266-0a95-7ca3-a4bf-b93924185a9f.jsonl; buffered rollout items will be retried: No space left on device (os error 28)
+2026-04-15T18:35:27.706744Z ERROR codex_rollout::recorder: rollout writer failed for /Users/will/.codex/sessions/2026/04/15/rollout-2026-04-15T20-28-56-019d9267-4d32-7c51-a433-db60658f6ba1.jsonl; buffered rollout items will be retried: No space left on device (os error 28)
+
+=== Finished: 2026-04-15T20:35:28+02:00 ===
+=== Duration: 7m 54s ===
+=== Exit code: 101 ===

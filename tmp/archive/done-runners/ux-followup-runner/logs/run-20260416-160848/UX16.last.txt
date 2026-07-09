@@ -1,0 +1,19 @@
+**Implemented**
+
+Diagnosis summaries now flow into the live snapshot via [dashboard_snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/dashboard_snapshot.rs:153) and [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:4216). `DashboardSnapshot` carries a deduping `VecDeque<DiagnosisSummary>` ring capped at 50, fed by the new `DashboardEvent::Diagnosis`, with event-log bootstrap support and a ring-buffer test at [dashboard_snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/dashboard_snapshot.rs:1346).
+
+The TUI now renders a visible diagnosis panel in the dashboard right-hand column, backed by snapshot state in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/state.rs:768) and [dashboard_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/views/dashboard_view.rs:967). Severity palette is `Alert -> error/danger style`, `Warn -> theme.warning()`, `Info -> theme.info()` at [dashboard_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/views/dashboard_view.rs:1296).
+
+The HTTP surface now exposes `GET /api/diagnosis/recent` via [diagnosis.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/routes/diagnosis.rs:12), registered in [mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/routes/mod.rs:57). I also added an integration-style test that trips the conductor circuit breaker and polls the real router until the diagnosis appears within 1 second at [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:15030).
+
+**Verification**
+
+`cargo check -p roko-cli -p roko-serve -p roko-core -p roko-conductor` passed.
+
+`cargo test -p roko-core diagnosis_ring_dedupes_by_id_and_keeps_latest_copy` passed.
+
+`cargo test -p roko-cli diagnosis_endpoint_surfaces_conductor_circuit_breaker_summary` passed.
+
+`cargo clippy -p roko-cli -p roko-serve -p roko-core -p roko-conductor --no-deps -- -D warnings` does not pass in this worktree because of pre-existing warning debt outside UX16. The first failures are unrelated baseline lints in `roko-core` such as [affect.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/affect.rs:35) and [agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/agent.rs:40), plus longstanding missing-docs warnings across `roko-core`, `roko-cli`, and transitive workspace crates.
+
+Ring cap: `50`. Endpoint path: `GET /api/diagnosis/recent`. Severity palette: `Alert/error`, `Warn/warning`, `Info/info`.

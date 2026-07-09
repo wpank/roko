@@ -1,0 +1,21 @@
+Implemented PE06 in code across `roko-neuro` and `roko-cli`.
+
+Completed:
+- `N1`: wired `ContextAssembler` onto the real orchestrator prompt path in [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs), as additional prompt sections with attribution preserved in `last_context_knowledge_ids`.
+- `N2`: made the neuro query contract explicit in [crates/roko-neuro/src/knowledge_store.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-neuro/src/knowledge_store.rs) via `KnowledgeQueryHit` / `KnowledgeQueryBreakdown`, and calibrated the HDC contribution so unrelated vectors no longer clear the query floor.
+- `N3` and `N5`: hardened distillation and ingest in [distiller.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-neuro/src/distiller.rs) and [knowledge_store.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-neuro/src/knowledge_store.rs): bounded provenance labels, batch ownership checks for `source_episodes`, no single-episode heuristics / strategy fragments, and duplicate-ID dedupe on ingest.
+- `N4`: resolved the playbook/scheduler ambiguity by keeping `write_playbook` explicit and removing the implicit per-episode playbook refresh from [episode_completion.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-neuro/src/episode_completion.rs).
+- `N6`: added bounded local-only `roko neuro backup` / `roko neuro restore` in [crates/roko-cli/src/main.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/main.rs).
+
+Deferred:
+- `N7`, `N8`, `N9` as code work. Cross-domain transfer, advanced HDC enablers (`BundleAccumulator`, `ItemMemory`, `ResonatorNetwork`), and final status/meta-doc honesty remain frontier/docs follow-up, not something I built into `crates/` here.
+- Neuro `publish` stays intentionally absent; only local backup/restore was added.
+
+Verification passed:
+- `cargo check -p roko-neuro`
+- `cargo clippy -p roko-neuro --no-deps -- -D warnings`
+- `cargo check -p roko-cli`
+- `cargo test -p roko-neuro --lib`
+- `cargo test -p roko-cli neuro_backup -- --nocapture`
+
+One note: the worktree already had unrelated modified files outside this batch (`apps/mirage-rs`, `roko-compose`, `roko-orchestrator`, etc.). I did not touch or revert those.

@@ -1,0 +1,625 @@
+diff --git a/crates/roko-cli/src/tui/app.rs b/crates/roko-cli/src/tui/app.rs
+index a2a65823..3ac05d69 100644
+--- a/crates/roko-cli/src/tui/app.rs
++++ b/crates/roko-cli/src/tui/app.rs
+@@ -3,7 +3,7 @@
+ //! Integrates the Mori-style tab system (F1-F7), modal dialogs, TuiState,
+ //! TuiAction dispatch, PostFX pipeline, and atmosphere animations.
+ 
+-use std::collections::{HashMap, VecDeque};
++use std::collections::{HashMap, HashSet, VecDeque};
+ use std::io;
+ use std::io::Stdout;
+ use std::path::{Path, PathBuf};
+@@ -41,6 +41,7 @@ use super::pages::{PageId, PageRegistry};
+ use super::state::{PendingApproval, PlanEntry, TaskRowStatus, TuiState};
+ use super::tabs::Tab;
+ use super::views::{self, ViewState};
++use super::ws_client::{AgentStreamClient, StreamChunk};
+ 
+ /// Interactive dashboard shell backed by the existing snapshot renderer.
+ ///
+@@ -53,6 +54,7 @@ use super::views::{self, ViewState};
+ /// `&self.tui_state` and `&self.data` and writes to the frame buffer.
+ pub struct App {
+     workdir: PathBuf,
++    agent_stream_serve_url: String,
+ 
+     // -- Mori-style state --
+     /// Full TUI state (agents, plans, navigation, modals, scroll, etc.).
+@@ -110,6 +112,8 @@ pub struct App {
+     last_input: Instant,
+     /// Last known terminal size used for hit-testing.
+     terminal_size: (u16, u16),
++    /// Per-agent background `/stream` clients used by the Agents tab.
++    agent_stream_clients: HashMap<String, AgentStreamClient>,
+ }
+ 
+ /// Bundle of git data collected by the background git thread.
+@@ -321,6 +325,13 @@ fn tui_log_path(workdir: &Path) -> PathBuf {
+     workdir.join(".roko").join("tui.log")
+ }
+ 
++fn agent_stream_serve_url() -> String {
++    std::env::var("ROKO_SERVE_URL")
++        .ok()
++        .filter(|value| !value.trim().is_empty())
++        .unwrap_or_else(|| "http://localhost:6677".to_string())
++}
++
+ fn tui_log_dispatch(workdir: &Path) -> Result<tracing::Dispatch> {
+     let roko_dir = workdir.join(".roko");
+     std::fs::create_dir_all(&roko_dir)
+@@ -400,6 +411,7 @@ impl App {
+ 
+         let mut app = Self {
+             workdir,
++            agent_stream_serve_url: agent_stream_serve_url(),
+             tui_state,
+             fx_config: EffectsConfig::default(),
+             notifications: Vec::new(),
+@@ -425,6 +437,7 @@ impl App {
+             frame_counter: 0,
+             last_input: Instant::now(),
+             terminal_size,
++            agent_stream_clients: HashMap::new(),
+         };
+         app.fx_config = EffectsConfig::load_from_root(&app.workdir);
+         app
+@@ -690,6 +703,7 @@ impl App {
+         let footer_idx = 3;
+         let (content_area, input_area) = self.split_content_area(main_layout[content_idx]);
+ 
++        self.reconcile_agent_stream_clients();
+         self.clamp_scroll_state_to_view();
+         let view_state = self.current_view_state();
+         views::render_tab_content(
+@@ -2033,7 +2047,13 @@ impl App {
+                         .split(content_area);
+                 let sections =
+                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(panels[1]);
+-                sections[1].height.saturating_sub(2) as usize
++                let live_stream_height = sections[1].height.saturating_sub(4).min(6);
++                let output_height = if live_stream_height >= 4 {
++                    sections[1].height.saturating_sub(live_stream_height)
++                } else {
++                    sections[1].height
++                };
++                output_height.saturating_sub(2) as usize
+             }
+             Tab::Dashboard if self.tui_state.plan_detail_tab == 1 => {
+                 let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(6)])
+@@ -2172,6 +2192,7 @@ impl App {
+         if self.pages().scaffold(self.current_page).is_none() {
+             self.current_page = self.scaffold.active_page();
+         }
++        self.reconcile_agent_stream_clients();
+     }
+ 
+     fn tick_snapshot(&mut self) {
+@@ -2189,6 +2210,7 @@ impl App {
+         self.last_refresh = Instant::now();
+         self.clamp_signal_selection();
+         self.clamp_gate_failure_selection();
++        self.reconcile_agent_stream_clients();
+     }
+ 
+     fn save_config_changes(&mut self) {
+@@ -2290,6 +2312,7 @@ impl App {
+         const MAX_MESSAGES_PER_DRAIN: usize = 20;
+ 
+         self.drain_snapshot_channel();
++        self.poll_agent_stream_clients();
+ 
+         // -- sys metrics (merge, don't replace — keep history) --
+         let mut sys_snaps = Vec::new();
+@@ -2383,6 +2406,9 @@ impl App {
+                 }
+             }
+         }
++
++        self.reconcile_agent_stream_clients();
++        self.poll_agent_stream_clients();
+     }
+ 
+     fn drain_snapshot_channel(&mut self) {
+@@ -2401,8 +2427,66 @@ impl App {
+             return;
+         }
+ 
+-        let snapshot = rx.borrow_and_update();
+-        apply_dashboard_snapshot(tui_state, notifications, last_marker, &snapshot);
++        {
++            let snapshot = rx.borrow_and_update();
++            apply_dashboard_snapshot(tui_state, notifications, last_marker, &snapshot);
++        }
++        self.reconcile_agent_stream_clients();
++    }
++
++    fn reconcile_agent_stream_clients(&mut self) {
++        if !matches!(self.tui_state.active_tab, Tab::Agents) {
++            self.agent_stream_clients.clear();
++            return;
++        }
++
++        let desired_ids: HashSet<String> = self
++            .tui_state
++            .agents
++            .iter()
++            .map(|agent| agent.id.clone())
++            .collect();
++
++        self.agent_stream_clients
++            .retain(|agent_id, _| desired_ids.contains(agent_id));
++
++        for agent_id in desired_ids {
++            if self.agent_stream_clients.contains_key(&agent_id) {
++                continue;
++            }
++
++            self.tui_state.mark_disconnected(&agent_id);
++            self.agent_stream_clients.insert(
++                agent_id.clone(),
++                AgentStreamClient::connect_via_serve(
++                    agent_id,
++                    self.agent_stream_serve_url.clone(),
++                ),
++            );
++        }
++    }
++
++    fn poll_agent_stream_clients(&mut self) {
++        let agent_ids: Vec<String> = self.agent_stream_clients.keys().cloned().collect();
++        for agent_id in agent_ids {
++            let Some(client) = self.agent_stream_clients.get_mut(&agent_id) else {
++                continue;
++            };
++
++            while let Some(chunk) = client.try_recv() {
++                match chunk {
++                    StreamChunk::Text(text) => self.tui_state.push_agent_chunk(&agent_id, text),
++                    StreamChunk::Done { session } => {
++                        if let Some(session) = session {
++                            self.tui_state
++                                .push_agent_chunk(&agent_id, format!("[done] session {session}"));
++                        }
++                        self.tui_state.mark_connected(&agent_id);
++                    }
++                    StreamChunk::Disconnected => self.tui_state.mark_disconnected(&agent_id),
++                }
++            }
++        }
+     }
+ 
+     fn pages(&self) -> PageRegistry {
+diff --git a/crates/roko-cli/src/tui/mod.rs b/crates/roko-cli/src/tui/mod.rs
+index e8537876..fca1604d 100644
+--- a/crates/roko-cli/src/tui/mod.rs
++++ b/crates/roko-cli/src/tui/mod.rs
+@@ -32,6 +32,7 @@ pub mod theme;
+ pub mod util;
+ pub mod views;
+ pub mod widgets;
++pub mod ws_client;
+ 
+ pub use app::App;
+ pub use approval_ipc::{ApprovalChannel, ApprovalRequest};
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 1e85bfe1..5f1b9194 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -18,9 +18,9 @@ use super::atmosphere::Atmosphere;
+ use super::dashboard::{DashboardData, GateResultSummary, PlanTaskListSnapshot, Theme};
+ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
+ use super::modals::ModalState;
+-use super::segment::{CachedRender, output_byte_len, render_cached_output};
++use super::segment::{output_byte_len, render_cached_output, CachedRender};
+ use super::tabs::Tab;
+-use crate::plan::{PlanSummary, plans_dir};
++use crate::plan::{plans_dir, PlanSummary};
+ use crate::task_parser::{TaskDef, TasksFile};
+ 
+ // ---------------------------------------------------------------------------
+@@ -271,6 +271,86 @@ pub struct AgentRow {
+     pub last_output_line: String,
+ }
+ 
++#[derive(Debug, Clone)]
++pub struct RingBuffer<T> {
++    items: Vec<T>,
++    cap: usize,
++}
++
++impl<T> RingBuffer<T> {
++    pub fn new(cap: usize) -> Self {
++        Self {
++            items: Vec::new(),
++            cap,
++        }
++    }
++
++    pub fn push(&mut self, item: T) {
++        if self.cap == 0 {
++            return;
++        }
++        if self.items.len() == self.cap {
++            self.items.remove(0);
++        }
++        self.items.push(item);
++    }
++
++    pub fn is_empty(&self) -> bool {
++        self.items.is_empty()
++    }
++
++    pub fn as_slice(&self) -> &[T] {
++        &self.items
++    }
++}
++
++impl<T> Default for RingBuffer<T> {
++    fn default() -> Self {
++        Self::new(0)
++    }
++}
++
++/// Live WS stream tail for a single agent.
++#[derive(Debug, Clone)]
++pub struct AgentStream {
++    /// Bounded recent stream chunks.
++    pub chunks: RingBuffer<String>,
++    /// Whether the WS sidecar is currently connected.
++    pub connected: bool,
++    /// When the most recent chunk was received.
++    pub last_chunk_at: Option<Instant>,
++}
++
++impl AgentStream {
++    fn new() -> Self {
++        Self {
++            chunks: RingBuffer::new(200),
++            connected: false,
++            last_chunk_at: None,
++        }
++    }
++
++    fn push_chunk(&mut self, chunk: String) {
++        self.chunks.push(chunk);
++        self.connected = true;
++        self.last_chunk_at = Some(Instant::now());
++    }
++
++    fn mark_connected(&mut self) {
++        self.connected = true;
++    }
++
++    fn mark_disconnected(&mut self) {
++        self.connected = false;
++    }
++}
++
++impl Default for AgentStream {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
+ /// Per-agent routing and context metrics shown in the TUI.
+ #[derive(Debug, Clone, Default, PartialEq)]
+ pub struct RouteMetrics {
+@@ -757,6 +837,8 @@ pub struct TuiState {
+     pub route_metrics: HashMap<String, RouteMetrics>,
+     /// Cached styled agent output keyed by agent identifier.
+     pub agent_output_cache: RefCell<HashMap<String, CachedRender>>,
++    /// Live per-agent stream tails keyed by agent identifier.
++    pub agent_streams: HashMap<String, AgentStream>,
+     // -- navigation --
+     /// Active top-level tab.
+     pub active_tab: Tab,
+@@ -920,6 +1002,7 @@ impl Default for TuiState {
+             agents: Vec::new(),
+             route_metrics: HashMap::new(),
+             agent_output_cache: RefCell::new(HashMap::new()),
++            agent_streams: HashMap::new(),
+             active_tab: Tab::default(),
+             selected_plan_idx: 0,
+             selected_agent: 0,
+@@ -1324,6 +1407,7 @@ impl TuiState {
+             })
+             .collect();
+         self.prune_agent_output_cache();
++        self.prune_agent_streams();
+ 
+         self.cost_dollars = data.efficiency.total_cost_usd;
+         self.cumulative_input_tokens = data.efficiency.total_input_tokens;
+@@ -1628,6 +1712,7 @@ impl TuiState {
+             })
+             .collect();
+         self.prune_agent_output_cache();
++        self.prune_agent_streams();
+ 
+         self.gate_results = snap
+             .gates
+@@ -1718,6 +1803,30 @@ impl TuiState {
+         cached.styled_lines.clone()
+     }
+ 
++    /// Append a live stream chunk for an agent and mark it connected.
++    pub fn push_agent_chunk(&mut self, agent_id: &str, chunk: String) {
++        self.agent_streams
++            .entry(agent_id.to_string())
++            .or_default()
++            .push_chunk(chunk);
++    }
++
++    /// Mark an agent stream as connected.
++    pub fn mark_connected(&mut self, agent_id: &str) {
++        self.agent_streams
++            .entry(agent_id.to_string())
++            .or_default()
++            .mark_connected();
++    }
++
++    /// Mark an agent stream as disconnected.
++    pub fn mark_disconnected(&mut self, agent_id: &str) {
++        self.agent_streams
++            .entry(agent_id.to_string())
++            .or_default()
++            .mark_disconnected();
++    }
++
+     fn update_efficiency_rates(&mut self) {
+         let now = Instant::now();
+         let token_total = self.token_total;
+@@ -1834,6 +1943,16 @@ impl TuiState {
+             .borrow_mut()
+             .retain(|key, _| key == "__agent-output__" || valid_ids.contains(key.as_str()));
+     }
++
++    fn prune_agent_streams(&mut self) {
++        let valid_ids = self
++            .agents
++            .iter()
++            .map(|agent| agent.id.as_str())
++            .collect::<HashSet<_>>();
++        self.agent_streams
++            .retain(|agent_id, _| valid_ids.contains(agent_id.as_str()));
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -3391,6 +3510,69 @@ tier = "focused"
+         assert_eq!(state.plan_scroll_offset, 0);
+     }
+ 
++    #[test]
++    fn agent_stream_helpers_bound_tail_and_track_connection_state() {
++        let mut state = TuiState::default();
++        state.agents = vec![AgentRow {
++            id: "agent-a".into(),
++            ..AgentRow::default()
++        }];
++
++        state.mark_connected("agent-a");
++        for idx in 1..=205 {
++            state.push_agent_chunk("agent-a", format!("chunk-{idx}"));
++        }
++        state.mark_disconnected("agent-a");
++
++        let stream = state.agent_streams.get("agent-a").expect("stream");
++        assert!(!stream.chunks.is_empty());
++        assert!(stream.last_chunk_at.is_some());
++        assert!(!stream.connected);
++        assert_eq!(stream.chunks.as_slice().len(), 200);
++        assert_eq!(
++            stream.chunks.as_slice().first().map(String::as_str),
++            Some("chunk-6")
++        );
++        assert_eq!(
++            stream.chunks.as_slice().last().map(String::as_str),
++            Some("chunk-205")
++        );
++    }
++
++    #[test]
++    fn update_from_snapshot_prunes_stale_agent_streams() {
++        let mut state = TuiState::default();
++        state.agent_streams.insert(
++            "agent-keep".into(),
++            AgentStream {
++                chunks: RingBuffer::new(200),
++                connected: true,
++                last_chunk_at: None,
++            },
++        );
++        state.agent_streams.insert(
++            "agent-drop".into(),
++            AgentStream {
++                chunks: RingBuffer::new(200),
++                connected: true,
++                last_chunk_at: None,
++            },
++        );
++
++        let mut data = DashboardData::default();
++        data.agents = vec![crate::tui::dashboard::AgentSummary {
++            id: "agent-keep".into(),
++            label: "agent-keep".into(),
++            plan_id: None,
++            status: "active".into(),
++        }];
++
++        state.update_from_snapshot(&data);
++
++        assert!(state.agent_streams.contains_key("agent-keep"));
++        assert!(!state.agent_streams.contains_key("agent-drop"));
++    }
++
+     #[test]
+     fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation() {
+         use roko_core::dashboard_snapshot::{
+diff --git a/crates/roko-cli/src/tui/views/agents_view.rs b/crates/roko-cli/src/tui/views/agents_view.rs
+index 09b623bc..2924d256 100644
+--- a/crates/roko-cli/src/tui/views/agents_view.rs
++++ b/crates/roko-cli/src/tui/views/agents_view.rs
+@@ -6,16 +6,16 @@
+ //! Renders rich gradient progress bars, context gauges, role-colored
+ //! tabs, and status chips matching the Mori Agents screen (F3).
+ 
+-use ratatui::Frame;
+ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+ use ratatui::style::{Color, Modifier, Style};
+ use ratatui::text::{Line, Span};
+ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
++use ratatui::Frame;
+ 
+ use super::ViewState;
+ use crate::tui::dashboard::{DashboardData, Theme};
+ use crate::tui::input::FocusZone;
+-use crate::tui::state::{AgentStatus, TuiState, model_context_limit};
++use crate::tui::state::{model_context_limit, AgentStatus, TuiState};
+ use crate::tui::util::truncate_middle;
+ 
+ // ---------------------------------------------------------------------------
+@@ -599,11 +599,21 @@ fn render_output_body(
+     let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+     render_route_metrics_bar(frame, layout[0], data, tui_state, view_state, theme);
+ 
+-    if layout[1].width == 0 || layout[1].height == 0 {
++    let live_stream_height = layout[1].height.saturating_sub(4).min(6);
++    let (output_area, live_area) = if live_stream_height >= 4 {
++        let sections =
++            Layout::vertical([Constraint::Min(0), Constraint::Length(live_stream_height)])
++                .split(layout[1]);
++        (sections[0], Some(sections[1]))
++    } else {
++        (layout[1], None)
++    };
++
++    if output_area.width == 0 || output_area.height == 0 {
+         return;
+     }
+ 
+-    let visible_height = layout[1].height as usize;
++    let visible_height = output_area.height as usize;
+     let max_scroll = total_lines
+         .saturating_sub(visible_height)
+         .min(u16::MAX as usize);
+@@ -628,7 +638,7 @@ fn render_output_body(
+ 
+     if output_lines.is_empty() {
+         // Centered empty state
+-        let v_pad = layout[1].height / 2;
++        let v_pad = output_area.height / 2;
+         let mut empty_lines: Vec<Line<'_>> = Vec::new();
+         for _ in 0..v_pad.saturating_sub(2) {
+             empty_lines.push(Line::from(""));
+@@ -647,15 +657,105 @@ fn render_output_body(
+         let empty = Paragraph::new(empty_lines)
+             .alignment(Alignment::Center)
+             .wrap(Wrap { trim: false });
+-        frame.render_widget(empty, layout[1]);
++        frame.render_widget(empty, output_area);
++    } else {
++        let paragraph = Paragraph::new(output_lines)
++            .style(theme.text())
++            .wrap(Wrap { trim: false })
++            .scroll((scroll as u16, 0));
++        frame.render_widget(paragraph, output_area);
++    }
++
++    if let Some(stream_area) = live_area {
++        render_live_stream_panel(frame, stream_area, selected_agent, tui_state, theme);
++    }
++}
++
++fn render_live_stream_panel(
++    frame: &mut Frame<'_>,
++    area: Rect,
++    selected_agent: Option<&crate::tui::dashboard::AgentSummary>,
++    tui_state: &TuiState,
++    theme: &Theme,
++) {
++    if area.width == 0 || area.height == 0 {
++        return;
++    }
++
++    let selected_id = selected_agent.map(|agent| agent.id.as_str()).unwrap_or("");
++    let block = Block::default()
++        .borders(Borders::ALL)
++        .title(Span::styled(" Live stream ", theme.muted()));
++    let inner = block.inner(area);
++    frame.render_widget(block, area);
++
++    if inner.width == 0 || inner.height == 0 {
++        return;
++    }
++
++    let stream = if selected_id.is_empty() {
++        None
++    } else {
++        tui_state.agent_streams.get(selected_id)
++    };
++
++    let Some(stream) = stream else {
++        let empty = Paragraph::new(vec![Line::from(Span::styled(
++            "connecting...",
++            Style::default()
++                .fg(theme.muted)
++                .add_modifier(Modifier::ITALIC),
++        ))])
++        .alignment(Alignment::Center)
++        .wrap(Wrap { trim: false });
++        frame.render_widget(empty, inner);
++        return;
++    };
++
++    if stream.chunks.is_empty() {
++        let message = if stream.connected {
++            "waiting for stream..."
++        } else {
++            "connecting..."
++        };
++        let empty = Paragraph::new(vec![Line::from(Span::styled(
++            message,
++            Style::default()
++                .fg(theme.muted)
++                .add_modifier(Modifier::ITALIC),
++        ))])
++        .alignment(Alignment::Center)
++        .wrap(Wrap { trim: false });
++        frame.render_widget(empty, inner);
++        return;
++    }
++
++    let mut tail_lines: Vec<Line<'_>> = Vec::new();
++    for chunk in stream.chunks.as_slice() {
++        for line in chunk.lines() {
++            tail_lines.push(Line::from(line.to_string()));
++        }
++    }
++
++    if tail_lines.is_empty() {
++        let empty = Paragraph::new(vec![Line::from(Span::styled(
++            "connecting...",
++            Style::default()
++                .fg(theme.muted)
++                .add_modifier(Modifier::ITALIC),
++        ))])
++        .alignment(Alignment::Center)
++        .wrap(Wrap { trim: false });
++        frame.render_widget(empty, inner);
+         return;
+     }
+ 
+-    let paragraph = Paragraph::new(output_lines)
++    let scroll = tail_lines.len().saturating_sub(inner.height as usize);
++    let paragraph = Paragraph::new(tail_lines)
+         .style(theme.text())
+         .wrap(Wrap { trim: false })
+         .scroll((scroll as u16, 0));
+-    frame.render_widget(paragraph, layout[1]);
++    frame.render_widget(paragraph, inner);
+ }
+ 
+ pub(crate) fn collect_agent_output_lines(

@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-serve -p roko-mcp-code --no-deps -- -D warnings
+
+Recent log tail:
+35 |     pub workdir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-serve/src/runtime.rs:36:5
+   |
+36 |     pub daemon_running: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-serve/src/runtime.rs:37:5
+   |
+37 |     pub signal_count: Option<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-serve/src/runtime.rs:38:5
+   |
+38 |     pub episode_count: Option<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-serve/src/runtime.rs:39:5
+   |
+39 |     pub last_episode_passed: Option<bool>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> crates/roko-serve/src/runtime.rs:45:5
+   |
+45 |     pub rendered: String,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct
+   --> crates/roko-serve/src/state.rs:172:1
+    |
+172 | pub struct CachedJsonValue {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `roko-serve` (lib) due to 211 previous errors

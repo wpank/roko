@@ -1,0 +1,29 @@
+Completed the narrow PE00 seams that were actually implementable from this checkout. The referenced `tmp/docs-parity/...` files were not present, so I used the prompt’s T1-T11 list as the batch spec and verified against the current code.
+
+Completed:
+- `T2` in [system_prompt_builder.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-compose/src/system_prompt_builder.rs): `SystemPromptBuilder` now implements `roko_core::Composer` with budget-aware prompt composition and lineage tracking.
+- `T6` in [tier_progression.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-neuro/src/tier_progression.rs): tier promotion/demotion rules are now explicit and inspectable.
+- `T7` in [score.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/score.rs) and [decay.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/decay.rs): added finite-value guards and tests so bad float inputs collapse safely instead of leaking `NaN`/`inf`.
+- `T8` in [score_decay_properties.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/tests/score_decay_properties.rs), [kernel_primitives.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/benches/kernel_primitives.rs), and [engram_roundtrip.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/fuzz/fuzz_targets/engram_roundtrip.rs): added property tests plus benchmark/fuzz scaffolding under `roko-core`.
+- `T10` in [kind.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/kind.rs) and [engram.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/engram.rs): added `Kind::Compound(Vec<Kind>)` and made content hashing distinguish compound membership.
+- `T11` in [provenance.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/provenance.rs) and [taint_propagation.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-orchestrator/src/safety/taint_propagation.rs): added `TaintInfo`, provenance coherence checks, and aligned the taint tracker to preserve structured taint metadata.
+
+Deferred:
+- `T1`: adding `roko_core::Router` adapters for `CascadeRouter`/`LinUCBRouter` is possible, but the generic `Router` trait lacks the model-routing context and feedback payload those routers actually learn from. A clean fix needs an adapter contract, not just an impl block.
+- `T3`: routing a live orchestrator path through `loop_tick()` would require extracting a real production path around agent execution, persistence, gate handling, and feedback. The current CLI path is already more specialized than the batch summary implied.
+- `T4`: active-inference tiering exists, but there is no persisted/live `BeliefState` in the dispatch path. Wiring it meaningfully needs a per-plan belief lifecycle and outcome updates.
+- `T5`: failure/replan/learning already exists in `orchestrate.rs`, but centralizing or closing that loop cleanly would require moving decision/apply logic out of the CLI path.
+- `T9`: broader cross-crate test-depth work was out of scope once the core/orchestrator changes were verified.
+
+Verification:
+- `cargo test -p roko-neuro tier_progression --no-fail-fast`
+- `cargo test -p roko-compose system_prompt_builder --no-fail-fast`
+- `cargo test -p roko-orchestrator taint_propagation --no-fail-fast`
+- `cargo test -p roko-core --no-fail-fast`
+- `cargo check -p roko-core`
+- `cargo clippy -p roko-core --no-deps -- -D warnings`
+
+Seams left:
+- `T8` benches/fuzz are scaffolds only; I did not run benchmark or fuzz jobs in this pass.
+- `T11` now carries taint metadata coherently, but taint is still not enforced at real execution sinks.
+- The remaining deferred items are mostly wiring/extraction work across `roko-cli` and `roko-learn`, not missing leaf functionality.

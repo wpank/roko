@@ -1,0 +1,17 @@
+Removed all `unwrap()` occurrences from the ten scoped files. The hot files [system_prompt_builder.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-compose/src/system_prompt_builder.rs) and [middleware.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/routes/middleware.rs) only had test-path unwraps; those now use invariant-specific `expect(...)`. The other eight files were cleaned the same way, including one doc example string in `payload.rs` and fixture strings in `system_prompt_builder.rs` so the grep gate is actually zero.
+
+Verification passed with `cargo fmt --all --check`, `cargo check -p roko-compose -p roko-serve -p roko-gate -p roko-runtime`, and `cargo clippy -p roko-compose -p roko-serve -p roko-gate -p roko-runtime --no-deps -- -D warnings`. The delegated workers also passed `cargo test -p roko-compose system_prompt_builder` and `cargo test -p roko-serve middleware`.
+
+| File | before | after |
+|---|---:|---:|
+| `system_prompt_builder.rs` | 20 | 0 |
+| `routes/middleware.rs` | 22 | 0 |
+| `artifact_store.rs` | 6 | 0 |
+| `metrics.rs` | 6 | 0 |
+| `routes/status.rs` | 4 | 0 |
+| `routes/learning.rs` | 2 | 0 |
+| `payload.rs` | 3 | 0 |
+| `adaptive_threshold.rs` | 3 | 0 |
+| `symbol_resolver.rs` | 3 | 0 |
+| `event_bus.rs` | 1 | 0 |
+| **Total** | **70** | **0** |

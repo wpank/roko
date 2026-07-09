@@ -1,0 +1,4 @@
+ M crates/roko-cli/src/tui/mod.rs
+ M crates/roko-cli/src/tui/state.rs
+ M crates/roko-cli/src/tui/views/agents_view.rs
+?? crates/roko-cli/src/tui/segment.rs

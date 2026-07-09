@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+   fi
+ 
+   cat > "$prompt_file" <<PROMPT
+@@ -110,6 +95,11 @@
+ ## Task
+ $desc
+ 
++Dependencies for execution order: ${deps:-none}
++
++This runner is prompt-generation-only. Dependency edges are advisory for batch
++execution order; they must not prevent prompt emission.
++
+ Read these files first:
+ - $PARITY_DIR/00-INDEX.md
+ - $PARITY_DIR/BATCHES.md
+@@ -133,8 +123,9 @@
+ 1. Stay inside the batch scope from BATCHES.md.
+ 2. Edit only under $PARITY_DIR.
+ 3. Keep shipped agent infrastructure explicit and research backlog clearly bounded.
+-4. Do not promote temperament, domain profiles, TypedContext, or Custody to present tense unless the source docs and code both justify it.
+-5. After changes, run the verify command and report files changed, commands run, pass/fail status, and intentional deferrals.
++4. Keep the provider story honest: docs still frame four protocol families, while live code now exposes six provider kinds / static adapters.
++5. Do not promote temperament, domain profiles, TypedContext, or Custody to present tense unless the source docs and code both justify it.
++6. After changes, run the verify command and report files changed, commands run, pass/fail status, and intentional deferrals.
+ 
+ Verify command: ${BATCH_VERIFY[$batch]}
+ PROMPT
+
+tokens used
+155,818
+Refreshed the full `tmp/docs-parity/02/` pack: [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/BATCHES.md), [A-core-abstractions.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/A-core-abstractions.md), [B-provider-system.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/B-provider-system.md), [C-tool-loop.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/C-tool-loop.md), [D-lifecycle-infrastructure.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/D-lifecycle-infrastructure.md), [E-routing-temperament.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/E-routing-temperament.md), [F-advanced-capabilities.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/F-advanced-capabilities.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/SOURCE-INDEX.md), the full context pack, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/run-docs-parity.sh).
+
+The pack now reflects the audited `02-agents` posture more tightly: it distinguishes the docs’ four protocol-family framing from the code’s six live provider kinds/static adapters, keeps tool-loop coverage framed as shipped but not universal, calls out the stale temperament claim against `AgentConfig`, and keeps domain profiles, `TypedContext`, `Custody`, four-layer SDK promises, plugin SPI tiers `4-5`, and self-evolving-agent material explicitly deferred. The runner was also fixed so it emits prompts for all requested batches in calibrated order instead of blocking halfway through prompt generation; dependencies remain execution-time guidance.
+
+Verification: `bash -n tmp/docs-parity/02/run-docs-parity.sh` passed, I smoke-ran the runner to confirm all eight batch prompts are emitted in order, and all eight `rg` verify commands from [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/02/BATCHES.md) passed. No files under `docs/` were edited.
+
+=== Finished: 2026-04-17T23:34:17+02:00 ===
+=== Duration: 11m 23s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/02/

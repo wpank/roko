@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy -p roko-core -p roko-agent-server -p roko-serve --no-deps -- -D warnings
+
+Recent log tail:
+9 | pub const SLACK_REACTION: &str = "slack:reaction_added";
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:10:1
+   |
+10 | pub const CRON_TICK: &str = "scheduler:cron";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:11:1
+   |
+11 | pub const FS_CHANGED: &str = "fswatcher:changed";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:12:1
+   |
+12 | pub const FS_CREATED: &str = "fswatcher:created";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:13:1
+   |
+13 | pub const FS_MODIFIED: &str = "fswatcher:modified";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:14:1
+   |
+14 | pub const FS_DELETED: &str = "fswatcher:deleted";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a constant
+  --> crates/roko-core/src/signal_kinds.rs:15:1
+   |
+15 | pub const MANUAL_TRIGGER: &str = "manual:trigger";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `roko-core` (lib) due to 135 previous errors

@@ -1,0 +1,64 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Replace raw string status comparisons with proper enums.
+
+PROBLEM: 90+ sites compare status via string literals like 'running', 'active', 'done',
+'completed', 'passed', 'failed', 'error', 'pending', 'queued'. No compile-time checking.
+Multiple strings mean the same thing ('done' = 'completed' = 'passed').
+
+FIX:
+1. In state.rs, define enums:
+   pub enum AgentStatus { Active, Idle, Done, Failed }
+   pub enum TaskStatus { Pending, Active, Done, Failed, Blocked }
+   pub enum PlanPhase { Pending, Active, Done, Failed }
+
+2. Implement From<&str> for each enum to parse existing string statuses:
+   impl From<&str> for TaskStatus {
+       fn from(s: &str) -> Self {
+           match s {
+               "done" | "completed" | "passed" => Self::Done,
+               "running" | "active" | "executing" => Self::Active,
+               "failed" | "error" => Self::Failed,
+               "blocked" => Self::Blocked,
+               _ => Self::Pending,
+           }
+       }
+   }
+
+3. Change the status fields on AgentRow, TaskRow, PlanEntry from String to the enum types
+4. Update update_from_snapshot() to use .into() or From::from() when building these structs
+5. Update widgets/views that compare status strings to use enum matches instead
+
+This is a large change — do it incrementally. Start with TaskStatus (most impactful),
+then PlanPhase, then AgentStatus.
+
+VERIFY: cargo check -p roko-cli && cargo test -p roko-cli

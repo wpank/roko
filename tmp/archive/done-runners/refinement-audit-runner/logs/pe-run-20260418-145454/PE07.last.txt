@@ -1,0 +1,23 @@
+Implemented the code-backed PE07 subset in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs), [circuit_breaker.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-conductor/src/circuit_breaker.rs), [conductor.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-conductor/src/conductor.rs), [health.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-conductor/src/health.rs), [interventions.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-conductor/src/interventions.rs), and the executor snapshot types in [snapshot.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-orchestrator/src/executor/snapshot.rs).
+
+Completed:
+- `C4`: circuit-breaker state now persists across snapshot/restart. `ExecutorSnapshot` carries optional breaker state, `CircuitBreaker` can snapshot/restore, and `PlanRunner` now saves/restores the conductor from that state.
+- `C6`: signal-contract drift cleanup. Phase signals now carry a real `plan_id` tag, emitted severity tags are normalized to lowercase, and the stale `golem_status` check was renamed to `chain_status`.
+- `C1` partial: `HealthMonitor` now runs on the heartbeat cadence and emits conductor alerts, but only with a summary-safe liveness view because process ownership is still split.
+- `C2` partial: `StuckDetector` and `MetaCognitionHook` now run on theta heartbeat cadence from bounded per-plan activity history; agent-output signals now include `output_hash` and `files_changed_count`.
+- `C5` partial: task-tracker persistence now includes attempt/failure context and activity history so retry state survives restart.
+
+Deferred:
+- `C3`: canonical process ownership is still split between `roko-runtime` and `roko-agent`; fixing it requires changing the actual launch/accounting path, not just conductor wiring.
+- `C5` full: phase-timeout enforcement is still deferred until executor phase-entry timestamps become trustworthy on every transition.
+- `C7` and `C8`: these are status/frontier/meta passes, not source-backed runtime work in this slice.
+
+Verification:
+- `cargo fmt --all`
+- `cargo check -p roko-conductor -p roko-orchestrator -p roko-cli`
+- `cargo clippy -p roko-conductor --no-deps -- -D warnings`
+- `cargo test -p roko-conductor --lib`
+- `cargo test -p roko-orchestrator snapshot --lib`
+- `cargo test -p roko-cli from_snapshot --lib`
+
+The `roko-cli` test run passed but surfaced pre-existing unrelated test warnings in TUI code.

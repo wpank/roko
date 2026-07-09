@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy --workspace --no-deps -- -D warnings -D clippy::missing_errors_doc -D clippy::missing_panics_doc
+
+Recent log tail:
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> crates/roko-serve/src/templates.rs:357:5
+    |
+357 |     pub fn remove(&mut self, name: &str) -> Result<bool> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> crates/roko-serve/src/lib.rs:164:5
+    |
+164 |     pub async fn run(mut self) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> crates/roko-serve/src/lib.rs:217:1
+    |
+217 | / pub async fn run_server(
+218 | |     workdir: PathBuf,
+219 | |     runtime: Arc<dyn CliRuntime>,
+220 | |     bind: Option<String>,
+221 | |     port: Option<u16>,
+222 | | ) -> Result<()> {
+    | |_______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> crates/roko-serve/src/lib.rs:248:1
+    |
+248 | pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) -> Result<()> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#missing_errors_doc
+
+error: could not compile `roko-serve` (lib) due to 24 previous errors

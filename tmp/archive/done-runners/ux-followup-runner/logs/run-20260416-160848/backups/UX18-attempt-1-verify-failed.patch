@@ -1,0 +1,205 @@
+diff --git a/crates/roko-agent-server/Cargo.toml b/crates/roko-agent-server/Cargo.toml
+index ac639fb8..137f4203 100644
+--- a/crates/roko-agent-server/Cargo.toml
++++ b/crates/roko-agent-server/Cargo.toml
+@@ -15,6 +15,7 @@ workspace = true
+ [dependencies]
+ roko-agent = { path = "../roko-agent" }
+ roko-chain = { path = "../roko-chain" }
++roko-core = { path = "../roko-core" }
+ roko-learn = { path = "../roko-learn" }
+ roko-neuro = { path = "../roko-neuro" }
+ 
+@@ -36,6 +37,5 @@ tracing = { workspace = true }
+ uuid = { workspace = true }
+ 
+ [dev-dependencies]
+-roko-core = { path = "../roko-core" }
+ tokio-tungstenite = { workspace = true }
+ tower = { workspace = true, features = ["limit", "load-shed", "util"] }
+diff --git a/crates/roko-agent-server/src/state.rs b/crates/roko-agent-server/src/state.rs
+index 044ce0ea..22827693 100644
+--- a/crates/roko-agent-server/src/state.rs
++++ b/crates/roko-agent-server/src/state.rs
+@@ -15,6 +15,8 @@ use roko_agent::streaming::StreamChunk;
+ use roko_agent::tool_loop::LlmBackend;
+ use roko_agent::translate::{BackendResponse, RenderedTools, normalize_finish_reason};
+ use roko_chain::ChainClient;
++use roko_core::obs::metrics::{MetricSnapshot, MetricValue};
++use roko_core::obs::schema::{self, CanonicalMetricSchema, MetricDescriptor, MetricSchema};
+ use roko_neuro::KnowledgeStore;
+ use serde::{Deserialize, Serialize};
+ use serde_json::Value;
+@@ -176,13 +178,38 @@ impl AgentMetrics {
+     /// Export current counters.
+     #[must_use]
+     pub fn snapshot(&self) -> serde_json::Value {
++        let request_count = self.request_count.load(Ordering::Relaxed);
++        let message_count = self.message_count.load(Ordering::Relaxed);
+         serde_json::json!({
+-            "requests": self.request_count.load(Ordering::Relaxed),
+-            "messages": self.message_count.load(Ordering::Relaxed),
++            "schema_version": CanonicalMetricSchema::schema_version(),
++            "families": [
++                counter_snapshot(
++                    &schema::ROKO_AGENT_SERVER_REQUESTS_TOTAL_DESCRIPTOR,
++                    request_count,
++                ),
++                counter_snapshot(
++                    &schema::ROKO_AGENT_SERVER_MESSAGE_REQUESTS_TOTAL_DESCRIPTOR,
++                    message_count,
++                ),
++            ],
++            "requests": request_count,
++            "messages": message_count,
+         })
+     }
+ }
+ 
++fn counter_snapshot(descriptor: &MetricDescriptor, value: u64) -> MetricSnapshot {
++    debug_assert_eq!(descriptor.kind, roko_core::obs::MetricKind::Counter);
++    debug_assert!(descriptor.labels.is_empty());
++    MetricSnapshot {
++        name: descriptor.name.to_string(),
++        help: descriptor.help.to_string(),
++        kind: descriptor.kind,
++        labels: Vec::new(),
++        value: MetricValue::Counter(value),
++    }
++}
++
+ /// Stats payload shaped to resemble the legacy mirage agent stats.
+ #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+ pub struct AgentRuntimeStats {
+diff --git a/crates/roko-cli/src/tui/views/dashboard_view.rs b/crates/roko-cli/src/tui/views/dashboard_view.rs
+index 6439f91e..d4a33793 100644
+--- a/crates/roko-cli/src/tui/views/dashboard_view.rs
++++ b/crates/roko-cli/src/tui/views/dashboard_view.rs
+@@ -7,11 +7,11 @@
+ //!
+ //! Delegates to compiled widgets for all panels.
+ 
++use ratatui::Frame;
+ use ratatui::layout::{Constraint, Layout, Rect};
+ use ratatui::style::{Color, Modifier, Style};
+ use ratatui::text::{Line, Span};
+ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, Wrap};
+-use ratatui::Frame;
+ use std::collections::{BTreeMap, HashMap, HashSet};
+ use std::path::{Path, PathBuf};
+ 
+diff --git a/crates/roko-core/src/obs/mod.rs b/crates/roko-core/src/obs/mod.rs
+index 0e88ce03..f250ea80 100644
+--- a/crates/roko-core/src/obs/mod.rs
++++ b/crates/roko-core/src/obs/mod.rs
+@@ -8,6 +8,7 @@
+ pub mod health;
+ pub mod histograms;
+ pub mod metrics;
++pub mod schema;
+ pub mod scrub;
+ 
+ pub use health::{
+@@ -15,7 +16,8 @@ pub use health::{
+ };
+ pub use histograms::{Histogram, HistogramSnapshot, LLM_LATENCY_BUCKETS};
+ pub use metrics::{
+-    Counter, Gauge, LabelSet, MetricKind, MetricRegistry, MetricSnapshot, STANDARD_METRICS,
+-    register_standard_metrics,
++    Counter, Gauge, LabelSet, MetricKind, MetricRegistry, MetricSnapshot, MetricValue,
++    STANDARD_METRICS, register_standard_metrics,
+ };
++pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
+ pub use scrub::{LogScrubber, REDACTED};
+diff --git a/crates/roko-learn/src/aggregate.rs b/crates/roko-learn/src/aggregate.rs
+index e05a067a..354d0665 100644
+--- a/crates/roko-learn/src/aggregate.rs
++++ b/crates/roko-learn/src/aggregate.rs
+@@ -284,15 +284,14 @@ fn apply_event_to_buckets(
+         return;
+     }
+ 
+-    let idx = usize::try_from((event_bucket_ms - oldest_start_ms) / bucket_ms).unwrap_or(usize::MAX);
++    let idx =
++        usize::try_from((event_bucket_ms - oldest_start_ms) / bucket_ms).unwrap_or(usize::MAX);
+     let Some(bucket) = buckets.get_mut(idx) else {
+         return;
+     };
+ 
+     let turns_before = bucket.turns;
+-    let total_latency_before = bucket
+-        .latency_ms_avg
+-        .mul_add(turns_before as f64, 0.0);
++    let total_latency_before = bucket.latency_ms_avg.mul_add(turns_before as f64, 0.0);
+     let turns_after = turns_before.saturating_add(1);
+ 
+     bucket.turns = turns_after;
+@@ -434,8 +433,12 @@ mod tests {
+             .append(true)
+             .open(path)
+             .expect("open file for append");
+-        writeln!(file, "{}", serde_json::to_string(event).expect("serialize event"))
+-            .expect("write event");
++        writeln!(
++            file,
++            "{}",
++            serde_json::to_string(event).expect("serialize event")
++        )
++        .expect("write event");
+     }
+ 
+     #[test]
+@@ -449,7 +452,10 @@ mod tests {
+         for hour in 0..10 {
+             for turn in 0..10 {
+                 let timestamp = start + Duration::hours(hour) + Duration::minutes(turn * 6);
+-                append_event(&path, &sample_event(timestamp, hour as usize * 10 + turn as usize));
++                append_event(
++                    &path,
++                    &sample_event(timestamp, hour as usize * 10 + turn as usize),
++                );
+             }
+         }
+ 
+@@ -536,11 +542,17 @@ mod tests {
+         fs::write(&path, "one\ntwo\n").expect("seed file");
+ 
+         let mut cursor = JsonlCursor::new(&path);
+-        assert_eq!(cursor.read_new_lines().expect("initial read"), vec!["one", "two"]);
++        assert_eq!(
++            cursor.read_new_lines().expect("initial read"),
++            vec!["one", "two"]
++        );
+         assert_eq!(cursor.last_line_number(), 2);
+ 
+         fs::write(&path, "reset\n").expect("truncate file");
+-        assert_eq!(cursor.read_new_lines().expect("after truncation"), vec!["reset"]);
++        assert_eq!(
++            cursor.read_new_lines().expect("after truncation"),
++            vec!["reset"]
++        );
+         assert_eq!(cursor.last_line_number(), 1);
+ 
+         fs::remove_file(&path).expect("remove file");
+diff --git a/crates/roko-learn/src/lib.rs b/crates/roko-learn/src/lib.rs
+index ce9961e6..2926f521 100644
+--- a/crates/roko-learn/src/lib.rs
++++ b/crates/roko-learn/src/lib.rs
+@@ -22,6 +22,8 @@
+ 
+ /// Active inference helpers for tier routing support.
+ pub mod active_inference;
++/// Efficiency trend aggregation helpers for JSONL telemetry.
++pub mod aggregate;
+ pub mod anomaly;
+ pub mod bandits;
+ pub mod baseline;
+@@ -46,8 +48,6 @@ pub mod error_enrichment;
+ pub mod event_subscriber;
+ /// Unified learning events emitted by routing, evaluation, and runtime feedback.
+ pub mod events;
+-/// Efficiency trend aggregation helpers for JSONL telemetry.
+-pub mod aggregate;
+ pub mod hdc_clustering;
+ /// Rolling latency EMAs and percentiles for routing feedback.
+ pub mod latency;

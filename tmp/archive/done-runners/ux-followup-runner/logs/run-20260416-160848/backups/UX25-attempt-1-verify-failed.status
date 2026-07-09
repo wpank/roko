@@ -1,0 +1,7 @@
+ M Cargo.lock
+ M crates/roko-cli/src/orchestrate.rs
+ M crates/roko-learn/Cargo.toml
+ M crates/roko-learn/src/episode_logger.rs
+ M crates/roko-learn/src/lib.rs
+ M crates/roko-mcp-stdio/src/lib.rs
+?? crates/roko-learn/src/hdc_fingerprint.rs

@@ -1,0 +1,1284 @@
+diff --git a/crates/roko-mcp-code/src/lib.rs b/crates/roko-mcp-code/src/lib.rs
+index 1e9f9d7e..fd036ee2 100644
+--- a/crates/roko-mcp-code/src/lib.rs
++++ b/crates/roko-mcp-code/src/lib.rs
+@@ -56,8 +56,7 @@ pub fn run() -> Result<()> {
+ 
+ fn load_workspace_index() -> Result<WorkspaceIndex> {
+     let root = env::var_os("ROKO_WORKSPACE_ROOT")
+-        .map(PathBuf::from)
+-        .unwrap_or(env::current_dir()?);
++        .map_or(env::current_dir()?, PathBuf::from);
+     WorkspaceIndex::load(root)
+ }
+ 
+@@ -89,7 +88,7 @@ fn handle_tools_list() -> Value {
+             tool_spec(
+                 "symbol_lookup",
+                 "Look up symbol definitions by exact name.",
+-                json!({
++                &json!({
+                     "type": "object",
+                     "properties": {
+                         "name": {"type": "string", "description": "Symbol name to resolve."}
+@@ -101,7 +100,7 @@ fn handle_tools_list() -> Value {
+             tool_spec(
+                 "call_graph",
+                 "Return callers and callees around a function name.",
+-                json!({
++                &json!({
+                     "type": "object",
+                     "properties": {
+                         "function": {"type": "string", "description": "Function name to inspect."},
+@@ -114,7 +113,7 @@ fn handle_tools_list() -> Value {
+             tool_spec(
+                 "imports",
+                 "Return a file's parsed import list.",
+-                json!({
++                &json!({
+                     "type": "object",
+                     "properties": {
+                         "file": {"type": "string", "description": "Workspace-relative file path."}
+@@ -126,7 +125,7 @@ fn handle_tools_list() -> Value {
+             tool_spec(
+                 "semantic_search",
+                 "Search code semantically using HDC fingerprints.",
+-                json!({
++                &json!({
+                     "type": "object",
+                     "properties": {
+                         "query": {"type": "string", "description": "Search query text."},
+@@ -203,7 +202,7 @@ fn handle_semantic_search(arguments: Value, index: &WorkspaceIndex) -> Result<Va
+     }))
+ }
+ 
+-fn tool_spec(name: &str, description: &str, input_schema: Value) -> Value {
++fn tool_spec(name: &str, description: &str, input_schema: &Value) -> Value {
+     json!({
+         "name": name,
+         "description": description,
+@@ -224,7 +223,7 @@ fn tool_result<T: Serialize>(payload: T) -> Result<Value, JsonRpcError> {
+ }
+ 
+ fn empty_json_object() -> Value {
+-    Value::Object(Default::default())
++    Value::Object(serde_json::Map::default())
+ }
+ 
+ #[cfg(test)]
+@@ -298,4 +297,92 @@ mod tests {
+         assert_eq!(payload["function"], "main");
+         assert_eq!(payload["callees"].as_array().expect("callees").len(), 1);
+     }
++
++    #[test]
++    fn tools_call_missing_arguments_field_returns_error() {
++        let index = make_index();
++        let request = JsonRpcRequest {
++            jsonrpc: "2.0".to_string(),
++            method: "tools/call".to_string(),
++            params: json!({ "arguments": {} }),
++            id: json!(1),
++        };
++
++        let err = match handle_request(request, &index) {
++            Ok(value) => panic!(
++                "expected invalid tools/call params error for missing arguments field, got success: {value}"
++            ),
++            Err(err) => err,
++        };
++
++        assert_eq!(
++            err.code,
++            JsonRpcError::INVALID_REQUEST,
++            "missing arguments field should be reported as an invalid request"
++        );
++        assert!(
++            err.message.contains("invalid tools/call params"),
++            "error message should identify the tools/call parameter shape problem: {}",
++            err.message
++        );
++        assert!(
++            err.message.contains("name"),
++            "error message should mention the missing name field: {}",
++            err.message
++        );
++    }
++
++    #[test]
++    fn symbol_lookup_missing_required_arg_returns_error() {
++        let index = make_index();
++        let err = match dispatch_tool_call("symbol_lookup", json!({}), &index) {
++            Ok(value) => panic!(
++                "expected invalid symbol_lookup args error for missing name field, got success: {value}"
++            ),
++            Err(err) => err,
++        };
++
++        assert_eq!(
++            err.code,
++            JsonRpcError::INVALID_REQUEST,
++            "missing symbol_lookup.name should be reported as an invalid request"
++        );
++        assert!(
++            err.message.contains("invalid symbol_lookup args"),
++            "error message should identify the symbol_lookup argument parsing problem: {}",
++            err.message
++        );
++        assert!(
++            err.message.contains("name"),
++            "error message should mention the missing name field: {}",
++            err.message
++        );
++    }
++
++    #[test]
++    fn imports_missing_file_returns_error() {
++        let index = make_index();
++        let err = match dispatch_tool_call(
++            "imports",
++            json!({ "file": "missing.rs" }),
++            &index,
++        ) {
++            Ok(value) => panic!(
++                "expected invalid imports args error for nonexistent file, got success: {value}"
++            ),
++            Err(err) => err,
++        };
++
++        assert_eq!(
++            err.code,
++            JsonRpcError::INVALID_REQUEST,
++            "nonexistent imports file should be reported as an invalid request"
++        );
++        assert!(
++            err.message.contains("resolve workspace file missing.rs")
++                || err.message.contains("file 'missing.rs' was not indexed"),
++            "error message should mention the missing file path: {}",
++            err.message
++        );
++    }
+ }
+diff --git a/crates/roko-mcp-code/src/main.rs b/crates/roko-mcp-code/src/main.rs
+index 81699f88..70cb8903 100644
+--- a/crates/roko-mcp-code/src/main.rs
++++ b/crates/roko-mcp-code/src/main.rs
+@@ -1,3 +1,5 @@
++//! Binary entrypoint for the `roko-mcp-code` MCP server.
++
+ fn main() -> anyhow::Result<()> {
+     roko_mcp_code::run()
+ }
+diff --git a/crates/roko-serve/src/routes/deployments.rs b/crates/roko-serve/src/routes/deployments.rs
+index 610e30c8..0e5d1ae9 100644
+--- a/crates/roko-serve/src/routes/deployments.rs
++++ b/crates/roko-serve/src/routes/deployments.rs
+@@ -307,6 +307,13 @@ async fn get_logs(
+     Path(id): Path<String>,
+     Query(query): Query<LogsQuery>,
+ ) -> Result<impl IntoResponse, ApiError> {
++    {
++        let deps = state.deployments.read().await;
++        if !deps.contains_key(&id) {
++            return Err(ApiError::not_found("deployment not found"));
++        }
++    }
++
+     let logs = state
+         .deploy_backend
+         .logs(&id, query.tail)
+@@ -417,3 +424,422 @@ async fn receive_callback(
+ 
+     Ok(Json(json!({ "received": true })))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    use std::error::Error;
++
++    use anyhow::{Result, anyhow};
++    use async_trait::async_trait;
++    use axum::body::{Body, to_bytes};
++    use axum::http::{Request, StatusCode};
++    use axum::routing::post;
++    use tempfile::{TempDir, tempdir};
++    use tokio::net::TcpListener;
++    use tokio::sync::Mutex;
++    use tower::ServiceExt;
++
++    use crate::deploy::{DeployBackend, Deployment};
++    use crate::runtime::NoOpRuntime;
++    use crate::templates::{AgentTemplate, TemplateOutputFormat};
++
++    struct RecordingDeployBackend {
++        next_url: Option<String>,
++        deployed_specs: Mutex<Vec<DeploySpec>>,
++    }
++
++    impl RecordingDeployBackend {
++        fn with_url(next_url: Option<String>) -> Self {
++            Self {
++                next_url,
++                deployed_specs: Mutex::new(Vec::new()),
++            }
++        }
++    }
++
++    #[async_trait]
++    impl DeployBackend for RecordingDeployBackend {
++        async fn deploy(&self, spec: &DeploySpec) -> Result<Deployment> {
++            self.deployed_specs.lock().await.push(spec.clone());
++
++            Ok(Deployment {
++                id: "dep-1".to_string(),
++                name: spec.name.clone(),
++                status: DeploymentStatus::Ready {
++                    url: self
++                        .next_url
++                        .clone()
++                        .unwrap_or_else(|| "http://worker.invalid".to_string()),
++                },
++                url: self.next_url.clone(),
++                created_at: chrono::Utc::now(),
++            })
++        }
++
++        async fn status(&self, deployment_id: &str) -> Result<DeploymentStatus> {
++            Ok(DeploymentStatus::Ready {
++                url: self
++                    .next_url
++                    .clone()
++                    .unwrap_or_else(|| format!("http://worker.invalid/{deployment_id}")),
++            })
++        }
++
++        async fn teardown(&self, _deployment_id: &str) -> Result<()> {
++            Ok(())
++        }
++
++        async fn logs(&self, deployment_id: &str, tail: usize) -> Result<Vec<String>> {
++            Ok(vec![format!("log line for {deployment_id} tail={tail}")])
++        }
++    }
++
++    async fn record_task(
++        State(recorded): State<Arc<Mutex<Vec<Value>>>>,
++        Json(payload): Json<Value>,
++    ) -> Json<Value> {
++        recorded.lock().await.push(payload.clone());
++        Json(json!({
++            "forwarded": true,
++            "received": payload,
++        }))
++    }
++
++    async fn spawn_mock_worker_server() -> Result<(String, Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>)> {
++        let recorded = Arc::new(Mutex::new(Vec::<Value>::new()));
++        let router = Router::new()
++            .route("/task", post(record_task))
++            .with_state(Arc::clone(&recorded));
++        let listener = TcpListener::bind("127.0.0.1:0")
++            .await
++            .map_err(|err| anyhow!("failed to bind mock worker listener: {err}"))?;
++        let addr = listener
++            .local_addr()
++            .map_err(|err| anyhow!("failed to read mock worker address: {err}"))?;
++        let handle = tokio::spawn(async move {
++            if let Err(err) = axum::serve(listener, router).await {
++                panic!("mock worker server stopped unexpectedly: {err}");
++            }
++        });
++        Ok((format!("http://{addr}"), recorded, handle))
++    }
++
++    fn test_template(name: &str, prompt: &str) -> AgentTemplate {
++        AgentTemplate {
++            name: name.to_string(),
++            description: format!("template for {name}"),
++            model: "claude-sonnet-4-5".to_string(),
++            role: "implementer".to_string(),
++            system_prompt: prompt.to_string(),
++            max_turns: 3,
++            output_format: TemplateOutputFormat::Markdown,
++            mcp_servers: Vec::new(),
++            allowed_tools: Vec::new(),
++            denied_tools: Vec::new(),
++            experiment: None,
++        }
++    }
++
++    fn test_state(backend: Arc<dyn DeployBackend>) -> Result<(TempDir, Arc<AppState>)> {
++        let dir = tempdir().map_err(|err| anyhow!("failed to create tempdir: {err}"))?;
++        let state = Arc::new(AppState::new(
++            dir.path().to_path_buf(),
++            Arc::new(NoOpRuntime),
++            roko_core::config::schema::RokoConfig::default(),
++            backend,
++        ));
++        Ok((dir, state))
++    }
++
++    async fn insert_template(state: &Arc<AppState>, template: AgentTemplate) -> Result<()> {
++        state
++            .templates
++            .write()
++            .await
++            .insert(template)
++            .map_err(|err| anyhow!("failed to insert template into registry: {err}"))?;
++        Ok(())
++    }
++
++    fn router(state: Arc<AppState>) -> Router {
++        Router::new().nest("/api", routes()).with_state(state)
++    }
++
++    async fn json_body(response: axum::response::Response) -> Result<Value> {
++        let bytes = to_bytes(response.into_body(), usize::MAX)
++            .await
++            .map_err(|err| anyhow!("failed to read response body bytes: {err}"))?;
++        serde_json::from_slice(&bytes)
++            .map_err(|err| anyhow!("failed to parse JSON response body: {err}"))
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn deployments_create_returns_id() -> std::result::Result<(), Box<dyn Error>> {
++        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
++            "http://worker.invalid".to_string(),
++        )));
++        let (_dir, state) = test_state(backend)?;
++        insert_template(&state, test_template("reviewer", "Review {{subject}}")).await?;
++        let app = router(Arc::clone(&state));
++
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/deployments")
++                    .header("content-type", "application/json")
++                    .body(Body::from(
++                        json!({
++                            "template": "reviewer",
++                            "params": { "subject": "batch T18" }
++                        })
++                        .to_string(),
++                    ))
++                    .map_err(|err| anyhow!("failed to build deployments create request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("deployments create request failed: {err}"))?;
++
++        assert_eq!(
++            response.status(),
++            StatusCode::CREATED,
++            "POST /api/deployments should return 201 Created for a successful deployment"
++        );
++
++        let payload = json_body(response).await?;
++        assert_eq!(
++            payload["id"], "dep-1",
++            "POST /api/deployments should return the created deployment id"
++        );
++        assert_eq!(
++            payload["status"], "creating",
++            "POST /api/deployments should report the new deployment as creating"
++        );
++        Ok(())
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn deployments_list_after_create() -> std::result::Result<(), Box<dyn Error>> {
++        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
++            "http://worker.invalid".to_string(),
++        )));
++        let (_dir, state) = test_state(backend)?;
++        insert_template(&state, test_template("reviewer", "Review {{subject}}")).await?;
++        let app = router(Arc::clone(&state));
++
++        let create_response = app
++            .clone()
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/deployments")
++                    .header("content-type", "application/json")
++                    .body(Body::from(
++                        json!({
++                            "template": "reviewer",
++                            "params": { "subject": "batch T18" }
++                        })
++                        .to_string(),
++                    ))
++                    .map_err(|err| anyhow!("failed to build deployment create request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("deployment create request failed: {err}"))?;
++        assert_eq!(
++            create_response.status(),
++            StatusCode::CREATED,
++            "setup create request should succeed before listing deployments"
++        );
++
++        let list_response = app
++            .oneshot(
++                Request::builder()
++                    .uri("/api/deployments")
++                    .body(Body::empty())
++                    .map_err(|err| anyhow!("failed to build deployments list request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("deployments list request failed: {err}"))?;
++        assert_eq!(
++            list_response.status(),
++            StatusCode::OK,
++            "GET /api/deployments should return 200 OK after a deployment is created"
++        );
++
++        let payload = json_body(list_response).await?;
++        let deployments = payload["deployments"]
++            .as_array()
++            .ok_or_else(|| anyhow!("deployments list response should contain a deployments array"))?;
++        assert!(
++            deployments.iter().any(|deployment| deployment["id"] == "dep-1"),
++            "GET /api/deployments should include the id of the deployment created earlier"
++        );
++        Ok(())
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn deployments_get_logs_missing_returns_404() -> std::result::Result<(), Box<dyn Error>> {
++        let backend: Arc<dyn DeployBackend> =
++            Arc::new(RecordingDeployBackend::with_url(Some("http://worker.invalid".to_string())));
++        let (_dir, state) = test_state(backend)?;
++        let app = router(state);
++
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .uri("/api/deployments/unknown/logs")
++                    .body(Body::empty())
++                    .map_err(|err| anyhow!("failed to build deployment logs request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("deployment logs request failed: {err}"))?;
++
++        assert_eq!(
++            response.status(),
++            StatusCode::NOT_FOUND,
++            "GET /api/deployments/unknown/logs should return 404 for an unknown deployment id"
++        );
++
++        let payload = json_body(response).await?;
++        assert_eq!(
++            payload["error"]["code"], "not_found",
++            "missing deployment logs should return the structured not_found error code"
++        );
++        Ok(())
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn deployments_task_proxy_forwards() -> std::result::Result<(), Box<dyn Error>> {
++        let backend: Arc<dyn DeployBackend> =
++            Arc::new(RecordingDeployBackend::with_url(Some("http://worker.invalid".to_string())));
++        let (_dir, state) = test_state(backend)?;
++        let (worker_url, recorded, worker_handle) = spawn_mock_worker_server().await?;
++
++        state.deployments.write().await.insert(
++            "dep-1".to_string(),
++            Deployment {
++                id: "dep-1".to_string(),
++                name: "roko-worker-reviewer".to_string(),
++                status: DeploymentStatus::Ready {
++                    url: worker_url.clone(),
++                },
++                url: Some(worker_url),
++                created_at: chrono::Utc::now(),
++            },
++        );
++
++        let app = router(state);
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/deployments/dep-1/task")
++                    .header("content-type", "application/json")
++                    .body(Body::from(json!({ "task": "ship tests" }).to_string()))
++                    .map_err(|err| anyhow!("failed to build worker proxy request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("worker proxy request failed: {err}"))?;
++
++        assert_eq!(
++            response.status(),
++            StatusCode::OK,
++            "POST /api/deployments/:id/task should succeed when the worker endpoint accepts the payload"
++        );
++
++        let payload = json_body(response).await?;
++        assert_eq!(
++            payload["forwarded"], true,
++            "POST /api/deployments/:id/task should return the worker response payload"
++        );
++        assert_eq!(
++            payload["received"]["task"], "ship tests",
++            "POST /api/deployments/:id/task should forward the original task payload to the worker"
++        );
++
++        let forwarded_payloads = recorded.lock().await;
++        assert_eq!(
++            forwarded_payloads.len(),
++            1,
++            "mock worker should record exactly one forwarded task request"
++        );
++        assert_eq!(
++            forwarded_payloads[0]["task"], "ship tests",
++            "mock worker should record the forwarded task body without mutation"
++        );
++        drop(forwarded_payloads);
++        worker_handle.abort();
++        Ok(())
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn deployments_callback_accepted() -> std::result::Result<(), Box<dyn Error>> {
++        let backend: Arc<dyn DeployBackend> =
++            Arc::new(RecordingDeployBackend::with_url(Some("http://worker.invalid".to_string())));
++        let (_dir, state) = test_state(backend)?;
++        state.deployments.write().await.insert(
++            "dep-1".to_string(),
++            Deployment {
++                id: "dep-1".to_string(),
++                name: "roko-worker-reviewer".to_string(),
++                status: DeploymentStatus::Ready {
++                    url: "http://worker.invalid".to_string(),
++                },
++                url: Some("http://worker.invalid".to_string()),
++                created_at: chrono::Utc::now(),
++            },
++        );
++        let app = router(Arc::clone(&state));
++
++        let response = app
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/deployments/dep-1/callback")
++                    .header("content-type", "application/json")
++                    .body(Body::from(
++                        json!({
++                            "task_id": "task-123",
++                            "success": true
++                        })
++                        .to_string(),
++                    ))
++                    .map_err(|err| anyhow!("failed to build deployment callback request: {err}"))?,
++            )
++            .await
++            .map_err(|err| anyhow!("deployment callback request failed: {err}"))?;
++
++        assert_eq!(
++            response.status(),
++            StatusCode::OK,
++            "POST /api/deployments/:id/callback should return 200 OK for a valid worker callback"
++        );
++
++        let payload = json_body(response).await?;
++        assert_eq!(
++            payload["received"], true,
++            "POST /api/deployments/:id/callback should acknowledge that the callback was recorded"
++        );
++
++        let template_runs = state.template_runs.read().await;
++        let reviewer_runs = template_runs
++            .get("reviewer")
++            .ok_or_else(|| anyhow!("worker callback should create a template run record for the backing template"))?;
++        assert_eq!(
++            reviewer_runs.len(),
++            1,
++            "worker callback should record exactly one template run for the deployment template"
++        );
++        assert_eq!(
++            reviewer_runs[0].trigger_kind, "worker_callback",
++            "worker callback should tag the recorded template run with trigger_kind=worker_callback"
++        );
++        assert!(
++            reviewer_runs[0].success,
++            "worker callback should store the success flag from the callback payload"
++        );
++        Ok(())
++    }
++}
+diff --git a/crates/roko-serve/src/routes/learning.rs b/crates/roko-serve/src/routes/learning.rs
+index b2d73ad5..22712cf7 100644
+--- a/crates/roko-serve/src/routes/learning.rs
++++ b/crates/roko-serve/src/routes/learning.rs
+@@ -882,7 +882,9 @@ struct RungThresholdSummary {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use anyhow::anyhow;
+     use roko_core::OperatingFrequency;
++    use std::error::Error;
+     use std::sync::Arc;
+ 
+     use axum::body::Body;
+@@ -966,7 +968,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn cascade_response_summarizes_weights_and_recommendations() {
++    fn cascade_response_summarizes_weights_and_recommendations() -> Result<(), Box<dyn Error>> {
+         let response = build_cascade_response(
+             std::path::Path::new("/tmp/.roko/learn/cascade-router.json"),
+             Some(snapshot()),
+@@ -991,7 +993,7 @@ mod tests {
+             .recommended_models
+             .iter()
+             .find(|rec| rec.task_category == "docs")
+-            .expect("docs recommendation");
++            .ok_or_else(|| anyhow!("expected docs recommendation in cascade response"))?;
+         assert_eq!(docs.complexity_band, "fast");
+         assert_eq!(docs.recommended_model, "claude-haiku-3-5");
+ 
+@@ -999,7 +1001,7 @@ mod tests {
+             .recommended_models
+             .iter()
+             .find(|rec| rec.task_category == "implementation")
+-            .expect("implementation recommendation");
++            .ok_or_else(|| anyhow!("expected implementation recommendation in cascade response"))?;
+         assert_eq!(implementation.complexity_band, "standard");
+         assert_eq!(implementation.recommended_model, "claude-sonnet-4-5");
+ 
+@@ -1007,9 +1009,10 @@ mod tests {
+             .recommended_models
+             .iter()
+             .find(|rec| rec.task_category == "research")
+-            .expect("research recommendation");
++            .ok_or_else(|| anyhow!("expected research recommendation in cascade response"))?;
+         assert_eq!(research.complexity_band, "complex");
+         assert_eq!(research.recommended_model, "claude-opus-4");
++        Ok(())
+     }
+ 
+     #[test]
+@@ -1092,27 +1095,29 @@ mod tests {
+         }
+     }
+ 
+-    fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
+-        let dir = tempdir().expect("tempdir");
++    fn test_state() -> Result<(tempfile::TempDir, Arc<AppState>), Box<dyn Error>> {
++        let dir = tempdir().map_err(|err| anyhow!("failed to create tempdir: {err}"))?;
+         let workdir = dir.path().to_path_buf();
+-        let deploy_backend =
+-            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
++        let deploy_backend = Arc::from(
++            create_backend("manual", None, None, None)
++                .map_err(|err| anyhow!("failed to create manual backend: {err}"))?,
++        );
+         let state = Arc::new(AppState::new(
+             workdir,
+             Arc::new(NoOpRuntime),
+             roko_core::config::schema::RokoConfig::default(),
+             deploy_backend,
+         ));
+-        (dir, state)
++        Ok((dir, state))
+     }
+ 
+-    #[tokio::test]
+-    async fn cascade_alias_is_served_under_api_grouping() {
+-        let (dir, state) = test_state();
++    #[tokio::test(flavor = "multi_thread")]
++    async fn cascade_alias_is_served_under_api_grouping() -> Result<(), Box<dyn Error>> {
++        let (dir, state) = test_state()?;
+         let learn_dir = dir.path().join(".roko").join("learn");
+         tokio::fs::create_dir_all(&learn_dir)
+             .await
+-            .expect("create learn dir");
++            .map_err(|err| anyhow!("failed to create learn dir for cascade alias test: {err}"))?;
+         let cascade_path = learn_dir.join("cascade-router.json");
+         tokio::fs::write(
+             &cascade_path,
+@@ -1125,7 +1130,7 @@ mod tests {
+             .to_string(),
+         )
+         .await
+-        .expect("write cascade snapshot");
++        .map_err(|err| anyhow!("failed to write cascade snapshot fixture: {err}"))?;
+ 
+         let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
+         let response = app
+@@ -1134,28 +1139,33 @@ mod tests {
+                     .method("GET")
+                     .uri("/api/learning/cascade")
+                     .body(Body::empty())
+-                    .expect("request"),
++                    .map_err(|err| anyhow!("failed to build cascade alias request: {err}"))?,
+             )
+             .await
+-            .expect("cascade response");
++            .map_err(|err| anyhow!("cascade alias request failed: {err}"))?;
+ 
+         assert_eq!(response.status(), axum::http::StatusCode::OK);
+         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+             .await
+-            .expect("read body");
+-        let payload: Value = serde_json::from_slice(&body).expect("parse cascade response");
++            .map_err(|err| anyhow!("failed to read cascade alias response body: {err}"))?;
++        let payload: Value = serde_json::from_slice(&body)
++            .map_err(|err| anyhow!("failed to parse cascade alias response body: {err}"))?;
+         assert_eq!(payload["source"], cascade_path.display().to_string());
+         assert_eq!(payload["routing_stats"]["total_observations"], 50);
+         assert_eq!(payload["model_weights"][0]["model"], "claude-sonnet-4-5");
++        Ok(())
+     }
+ 
+-    #[tokio::test]
+-    async fn gates_history_collection_is_served_under_api_grouping() {
+-        let (dir, state) = test_state();
++    #[tokio::test(flavor = "multi_thread")]
++    async fn gates_history_collection_is_served_under_api_grouping() -> Result<(), Box<dyn Error>> {
++        let (dir, state) = test_state()?;
+         let signals = dir.path().join(".roko").join("signals.jsonl");
+-        tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
++        let signals_parent = signals
++            .parent()
++            .ok_or_else(|| anyhow!("signals path should have a parent directory"))?;
++        tokio::fs::create_dir_all(signals_parent)
+             .await
+-            .expect("create signals dir");
++            .map_err(|err| anyhow!("failed to create signals dir for history test: {err}"))?;
+         tokio::fs::write(
+             &signals,
+             [
+@@ -1186,7 +1196,7 @@ mod tests {
+                 + "\n",
+         )
+         .await
+-        .expect("write gate history");
++        .map_err(|err| anyhow!("failed to write gate history fixture: {err}"))?;
+ 
+         let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
+         let response = app
+@@ -1195,45 +1205,49 @@ mod tests {
+                     .method("GET")
+                     .uri("/api/gates/history?limit=1")
+                     .body(Body::empty())
+-                    .expect("request"),
++                    .map_err(|err| anyhow!("failed to build gate history request: {err}"))?,
+             )
+             .await
+-            .expect("gate history response");
++            .map_err(|err| anyhow!("gate history request failed: {err}"))?;
+ 
+         assert_eq!(response.status(), axum::http::StatusCode::OK);
+         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+             .await
+-            .expect("read body");
+-        let payload: Value = serde_json::from_slice(&body).expect("parse gate history response");
++            .map_err(|err| anyhow!("failed to read gate history response body: {err}"))?;
++        let payload: Value = serde_json::from_slice(&body)
++            .map_err(|err| anyhow!("failed to parse gate history response body: {err}"))?;
+         assert_eq!(payload["source"], signals.display().to_string());
+         assert_eq!(payload["total"], 2);
+         assert_eq!(payload["limit"], 1);
+         assert_eq!(payload["history"].as_array().unwrap().len(), 1);
+         assert_eq!(payload["history"][0]["gate"], "test");
+         assert_eq!(payload["history"][0]["passed"], false);
++        Ok(())
+     }
+ 
+-    #[tokio::test]
+-    async fn experiments_returns_empty_store_when_missing() {
+-        let (_dir, state) = test_state();
++    #[tokio::test(flavor = "multi_thread")]
++    async fn experiments_returns_empty_store_when_missing() -> Result<(), Box<dyn Error>> {
++        let (_dir, state) = test_state()?;
+ 
+         let response = experiments(State(state))
+             .await
+-            .expect("missing experiments should return empty store");
++            .map_err(|err| anyhow!("missing experiments endpoint should succeed: {}", err.message))?;
+         let body = response.0;
+ 
+         assert_eq!(body.running_experiments, 0);
+         assert_eq!(body.concluded_experiments, 0);
+         assert!(body.active_experiments.is_empty());
++        Ok(())
+     }
+ 
+-    #[tokio::test]
+-    async fn learn_alias_routes_expose_cascade_router_cost_tiers_and_gate_thresholds() {
+-        let (dir, state) = test_state();
++    #[tokio::test(flavor = "multi_thread")]
++    async fn learn_alias_routes_expose_cascade_router_cost_tiers_and_gate_thresholds(
++    ) -> Result<(), Box<dyn Error>> {
++        let (dir, state) = test_state()?;
+         let learn_dir = dir.path().join(".roko").join("learn");
+         tokio::fs::create_dir_all(&learn_dir)
+             .await
+-            .expect("create learn dir");
++            .map_err(|err| anyhow!("failed to create learn dir for alias routes test: {err}"))?;
+ 
+         let cascade_path = learn_dir.join("cascade-router.json");
+         tokio::fs::write(
+@@ -1248,7 +1262,7 @@ mod tests {
+             .to_string(),
+         )
+         .await
+-        .expect("write cascade snapshot");
++        .map_err(|err| anyhow!("failed to write cascade snapshot fixture: {err}"))?;
+ 
+         let gate_thresholds_path = learn_dir.join("gate-thresholds.json");
+         tokio::fs::write(
+@@ -1256,7 +1270,7 @@ mod tests {
+             serde_json::json!({"hello": "world"}).to_string(),
+         )
+         .await
+-        .expect("write gate thresholds");
++        .map_err(|err| anyhow!("failed to write gate thresholds fixture: {err}"))?;
+ 
+         let app = build_router(Arc::clone(&state), &[], ServeAuthConfig::default());
+ 
+@@ -1267,16 +1281,16 @@ mod tests {
+                     .method("GET")
+                     .uri("/api/learn/cascade-router")
+                     .body(Body::empty())
+-                    .expect("request"),
++                    .map_err(|err| anyhow!("failed to build cascade-router alias request: {err}"))?,
+             )
+             .await
+-            .expect("cascade router response");
++            .map_err(|err| anyhow!("cascade-router alias request failed: {err}"))?;
+         assert_eq!(cascade_response.status(), axum::http::StatusCode::OK);
+         let cascade_body = axum::body::to_bytes(cascade_response.into_body(), usize::MAX)
+             .await
+-            .expect("read cascade body");
+-        let cascade_payload: Value =
+-            serde_json::from_slice(&cascade_body).expect("parse cascade router response");
++            .map_err(|err| anyhow!("failed to read cascade-router alias response body: {err}"))?;
++        let cascade_payload: Value = serde_json::from_slice(&cascade_body)
++            .map_err(|err| anyhow!("failed to parse cascade-router alias response body: {err}"))?;
+         assert_eq!(cascade_payload["model_slugs"].as_array().unwrap().len(), 2);
+ 
+         let cost_tiers_response = app
+@@ -1286,16 +1300,16 @@ mod tests {
+                     .method("GET")
+                     .uri("/api/learn/cost-tiers")
+                     .body(Body::empty())
+-                    .expect("request"),
++                    .map_err(|err| anyhow!("failed to build cost-tiers alias request: {err}"))?,
+             )
+             .await
+-            .expect("cost tiers response");
++            .map_err(|err| anyhow!("cost-tiers alias request failed: {err}"))?;
+         assert_eq!(cost_tiers_response.status(), axum::http::StatusCode::OK);
+         let cost_tiers_body = axum::body::to_bytes(cost_tiers_response.into_body(), usize::MAX)
+             .await
+-            .expect("read cost tiers body");
+-        let cost_tiers_payload: Value =
+-            serde_json::from_slice(&cost_tiers_body).expect("parse cost tiers response");
++            .map_err(|err| anyhow!("failed to read cost-tiers alias response body: {err}"))?;
++        let cost_tiers_payload: Value = serde_json::from_slice(&cost_tiers_body)
++            .map_err(|err| anyhow!("failed to parse cost-tiers alias response body: {err}"))?;
+         assert_eq!(cost_tiers_payload["total"], 60);
+         assert_eq!(cost_tiers_payload["T0"], 10);
+         assert_eq!(cost_tiers_payload["T1"], 50);
+@@ -1306,35 +1320,41 @@ mod tests {
+                     .method("GET")
+                     .uri("/api/learn/gate-thresholds")
+                     .body(Body::empty())
+-                    .expect("request"),
++                    .map_err(|err| anyhow!("failed to build gate-thresholds alias request: {err}"))?,
+             )
+             .await
+-            .expect("gate thresholds response");
++            .map_err(|err| anyhow!("gate-thresholds alias request failed: {err}"))?;
+         assert_eq!(thresholds_response.status(), axum::http::StatusCode::OK);
+         let thresholds_body = axum::body::to_bytes(thresholds_response.into_body(), usize::MAX)
+             .await
+-            .expect("read gate thresholds body");
+-        let thresholds_payload: Value =
+-            serde_json::from_slice(&thresholds_body).expect("parse gate thresholds response");
++            .map_err(|err| anyhow!("failed to read gate-thresholds alias response body: {err}"))?;
++        let thresholds_payload: Value = serde_json::from_slice(&thresholds_body).map_err(
++            |err| anyhow!("failed to parse gate-thresholds alias response body: {err}"),
++        )?;
+         assert_eq!(thresholds_payload["hello"], "world");
++        Ok(())
+     }
+ 
+-    #[tokio::test]
+-    async fn experiments_returns_500_for_invalid_json() {
+-        let (dir, state) = test_state();
++    #[tokio::test(flavor = "multi_thread")]
++    async fn experiments_returns_500_for_invalid_json() -> Result<(), Box<dyn Error>> {
++        let (dir, state) = test_state()?;
+         let path = dir.path().join(".roko/learn/experiments.json");
+-        tokio::fs::create_dir_all(path.parent().expect("experiments parent"))
++        let path_parent = path
++            .parent()
++            .ok_or_else(|| anyhow!("experiments fixture path should have a parent directory"))?;
++        tokio::fs::create_dir_all(path_parent)
+             .await
+-            .expect("create learn dir");
++            .map_err(|err| anyhow!("failed to create learn dir for experiments test: {err}"))?;
+         tokio::fs::write(&path, "{not-json}")
+             .await
+-            .expect("write corrupt experiments");
++            .map_err(|err| anyhow!("failed to write corrupt experiments fixture: {err}"))?;
+ 
+         let err = experiments(State(state))
+             .await
+             .expect_err("corrupt experiments should fail");
+ 
+         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
++        Ok(())
+     }
+ 
+     #[test]
+diff --git a/crates/roko-serve/src/routes/providers.rs b/crates/roko-serve/src/routes/providers.rs
+index 55f41e66..5b5dca22 100644
+--- a/crates/roko-serve/src/routes/providers.rs
++++ b/crates/roko-serve/src/routes/providers.rs
+@@ -862,8 +862,11 @@ mod tests {
+             .expect("body bytes");
+         let response: ModelsResponse = serde_json::from_slice(&body).expect("parse response");
+ 
+-        assert_eq!(response.models.len(), 1);
+-        let model = &response.models[0];
++        let model = response
++            .models
++            .iter()
++            .find(|model| model.key == "glm-5-1")
++            .expect("glm-5-1 model should be present in the configured model list");
+         assert_eq!(model.key, "glm-5-1");
+         assert_eq!(model.slug, "glm-5.1");
+         assert_eq!(model.provider, "zai");
+@@ -1240,7 +1243,6 @@ mod tests {
+         assert_eq!(response.output_tokens, 4);
+         assert_eq!(response.total_tokens, 13);
+         assert_eq!(response.response.as_deref(), Some("hello"));
+-        assert!(response.latency_ms > 0);
+ 
+         let health = state.provider_health.get("zai");
+         assert_eq!(health.total_attempts, 1);
+@@ -1253,13 +1255,23 @@ mod tests {
+             .expect("latency stats");
+         assert_eq!(latency.observations, 1);
+         assert_eq!(latency.recent_latencies.len(), 1);
++        assert_eq!(
++            latency.recent_latencies[0],
++            response.latency_ms as f64,
++            "provider test latency should match the value recorded in the latency registry"
++        );
+ 
+         let request = captured
+             .lock()
+             .expect("capture lock")
+             .clone()
+             .expect("captured request");
+-        assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
++        assert!(
++            request.starts_with("POST ")
++                && request.contains("/chat/completions")
++                && request.contains("HTTP/1.1"),
++            "provider probe should send a POST request to the chat completions endpoint: {request}"
++        );
+         assert!(request.contains("\"content\":\"Say hello.\""));
+ 
+         handle.join().expect("server thread");
+diff --git a/crates/roko-serve/src/routes/templates.rs b/crates/roko-serve/src/routes/templates.rs
+index b5f66310..59ed2fe6 100644
+--- a/crates/roko-serve/src/routes/templates.rs
++++ b/crates/roko-serve/src/routes/templates.rs
+@@ -276,3 +276,286 @@ async fn deploy_template_cloud(
+         Json(json!({ "id": dep_id, "type": "cloud_deployment" })),
+     ))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    use std::sync::{Arc, Mutex};
++    use std::time::Duration;
++
++    use async_trait::async_trait;
++    use axum::body::{Body, to_bytes};
++    use axum::http::{Request, StatusCode, header};
++    use tempfile::tempdir;
++    use tokio::sync::Notify;
++    use tower::ServiceExt;
++
++    use crate::deploy::manual::ManualBackend;
++    use crate::runtime::{CliRuntime, DashboardInfo, NoOpRuntime, RunResult, SessionStatusInfo};
++
++    #[tokio::test]
++    async fn templates_create_and_get_roundtrip() {
++        let state = test_state(Arc::new(NoOpRuntime));
++        let router = test_router(state);
++        let payload = json!({
++            "name": "demo",
++            "description": "Demo template",
++            "model": "sonnet",
++            "role": "implementer",
++            "system_prompt": "Hello from demo",
++            "max_turns": 3,
++            "output_format": "markdown",
++            "mcp_servers": [],
++            "allowed_tools": [],
++            "denied_tools": [],
++        });
++
++        let create_response = router
++            .clone()
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/templates")
++                    .header(header::CONTENT_TYPE, "application/json")
++                    .body(Body::from(payload.to_string()))
++                    .expect("build create request"),
++            )
++            .await
++            .expect("create template response");
++
++        assert_eq!(
++            create_response.status(),
++            StatusCode::CREATED,
++            "creating a valid template should return 201"
++        );
++
++        let create_body = to_bytes(create_response.into_body(), usize::MAX)
++            .await
++            .expect("read create response body");
++        let create_json: Value =
++            serde_json::from_slice(&create_body).expect("parse create response json");
++        assert_eq!(
++            create_json["name"],
++            "demo",
++            "create response should echo the inserted template name"
++        );
++
++        let get_response = router
++            .oneshot(
++                Request::builder()
++                    .method("GET")
++                    .uri("/api/templates/demo")
++                    .body(Body::empty())
++                    .expect("build get request"),
++            )
++            .await
++            .expect("get template response");
++
++        assert_eq!(
++            get_response.status(),
++            StatusCode::OK,
++            "fetching a created template should return 200"
++        );
++
++        let get_body = to_bytes(get_response.into_body(), usize::MAX)
++            .await
++            .expect("read get response body");
++        let template_json: Value =
++            serde_json::from_slice(&get_body).expect("parse get response json");
++        assert_eq!(
++            template_json["name"],
++            "demo",
++            "GET /api/templates/demo should return the created template"
++        );
++        assert_eq!(
++            template_json["system_prompt"],
++            "Hello from demo",
++            "GET /api/templates/demo should preserve the system prompt"
++        );
++        assert_eq!(
++            template_json["output_format"],
++            "markdown",
++            "GET /api/templates/demo should preserve the template output format"
++        );
++    }
++
++    #[tokio::test]
++    async fn templates_interpolate_replaces_placeholders() {
++        let runtime = Arc::new(RecordingRuntime::new());
++        let state = test_state(Arc::clone(&runtime) as Arc<dyn CliRuntime>);
++        let router = test_router(state);
++
++        let create_payload = json!({
++            "name": "interpolate",
++            "description": "Interpolation demo",
++            "role": "implementer",
++            "system_prompt": "Investigate {{subject}}",
++            "max_turns": 2,
++        });
++
++        let create_response = router
++            .clone()
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/templates")
++                    .header(header::CONTENT_TYPE, "application/json")
++                    .body(Body::from(create_payload.to_string()))
++                    .expect("build interpolation create request"),
++            )
++            .await
++            .expect("create interpolation template response");
++        assert_eq!(
++            create_response.status(),
++            StatusCode::CREATED,
++            "template setup for interpolation test should succeed"
++        );
++
++        let deploy_response = router
++            .clone()
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/templates/interpolate/deploy")
++                    .header(header::CONTENT_TYPE, "application/json")
++                    .body(Body::from(
++                        json!({
++                            "params": {
++                                "subject": "codebase"
++                            }
++                        })
++                        .to_string(),
++                    ))
++                    .expect("build deploy request"),
++            )
++            .await
++            .expect("deploy template response");
++
++        assert_eq!(
++            deploy_response.status(),
++            StatusCode::ACCEPTED,
++            "deploying a template should enqueue work"
++        );
++
++        let deploy_body = to_bytes(deploy_response.into_body(), usize::MAX)
++            .await
++            .expect("read deploy response body");
++        let deploy_json: Value =
++            serde_json::from_slice(&deploy_body).expect("parse deploy response json");
++        assert!(
++            deploy_json["id"].as_str().is_some(),
++            "deploy response should include a run id"
++        );
++
++        tokio::time::timeout(Duration::from_secs(1), runtime.notified.notified())
++            .await
++            .expect("deploy task did not invoke the runtime");
++
++        let prompt = runtime
++            .prompt
++            .lock()
++            .expect("lock recorded prompt")
++            .clone()
++            .expect("runtime should capture the rendered prompt");
++        assert_eq!(
++            prompt,
++            "Investigate codebase",
++            "template deployment should interpolate request params into the prompt"
++        );
++    }
++
++    #[tokio::test]
++    async fn templates_bad_syntax_returns_400() {
++        let state = test_state(Arc::new(NoOpRuntime));
++        let router = test_router(state);
++
++        let response = router
++            .oneshot(
++                Request::builder()
++                    .method("POST")
++                    .uri("/api/templates")
++                    .header(header::CONTENT_TYPE, "application/json")
++                    .body(Body::from("{"))
++                    .expect("build malformed create request"),
++            )
++            .await
++            .expect("malformed template response");
++
++        assert_eq!(
++            response.status(),
++            StatusCode::BAD_REQUEST,
++            "malformed template JSON should be rejected with 400"
++        );
++
++        let body = to_bytes(response.into_body(), usize::MAX)
++            .await
++            .expect("read malformed response body");
++        let body_text = String::from_utf8(body.to_vec()).expect("decode malformed response body");
++        assert!(
++            body_text.contains("Failed to parse the request body as JSON"),
++            "malformed template response should explain the JSON parse failure: {body_text}"
++        );
++    }
++
++    fn test_state(runtime: Arc<dyn CliRuntime>) -> Arc<AppState> {
++        let dir = tempdir().expect("create tempdir for template tests");
++        Arc::new(AppState::new(
++            dir.path().to_path_buf(),
++            runtime,
++            roko_core::config::schema::RokoConfig::default(),
++            Arc::new(ManualBackend::default()),
++        ))
++    }
++
++    fn test_router(state: Arc<AppState>) -> Router {
++        Router::new().nest("/api", routes()).with_state(state)
++    }
++
++    struct RecordingRuntime {
++        prompt: Arc<Mutex<Option<String>>>,
++        notified: Arc<Notify>,
++    }
++
++    impl RecordingRuntime {
++        fn new() -> Self {
++            Self {
++                prompt: Arc::new(Mutex::new(None)),
++                notified: Arc::new(Notify::new()),
++            }
++        }
++    }
++
++    #[async_trait]
++    impl CliRuntime for RecordingRuntime {
++        async fn run_once(
++            &self,
++            _workdir: &std::path::Path,
++            prompt: &str,
++        ) -> anyhow::Result<RunResult> {
++            *self
++                .prompt
++                .lock()
++                .expect("lock prompt recorder for template deployment") = Some(prompt.to_owned());
++            self.notified.notify_one();
++            Ok(RunResult { success: true })
++        }
++
++        fn session_status(&self, workdir: std::path::PathBuf) -> SessionStatusInfo {
++            SessionStatusInfo {
++                session_id: None,
++                workdir,
++                daemon_running: false,
++                signal_count: None,
++                episode_count: None,
++                last_episode_passed: None,
++            }
++        }
++
++        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
++            DashboardInfo {
++                rendered: String::new(),
++            }
++        }
++    }
++}

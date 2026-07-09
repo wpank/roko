@@ -1,0 +1,19 @@
+Added shared JSON extraction and validation in [extract.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/extract.rs), and reshaped [ApiError](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/error.rs) to return top-level `{ code, message, details? }`. `ValidJson<T>` now handles typed bodies with validation, while `ApiJson<T>` gives the same parse-error shape for permissive `Value` endpoints. I kept the raw proxy/callback bodies permissive and wired manual validation where `validator` wasn’t a good fit, such as `SubscriptionConfig` and `AgentTemplate`.
+
+Routes covered:
+- Validated typed bodies: `POST /api/agents/register`, `POST /api/agents/{id}/message`, `POST /api/deployments`, `POST /api/plans`, `POST /api/plans/generate`, `POST /api/prds/ideas`, `POST /api/research/topic`, `POST /api/run`, `POST /api/subscriptions`, `PUT /api/subscriptions/{id}`, `POST /api/templates/{name}/deploy`.
+- Unified parse errors for raw JSON bodies: `PUT /api/config`, `POST /api/deployments/{id}/task`, `POST /api/deployments/{id}/callback`, `POST /api/templates`.
+- OpenAPI is exposed at `/api/openapi.json` via [openapi.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/openapi.rs).
+
+Validation attribute examples:
+- `#[validate(length(min = 1), custom(function = "crate::extract::validate_non_blank"))]` on fields like `agent_id`, `message`, `title`, `slug`, `prompt`.
+- `#[validate(nested)]` on `CreatePlanRequest.tasks`.
+- `#[validate(custom(function = "crate::extract::validate_string_items_non_blank"))]` on `depends_on` and `files`.
+
+Verification passed:
+- `CARGO_HOME=/tmp/cargo-home cargo check -p roko-serve`
+- `CARGO_HOME=/tmp/cargo-home cargo test -p roko-serve --lib --no-run`
+- `CARGO_HOME=/tmp/cargo-home cargo clippy -p roko-serve --no-deps -- -D warnings`
+- Targeted behavior tests passed: `create_plan_route_returns_top_level_validation_error`, `openapi_endpoint_is_served_under_api`
+
+Also updated `Cargo.lock` for `validator`.

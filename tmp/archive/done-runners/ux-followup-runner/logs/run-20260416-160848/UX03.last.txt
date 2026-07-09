@@ -1,0 +1,11 @@
+Implemented the UX03 smoke path in [e2e_self_host.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/tests/e2e_self_host.rs) and added scripted mock-dispatcher support in [mock.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/mock.rs) plus the env seam in [provider/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/src/provider/mod.rs). The test drives the full self-hosting flow against a temp repo, seeds git, enables `auto_plan`, uses canned turns, and asserts the real file surfaces under `.roko/` and `plans/`. One important correction in the test is that `prd_published` is asserted from the root audit log `.roko/episodes.jsonl`, while `agent_turn` is asserted from `.roko/memory/episodes.jsonl`, which is where the run path actually records agent turns.
+
+Fixture directory path: [self-host-fixture](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-agent/testdata/mock-dispatcher/self-host-fixture).  
+Observed test runtime: `2.04s`.  
+CLI subcommands exercised: `init`, `prd idea`, `prd draft new`, `research enhance-prd`, `prd draft promote`, `plan validate`, `plan run`, `status`.
+
+Verification:
+- `CARGO_HOME=/tmp/codex-cargo-home cargo test -p roko-cli --test e2e_self_host --no-run`
+- `CARGO_HOME=/tmp/codex-cargo-home cargo test -p roko-cli --test e2e_self_host`
+
+Both passed. Existing workspace warning noise remains during compile, but it did not block this batch.

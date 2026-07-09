@@ -1,0 +1,43 @@
+Verification failed for command: cargo check -p roko-core -p roko-chain -p roko-neuro -p roko-daimon -p roko-agent -p roko-cli
+
+Recent log tail:
+warning: build failed, waiting for other jobs to finish...
+error: failed to create file encoder: No space left on device (os error 28)
+
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetasJyB9a/full.rmeta`: No space left on device (os error 28)
+
+error: couldn't create a temp dir: No space left on device (os error 28) at path "/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmeta6geTSH"
+
+error: could not compile `memchr` (lib) due to 1 previous error
+error: failed to write /Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/libbitflags-2417d14d1fb60c3a.rmeta: No space left on device (os error 28)
+
+error: error writing dependencies to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/libm-5a21b6dfb2c3999f.d`: No space left on device (os error 28)
+
+error: could not compile `libm` (lib) due to 1 previous error
+error: could not compile `base64ct` (lib) due to 1 previous error
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetahuhXkZ/full.rmeta`: No space left on device (os error 28)
+
+error: could not compile `lock_api` (lib) due to 1 previous error
+error: could not compile `bitflags` (lib) due to 1 previous error
+error: could not compile `core-foundation-sys` (lib) due to 1 previous error
+error: failed to write /Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/libtracing_core-79bb048768ac36fa.rmeta: No space left on device (os error 28)
+
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetaAzOkvt/full.rmeta`: No space left on device (os error 28)
+
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetaHs37Lb/full.rmeta`: No space left on device (os error 28)
+
+error: could not compile `futures-channel` (lib) due to 1 previous error
+error: could not compile `tracing-core` (lib) due to 1 previous error
+error: could not compile `typenum` (lib) due to 1 previous error
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetaL0yL86/full.rmeta`: No space left on device (os error 28)
+
+error: could not compile `bytes` (lib) due to 1 previous error
+error: couldn't create a temp dir: No space left on device (os error 28) at path "/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmetaDP9HeF"
+
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmeta38dKWh/full.rmeta`: No space left on device (os error 28)
+
+error: could not compile `libc` (lib) due to 1 previous error
+error: could not compile `hashbrown` (lib) due to 1 previous error
+error: failed to write to `/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/.cargo-target/debug/deps/rmeta0O65aF/full.rmeta`: No space left on device (os error 28)
+
+error: could not compile `serde_core` (lib) due to 1 previous error

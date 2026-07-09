@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
++  [M6]="Keep threat model as a ship-soon doc; mark advanced risk math as deferred and the attestation+taint extension as bounded next work, not a new spine"
+   [M7]="Tag docs 10-15 as deferred where appropriate and sweep the chapter index/banners for consistency"
+ )
+ 
+@@ -32,12 +32,12 @@
+ )
+ 
+ declare -A BATCH_VERIFY=(
+-  [M1]="rg -n \"roko-orchestrator/src/safety|Capability<K>|AuditChain|TaintTracker|LoopGuard|SandboxEnforcer\" docs/11-safety tmp/docs-parity/11"
++  [M1]="rg -n \"roko-orchestrator/src/safety|Capability<K>|Permit|AuditChain|TaintTracker|LoopGuard|SandboxEnforcer\" docs/11-safety tmp/docs-parity/11"
+   [M2]="rg -n \"Capability<K>|CapabilityKind|AgentWarrant|Permit|target-state\" docs/11-safety/01-*.md docs/11-safety/04-*.md"
+-  [M3]="rg -n \"AuditChain|AuditEntry|TaintTracker|TaintReason|Attestation|taint\" docs/11-safety/02-*.md docs/11-safety/03-*.md"
++  [M3]="rg -n \"AuditChain|AuditEntry|TaintTracker|TaintReason|Attestation|Provenance|taint\" docs/11-safety/02-*.md docs/11-safety/03-*.md"
+   [M4]="rg -n \"LoopGuard|SandboxEnforcer|MCP|CaMeL|Ventriloquist\" docs/11-safety/05-*.md docs/11-safety/06-*.md docs/11-safety/07-*.md"
+   [M5]="rg -n \"Critical Integration Gap|Coverage Status|ToolDispatcher|subprocess|provider\" docs/11-safety/16-*.md"
+-  [M6]="rg -n \"threat model|Attestation|taint|Kelly|Beta-Binomial|budget\" docs/11-safety/08-*.md docs/11-safety/09-*.md"
++  [M6]="rg -n \"threat model|Attestation|taint|Kelly|Beta-Binomial|budget|NIST|MITRE|OWASP\" docs/11-safety/08-*.md docs/11-safety/09-*.md"
+   [M7]="rg -n \"Deferred|Phase 2\\+|Tier 6|Positioning|coverage status\" docs/11-safety tmp/docs-parity/11"
+ )
+ 
+@@ -47,7 +47,7 @@
+   [M3]="B-audit-taint-provenance.md SOURCE-INDEX.md"
+   [M4]="C-runtime-guards.md SOURCE-INDEX.md"
+   [M5]="F-kernel-forensics-gap.md"
+-  [M6]="D-threat-risk-adaptive.md"
++  [M6]="D-threat-risk-adaptive.md B-audit-taint-provenance.md"
+   [M7]="E-chain-safety.md F-kernel-forensics-gap.md 00-INDEX.md"
+ )
+ 
+
+tokens used
+187,665
+Refreshed the full parity pack under `tmp/docs-parity/11/` only. The key pack files now align on the same story in [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/11/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/11/BATCHES.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/11/SOURCE-INDEX.md), the six detail files, the five `context-pack/*` briefs, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/11/run-docs-parity.sh). The pack now explicitly centers the audited two-crate, 7,183 LOC safety stack; treats `Capability<K>`, `Permit`, `AuditChain`, `TaintTracker`, `LoopGuard`, and `SandboxEnforcer` as shipping; adds `roko-core` `Provenance` and `Attestation` as the evidence base for the bounded ship-soon extension path; keeps Doc 07 in the mixed bucket; and reframes Doc 16 around coverage status rather than a blanket “critical gap” story.
+
+Verification passed for the doc-only scope I changed. I ran `bash -n tmp/docs-parity/11/run-docs-parity.sh`, `test -x tmp/docs-parity/11/run-docs-parity.sh`, targeted `rg` checks across `tmp/docs-parity/11` for the shipped safety surfaces, attestation/provenance anchors, batch-structure sections, and coverage-status wording, and a final consistency pass on the worker-updated frontier/context files. Intentional deferrals remained explicit: compliance overlays, chain-domain safety docs 10-13, cognitive-kernel redesign, forensic packaging/export layers, and the broader adaptive-risk math stay deferred/frontier rather than being pulled into current-state parity.
+
+=== Finished: 2026-04-18T02:17:03+02:00 ===
+=== Duration: 7m 18s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/11/

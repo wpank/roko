@@ -1,0 +1,60 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Add change detection to avoid rebuilding scaffold every 500ms.
+
+CONTEXT:
+- File: crates/roko-cli/src/tui/app.rs
+- drain_background_channels() calls DashboardScaffold::new_in() at line ~1913 on EVERY data_rx receive.
+- This runs every 500ms and reads many files from disk unnecessarily.
+- Also at line ~1718 in refresh_snapshot().
+
+WHAT TO DO:
+1. Add a generation counter to DashboardData. In dashboard.rs, add a field:
+     pub generation: u64
+   Increment it whenever any file stamp changes during load_best_effort().
+2. In app.rs, track the last-seen generation:
+     let mut last_data_gen: u64 = 0;
+3. In drain_background_channels(), only rebuild scaffold when generation changes:
+     if new_data.generation != last_data_gen {
+         last_data_gen = new_data.generation;
+         self.scaffold = DashboardScaffold::new_in(&self.workdir);
+     }
+     self.data = new_data;
+     self.tui_state.update_from_snapshot(&self.data);
+
+Alternative simpler approach: just remove the scaffold rebuild from drain_background_channels
+entirely and only rebuild in refresh_snapshot() (triggered by Ctrl-R). The scaffold is only
+used for the legacy text-mode path anyway.
+
+VERIFY:
+  cargo check -p roko-cli
+ACCEPTANCE: The scaffold rebuild should not run unconditionally on every data receive.

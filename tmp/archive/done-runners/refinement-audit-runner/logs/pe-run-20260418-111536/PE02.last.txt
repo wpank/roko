@@ -1,0 +1,23 @@
+**Outcome**
+Completed:
+- `G6`: removed the three `ResearchCmd::Topic` direct creation sites in [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-cli/src/main.rs) and routed them through `spawn_agent_scoped(...)` with the `researcher` role.
+- `G1` + `G2`: canonicalized `ChatResponse`/`FinishReason`/`ResponseMetadata`/`SessionState` and moved the shared response surface into [chat_types.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/chat_types.rs), with shared `Usage` in [usage.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/usage.rs).
+- `G3`: closed the Anthropic HTTP backend factory gap in [tool_loop/backends/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-agent/src/tool_loop/backends/mod.rs) by wiring it to the existing Anthropic tool-loop backend from [provider/anthropic_api/tool_loop.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-agent/src/provider/anthropic_api/tool_loop.rs).
+- `G5`: enforced tool degradation caps in [translate/capability.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-agent/src/translate/capability.rs) and applied them in [tool_loop/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-agent/src/tool_loop/mod.rs).
+- `G7` + `G8`: added typed `Temperament` in [temperament.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-core/src/temperament.rs), propagated it through config/provider options, used it for OpenAI-compatible sampling defaults, tool-cap tightening, and router tier bias in [cascade_router.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/parity-exec-pe-run-20260418-111536/crates/roko-learn/src/cascade_router.rs).
+- `G4`: verified as already satisfied on the existing provider-backed orchestrate path; no code change was needed because `orchestrate.rs -> spawn_agent_with_layer -> create_agent_for_model` already reaches `ToolLoop`/`ToolDispatcher` for tool-capable providers.
+
+Deferred:
+- None as code work.
+- I did not add a new direct `ToolDispatcher` call inside `orchestrate.rs`; that would be a broader runtime redesign, and the live provider-backed path already covers the parity requirement.
+
+**Verification**
+Ran successfully:
+- `cargo check -p roko-agent`
+- `cargo clippy -p roko-agent --no-deps -- -D warnings`
+- `cargo check -p roko-cli -p roko-learn -p roko-serve`
+- `cargo test -p roko-agent create_tool_loop_backend_routes_anthropic_models_to_messages_api -- --nocapture`
+
+**Seams**
+- The `tmp/docs-parity/02/` batch pack referenced in the prompt is missing in this worktree; the sibling copy I found is docs-only and stale relative to the code-execution task, so I used the prompt’s concrete implementation list as the source of truth.
+- `temperament` is now a typed runtime contract with a config default, but I did not add per-role overrides or a dedicated CLI flag.

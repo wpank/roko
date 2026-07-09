@@ -1,0 +1,43 @@
+Diff gate failed.
+
+Recent log tail:
+-  [P7]="cargo test -p roko-compose && rg -n \"<!-- cache|MCP_TOOLS_STANZA|with_cache_markers\" crates/roko-compose"
++  [P7]="cargo test -p roko-compose -p roko-cli && rg -n \"with_cache_markers|build_role_system_prompt_validated|MCP_TOOLS_STANZA\" crates/roko-compose crates/roko-cli"
+   [P8]="cargo test -p roko-compose -p roko-cli && rg -n \"ActiveInferenceScorer|GoalDirected|heuristic scorer\" crates/roko-compose crates/roko-cli"
+ )
+ 
+@@ -121,12 +121,18 @@
+ Also read these batch-specific files:
+ $(for f in ${BATCH_FILES[$batch]}; do echo "- $PARITY_DIR/$f"; done)
+ 
++If the worktree-local audit pack path is missing, use these repo-root audit docs:
++- /Users/will/dev/nunchi/roko/roko/tmp/refinements-audit/00-MASTER-SUMMARY.md
++- /Users/will/dev/nunchi/roko/roko/tmp/refinements-audit/01-foundation-audit.md
++- /Users/will/dev/nunchi/roko/roko/tmp/refinements-audit/06-codebase-reality-check.md
++
+ Execution rules:
+ 1. Search before changing code.
+ 2. Stay inside the batch scope from BATCHES.md.
+-3. If the task expands into learning-policy, eval-harness, or distributed-context design, stop and defer it.
+-4. After changes, run the verify command and fix issues if practical.
+-5. Report: files changed, commands run, pass/fail status, and intentional deferrals.
++3. If a subsystem is runtime-invoked but not runtime-authoritative, describe that split explicitly instead of flattening it.
++4. If the task expands into learning-policy, eval-harness, or distributed-context design, stop and defer it.
++5. After changes, run the verify command and fix issues if practical.
++6. Report: files changed, commands run, pass/fail status, and intentional deferrals.
+ 
+ Verify command: ${BATCH_VERIFY[$batch]}
+ PROMPT
+
+tokens used
+162,366
+Refreshed the full `tmp/docs-parity/03/` pack. The main corrections are in [00-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/03/00-INDEX.md), [BATCHES.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/03/BATCHES.md), [D-enrichment-context.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/03/D-enrichment-context.md), [SOURCE-INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/03/SOURCE-INDEX.md), the `context-pack/` files, and [run-docs-parity.sh](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/tmp/docs-parity/03/run-docs-parity.sh). The pack now explicitly resolves the audit inputs to the repo-root `tmp/refinements-audit/` files, treats enrichment as partially live but not prompt-authoritative, points later agents at the validated builder chain in `prompting.rs`/`role_prompts.rs`, and removes the stale claim that `EnrichmentPipeline::new(...)` has no runtime caller.
+
+Parity is now framed as `34/59 DONE`, `14/59 PARTIAL`, `11/59 DEFERRED`. `F-advanced-allocation.md` keeps VCG/MVT/distributed/eval work deferred, `F.02` stays bounded to scorer truth-in-advertising, and the batch runner metadata now matches that narrower posture.
+
+Verified with `bash -n tmp/docs-parity/03/run-docs-parity.sh`. I did not run the full parity runner.
+
+=== Finished: 2026-04-17T23:55:27+02:00 ===
+=== Duration: 13m 2s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/03/

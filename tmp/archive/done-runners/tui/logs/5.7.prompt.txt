@@ -1,0 +1,44 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Add interactive log level filtering to the Logs tab (F5).
+
+PROBLEM: Logs view renders all entries with level-based coloring but has no way to filter
+by level interactively.
+
+FIX: In views/logs_view.rs:
+1. Add a LogFilter struct or field to TuiState for active log levels:
+   pub log_filter_levels: HashSet<String> or similar
+2. Add key bindings in input.rs handle_logs_key:
+   '1' = toggle INFO, '2' = toggle WARN, '3' = toggle ERROR, '4' = toggle DEBUG
+   'a' = show all levels
+3. When rendering log entries, skip entries whose level is not in the active set
+4. Show the active filter in the status bar: '[INF] [WRN] [ERR]' with active ones highlighted
+5. Default: show all levels
+
+VERIFY: cargo check -p roko-cli

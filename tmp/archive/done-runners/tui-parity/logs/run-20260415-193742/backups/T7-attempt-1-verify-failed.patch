@@ -1,0 +1,1080 @@
+diff --git a/crates/roko-cli/src/tui/app.rs b/crates/roko-cli/src/tui/app.rs
+index 29205ec9..653d7611 100644
+--- a/crates/roko-cli/src/tui/app.rs
++++ b/crates/roko-cli/src/tui/app.rs
+@@ -410,8 +410,6 @@ impl App {
+             terminal_size,
+         };
+         app.fx_config = EffectsConfig::load_from_root(&app.workdir);
+-        // Populate git info synchronously on first load (fast enough for startup).
+-        app.populate_git_info();
+         app
+     }
+ 
+@@ -550,7 +548,6 @@ impl App {
+                 let _log_guard = tracing::dispatcher::set_default(&git_log_dispatch);
+                 loop {
+                     let view_data = super::views::git_view::collect_git_data();
+-                    let summary_lines = super::views::dashboard_view::collect_git_summary();
+                     let branch = view_data.current_branch.clone();
+                     let commit_short = view_data
+                         .commits
+@@ -558,6 +555,8 @@ impl App {
+                         .map(|c| c.hash_short.clone())
+                         .unwrap_or_default();
+                     let age = collect_git_age(&git_workdir);
++                    let summary_lines =
++                        super::views::dashboard_view::collect_git_summary(&view_data, &age);
+                     let bg = GitBgData {
+                         view_data,
+                         summary_lines,
+@@ -1720,12 +1719,11 @@ impl App {
+                     return collected.len();
+                 }
+ 
+-                if let Some(agent) = self
+-                    .tui_state
+-                    .agents_by_id
+-                    .values()
+-                    .nth(self.tui_state.selected_agent_tab)
+-                {
++                if let Some(agent) = self.tui_state.agents.get(
++                    self.tui_state
++                        .selected_agent
++                        .min(self.tui_state.agents.len().saturating_sub(1)),
++                ) {
+                     if !agent.output_lines.is_empty() {
+                         return agent.output_lines.len();
+                     }
+@@ -1856,9 +1854,6 @@ impl App {
+         self.last_data_gen = self.data.generation;
+         self.tui_state.update_from_snapshot(&self.data);
+         self.fx_config = EffectsConfig::load_from_root(&self.workdir);
+-        // Git info is refreshed by the background git thread; only
+-        // populate synchronously on first load (when fields are empty).
+-        self.populate_git_info();
+         self.last_refresh = Instant::now();
+         self.clamp_signal_selection();
+         self.clamp_gate_failure_selection();
+@@ -1894,49 +1889,6 @@ impl App {
+         }
+     }
+ 
+-    /// Populate TuiState git fields from actual git commands.
+-    fn populate_git_info(&mut self) {
+-        // Branch
+-        if self.tui_state.git_branch.is_empty() {
+-            if let Ok(out) = std::process::Command::new("git")
+-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+-                .current_dir(&self.workdir)
+-                .output()
+-            {
+-                if out.status.success() {
+-                    self.tui_state.git_branch =
+-                        String::from_utf8_lossy(&out.stdout).trim().to_string();
+-                }
+-            }
+-        }
+-        // Short commit hash
+-        if self.tui_state.git_commit_short.is_empty() {
+-            if let Ok(out) = std::process::Command::new("git")
+-                .args(["rev-parse", "--short", "HEAD"])
+-                .current_dir(&self.workdir)
+-                .output()
+-            {
+-                if out.status.success() {
+-                    self.tui_state.git_commit_short =
+-                        String::from_utf8_lossy(&out.stdout).trim().to_string();
+-                }
+-            }
+-        }
+-        // Commit age
+-        if self.tui_state.git_age.is_empty() {
+-            if let Ok(out) = std::process::Command::new("git")
+-                .args(["log", "-1", "--format=%cr"])
+-                .current_dir(&self.workdir)
+-                .output()
+-            {
+-                if out.status.success() {
+-                    self.tui_state.git_age =
+-                        String::from_utf8_lossy(&out.stdout).trim().to_string();
+-                }
+-            }
+-        }
+-    }
+-
+     fn current_view_state(&self) -> ViewState {
+         match self.tui_state.active_tab {
+             Tab::Dashboard => ViewState {
+@@ -2263,91 +2215,6 @@ fn tab_to_page(tab: Tab) -> Option<PageId> {
+     }
+ }
+ 
+-fn help_lines() -> Vec<Line<'static>> {
+-    let theme = Theme::from_env();
+-    vec![
+-        Line::from(Span::styled(
+-            "roko dashboard keybindings",
+-            theme.accent_bold(),
+-        )),
+-        Line::from(""),
+-        Line::from(Span::styled("Navigation", theme.accent_bold())),
+-        Line::from("F1-F7      switch tabs (Dashboard/Plans/Agents/Git/Logs/Config/Inspect)"),
+-        Line::from("F8 / u     queue overview modal"),
+-        Line::from("Tab        cycle focus between panels"),
+-        Line::from("Shift+Tab  cycle focus backward"),
+-        Line::from("j/k up/dn  scroll focused panel"),
+-        Line::from("PgUp/PgDn  page scroll"),
+-        Line::from("Home/End   jump to top/bottom"),
+-        Line::from("Enter      expand/drill into selection"),
+-        Line::from("Esc        close overlay / drill out"),
+-        Line::from("q          close overlay or quit"),
+-        Line::from(""),
+-        Line::from(Span::styled("Dashboard Sub-Tabs (F1)", theme.accent_bold())),
+-        Line::from("a          Agents panel"),
+-        Line::from("o          Output panel"),
+-        Line::from("d          Diff panel"),
+-        Line::from("e          Errors panel"),
+-        Line::from("g          Git panel"),
+-        Line::from("m          MCP / Context panel"),
+-        Line::from("P          Processes panel"),
+-        Line::from(""),
+-        Line::from(Span::styled("Modals & Modes", theme.accent_bold())),
+-        Line::from("?          toggle this help"),
+-        Line::from("w          wave overview"),
+-        Line::from("p          pause/resume pipeline"),
+-        Line::from("i          inject message to agent"),
+-        Line::from("/          filter mode (Plans/Logs)"),
+-        Line::from("Ctrl-t     task picker"),
+-        Line::from("Ctrl-a     approve all pending"),
+-        Line::from("Ctrl-x     force advance (confirm)"),
+-        Line::from("Ctrl-d     reset selected plan (confirm)"),
+-        Line::from("Ctrl-e     toggle screen effects"),
+-        Line::from(""),
+-        Line::from(Span::styled("Agent Controls (F3)", theme.accent_bold())),
+-        Line::from("y          approve pending command"),
+-        Line::from("A          approve all pending"),
+-        Line::from("x          reject pending command"),
+-        Line::from("`          cycle agent tabs"),
+-        Line::from("1-7        switch agent tab directly"),
+-        Line::from("G          resume auto-scroll"),
+-        Line::from(""),
+-        Line::from(Span::styled("Plans (F2)", theme.accent_bold())),
+-        Line::from("e          expand/collapse plan"),
+-        Line::from("[/]        wave prev/next"),
+-        Line::from("h/l left/right drill out/in"),
+-        Line::from("s          soft retry plan"),
+-        Line::from("R          restart phase"),
+-        Line::from("F          force advance"),
+-        Line::from("V / c      re-verify plan"),
+-        Line::from("S          repair (preserve completed)"),
+-        Line::from("t          task picker"),
+-        Line::from("o          queue overview"),
+-        Line::from(""),
+-        Line::from(Span::styled("Logs (F5)", theme.accent_bold())),
+-        Line::from("1-4        toggle level filter (INF/WRN/ERR/DBG)"),
+-        Line::from("a          show all log levels"),
+-        Line::from(""),
+-        Line::from(Span::styled("General", theme.accent_bold())),
+-        Line::from("Ctrl-r     refresh data"),
+-        Line::from("Ctrl-C     quit immediately"),
+-    ]
+-}
+-
+-/// Extract a numeric value from a vm_stat line like "Pages active:    123456."
+-#[cfg(target_os = "macos")]
+-fn extract_vm_stat_value(line: &str, key: &str) -> Option<u64> {
+-    if !line.contains(key) {
+-        return None;
+-    }
+-    line.split(':')
+-        .nth(1)?
+-        .trim()
+-        .trim_end_matches('.')
+-        .parse::<u64>()
+-        .ok()
+-}
+-
+ fn truncate_str(s: &str, max: usize) -> String {
+     if s.len() <= max {
+         s.to_string()
+diff --git a/crates/roko-cli/src/tui/dashboard.rs b/crates/roko-cli/src/tui/dashboard.rs
+index c12cf0d6..40536fdd 100644
+--- a/crates/roko-cli/src/tui/dashboard.rs
++++ b/crates/roko-cli/src/tui/dashboard.rs
+@@ -1780,7 +1780,7 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
+                     .and_then(Value::as_u64)
+                     .or_else(|| plan_state.get("tasks_done").and_then(Value::as_u64))
+             })
+-            .unwrap_or(0) as usize;
++            .unwrap_or(tasks_done as u64) as usize;
+ 
+         let tasks_failed = state
+             .get("plan_states")
+@@ -1792,7 +1792,7 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
+                     .and_then(Value::as_u64)
+                     .or_else(|| plan_state.get("tasks_failed").and_then(Value::as_u64))
+             })
+-            .unwrap_or(0) as usize;
++            .unwrap_or(tasks_failed as u64) as usize;
+ 
+         let last_error = state
+             .get("plan_states")
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 6712f6e7..61bcadf9 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -249,36 +249,11 @@ impl fmt::Display for PlanPhase {
+     }
+ }
+ 
+-/// Agent state tracked per active agent (legacy HashMap-based tracking).
+-#[derive(Debug, Clone, Default)]
+-pub struct AgentState {
+-    /// Agent identifier.
+-    pub id: String,
+-    /// Display name.
+-    pub name: String,
+-    /// Current status label (e.g. "running", "waiting", "done").
+-    pub status: AgentStatus,
+-    /// Accumulated output lines.
+-    pub output_lines: Vec<String>,
+-    /// Latest diff content, if any.
+-    pub diff_content: String,
+-    /// Cumulative input tokens.
+-    pub input_tokens: u64,
+-    /// Cumulative output tokens.
+-    pub output_tokens: u64,
+-    /// Cached rendered output (invalidated on new output).
+-    pub render_cache: Option<String>,
+-    /// Plan this agent is working on, if known.
+-    pub plan_id: Option<String>,
+-    /// Task this agent is working on, if known.
+-    pub task_id: Option<String>,
+-}
+-
+ /// Agent row for the Vec-based agent roster used by widgets.
+ ///
+ /// Widgets index into `TuiState::agents` by position, and read fields
+ /// like `.active`, `.role`, `.model`, `.current_plan`, `.current_task`,
+-/// `.context_limit`, `.last_output_line` etc.
++/// `.context_limit`, `.output_lines`, `.last_output_line` etc.
+ #[derive(Debug, Clone, Default)]
+ pub struct AgentRow {
+     /// Agent identifier.
+@@ -301,6 +276,8 @@ pub struct AgentRow {
+     pub current_plan: String,
+     /// Task this agent is working on.
+     pub current_task: String,
++    /// Accumulated output lines for the output pane.
++    pub output_lines: Vec<String>,
+     /// Last line of agent output (for the output pane).
+     pub last_output_line: String,
+ }
+@@ -357,11 +334,6 @@ pub struct PlanEntry {
+     pub elapsed_secs: f64,
+     /// Wave index this plan belongs to, if any.
+     pub wave: Option<usize>,
+-    // -- legacy aliases (kept for backward compatibility) --
+-    /// Legacy: total tasks (alias for tasks_total).
+-    pub task_total: usize,
+-    /// Legacy: done tasks (alias for tasks_done).
+-    pub task_done: usize,
+     /// Whether the plan tree node is expanded.
+     pub expanded: bool,
+     /// Nested task entries (for plan detail view).
+@@ -398,16 +370,6 @@ pub struct GitCommitEntry {
+     pub branch: Option<String>,
+ }
+ 
+-/// Token burn history entry for cost tracking.
+-#[derive(Debug, Clone, Default)]
+-pub struct TokenBurnEntry {
+-    pub timestamp_ms: i64,
+-    pub input_tokens: u64,
+-    pub output_tokens: u64,
+-    pub cost_usd: f64,
+-    pub role: String,
+-}
+-
+ // ---------------------------------------------------------------------------
+ // Phase pipeline types (for phase_compact widget)
+ // ---------------------------------------------------------------------------
+@@ -569,8 +531,6 @@ pub struct TuiState {
+     // -- agents (Vec-based roster for widgets) --
+     /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
+     pub agents: Vec<AgentRow>,
+-    /// Legacy per-agent state keyed by agent ID.
+-    pub agents_by_id: HashMap<String, AgentState>,
+     /// Parallel agents currently executing.
+     pub parallel_agents: Vec<ParallelAgentState>,
+ 
+@@ -649,18 +609,12 @@ pub struct TuiState {
+     pub git_view_data: Option<super::views::git_view::GitViewData>,
+ 
+     // -- plan detail --
+-    /// Content for the plan detail overlay.
+-    pub plan_detail_content: String,
+     /// Active sub-tab in the plan detail overlay.
+     pub plan_detail_tab: usize,
+-    /// Content for the plan summary view.
+-    pub plan_summary_content: String,
+ 
+     // -- pipeline --
+     /// Whether pipeline execution is currently paused.
+     pub is_paused: bool,
+-    /// Whether parallel execution is active.
+-    pub parallel_run: bool,
+ 
+     // -- cost / tokens --
+     /// Cost per plan (plan_id -> USD).
+@@ -680,9 +634,6 @@ pub struct TuiState {
+     /// Cumulative cost in USD for header_bar display.
+     pub cost_dollars: f64,
+ 
+-    // -- token history --
+-    /// Token burn history per role (role -> entries) — legacy.
+-    pub token_burn_history: HashMap<String, Vec<TokenBurnEntry>>,
+     /// Per-role token time-series for sparkline rendering (role -> sample ring).
+     pub token_history: HashMap<String, VecDeque<u64>>,
+ 
+@@ -741,7 +692,6 @@ impl Default for TuiState {
+             gate_results: Vec::new(),
+ 
+             agents: Vec::new(),
+-            agents_by_id: HashMap::new(),
+             parallel_agents: Vec::new(),
+ 
+             active_tab: Tab::default(),
+@@ -781,12 +731,9 @@ impl Default for TuiState {
+             git_summary_lines: Vec::new(),
+             git_view_data: None,
+ 
+-            plan_detail_content: String::new(),
+             plan_detail_tab: 0,
+-            plan_summary_content: String::new(),
+ 
+             is_paused: false,
+-            parallel_run: false,
+ 
+             cost_per_plan: HashMap::new(),
+             cost_per_task: HashMap::new(),
+@@ -797,7 +744,6 @@ impl Default for TuiState {
+             cost_rate: 0.0,
+             cost_dollars: 0.0,
+ 
+-            token_burn_history: HashMap::new(),
+             token_history: HashMap::new(),
+ 
+             sys: SysMetrics::default(),
+@@ -996,8 +942,6 @@ impl TuiState {
+                     tasks_failed,
+                     elapsed_secs: snapshot.map(|plan| plan.elapsed_secs).unwrap_or(0.0),
+                     wave: None,
+-                    task_total: tasks_total,
+-                    task_done: tasks_done,
+                     expanded: expanded_by_plan.get(&p.id).copied().unwrap_or(false),
+                     tasks: snapshot
+                         .map(|plan| {
+@@ -1016,9 +960,8 @@ impl TuiState {
+             })
+             .collect();
+ 
+-        // Agents — populate both Vec and HashMap
++        // Agents
+         self.agents.clear();
+-        self.agents_by_id.clear();
+         let mut agent_ids = data
+             .agents
+             .iter()
+@@ -1052,7 +995,7 @@ impl TuiState {
+             self.agents.push(AgentRow {
+                 id: agent_id.clone(),
+                 active: is_active,
+-                status: if is_active { AgentStatus::Active } else { AgentStatus::Idle },
++                status: AgentStatus::from(status.as_str()),
+                 role: label.clone(),
+                 model: latest.map(|event| event.model.clone()).unwrap_or_default(),
+                 input_tokens: latest.map_or(0, |event| event.input_tokens),
+@@ -1060,35 +1003,18 @@ impl TuiState {
+                 context_limit: model_context_limit(latest.map(|e| e.model.as_str()).unwrap_or("")),
+                 current_plan: current_plan.clone(),
+                 current_task: current_task.clone(),
++                output_lines: Vec::new(),
+                 last_output_line: String::new(),
+             });
+-            self.agents_by_id.insert(
+-                agent_id.clone(),
+-                AgentState {
+-                    id: agent_id,
+-                    name: label,
+-                    status: AgentStatus::from(status.as_str()),
+-                    input_tokens: latest.map_or(0, |event| event.input_tokens),
+-                    output_tokens: latest.map_or(0, |event| event.output_tokens),
+-                    plan_id: (!current_plan.is_empty()).then_some(current_plan),
+-                    task_id: (!current_task.is_empty()).then_some(current_task),
+-                    ..AgentState::default()
+-                },
+-            );
+         }
+ 
+         // Populate agent output from episodes (Task 2)
+         for episode in data.episodes() {
+-            // Populate the HashMap-based agent state
+-            if let Some(agent) = self.agents_by_id.get_mut(&episode.agent_id) {
++            if let Some(row) = self.agents.iter_mut().find(|a| a.id == episode.agent_id) {
+                 let output_text = extract_episode_output(episode);
+                 if !output_text.is_empty() {
+-                    agent.output_lines = output_text.lines().map(String::from).collect();
++                    row.output_lines = output_text.lines().map(String::from).collect();
+                 }
+-            }
+-            // Populate the Vec-based agent roster last_output_line
+-            if let Some(row) = self.agents.iter_mut().find(|a| a.id == episode.agent_id) {
+-                let output_text = extract_episode_output(episode);
+                 if let Some(last_line) = output_text.lines().last() {
+                     row.last_output_line = last_line.to_string();
+                 }
+@@ -1109,6 +1035,9 @@ impl TuiState {
+         for (task_id, lines) in data.task_outputs() {
+             // Find agent working on this task and add output if empty
+             if let Some(row) = self.agents.iter_mut().find(|a| a.current_task == *task_id) {
++                if row.output_lines.is_empty() && !lines.is_empty() {
++                    row.output_lines = lines.clone();
++                }
+                 if row.last_output_line.is_empty() {
+                     if let Some(last) = lines.last() {
+                         row.last_output_line = last.clone();
+@@ -1255,8 +1184,6 @@ impl TuiState {
+             .cloned()
+             .map(|agent| (agent.id.clone(), agent))
+             .collect();
+-        let prev_agent_state = self.agents_by_id.clone();
+-
+         let mut snapshot_tasks: Vec<&roko_core::dashboard_snapshot::TaskState> =
+             snap.tasks.values().collect();
+         snapshot_tasks.sort_by(|lhs, rhs| {
+@@ -1315,8 +1242,6 @@ impl TuiState {
+                     tasks_failed: plan.tasks_failed.min(tasks_total),
+                     elapsed_secs: prev_plan_elapsed.get(plan_id).copied().unwrap_or(0.0),
+                     wave: prev_plan_wave.get(plan_id).copied().flatten(),
+-                    task_total: tasks_total,
+-                    task_done: plan.tasks_done.min(tasks_total),
+                     expanded: prev_plan_expanded.get(plan_id).copied().unwrap_or(false),
+                     tasks,
+                 }
+@@ -1358,8 +1283,6 @@ impl TuiState {
+                 tasks_failed,
+                 elapsed_secs: prev_plan_elapsed.get(&plan_id).copied().unwrap_or(0.0),
+                 wave: prev_plan_wave.get(&plan_id).copied().flatten(),
+-                task_total: tasks_total,
+-                task_done: tasks_done,
+                 expanded: prev_plan_expanded.get(&plan_id).copied().unwrap_or(false),
+                 tasks,
+             });
+@@ -1408,6 +1331,9 @@ impl TuiState {
+                     current_task: prev_row
+                         .map(|row| row.current_task.clone())
+                         .unwrap_or_default(),
++                    output_lines: prev_row
++                        .map(|row| row.output_lines.clone())
++                        .unwrap_or_default(),
+                     last_output_line: prev_row
+                         .map(|row| row.last_output_line.clone())
+                         .unwrap_or_default(),
+@@ -1415,40 +1341,6 @@ impl TuiState {
+             })
+             .collect();
+ 
+-        self.agents_by_id = agent_ids
+-            .iter()
+-            .map(|agent_id| {
+-                let agent = &snap.agents[agent_id];
+-                let prev = prev_agent_state.get(agent_id);
+-                (
+-                    agent.agent_id.clone(),
+-                    AgentState {
+-                        id: agent.agent_id.clone(),
+-                        name: agent.role.clone(),
+-                        status: if agent.active {
+-                            AgentStatus::Active
+-                        } else {
+-                            AgentStatus::Idle
+-                        },
+-                        output_lines: prev
+-                            .map(|agent_state| agent_state.output_lines.clone())
+-                            .unwrap_or_default(),
+-                        diff_content: prev
+-                            .map(|agent_state| agent_state.diff_content.clone())
+-                            .unwrap_or_default(),
+-                        input_tokens: prev.map(|agent_state| agent_state.input_tokens).unwrap_or(0),
+-                        output_tokens: prev
+-                            .map(|agent_state| agent_state.output_tokens)
+-                            .unwrap_or(0)
+-                            .max(agent.output_bytes as u64),
+-                        render_cache: None,
+-                        plan_id: prev.and_then(|agent_state| agent_state.plan_id.clone()),
+-                        task_id: prev.and_then(|agent_state| agent_state.task_id.clone()),
+-                    },
+-                )
+-            })
+-            .collect();
+-
+         self.parallel_agents = self
+             .agents
+             .iter()
+diff --git a/crates/roko-cli/src/tui/views/agents_view.rs b/crates/roko-cli/src/tui/views/agents_view.rs
+index 3f9773d8..d772b133 100644
+--- a/crates/roko-cli/src/tui/views/agents_view.rs
++++ b/crates/roko-cli/src/tui/views/agents_view.rs
+@@ -291,7 +291,7 @@ fn render_agent_roster(
+         } else {
+             " idle "
+         };
+-        let state_bg = if is_active {
++        let status_color = if is_active {
+             accent
+         } else if is_done {
+             theme.success
+@@ -300,11 +300,6 @@ fn render_agent_roster(
+         } else {
+             Color::Reset
+         };
+-        let state_fg = if state_bg == Color::Reset {
+-            theme.muted
+-        } else {
+-            Color::Black
+-        };
+ 
+         let mut spans = vec![
+             Span::styled(cursor, Style::default().fg(theme.accent).bg(bg)),
+@@ -330,8 +325,12 @@ fn render_agent_roster(
+             Span::styled(
+                 format!("{:<7}", state_label),
+                 Style::default()
+-                    .fg(state_fg)
+-                    .bg(state_bg)
++                    .fg(if status_color == Color::Reset {
++                        theme.muted
++                    } else {
++                        Color::Black
++                    })
++                    .bg(status_color)
+                     .add_modifier(Modifier::BOLD),
+             ),
+             Span::styled("  ", Style::default().bg(bg)),
+@@ -381,12 +380,15 @@ fn render_agent_roster(
+                     Style::default().fg(theme.muted).bg(bg),
+                 ));
+             }
+-            if let Some(agent_state) = tui_state.agents_by_id.get(&agent.id) {
+-                if let Some(last_line) = agent_state.output_lines.last() {
++            if let Some(agent_row) = tui_state.agents.iter().find(|row| row.id == agent.id) {
++                if !agent_row.last_output_line.is_empty() {
+                     detail.push(Span::styled(
+                         format!(
+                             "  last: {}",
+-                            truncate_middle(last_line, content_width.saturating_sub(30))
++                            truncate_middle(
++                                &agent_row.last_output_line,
++                                content_width.saturating_sub(30)
++                            )
+                         ),
+                         Style::default().fg(theme.muted).bg(bg),
+                     ));
+@@ -461,164 +463,6 @@ fn render_summary_line(
+     frame.render_widget(para, area);
+ }
+ 
+-// ---------------------------------------------------------------------------
+-// Token sparkline (6 lines, braille-style inline rendering)
+-// ---------------------------------------------------------------------------
+-
+-fn render_token_sparkline(
+-    frame: &mut Frame<'_>,
+-    area: Rect,
+-    data: &DashboardData,
+-    tui_state: &TuiState,
+-    theme: &Theme,
+-) {
+-    let total_tokens = tui_state.cumulative_input_tokens + tui_state.cumulative_output_tokens;
+-    let total_str = format_tokens(total_tokens);
+-
+-    let border_style = if total_tokens > 0 {
+-        Style::default().fg(Color::Rgb(100, 65, 85))
+-    } else {
+-        theme.muted()
+-    };
+-    let block = Block::default()
+-        .borders(Borders::ALL)
+-        .title(Span::styled(
+-            " Token Burn ",
+-            Style::default().fg(theme.accent),
+-        ))
+-        .border_style(border_style);
+-    let inner = block.inner(area);
+-    frame.render_widget(block, area);
+-
+-    if inner.width < 10 || inner.height < 2 {
+-        return;
+-    }
+-
+-    let inner_w = inner.width as usize;
+-
+-    // Build sparkline from efficiency events (aggregate by 10-event buckets)
+-    let mut buckets: Vec<u64> = Vec::new();
+-    let bucket_size = 10usize.max(1);
+-    let mut bucket_accum: u64 = 0;
+-    let mut bucket_count: usize = 0;
+-    for event in &data.efficiency_events {
+-        bucket_accum += event.input_tokens + event.output_tokens;
+-        bucket_count += 1;
+-        if bucket_count >= bucket_size {
+-            buckets.push(bucket_accum);
+-            bucket_accum = 0;
+-            bucket_count = 0;
+-        }
+-    }
+-    if bucket_count > 0 {
+-        buckets.push(bucket_accum);
+-    }
+-
+-    let mut lines: Vec<Line<'_>> = Vec::new();
+-
+-    if buckets.len() >= 2 {
+-        // Simple block chart sparkline
+-        let max_val = buckets.iter().copied().max().unwrap_or(1).max(1);
+-        let display: Vec<u64> = if buckets.len() > inner_w {
+-            buckets[buckets.len() - inner_w..].to_vec()
+-        } else {
+-            buckets.clone()
+-        };
+-
+-        let spark_chars = [
+-            ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}',
+-            '\u{2587}', '\u{2588}',
+-        ];
+-
+-        let label_w = total_str.len() + 2;
+-        let bar_w = inner_w.saturating_sub(label_w);
+-
+-        let mut spans: Vec<Span<'_>> = vec![Span::styled(
+-            format!(" {} ", total_str),
+-            Style::default().fg(theme.foreground),
+-        )];
+-
+-        for i in 0..bar_w {
+-            let idx = if display.len() > bar_w {
+-                display.len() - bar_w + i
+-            } else if i < display.len() {
+-                i
+-            } else {
+-                continue;
+-            };
+-            if idx < display.len() {
+-                let val = display[idx];
+-                let frac = val as f64 / max_val as f64;
+-                let ch_idx = (frac * 8.0).round() as usize;
+-                let ch = spark_chars[ch_idx.min(8)];
+-                spans.push(Span::styled(
+-                    ch.to_string(),
+-                    Style::default().fg(theme.accent),
+-                ));
+-            }
+-        }
+-
+-        lines.push(Line::from(spans));
+-    } else {
+-        lines.push(Line::from(Span::styled(
+-            format!(" {} total tokens  waiting for data...", total_str),
+-            Style::default().fg(theme.muted),
+-        )));
+-    }
+-
+-    // Per-role token breakdown
+-    let mut role_tokens: Vec<(String, u64)> = Vec::new();
+-    for event in &data.efficiency_events {
+-        let role = event.role.clone();
+-        let tokens = event.input_tokens + event.output_tokens;
+-        if let Some(existing) = role_tokens.iter_mut().find(|(r, _)| *r == role) {
+-            existing.1 += tokens;
+-        } else {
+-            role_tokens.push((role, tokens));
+-        }
+-    }
+-    role_tokens.sort_by(|a, b| b.1.cmp(&a.1));
+-
+-    let remaining_rows = (inner.height as usize).saturating_sub(lines.len());
+-    for (role, tokens) in role_tokens.iter().take(remaining_rows) {
+-        let accent = role_accent(role, theme);
+-        let label = format!(" {:>5} ", &role[..role.len().min(5)]);
+-        let pct = if total_tokens > 0 {
+-            (*tokens as f64 / total_tokens as f64 * 100.0).round() as u64
+-        } else {
+-            0
+-        };
+-
+-        let bar_budget = inner_w.saturating_sub(label.len() + 12);
+-        let fill_pct = if total_tokens > 0 {
+-            (*tokens as f64 / total_tokens as f64).clamp(0.0, 1.0)
+-        } else {
+-            0.0
+-        };
+-        let filled = (fill_pct * bar_budget as f64).round() as usize;
+-        let empty = bar_budget.saturating_sub(filled);
+-
+-        lines.push(Line::from(vec![
+-            Span::styled(label, Style::default().fg(accent)),
+-            Span::styled(
+-                "\u{2588}".repeat(filled.min(bar_budget)),
+-                Style::default().fg(accent),
+-            ),
+-            Span::styled(
+-                "\u{2500}".repeat(empty),
+-                Style::default().fg(Color::Rgb(40, 35, 42)),
+-            ),
+-            Span::styled(
+-                format!(" {} ({}%)", format_tokens(*tokens), pct),
+-                Style::default().fg(theme.muted),
+-            ),
+-        ]));
+-    }
+-
+-    let para = Paragraph::new(lines);
+-    frame.render_widget(para, inner);
+-}
+-
+ // ---------------------------------------------------------------------------
+ // Right panel: role tabs + agent output
+ // ---------------------------------------------------------------------------
+@@ -815,7 +659,7 @@ pub(crate) fn collect_agent_output_lines(
+ 
+     // Priority:
+     //   1. current_plan_execution.agent_output_tail
+-    //   2. selected agent output from tui_state.agents_by_id
++    //   2. selected agent's live row data from tui_state.agents
+     //   3. task_outputs for the agent's current task
+     //   4. episode output text
+     let collected: Vec<String> = data
+@@ -829,12 +673,19 @@ pub(crate) fn collect_agent_output_lines(
+     }
+ 
+     if let Some(agent_summary) = selected_agent {
+-        if let Some(agent_state) = tui_state.agents_by_id.get(&agent_summary.id) {
+-            if !agent_state.output_lines.is_empty() {
+-                return agent_state.output_lines.clone();
++        if let Some(agent_row) = tui_state.agents.iter().find(|row| row.id == agent_summary.id) {
++            if !agent_row.output_lines.is_empty() {
++                return agent_row.output_lines.clone();
++            }
++            if !agent_row.last_output_line.is_empty() {
++                return vec![agent_row.last_output_line.clone()];
+             }
+-            if let Some(task_id) = &agent_state.task_id {
+-                let task_output = data.task_outputs.get(task_id).cloned().unwrap_or_default();
++            if !agent_row.current_task.is_empty() {
++                let task_output = data
++                    .task_outputs
++                    .get(&agent_row.current_task)
++                    .cloned()
++                    .unwrap_or_default();
+                 if !task_output.is_empty() {
+                     return task_output;
+                 }
+@@ -1017,40 +868,6 @@ fn agent_status_rank(status: &str) -> u8 {
+     }
+ }
+ 
+-fn agent_status_color(status: &str, theme: &Theme) -> Color {
+-    if is_agent_active(status) {
+-        theme.accent
+-    } else if is_agent_done(status) {
+-        theme.success
+-    } else if is_agent_failed(status) {
+-        theme.danger
+-    } else {
+-        theme.muted
+-    }
+-}
+-
+-fn agent_status_icon(status: &str, theme: &Theme) -> (&'static str, Style) {
+-    if is_agent_active(status) {
+-        (
+-            "\u{25b6}",
+-            Style::default()
+-                .fg(theme.warning)
+-                .add_modifier(Modifier::BOLD),
+-        )
+-    } else if is_agent_done(status) {
+-        ("\u{2713}", Style::default().fg(theme.success))
+-    } else if is_agent_failed(status) {
+-        (
+-            "\u{2717}",
+-            Style::default()
+-                .fg(theme.danger)
+-                .add_modifier(Modifier::BOLD),
+-        )
+-    } else {
+-        ("\u{00b7}", Style::default().fg(theme.muted))
+-    }
+-}
+-
+ /// Shorten a model slug for compact display.
+ fn shorten_model(slug: &str) -> String {
+     slug.replace("claude-", "")
+diff --git a/crates/roko-cli/src/tui/views/dashboard_view.rs b/crates/roko-cli/src/tui/views/dashboard_view.rs
+index 0afafdfe..e989a71e 100644
+--- a/crates/roko-cli/src/tui/views/dashboard_view.rs
++++ b/crates/roko-cli/src/tui/views/dashboard_view.rs
+@@ -292,7 +292,7 @@ fn render_output_panel(
+     //
+     // Priority:
+     //   1. current_plan_execution.agent_output_tail
+-    //   2. selected agent's output from tui_state.agents_by_id
++    //   2. selected agent's live row data from tui_state.agents
+     //   3. most recent task output from data.task_outputs
+     let collected: Vec<String> = {
+         // 1. Plan execution output tail.
+@@ -303,18 +303,21 @@ fn render_output_panel(
+             .unwrap_or_default();
+         if !exec_lines.is_empty() {
+             exec_lines
+-        } else if let Some(agent_summary) = tui_state.agents.get(
++        } else if let Some(agent) = tui_state.agents.get(
+             tui_state
+                 .selected_agent
+                 .min(tui_state.agents.len().saturating_sub(1)),
+         ) {
+-            // 2. Selected agent output.
+-            if let Some(agent) = tui_state.agents_by_id.get(&agent_summary.id) {
+-                if !agent.output_lines.is_empty() {
+-                    agent.output_lines.clone()
+-                } else {
+-                    Vec::new()
+-                }
++            // 2. Selected agent output from live row data.
++            if !agent.output_lines.is_empty() {
++                agent.output_lines.clone()
++            } else if !agent.last_output_line.is_empty() {
++                vec![agent.last_output_line.clone()]
++            } else if !agent.current_task.is_empty() {
++                data.task_outputs
++                    .get(&agent.current_task)
++                    .cloned()
++                    .unwrap_or_default()
+             } else {
+                 Vec::new()
+             }
+@@ -460,58 +463,68 @@ fn render_sub_git(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme
+     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+ }
+ 
+-/// Collect git summary data as plain strings.
+-///
+-/// This runs multiple git subprocess calls and should only be called from
+-/// a background thread, never from the render path.
+-pub fn collect_git_summary() -> Vec<String> {
++/// Collect git summary data as plain strings from the cached git snapshot.
++pub fn collect_git_summary(
++    git_data: &crate::tui::views::git_view::GitViewData,
++    age: &str,
++) -> Vec<String> {
+     let mut lines = Vec::new();
+ 
+-    let branch = git_cmd(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+-    let commit = git_cmd(&["rev-parse", "--short", "HEAD"]).unwrap_or_default();
+-    let age = git_cmd(&["log", "-1", "--format=%cr"]).unwrap_or_default();
+-
+-    if !branch.is_empty() {
+-        lines.push(format!(" branch: {branch}  {commit}  {age}"));
++    let commit = git_data
++        .commits
++        .first()
++        .map(|commit| commit.hash_short.as_str())
++        .unwrap_or_default();
++
++    if !git_data.current_branch.is_empty() {
++        lines.push(format!(
++            " branch: {}  {commit}  {age}",
++            git_data.current_branch
++        ));
+     }
+ 
+-    if let Some(status) = git_cmd(&["status", "--short"]) {
+-        let modified = status
+-            .lines()
+-            .filter(|l| l.starts_with(" M") || l.starts_with("M "))
+-            .count();
+-        let added = status
+-            .lines()
+-            .filter(|l| l.starts_with("A ") || l.starts_with("??"))
+-            .count();
+-        let deleted = status
+-            .lines()
+-            .filter(|l| l.starts_with(" D") || l.starts_with("D "))
+-            .count();
+-        let total = status.lines().filter(|l| !l.is_empty()).count();
+-        if total > 0 {
+-            lines.push(format!(
+-                " status: {total} changed  M:{modified} A:{added} D:{deleted}"
+-            ));
+-        } else {
+-            lines.push(" status: clean".to_string());
+-        }
++    let modified = git_data
++        .status_lines
++        .iter()
++        .filter(|line| line.starts_with(" M") || line.starts_with("M "))
++        .count();
++    let added = git_data
++        .status_lines
++        .iter()
++        .filter(|line| line.starts_with("A ") || line.starts_with("??"))
++        .count();
++    let deleted = git_data
++        .status_lines
++        .iter()
++        .filter(|line| line.starts_with(" D") || line.starts_with("D "))
++        .count();
++    let total = git_data
++        .status_lines
++        .iter()
++        .filter(|line| !line.is_empty())
++        .count();
++    if total > 0 {
++        lines.push(format!(
++            " status: {total} changed  M:{modified} A:{added} D:{deleted}"
++        ));
++    } else if !git_data.current_branch.is_empty() {
++        lines.push(" status: clean".to_string());
+     }
+ 
+-    if let Some(log) = git_cmd(&["log", "--oneline", "--graph", "-8"]) {
++    if !git_data.commits.is_empty() {
+         lines.push(String::new());
+         lines.push(" recent commits:".to_string());
+-        for line in log.lines().take(8) {
+-            lines.push(format!("  {line}"));
++        for commit in git_data.commits.iter().take(8) {
++            lines.push(format!(
++                "  {}{} {}",
++                commit.graph_prefix, commit.hash_short, commit.subject
++            ));
+         }
+     }
+ 
+-    if let Some(wt) = git_cmd(&["worktree", "list", "--porcelain"]) {
+-        let count = wt.lines().filter(|l| l.starts_with("worktree ")).count();
+-        if count > 1 {
+-            lines.push(String::new());
+-            lines.push(format!(" worktrees: {count}"));
+-        }
++    if git_data.worktrees.len() > 1 {
++        lines.push(String::new());
++        lines.push(format!(" worktrees: {}", git_data.worktrees.len()));
+     }
+ 
+     if lines.is_empty() {
+@@ -521,15 +534,6 @@ pub fn collect_git_summary() -> Vec<String> {
+     lines
+ }
+ 
+-fn git_cmd(args: &[&str]) -> Option<String> {
+-    std::process::Command::new("git")
+-        .args(args)
+-        .output()
+-        .ok()
+-        .filter(|o| o.status.success())
+-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+-}
+-
+ // ---------------------------------------------------------------------------
+ // Sub-tab: MCP / Context status
+ // ---------------------------------------------------------------------------
+@@ -799,11 +803,7 @@ fn render_sub_processes(
+                 "-".to_string()
+             };
+             let tokens = agent.input_tokens.saturating_add(agent.output_tokens);
+-            let status = tui_state
+-                .agents_by_id
+-                .get(&agent.id)
+-                .map(|entry| entry.status)
+-                .unwrap_or(AgentStatus::Active);
++            let status = agent.status;
+             (
+                 agent.id.clone(),
+                 agent.role.clone(),
+diff --git a/crates/roko-cli/src/tui/views/logs_view.rs b/crates/roko-cli/src/tui/views/logs_view.rs
+index 9c511c23..31a5f7b6 100644
+--- a/crates/roko-cli/src/tui/views/logs_view.rs
++++ b/crates/roko-cli/src/tui/views/logs_view.rs
+@@ -462,32 +462,12 @@ fn source_style(source: &str, theme: &Theme) -> ratatui::style::Style {
+     }
+ }
+ 
+-fn entry_matches_filter(entry: &LogEntry, filter_lower: &str) -> bool {
+-    entry.timestamp.to_lowercase().contains(filter_lower)
+-        || entry.message.to_lowercase().contains(filter_lower)
+-        || entry.source.to_lowercase().contains(filter_lower)
+-        || entry
+-            .level
+-            .label()
+-            .to_ascii_lowercase()
+-            .contains(filter_lower)
+-}
+-
+ fn format_timestamp_ms(ms: i64) -> String {
+     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+         .map(|dt| dt.format("%H:%M:%S").to_string())
+         .unwrap_or_else(|| String::from("??:??:??"))
+ }
+ 
+-fn truncate_message(message: &str, max: usize) -> String {
+-    let trimmed = message.trim();
+-    if trimmed.len() <= max {
+-        trimmed.to_string()
+-    } else {
+-        truncate(trimmed, max)
+-    }
+-}
+-
+ fn style_with_bg(
+     style: ratatui::style::Style,
+     bg: Option<ratatui::style::Color>,
+diff --git a/crates/roko-cli/src/tui/views/plans_view.rs b/crates/roko-cli/src/tui/views/plans_view.rs
+index c590dc7e..1acc9af8 100644
+--- a/crates/roko-cli/src/tui/views/plans_view.rs
++++ b/crates/roko-cli/src/tui/views/plans_view.rs
+@@ -493,8 +493,10 @@ fn render_plan_line(
+     let is_failed = tui_plan
+         .map(|p| p.status.is_failed())
+         .unwrap_or(false);
+-    let task_done = tui_plan.map(|p| p.task_done).unwrap_or(0);
+-    let task_total = plan.task_count;
++    let task_total = tui_plan.map(|p| p.tasks_total).unwrap_or(plan.task_count);
++    let task_done = tui_plan
++        .map(|p| p.tasks_done)
++        .unwrap_or(if plan.completed { task_total } else { 0 });
+ 
+     // Status icon
+     let (icon, icon_style) = if plan.completed {
+@@ -807,9 +809,8 @@ fn render_plan_summary(
+         .unwrap_or(false);
+     let tasks_total = plan
+         .tasks_total
+-        .max(plan.task_total)
+         .max(plan_summary.map_or(0, |summary| summary.task_count));
+-    let tasks_done = plan.tasks_done.max(plan.task_done).min(tasks_total);
++    let tasks_done = plan.tasks_done.min(tasks_total);
+     let pct = if tasks_total > 0 {
+         tasks_done as f64 / tasks_total as f64
+     } else if summary_completed {
+@@ -1142,7 +1143,7 @@ fn build_timing_lines(
+     theme: &Theme,
+ ) -> Vec<Line<'static>> {
+     let mut lines = Vec::new();
+-    let tasks_done = plan.tasks_done.max(plan.task_done);
++    let tasks_done = plan.tasks_done;
+ 
+     if plan.elapsed_secs > 0.0 {
+         lines.push(Line::from(vec![

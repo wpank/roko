@@ -1,0 +1,14 @@
+Updated the UX/deployment docs to separate shipping behavior from target-state specs without weakening the kept REF26/REF28 material. The referenced `tmp/...` audit files were not present in this worktree, so I used the batch brief’s embedded audit text as the source of truth and patched the live docs directly.
+
+Edited docs and assigned status tiers:
+- [docs/12-interfaces/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/INDEX.md) — added a readable `shipping` / `minimal` / `target-state` overview and marked web/gRPC/SDK/rich primitives accordingly.
+- [docs/12-interfaces/19-rust-sdk-developer-ux.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/19-rust-sdk-developer-ux.md) — marked `deferred target-state`; added the “6 kernel traits are the current surface” callout.
+- [docs/12-interfaces/21-user-ux-running-agents.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/21-user-ux-running-agents.md) — marked CLI/TUI `shipping`, chat `minimal`, web `not started`, universal verb symmetry `target-state`; narrowed session/web/chat claims.
+- [docs/12-interfaces/22-statehub-projection-layer.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/22-statehub-projection-layer.md) — kept strong, but added a callout that current `StateHub` is shipping and typed projections are the target evolution.
+- [docs/12-interfaces/23-rich-ux-primitives.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/23-rich-ux-primitives.md) — marked `target-state`; called out the smaller current TUI subset.
+- [docs/12-interfaces/13-web-portal.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/13-web-portal.md) — marked `deferred`; added “zero frontend code exists” and reframed it as a future browser client.
+- [docs/12-interfaces/06-websocket-streaming.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/12-interfaces/06-websocket-streaming.md) — marked WebSocket/SSE as current and gRPC as `deferred`.
+- [docs/19-deployment/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/19-deployment/INDEX.md) — added “only laptop-local is currently tested,” softened aspirational shape summaries, and replaced vague references with concrete links.
+- [docs/19-deployment/14-observability-and-telemetry.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/19-deployment/14-observability-and-telemetry.md) — added the current baseline, marked Prometheus/OTLP as `target-state`, and qualified the richer StateHub projection catalog.
+
+Verification: `git diff --check` passed.

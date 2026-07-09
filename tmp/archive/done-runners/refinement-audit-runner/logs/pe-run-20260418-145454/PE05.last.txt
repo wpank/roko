@@ -1,0 +1,21 @@
+Implemented PE05 in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs), [regression.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-learn/src/regression.rs), and [runtime_feedback.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-learn/src/runtime_feedback.rs).
+
+- `L1` completed: learned-context selection now uses real task metadata for `SkillQuery` and `MatchContext` instead of role-only lookup, including files, extracted symbols, crate name, task category, and normalized prior error signatures.
+- `L2` completed: regression detection is now slice-aware and `iterations_increase` is active for both overall and per-slice warnings.
+- `L3` completed: the routing-log replay path remains the canonical calibration source, and the prompt path now surfaces a concrete calibration summary from `CalibrationTracker::summary(...)`.
+- `L5` completed: budget pressure now feeds routing as an explicit normalized input and produces clearer routing reasons.
+- `L6` completed: concluded prompt-experiment winners are persisted to a durable operator-facing artifact at `.roko/learn/experiment-winners.json`.
+
+Verification passed:
+- `cargo test -p roko-cli -p roko-learn -p roko-compose -p roko-core`
+- `cargo check -p roko-learn`
+- `cargo clippy -p roko-learn --no-deps -- -D warnings`
+- Batch `rg` checks for L1/L2/L3/L5/L6
+
+Deferred:
+- `L4`: left `run_learning_subscriber` and `DriftDetector` as explicit seams. Wiring them now would duplicate the existing turn-feedback path and still lacks a real reference-distribution / alert-sink contract.
+- `L7`, `L8`: docs-only parity work; out of this code-only write scope.
+
+Residual seams for follow-up:
+- If `L4` is revisited, it should start by choosing one live learning event path and one alert sink rather than adding another parallel subscriber.
+- `EpisodeLogger::compact` and the broader tier-progression analysis/write-playbook flow remain implemented-but-not-fully-wired surfaces for the docs pass.

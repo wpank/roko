@@ -1,0 +1,18 @@
+Implemented Batch C1.
+
+The core work is in the new [roko-agent-server crate](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent-server/src/lib.rs:142), with builder/serve wiring in [lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent-server/src/lib.rs:108), bearer auth in [auth/bearer.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent-server/src/auth/bearer.rs:13), and ERC-8004 agent-card construction/registration in [registration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-agent-server/src/registration.rs:21). It exposes explicit public-vs-authenticated boundaries, feature modules for messaging/predictions/research/tasks, and startup registration that can publish a card URI and optionally push it on-chain.
+
+On `roko-serve`, I added discovery/token state in [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/state.rs:72), a new Mirage-shaped aggregator in [routes/aggregator.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/aggregator.rs:28), and auth/discovery endpoints plus backward-compatible managed-agent handling in [routes/agents.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/agents.rs:46). Mirage extraction is now feature-gated in [apps/mirage-rs/Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/Cargo.toml:90), [src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/lib.rs:69), and [src/rpc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/rpc.rs:120), so the legacy API is no longer just a doc plan.
+
+Verification passed for the batch gates:
+- `cargo build -p roko-agent-server`
+- `cargo test -p roko-agent-server`
+- `cargo build -p mirage-rs`
+- `cargo build -p mirage-rs --no-default-features --features binary`
+- `cargo build -p roko-serve`
+- `cargo test -p roko-serve aggregator`
+- `cargo build -p roko-serve -p roko-agent-server`
+- `cargo test -p roko-agent-server --lib -- auth`
+- `cargo build -p roko-agent-server -p roko-chain`
+
+Only residual note: an untracked `.cargo-target/` build artifact is still present because deletion was blocked by policy.

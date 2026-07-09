@@ -1,0 +1,12 @@
+Chose seam A in the prompt builder. `PlaybookStore::query` now exposes a prompt-time query seam in [playbook.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/playbook.rs:133), and `orchestrate.rs` now resolves relevant playbooks per dispatch via `playbook_query_context(...)` and passes them through `PromptBuildOptions` into `roko-compose` instead of appending a separate ad hoc playbook section afterward ([orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:2347), [prompting.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/prompting.rs:10)). In `roko-compose`, the builder and role prompt spec now carry typed playbooks and render them inside the existing relevant-techniques layer, with the old orchestrator-side injection removed ([system_prompt_builder.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-compose/src/system_prompt_builder.rs:67), [role_prompts.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-compose/src/role_prompts.rs:167)).
+
+Cap is 3 playbooks per turn. Ranking is deterministic: textual relevance against the task title/body plus role/task-id context, then recency, then accumulated outcomes, then `id` ascending. I left unrelated existing worktree edits alone.
+
+Verification passed:
+- `cargo check -p roko-cli -p roko-learn -p roko-compose`
+- `cargo test -p roko-learn --lib playbook --no-run`
+- `cargo clippy --no-deps -- -D warnings`
+
+Focused proof tests also passed:
+- `cargo test -p roko-compose relevant_playbooks --lib`
+- `cargo test -p roko-learn query_ --lib`

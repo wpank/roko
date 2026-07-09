@@ -1,0 +1,19 @@
+**Changes**
+I kept PE08 narrow and only touched `crates/roko-chain`.
+
+- [wallet_gate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/gate/wallet_gate.rs:10) now treats `require_allowance_for` honestly: if configured, `WalletGate` fails closed through `Unsupported` instead of passing as if ERC-20 allowance enforcement existed. I also clarified that `check()` is balance-only and added coverage for the new unsupported path.
+- [witness.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/witness.rs:8) now explicitly describes `ChainWitnessEngine` as the narrow attestation anchor, not the frontier `WitnessEngine` pipeline. I also hardened verification in [witness.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/witness.rs:88) so it checks stored `chain_id` and `block_number`, and added tests for the static sink/topic plus mismatch cases.
+- I cleaned up crate truth-in-advertising in [lib.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/lib.rs:4), [client.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/client.rs:1), and [gate/mod.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/gate/mod.rs:1) so the crate no longer implies a shipped `MirageChainClient` or active allowance checks. I also made `FailingSimulator` test-only in [tx_sim_gate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/gate/tx_sim_gate.rs:235) and fixed stale mock comments in [mock.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-chain/src/mock.rs:104).
+
+**Verification**
+`cargo test -p roko-chain` passed: 59 tests, 1 doctest.
+`cargo check -p roko-chain && cargo clippy -p roko-chain --no-deps -- -D warnings` passed.
+
+**Batch Status**
+Completed in `crates/roko-chain`: `K1`, code-side part of `K3`, and `K5`.
+Deferred / no crate edit by design: `K2`, `K4`, `K6`, `K7`, `K8` because those are docs/status or adjacent `contracts/` / `apps/mirage-rs/` work, not `roko-chain` implementation.
+
+Remaining seams for follow-up:
+- Full `ChainClient::get_logs` semantics are still not implemented across backends; I only narrowed the trait docs.
+- The Solidity/demo, mirage scaffold, ISFR proxy, and global chain status work remain outside this crate.
+- The worktree already had unrelated edits in `apps/mirage-rs/src/main.rs` and `apps/mirage-rs/src/rpc.rs`; I left them untouched.

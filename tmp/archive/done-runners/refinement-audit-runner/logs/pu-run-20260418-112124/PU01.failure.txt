@@ -1,0 +1,43 @@
+Diff gate failed: no changes in tmp/docs-parity/01/.
+
+Recent log tail:
++  echo "  [TODO] Run this prompt with: claude --print \"\$(cat "$prompt_file")\" 2>&1 | tee $log_file"
+ 
+   echo "PENDING" > "$result_file"
+ }
+ 
+ if [ $# -eq 0 ]; then
+-  BATCHES=(O1 O5 O2 O3 O4 O6)
++  BATCHES=(O1 O5 O2 O3 O4)
+ else
+   BATCHES=("$@")
+ fi
+ 
++for batch in "${BATCHES[@]}"; do
++  if ! contains_batch "$batch"; then
++    echo "Unknown batch: $batch" >&2
++    echo "Valid batches: ${VALID_BATCHES[*]}" >&2
++    exit 1
++  fi
++done
++
+ echo "Docs-Parity Run: $RUN_ID"
+ echo "Batches: ${BATCHES[*]}"
+ echo "Logs: $LOG_DIR/$RUN_ID/"
+
+tokens used
+119,152
+Updated the full `tmp/docs-parity/01/` pack, including all required files:
+
+- `00-INDEX.md`, `BATCHES.md`, `A-core-orchestration.md`, `B-isolation-merge.md`, `C-persistence-recovery.md`, `D-monitoring-conductor.md`, `E-coordination-domains.md`, `SOURCE-INDEX.md`
+- `context-pack/orchestration-summary.md`, `gaps-summary.md`, `carry-forward-map.md`, `repo-map.md`, `agent-runbook.md`
+- `run-docs-parity.sh`
+
+The pack now reflects the audit posture instead of the earlier overscoped one: orchestration is already wired, `crates/roko-cli/src/orchestrate.rs` is called out as the real debt at `17,087` lines, snapshot/resume and worktree lifecycle are treated as live, the conductor→learn boundary is named directly, and docs `12-13` are explicitly deferred. `BATCHES.md` is narrowed to five small executable batches (`O1`-`O5`) plus an explicit deferred `O6` lane, and `SOURCE-INDEX.md` now points at real code anchors.
+
+Verification: `bash -n tmp/docs-parity/01/run-docs-parity.sh` passes. I did not run Rust tests because this was a docs/script refresh only.
+
+=== Finished: 2026-04-18T11:40:56+02:00 ===
+=== Duration: 7m 5s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/01/

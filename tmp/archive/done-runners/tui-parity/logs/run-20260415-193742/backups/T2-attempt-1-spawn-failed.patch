@@ -1,0 +1,638 @@
+diff --git a/crates/roko-cli/src/tui/mod.rs b/crates/roko-cli/src/tui/mod.rs
+index 924db613..60c892f9 100644
+--- a/crates/roko-cli/src/tui/mod.rs
++++ b/crates/roko-cli/src/tui/mod.rs
+@@ -20,6 +20,7 @@ pub mod pages;
+ pub mod postfx;
+ pub mod postfx_pipeline;
+ pub mod scroll;
++pub mod segment;
+ pub mod state;
+ pub mod tabs;
+ pub mod util;
+diff --git a/crates/roko-cli/src/tui/state.rs b/crates/roko-cli/src/tui/state.rs
+index 7c77b66a..1ab0a6e3 100644
+--- a/crates/roko-cli/src/tui/state.rs
++++ b/crates/roko-cli/src/tui/state.rs
+@@ -4,15 +4,18 @@
+ //! needs: navigation, scroll positions, modal visibility, agent/plan data,
+ //! cost tracking, git state, and more.
+ 
++use std::cell::RefCell;
+ use std::collections::{HashMap, HashSet};
+ use std::fmt;
+ use std::time::Instant;
+ 
+ use chrono::{DateTime, Utc};
++use ratatui::text::Line;
+ 
+ use super::atmosphere::Atmosphere;
+-use super::dashboard::{DashboardData, PlanTaskListSnapshot};
++use super::dashboard::{DashboardData, PlanTaskListSnapshot, Theme};
+ use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
++use super::segment::{CachedRender, output_byte_len, render_cached_output};
+ use super::tabs::Tab;
+ use crate::plan::PlanSummary;
+ 
+@@ -521,6 +524,8 @@ pub struct TuiState {
+     // -- agents (Vec-based roster for widgets) --
+     /// Ordered agent roster for widgets (agent_pool, agent_output, header_bar).
+     pub agents: Vec<AgentRow>,
++    /// Cached styled agent output keyed by agent identifier.
++    pub agent_output_cache: RefCell<HashMap<String, CachedRender>>,
+     // -- navigation --
+     /// Active top-level tab.
+     pub active_tab: Tab,
+@@ -676,6 +681,7 @@ impl Default for TuiState {
+             gate_results: Vec::new(),
+ 
+             agents: Vec::new(),
++            agent_output_cache: RefCell::new(HashMap::new()),
+             active_tab: Tab::default(),
+             selected_plan_idx: 0,
+             selected_agent: 0,
+@@ -1025,6 +1031,7 @@ impl TuiState {
+                 }
+             }
+         }
++        self.prune_agent_output_cache();
+ 
+         self.cost_dollars = data.efficiency.total_cost_usd;
+         self.cumulative_input_tokens = data.efficiency.total_input_tokens;
+@@ -1306,6 +1313,7 @@ impl TuiState {
+                 }
+             })
+             .collect();
++        self.prune_agent_output_cache();
+ 
+         self.gate_results = snap
+             .gates
+@@ -1354,6 +1362,38 @@ impl TuiState {
+         self.selected_agent_tab = self.selected_agent_tab.min(6);
+     }
+ 
++    #[must_use]
++    pub fn render_agent_output_lines(
++        &self,
++        cache_key: &str,
++        raw_output: &[String],
++        theme: &Theme,
++    ) -> Vec<Line<'static>> {
++        if raw_output.is_empty() {
++            if !cache_key.is_empty() {
++                self.agent_output_cache.borrow_mut().remove(cache_key);
++            }
++            return Vec::new();
++        }
++
++        let cache_key = if cache_key.is_empty() {
++            "__agent-output__"
++        } else {
++            cache_key
++        };
++        let output_len = output_byte_len(raw_output);
++        let mut cache = self.agent_output_cache.borrow_mut();
++        let cached = cache
++            .entry(cache_key.to_string())
++            .or_insert_with(CachedRender::default);
++
++        if cached.last_len != output_len {
++            *cached = render_cached_output(raw_output, theme);
++        }
++
++        cached.styled_lines.clone()
++    }
++
+     fn update_efficiency_rates(&mut self) {
+         let now = Instant::now();
+         let token_total = self.token_total;
+@@ -1423,6 +1463,17 @@ impl TuiState {
+     pub fn log_level_visible(&self, level: LogFilterLevel) -> bool {
+         self.log_filter_levels.contains(&level)
+     }
++
++    fn prune_agent_output_cache(&self) {
++        let valid_ids = self
++            .agents
++            .iter()
++            .map(|agent| agent.id.as_str())
++            .collect::<HashSet<_>>();
++        self.agent_output_cache.borrow_mut().retain(|key, _| {
++            key == "__agent-output__" || valid_ids.contains(key.as_str())
++        });
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/crates/roko-cli/src/tui/views/agents_view.rs b/crates/roko-cli/src/tui/views/agents_view.rs
+index 0facb720..42f4e093 100644
+--- a/crates/roko-cli/src/tui/views/agents_view.rs
++++ b/crates/roko-cli/src/tui/views/agents_view.rs
+@@ -13,7 +13,6 @@ use ratatui::text::{Line, Span};
+ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+ 
+ use super::ViewState;
+-use crate::tui::ansi::parse_ansi_line;
+ use crate::tui::dashboard::{DashboardData, Theme};
+ use crate::tui::input::FocusZone;
+ use crate::tui::state::{AgentStatus, TuiState, model_context_limit};
+@@ -33,6 +32,457 @@ const ROLE_TABS: &[(&str, &str)] = &[
+     ("researcher", "7:res"),
+ ];
+ 
++// ---------------------------------------------------------------------------
++// Segment parsing + cached render
++// ---------------------------------------------------------------------------
++
++mod segment {
++    use std::collections::HashMap;
++    use std::sync::{Mutex, OnceLock};
++
++    use ratatui::style::{Modifier, Style};
++    use ratatui::text::{Line, Span};
++
++    use crate::tui::ansi::parse_ansi_line;
++    use crate::tui::dashboard::Theme;
++    use crate::tui::widgets::rosedust::MoriTheme;
++
++    /// Semantic segment types for agent output.
++    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++    pub(crate) enum SegmentKind {
++        Thinking,
++        Heading,
++        ToolUse,
++        Code,
++        Success,
++        Error,
++        Blank,
++        TurnMarker,
++    }
++
++    /// A consecutive run of agent output lines with the same semantic type.
++    #[derive(Debug, Clone)]
++    pub(crate) struct SegmentGroup {
++        pub kind: SegmentKind,
++        pub lines: Vec<String>,
++    }
++
++    /// Cached styled render for one agent output stream.
++    #[derive(Debug, Clone)]
++    pub(crate) struct CachedRender {
++        pub last_len: usize,
++        pub groups: Vec<SegmentGroup>,
++        pub styled_lines: Vec<Line<'static>>,
++    }
++
++    static OUTPUT_RENDER_CACHE: OnceLock<Mutex<HashMap<String, CachedRender>>> = OnceLock::new();
++
++    fn cache() -> &'static Mutex<HashMap<String, CachedRender>> {
++        OUTPUT_RENDER_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
++    }
++
++    pub(crate) fn cached_render(agent_id: &str, lines: &[String], theme: &Theme) -> CachedRender {
++        let last_len = output_len(lines);
++
++        if let Some(cached) = cache()
++            .lock()
++            .expect("agent output render cache poisoned")
++            .get(agent_id)
++            .filter(|cached| cached.last_len == last_len)
++            .cloned()
++        {
++            return cached;
++        }
++
++        let groups = group_segments(&preprocess_lines(lines));
++        let styled_lines = render_groups(&groups, theme);
++        let rendered = CachedRender {
++            last_len,
++            groups,
++            styled_lines,
++        };
++
++        cache()
++            .lock()
++            .expect("agent output render cache poisoned")
++            .insert(agent_id.to_string(), rendered.clone());
++        rendered
++    }
++
++    fn output_len(lines: &[String]) -> usize {
++        lines.iter().map(|line| line.len()).sum::<usize>() + lines.len().saturating_sub(1)
++    }
++
++    pub(crate) fn preprocess_lines(lines: &[String]) -> Vec<String> {
++        let mut out = Vec::new();
++        for line in lines {
++            let replaced = line
++                .replace("Now ", "\nNow ")
++                .replace("Let ", "\nLet ")
++                .replace("I'll ", "\nI'll ");
++
++            let fragments = replaced.split('\n').filter(|fragment| {
++                !fragment.is_empty() || line.trim().is_empty()
++            });
++
++            for fragment in fragments {
++                for split in split_long_line(fragment) {
++                    out.push(split);
++                }
++            }
++        }
++        out
++    }
++
++    pub(crate) fn split_long_line(line: &str) -> Vec<String> {
++        if line.len() <= 120 {
++            return vec![line.to_string()];
++        }
++
++        let boundary = line
++            .match_indices(". ")
++            .map(|(idx, _)| idx + 1)
++            .filter(|idx| *idx <= 120)
++            .last()
++            .or_else(|| {
++                line.match_indices(". ")
++                    .map(|(idx, _)| idx + 1)
++                    .find(|idx| *idx > 120)
++            });
++
++        let split_at = boundary.unwrap_or(120.min(line.len()));
++        if split_at >= line.len() {
++            return vec![line.to_string()];
++        }
++
++        let (head, tail) = line.split_at(split_at);
++        let mut parts = vec![head.trim_end().to_string()];
++        let tail = tail.trim_start();
++        if !tail.is_empty() {
++            parts.extend(split_long_line(tail));
++        }
++        parts
++    }
++
++    pub(crate) fn group_segments(lines: &[String]) -> Vec<SegmentGroup> {
++        let mut groups = Vec::new();
++        let mut current_kind: Option<SegmentKind> = None;
++        let mut current_lines: Vec<String> = Vec::new();
++        let mut in_code_block = false;
++        let mut prev_blank = true;
++
++        for line in lines {
++            let kind = classify_line(line, in_code_block, prev_blank);
++            let is_fence = line.trim_start().starts_with("```");
++
++            match current_kind {
++                Some(current) if current == kind => current_lines.push(line.clone()),
++                Some(current) => {
++                    groups.push(SegmentGroup {
++                        kind: current,
++                        lines: std::mem::take(&mut current_lines),
++                    });
++                    current_kind = Some(kind);
++                    current_lines.push(line.clone());
++                }
++                None => {
++                    current_kind = Some(kind);
++                    current_lines.push(line.clone());
++                }
++            }
++
++            prev_blank = matches!(kind, SegmentKind::Blank);
++            if is_fence {
++                in_code_block = !in_code_block;
++            }
++        }
++
++        if let Some(kind) = current_kind {
++            groups.push(SegmentGroup {
++                kind,
++                lines: current_lines,
++            });
++        }
++
++        groups
++    }
++
++    fn classify_line(line: &str, in_code_block: bool, prev_blank: bool) -> SegmentKind {
++        let trimmed = line.trim_start();
++        if line.trim().is_empty() {
++            return SegmentKind::Blank;
++        }
++        if trimmed.starts_with("```") {
++            return SegmentKind::Code;
++        }
++        if in_code_block {
++            return SegmentKind::Code;
++        }
++        if trimmed.starts_with("# ")
++            || trimmed.starts_with("## ")
++            || trimmed.starts_with("### ")
++        {
++            return SegmentKind::Heading;
++        }
++        if trimmed.starts_with("▸ ")
++            || trimmed.starts_with("> ")
++            || trimmed.starts_with("$ ")
++            || trimmed.starts_with("Running ")
++            || trimmed.starts_with("Reading ")
++            || trimmed.starts_with("Writing ")
++            || trimmed.starts_with("Editing ")
++            || trimmed.starts_with("Created ")
++        {
++            return SegmentKind::ToolUse;
++        }
++        if prev_blank && line.starts_with("    ") {
++            return SegmentKind::Code;
++        }
++        if line.contains('✓') || line.contains("PASS") || line.contains("APPROVE") {
++            return SegmentKind::Success;
++        }
++        if line.contains("ERROR") || line.contains("FAILED") || line.contains("error[") || trimmed.starts_with("error") {
++            return SegmentKind::Error;
++        }
++        if trimmed.starts_with("────") {
++            return SegmentKind::TurnMarker;
++        }
++        SegmentKind::Thinking
++    }
++
++    fn render_groups(groups: &[SegmentGroup], theme: &Theme) -> Vec<Line<'static>> {
++        let mut lines = Vec::new();
++        for group in groups {
++            if group.kind != SegmentKind::Blank {
++                lines.push(render_group_header(group.kind, theme));
++            }
++            for line in &group.lines {
++                lines.push(render_segment_line(line, group.kind, theme));
++            }
++        }
++        lines
++    }
++
++    fn render_group_header(kind: SegmentKind, theme: &Theme) -> Line<'static> {
++        let label = match kind {
++            SegmentKind::Thinking => "thinking",
++            SegmentKind::Heading => "heading",
++            SegmentKind::ToolUse => "tool use",
++            SegmentKind::Code => "code",
++            SegmentKind::Success => "success",
++            SegmentKind::Error => "error",
++            SegmentKind::Blank => "blank",
++            SegmentKind::TurnMarker => "turn marker",
++        };
++
++        Line::from(vec![
++            Span::styled("  ", Style::default()),
++            Span::styled(
++                format!("[{label}]"),
++                Style::default()
++                    .fg(theme.muted)
++                    .add_modifier(Modifier::ITALIC),
++            ),
++        ])
++    }
++
++    fn render_segment_line(line: &str, kind: SegmentKind, theme: &Theme) -> Line<'static> {
++        let base_style = segment_style(kind, theme);
++        let mut spans = vec![Span::styled(" ", base_style)];
++        if line.is_empty() {
++            spans.push(Span::styled(String::new(), base_style));
++            return Line::from(spans);
++        }
++
++        spans.extend(
++            parse_ansi_line(line)
++                .into_iter()
++                .map(|span| Span::styled(span.content.to_string(), base_style.patch(span.style))),
++        );
++        Line::from(spans)
++    }
++
++    fn segment_style(kind: SegmentKind, theme: &Theme) -> Style {
++        match kind {
++            SegmentKind::Thinking => Style::default().fg(theme.muted),
++            SegmentKind::Heading => Style::default()
++                .fg(theme.accent)
++                .add_modifier(Modifier::BOLD),
++            SegmentKind::ToolUse => Style::default().fg(theme.info),
++            SegmentKind::Code => Style::default()
++                .fg(MoriTheme::SAGE)
++                .bg(MoriTheme::BG_SECONDARY),
++            SegmentKind::Success => Style::default()
++                .fg(theme.success)
++                .add_modifier(Modifier::BOLD),
++            SegmentKind::Error => Style::default()
++                .fg(theme.danger)
++                .add_modifier(Modifier::BOLD),
++            SegmentKind::Blank => Style::default().fg(theme.muted),
++            SegmentKind::TurnMarker => Style::default()
++                .fg(theme.muted)
++                .add_modifier(Modifier::ITALIC),
++        }
++    }
++
++    #[cfg(test)]
++    mod tests {
++        use super::*;
++        use crate::tui::dashboard::Theme;
++
++        fn theme() -> Theme {
++            Theme::dark()
++        }
++
++        #[test]
++        fn classifies_and_groups_semantic_lines() {
++            let lines = vec![
++                "# heading".to_string(),
++                "Running tool".to_string(),
++                "plain text".to_string(),
++                "plain follow-up".to_string(),
++                "✓ done".to_string(),
++            ];
++            let groups = group_segments(&lines);
++            assert_eq!(groups.len(), 4);
++            assert_eq!(groups[0].kind, SegmentKind::Heading);
++            assert_eq!(groups[1].kind, SegmentKind::ToolUse);
++            assert_eq!(groups[2].kind, SegmentKind::Thinking);
++            assert_eq!(groups[2].lines.len(), 2);
++            assert_eq!(groups[3].kind, SegmentKind::Success);
++        }
++
++        #[test]
++        fn preprocesses_paragraph_breaks_before_common_phrases() {
++            let lines = vec!["We were here. Now go. Let us move. I'll stay.".to_string()];
++            let preprocessed = preprocess_lines(&lines);
++            assert_eq!(
++                preprocessed,
++                vec![
++                    "We were here.".to_string(),
++                    "Now go.".to_string(),
++                    "Let us move.".to_string(),
++                    "I'll stay.".to_string(),
++                ]
++            );
++        }
++
++        #[test]
++        fn splits_long_lines_at_sentence_boundaries() {
++            let long = format!(
++                "{}. {}. {}",
++                "a".repeat(70),
++                "b".repeat(70),
++                "c".repeat(70)
++            );
++            let split = split_long_line(&long);
++            assert!(split.len() >= 2);
++            assert!(split.iter().all(|part| !part.is_empty()));
++        }
++
++        #[test]
++        fn caches_by_output_length() {
++            let mut lines = vec!["plain text".to_string()];
++            let first = cached_render("agent-1", &lines, &theme());
++            assert_eq!(first.last_len, 10);
++
++            lines[0] = "changed".to_string();
++            let second = cached_render("agent-1", &lines, &theme());
++            assert_eq!(second.last_len, 7);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tui {
++    pub mod segment {
++        use super::super::segment::*;
++        use crate::tui::dashboard::Theme;
++
++        fn theme() -> Theme {
++            Theme::dark()
++        }
++
++        #[test]
++        fn classifies_and_groups_semantic_lines() {
++            let lines = vec![
++                "# heading".to_string(),
++                "Running tool".to_string(),
++                "plain text".to_string(),
++                "plain follow-up".to_string(),
++                "✓ done".to_string(),
++            ];
++            let groups = group_segments(&lines);
++            assert_eq!(groups.len(), 4);
++            assert_eq!(groups[0].kind, SegmentKind::Heading);
++            assert_eq!(groups[1].kind, SegmentKind::ToolUse);
++            assert_eq!(groups[2].kind, SegmentKind::Thinking);
++            assert_eq!(groups[2].lines.len(), 2);
++            assert_eq!(groups[3].kind, SegmentKind::Success);
++        }
++
++        #[test]
++        fn preprocesses_paragraph_breaks_before_common_phrases() {
++            let lines = vec!["We were here. Now go. Let us move. I'll stay.".to_string()];
++            let preprocessed = preprocess_lines(&lines);
++            assert_eq!(
++                preprocessed,
++                vec![
++                    "We were here.".to_string(),
++                    "Now go.".to_string(),
++                    "Let us move.".to_string(),
++                    "I'll stay.".to_string(),
++                ]
++            );
++        }
++
++        #[test]
++        fn splits_long_lines_at_sentence_boundaries() {
++            let long = format!(
++                "{}. {}. {}",
++                "a".repeat(70),
++                "b".repeat(70),
++                "c".repeat(70)
++            );
++            let split = split_long_line(&long);
++            assert!(split.len() >= 2);
++            assert!(split.iter().all(|part| !part.is_empty()));
++        }
++
++        #[test]
++        fn caches_by_output_length() {
++            let mut lines = vec!["plain text".to_string()];
++            let first = cached_render("agent-1", &lines, &theme());
++            assert_eq!(first.last_len, 10);
++
++            lines[0] = "changed".to_string();
++            let second = cached_render("agent-1", &lines, &theme());
++            assert_eq!(second.last_len, 7);
++        }
++    }
++}
++
++trait AgentOutputRenderExt {
++    fn render_agent_output_lines(
++        &self,
++        cache_key: &str,
++        raw_output: &[String],
++        theme: &Theme,
++    ) -> Vec<Line<'static>>;
++}
++
++impl AgentOutputRenderExt for TuiState {
++    fn render_agent_output_lines(
++        &self,
++        cache_key: &str,
++        raw_output: &[String],
++        theme: &Theme,
++    ) -> Vec<Line<'static>> {
++        segment::cached_render(cache_key, raw_output, theme)
++            .styled_lines
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Public render
+ // ---------------------------------------------------------------------------
+@@ -577,7 +1027,12 @@ fn render_output_body(
+     };
+ 
+     let collected = collect_agent_output_lines(data, tui_state, view_state.selected);
+-    let total_lines = collected.len();
++    let output_lines = if collected.is_empty() {
++        Vec::new()
++    } else {
++        tui_state.render_agent_output_lines(selected_id, &collected, theme)
++    };
++    let total_lines = output_lines.len();
+     let block = Block::default()
+         .borders(Borders::ALL)
+         .border_style(border_style);
+@@ -606,8 +1061,6 @@ fn render_output_body(
+     ]);
+     frame.render_widget(block, area);
+ 
+-    let output_lines: Vec<&str> = collected.iter().map(String::as_str).collect();
+-
+     if output_lines.is_empty() {
+         // Centered empty state
+         let v_pad = inner.height / 2;
+@@ -633,17 +1086,7 @@ fn render_output_body(
+         return;
+     }
+ 
+-    let text: Vec<Line<'static>> = output_lines
+-        .iter()
+-        .map(|line| {
+-            let mut spans = Vec::with_capacity(2);
+-            spans.push(Span::raw(" "));
+-            spans.extend(parse_ansi_line(line));
+-            Line::from(spans)
+-        })
+-        .collect();
+-
+-    let paragraph = Paragraph::new(text)
++    let paragraph = Paragraph::new(output_lines)
+         .style(theme.text())
+         .wrap(Wrap { trim: false })
+         .scroll((scroll as u16, 0));

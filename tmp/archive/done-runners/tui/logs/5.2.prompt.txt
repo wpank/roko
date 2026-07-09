@@ -1,0 +1,45 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Agent output should auto-scroll to the latest line unless the user scrolled up.
+
+PROBLEM: agent_scroll is Option<usize> where None = auto-tail and Some(n) = pinned.
+But the rendering in agents_view.rs may not implement this correctly.
+
+FIX:
+1. In agents_view.rs render_output_body(), check state.agent_scroll:
+   - If None: scroll to the end (set offset to max(0, total_lines - visible_height))
+   - If Some(n): use n as the scroll offset
+2. When new output arrives (in update_from_snapshot), if agent_scroll is None, it stays None
+   (auto-tail continues). If Some, it stays pinned.
+3. ScrollAgentUp should set agent_scroll to Some(current - 1) — pinning it.
+4. ScrollAgentEnd should set agent_scroll to None — resuming auto-tail.
+5. Add a visual indicator: '[TAIL]' in the output panel title when auto-tailing,
+   '[PINNED line N]' when manually scrolled.
+
+VERIFY: cargo check -p roko-cli

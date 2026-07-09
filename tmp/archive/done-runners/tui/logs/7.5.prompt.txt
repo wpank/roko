@@ -1,0 +1,51 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Remove unreachable duplicate modal checks.
+
+CONTEXT:
+- File: crates/roko-cli/src/tui/input.rs
+- In handle_key(), modal checks happen TWICE:
+  - First set at lines ~362-368: show_help (362), show_wave_overview (365), show_plan_detail (368)
+  - Second set at lines ~380-386: show_wave_overview (380), show_plan_detail (383), show_help (386)
+- The second set is UNREACHABLE dead code because the first set returns early.
+
+WHAT TO DO:
+1. Open input.rs and find handle_key().
+2. Find the SECOND occurrence of these checks (around lines 380-386).
+3. Delete those 3 duplicate if-blocks entirely.
+4. Keep the FIRST occurrence (around lines 362-368) intact.
+
+VERIFY:
+  cargo check -p roko-cli
+ACCEPTANCE:
+  grep -c 'show_help' crates/roko-cli/src/tui/input.rs  # should decrease by at least 1
+  # And no duplicate handler function calls

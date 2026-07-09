@@ -1,0 +1,29 @@
+Implemented PE04’s runtime path across [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs:13237), [rung_dispatch.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-gate/src/rung_dispatch.rs:99), [artifact_store.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-gate/src/artifact_store.rs:52), [ratchet.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-gate/src/ratchet.rs:49), [engram.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/engram.rs:143), and [decay.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/decay.rs:129).
+
+Batches completed:
+- `V1`: canonical rung enum dispatch replaced the old ad hoc numbering.
+- `V2`: `select_rungs()` and `GatePipeline` now run on the production `rung == 0` path.
+- `V3`: adaptive thresholds now affect retry budgets and selector-side skip decisions.
+- `V4`: structured `feedback_for_agent()` output is injected into the autofix prompt path.
+- `V5`: gate artifacts now persist under `.roko/artifacts/` via content-addressed storage.
+- `V6`: `GateRatchet` now loads, enforces regressions, records passes, and saves on persist.
+- `V7`: selector gating now respects actual runtime caps; high-rung selector steps stay off unless real inputs exist.
+- `V8`: verdict engrams now use explicit gate-verdict decay, preserve parent tags/lineage, persist artifact hashes, and get chain-integrity checks before substrate writes.
+
+Verification:
+- `cargo check -p roko-cli -p roko-gate -p roko-core` passed.
+- `cargo clippy -p roko-gate --no-deps -- -D warnings` passed.
+- Targeted tests passed:
+  - `cargo test -p roko-gate --test rungs run_rung_invokes_all_seven_rungs_with_expected_gate_mapping -- --exact`
+  - `cargo test -p roko-gate adaptive_thresholds_persist_across_sessions -- --exact`
+  - `cargo test -p roko-gate --lib artifact_store::tests::artifact_store_persists_across_reopen -- --exact`
+  - `cargo test -p roko-gate --lib ratchet::tests::ratchet_save_and_load_roundtrip -- --exact`
+  - `cargo test -p roko-gate --lib feedback::tests::feedback_extracts_errors -- --exact`
+  - `cargo test -p roko-core --lib engram::tests::derive_verdict_preserves_lineage_tags_and_decay -- --exact`
+
+Deferred batches:
+- None of `V1` through `V8`.
+
+Follow-up seams:
+- The new production selector path is intentionally narrow: only compile/lint/test/generated-test are activated there today. Symbol/property/integration stay off until real runtime inputs are wired into `RungCaps`.
+- `cargo test -p roko-gate` is still not fully green because of unrelated existing tests outside this batch’s changes, including `generated::tests::tautology_filter_discards_preexisting_passing_tests` and the direct `SymbolGate` fixture mismatch in `symbol_rung_passes_and_reports_missing_symbols`.

@@ -1,0 +1,43 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Populate orchestrator_state, current_iteration, and current_phase from executor state.
+
+PROBLEM: In state.rs, orchestrator_state is permanently 'idle', current_iteration is 0,
+current_phase is empty. These are never set in update_from_snapshot().
+
+FIX: DashboardData loads .roko/state/executor.json. In update_from_snapshot():
+1. Check if data has executor state info. Look in dashboard.rs for how executor state JSON
+   is parsed — search for 'executor' or 'state' fields on DashboardData.
+2. Extract the orchestrator status (running/paused/idle/error).
+3. Extract iteration count if available.
+4. Extract current phase label from the most advanced active task.
+5. Set self.orchestrator_state, self.current_iteration, self.current_phase.
+6. If executor state is absent, keep defaults (idle/0/empty) — don't crash.
+
+VERIFY: cargo check -p roko-cli

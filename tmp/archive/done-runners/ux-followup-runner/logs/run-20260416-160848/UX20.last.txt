@@ -1,0 +1,11 @@
+The topology widget is in [agents_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/views/agents_view.rs:693). `Ctrl+T` now toggles it globally via [input.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/input.rs:566), and the fetch is kicked from [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/app.rs:2487) on Agents-tab activation or when the panel opens. The shared topology payload now lives in [dashboard_snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/dashboard_snapshot.rs:245) and `roko-serve` reuses it in [aggregator.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-serve/src/routes/aggregator.rs:343).
+
+The widget renders a box-drawn nested tree under a default pool, attaches active tasks per agent from the TUI’s active-task state, and degrades cleanly. The 404 placeholder copy is: `topology not available from this roko serve`.
+
+Verification:
+- `cargo check -p roko-cli -p roko-serve -p roko-core` passed.
+- `CARGO_HOME=/tmp/ux20-cargo-home cargo clippy -p roko-cli -p roko-serve -p roko-core --no-deps -- -D warnings` passed.
+- `cargo test -p roko-cli --lib ctrl_t_toggles_agent_topology_globally --quiet` passed.
+- `cargo test -p roko-cli --lib agent_topology_toggle_and_clamp_work --quiet` passed.
+
+The exact workspace-wide `cargo clippy --no-deps -- -D warnings` gate is still failing outside UX20 in `crates/roko-mcp-stdio/src/lib.rs:27` and `:193`, so I did not broaden scope into that unrelated crate.

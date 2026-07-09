@@ -1,0 +1,10 @@
+Modal ownership is now consolidated on `TuiState`. I added `pub active_modal: Option<ModalState>` to [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/state.rs:818), removed the duplicate `App.active_modal`, and rewired render, dispatch, modal open/close, and modal scroll/update paths to use `self.tui_state.active_modal` in [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/app.rs:718) and [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/app.rs:767). The help/plan-detail/task-detail/wave/queue/task-picker/quit/confirm/approval flows now all mutate the same canonical enum.
+
+I also removed the boolean-style modal visibility mirroring from input dispatch. `handle_key` now matches directly on `Option<&ModalState>` in [input.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260416-101433/crates/roko-cli/src/tui/input.rs:354), and the input tests now construct real `ModalState` values instead of toggling `show_*` flags.
+
+Verification:
+- `cargo check -p roko-cli` passed
+- `cargo clippy -p roko-cli --no-deps -- -D warnings` passed
+- `grep -n 'show_.*: bool' crates/roko-cli/src/tui/state.rs` returned no matches
+
+I did not complete a manual TUI run. I also started a targeted `cargo test` pass, but it was still spending time compiling the broader workspace rather than reaching the TUI cases when I stopped waiting.

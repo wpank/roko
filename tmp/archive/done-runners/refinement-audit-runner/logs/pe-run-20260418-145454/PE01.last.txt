@@ -1,0 +1,16 @@
+Completed `PE01` with `O1-O5` landing as verified runtime behavior; `O6` remains deferred as the batch contract requires.
+
+The only code I needed to add on top of the existing PE01 delta was:
+- a clippy-safe fix in [taint_propagation.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-orchestrator/src/safety/taint_propagation.rs:187),
+- a real background-conductor hook fix in [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs:1902) so `"Critical"` alerts from `roko-conductor` actually trigger the bounded cancel path,
+- two stale `roko-cli` TUI test expectation fixes in [input.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/input.rs:1364) and [state.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/tui/state.rs:3792) so the required batch verifies pass again.
+
+Verification passed:
+- `cargo check -p roko-orchestrator -p roko-cli`
+- `cargo clippy -p roko-orchestrator -p roko-cli --no-deps -- -D warnings`
+- `cargo test -p roko-orchestrator -p roko-cli`
+- `cargo test -p roko-cli -p roko-conductor`
+
+One explicit seam remains:
+- `tmp/docs-parity/01/BATCHES.md` still lists `cargo run -p roko-cli -- plan run plans/ --dry-run`, but the current CLI no longer supports `--dry-run` on `plan run`; `roko plan run --help` confirms that verify string is stale.
+- `RecoveryEngine::recover_from_event_log()` still validates raw event slices by contiguous sequence only; full hash-chain integrity is enforced on the live snapshot restore path via `EventLog::restore_verified`, but not in that helper’s standalone raw-slice path.

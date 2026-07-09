@@ -1,0 +1,65 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Make Left/Right navigate git branches on the Git tab.
+
+CONTEXT:
+- File: crates/roko-cli/src/tui/app.rs
+- DrillIn/DrillOut dispatch currently toggles plans[selected].expanded for ALL tabs.
+- On Git tab, it should move git_branch_cursor instead.
+- TuiState has git_branch_cursor: usize and git_branch_tree: Vec<GitBranchNode>.
+
+WHAT TO DO:
+1. In app.rs, find TuiAction::DrillIn and TuiAction::DrillOut handlers.
+2. Wrap in a match on active_tab:
+     TuiAction::DrillIn => match self.tui_state.active_tab {
+         Tab::Dashboard | Tab::Plans => {
+             // existing plan expand code
+         }
+         Tab::Git => {
+             let max = self.tui_state.git_branch_tree.len().saturating_sub(1);
+             self.tui_state.git_branch_cursor = (self.tui_state.git_branch_cursor + 1).min(max);
+         }
+         _ => {}
+     },
+     TuiAction::DrillOut => match self.tui_state.active_tab {
+         Tab::Dashboard | Tab::Plans => {
+             // existing plan collapse code
+         }
+         Tab::Git => {
+             self.tui_state.git_branch_cursor = self.tui_state.git_branch_cursor.saturating_sub(1);
+         }
+         _ => {}
+     },
+
+VERIFY:
+  cargo check -p roko-cli
+ACCEPTANCE: grep -A10 'DrillIn' crates/roko-cli/src/tui/app.rs | grep 'Tab::Git'

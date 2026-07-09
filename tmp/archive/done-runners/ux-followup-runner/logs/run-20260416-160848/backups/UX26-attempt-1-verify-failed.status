@@ -1,0 +1,5 @@
+ M crates/roko-agent/src/dispatcher/mod.rs
+ M crates/roko-agent/src/safety/contract.rs
+ M crates/roko-agent/src/safety/mod.rs
+?? crates/roko-agent/src/safety/contracts/
+?? crates/roko-agent/tests/contracts.rs

@@ -1,0 +1,22 @@
+Implemented Batch A1 end to end.
+
+In `mirage-rs`, agents now carry `owner` and per-skill config, with owner filtering plus `GET/PUT /agents/{id}/skills` and `PUT /agents/{id}/skills/{skill}` wired through the HTTP API ([agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/src/chain/agent.rs:69), [agent.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/src/http_api/agent.rs:15), [skills.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/src/http_api/skills.rs:1)). Tasks now persist artifacts, summary, and completion metadata, and the API exposes artifact reads plus richer agent heartbeat/stats derived from task activity ([task.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/src/chain/task.rs:62), [task.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/src/http_api/task.rs:1)).
+
+In `roko-serve`, agent messaging now goes through the normal run launcher instead of a parallel execution path, and server events can carry agent output with `run_id` and `done` for the UI/consumers ([run.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/routes/run.rs:24), [agents.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/routes/agents.rs:114), [events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/events.rs:94), [sse.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/routes/sse.rs:17)). I also added the coarse cost-tier backend endpoint in `learning` and updated adjacent CLI/runtime consumers to compile against the richer run/event payloads.
+
+Verification:
+- `cargo build -p mirage-rs --features chain`
+- `cargo test -p mirage-rs --features chain --lib`
+- `cargo test -p mirage-rs --features chain --test http_api`
+- `cargo build -p roko-serve`
+- `cargo test -p roko-serve send_message_reuses_run_path_and_emits_agent_output -- --nocapture`
+- `cargo test -p roko-serve cost_tiers_response_buckets_trials_by_model_tier -- --nocapture`
+- `cargo test -p roko-serve agent_output_serializes_run_metadata -- --nocapture`
+
+Relevant new/updated tests are in [http_api.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/apps/mirage-rs/tests/http_api.rs:771), [agents.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/routes/agents.rs:217), [learning.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/routes/learning.rs:995), and [events.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260414-220705/crates/roko-serve/src/events.rs:222).
+
+One caveat remains: the broader `cargo test -p roko-serve --lib` suite still has two unrelated provider-route failures that predate this batch:
+- `routes::providers::tests::list_models_returns_configured_models_with_capabilities_and_costs`
+- `routes::providers::tests::test_provider_sends_live_request_and_records_metrics`
+
+The sandbox also blocked cleanup of the generated untracked `.cargo-target/` directory after verification.

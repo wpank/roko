@@ -1,0 +1,15 @@
+Claude exited unsuccessfully.
+
+Recent log tail:
+=== Batch: PU04 (Refresh docs-parity/04 (verification) with audit-refined docs) ===
+=== Started: 2026-04-18T11:17:24+02:00 ===
+=== Workdir: /Users/will/dev/nunchi/roko/roko (main repo, no worktree) ===
+=== Model: gpt-5.4 ===
+=== Timeout: 5400 ===
+=== Prompt snapshot: /Users/will/dev/nunchi/roko/roko/tmp/refinement-audit-runner/logs/pu-run-20260418-111656/prompts/PU04.prompt.md ===
+
+There's an issue with the selected model (gpt-5.4). It may not exist or you may not have access to it. Run --model to pick a different model.
+
+=== Finished: 2026-04-18T11:17:26+02:00 ===
+=== Duration: 2s ===
+=== Exit code: 1 ===

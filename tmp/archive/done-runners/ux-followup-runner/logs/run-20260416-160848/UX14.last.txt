@@ -1,0 +1,11 @@
+Implemented UX14 in [process.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-runtime/src/process.rs:67) and [process_supervisor.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-runtime/tests/process_supervisor.rs:96). `SpawnConfig` now carries an optional per-process `CancelToken`, Unix shutdown sends `SIGTERM` and waits for the grace window before escalating to `SIGKILL`, and `ProcessSupervisor` now has a synchronous `Drop` path that force-kills any still-tracked children. I also switched the supervisor’s internal bookkeeping to a sync mutex so that drop cleanup is actually possible, and added the Unix-only `nix` dependency in [Cargo.toml](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-runtime/Cargo.toml:24). `crates/roko-cli/src/orchestrate.rs` did not need a change because there are no direct `ProcessSupervisor::spawn` call sites there.
+
+The runtime tests now cover the three required cases: TERM→KILL escalation, supervisor drop cleanup, and per-spawn cancellation-triggered shutdown. `Cargo.lock` updated for the new `nix` dependency.
+
+Verified successfully with:
+- `CARGO_HOME=/tmp/roko-cargo-home-ux14 CARGO_TARGET_DIR=/tmp/roko-cargo-target-ux14 cargo check -p roko-runtime -p roko-cli`
+- `CARGO_HOME=/tmp/roko-cargo-home-ux14 CARGO_TARGET_DIR=/tmp/roko-cargo-target-ux14 cargo test -p roko-runtime --lib --no-run`
+- `CARGO_HOME=/tmp/roko-cargo-home-ux14 CARGO_TARGET_DIR=/tmp/roko-cargo-target-ux14 cargo test -p roko-runtime --test process_supervisor`
+- `CARGO_HOME=/tmp/roko-cargo-home-ux14 CARGO_TARGET_DIR=/tmp/roko-cargo-target-ux14 cargo clippy -p roko-runtime -p roko-cli --no-deps -- -D warnings`
+
+Grace period default is still 5 seconds. Windows fallback remains “wait for the grace period, then use Tokio’s kill path” rather than Unix signal escalation. No `ROKO_GRACE_PERIOD_MS` env var was added in this batch.

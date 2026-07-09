@@ -1,0 +1,10 @@
+Claude exited unsuccessfully.
+
+Recent log tail:
+Error: Claude Code cannot be launched inside another Claude Code session.
+Nested sessions share runtime resources and will crash all active sessions.
+To bypass this check, unset the CLAUDECODE environment variable.
+
+=== Finished: 2026-04-18T11:15:29+02:00 ===
+=== Duration: 0s ===
+=== Exit code: 1 ===

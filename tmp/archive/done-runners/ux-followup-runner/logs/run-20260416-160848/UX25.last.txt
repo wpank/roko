@@ -1,0 +1,10 @@
+Implemented UX25 in [crates/roko-learn/src/hdc_fingerprint.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/hdc_fingerprint.rs:1), [crates/roko-learn/src/episode_logger.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/episode_logger.rs:239), [crates/roko-learn/src/lib.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/src/lib.rs:91), and [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:2917). `Episode` now carries an additive `#[serde(default)] hdc_fingerprint: Option<String>`, `roko-learn` exposes helper encode/decode/fingerprint functions, and the orchestrator stamps the fingerprint from prompt + outcome before persistence across the episode write paths. The `roko-primitives` row in `CLAUDE.md` is in the final non-pending state (`Tier wired`).
+
+HDC details: `10,240` bits (`1,280` bytes raw) encoded as standard padded base64 on disk. The measured helper cost for `fingerprint_episode + encode` was `2.778 µs` per episode over `20,000` iterations, comfortably below the `1 ms` budget.
+
+Verification passed:
+- `cargo check -p roko-learn -p roko-primitives`
+- `cargo test -p roko-learn --lib --no-run -- episode_logger`
+- `cargo clippy --no-deps -- -D warnings`
+- `cargo test -p roko-learn hdc_fingerprint_round_trips_through_jsonl_append_and_read -- --nocapture`
+- `cargo test -p roko-cli episode_hdc_fingerprint_round_trips_through_episode -- --nocapture`

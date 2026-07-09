@@ -1,0 +1,46 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Show actual git diffs in the Dashboard Diff sub-tab.
+
+PROBLEM: diff_panel shows agent output text filtered for +/-/@@/diff lines, not real diffs.
+Often empty.
+
+FIX: In views/dashboard_view.rs, for the Diff sub-tab:
+1. Instead of filtering agent output, run git diff to get real diff content
+2. Add a helper function that runs: git diff HEAD (for unstaged changes) or
+   git diff --cached (for staged changes)
+3. Store the diff output and pass it to diff_panel widget
+4. Add basic syntax highlighting: + lines in green, - lines in red, @@ in cyan,
+   diff headers in bold
+5. Cache the diff output and refresh it when data refreshes (not every frame)
+
+Running git subprocess on every frame would be too expensive, so compute it in the
+background data thread or cache it.
+
+VERIFY: cargo check -p roko-cli

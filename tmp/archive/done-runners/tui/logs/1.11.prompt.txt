@@ -1,0 +1,48 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Replace the synthetic phase pipeline heuristic with real data.
+
+PROBLEM: build_phase_pipeline() in state.rs:925-971 uses a position-based midpoint heuristic
+to assign done/active/pending status to phases. This is completely fake.
+
+FIX: Map actual task statuses to canonical phases. The 9 canonical phases are:
+preflight, strategist, implementer, compile-gate, test-gate, reviewing, critic-review,
+verdict, committing.
+
+In build_phase_pipeline():
+1. Look at active_tasks from DashboardData
+2. For each task, determine which canonical phase it maps to (use task status, kind, or
+   the episode_to_phase_name() helper that already exists)
+3. Mark a phase as Done if all tasks for that phase completed
+4. Mark as Active if any task for that phase is running
+5. Mark as Failed if any task for that phase failed
+6. Mark as Pending otherwise
+7. Compute pct from the ratio of done/total tasks for that phase
+
+VERIFY: cargo check -p roko-cli

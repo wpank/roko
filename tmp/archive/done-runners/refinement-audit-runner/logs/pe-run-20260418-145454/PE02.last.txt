@@ -1,0 +1,14 @@
+Completed PE02 with `G6`, `G1`, `G3`, `G4`, `G5`, `G2`, `G7`, and a narrow but live `G8`.
+
+The main changes are in [crates/roko-core/src/chat_types.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/chat_types.rs), [crates/roko-agent/src/provider/mod.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/provider/mod.rs), [crates/roko-cli/src/main.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/main.rs), [crates/roko-cli/src/orchestrate.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs), and [crates/roko-core/src/temperament.rs](/Users/will/dev/nunchi/roko/roko/crates/roko-core/src/temperament.rs). `ChatResponse`/`ResponseMetadata`/`Usage` are now core-owned and re-exported through `roko-agent`; the direct research-agent creation sites in `main.rs` now go through scoped safety; Anthropic now plugs into the shared tool-loop backend factory; `orchestrate.rs` has an explicit `ollama` ToolDispatcher+ToolLoop path; tool catalogs are capped through `cap_tools_for_profile`; and temperament is now typed, exposed in config, carried into `RoutingContext`, used by the router, reflected in `AgentIdentity`, and applied in provider-side tool-loop/tool-budget behavior.
+
+Verification passed with:
+`cargo check -p roko-core -p roko-learn -p roko-agent -p roko-cli --bin roko`
+`cargo clippy -p roko-agent --no-deps -- -D warnings`
+`cargo test -p roko-agent --lib cap_tools_for_profile_truncates_to_model_limit`
+`cargo test -p roko-learn --lib conservative_temperament_biases_static_routing_toward_stronger_tiers`
+
+Deferred seams:
+- `run_prepared_agent()` still lacks an explicit `ollama` tool-loop branch, so the parallel implementer path is not yet parity-complete there.
+- `SpawnAgentSpec` still carries Perplexity search options indirectly via `extra_args`.
+- Provider-built `ToolLoopAgent`s still do not set `with_worktree_path(...)`, so worktree scoping remains a follow-up cleanup.

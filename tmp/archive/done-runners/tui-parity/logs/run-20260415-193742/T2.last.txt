@@ -1,0 +1,7 @@
+Implemented the T2 segment-rendering path across [segment.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/segment.rs), [state.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/state.rs), [agents_view.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/views/agents_view.rs), and [mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/mod.rs). The new shared parser classifies agent output into semantic segments, preserves blank lines, tracks fenced and indented code blocks, groups consecutive same-kind lines, renders subtle per-group headers, and caches the styled `Line<'static>` output in `TuiState` keyed by agent id. The F3 right panel now uses that cached shared render path instead of raw line rendering.
+
+Verification passed:
+- `cargo check -p roko-cli`
+- `cargo test -p roko-cli --lib -- tui::segment`
+
+The focused segment suite passed `7/7`. The build still emits many pre-existing warnings outside this batch. I did not run an interactive visual TUI pass, so the F3 styling change is code-verified rather than manually inspected on screen.

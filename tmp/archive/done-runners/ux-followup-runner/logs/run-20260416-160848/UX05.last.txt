@@ -1,0 +1,11 @@
+Standalone TUI now always runs against a live in-process hub. In [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/app.rs), `App::new` and `App::new_with_page` create `SharedStateHub::new_in_process()`, call `bootstrap_from_workdir(...)`, retain the hub on the app so it stays alive, and install `snapshot_rx` before the event loop starts. Connected mode still goes through `new_connected_with_page(...)` with the same signature. The polling fallback in `run()` and the background-drain `snapshot_rx.is_none()` branch are both deleted.
+
+On the core side, [state_hub.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/state_hub.rs) now exposes `SharedStateHub::new_in_process()` and `SharedStateHub::bootstrap_from_workdir(&Path) -> Result<(), std::io::Error>`, with warn-and-empty fallback on bootstrap failure. [dashboard_snapshot.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-core/src/dashboard_snapshot.rs) adds `DashboardSnapshot::load_from_workdir(&Path) -> Result<Self, std::io::Error>` and boots from `.roko/state/executor.json`, `.roko/state/task-trackers.json`, `.roko/signals.jsonl`, and `.roko/state/events.json`.
+
+Verified:
+- `cargo check -p roko-cli`
+- `cargo clippy -p roko-cli --no-deps -- -D warnings`
+- `cargo test -p roko-core load_from_workdir_bootstraps_executor_trackers_and_events -- --nocapture`
+- `cargo test -p roko-core in_process_bootstrap_populates_live_receiver -- --nocapture`
+- `cargo test -p roko-cli app_new_standalone_installs_snapshot_receiver -- --nocapture`
+- `grep -rn 'snapshot_rx.is_none\|last_refresh.elapsed' crates/roko-cli/src/tui/` returned 0 hits

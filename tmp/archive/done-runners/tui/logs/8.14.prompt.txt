@@ -1,0 +1,50 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Replace stringly-typed pause state with a boolean.
+
+CONTEXT:
+- TuiState.pipeline_run_state: String at line ~659 — toggles between "paused" and "running".
+- Read by status_bar.rs for PAUSED indicator.
+- TogglePause handler in app.rs compares and sets strings.
+
+WHAT TO DO:
+1. In state.rs, replace: pub pipeline_run_state: String → pub is_paused: bool
+2. Default to false instead of "idle"
+3. In app.rs TogglePause handler, change to: self.tui_state.is_paused = !self.tui_state.is_paused
+4. In widgets/status_bar.rs, change the check from string comparison to: if state.is_paused { ... }
+5. grep -rn 'pipeline_run_state' to find and update ALL references
+
+VERIFY:
+  cargo check -p roko-cli && cargo test -p roko-cli
+ACCEPTANCE:
+  ! grep -q 'pipeline_run_state' crates/roko-cli/src/tui/state.rs
+  grep -q 'is_paused' crates/roko-cli/src/tui/state.rs

@@ -1,0 +1,43 @@
+Diff gate failed: no changes in tmp/docs-parity/00/.
+
+Recent log tail:
++Keep the repository baseline explicit while doing that work: 36 workspace members, 322,088 Rust
++LOC, `roko-serve` wired with 200+ routes, and the TUI wired at ~58K LOC.
+diff --git a/tmp/docs-parity/00/run-docs-parity.sh b/tmp/docs-parity/00/run-docs-parity.sh
+index 1d0f575a3ec418825de87b1baa4d362ed9f4d089..6929e636571096459ff7fe5eb01197ced39811b5
+--- a/tmp/docs-parity/00/run-docs-parity.sh
++++ b/tmp/docs-parity/00/run-docs-parity.sh
+@@ -20,7 +20,7 @@
+   [P1]="Tighten the parity contract and context pack around post-audit docs truth"
+   [P2]="Refresh foundation, trait, and loop analyses with keep/narrow/defer framing"
+   [P3]="Correct architecture-layer status and implementation-scale facts"
+-  [P4]="Rewrite advanced and meta docs as deferred research or planning material"
++  [P4]="Rewrite advanced and meta docs as planning artifacts, deferred research, or dependency ordering"
+   [P5]="Refresh source anchors and keep the runner aligned with the narrowed contract"
+ )
+ 
+@@ -95,6 +95,7 @@
+ - The live runtime bus is still a narrow utility with exactly two RokoEvent variants: PlanRevision and PrdPublished
+ - Do not describe Pulse, Datum, Demurrage, Worldview, or Custody as shipping code
+ - Prefer Engram-centered wording in parity materials
++- Treat roadmap staffing language as planning-only; preserve dependency ordering, not a 5-7 engineer execution stance
+ - Treat SOURCE-INDEX anchors as verification aids, not proof that planned concepts exist
+ 
+ Read first:
+
+tokens used
+84,038
+Updated the full `tmp/docs-parity/00/` pack and touched all 16 required files. The refresh now leans harder into the audit posture: explicit `36 workspace members` / `322,088 Rust LOC`, `roko-serve` and TUI both marked wired, exact prose for the live event reality as `two live RokoEvent variants`, stronger Engram-centered wording, and clearer treatment of docs `23-35` as planning artifacts, deferred research, or dependency-order references rather than implied runtime truth.
+
+I also tightened the weak spots the explorers found: `F-advanced-capabilities.md` now carries explicit planning-artifact language instead of relying on `G` alone, the context pack uses the exact baseline phrases instead of shorthand, `SOURCE-INDEX.md` keeps the current 23-35 anchors with planning-only posture, and `run-docs-parity.sh` now matches the narrowed batch contract.
+
+Verification:
+- `bash -n tmp/docs-parity/00/run-docs-parity.sh` passed.
+- All PU00 grep checks passed for P1-P5.
+- `rg -n "Signal" tmp/docs-parity/00` now returns no matches.
+- `tmp/` is gitignored in this repo, so `git diff` is not useful here; I confirmed the refresh by direct file reads plus fresh mtimes across all 16 required files under `tmp/docs-parity/00/`.
+
+=== Finished: 2026-04-18T11:33:51+02:00 ===
+=== Duration: 5m 38s ===
+=== Exit code: 0 ===
+[verify] diff_gate: no changes in tmp/docs-parity/00/

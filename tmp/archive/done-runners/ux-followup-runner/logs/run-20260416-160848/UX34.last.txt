@@ -1,0 +1,29 @@
+Added two new integration tests: [cascade_router_integration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/tests/cascade_router_integration.rs) and [model_router_integration.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-learn/tests/model_router_integration.rs).
+
+They use the live seams in this worktree, not the stale prompt sketch: real `ToolDispatcher` + `ToolLoop` + two deterministic mock `LlmBackend`s, with tempdir-isolated persistence checks. I did not touch the unrelated existing changes in `crates/roko-agent/src/cursor_agent.rs` or `crates/roko-agent/src/testutil.rs`.
+
+**What Changed**
+- `cascade_router_integration` boots a real dispatcher, routes between `claude-opus-4` and `claude-haiku-3-5`, records 60 observations, and verifies the cascade flips from the expensive static choice to the cheap backend in `Confidence` stage.
+- `model_router_integration` boots the same dispatcher pattern, verifies cold-start tier routing for `Fast` vs `Premium`, performs deterministic persisted updates, and reloads the router from disk.
+
+**Verification**
+- Passed: `cargo test -p roko-learn --test cascade_router_integration`
+- Passed: `cargo test -p roko-learn --test model_router_integration`
+- Passed: `cargo check -p roko-agent -p roko-learn -p roko-std`
+- Passed: `cargo clippy -p roko-agent -p roko-learn --no-deps -- -D warnings`
+- Passed: `cargo clippy -p roko-learn --test cascade_router_integration -- -D warnings`
+- Passed: `cargo clippy -p roko-learn --test model_router_integration -- -D warnings`
+
+Seeds used:
+- Cascade test: `34034`
+- Model-router test: `60060`
+
+Test runtime:
+- `cascade_router_integration`: about `0.03s`
+- `model_router_integration`: about `0.03s`
+
+Persisted-state assertions:
+- Cascade test proves the write happened during the test with `modified_after > modified_before`, asserts `cascade-router.json.tmp` is gone after save, checks `total_observations == 60`, `stage_transitions.len() == 1`, and reload preserves stage/confidence state.
+- Model-router test proves the write happened during the test with `modified_after > modified_before`, asserts no `.linucb_tmp_*` files remain, checks `total_observations == 40`, `arms.len() == 2`, and reload preserves routing/observation count.
+
+One prompt drift mattered: the live tree has no `roko-std/src/mock.rs` / `dispatch_with` seam, so the tests were implemented against the actual public APIs in `roko-agent` and `roko-learn`.

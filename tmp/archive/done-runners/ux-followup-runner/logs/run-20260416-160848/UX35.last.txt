@@ -1,0 +1,15 @@
+**Audit**
+There was already a read path for `.roko/learn/gate-thresholds.json`, but not at gate-dispatch time. The executor loaded it on startup and saved it on shutdown, and the dashboard/serve paths already read the same raw `AdaptiveThresholds` JSON shape ([orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:3672), [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/dashboard.rs:459), [dashboard.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/tui/dashboard.rs:3128)). Before this patch, no rung consumed the threshold; it was only applied post-verify via `self.adaptive_thresholds.update(rung, passed)` after verdicts were already known.
+
+I wired the cached executor thresholds into dispatch. `PlanRunner::run_gate_rung` now builds per-rung config from `self.adaptive_thresholds.threshold_for(rung)` and passes that into rung execution ([orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-cli/src/orchestrate.rs:12526)). In practice, rung 5 now consumes the EMA pre-verify as `fact_check_min_confidence`, and rung 6 consumes it pre-verify as `llm_judge_min_score` ([rung_dispatch.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/src/rung_dispatch.rs:41)). Unknown rungs default to `0.5`.
+
+**Changes**
+`AdaptiveThresholds` now exposes `load`, `threshold_for`, and `observe`, keeps `update` as a compatibility alias, and saves via temp-file write + `sync_all` + rename ([adaptive_threshold.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/src/adaptive_threshold.rs:64)). I also added serde defaults for compatibility and a two-session persistence test in [adaptive_threshold.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/src/adaptive_threshold.rs:180) plus [adaptive_threshold.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-followup-run-20260416-160848/crates/roko-gate/tests/adaptive_threshold.rs:1).
+
+Verification passed:
+- `cargo check -p roko-gate -p roko-cli`
+- `cargo test -p roko-gate --lib --no-run -- adaptive_threshold`
+- `cargo test -p roko-gate --test adaptive_threshold`
+- `cargo clippy --no-deps -- -D warnings`
+
+`cargo check` still emits existing `missing-docs` warnings in `roko-cli`, but it exits successfully.

@@ -1,0 +1,15 @@
+Implemented F2 across the owned surfaces.
+
+- `roko-cli`: tracing/log directive cleanup, daemon/headless wiring, status cost aggregation, PRD promote follow-on plan generation, and live `PlaybookStore` integration in the runner. The runner now loads the directory-backed playbook store, looks up relevant playbooks for prompt context, and bootstraps a playbook on first successful execution.
+- `roko-learn`: added cost aggregation APIs on `CostsLog` and relevance lookup on `PlaybookStore`.
+- `roko-index` / new `roko-mcp-code`: added workspace-level code intelligence surface for symbol lookup, call graph, imports, and semantic search; wired the new MCP crate into the workspace.
+- Batch verification also exposed a few `roko-cli` test breakages in allowed scope, which I normalized: `plans/` preference when present, frontmatter-aware PRD body detection, logs-tab `End` behavior, and empty dashboard snapshots defaulting to `"idle"`.
+
+Verification passed:
+- `cargo test -p roko-cli --lib`
+- `cargo test -p roko-learn --lib -- costs_log playbook`
+- `cargo test -p roko-index --lib`
+- `cargo test -p roko-mcp-code --lib`
+- `cargo build -p roko-mcp-code`
+
+There are still non-blocking compiler warnings in the workspace, but F2-owned code builds and tests cleanly.

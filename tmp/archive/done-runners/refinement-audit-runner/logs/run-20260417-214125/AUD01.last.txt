@@ -1,0 +1,19 @@
+Updated [docs/STATUS.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/STATUS.md) and [docs/00-architecture/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/00-architecture/INDEX.md). I also checked [docs/INDEX.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/audit-runner-run-20260417-214125/docs/INDEX.md); it did not cite the stale `177K` / `18 crates` / `~85 routes` numbers, so I left it unchanged.
+
+The stale interface claims are gone: `roko-serve` now reads as shipping with `200+` routes plus SSE/WebSocket, the TUI now reads as a wired ratatui interface, `Interfaces` is no longer marked `Scaffold`, and the Critical Path marks interactive TUI as done. I verified the old phrases about “no routes” and “text-mode only” no longer appear in the edited docs.
+
+Numbers changed:
+- `docs/STATUS.md`: `Last updated` `2026-04-14` -> `2026-04-17`
+- `docs/STATUS.md`: `roko-learn` summary `101 tests` -> `42 modules, 35,847 LOC`
+- `docs/STATUS.md`: workspace baseline added as `~322K Rust LOC`, `36` workspace members, `3,761` test functions
+- `docs/STATUS.md`: `HTTP server + REST API` `no routes` -> `200+ routes`
+- `docs/STATUS.md`: test summary `Total 1,568` -> `Workspace total 3,761`
+- `docs/00-architecture/INDEX.md`: total `~1,568 tests` -> `3,761 test functions`
+- `docs/00-architecture/INDEX.md`: total `~177K LOC` -> `~322K LOC`
+- `docs/00-architecture/INDEX.md`: total `18+ crates` -> `36 workspace members`
+- `docs/00-architecture/INDEX.md`: generated date `2026-04-11` -> `2026-04-17`
+- `docs/00-architecture/INDEX.md`: `Sub-docs produced 29` -> `36`
+- `docs/00-architecture/INDEX.md`: `roko-serve` status `HTTP API not wired` -> `Shipping: 200+ REST routes, SSE, WebSocket on :6677`
+- `docs/00-architecture/INDEX.md`: `TUI` status `Text-mode dashboard only` -> `Shipping: ratatui interactive TUI with F1-F7 tabs, WebSocket, themes, modals`
+
+No code tests were run; this was a docs-only correction pass.

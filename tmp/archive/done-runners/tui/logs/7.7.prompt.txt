@@ -1,0 +1,52 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Fix efficiency events appearing at wrong position in unified log.
+
+Use subagents to read both the logs_view and the AgentEfficiencyEvent struct in parallel.
+
+CONTEXT:
+- File: crates/roko-cli/src/tui/views/logs_view.rs
+- Efficiency events are added to the unified BTreeMap log using event.wall_time_ms as timestamp.
+- But wall_time_ms is a DURATION (e.g., 5000 = 5 seconds), NOT a Unix timestamp.
+- This causes efficiency events to sort near position zero (the beginning of time).
+- The AgentEfficiencyEvent struct is in crates/roko-learn/src/efficiency.rs.
+
+WHAT TO DO:
+1. Read crates/roko-learn/src/efficiency.rs to find the AgentEfficiencyEvent struct.
+2. Look for a proper timestamp field: created_at_ms, timestamp_ms, started_at_ms, or similar.
+3. In logs_view.rs, find where efficiency events are inserted into the BTreeMap.
+4. Replace wall_time_ms with the correct timestamp field.
+5. If no proper timestamp exists on the struct, use chrono::Utc::now().timestamp_millis() as a fallback, or derive from other available data.
+
+VERIFY:
+  cargo check -p roko-cli
+ACCEPTANCE: grep -n 'wall_time_ms' crates/roko-cli/src/tui/views/logs_view.rs | wc -l  # should be 0 (replaced)

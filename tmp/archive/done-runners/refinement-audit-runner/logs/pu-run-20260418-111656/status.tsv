@@ -1,0 +1,54 @@
+2026-04-18T11:16:56+02:00	PU00	1	attempt_started	Refresh docs-parity/00 (architecture) with audit-refined docs
+2026-04-18T11:16:56+02:00	PU00	1	spawn_started	claude --print started
+2026-04-18T11:17:00+02:00	PU00	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:00+02:00	PU00	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:00+02:00	PU00	2	attempt_started	Refresh docs-parity/00 (architecture) with audit-refined docs
+2026-04-18T11:17:00+02:00	PU00	2	spawn_started	claude --print started
+2026-04-18T11:17:03+02:00	PU00	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:03+02:00	PU00	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:03+02:00	PU01	1	attempt_started	Refresh docs-parity/01 (orchestration) with audit-refined docs
+2026-04-18T11:17:03+02:00	PU01	1	spawn_started	claude --print started
+2026-04-18T11:17:06+02:00	PU01	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:06+02:00	PU01	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:06+02:00	PU01	2	attempt_started	Refresh docs-parity/01 (orchestration) with audit-refined docs
+2026-04-18T11:17:06+02:00	PU01	2	spawn_started	claude --print started
+2026-04-18T11:17:09+02:00	PU01	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:09+02:00	PU01	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:09+02:00	PU02	1	attempt_started	Refresh docs-parity/02 (agents) with audit-refined docs
+2026-04-18T11:17:09+02:00	PU02	1	spawn_started	claude --print started
+2026-04-18T11:17:11+02:00	PU02	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:11+02:00	PU02	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:11+02:00	PU02	2	attempt_started	Refresh docs-parity/02 (agents) with audit-refined docs
+2026-04-18T11:17:12+02:00	PU02	2	spawn_started	claude --print started
+2026-04-18T11:17:14+02:00	PU02	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:14+02:00	PU02	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:14+02:00	PU03	1	attempt_started	Refresh docs-parity/03 (composition) with audit-refined docs
+2026-04-18T11:17:14+02:00	PU03	1	spawn_started	claude --print started
+2026-04-18T11:17:17+02:00	PU03	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:17+02:00	PU03	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:17+02:00	PU03	2	attempt_started	Refresh docs-parity/03 (composition) with audit-refined docs
+2026-04-18T11:17:17+02:00	PU03	2	spawn_started	claude --print started
+2026-04-18T11:17:20+02:00	PU03	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:20+02:00	PU03	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:20+02:00	PU04	1	attempt_started	Refresh docs-parity/04 (verification) with audit-refined docs
+2026-04-18T11:17:20+02:00	PU04	1	spawn_started	claude --print started
+2026-04-18T11:17:23+02:00	PU04	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:23+02:00	PU04	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:24+02:00	PU04	2	attempt_started	Refresh docs-parity/04 (verification) with audit-refined docs
+2026-04-18T11:17:24+02:00	PU04	2	spawn_started	claude --print started
+2026-04-18T11:17:26+02:00	PU04	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:26+02:00	PU04	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:26+02:00	PU05	1	attempt_started	Refresh docs-parity/05 (learning) with audit-refined docs
+2026-04-18T11:17:26+02:00	PU05	1	spawn_started	claude --print started
+2026-04-18T11:17:30+02:00	PU05	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:30+02:00	PU05	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:30+02:00	PU05	2	attempt_started	Refresh docs-parity/05 (learning) with audit-refined docs
+2026-04-18T11:17:30+02:00	PU05	2	spawn_started	claude --print started
+2026-04-18T11:17:33+02:00	PU05	2	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:33+02:00	PU05	2	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:33+02:00	PU06	1	attempt_started	Refresh docs-parity/06 (neuro) with audit-refined docs
+2026-04-18T11:17:33+02:00	PU06	1	spawn_started	claude --print started
+2026-04-18T11:17:37+02:00	PU06	1	spawn_failed	claude --print exited with 1
+2026-04-18T11:17:37+02:00	PU06	1	attempt_failed	claude exited unsuccessfully
+2026-04-18T11:17:38+02:00	PU06	2	attempt_started	Refresh docs-parity/06 (neuro) with audit-refined docs
+2026-04-18T11:17:38+02:00	PU06	2	spawn_started	claude --print started

@@ -1,0 +1,20 @@
+2026-04-18T11:21:24+02:00	PU00	1	attempt_started	Refresh docs-parity/00 (architecture) with audit-refined docs
+2026-04-18T11:21:24+02:00	PU00	1	spawn_started	codex exec started
+2026-04-18T11:28:12+02:00	PU00	1	spawn_succeeded	codex completed
+2026-04-18T11:28:12+02:00	PU00	1	verify_running	scope+diff (main repo)
+2026-04-18T11:28:13+02:00	PU00	1	verify_failed	diff_gate
+2026-04-18T11:28:13+02:00	PU00	1	attempt_failed	verification failed
+2026-04-18T11:28:13+02:00	PU00	2	attempt_started	Refresh docs-parity/00 (architecture) with audit-refined docs
+2026-04-18T11:28:13+02:00	PU00	2	spawn_started	codex exec started
+2026-04-18T11:33:51+02:00	PU00	2	spawn_succeeded	codex completed
+2026-04-18T11:33:51+02:00	PU00	2	verify_running	scope+diff (main repo)
+2026-04-18T11:33:51+02:00	PU00	2	verify_failed	diff_gate
+2026-04-18T11:33:51+02:00	PU00	2	attempt_failed	verification failed
+2026-04-18T11:33:51+02:00	PU01	1	attempt_started	Refresh docs-parity/01 (orchestration) with audit-refined docs
+2026-04-18T11:33:51+02:00	PU01	1	spawn_started	codex exec started
+2026-04-18T11:40:56+02:00	PU01	1	spawn_succeeded	codex completed
+2026-04-18T11:40:56+02:00	PU01	1	verify_running	scope+diff (main repo)
+2026-04-18T11:40:56+02:00	PU01	1	verify_failed	diff_gate
+2026-04-18T11:40:56+02:00	PU01	1	attempt_failed	verification failed
+2026-04-18T11:40:56+02:00	PU01	2	attempt_started	Refresh docs-parity/01 (orchestration) with audit-refined docs
+2026-04-18T11:40:56+02:00	PU01	2	spawn_started	codex exec started

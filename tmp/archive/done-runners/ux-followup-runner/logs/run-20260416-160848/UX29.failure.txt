@@ -1,0 +1,43 @@
+Verification failed for command: cargo clippy --workspace --no-deps -- -D warnings
+
+Recent log tail:
+
+error: used `unwrap()` on a `Result` value
+   --> apps/mirage-rs/src/http_api/mod.rs:147:25
+    |
+147 |         let mut cache = self.inner.lock().unwrap();
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: consider using `expect()` to provide a better panic message
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unwrap_used
+
+error: variables can be used directly in the `format!` string
+   --> apps/mirage-rs/src/http_api/agent.rs:253:20
+    |
+253 | ...ror: format!("agent '{}' not found", id),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#uninlined_format_args
+    = note: `-D clippy::uninlined-format-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::uninlined_format_args)]`
+help: change this to
+    |
+253 -             error: format!("agent '{}' not found", id),
+253 +             error: format!("agent '{id}' not found"),
+    |
+
+error: variables can be used directly in the `format!` string
+   --> apps/mirage-rs/src/http_api/agent.rs:298:20
+    |
+298 | ...ror: format!("agent '{}' not found", id),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#uninlined_format_args
+help: change this to
+    |
+298 -             error: format!("agent '{}' not found", id),
+298 +             error: format!("agent '{id}' not found"),
+    |
+
+error: could not compile `mirage-rs` (lib) due to 19 previous errors

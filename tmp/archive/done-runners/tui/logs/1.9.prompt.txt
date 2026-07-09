@@ -1,0 +1,50 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Populate TuiState.parallel_agents from DashboardData.
+
+PROBLEM: parallel_agents (Vec<ParallelAgentState>) in state.rs is never written. The
+parallel_pool widget renders nothing.
+
+FIX: In update_from_snapshot(), build parallel_agents from agents that are currently active:
+  self.parallel_agents = self.agents.iter()
+      .filter(|a| a.active)
+      .map(|a| ParallelAgentState {
+          agent_id: a.id.clone(),
+          plan_id: a.current_plan.clone(),
+          task_id: a.current_task.clone(),
+          status: if a.active { "running".to_string() } else { "idle".to_string() },
+          progress_pct: 0.0,
+      })
+      .collect();
+
+Also check if the parallel_pool widget in views/dashboard_view.rs uses the state.parallel_agents
+or builds its own. If it builds its own, that's OK — but state should also be populated for
+any widget that reads it.
+
+VERIFY: cargo check -p roko-cli

@@ -1,0 +1,50 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- NEVER run 'cargo build --release' (wastes disk with optimized artifacts)
+- NEVER run 'cargo doc' (generates large HTML output)
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+- CARGO_TARGET_DIR is set — do not create or reference a local target/ directory
+
+TASK: Remove 4 dead fields from TuiState.
+
+Use subagents to verify each field has zero readers before removing.
+
+FIELDS TO REMOVE:
+1. plan_detail_content: String (line ~651) — never populated, plan detail modal reads PlanEntry directly
+2. plan_summary_content: String (line ~655) — never populated
+3. parallel_run: bool (line ~661) — never set to true
+4. plan_detail_tab: usize — may or may not be used, verify first
+
+WHAT TO DO for each field:
+1. grep -rn 'FIELD_NAME' crates/roko-cli/src/tui/ --include='*.rs' to find all references
+2. If only found in struct definition and Default impl → safe to remove
+3. If found in a view or widget → it IS used, keep it
+4. Remove the field, its Default initialization, and any dead assignment code
+
+VERIFY:
+  cargo check -p roko-cli && cargo test -p roko-cli
+ACCEPTANCE: The removed fields should not appear in TuiState struct definition.

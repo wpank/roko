@@ -1,0 +1,15 @@
+**Implemented**
+
+- Mirage now exposes the missing A2 backend routes from [http_api/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/mod.rs:157): ISFR proxy in [isfr.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/isfr.rs:1), prediction endpoints in [prediction.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/prediction.rs:1), and task improvement flow in [task.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/http_api/task.rs:365). Prediction state/events are backed by the new [chain/prediction.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/apps/mirage-rs/src/chain/prediction.rs:1).
+- `roko chat` is now a real CLI surface via [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/main.rs:175) and [chat.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-cli/src/chat.rs:1). This v1 uses agent-message plus run-status polling.
+- Research intent support is wired in [research.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/crates/roko-serve/src/routes/research.rs:61): validated on input, included in the spawned operation kind, and injected into the runtime prompt. Touched batch/spec docs were updated to reflect shipped behavior in [A-dashboard-backend.md](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/ux-refactoring-run-20260415-090253/tmp/ux-refactoring/A-dashboard-backend.md:239) and the A.06-A.10 spec notes.
+
+**Verified**
+
+- `cargo test -p mirage-rs --features roko create_improvement_ -- --nocapture`
+- `cargo test -p mirage-rs --features roko calibration_summary_groups_by_category -- --nocapture`
+- `cargo test -p roko-serve topic_research_`
+- `cargo test -p roko-cli run_status_defaults_deserialize`
+- `cargo run -p roko-cli -- chat --help`
+
+Residuals: the repo still emits existing `missing_docs` warnings, and the worktree was already dirty from earlier foundation changes which I preserved. An untracked `.cargo-target/` directory may remain because cleanup was blocked by policy in this environment.

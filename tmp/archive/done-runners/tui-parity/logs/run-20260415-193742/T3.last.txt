@@ -1,0 +1,7 @@
+Approval IPC is wired end-to-end.
+
+I added [approval_ipc.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/approval_ipc.rs), exported it from [tui/mod.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/mod.rs), and connected the TUI in [app.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/app.rs) and [input.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/tui/input.rs). Incoming approval requests now open the existing approval modal, `y/n` resolves the embedded oneshot, and unrelated keys no longer bypass the prompt.
+
+On the runtime side, [orchestrate.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/orchestrate.rs) now carries an optional approval sender and blocks dispatch on the oneshot for dangerous roles, and [main.rs](/Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-parity-run-20260415-193742/crates/roko-cli/src/main.rs) adds `plan run --approval`, starts a connected TUI sidecar when interactive, and keeps the default path unchanged when approval is off.
+
+Verified with `cargo check -p roko-cli`, `cargo test -p roko-cli --lib -- tui::approval_ipc`, `cargo test -p roko-cli --lib approval_request_opens_modal_and_resolves_response`, and `cargo test -p roko-cli --lib approval_modal_intercepts_yes_and_no`.

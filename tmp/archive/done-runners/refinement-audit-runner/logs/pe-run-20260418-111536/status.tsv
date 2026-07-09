@@ -1,0 +1,37 @@
+2026-04-18T11:15:37+02:00	PE00	1	attempt_started	Execute docs-parity/00 (architecture) code updates
+2026-04-18T11:15:37+02:00	PE00	1	spawn_started	codex exec started
+2026-04-18T11:28:37+02:00	PE00	1	spawn_succeeded	codex exec completed
+2026-04-18T11:28:37+02:00	PE00	1	verify_running	cargo check -p roko-core
+2026-04-18T11:28:53+02:00	PE00	1	verify_running	cargo clippy -p roko-core --no-deps -- -D warnings
+2026-04-18T11:28:57+02:00	PE00	1	verify_succeeded	all verification commands passed
+2026-04-18T11:28:57+02:00	PE00	1	commit_succeeded	a7ff1bba
+2026-04-18T11:29:00+02:00	PE00	1	attempt_succeeded	verified and committed
+2026-04-18T11:29:00+02:00	PE01	1	attempt_started	Execute docs-parity/01 (orchestration) code updates
+2026-04-18T11:29:00+02:00	PE01	1	spawn_started	codex exec started
+2026-04-18T11:45:34+02:00	PE01	1	attempt_resumed	reusing dirty worktree
+2026-04-18T11:45:35+02:00	PE01	1	spawn_started	codex exec started
+2026-04-18T12:03:09+02:00	PE01	1	spawn_succeeded	codex exec completed
+2026-04-18T12:03:09+02:00	PE01	1	verify_running	cargo check -p roko-orchestrator -p roko-cli
+2026-04-18T12:04:05+02:00	PE01	1	verify_running	cargo clippy -p roko-orchestrator -p roko-cli --no-deps -- -D warnings
+2026-04-18T12:04:26+02:00	PE01	1	verify_succeeded	all verification commands passed
+2026-04-18T12:04:26+02:00	PE01	1	commit_succeeded	ac7b661d
+2026-04-18T12:04:29+02:00	PE01	1	attempt_succeeded	verified and committed
+2026-04-18T12:04:29+02:00	PE02	1	attempt_backed_up	saved dirty worktree
+2026-04-18T12:04:29+02:00	PE02	1	attempt_started	Execute docs-parity/02 (agents) code updates
+2026-04-18T12:04:29+02:00	PE02	1	spawn_started	codex exec started
+2026-04-18T12:21:05+02:00	PE02	1	spawn_succeeded	codex exec completed
+2026-04-18T12:21:06+02:00	PE02	1	verify_running	cargo check -p roko-agent
+2026-04-18T12:21:30+02:00	PE02	1	verify_running	cargo clippy -p roko-agent --no-deps -- -D warnings
+2026-04-18T12:21:36+02:00	PE02	1	verify_succeeded	all verification commands passed
+2026-04-18T12:21:37+02:00	PE02	1	commit_succeeded	29317913
+2026-04-18T12:21:39+02:00	PE02	1	attempt_succeeded	verified and committed
+2026-04-18T12:21:39+02:00	PE03	1	attempt_started	Execute docs-parity/03 (composition) code updates
+2026-04-18T12:21:39+02:00	PE03	1	spawn_started	codex exec started
+2026-04-18T12:41:49+02:00	PE03	1	spawn_succeeded	codex exec completed
+2026-04-18T12:41:49+02:00	PE03	1	verify_running	cargo check -p roko-compose
+2026-04-18T12:42:18+02:00	PE03	1	verify_running	cargo clippy -p roko-compose --no-deps -- -D warnings
+2026-04-18T12:42:28+02:00	PE03	1	verify_succeeded	all verification commands passed
+2026-04-18T12:42:28+02:00	PE03	1	commit_succeeded	6f14a3a5
+2026-04-18T12:42:32+02:00	PE03	1	attempt_succeeded	verified and committed
+2026-04-18T12:42:32+02:00	PE04	1	attempt_started	Execute docs-parity/04 (verification) code updates
+2026-04-18T12:42:32+02:00	PE04	1	spawn_started	codex exec started

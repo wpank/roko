@@ -1,0 +1,44 @@
+
+PROJECT CONTEXT:
+- Workspace root: /Users/will/dev/nunchi/roko/roko/.roko/worktrees/tui-agents
+- This is a Rust workspace with 18 crates, ~177K LOC
+- TUI source: crates/roko-cli/src/tui/ (69 files, ~38K LOC)
+- The TUI uses ratatui + crossterm
+- Key files:
+  - app.rs (2077L): Main app, event loop, draw, action dispatch
+  - state.rs (1365L): TuiState with all mutable state
+  - input.rs (774L): TuiAction enum, key dispatch
+  - dashboard.rs (5669L): DashboardData disk loading, Theme
+  - event.rs (75L): Event enum, EventHandler
+  - scroll.rs (95L): ScrollAccel (currently unused)
+  - views/: 7 view files (dashboard, plans, agents, git, logs, config, context)
+  - widgets/: 28 widget files
+  - modals/: 14 modal files
+- Build: cargo check -p roko-cli
+- Test: cargo test -p roko-cli
+
+RULES:
+- NEVER push, NEVER touch main branch
+- NEVER modify files outside crates/roko-cli/ unless the task explicitly says to
+- After changes, run: cargo check -p roko-cli
+- If check fails, fix errors before finishing
+- Keep changes minimal and focused
+- Do not add unnecessary dependencies
+- Do not refactor beyond what the task requires
+
+TASK: Prevent scrolling past the end of content.
+
+PROBLEM: No scroll field has an upper bound. Users can scroll into empty space below content.
+
+FIX: In the scroll_focused() method in app.rs, after adjusting the scroll offset, clamp it:
+  // After incrementing, clamp to reasonable max
+  // We don't know exact content height here, but we can cap at a large reasonable value
+  // and let widgets do fine clamping during render.
+
+Better approach: in each widget that reads scroll, clamp at render time:
+  let scroll = state.plan_scroll_offset.min(total_lines.saturating_sub(visible_height));
+
+Check plan_tree.rs, task_progress.rs, agents_view.rs render_output_body, logs_view.rs —
+add .min(max_scroll) wherever a scroll offset is read.
+
+VERIFY: cargo check -p roko-cli

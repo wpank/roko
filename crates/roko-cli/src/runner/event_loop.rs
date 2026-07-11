@@ -4496,8 +4496,6 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Noop;
             }
 
-            info!(plan_id = %plan_id, task = %task_id, "spawning agent");
-
             // Per-plan budget check.
             let max_plan_usd = ctx.config.max_plan_usd;
             let plan_spent = ctx.state.plan_cost(plan_id);
@@ -4584,6 +4582,8 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             }
+
+            info!(plan_id = %plan_id, task = %task_id, "spawning agent");
 
             let plan_workdir = match ensure_plan_workdir(ctx.worktrees, plan_id).await {
                 Ok(path) => path,

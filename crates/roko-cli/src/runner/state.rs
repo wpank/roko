@@ -14,7 +14,7 @@ use roko_learn::model_router::RoutingContext;
 use super::types::{
     AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RunnerEvent, RunnerFailureKind,
     RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle, TaskAttemptOutcome,
-    TaskAttemptRef, TaskAttemptStatus,
+    TaskAttemptRef, TaskAttemptStatus, TaskLifecycle, TaskLifecycleStatus,
 };
 
 /// Mutable state for the current runner execution.
@@ -77,6 +77,10 @@ pub struct RunState {
     /// Current gate output (last gate run).
     pub gate_output: String,
     /// Iteration count per task, keyed by `"{plan_id}:{task_id}"`.
+    ///
+    /// Compatibility mirror for older executor call sites. The canonical
+    /// attempt allocation lives in `lifecycle.tasks[*].current_attempt` /
+    /// `next_attempt` and this map is only updated from those values.
     pub iterations: HashMap<String, u32>,
 
     // ─── Totals ─────────────────────────────────────────────────────
@@ -216,25 +220,60 @@ impl RunState {
 
     /// Current task attempt reference, using at least attempt 1.
     pub fn current_attempt_ref(&self) -> TaskAttemptRef {
-        let key = format!("{}:{}", self.plan_id, self.current_task);
-        let iteration = self.iterations.get(&key).copied().unwrap_or(1);
         TaskAttemptRef::new(
             self.plan_id.clone(),
             self.current_task.clone(),
-            iteration.max(1),
+            self.iteration_for(&self.plan_id, &self.current_task),
         )
     }
 
     /// Get the iteration count for a specific plan/task pair.
     pub fn iteration_for(&self, plan_id: &str, task_id: &str) -> u32 {
         let key = format!("{plan_id}:{task_id}");
-        self.iterations.get(&key).copied().unwrap_or(1)
+        self.lifecycle
+            .tasks
+            .get(&key)
+            .map(|task| task.current_attempt.max(1))
+            .or_else(|| self.iterations.get(&key).copied())
+            .unwrap_or(1)
     }
 
     /// Set the iteration count for a specific plan/task pair.
     pub fn set_iteration(&mut self, plan_id: &str, task_id: &str, value: u32) {
-        let key = format!("{plan_id}:{task_id}");
-        self.iterations.insert(key, value);
+        let attempt = value.max(1);
+        let key = task_key(plan_id, task_id);
+        self.ensure_task_lifecycle(plan_id, task_id, 0);
+        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+            task.current_attempt = task.current_attempt.max(attempt);
+            task.next_attempt = task
+                .next_attempt
+                .max(task.current_attempt.saturating_add(1));
+            self.iterations.insert(key, task.current_attempt);
+        }
+    }
+
+    /// Allocate the next attempt for a task monotonically.
+    ///
+    /// This is the canonical allocator for new code. `set_iteration` remains as
+    /// a compatibility shim for executor code that still owns a plan iteration.
+    pub fn allocate_next_attempt(&mut self, plan_id: &str, task_id: &str) -> TaskAttemptRef {
+        let key = task_key(plan_id, task_id);
+        self.ensure_task_lifecycle(plan_id, task_id, 0);
+        let attempt = self
+            .lifecycle
+            .tasks
+            .get_mut(&key)
+            .map(|task| {
+                let attempt = task
+                    .next_attempt
+                    .max(task.current_attempt.saturating_add(1));
+                task.current_attempt = attempt;
+                task.next_attempt = attempt.saturating_add(1);
+                attempt
+            })
+            .unwrap_or(1);
+        self.iterations.insert(key, attempt);
+        TaskAttemptRef::new(plan_id.to_string(), task_id.to_string(), attempt)
     }
 
     /// Apply a normalized runner event to the in-memory lifecycle projection.
@@ -281,6 +320,7 @@ impl RunState {
                 timestamp_ms,
                 ..
             } => {
+                self.register_attempt_start(attempt, *timestamp_ms);
                 self.upsert_attempt(attempt, *status, *timestamp_ms, None, None);
             }
             RunnerEvent::AgentDispatchStarted {
@@ -355,7 +395,7 @@ impl RunState {
                 let status = if *passed {
                     TaskAttemptStatus::Passed
                 } else {
-                    TaskAttemptStatus::Failed
+                    TaskAttemptStatus::GateFailed
                 };
                 self.upsert_attempt(attempt, status, *timestamp_ms, None, *failure_kind);
             }
@@ -365,6 +405,7 @@ impl RunState {
                 attempt,
                 action,
                 failure_kind,
+                next_attempt,
                 timestamp_ms,
                 ..
             } => {
@@ -378,6 +419,7 @@ impl RunState {
                 if let Some(attempt_state) = self.lifecycle.task_attempts.get_mut(&key) {
                     attempt_state.retry_action = Some(*action);
                 }
+                self.apply_retry_to_task(attempt, *action, *failure_kind, *next_attempt);
             }
             RunnerEvent::TaskAttemptCompleted {
                 attempt,
@@ -397,6 +439,7 @@ impl RunState {
                 if let Some(attempt_state) = self.lifecycle.task_attempts.get_mut(&key) {
                     attempt_state.completed_at_ms = Some(*timestamp_ms);
                 }
+                self.apply_attempt_terminal_to_task(attempt, status, *timestamp_ms, *failure_kind);
             }
         }
     }
@@ -409,6 +452,8 @@ impl RunState {
         agent_id: Option<String>,
         failure_kind: Option<RunnerFailureKind>,
     ) {
+        self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, timestamp_ms);
+        self.observe_attempt_number(attempt);
         let key = attempt.key();
         let entry =
             self.lifecycle
@@ -424,12 +469,165 @@ impl RunState {
                     retry_action: None,
                 });
 
+        if !entry.status.can_transition_to(status) {
+            tracing::warn!(
+                plan_id = %attempt.plan_id,
+                task_id = %attempt.task_id,
+                attempt = attempt.attempt,
+                from = ?entry.status,
+                to = ?status,
+                "illegal task attempt transition ignored"
+            );
+            return;
+        }
+
         entry.status = status;
         if let Some(agent_id) = agent_id {
             entry.agent_id = Some(agent_id);
         }
         if let Some(failure_kind) = failure_kind {
             entry.failure_kind = Some(failure_kind);
+        }
+        self.apply_attempt_status_to_task(attempt, status, timestamp_ms, failure_kind);
+    }
+
+    fn ensure_task_lifecycle(&mut self, plan_id: &str, task_id: &str, timestamp_ms: u64) {
+        let key = task_key(plan_id, task_id);
+        self.lifecycle
+            .tasks
+            .entry(key.clone())
+            .or_insert_with(|| TaskLifecycle {
+                plan_id: plan_id.to_string(),
+                task_id: task_id.to_string(),
+                status: TaskLifecycleStatus::Started,
+                current_attempt: 1,
+                next_attempt: 2,
+                started_at_ms: timestamp_ms,
+                completed_at_ms: None,
+                latest_failure_kind: None,
+            });
+        self.iterations.entry(key).or_insert(1);
+    }
+
+    fn observe_attempt_number(&mut self, attempt: &TaskAttemptRef) {
+        let key = attempt.task_key();
+        self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
+        if let Some(task) = self.lifecycle.tasks.get_mut(&key) {
+            task.current_attempt = task.current_attempt.max(attempt.attempt.max(1));
+            task.next_attempt = task
+                .next_attempt
+                .max(task.current_attempt.saturating_add(1));
+            self.iterations.insert(key, task.current_attempt);
+        }
+    }
+
+    fn register_attempt_start(&mut self, attempt: &TaskAttemptRef, timestamp_ms: u64) {
+        self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, timestamp_ms);
+        self.observe_attempt_number(attempt);
+        self.supersede_retry_attempts_before(attempt, timestamp_ms);
+        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+            if !task.status.is_terminal() {
+                task.status = TaskLifecycleStatus::Running;
+                task.completed_at_ms = None;
+            }
+        }
+    }
+
+    fn supersede_retry_attempts_before(&mut self, attempt: &TaskAttemptRef, timestamp_ms: u64) {
+        for prior in self.lifecycle.task_attempts.values_mut() {
+            if prior.attempt.plan_id == attempt.plan_id
+                && prior.attempt.task_id == attempt.task_id
+                && prior.attempt.attempt < attempt.attempt
+                && prior.status == TaskAttemptStatus::Retrying
+            {
+                prior.status = TaskAttemptStatus::Superseded;
+                prior.completed_at_ms = Some(timestamp_ms);
+            }
+        }
+    }
+
+    fn apply_retry_to_task(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        action: RetryAction,
+        failure_kind: RunnerFailureKind,
+        next_attempt: Option<u32>,
+    ) {
+        self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
+        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+            task.latest_failure_kind = Some(failure_kind);
+            match action {
+                RetryAction::RetryAfterBackoff => {
+                    task.status = TaskLifecycleStatus::Retrying;
+                    task.completed_at_ms = None;
+                    task.current_attempt = task.current_attempt.max(attempt.attempt);
+                    if let Some(next_attempt) = next_attempt {
+                        task.next_attempt = task.next_attempt.max(next_attempt.max(1));
+                    }
+                    task.next_attempt = task
+                        .next_attempt
+                        .max(task.current_attempt.saturating_add(1));
+                    self.iterations
+                        .insert(attempt.task_key(), task.current_attempt.max(1));
+                }
+                RetryAction::Exhausted => {
+                    task.status = TaskLifecycleStatus::Exhausted;
+                }
+                RetryAction::NotRetryable => {
+                    task.status = TaskLifecycleStatus::Failed;
+                }
+            }
+        }
+    }
+
+    fn apply_attempt_status_to_task(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        status: TaskAttemptStatus,
+        timestamp_ms: u64,
+        failure_kind: Option<RunnerFailureKind>,
+    ) {
+        if status.is_terminal() {
+            self.apply_attempt_terminal_to_task(attempt, status, timestamp_ms, failure_kind);
+            return;
+        }
+        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+            if let Some(failure_kind) = failure_kind {
+                task.latest_failure_kind = Some(failure_kind);
+            }
+            task.status = match status {
+                TaskAttemptStatus::Retrying => TaskLifecycleStatus::Retrying,
+                _ => TaskLifecycleStatus::Running,
+            };
+            task.completed_at_ms = None;
+        }
+    }
+
+    fn apply_attempt_terminal_to_task(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        status: TaskAttemptStatus,
+        timestamp_ms: u64,
+        failure_kind: Option<RunnerFailureKind>,
+    ) {
+        if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
+            if attempt.attempt < task.current_attempt && status == TaskAttemptStatus::Superseded {
+                return;
+            }
+            if let Some(failure_kind) = failure_kind {
+                task.latest_failure_kind = Some(failure_kind);
+            }
+            task.status = match status {
+                TaskAttemptStatus::Passed => TaskLifecycleStatus::Passed,
+                TaskAttemptStatus::Failed => TaskLifecycleStatus::Failed,
+                TaskAttemptStatus::Exhausted => TaskLifecycleStatus::Exhausted,
+                TaskAttemptStatus::Cancelled => TaskLifecycleStatus::Cancelled,
+                TaskAttemptStatus::Superseded => task.status,
+                _ => task.status,
+            };
+            if task.status.is_terminal() {
+                task.completed_at_ms = Some(timestamp_ms);
+            }
         }
     }
 
@@ -725,9 +923,17 @@ impl RunState {
     }
 }
 
+fn task_key(plan_id: &str, task_id: &str) -> String {
+    format!("{plan_id}:{task_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::RunState;
+    use crate::runner::types::{
+        AgentCompletionSummary, AgentDispatchOutcome, RetryAction, RunnerEvent, RunnerFailureKind,
+        TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus,
+    };
 
     #[test]
     fn mark_task_completed_ignores_empty_and_duplicates() {
@@ -739,5 +945,64 @@ mod tests {
         assert!(state.mark_task_completed("plan", "T1"));
         assert!(!state.mark_task_completed("plan", "T1"));
         assert_eq!(state.plan_completed_tasks("plan"), ["T1"]);
+    }
+
+    #[test]
+    fn attempt_allocation_is_monotonic() {
+        let mut state = RunState::new(1);
+
+        state.set_iteration("plan", "T1", 3);
+        state.set_iteration("plan", "T1", 1);
+
+        assert_eq!(state.iteration_for("plan", "T1"), 3);
+        assert_eq!(state.allocate_next_attempt("plan", "T1").attempt, 4);
+        assert_eq!(state.iteration_for("plan", "T1"), 4);
+        assert_eq!(
+            state.lifecycle.tasks["plan:T1"].next_attempt, 5,
+            "next allocation cursor remains ahead of current attempt"
+        );
+    }
+
+    #[test]
+    fn starting_new_attempt_supersedes_stale_retry_attempt() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let first = TaskAttemptRef::new("plan", "T1", 1);
+        let second = TaskAttemptRef::new("plan", "T1", 2);
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            first.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::agent_completed(
+            &run_id,
+            first.clone(),
+            "plan/T1",
+            AgentDispatchOutcome::Failed,
+            AgentCompletionSummary {
+                message: Some("temporary failure".to_string()),
+                ..AgentCompletionSummary::default()
+            },
+        ));
+        state.apply_runner_event(&RunnerEvent::retry_decision(
+            &run_id,
+            first.clone(),
+            RetryAction::RetryAfterBackoff,
+            RunnerFailureKind::Transient,
+            Some(2),
+            10,
+            "retry".to_string(),
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(&run_id, second, "task"));
+
+        let first_state = &state.lifecycle.task_attempts[&first.key()];
+        assert_eq!(first_state.status, TaskAttemptStatus::Superseded);
+        assert!(first_state.completed_at_ms.is_some());
+        assert_eq!(
+            state.lifecycle.tasks["plan:T1"].status,
+            TaskLifecycleStatus::Running
+        );
+        assert_eq!(state.iteration_for("plan", "T1"), 2);
     }
 }

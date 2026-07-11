@@ -379,6 +379,10 @@ impl TaskAttemptRef {
     pub fn key(&self) -> String {
         format!("{}:{}:{}", self.plan_id, self.task_id, self.attempt)
     }
+
+    pub fn task_key(&self) -> String {
+        format!("{}:{}", self.plan_id, self.task_id)
+    }
 }
 
 /// Overall lifecycle status of a runner invocation.
@@ -430,6 +434,28 @@ impl From<PlanOutcome> for PlanLifecycleStatus {
     }
 }
 
+/// Per-task lifecycle status aggregated from its attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLifecycleStatus {
+    Started,
+    Running,
+    Retrying,
+    Passed,
+    Failed,
+    Exhausted,
+    Cancelled,
+}
+
+impl TaskLifecycleStatus {
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Passed | Self::Failed | Self::Exhausted | Self::Cancelled
+        )
+    }
+}
+
 /// Task attempt status in the runner projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -439,11 +465,68 @@ pub enum TaskAttemptStatus {
     AgentRunning,
     AgentCompleted,
     Gating,
+    GateFailed,
     Retrying,
     Passed,
     Failed,
     Exhausted,
     Cancelled,
+    Superseded,
+}
+
+impl TaskAttemptStatus {
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Passed | Self::Failed | Self::Exhausted | Self::Cancelled | Self::Superseded
+        )
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+
+        match self {
+            Self::Started => matches!(
+                next,
+                Self::DispatchingAgent
+                    | Self::AgentRunning
+                    | Self::AgentCompleted
+                    | Self::Gating
+                    | Self::Passed
+                    | Self::Failed
+                    | Self::Cancelled
+            ),
+            Self::DispatchingAgent => matches!(
+                next,
+                Self::AgentRunning
+                    | Self::AgentCompleted
+                    | Self::Gating
+                    | Self::Failed
+                    | Self::Cancelled
+            ),
+            Self::AgentRunning => matches!(
+                next,
+                Self::AgentCompleted | Self::Gating | Self::Failed | Self::Cancelled
+            ),
+            Self::AgentCompleted => matches!(
+                next,
+                Self::Gating | Self::Passed | Self::Failed | Self::Cancelled
+            ),
+            Self::Gating => matches!(
+                next,
+                Self::Passed | Self::GateFailed | Self::Failed | Self::Cancelled
+            ),
+            Self::GateFailed => matches!(
+                next,
+                Self::Retrying | Self::Failed | Self::Exhausted | Self::Cancelled
+            ),
+            Self::Retrying => matches!(next, Self::Superseded | Self::Failed | Self::Exhausted),
+            Self::Failed => matches!(next, Self::Retrying | Self::Exhausted),
+            Self::Passed | Self::Exhausted | Self::Cancelled | Self::Superseded => false,
+        }
+    }
 }
 
 /// Terminal task attempt outcome.
@@ -525,6 +608,21 @@ pub struct TaskAttemptLifecycle {
     pub retry_action: Option<RetryAction>,
 }
 
+/// Materialized lifecycle for one task, independent of a specific attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskLifecycle {
+    pub plan_id: String,
+    pub task_id: String,
+    pub status: TaskLifecycleStatus,
+    pub current_attempt: u32,
+    pub next_attempt: u32,
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_failure_kind: Option<RunnerFailureKind>,
+}
+
 /// Materialized lifecycle projection updated from typed runner events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnerLifecycleProjection {
@@ -535,6 +633,8 @@ pub struct RunnerLifecycleProjection {
     pub resumed: bool,
     #[serde(default)]
     pub plans: std::collections::HashMap<String, PlanLifecycleStatus>,
+    #[serde(default)]
+    pub tasks: std::collections::HashMap<String, TaskLifecycle>,
     #[serde(default)]
     pub task_attempts: std::collections::HashMap<String, TaskAttemptLifecycle>,
     #[serde(default)]
@@ -551,6 +651,7 @@ impl RunnerLifecycleProjection {
             total_tasks,
             resumed: false,
             plans: std::collections::HashMap::new(),
+            tasks: std::collections::HashMap::new(),
             task_attempts: std::collections::HashMap::new(),
             last_resume_marker: None,
             events_seen: 0,

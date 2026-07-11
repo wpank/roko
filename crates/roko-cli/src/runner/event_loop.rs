@@ -384,6 +384,7 @@ struct RunContext<'a> {
     task_sem: Arc<tokio::sync::Semaphore>,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
+    gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -842,6 +843,7 @@ pub async fn run(
     let mut active_agent_attempts: HashMap<String, ActiveAgentAttempt> = HashMap::new();
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
+    let mut gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -1275,11 +1277,16 @@ pub async fn run(
                 );
                 state.clear_gate_active(&effect_key);
                 state.gate_output = completion.output.clone();
-                let completion_attempt = TaskAttemptRef::new(
-                    completion.plan_id.clone(),
-                    completion.task_id.clone(),
-                    state.iteration_for(&completion.plan_id, &completion.task_id),
-                );
+                let completion_attempt =
+                    gate_attempts
+                        .remove(&effect_key)
+                        .unwrap_or_else(|| {
+                            TaskAttemptRef::new(
+                                completion.plan_id.clone(),
+                                completion.task_id.clone(),
+                                state.iteration_for(&completion.plan_id, &completion.task_id),
+                            )
+                        });
 
                 for v in &completion.verdicts {
                     tui.gate_result(
@@ -1773,10 +1780,15 @@ pub async fn run(
                         .unwrap_or_else(|| RunnerFailureKind::from_output(&completion.output));
                     let can_retry = executor
                         .plan_state(&completion.plan_id)
-                        .map(|ps| ps.iteration <= retry_budget && failure_kind.is_retryable())
+                        .map(|ps| {
+                            ps.current_phase.kind() == PhaseKind::Gating
+                                && ps.iteration <= retry_budget
+                                && failure_kind.is_retryable()
+                        })
                         .unwrap_or(false);
-                    if can_retry {
-                        match executor.apply_event(&completion.plan_id, &ExecutorEvent::GateFailed) {
+                    let retry_started = if can_retry {
+                        match executor.apply_event(&completion.plan_id, &ExecutorEvent::GateFailed)
+                        {
                             Ok(phase) => {
                                 let mut next_attempt = None;
                                 let mut cooldown_ms = 0;
@@ -1891,12 +1903,22 @@ pub async fn run(
                                 // that should inform the retry prompt.
                                 prompt_cache = Arc::new(PromptCache::load(&config.workdir));
                                 debug!("prompt cache refreshed after gate failure");
+                                true
                             }
                             Err(e) => {
-                                warn!(plan_id = %completion.plan_id, err = %e, "transition error after gate failure");
+                                warn!(
+                                    plan_id = %completion.plan_id,
+                                    task_id = %completion.task_id,
+                                    err = %e,
+                                    "gate failure retry transition rejected; terminalizing attempt"
+                                );
+                                false
                             }
                         }
                     } else {
+                        false
+                    };
+                    if !retry_started {
                         state.task_failed();
                         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
                         let reason = if failure_kind.is_retryable() {
@@ -2121,6 +2143,7 @@ pub async fn run(
                         task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
                         task_runtime_states: &mut task_runtime_states,
+                        gate_attempts: &mut gate_attempts,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
@@ -2343,6 +2366,45 @@ fn apply_agent_completion(executor: &mut ParallelExecutor, plan_id: &str, tui: &
         Err(e) => {
             warn!(plan_id = %plan_id, err = %e, "transition error after agent completion");
         }
+    }
+}
+
+fn advance_preflight_success_to_gate(
+    executor: &mut ParallelExecutor,
+    plan_id: &str,
+) -> Result<PlanPhase, TransitionError> {
+    let Some(phase_kind) = executor
+        .plan_state(plan_id)
+        .map(|state| state.current_phase.kind())
+    else {
+        return Err(TransitionError {
+            from: PhaseKind::Queued,
+            to: PhaseKind::Gating,
+            reason: format!("plan '{plan_id}' not found"),
+        });
+    };
+
+    match phase_kind {
+        PhaseKind::Enriching => {
+            executor.apply_event(plan_id, &ExecutorEvent::EnrichmentDone)?;
+            executor.apply_event(plan_id, &ExecutorEvent::ImplementationDone)
+        }
+        PhaseKind::Implementing => {
+            executor.apply_event(plan_id, &ExecutorEvent::ImplementationDone)
+        }
+        PhaseKind::Gating => executor
+            .plan_state(plan_id)
+            .map(|state| state.current_phase.clone())
+            .ok_or_else(|| TransitionError {
+                from: PhaseKind::Queued,
+                to: PhaseKind::Gating,
+                reason: format!("plan '{plan_id}' not found"),
+            }),
+        other => Err(TransitionError {
+            from: other,
+            to: PhaseKind::Gating,
+            reason: format!("preflight success cannot advance from {other:?}"),
+        }),
     }
 }
 
@@ -4314,7 +4376,10 @@ fn task_role_is_read_only(task_def: Option<&TaskDef>) -> bool {
 
 fn task_should_preflight_verify(task_def: &TaskDef, attempt_num: u32) -> bool {
     let preflight_disabled = std::env::var("ROKO_SKIP_PREFLIGHT").is_ok_and(|value| {
-        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
     });
     !preflight_disabled
         && attempt_num == 1
@@ -4671,6 +4736,8 @@ async fn dispatch_action(
                                 "preflight gate result found an already active gate effect"
                             );
                         }
+                        ctx.gate_attempts
+                            .insert(effect_key.clone(), attempt_ref.clone());
                         emit_runner_event(
                             ctx.paths,
                             ctx.state,
@@ -4684,10 +4751,7 @@ async fn dispatch_action(
                             ),
                         );
 
-                        match ctx
-                            .executor
-                            .apply_event(plan_id, &ExecutorEvent::ImplementationDone)
-                        {
+                        match advance_preflight_success_to_gate(ctx.executor, plan_id) {
                             Ok(phase) => {
                                 ctx.tui.phase_transition(plan_id, "implementing", "gating");
                                 info!(
@@ -5317,6 +5381,8 @@ async fn dispatch_action(
                 task_id.clone(),
                 ctx.state.iteration_for(plan_id, &task_id),
             );
+            ctx.gate_attempts
+                .insert(effect_key.clone(), attempt_ref.clone());
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -5495,6 +5561,8 @@ async fn dispatch_action(
                 "plan-verify",
                 ctx.state.iteration_for(plan_id, "plan-verify"),
             );
+            ctx.gate_attempts
+                .insert(effect_key.clone(), attempt_ref.clone());
             emit_runner_event(
                 ctx.paths,
                 ctx.state,

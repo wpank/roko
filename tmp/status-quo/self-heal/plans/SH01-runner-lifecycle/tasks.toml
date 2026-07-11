@@ -129,12 +129,12 @@ acceptance = ["Serde round trips preserve both values and precedence.", "An expl
 [[task]]
 id = "SH01-T06B"
 title = "Give every attempt and gate an owned cancellation handle"
-description = "Represent CLI agents, bridge-backed agents, and gate effects with attempt-keyed cancellation/abort ownership and start/activity/deadline timestamps. Cancellation must stop provider inference or the exact gate future, not merely remove map entries. Add typed cancellation-requested, timed-out, and cancelled attempt events; do not implement global scheduler policy in this task."
+description = "Represent CLI agents, bridge-backed agents, and gate effects with attempt-keyed cancellation/abort ownership and start/activity/deadline timestamps. CancellationRequested is a nonterminal Cancelling state, never terminal Cancelled. Store every returned bridge and gate JoinHandle by exact attempt/effect key; on cancellation abort and await that owned handle (or kill/await the CLI process), then emit exactly one TimedOut or Cancelled terminal after stop confirmation. Never discard returned handles or terminalize intent. Do not implement global scheduler policy in this task."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 420
-files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/dispatch/factory.rs"]
+files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/dispatch/factory.rs"]
 role = "implementer"
 domain = "execution-engine"
 depends_on = ["SH01-T06A"]
@@ -144,7 +144,7 @@ read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = 
 phase = "test"
 command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Attempt and gate cancellation ownership tests must pass."
-acceptance = ["CLI and bridge attempts both stop underlying work on cancellation.", "A lost gate completion is cancellable by its owned deadline.", "Cancellation events carry exact plan/task/attempt identity.", "Cancelling one attempt leaves unrelated work active."]
+acceptance = ["CancellationRequested projects to nonterminal Cancelling.", "Every bridge and gate JoinHandle is retained by exact owner until confirmed completion.", "CLI and bridge attempts both stop and await underlying work on cancellation.", "A lost gate completion is cancellable by its owned deadline.", "Exactly one terminal TimedOut or Cancelled event follows confirmed stop.", "Cancelling one attempt leaves unrelated work active."]
 
 [[task]]
 id = "SH01-T06C"

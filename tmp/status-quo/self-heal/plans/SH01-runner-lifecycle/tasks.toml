@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 7
-done = 2
+done = 3
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -50,7 +50,7 @@ acceptance = ["A passing preflight emits one terminal sequence and no agent disp
 id = "SH01-T03"
 title = "Add atomic idempotent task terminalization"
 description = "Create one coordinator that updates attempt state, DAG state, projections, ledger, durable task output, and commit outcome atomically and idempotently."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 400

@@ -25,9 +25,11 @@ use roko_fs::RokoLayout;
 use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classification};
 use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
-    MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanState as OrcPlanState,
-    RecoveryEngine, TransitionError,
+    MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
+    PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
+    TransitionError,
 };
+use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::{HttpEventSink, RunLedger, WorkflowConfig};
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -541,6 +543,9 @@ pub async fn run(
         for plan in &plans {
             plan_map.insert(plan.id.clone(), plan.tasks.tasks.clone());
         }
+        if let Some(snapshot) = prior_snapshot.as_ref() {
+            apply_revised_tasks_to_plan_map(&mut plan_map, &snapshot.revised_tasks);
+        }
         let prior_fingerprints = prior_snapshot
             .as_ref()
             .map(|snapshot| snapshot.fingerprints.as_slice())
@@ -786,6 +791,16 @@ pub async fn run(
     } else {
         seed_completed_tasks_from_plan_status(&mut state, &plans);
         initialize_terminal_plan_phases(&mut executor, &state, &plans);
+    }
+    if !state.revised_tasks.is_empty() {
+        for revision in state.revised_tasks.values() {
+            apply_task_revision_to_index(&mut task_index, revision);
+        }
+        refresh_task_fingerprints_from_index(&mut state, &task_index);
+        info!(
+            revised_tasks = state.revised_tasks.len(),
+            "restored durable task revisions from run-state snapshot"
+        );
     }
     seed_task_dag_from_run_state(&mut task_dag, &plans, &state);
 
@@ -1715,8 +1730,10 @@ pub async fn run(
                             Ok(phase) => {
                                 let mut next_attempt = None;
                                 let mut cooldown_ms = 0;
+                                let mut failed_attempt = 0;
                                 if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
                                     let attempt = ps.iteration;
+                                    failed_attempt = attempt;
                                     ps.reset_for_retry();
                                     task_dag.clear_running(
                                         &completion.plan_id,
@@ -1805,10 +1822,17 @@ pub async fn run(
                                         );
                                     }
 
-                                    state.set_replan_context(
+                                    maybe_apply_gate_failure_plan_revision(
+                                        config,
+                                        &paths,
+                                        &mut state,
+                                        &mut task_index,
                                         &completion.plan_id,
                                         &completion.task_id,
-                                        replan_context,
+                                        failed_attempt.max(1),
+                                        &completion.verdicts,
+                                        &completion.output,
+                                        &replan_context,
                                     );
                                 }
 
@@ -3614,6 +3638,69 @@ fn build_run_completed_event(
 
 // ─── Snapshot Helper ────────────────────────────────────────────────────
 
+fn sorted_task_revisions(state: &RunState) -> Vec<persist::TaskRevision> {
+    let mut revisions = state.revised_tasks.values().cloned().collect::<Vec<_>>();
+    revisions.sort_by(|left, right| {
+        left.plan_id
+            .cmp(&right.plan_id)
+            .then_with(|| left.task_id.cmp(&right.task_id))
+            .then_with(|| left.failure_key.cmp(&right.failure_key))
+    });
+    revisions
+}
+
+fn apply_revised_tasks_to_plan_map(
+    plan_map: &mut HashMap<String, Vec<TaskDef>>,
+    revisions: &[persist::TaskRevision],
+) {
+    for revision in revisions {
+        let Some(tasks) = plan_map.get_mut(&revision.plan_id) else {
+            continue;
+        };
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == revision.task_id) {
+            *task = revision.revised_task.clone();
+        }
+    }
+}
+
+fn apply_task_revision_to_index(
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    revision: &persist::TaskRevision,
+) {
+    if let Some(tasks) = task_index.get_mut(&revision.plan_id)
+        && tasks.contains_key(&revision.task_id)
+    {
+        tasks.insert(revision.task_id.clone(), revision.revised_task.clone());
+    }
+}
+
+fn refresh_task_fingerprints_from_index(
+    state: &mut RunState,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+) {
+    let mut plan_ids = task_index.keys().cloned().collect::<Vec<_>>();
+    plan_ids.sort();
+
+    let mut fingerprints = Vec::new();
+    for plan_id in plan_ids {
+        let Some(tasks) = task_index.get(&plan_id) else {
+            continue;
+        };
+        let mut task_refs = tasks.values().collect::<Vec<_>>();
+        task_refs.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        fingerprints.extend(
+            task_refs
+                .into_iter()
+                .map(|task| persist::TaskDefFingerprint::from_task(task, &plan_id)),
+        );
+    }
+    state.task_fingerprints = fingerprints;
+}
+
 /// Build a unified [`StateSnapshot`] from all four state groups (executor,
 /// orchestrator, run counters, gate thresholds) with a SHA-256 checksum,
 /// then enqueue the serialized blob on the async writer. Serialisation
@@ -3666,6 +3753,8 @@ fn save_snapshot(
         completed_tasks: state.completed_tasks.clone(),
         snapshot_fail_streak: state.snapshot_fail_streak,
         fingerprints: state.task_fingerprints.clone(),
+        replan_ledger: state.replan_ledger.clone(),
+        revised_tasks: sorted_task_revisions(state),
         cascade_router_json: config
             .cascade_router
             .as_ref()
@@ -3725,6 +3814,18 @@ fn restore_state_from_resume_snapshot(
     state.plan_costs = snapshot.plan_costs.clone();
     state.snapshot_fail_streak = snapshot.snapshot_fail_streak;
     state.completed_tasks = snapshot.completed_tasks.clone();
+    state.replan_ledger = snapshot.replan_ledger.clone();
+    state.revised_tasks = snapshot
+        .revised_tasks
+        .iter()
+        .cloned()
+        .map(|revision| {
+            (
+                format!("{}/{}", revision.plan_id, revision.task_id),
+                revision,
+            )
+        })
+        .collect();
     state.completed_tasks.retain(|plan_id, completed| {
         let Some(tasks) = task_index.get(plan_id) else {
             return false;
@@ -6465,6 +6566,318 @@ fn build_gate_retry_context(
          ### Gate error output\n```\n{gate_excerpt}\n```\n\n\
          ### What you did last time\n```\n{agent_excerpt}\n```"
     )
+}
+
+fn maybe_apply_gate_failure_plan_revision(
+    config: &RunConfig,
+    paths: &PersistPaths,
+    state: &mut RunState,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    plan_id: &str,
+    task_id: &str,
+    failed_attempt: u32,
+    verdicts: &[GateVerdictSummary],
+    gate_output: &str,
+    replan_context: &str,
+) {
+    if !gate_failure_replan_enabled(config) {
+        return;
+    }
+    let replan_cap = gate_failure_replan_cap(config);
+    if replan_cap == 0 {
+        return;
+    }
+    if state.replan_count_for(plan_id) >= replan_cap {
+        debug!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            replan_cap,
+            "gate-failure plan revision cap reached"
+        );
+        return;
+    }
+
+    let Some(task_def) = task_index
+        .get(plan_id)
+        .and_then(|tasks| tasks.get(task_id))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(revision) = build_gate_failure_plan_revision(
+        config,
+        plan_id,
+        task_id,
+        &task_def,
+        failed_attempt,
+        verdicts,
+        gate_output,
+        replan_context,
+    ) else {
+        return;
+    };
+    if state.has_seen_replan_failure(&revision.failure_key) {
+        debug!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            failure_key = %revision.failure_key,
+            "duplicate gate-failure plan revision skipped"
+        );
+        return;
+    }
+
+    apply_task_revision_to_index(task_index, &revision);
+    refresh_task_fingerprints_from_index(state, task_index);
+    let request_id = revision.revision_request.request_id.clone();
+    let required_next_action = revision.revision_request.disposition.to_string();
+    let failure_key = revision.failure_key.clone();
+    state.record_task_revision(failure_key.clone(), revision.clone());
+    append_ledger_entry(
+        &paths.run_ledger_jsonl,
+        "plan_revision",
+        &serde_json::json!({
+            "request_id": request_id,
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "failure_key": failure_key,
+            "required_next_action": required_next_action,
+            "attempts": failed_attempt,
+        }),
+    );
+    info!(
+        plan_id = %plan_id,
+        task_id = %task_id,
+        request_id = %request_id,
+        required_next_action = %required_next_action,
+        "gate failure upgraded to durable task revision"
+    );
+}
+
+fn build_gate_failure_plan_revision(
+    config: &RunConfig,
+    plan_id: &str,
+    task_id: &str,
+    task_def: &TaskDef,
+    failed_attempt: u32,
+    verdicts: &[GateVerdictSummary],
+    gate_output: &str,
+    replan_context: &str,
+) -> Option<persist::TaskRevision> {
+    let failing_verdicts = verdicts
+        .iter()
+        .filter(|verdict| !verdict.passed)
+        .cloned()
+        .collect::<Vec<_>>();
+    if failing_verdicts.is_empty() {
+        return None;
+    }
+
+    let gate_name = failing_verdicts
+        .first()
+        .map(|verdict| verdict.gate_name.as_str())
+        .unwrap_or("gate");
+    let classification = classify_gate_failure(gate_name, gate_output);
+    let attempt_limit = gate_failure_replan_attempt_limit(config);
+    let needs_revision = matches!(
+        classification.recommended_action,
+        roko_gate::GateFailureAction::NeedsReplan
+    ) || failed_attempt >= attempt_limit;
+    let blocked_or_human = matches!(
+        classification.recommended_action,
+        roko_gate::GateFailureAction::Blocked | roko_gate::GateFailureAction::NeedsHuman
+    );
+    if !needs_revision || blocked_or_human {
+        return None;
+    }
+
+    let reason = PlanRevisionReason::GateFailureLimit {
+        attempts: failed_attempt,
+    };
+    let failure_key = gate_failure_revision_failure_key(
+        plan_id,
+        task_id,
+        &reason,
+        &failing_verdicts,
+        gate_output,
+    );
+    let evidence = gate_failure_revision_evidence(gate_name, &classification, &failing_verdicts);
+    let revision_request =
+        PlanRevisionRequest::gate_failure_limit(plan_id, task_id, failed_attempt, evidence);
+    let revised_task = revised_task_for_gate_failure(
+        config,
+        task_def,
+        &revision_request,
+        &classification,
+        replan_context,
+    );
+
+    Some(persist::TaskRevision {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        failure_key,
+        revision_request,
+        revised_task,
+    })
+}
+
+fn gate_failure_revision_failure_key(
+    plan_id: &str,
+    task_id: &str,
+    reason: &PlanRevisionReason,
+    failing_verdicts: &[GateVerdictSummary],
+    gate_output: &str,
+) -> String {
+    let gate_excerpt = gate_output.chars().take(4_000).collect::<String>();
+    let payload = serde_json::json!({
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "reason": reason,
+        "failing_verdicts": failing_verdicts,
+        "gate_output": gate_excerpt,
+    });
+    ContentHash::of(payload.to_string().as_bytes()).to_hex()
+}
+
+fn gate_failure_revision_evidence(
+    gate_name: &str,
+    classification: &roko_gate::GateFailureClassification,
+    failing_verdicts: &[GateVerdictSummary],
+) -> Vec<PlanRevisionEvidence> {
+    let failure_pattern_ids = classification
+        .classes
+        .iter()
+        .map(|class| format!("failure_class:{}", failure_class_label(class)))
+        .collect::<Vec<_>>();
+    let detail = failing_verdicts
+        .iter()
+        .map(|verdict| {
+            let digest = verdict.error_digest.as_deref().unwrap_or("");
+            format!(
+                "{}: {}; kind={:?}; digest={}",
+                verdict.gate_name, verdict.summary, verdict.failure_kind, digest
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    vec![
+        PlanRevisionEvidence::gate(gate_name.to_string())
+            .with_classification(Some(failure_class_label(&classification.primary)))
+            .with_failure_pattern_ids(failure_pattern_ids)
+            .with_blocking_findings(classification.blocking_findings.clone())
+            .with_detail((!detail.trim().is_empty()).then_some(detail)),
+    ]
+}
+
+fn revised_task_for_gate_failure(
+    config: &RunConfig,
+    task_def: &TaskDef,
+    revision_request: &PlanRevisionRequest,
+    classification: &roko_gate::GateFailureClassification,
+    replan_context: &str,
+) -> TaskDef {
+    let mut revised_task = task_def.clone();
+    let strategy = if classification.replan_candidate {
+        ReplanStrategy::Decompose
+    } else {
+        ReplanStrategy::RetryWithEscalation
+    };
+    revised_task.status = "ready".to_string();
+    revised_task.replan_strategy = Some(strategy);
+    if revised_task.model_hint.is_none() || matches!(strategy, ReplanStrategy::RetryWithEscalation)
+    {
+        revised_task.model_hint = Some(architectural_model_hint(config));
+    }
+    if matches!(strategy, ReplanStrategy::Decompose) && revised_task.split_into.is_none() {
+        revised_task.split_into = Some(vec![
+            format!("{}-diagnose", task_def.id),
+            format!("{}-fix", task_def.id),
+            format!("{}-verify", task_def.id),
+        ]);
+    }
+
+    let existing_description = revised_task
+        .description
+        .clone()
+        .unwrap_or_else(|| revised_task.title.clone());
+    let context_excerpt = replan_context.chars().take(2_000).collect::<String>();
+    revised_task.description = Some(format!(
+        "{existing_description}\n\n\
+         ## Durable Gate-Failure Revision\n\
+         Request id: {}\n\
+         Required next action: {}\n\
+         Reason: gate_failure_limit attempts={}\n\
+         Strategy: {}\n\
+         Failure classes: {}\n\n\
+         Revision context:\n{}",
+        revision_request.request_id,
+        revision_request.disposition,
+        revision_request.attempts,
+        strategy,
+        classification
+            .classes
+            .iter()
+            .map(failure_class_label)
+            .collect::<Vec<_>>()
+            .join(", "),
+        context_excerpt
+    ));
+    let acceptance = format!(
+        "Address plan revision request {} before rerunning verification.",
+        revision_request.request_id
+    );
+    if !revised_task
+        .acceptance
+        .iter()
+        .any(|item| item == &acceptance)
+    {
+        revised_task.acceptance.push(acceptance);
+    }
+    if !revised_task.title.contains("[gate revision]") {
+        revised_task.title = format!("{} [gate revision]", revised_task.title);
+    }
+    revised_task
+}
+
+fn gate_failure_replan_enabled(config: &RunConfig) -> bool {
+    config
+        .roko_config
+        .as_deref()
+        .map(|cfg| cfg.learning.replan_on_gate_failure)
+        .unwrap_or(true)
+}
+
+fn gate_failure_replan_cap(config: &RunConfig) -> u32 {
+    config
+        .roko_config
+        .as_deref()
+        .map(|cfg| cfg.learning.replan_max_per_plan)
+        .unwrap_or(2)
+}
+
+fn gate_failure_replan_attempt_limit(config: &RunConfig) -> u32 {
+    config
+        .roko_config
+        .as_deref()
+        .map(|cfg| cfg.learning.replan_gate_attempts)
+        .unwrap_or(3)
+        .max(1)
+}
+
+fn architectural_model_hint(config: &RunConfig) -> String {
+    config
+        .roko_config
+        .as_deref()
+        .and_then(|cfg| cfg.agent.tier_models.get("architectural"))
+        .cloned()
+        .unwrap_or_else(|| roko_core::defaults::MODEL_DEEP.to_string())
+}
+
+fn failure_class_label(class: &roko_gate::FailureClass) -> String {
+    serde_json::to_value(class)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{class:?}").to_ascii_lowercase())
 }
 
 /// Commit working tree changes for a completed task.

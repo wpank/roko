@@ -86,7 +86,7 @@ impl Cell for TaskExecutorCell {
                 "TaskExecutorCell live dispatch not yet implemented; using dry-run fallback"
             );
             let output = Engram::builder(Kind::AgentOutput)
-                .body(Body::text(format!("task-output:stub:{task_label}")))
+                .body(Body::text(format!("task-output:dry-run:{task_label}")))
                 .build();
             Ok(vec![output])
         }

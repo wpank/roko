@@ -1046,6 +1046,16 @@ impl DashboardSnapshot {
             DashboardEvent::AgentOutput { agent_id, content } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
                     agent.output_bytes += content.len();
+                    let task_key = agent.current_task.clone();
+                    if !task_key.is_empty() {
+                        let ring = self.task_outputs.entry(task_key).or_default();
+                        for line in content.lines() {
+                            if ring.len() >= MAX_TASK_OUTPUT_LINES {
+                                ring.pop_front();
+                            }
+                            ring.push_back(line.to_string());
+                        }
+                    }
                 }
             }
             DashboardEvent::GateResult {

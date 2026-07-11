@@ -2291,6 +2291,61 @@ impl TuiState {
         self.agents_online = snap.agents.values().filter(|agent| agent.active).count();
         self.isfr = snapshot_gate_pass_rate(&snap.gates);
 
+        // Synthesize plan_summaries from snapshot-built plans so the F2 left
+        // panel works in approval mode (where DashboardData is never loaded).
+        self.plan_summaries = self
+            .plans
+            .iter()
+            .map(|plan| PlanSummary {
+                id: plan.id.clone(),
+                title: plan.name.clone(),
+                task_count: plan.tasks_total,
+                tasks_done: plan.tasks_done,
+                tasks_failed: plan.tasks_failed,
+                completed: plan.status.is_done(),
+                status: plan.phase.clone(),
+                superseded_by: None,
+                old_format: false,
+                last_error: None,
+            })
+            .collect();
+
+        // Synthesize agent_summaries from snapshot-built agents so the F3 left
+        // panel works in approval mode.
+        self.agent_summaries = self
+            .agents
+            .iter()
+            .map(|agent| AgentSummary {
+                id: agent.id.clone(),
+                label: format!("{} ({})", agent.role, agent.model),
+                plan_id: Some(agent.current_plan.clone()).filter(|s| !s.is_empty()),
+                status: if agent.active {
+                    "running".into()
+                } else {
+                    "idle".into()
+                },
+            })
+            .collect();
+
+        // Synthesize gate_result_summaries from snapshot gates so the F2 right
+        // panel shows gate verdicts in approval mode.
+        self.gate_result_summaries = snap
+            .gates
+            .iter()
+            .map(|g| GateResultSummary {
+                plan_id: g.plan_id.clone(),
+                gate_name: g.gate.clone(),
+                passed: g.passed,
+                rung: 0,
+                duration_ms: 0,
+                summary: if g.task_id.is_empty() {
+                    String::new()
+                } else {
+                    format!("task {}", g.task_id)
+                },
+            })
+            .collect();
+
         self.phase_pipeline = build_phase_pipeline_from_dashboard_snapshot(snap);
         self.execution_waves = rebuild_execution_waves(&self.plans, &self.execution_waves);
 

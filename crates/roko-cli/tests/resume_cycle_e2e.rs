@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use roko_cli::runner::persist::{
-    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, RunStateSnapshot, TaskDefFingerprint,
-    save_run_state,
+    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, ReplanLedgerSnapshot, RunStateSnapshot,
+    TaskDefFingerprint, save_run_state,
 };
 use roko_cli::runner::resume::{JsonlRecoveryReport, ResumeError, prepare_resume};
 use roko_cli::task_parser::{TaskDef, VerifyStep};
@@ -76,6 +76,8 @@ fn baseline_snapshot(run_id: &str, fingerprints: Vec<TaskDefFingerprint>) -> Run
         completed_tasks: HashMap::from([("p1".to_string(), vec!["a".to_string()])]),
         snapshot_fail_streak: 0,
         fingerprints,
+        replan_ledger: ReplanLedgerSnapshot::default(),
+        revised_tasks: Vec::new(),
         cascade_router_json: None,
     }
 }

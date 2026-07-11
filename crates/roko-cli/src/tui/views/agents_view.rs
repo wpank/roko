@@ -867,6 +867,9 @@ fn render_live_stream_panel(
     let stream = (!agent_id.is_empty())
         .then(|| tui_state.agent_streams.get(agent_id))
         .flatten();
+    let has_runner_output = stream.is_none()
+        && !agent_id.is_empty()
+        && !collect_agent_output_lines(tui_state, tui_state.selected_agent).is_empty();
     let (status_label, title_style) = match stream {
         Some(stream) if stream.connected => (
             "connected",
@@ -876,7 +879,11 @@ fn render_live_stream_panel(
         ),
         Some(stream) if stream.completed => ("done", Style::default().fg(theme.success)),
         Some(_) => ("connecting...", Style::default().fg(theme.warning)),
-        None => ("connecting...", Style::default().fg(theme.muted)),
+        None if has_runner_output => (
+            "output (from runner)",
+            Style::default().fg(theme.accent),
+        ),
+        None => ("no stream", Style::default().fg(theme.muted)),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -911,7 +918,16 @@ fn render_live_stream_panel(
             chunks[start..].join("\n")
         }
     } else {
-        "connecting...".to_string()
+        // No WebSocket stream — fall back to agent output collected by the
+        // runner (approval / plan-run mode without a sidecar).
+        let collected = collect_agent_output_lines(tui_state, tui_state.selected_agent);
+        if collected.is_empty() {
+            "no live stream (output appears in Output tab)".to_string()
+        } else {
+            let visible_lines = inner.height as usize;
+            let start = collected.len().saturating_sub(visible_lines);
+            collected[start..].join("\n")
+        }
     };
 
     let paragraph = Paragraph::new(body)

@@ -117,6 +117,8 @@ pub(crate) fn handle_agent_event(
                     cache_write_tokens: *cache_write_tokens,
                 },
             );
+            tui.efficiency_event(plan_id, task_id, "input_tokens", *input_tokens as f64);
+            tui.efficiency_event(plan_id, task_id, "output_tokens", *output_tokens as f64);
         }
 
         AgentEvent::TurnCompleted {
@@ -162,6 +164,7 @@ pub(crate) fn handle_agent_event(
                 state.tokens_in,
                 state.tokens_out,
             );
+            tui.efficiency_event(plan_id, task_id, "cost_usd", state.cost_usd);
         }
 
         AgentEvent::Error { message } => {

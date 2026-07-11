@@ -142,12 +142,9 @@ pub trait MergeBackend: Send + Sync + std::fmt::Debug {
 
 /// Git-backed merge backend.
 ///
-/// Runner v2 currently supports two execution modes:
-/// - branch/worktree mode, where `request.branch_name` exists and is merged
-///   with `git merge --no-ff --no-edit`;
-/// - in-place mode, where the runner executed directly in `workdir` and there
-///   is no branch to merge. In-place mode is explicit and still runs the
-///   post-merge regression gate before the executor can complete.
+/// Runner v2 requires branch/worktree mode: `request.branch_name` must exist
+/// and is merged with `git merge --no-ff --no-edit` before the post-merge
+/// regression gate can complete the executor merge phase.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitMergeBackend;
 
@@ -167,30 +164,15 @@ impl MergeBackend for GitMergeBackend {
         )
         .await;
         if !branch_exists {
-            let dirty = git_output(&config.workdir, &["status", "--porcelain"]).await;
             let duration_ms = started.elapsed().as_millis() as u64;
-            return match dirty {
-                Ok(output) if !output.trim().is_empty() => MergeBackendOutcome::pass(
-                    format!(
-                        "in-place runner mode: branch `{}` is absent; validating current working tree with {} dirty path(s)",
-                        request.branch_name,
-                        output.lines().count()
-                    ),
-                    duration_ms,
+            return MergeBackendOutcome::fail(
+                format!(
+                    "merge branch `{}` is absent; isolated runner execution requires a plan worktree branch",
+                    request.branch_name
                 ),
-                Ok(_) => MergeBackendOutcome::pass(
-                    format!(
-                        "nothing to merge for `{}`: branch absent and working tree clean",
-                        request.branch_name
-                    ),
-                    duration_ms,
-                ),
-                Err(err) => MergeBackendOutcome::fail(
-                    format!("git status failed before merge: {err}"),
-                    RunnerFailureKind::Resource,
-                    duration_ms,
-                ),
-            };
+                RunnerFailureKind::Structural,
+                duration_ms,
+            );
         }
 
         let output = tokio::process::Command::new("git")
@@ -677,6 +659,22 @@ mod tests {
             "merge conflict should have been aborted, status:\n{status}"
         );
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "main change\n");
+    }
+
+    #[tokio::test]
+    async fn git_backend_fails_when_branch_is_absent() {
+        let repo = init_repo();
+        std::fs::write(repo.path().join("state.txt"), "base\n").unwrap();
+        commit_all(repo.path(), "base");
+
+        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["state.txt".into()], 0);
+        let config = PlanMergerConfig::new(repo.path().to_path_buf(), Duration::from_secs(5));
+
+        let outcome = GitMergeBackend.merge(&request, &config).await;
+
+        assert!(!outcome.passed);
+        assert_eq!(outcome.failure_kind, Some(RunnerFailureKind::Structural));
+        assert!(outcome.summary.contains("branch `roko/plan-a` is absent"));
     }
 
     #[tokio::test]

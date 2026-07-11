@@ -59,7 +59,7 @@ use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{SnapshotPayload, SnapshotWriter};
 use super::state::RunState;
-use super::task_dag::task_status_is_terminal;
+use super::task_dag::{DagConfig, TaskDag, task_status_is_terminal};
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
@@ -196,6 +196,7 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 /// Shared context for the dispatch loop, replacing 11 loose parameters.
 struct RunContext<'a> {
     executor: &'a mut ParallelExecutor,
+    task_dag: &'a mut TaskDag,
     task_index: &'a HashMap<String, HashMap<String, TaskDef>>,
     skip_enrichment: &'a HashMap<String, bool>,
     config: &'a RunConfig,
@@ -482,12 +483,17 @@ pub async fn run(
 
     // Index tasks by plan_id/task_id for lookup.
     let mut task_index: HashMap<String, HashMap<String, TaskDef>> = HashMap::new();
+    let mut task_dag = TaskDag::new(DagConfig {
+        plan_timeout: plan_total_timeout(config),
+        ..DagConfig::default()
+    });
     let mut total_tasks = 0usize;
 
     for plan in &plans {
         // add_plan is a no-op if plan already exists (from snapshot).
         let orc_state = OrcPlanState::new(&plan.id);
         executor.add_plan(orc_state);
+        task_dag.plan_mut(&plan.id);
 
         let mut tasks_map = HashMap::new();
         for task in &plan.tasks.tasks {
@@ -612,6 +618,7 @@ pub async fn run(
         seed_completed_tasks_from_plan_status(&mut state, &plans);
         initialize_terminal_plan_phases(&mut executor, &state, &plans);
     }
+    seed_task_dag_from_run_state(&mut task_dag, &plans, &state);
 
     let mut agent_handles: HashMap<String, AgentHandle> = HashMap::new();
     let mut active_agent_tasks: HashMap<String, String> = HashMap::new();
@@ -905,6 +912,7 @@ pub async fn run(
                             fire_on_error_hook(config, &message, "agent_turn", &tui, &state.plan_id, &state.current_task).await;
                             handle_agent_failure(
                                 &mut executor,
+                                &mut task_dag,
                                 &task_index,
                                 &mut state,
                                 &paths,
@@ -981,6 +989,7 @@ pub async fn run(
                             );
                             handle_agent_failure(
                                 &mut executor,
+                                &mut task_dag,
                                 &task_index,
                                 &mut state,
                                 &paths,
@@ -1435,22 +1444,10 @@ pub async fn run(
                         "task timing"
                     );
 
-                    let completed = state.plan_completed_tasks(&completion.plan_id);
-                    let failed = state.plan_failed_tasks(&completion.plan_id);
-                    let completed_plans = completed_plan_ids(&executor, &task_index);
-                    let has_more = task_index
-                        .get(completion.plan_id.as_str())
-                        .map(|tasks| {
-                            tasks
-                                .values()
-                                .any(|t| {
-                                    !completed.contains(&t.id)
-                                        && !failed.contains(&t.id)
-                                        && !task_status_is_terminal(&t.status)
-                                        && t.is_ready_with_plan_deps(completed, &completed_plans)
-                                })
-                        })
-                        .unwrap_or(false);
+                    task_dag.mark_complete(&completion.plan_id, &completion.task_id);
+                    let ready =
+                        ready_tasks_for_plan(&task_dag, &executor, &task_index, &state, &completion.plan_id);
+                    let has_more = !ready.is_empty();
 
                     if has_more {
                         // More tasks remain — force plan back to Implementing so
@@ -1460,11 +1457,20 @@ pub async fn run(
                             ps.current_phase = PlanPhase::Implementing;
                         }
                         let remaining = task_index.get(completion.plan_id.as_str())
-                            .map(|t| t.len().saturating_sub(completed.len() + failed.len())).unwrap_or(0);
+                            .map(|t| t.len().saturating_sub(state.plan_completed_tasks(&completion.plan_id).len() + state.plan_failed_tasks(&completion.plan_id).len())).unwrap_or(0);
                         info!(
                             plan_id = %completion.plan_id,
                             remaining,
                             "task passed — advancing to next task"
+                        );
+                    } else if has_pending_dag_tasks(&task_dag, &task_index, &state, &completion.plan_id) {
+                        if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                            ps.gate_results.clear();
+                            ps.current_phase = PlanPhase::Implementing;
+                        }
+                        info!(
+                            plan_id = %completion.plan_id,
+                            "task passed — waiting on blocked DAG dependencies"
                         );
                     } else {
                         // All tasks done — run the plan-level verify chain.
@@ -1500,6 +1506,10 @@ pub async fn run(
                                 if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
                                     let attempt = ps.iteration;
                                     ps.reset_for_retry();
+                                    task_dag.clear_running(
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                    );
                                     state.set_retry_backoff(
                                         &completion.plan_id,
                                         failure_kind,
@@ -1691,23 +1701,29 @@ pub async fn run(
 
                         // Track this task as failed so dependents are skipped.
                         state.mark_task_failed(&completion.plan_id, &completion.task_id);
+                        let task_refs = task_refs_for_plan(&task_index, &completion.plan_id);
+                        let skipped = task_dag.mark_failed_blocking_downstream(
+                            &completion.plan_id,
+                            &completion.task_id,
+                            &task_refs,
+                        );
+                        if !skipped.is_empty() {
+                            debug!(
+                                plan_id = %completion.plan_id,
+                                task_id = %completion.task_id,
+                                skipped = ?skipped,
+                                "gate failure blocked downstream tasks"
+                            );
+                        }
 
-                        // Check if there are still runnable tasks in this plan
-                        // (tasks whose deps don't include the failed task).
-                        let completed = state.plan_completed_tasks(&completion.plan_id);
-                        let failed = state.plan_failed_tasks(&completion.plan_id);
-                        let completed_plans = completed_plan_ids(&executor, &task_index);
-                        let has_runnable = task_index
-                            .get(completion.plan_id.as_str())
-                            .map(|tasks| {
-                                tasks.values().any(|t| {
-                                    !completed.contains(&t.id)
-                                        && !failed.contains(&t.id)
-                                        && !task_status_is_terminal(&t.status)
-                                        && t.is_ready_with_plan_deps(completed, &completed_plans)
-                                })
-                            })
-                            .unwrap_or(false);
+                        let has_runnable = !ready_tasks_for_plan(
+                            &task_dag,
+                            &executor,
+                            &task_index,
+                            &state,
+                            &completion.plan_id,
+                        )
+                        .is_empty();
 
                         if has_runnable {
                             // Keep the plan in Implementing so the next tick
@@ -1725,6 +1741,21 @@ pub async fn run(
                                 "task {} failed (skipped) — continuing with remaining tasks",
                                 completion.task_id
                             ));
+                        } else if has_pending_dag_tasks(
+                            &task_dag,
+                            &task_index,
+                            &state,
+                            &completion.plan_id,
+                        ) {
+                            if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                                ps.gate_results.clear();
+                                ps.current_phase = PlanPhase::Implementing;
+                            }
+                            warn!(
+                                plan_id = %completion.plan_id,
+                                task_id = %completion.task_id,
+                                "task failed — waiting on blocked DAG tasks"
+                            );
                         } else {
                             // No more runnable tasks — fail the plan.
                             let _ = executor.apply_event(
@@ -1763,6 +1794,7 @@ pub async fn run(
                     };
                     let mut ctx = RunContext {
                         executor: &mut executor,
+                        task_dag: &mut task_dag,
                         task_index: &task_index,
                         skip_enrichment: &skip_enrichment,
                         config,
@@ -2044,6 +2076,7 @@ fn build_agent_retry_context(message: &str, agent_output: &str, attempt_num: u32
 
 fn handle_agent_failure(
     executor: &mut ParallelExecutor,
+    task_dag: &mut TaskDag,
     task_index: &HashMap<String, HashMap<String, TaskDef>>,
     state: &mut RunState,
     paths: &PersistPaths,
@@ -2076,6 +2109,7 @@ fn handle_agent_failure(
             let failed_attempt = ps.iteration;
             ps.reset_for_retry();
             ps.current_phase = PlanPhase::Implementing;
+            task_dag.clear_running(&plan_id, &task_id);
             state.set_retry_backoff(&plan_id, failure_kind, failed_attempt);
             state.set_iteration(&plan_id, &task_id, ps.iteration);
             next_attempt = Some(ps.iteration);
@@ -2133,6 +2167,16 @@ fn handle_agent_failure(
     };
     state.record_task_failure(&plan_id, &task_id, &reason);
     state.mark_task_failed(&plan_id, &task_id);
+    let task_refs = task_refs_for_plan(task_index, &plan_id);
+    let skipped = task_dag.mark_failed_blocking_downstream(&plan_id, &task_id, &task_refs);
+    if !skipped.is_empty() {
+        debug!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            skipped = ?skipped,
+            "agent failure blocked downstream tasks"
+        );
+    }
     sink.task_failed(&plan_id, &task_id, &reason);
     tui.task_completed(&plan_id, &task_id, "failed");
 
@@ -2197,20 +2241,8 @@ fn handle_agent_failure(
         &reason,
     );
 
-    let completed = state.plan_completed_tasks(&plan_id);
-    let failed = state.plan_failed_tasks(&plan_id);
-    let completed_plans = completed_plan_ids(executor, task_index);
-    let has_runnable = task_index
-        .get(plan_id.as_str())
-        .map(|tasks| {
-            tasks.values().any(|t| {
-                !completed.contains(&t.id)
-                    && !failed.contains(&t.id)
-                    && !task_status_is_terminal(&t.status)
-                    && t.is_ready_with_plan_deps(completed, &completed_plans)
-            })
-        })
-        .unwrap_or(false);
+    let has_runnable =
+        !ready_tasks_for_plan(task_dag, executor, task_index, state, &plan_id).is_empty();
 
     if has_runnable {
         if let Some(ps) = executor.plan_state_mut(&plan_id) {
@@ -2225,6 +2257,16 @@ fn handle_agent_failure(
         tui.error(&format!(
             "task {task_id} failed after agent error — continuing with remaining tasks"
         ));
+    } else if has_pending_dag_tasks(task_dag, task_index, state, &plan_id) {
+        if let Some(ps) = executor.plan_state_mut(&plan_id) {
+            ps.gate_results.clear();
+            ps.current_phase = PlanPhase::Implementing;
+        }
+        warn!(
+            plan_id = %plan_id,
+            task_id = %task_id,
+            "agent failed task — waiting on blocked DAG tasks"
+        );
     } else if let Err(err) = executor.apply_event(&plan_id, &ExecutorEvent::Fatal(reason.clone())) {
         error!(plan_id = %plan_id, error = %err, "failed to apply Fatal event after agent failure");
         state.force_plan_terminal(&plan_id);
@@ -3501,6 +3543,15 @@ fn seed_completed_tasks_from_plan_status(state: &mut RunState, plans: &[Plan]) {
     }
 }
 
+fn seed_task_dag_from_run_state(task_dag: &mut TaskDag, plans: &[Plan], state: &RunState) {
+    for plan in plans {
+        task_dag.plan_mut(&plan.id);
+        for task_id in state.plan_completed_tasks(&plan.id) {
+            task_dag.mark_complete(&plan.id, task_id);
+        }
+    }
+}
+
 fn initialize_terminal_plan_phases(
     executor: &mut ParallelExecutor,
     state: &RunState,
@@ -3915,27 +3966,28 @@ async fn dispatch_action(
         }
 
         ExecutorAction::SpawnAgent { plan_id, task, .. } => {
+            let phase_kind = ctx
+                .executor
+                .plan_state(plan_id)
+                .map(|state| state.current_phase.kind());
+            let is_dag_task_spawn = phase_kind.as_ref().is_some_and(|kind| {
+                matches!(
+                    kind,
+                    PhaseKind::Implementing | PhaseKind::AutoFixing | PhaseKind::RegeneratingVerify
+                )
+            });
+
             // Resolve sentinel task names ("next", "fix", etc.) to actual task IDs
             // by walking the plan's DAG and finding the first ready task.
             let resolved_task = if task == "next" || task == "fix" || task == "regen-verify" {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
-                let failed = ctx.state.plan_failed_tasks(plan_id);
                 let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
-                let plan_tasks = ctx.task_index.get(plan_id.as_str());
-                plan_tasks.and_then(|tasks| {
-                    // Collect all TaskDefs, then find the first ready one in definition order.
-                    let mut all_tasks: Vec<&TaskDef> = tasks.values().collect();
-                    all_tasks.sort_by_key(|t| t.sequence);
-                    all_tasks
-                        .iter()
-                        .find(|t| {
-                            !completed.contains(&t.id)
-                                && !failed.contains(&t.id)
-                                && !task_status_is_terminal(&t.status)
-                                && t.is_ready_with_plan_deps(completed, &completed_plans)
-                        })
-                        .map(|t| t.id.clone())
-                })
+                let plan_tasks = task_refs_for_plan(ctx.task_index, plan_id);
+                let next_ready_task = {
+                    let task_dag = &*ctx.task_dag;
+                    task_dag.next_ready_task(plan_id, &plan_tasks, completed, &completed_plans)
+                };
+                next_ready_task.map(|task| task.id.clone())
             } else if matches!(task.as_str(), "review" | "doc-revision" | "docs" | "enrich") {
                 if ctx.state.current_task.is_empty() {
                     ctx.task_index
@@ -3952,11 +4004,16 @@ async fn dispatch_action(
             let task_id = match resolved_task {
                 Some(id) => id,
                 None => {
-                    let Some(phase_kind) = ctx
-                        .executor
-                        .plan_state(plan_id)
-                        .map(|state| state.current_phase.kind())
-                    else {
+                    if has_pending_dag_tasks(ctx.task_dag, ctx.task_index, ctx.state, plan_id) {
+                        debug!(
+                            plan_id = %plan_id,
+                            requested_task = %task,
+                            "no ready task yet — waiting on DAG dependencies"
+                        );
+                        return ActionDispatchOutcome::Noop;
+                    }
+
+                    let Some(phase_kind) = phase_kind else {
                         warn!(plan_id = %plan_id, requested_task = %task, "no ready task for unknown plan");
                         return ActionDispatchOutcome::Noop;
                     };
@@ -4075,6 +4132,34 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
+
+            if is_dag_task_spawn {
+                let completed = ctx.state.plan_completed_tasks(plan_id);
+                let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
+                let plan_tasks = task_refs_for_plan(ctx.task_index, plan_id);
+                let is_ready = ctx
+                    .task_dag
+                    .ready_tasks(plan_id, &plan_tasks, completed, &completed_plans)
+                    .iter()
+                    .any(|task| task.id == task_id);
+                if !is_ready {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        requested_task = %task,
+                        "task is not ready in DAG — suppressing spawn"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
+                if !ctx.task_dag.mark_running(plan_id, &task_id) {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        "task already running in DAG — suppressing duplicate spawn"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
+            }
 
             let previous_gate_output = ctx.state.gate_output.clone();
             let attempt_num = ctx
@@ -4295,6 +4380,9 @@ async fn dispatch_action(
                 Err(err) => {
                     let message = format!("dispatch planning failed: {err}");
                     error!(plan_id = %plan_id, task = %task_id, error = %message);
+                    if is_dag_task_spawn {
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                    }
                     if let Err(e) = ctx
                         .executor
                         .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -4451,6 +4539,9 @@ async fn dispatch_action(
                                 requested_model, hint_err, default_model, default_err
                             );
                             error!(plan_id = %plan_id, task = %task_id, error = %message);
+                            if is_dag_task_spawn {
+                                ctx.task_dag.clear_running(plan_id, &task_id);
+                            }
                             if let Err(e) = ctx
                                 .executor
                                 .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -4573,6 +4664,9 @@ async fn dispatch_action(
                         Err(e) => {
                             error!(err = %e, "failed to spawn agent");
                             let message = format!("agent spawn failed: {e}");
+                            if is_dag_task_spawn {
+                                ctx.task_dag.clear_running(plan_id, &task_id);
+                            }
                             let agent_provider = ctx.state.agent_provider.clone();
                             emit_runner_event(
                                 ctx.paths,
@@ -5951,6 +6045,61 @@ fn all_plans_terminal(executor: &ParallelExecutor, plans: &[Plan]) -> bool {
     plans
         .iter()
         .all(|p| executor.plan_state(&p.id).map_or(true, |s| s.is_terminal()))
+}
+
+fn task_refs_for_plan<'a>(
+    task_index: &'a HashMap<String, HashMap<String, TaskDef>>,
+    plan_id: &str,
+) -> Vec<&'a TaskDef> {
+    task_index
+        .get(plan_id)
+        .map(|tasks| tasks.values().collect())
+        .unwrap_or_default()
+}
+
+fn ready_tasks_for_plan<'a>(
+    task_dag: &TaskDag,
+    executor: &ParallelExecutor,
+    task_index: &'a HashMap<String, HashMap<String, TaskDef>>,
+    state: &RunState,
+    plan_id: &str,
+) -> Vec<&'a TaskDef> {
+    let task_refs = task_refs_for_plan(task_index, plan_id);
+    let completed = state.plan_completed_tasks(plan_id);
+    let completed_plans = completed_plan_ids(executor, task_index);
+    task_dag.ready_tasks(plan_id, &task_refs, completed, &completed_plans)
+}
+
+fn has_pending_dag_tasks(
+    task_dag: &TaskDag,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    state: &RunState,
+    plan_id: &str,
+) -> bool {
+    let completed = state.plan_completed_tasks(plan_id);
+    let failed = state.plan_failed_tasks(plan_id);
+    let dag_plan = task_dag.plan(plan_id);
+
+    task_index.get(plan_id).is_some_and(|tasks| {
+        tasks.values().any(|task| {
+            if completed.contains(&task.id)
+                || failed.contains(&task.id)
+                || task_status_is_terminal(&task.status)
+            {
+                return false;
+            }
+
+            if let Some(plan) = dag_plan
+                && (plan.completed.contains(&task.id)
+                    || plan.failed.contains(&task.id)
+                    || plan.skipped.contains_key(&task.id))
+            {
+                return false;
+            }
+
+            true
+        })
+    })
 }
 
 fn completed_plan_ids(

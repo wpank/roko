@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 7
-done = 1
+done = 2
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -30,7 +30,7 @@ acceptance = ["Every attempt has one start and one terminal outcome.", "Concurre
 id = "SH01-T02"
 title = "Make preflight and gate transitions exactly once"
 description = "Introduce attempt-specific preflight results, remove invalid unconditional ImplementationDone transitions, and ensure every gate completion terminalizes its exact attempt even when a higher-level transition fails."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 320

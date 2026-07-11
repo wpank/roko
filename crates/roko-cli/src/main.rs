@@ -1358,7 +1358,7 @@ Examples:
         /// Path to the plans directory.
         plans_dir: PathBuf,
         /// Execution engine to use for plan execution.
-        #[arg(long, default_value = "graph", value_enum)]
+        #[arg(long, default_value = "runner-v2", value_enum)]
         engine: PlanEngine,
         /// Working directory (repo root). Defaults to current directory.
         #[arg(long)]

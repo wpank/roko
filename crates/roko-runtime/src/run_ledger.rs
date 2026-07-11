@@ -34,6 +34,8 @@ pub struct RunLedger {
     pub artifacts: Vec<ArtifactOutcome>,
     /// Commit outcome, when commit was attempted.
     pub commit: Option<CommitOutcome>,
+    /// Idempotent terminal task attempt records.
+    pub task_terminals: Vec<TaskTerminalOutcome>,
     /// Cancellation outcome, when cancellation was requested.
     pub cancellation: Option<CancellationOutcome>,
     /// Event persistence health observed during the run.
@@ -60,6 +62,7 @@ impl RunLedger {
             gate_runs: Vec::new(),
             artifacts: Vec::new(),
             commit: None,
+            task_terminals: Vec::new(),
             cancellation: None,
             event_persistence: EventPersistenceHealth::default(),
             checkpoint_path: None,
@@ -176,6 +179,22 @@ impl RunLedger {
     /// Record a commit outcome.
     pub fn record_commit(&mut self, outcome: CommitOutcome) {
         self.commit = Some(outcome);
+    }
+
+    /// Record a terminal task attempt exactly once by plan/task/attempt.
+    ///
+    /// Returns true only when the terminal record was newly inserted.
+    pub fn record_task_terminal(&mut self, outcome: TaskTerminalOutcome) -> bool {
+        if self.task_terminals.iter().any(|existing| {
+            existing.plan_id == outcome.plan_id
+                && existing.task_id == outcome.task_id
+                && existing.attempt == outcome.attempt
+        }) {
+            return false;
+        }
+        self.commit = Some(outcome.commit_outcome.clone());
+        self.task_terminals.push(outcome);
+        true
     }
 
     /// Record a cancellation request observed by the workflow owner.
@@ -390,6 +409,29 @@ pub struct GateRunOutcome {
     pub duration_ms: u64,
 }
 
+/// Durable terminal record for one runner task attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTerminalOutcome {
+    /// Plan containing the task.
+    pub plan_id: String,
+    /// Task identifier within the plan.
+    pub task_id: String,
+    /// Monotonic attempt number for this task.
+    pub attempt: u32,
+    /// Whether the task reached the successful terminal.
+    pub passed: bool,
+    /// Terminal reason for failures or persistence errors.
+    pub reason: Option<String>,
+    /// Files durably attributed to this task.
+    pub output_files: Vec<String>,
+    /// Commit outcome observed before success was recorded.
+    pub commit_outcome: CommitOutcome,
+    /// Gate duration associated with terminalization.
+    pub duration_ms: u64,
+    /// Timestamp in milliseconds since unix epoch.
+    pub timestamp_ms: u64,
+}
+
 impl GateRunOutcome {
     fn to_report_gate(&self) -> GateOutcome {
         GateOutcome {
@@ -586,5 +628,33 @@ mod tests {
         assert_eq!(report.cost, None);
         assert!(report.gates.is_empty());
         assert!(report.events.is_empty());
+    }
+
+    #[test]
+    fn run_ledger_records_task_terminal_once_per_attempt() {
+        let mut ledger = RunLedger::new("run-1", "prompt", WorkflowConfig::express(), 1);
+        let outcome = TaskTerminalOutcome {
+            plan_id: "plan".into(),
+            task_id: "T1".into(),
+            attempt: 2,
+            passed: true,
+            reason: None,
+            output_files: vec!["src/lib.rs".into()],
+            commit_outcome: CommitOutcome::Created {
+                hash: "abc123".into(),
+            },
+            duration_ms: 42,
+            timestamp_ms: 100,
+        };
+
+        assert!(ledger.record_task_terminal(outcome.clone()));
+        assert!(!ledger.record_task_terminal(outcome));
+        assert_eq!(ledger.task_terminals.len(), 1);
+        assert_eq!(
+            ledger.commit,
+            Some(CommitOutcome::Created {
+                hash: "abc123".into()
+            })
+        );
     }
 }

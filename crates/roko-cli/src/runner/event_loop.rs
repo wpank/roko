@@ -30,7 +30,7 @@ use roko_orchestrator::{
     TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
 };
 use roko_runtime::event_bus::PlanRevisionReason;
-use roko_runtime::{HttpEventSink, RunLedger, WorkflowConfig};
+use roko_runtime::{CommitOutcome, HttpEventSink, RunLedger, TaskTerminalOutcome, WorkflowConfig};
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
@@ -1611,137 +1611,69 @@ pub async fn run(
                         debug!("dream consolidation skipped after verification-only plan gate");
                     }
                 } else if completion.passed {
-                    // Mark this task completed in the DAG and check for more.
                     state.clear_retry_backoff(&completion.plan_id);
                     let task_workdir = tracked_plan_workdir(&worktrees, &completion.plan_id);
-                    if task_workdir.is_none() {
-                        warn!(
-                            plan_id = %completion.plan_id,
-                            task_id = %completion.task_id,
-                            "isolated worktree missing while recording task output"
-                        );
-                    }
                     let task_declared_files = task_index
                         .get(completion.plan_id.as_str())
                         .and_then(|tasks| tasks.get(completion.task_id.as_str()))
                         .map(|task| task.files.clone())
                         .unwrap_or_default();
-                    let output_diffs = task_workdir
-                        .as_deref()
-                        .map(git_diff_entries_since_task_start)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|entry| {
-                            task_path_allowed_by_declared_files(&entry.path, &task_declared_files)
-                        })
-                        .collect::<Vec<_>>();
-                    let newly_completed =
-                        state.mark_task_completed(&completion.plan_id, &completion.task_id);
-                    if task_workdir.is_none() {
+                    let terminalized = terminalize_passed_task(
+                        &paths,
+                        &mut state,
+                        &mut task_dag,
+                        &task_index,
+                        &mut run_ledger,
+                        &tui,
+                        sink,
+                        config,
+                        &completion,
+                        &completion_attempt,
+                        task_workdir.as_deref(),
+                        &task_declared_files,
+                    );
+                    if matches!(terminalized, TaskTerminalization::AlreadyRecorded) {
+                        debug!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            attempt = completion_attempt.attempt,
+                            "duplicate task terminalization ignored"
+                        );
+                        continue;
+                    }
+                    if let TaskTerminalization::PersistenceFailed { reason } = terminalized {
                         warn!(
                             plan_id = %completion.plan_id,
                             task_id = %completion.task_id,
-                            "skipping task auto-commit because isolated worktree is missing"
+                            reason = %reason,
+                            "task terminalized as failed because durable completion could not be recorded"
                         );
-                    }
-                    // Snapshot which files this task produced so downstream
-                    // tasks can be told what their dependencies already created.
-                    let output_files = output_diffs.iter().map(|entry| entry.path.clone()).collect();
-                    state.record_task_outputs(
-                        &completion.plan_id,
-                        &completion.task_id,
-                        output_files,
-                    );
-                    if newly_completed {
-                        state.task_completed();
-                    }
-                    // Record task completion in the run ledger.
-                    if let Some(ref mut ledger) = run_ledger {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        ledger.record_phase_transition(
-                            roko_runtime::Phase::Implementing,
-                            roko_runtime::Phase::Complete,
-                            now_ms,
-                        );
-                        append_ledger_entry(
-                            &paths.run_ledger_jsonl,
-                            "task_completed",
-                            &serde_json::json!({
-                                "plan_id": completion.plan_id,
-                                "task_id": completion.task_id,
-                                "passed": true,
-                                "duration_ms": completion.duration_ms,
-                                "timestamp_ms": now_ms,
-                            }),
-                        );
-                    }
-                    let run_id = state.run_id().to_string();
-                    let agent_model = state.agent_model.clone();
-                    let agent_provider = state.agent_provider.clone();
-                    emit_runner_event(
-                        &paths,
-                        &mut state,
-                        &tui,
-                        config,
-                        RunnerEvent::task_attempt_completed(
-                            &run_id,
-                            completion_attempt.clone(),
-                            TaskAttemptOutcome::Passed,
-                            None,
-                            completion.duration_ms,
-                            agent_model,
-                            agent_provider,
-                        ),
-                    );
-                    record_daimon_task_outcome(
-                        config,
-                        state.current_daimon_strategy,
-                        &completion.plan_id,
-                        &completion.task_id,
-                        true,
-                        &format!("gate-rung-{}", completion.rung),
-                    );
-                    tui.task_completed(&completion.plan_id, &completion.task_id, "passed");
-
-                    // Commit generated code to git so subsequent tasks can diff.
-                    if let Some(task_workdir) = task_workdir.as_deref() {
-                        commit_task_changes(
-                            task_workdir,
+                        let has_runnable = !ready_tasks_for_plan(
+                            &task_dag,
+                            &executor,
+                            &task_index,
+                            &state,
                             &completion.plan_id,
-                            &completion.task_id,
-                            &task_declared_files,
-                        );
+                        )
+                        .is_empty();
+                        if has_runnable {
+                            if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                                ps.gate_results.clear();
+                                ps.current_phase = PlanPhase::Implementing;
+                            }
+                        } else if let Err(err) = executor.apply_event(
+                            &completion.plan_id,
+                            &ExecutorEvent::Fatal(reason.clone()),
+                        ) {
+                            warn!(
+                                plan_id = %completion.plan_id,
+                                error = %err,
+                                "failed to apply Fatal event -- forcing plan terminal"
+                            );
+                            state.force_plan_terminal(&completion.plan_id);
+                        }
+                        continue;
                     }
-
-                    let total_task_ms = state.task_elapsed_ms();
-                    let dispatch_ms = state.last_dispatch_ms;
-                    let gate_ms = completion.duration_ms;
-                    let agent_ms = if state.task_agent_calls == 0 {
-                        0
-                    } else {
-                        total_task_ms.saturating_sub(dispatch_ms + gate_ms)
-                    };
-
-                    sink.diff_block(&completion.plan_id, &completion.task_id, &output_diffs);
-                    sink.task_completed(
-                        &completion.plan_id,
-                        &completion.task_id,
-                        state.tasks_completed,
-                        state.tasks_total,
-                        total_task_ms,
-                    );
-                    info!(
-                        task = %completion.task_id,
-                        dispatch_ms,
-                        agent_ms,
-                        gate_ms,
-                        "task timing"
-                    );
-
-                    task_dag.mark_complete(&completion.plan_id, &completion.task_id);
                     let ready =
                         ready_tasks_for_plan(&task_dag, &executor, &task_index, &state, &completion.plan_id);
                     let has_more = !ready.is_empty();
@@ -4684,8 +4616,7 @@ async fn dispatch_action(
                 .plan_state(plan_id)
                 .map(|state| state.iteration)
                 .unwrap_or(1);
-            let attempt_ref =
-                TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
+            let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
             ctx.state.reset_for_task(plan_id, &task_id);
             ctx.state.set_iteration(plan_id, &task_id, attempt_num);
             ctx.task_runtime_states.insert(
@@ -7131,6 +7062,241 @@ fn failure_class_label(class: &roko_gate::FailureClass) -> String {
         .unwrap_or_else(|| format!("{class:?}").to_ascii_lowercase())
 }
 
+enum TaskTerminalization {
+    Passed,
+    PersistenceFailed { reason: String },
+    AlreadyRecorded,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminalize_passed_task(
+    paths: &PersistPaths,
+    state: &mut RunState,
+    task_dag: &mut TaskDag,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    run_ledger: &mut Option<RunLedger>,
+    tui: &TuiBridge,
+    sink: &dyn RunOutputSink,
+    config: &RunConfig,
+    completion: &GateCompletion,
+    attempt: &TaskAttemptRef,
+    task_workdir: Option<&Path>,
+    declared_files: &[String],
+) -> TaskTerminalization {
+    if state.task_attempt_is_terminal(attempt) {
+        return TaskTerminalization::AlreadyRecorded;
+    }
+
+    let output_diffs = task_workdir
+        .map(git_diff_entries_since_task_start)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| task_path_allowed_by_declared_files(&entry.path, declared_files))
+        .collect::<Vec<_>>();
+    let output_files = output_diffs
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+
+    let commit_outcome = match task_workdir {
+        Some(workdir) => commit_task_changes(
+            workdir,
+            &completion.plan_id,
+            &completion.task_id,
+            declared_files,
+        ),
+        None => CommitOutcome::Rejected {
+            reason: "isolated worktree missing while terminalizing passed task".to_string(),
+        },
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let durability_error = match &commit_outcome {
+        CommitOutcome::Created { .. } | CommitOutcome::NoChanges => None,
+        CommitOutcome::Rejected { reason } => Some(reason.clone()),
+        CommitOutcome::Failed { error } => Some(error.clone()),
+    };
+
+    if let Some(reason) = durability_error {
+        let reason = format!("task passed gates but durable completion failed: {reason}");
+        state.task_failed();
+        state.record_task_failure(&completion.plan_id, &completion.task_id, &reason);
+        state.mark_task_failed(&completion.plan_id, &completion.task_id);
+        let task_refs = task_refs_for_plan(task_index, &completion.plan_id);
+        let skipped = task_dag.mark_failed_blocking_downstream(
+            &completion.plan_id,
+            &completion.task_id,
+            &task_refs,
+        );
+        if !skipped.is_empty() {
+            debug!(
+                plan_id = %completion.plan_id,
+                task_id = %completion.task_id,
+                skipped = ?skipped,
+                "durability failure blocked downstream tasks"
+            );
+        }
+        sink.task_failed(&completion.plan_id, &completion.task_id, &reason);
+        tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
+        if let Some(ledger) = run_ledger.as_mut() {
+            let inserted = ledger.record_task_terminal(TaskTerminalOutcome {
+                plan_id: completion.plan_id.clone(),
+                task_id: completion.task_id.clone(),
+                attempt: attempt.attempt,
+                passed: false,
+                reason: Some(reason.clone()),
+                output_files,
+                commit_outcome,
+                duration_ms: completion.duration_ms,
+                timestamp_ms: now_ms,
+            });
+            if inserted {
+                append_ledger_entry(
+                    &paths.run_ledger_jsonl,
+                    "task_failed",
+                    &serde_json::json!({
+                        "run_id": state.run_id(),
+                        "plan_id": completion.plan_id,
+                        "task_id": completion.task_id,
+                        "attempt": attempt.attempt,
+                        "passed": false,
+                        "reason": reason,
+                        "duration_ms": completion.duration_ms,
+                        "timestamp_ms": now_ms,
+                        "commit_outcome": ledger.commit.as_ref(),
+                    }),
+                );
+            }
+        }
+        let run_id = state.run_id().to_string();
+        let agent_model = state.agent_model.clone();
+        let agent_provider = state.agent_provider.clone();
+        emit_runner_event(
+            paths,
+            state,
+            tui,
+            config,
+            RunnerEvent::task_attempt_completed(
+                &run_id,
+                attempt.clone(),
+                TaskAttemptOutcome::Failed,
+                Some(RunnerFailureKind::Permanent),
+                completion.duration_ms,
+                agent_model,
+                agent_provider,
+            ),
+        );
+        record_daimon_task_outcome(
+            config,
+            state.current_daimon_strategy,
+            &completion.plan_id,
+            &completion.task_id,
+            false,
+            &reason,
+        );
+        return TaskTerminalization::PersistenceFailed { reason };
+    }
+
+    state.record_task_outputs(
+        &completion.plan_id,
+        &completion.task_id,
+        output_files.clone(),
+    );
+    if state.mark_task_completed(&completion.plan_id, &completion.task_id) {
+        state.task_completed();
+    }
+
+    if let Some(ledger) = run_ledger.as_mut() {
+        ledger.record_phase_transition(
+            roko_runtime::Phase::Implementing,
+            roko_runtime::Phase::Complete,
+            now_ms,
+        );
+        let inserted = ledger.record_task_terminal(TaskTerminalOutcome {
+            plan_id: completion.plan_id.clone(),
+            task_id: completion.task_id.clone(),
+            attempt: attempt.attempt,
+            passed: true,
+            reason: None,
+            output_files,
+            commit_outcome,
+            duration_ms: completion.duration_ms,
+            timestamp_ms: now_ms,
+        });
+        if inserted {
+            append_ledger_entry(
+                &paths.run_ledger_jsonl,
+                "task_completed",
+                &serde_json::json!({
+                    "run_id": state.run_id(),
+                    "plan_id": completion.plan_id,
+                    "task_id": completion.task_id,
+                    "attempt": attempt.attempt,
+                    "passed": true,
+                    "duration_ms": completion.duration_ms,
+                    "timestamp_ms": now_ms,
+                    "commit_outcome": ledger.commit.as_ref(),
+                }),
+            );
+        }
+    }
+
+    let run_id = state.run_id().to_string();
+    let agent_model = state.agent_model.clone();
+    let agent_provider = state.agent_provider.clone();
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            completion.duration_ms,
+            agent_model,
+            agent_provider,
+        ),
+    );
+    record_daimon_task_outcome(
+        config,
+        state.current_daimon_strategy,
+        &completion.plan_id,
+        &completion.task_id,
+        true,
+        &format!("gate-rung-{}", completion.rung),
+    );
+    tui.task_completed(&completion.plan_id, &completion.task_id, "passed");
+
+    let total_task_ms = state.task_elapsed_ms();
+    let dispatch_ms = state.last_dispatch_ms;
+    let gate_ms = completion.duration_ms;
+    let agent_ms = if state.task_agent_calls == 0 {
+        0
+    } else {
+        total_task_ms.saturating_sub(dispatch_ms + gate_ms)
+    };
+    sink.diff_block(&completion.plan_id, &completion.task_id, &output_diffs);
+    sink.task_completed(
+        &completion.plan_id,
+        &completion.task_id,
+        state.tasks_completed,
+        state.tasks_total,
+        total_task_ms,
+    );
+    info!(
+        task = %completion.task_id,
+        dispatch_ms,
+        agent_ms,
+        gate_ms,
+        "task timing"
+    );
+
+    task_dag.mark_complete(&completion.plan_id, &completion.task_id);
+    TaskTerminalization::Passed
+}
+
 /// Commit working tree changes for a completed task.
 ///
 /// Only acts if there are uncommitted changes in the task's declared files.
@@ -7141,7 +7307,7 @@ fn commit_task_changes(
     plan_id: &str,
     task_id: &str,
     declared_files: &[String],
-) {
+) -> CommitOutcome {
     use std::process::Command;
 
     let paths = task_declared_git_paths(declared_files);
@@ -7151,7 +7317,7 @@ fn commit_task_changes(
             %task_id,
             "task has no declared files -- skipping auto-commit"
         );
-        return;
+        return CommitOutcome::NoChanges;
     }
 
     // Check if there are changes to commit in this task's declared write set.
@@ -7160,14 +7326,18 @@ fn commit_task_changes(
         .args(["status", "--porcelain", "--"])
         .args(&paths)
         .current_dir(workdir);
-    let status = status_cmd.output();
-    let has_changes = status
-        .as_ref()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+    let status = match status_cmd.output() {
+        Ok(status) => status,
+        Err(err) => {
+            return CommitOutcome::Failed {
+                error: format!("git status failed: {err}"),
+            };
+        }
+    };
+    let has_changes = !status.stdout.is_empty();
     if !has_changes {
         debug!(%plan_id, %task_id, "no uncommitted changes to commit");
-        return;
+        return CommitOutcome::NoChanges;
     }
 
     let msg = format!("[roko] {plan_id}: {task_id} completed");
@@ -7176,10 +7346,18 @@ fn commit_task_changes(
         .args(["add", "--"])
         .args(&paths)
         .current_dir(workdir);
-    let add = add_cmd.status();
-    if add.is_err() || !add.as_ref().map(|s| s.success()).unwrap_or(false) {
-        debug!(%plan_id, %task_id, "git add failed -- skipping commit");
-        return;
+    let add = match add_cmd.status() {
+        Ok(status) => status,
+        Err(err) => {
+            return CommitOutcome::Failed {
+                error: format!("git add failed: {err}"),
+            };
+        }
+    };
+    if !add.success() {
+        return CommitOutcome::Failed {
+            error: format!("git add exited with status {add}"),
+        };
     }
     let mut commit_cmd = Command::new("git");
     commit_cmd
@@ -7189,11 +7367,28 @@ fn commit_task_changes(
     let commit = commit_cmd.status();
     match commit {
         Ok(s) if s.success() => {
-            info!(%plan_id, %task_id, "committed task changes to git");
+            let hash = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(workdir)
+                .output()
+                .ok()
+                .and_then(|output| {
+                    output
+                        .status
+                        .success()
+                        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                })
+                .filter(|hash| !hash.is_empty())
+                .unwrap_or_else(|| "unknown".to_string());
+            info!(%plan_id, %task_id, %hash, "committed task changes to git");
+            CommitOutcome::Created { hash }
         }
-        _ => {
-            debug!(%plan_id, %task_id, "git commit failed -- non-fatal");
-        }
+        Ok(status) => CommitOutcome::Failed {
+            error: format!("git commit exited with status {status}"),
+        },
+        Err(err) => CommitOutcome::Failed {
+            error: format!("git commit failed: {err}"),
+        },
     }
 }
 

@@ -393,7 +393,7 @@ impl RunState {
                 ..
             } => {
                 let status = if *passed {
-                    TaskAttemptStatus::Passed
+                    TaskAttemptStatus::Gating
                 } else {
                     TaskAttemptStatus::GateFailed
                 };
@@ -831,6 +831,15 @@ impl RunState {
         self.task_outputs.insert(key, files);
     }
 
+    /// Return true when this exact attempt has already reached a terminal state.
+    pub fn task_attempt_is_terminal(&self, attempt: &TaskAttemptRef) -> bool {
+        self.lifecycle
+            .task_attempts
+            .get(&attempt.key())
+            .map(|attempt| attempt.status.is_terminal())
+            .unwrap_or(false)
+    }
+
     /// Return the files recorded for a specific completed task.
     pub fn task_output_files(&self, plan_id: &str, task_id: &str) -> &[String] {
         let key = format!("{plan_id}:{task_id}");
@@ -931,8 +940,9 @@ fn task_key(plan_id: &str, task_id: &str) -> String {
 mod tests {
     use super::RunState;
     use crate::runner::types::{
-        AgentCompletionSummary, AgentDispatchOutcome, RetryAction, RunnerEvent, RunnerFailureKind,
-        TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus,
+        AgentCompletionSummary, AgentDispatchOutcome, GateCompletion, GateCompletionKind,
+        RetryAction, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
+        TaskAttemptStatus, TaskLifecycleStatus,
     };
 
     #[test]
@@ -961,6 +971,54 @@ mod tests {
             state.lifecycle.tasks["plan:T1"].next_attempt, 5,
             "next allocation cursor remains ahead of current attempt"
         );
+    }
+
+    #[test]
+    fn gate_completed_does_not_terminalize_attempt_until_task_completed() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "T1", 1);
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        let completion = GateCompletion {
+            kind: GateCompletionKind::Gate,
+            attempt: Some(attempt.clone()),
+            plan_id: "plan".into(),
+            task_id: "T1".into(),
+            rung: 0,
+            passed: true,
+            failure_kind: None,
+            verdicts: Vec::new(),
+            output: String::new(),
+            duration_ms: 10,
+        };
+        state.apply_runner_event(&RunnerEvent::gate_completed(
+            &run_id,
+            attempt.clone(),
+            &completion,
+        ));
+
+        assert!(!state.task_attempt_is_terminal(&attempt));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Gating
+        );
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            10,
+            "model",
+            "provider",
+        ));
+
+        assert!(state.task_attempt_is_terminal(&attempt));
     }
 
     #[test]

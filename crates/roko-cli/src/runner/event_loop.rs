@@ -1269,6 +1269,29 @@ pub async fn run(
                     completion.rung,
                     completion.kind,
                 );
+                let completion_attempt = if completion.kind == GateCompletionKind::Merge {
+                    TaskAttemptRef::new(
+                        completion.plan_id.clone(),
+                        completion.task_id.clone(),
+                        state.iteration_for(&completion.plan_id, &completion.task_id),
+                    )
+                } else if let Some(attempt) = take_matching_gate_attempt(
+                    &mut gate_attempts,
+                    &effect_key,
+                    completion.attempt.as_ref(),
+                ) {
+                    attempt
+                } else {
+                    warn!(
+                        plan_id = %completion.plan_id,
+                        task_id = %completion.task_id,
+                        rung = completion.rung,
+                        kind = ?completion.kind,
+                        reported_attempt = ?completion.attempt,
+                        "dropping stale or duplicate gate completion"
+                    );
+                    continue;
+                };
                 restore_task_runtime(
                     &mut state,
                     &task_runtime_states,
@@ -1277,16 +1300,6 @@ pub async fn run(
                 );
                 state.clear_gate_active(&effect_key);
                 state.gate_output = completion.output.clone();
-                let completion_attempt =
-                    gate_attempts
-                        .remove(&effect_key)
-                        .unwrap_or_else(|| {
-                            TaskAttemptRef::new(
-                                completion.plan_id.clone(),
-                                completion.task_id.clone(),
-                                state.iteration_for(&completion.plan_id, &completion.task_id),
-                            )
-                        });
 
                 for v in &completion.verdicts {
                     tui.gate_result(
@@ -2406,6 +2419,18 @@ fn advance_preflight_success_to_gate(
             reason: format!("preflight success cannot advance from {other:?}"),
         }),
     }
+}
+
+fn take_matching_gate_attempt(
+    attempts: &mut HashMap<String, TaskAttemptRef>,
+    effect_key: &str,
+    reported: Option<&TaskAttemptRef>,
+) -> Option<TaskAttemptRef> {
+    let reported = reported?;
+    if attempts.get(effect_key) != Some(reported) {
+        return None;
+    }
+    attempts.remove(effect_key)
 }
 
 fn no_ready_spawn_event(phase_kind: PhaseKind, requested_task: &str) -> Option<ExecutorEvent> {
@@ -4659,6 +4684,8 @@ async fn dispatch_action(
                 .plan_state(plan_id)
                 .map(|state| state.iteration)
                 .unwrap_or(1);
+            let attempt_ref =
+                TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
             ctx.state.reset_for_task(plan_id, &task_id);
             ctx.state.set_iteration(plan_id, &task_id, attempt_num);
             ctx.task_runtime_states.insert(
@@ -4679,6 +4706,7 @@ async fn dispatch_action(
                         "running task verification preflight before agent dispatch"
                     );
                     let preflight = gate_dispatch::run_gate_once(
+                        attempt_ref.clone(),
                         plan_id.clone(),
                         task_id.clone(),
                         pipeline_rung,
@@ -4762,8 +4790,29 @@ async fn dispatch_action(
                                 );
                             }
                             Err(e) => {
-                                warn!(plan_id = %plan_id, task = %task_id, err = %e,
-                                    "transition error after preflight verification");
+                                let message = format!(
+                                    "preflight verification transition failed for {task_id}: {e}"
+                                );
+                                error!(plan_id = %plan_id, task = %task_id, err = %e,
+                                    "preflight transition failed; terminalizing plan");
+                                ctx.state.clear_gate_active(&effect_key);
+                                ctx.gate_attempts.remove(&effect_key);
+                                ctx.state.record_task_failure(plan_id, &task_id, &message);
+                                ctx.state.mark_task_failed(plan_id, &task_id);
+                                let task_refs = task_refs_for_plan(ctx.task_index, plan_id);
+                                ctx.task_dag
+                                    .mark_failed_blocking_downstream(plan_id, &task_id, &task_refs);
+                                if ctx
+                                    .executor
+                                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                                    .is_err()
+                                {
+                                    ctx.state.force_plan_terminal(plan_id);
+                                }
+                                ctx.sink.task_failed(plan_id, &task_id, &message);
+                                ctx.tui.task_completed(plan_id, &task_id, "failed");
+                                ctx.tui.error(&message);
+                                return ActionDispatchOutcome::Handled;
                             }
                         }
 
@@ -5390,7 +5439,7 @@ async fn dispatch_action(
                 ctx.config,
                 RunnerEvent::gate_dispatch_started(
                     &run_id,
-                    attempt_ref,
+                    attempt_ref.clone(),
                     GateCompletionKind::Gate,
                     pipeline_rung,
                 ),
@@ -5418,6 +5467,7 @@ async fn dispatch_action(
                 let completion = GateCompletion {
                     plan_id: plan_id.clone(),
                     task_id: task_id.clone(),
+                    attempt: Some(attempt_ref.clone()),
                     rung: pipeline_rung,
                     passed: true,
                     output: "skipped: read-only role".to_string(),
@@ -5454,6 +5504,7 @@ async fn dispatch_action(
                 let complexity = gate_plan_complexity_for_task(task_def);
                 let target_crates = task_target_crates(task_def);
                 gate_dispatch::spawn_gate(
+                    attempt_ref,
                     plan_id.clone(),
                     task_id,
                     pipeline_rung,
@@ -5570,7 +5621,7 @@ async fn dispatch_action(
                 ctx.config,
                 RunnerEvent::gate_dispatch_started(
                     &run_id,
-                    attempt_ref,
+                    attempt_ref.clone(),
                     GateCompletionKind::PlanVerify,
                     u32::MAX,
                 ),
@@ -5582,6 +5633,7 @@ async fn dispatch_action(
                 "dispatching plan verify"
             );
             gate_dispatch::spawn_plan_verify(
+                attempt_ref,
                 plan_id.clone(),
                 plan_workdir,
                 verify_steps,
@@ -7742,5 +7794,38 @@ mod tests_post_gate_reflection_lessons {
         let result = lessons_from_post_gate_reflections(learn_dir, "compile", "task-1");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], "Compile lesson");
+    }
+
+    #[test]
+    fn matching_gate_attempt_is_consumed_exactly_once() {
+        let attempt = TaskAttemptRef::new("plan", "task", 2);
+        let mut attempts = HashMap::from([("effect".to_string(), attempt.clone())]);
+
+        assert_eq!(
+            take_matching_gate_attempt(&mut attempts, "effect", Some(&attempt)),
+            Some(attempt.clone())
+        );
+        assert_eq!(
+            take_matching_gate_attempt(&mut attempts, "effect", Some(&attempt)),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_gate_attempt_cannot_consume_current_attempt() {
+        let stale = TaskAttemptRef::new("plan", "task", 1);
+        let current = TaskAttemptRef::new("plan", "task", 2);
+        let mut attempts = HashMap::from([("effect".to_string(), current.clone())]);
+
+        assert_eq!(
+            take_matching_gate_attempt(&mut attempts, "effect", Some(&stale)),
+            None
+        );
+        assert_eq!(attempts.get("effect"), Some(&current));
+        assert_eq!(
+            take_matching_gate_attempt(&mut attempts, "effect", None),
+            None
+        );
+        assert_eq!(attempts.get("effect"), Some(&current));
     }
 }

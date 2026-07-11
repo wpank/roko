@@ -57,6 +57,132 @@ pub enum SkippedReason {
     PlanTimedOut,
 }
 
+// ─── Progress classification ────────────────────────────────────────────
+
+/// Why a non-terminal task cannot run right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockedReason {
+    /// A same-plan prerequisite terminally failed.
+    PrerequisiteFailed { prerequisite: TaskId },
+    /// A same-plan prerequisite was skipped.
+    PrerequisiteSkipped { prerequisite: TaskId },
+    /// A cross-plan prerequisite terminally failed.
+    PlanPrerequisiteFailed { prerequisite_plan: PlanId },
+    /// A same-plan prerequisite has not completed and nothing is running it.
+    WaitingOnPrerequisite { prerequisite: TaskId },
+    /// A cross-plan prerequisite has not completed yet.
+    WaitingOnPlan { prerequisite_plan: PlanId },
+}
+
+impl BlockedReason {
+    /// Whether this block can clear through work in another plan.
+    #[must_use]
+    pub const fn may_make_future_progress(&self) -> bool {
+        matches!(self, Self::WaitingOnPlan { .. })
+    }
+
+    /// Convert hard failed-prerequisite blocks into the persisted skip reason.
+    #[must_use]
+    pub fn skipped_reason(&self) -> Option<SkippedReason> {
+        match self {
+            Self::PrerequisiteFailed { prerequisite }
+            | Self::PrerequisiteSkipped { prerequisite } => {
+                Some(SkippedReason::PrerequisiteFailed {
+                    prerequisite: prerequisite.clone(),
+                })
+            }
+            Self::PlanPrerequisiteFailed { prerequisite_plan } => {
+                Some(SkippedReason::PrerequisiteFailed {
+                    prerequisite: prerequisite_plan.clone(),
+                })
+            }
+            Self::WaitingOnPrerequisite { .. } | Self::WaitingOnPlan { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::PrerequisiteFailed { prerequisite } => {
+                format!("prerequisite {prerequisite} failed")
+            }
+            Self::PrerequisiteSkipped { prerequisite } => {
+                format!("prerequisite {prerequisite} was skipped")
+            }
+            Self::PlanPrerequisiteFailed { prerequisite_plan } => {
+                format!("plan prerequisite {prerequisite_plan} failed")
+            }
+            Self::WaitingOnPrerequisite { prerequisite } => {
+                format!("waiting on prerequisite {prerequisite}")
+            }
+            Self::WaitingOnPlan { prerequisite_plan } => {
+                format!("waiting on plan prerequisite {prerequisite_plan}")
+            }
+        }
+    }
+}
+
+/// Ready/active/blocked/terminal classification for one DAG task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DagTaskClassification {
+    Ready,
+    Active,
+    Blocked { reason: BlockedReason },
+    Terminal,
+}
+
+/// Blocked task with its concrete reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedTask {
+    pub task_id: TaskId,
+    pub reason: BlockedReason,
+}
+
+/// Summary of all task classifications for a plan.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DagProgressSummary {
+    pub ready: usize,
+    pub active: usize,
+    pub blocked: usize,
+    pub terminal: usize,
+    pub blocked_tasks: Vec<BlockedTask>,
+}
+
+impl DagProgressSummary {
+    #[must_use]
+    pub const fn has_ready(&self) -> bool {
+        self.ready > 0
+    }
+
+    #[must_use]
+    pub const fn has_active(&self) -> bool {
+        self.active > 0
+    }
+
+    /// True when no local runnable or active work exists but a cross-plan
+    /// dependency could still complete later.
+    #[must_use]
+    pub fn can_make_future_progress(&self) -> bool {
+        self.has_ready()
+            || self.has_active()
+            || self
+                .blocked_tasks
+                .iter()
+                .any(|task| task.reason.may_make_future_progress())
+    }
+
+    #[must_use]
+    pub fn describe_blocked(&self) -> String {
+        let mut reasons = self
+            .blocked_tasks
+            .iter()
+            .map(|task| format!("{}: {}", task.task_id, task.reason.describe()))
+            .collect::<Vec<_>>();
+        reasons.sort();
+        reasons.join("; ")
+    }
+}
+
 // ─── Per-plan state ─────────────────────────────────────────────────────
 
 /// Bookkeeping for a single plan's task DAG.
@@ -235,6 +361,151 @@ impl TaskDag {
                 task.is_ready_with_plan_deps(completed_in_plan, completed_plans)
             })
             .collect()
+    }
+
+    /// Classify every task in this plan as ready, active, blocked, or terminal.
+    #[must_use]
+    pub fn progress_summary(
+        &self,
+        plan_id: &str,
+        tasks: &[&TaskDef],
+        completed_in_plan: &[String],
+        failed_in_plan: &HashSet<String>,
+        completed_plans: &[String],
+        failed_plans: &[String],
+    ) -> DagProgressSummary {
+        let plan = self.plans.get(plan_id);
+        let ordered = ordered_tasks(tasks);
+        let mut summary = DagProgressSummary::default();
+
+        for task in ordered {
+            match self.classify_task(
+                plan,
+                task,
+                completed_in_plan,
+                failed_in_plan,
+                completed_plans,
+                failed_plans,
+            ) {
+                DagTaskClassification::Ready => summary.ready += 1,
+                DagTaskClassification::Active => summary.active += 1,
+                DagTaskClassification::Terminal => summary.terminal += 1,
+                DagTaskClassification::Blocked { reason } => {
+                    summary.blocked += 1;
+                    summary.blocked_tasks.push(BlockedTask {
+                        task_id: task.id.clone(),
+                        reason,
+                    });
+                }
+            }
+        }
+
+        summary
+    }
+
+    fn classify_task(
+        &self,
+        plan: Option<&PlanDag>,
+        task: &TaskDef,
+        completed_in_plan: &[String],
+        failed_in_plan: &HashSet<String>,
+        completed_plans: &[String],
+        failed_plans: &[String],
+    ) -> DagTaskClassification {
+        if completed_in_plan.contains(&task.id)
+            || failed_in_plan.contains(&task.id)
+            || task_status_is_terminal(&task.status)
+            || plan.is_some_and(|state| state.is_terminal(&task.id))
+        {
+            return DagTaskClassification::Terminal;
+        }
+
+        if plan.is_some_and(|state| state.is_running(&task.id)) {
+            return DagTaskClassification::Active;
+        }
+
+        for dep in &task.depends_on {
+            if failed_in_plan.contains(dep) || plan.is_some_and(|state| state.failed.contains(dep))
+            {
+                return DagTaskClassification::Blocked {
+                    reason: BlockedReason::PrerequisiteFailed {
+                        prerequisite: dep.clone(),
+                    },
+                };
+            }
+            if plan.is_some_and(|state| state.skipped.contains_key(dep)) {
+                return DagTaskClassification::Blocked {
+                    reason: BlockedReason::PrerequisiteSkipped {
+                        prerequisite: dep.clone(),
+                    },
+                };
+            }
+        }
+
+        for plan_dep in &task.depends_on_plan {
+            if failed_plans.contains(plan_dep) {
+                return DagTaskClassification::Blocked {
+                    reason: BlockedReason::PlanPrerequisiteFailed {
+                        prerequisite_plan: plan_dep.clone(),
+                    },
+                };
+            }
+        }
+
+        if task.is_ready_with_plan_deps(completed_in_plan, completed_plans) {
+            return DagTaskClassification::Ready;
+        }
+
+        for dep in &task.depends_on {
+            if !completed_in_plan.contains(dep) {
+                return DagTaskClassification::Blocked {
+                    reason: BlockedReason::WaitingOnPrerequisite {
+                        prerequisite: dep.clone(),
+                    },
+                };
+            }
+        }
+
+        for plan_dep in &task.depends_on_plan {
+            if !completed_plans.contains(plan_dep) {
+                return DagTaskClassification::Blocked {
+                    reason: BlockedReason::WaitingOnPlan {
+                        prerequisite_plan: plan_dep.clone(),
+                    },
+                };
+            }
+        }
+
+        DagTaskClassification::Blocked {
+            reason: BlockedReason::WaitingOnPrerequisite {
+                prerequisite: "<unknown>".to_string(),
+            },
+        }
+    }
+
+    /// Persist skipped state for tasks that are impossible because a
+    /// prerequisite failed or was skipped.
+    ///
+    /// Returns ids that were newly marked skipped.
+    pub fn mark_blocked_tasks_skipped(
+        &mut self,
+        plan_id: &str,
+        blocked_tasks: &[BlockedTask],
+    ) -> Vec<TaskId> {
+        let plan = self.plan_mut(plan_id);
+        let mut newly_skipped = Vec::new();
+        for blocked in blocked_tasks {
+            if plan.is_terminal(&blocked.task_id) {
+                continue;
+            }
+            let Some(reason) = blocked.reason.skipped_reason() else {
+                continue;
+            };
+            plan.running.remove(&blocked.task_id);
+            plan.skipped.insert(blocked.task_id.clone(), reason);
+            newly_skipped.push(blocked.task_id.clone());
+        }
+        newly_skipped
     }
 
     /// Mark a task as running. Returns `false` if the task was already
@@ -576,6 +847,100 @@ mod tests {
             }
             other => panic!("expected PrerequisiteFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn progress_summary_classifies_ready_active_blocked_terminal() {
+        let mut dag = TaskDag::default();
+        let a = task("A", &[]);
+        let b = task("B", &["A"]);
+        let c = task("C", &["B"]);
+        let d = task("D", &[]);
+        let e = task("E", &["Z"]);
+        let tasks: Vec<&TaskDef> = vec![&a, &b, &c, &d, &e];
+        let failed = HashSet::from(["B".to_string()]);
+
+        dag.mark_running("p1", "D");
+        let summary = dag.progress_summary("p1", &tasks, &["A".to_string()], &failed, &[], &[]);
+
+        assert_eq!(summary.ready, 0);
+        assert_eq!(summary.active, 1);
+        assert_eq!(summary.terminal, 2);
+        assert_eq!(summary.blocked, 2);
+        assert!(summary.can_make_future_progress());
+        assert!(summary.blocked_tasks.iter().any(|blocked| {
+            blocked.task_id == "C"
+                && matches!(
+                    blocked.reason,
+                    BlockedReason::PrerequisiteFailed { ref prerequisite }
+                        if prerequisite == "B"
+                )
+        }));
+        assert!(summary.blocked_tasks.iter().any(|blocked| {
+            blocked.task_id == "E"
+                && matches!(
+                    blocked.reason,
+                    BlockedReason::WaitingOnPrerequisite { ref prerequisite }
+                        if prerequisite == "Z"
+                )
+        }));
+    }
+
+    #[test]
+    fn progress_summary_detects_no_future_progress_when_dependencies_failed() {
+        let mut dag = TaskDag::default();
+        let a = task("A", &[]);
+        let b = task("B", &["A"]);
+        let c = task("C", &["B"]);
+        let tasks: Vec<&TaskDef> = vec![&a, &b, &c];
+
+        let skipped = dag.mark_failed_blocking_downstream("p1", "A", &tasks);
+        assert_eq!(skipped.len(), 2);
+        let failed = HashSet::from(["A".to_string()]);
+        let summary = dag.progress_summary("p1", &tasks, &[], &failed, &[], &[]);
+
+        assert_eq!(summary.ready, 0);
+        assert_eq!(summary.active, 0);
+        assert_eq!(summary.blocked, 0);
+        assert_eq!(summary.terminal, 3);
+        assert!(!summary.can_make_future_progress());
+    }
+
+    #[test]
+    fn mark_blocked_tasks_skipped_persists_failed_plan_prerequisite() {
+        let mut dag = TaskDag::default();
+        let mut a = task("A", &[]);
+        a.depends_on_plan = vec!["base".to_string()];
+        let tasks: Vec<&TaskDef> = vec![&a];
+        let failed = HashSet::new();
+
+        let summary = dag.progress_summary("p1", &tasks, &[], &failed, &[], &["base".to_string()]);
+
+        assert_eq!(summary.blocked, 1);
+        assert!(!summary.can_make_future_progress());
+        let skipped = dag.mark_blocked_tasks_skipped("p1", &summary.blocked_tasks);
+        assert_eq!(skipped, vec!["A".to_string()]);
+        assert!(matches!(
+            dag.plan("p1").unwrap().skipped.get("A"),
+            Some(SkippedReason::PrerequisiteFailed { prerequisite })
+                if prerequisite == "base"
+        ));
+    }
+
+    #[test]
+    fn waiting_on_incomplete_plan_can_make_future_progress() {
+        let dag = TaskDag::default();
+        let mut a = task("A", &[]);
+        a.depends_on_plan = vec!["base".to_string()];
+        let tasks: Vec<&TaskDef> = vec![&a];
+        let failed = HashSet::new();
+
+        let summary = dag.progress_summary("p1", &tasks, &[], &failed, &[], &[]);
+
+        assert_eq!(summary.ready, 0);
+        assert_eq!(summary.active, 0);
+        assert_eq!(summary.blocked, 1);
+        assert!(summary.can_make_future_progress());
     }
 
     #[test]

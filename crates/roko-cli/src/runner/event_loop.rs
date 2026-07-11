@@ -61,7 +61,7 @@ use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{SnapshotPayload, SnapshotWriter};
 use super::state::RunState;
-use super::task_dag::{DagConfig, TaskDag, task_status_is_terminal};
+use super::task_dag::{DagConfig, DagProgressSummary, TaskDag, task_status_is_terminal};
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
@@ -1692,31 +1692,70 @@ pub async fn run(
                             remaining,
                             "task passed — advancing to next task"
                         );
-                    } else if has_pending_dag_tasks(&task_dag, &task_index, &state, &completion.plan_id) {
-                        if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
-                            ps.gate_results.clear();
-                            ps.current_phase = PlanPhase::Implementing;
-                        }
-                        info!(
-                            plan_id = %completion.plan_id,
-                            "task passed — waiting on blocked DAG dependencies"
-                        );
                     } else {
-                        // All tasks done — run the plan-level verify chain.
-                        let _ = executor.apply_event(&completion.plan_id, &ExecutorEvent::GatePassed);
-                        info!(plan_id = %completion.plan_id, "all tasks passed — running plan verify");
-
-                        // Queue dream consolidation only when this run actually
-                        // spawned agents. Verification-only runs do not create
-                        // new agent episodes, and blocking after run.completed
-                        // on old episodes makes no-op reruns look stuck.
-                        if state.total_agent_calls > 0 {
-                            dream_completion_pending = true;
-                            debug!("dream consolidation queued after plan completion");
-                        } else {
+                        let progress = dag_progress_for_plan(
+                            &task_dag,
+                            &executor,
+                            &task_index,
+                            &state,
+                            &completion.plan_id,
+                        );
+                        let skipped = task_dag.mark_blocked_tasks_skipped(
+                            &completion.plan_id,
+                            &progress.blocked_tasks,
+                        );
+                        if !skipped.is_empty() {
                             debug!(
-                                "dream consolidation skipped after verification-only plan completion"
+                                plan_id = %completion.plan_id,
+                                skipped = ?skipped,
+                                "DAG quiescence propagated blocked tasks"
                             );
+                        }
+                        if progress.can_make_future_progress() {
+                            if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                                ps.gate_results.clear();
+                                ps.current_phase = PlanPhase::Implementing;
+                            }
+                            info!(
+                                plan_id = %completion.plan_id,
+                                "task passed — waiting on blocked DAG dependencies"
+                            );
+                        } else if dag_plan_has_failures(&task_dag, &state, &completion.plan_id)
+                            || progress.blocked > 0
+                        {
+                            let reason = dag_quiescence_reason(&completion.plan_id, &progress);
+                            warn!(plan_id = %completion.plan_id, reason = %reason, "DAG quiesced with no future progress");
+                            if let Err(err) = executor.apply_event(
+                                &completion.plan_id,
+                                &ExecutorEvent::Fatal(reason.clone()),
+                            )
+                            {
+                                warn!(
+                                    plan_id = %completion.plan_id,
+                                    error = %err,
+                                    "failed to apply Fatal event -- forcing plan terminal"
+                                );
+                                state.force_plan_terminal(&completion.plan_id);
+                            }
+                            tui.error(&reason);
+                        } else {
+                            // All tasks done — run the plan-level verify chain.
+                            let _ = executor
+                                .apply_event(&completion.plan_id, &ExecutorEvent::GatePassed);
+                            info!(plan_id = %completion.plan_id, "all tasks passed — running plan verify");
+
+                            // Queue dream consolidation only when this run actually
+                            // spawned agents. Verification-only runs do not create
+                            // new agent episodes, and blocking after run.completed
+                            // on old episodes makes no-op reruns look stuck.
+                            if state.total_agent_calls > 0 {
+                                dream_completion_pending = true;
+                                debug!("dream consolidation queued after plan completion");
+                            } else {
+                                debug!(
+                                    "dream consolidation skipped after verification-only plan completion"
+                                );
+                            }
                         }
                     }
                 } else {
@@ -1994,28 +2033,46 @@ pub async fn run(
                                 "task {} failed (skipped) — continuing with remaining tasks",
                                 completion.task_id
                             ));
-                        } else if has_pending_dag_tasks(
-                            &task_dag,
-                            &task_index,
-                            &state,
-                            &completion.plan_id,
-                        ) {
-                            if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
-                                ps.gate_results.clear();
-                                ps.current_phase = PlanPhase::Implementing;
-                            }
-                            warn!(
-                                plan_id = %completion.plan_id,
-                                task_id = %completion.task_id,
-                                "task failed — waiting on blocked DAG tasks"
-                            );
                         } else {
-                            // No more runnable tasks — fail the plan.
-                            let _ = executor.apply_event(
+                            let progress = dag_progress_for_plan(
+                                &task_dag,
+                                &executor,
+                                &task_index,
+                                &state,
                                 &completion.plan_id,
-                                &ExecutorEvent::Fatal(reason.clone()),
                             );
-                            tui.error(&reason);
+                            let skipped = task_dag.mark_blocked_tasks_skipped(
+                                &completion.plan_id,
+                                &progress.blocked_tasks,
+                            );
+                            if !skipped.is_empty() {
+                                debug!(
+                                    plan_id = %completion.plan_id,
+                                    skipped = ?skipped,
+                                    "DAG quiescence propagated blocked tasks"
+                                );
+                            }
+                            if progress.can_make_future_progress() {
+                                if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                                    ps.gate_results.clear();
+                                    ps.current_phase = PlanPhase::Implementing;
+                                }
+                                warn!(
+                                    plan_id = %completion.plan_id,
+                                    task_id = %completion.task_id,
+                                    "task failed — waiting on blocked DAG tasks"
+                                );
+                            } else {
+                                // No more runnable tasks — fail the plan.
+                                let quiescence_reason =
+                                    dag_quiescence_reason(&completion.plan_id, &progress);
+                                let fatal_reason = format!("{reason}; {quiescence_reason}");
+                                let _ = executor.apply_event(
+                                    &completion.plan_id,
+                                    &ExecutorEvent::Fatal(fatal_reason.clone()),
+                                );
+                                tui.error(&fatal_reason);
+                            }
                         }
                     }
                 }
@@ -2590,22 +2647,39 @@ fn handle_agent_failure(
         tui.error(&format!(
             "task {task_id} failed after agent error — continuing with remaining tasks"
         ));
-    } else if has_pending_dag_tasks(task_dag, task_index, state, &plan_id) {
-        if let Some(ps) = executor.plan_state_mut(&plan_id) {
-            ps.gate_results.clear();
-            ps.current_phase = PlanPhase::Implementing;
-        }
-        warn!(
-            plan_id = %plan_id,
-            task_id = %task_id,
-            "agent failed task — waiting on blocked DAG tasks"
-        );
-    } else if let Err(err) = executor.apply_event(&plan_id, &ExecutorEvent::Fatal(reason.clone())) {
-        error!(plan_id = %plan_id, error = %err, "failed to apply Fatal event after agent failure");
-        state.force_plan_terminal(&plan_id);
-        tui.error(&reason);
     } else {
-        tui.error(&reason);
+        let progress = dag_progress_for_plan(task_dag, executor, task_index, state, &plan_id);
+        let skipped = task_dag.mark_blocked_tasks_skipped(&plan_id, &progress.blocked_tasks);
+        if !skipped.is_empty() {
+            debug!(
+                plan_id = %plan_id,
+                skipped = ?skipped,
+                "DAG quiescence propagated blocked tasks"
+            );
+        }
+        if progress.can_make_future_progress() {
+            if let Some(ps) = executor.plan_state_mut(&plan_id) {
+                ps.gate_results.clear();
+                ps.current_phase = PlanPhase::Implementing;
+            }
+            warn!(
+                plan_id = %plan_id,
+                task_id = %task_id,
+                "agent failed task — waiting on blocked DAG tasks"
+            );
+        } else {
+            let quiescence_reason = dag_quiescence_reason(&plan_id, &progress);
+            let fatal_reason = format!("{reason}; {quiescence_reason}");
+            if let Err(err) =
+                executor.apply_event(&plan_id, &ExecutorEvent::Fatal(fatal_reason.clone()))
+            {
+                error!(plan_id = %plan_id, error = %err, "failed to apply Fatal event after agent failure");
+                state.force_plan_terminal(&plan_id);
+                tui.error(&fatal_reason);
+            } else {
+                tui.error(&fatal_reason);
+            }
+        }
     }
 }
 
@@ -4423,7 +4497,24 @@ async fn dispatch_action(
             let task_id = match resolved_task {
                 Some(id) => id,
                 None => {
-                    if has_pending_dag_tasks(ctx.task_dag, ctx.task_index, ctx.state, plan_id) {
+                    let progress = dag_progress_for_plan(
+                        ctx.task_dag,
+                        ctx.executor,
+                        ctx.task_index,
+                        ctx.state,
+                        plan_id,
+                    );
+                    let skipped = ctx
+                        .task_dag
+                        .mark_blocked_tasks_skipped(plan_id, &progress.blocked_tasks);
+                    if !skipped.is_empty() {
+                        debug!(
+                            plan_id = %plan_id,
+                            skipped = ?skipped,
+                            "DAG quiescence propagated blocked tasks"
+                        );
+                    }
+                    if progress.can_make_future_progress() {
                         debug!(
                             plan_id = %plan_id,
                             requested_task = %task,
@@ -4436,6 +4527,33 @@ async fn dispatch_action(
                         warn!(plan_id = %plan_id, requested_task = %task, "no ready task for unknown plan");
                         return ActionDispatchOutcome::Noop;
                     };
+
+                    if dag_plan_has_failures(ctx.task_dag, ctx.state, plan_id)
+                        || progress.blocked > 0
+                    {
+                        let reason = dag_quiescence_reason(plan_id, &progress);
+                        warn!(
+                            plan_id = %plan_id,
+                            requested_task = %task,
+                            reason = %reason,
+                            "no ready task and DAG cannot make future progress"
+                        );
+                        if let Err(e) = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(reason.clone()))
+                        {
+                            error!(
+                                plan_id = %plan_id,
+                                requested_task = %task,
+                                phase = ?phase_kind,
+                                err = %e,
+                                "failed to transition after DAG quiescence"
+                            );
+                            ctx.state.force_plan_terminal(plan_id);
+                        }
+                        ctx.tui.error(&reason);
+                        return ActionDispatchOutcome::Noop;
+                    }
 
                     let Some(event) = no_ready_spawn_event(phase_kind, &task) else {
                         debug!(
@@ -6657,36 +6775,26 @@ fn ready_tasks_for_plan<'a>(
     task_dag.ready_tasks(plan_id, &task_refs, completed, &completed_plans)
 }
 
-fn has_pending_dag_tasks(
+fn dag_progress_for_plan(
     task_dag: &TaskDag,
+    executor: &ParallelExecutor,
     task_index: &HashMap<String, HashMap<String, TaskDef>>,
     state: &RunState,
     plan_id: &str,
-) -> bool {
+) -> DagProgressSummary {
+    let task_refs = task_refs_for_plan(task_index, plan_id);
     let completed = state.plan_completed_tasks(plan_id);
     let failed = state.plan_failed_tasks(plan_id);
-    let dag_plan = task_dag.plan(plan_id);
-
-    task_index.get(plan_id).is_some_and(|tasks| {
-        tasks.values().any(|task| {
-            if completed.contains(&task.id)
-                || failed.contains(&task.id)
-                || task_status_is_terminal(&task.status)
-            {
-                return false;
-            }
-
-            if let Some(plan) = dag_plan
-                && (plan.completed.contains(&task.id)
-                    || plan.failed.contains(&task.id)
-                    || plan.skipped.contains_key(&task.id))
-            {
-                return false;
-            }
-
-            true
-        })
-    })
+    let completed_plans = completed_plan_ids(executor, task_index);
+    let failed_plans = failed_plan_ids(executor, task_index);
+    task_dag.progress_summary(
+        plan_id,
+        &task_refs,
+        completed,
+        failed,
+        &completed_plans,
+        &failed_plans,
+    )
 }
 
 fn completed_plan_ids(
@@ -6702,6 +6810,43 @@ fn completed_plan_ids(
         })
         .cloned()
         .collect()
+}
+
+fn failed_plan_ids(
+    executor: &ParallelExecutor,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+) -> Vec<String> {
+    task_index
+        .keys()
+        .filter(|plan_id| {
+            executor.plan_state(plan_id).is_some_and(|state| {
+                state.is_terminal() && !matches!(state.current_phase, PlanPhase::Complete)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn dag_plan_has_failures(task_dag: &TaskDag, state: &RunState, plan_id: &str) -> bool {
+    !state.plan_failed_tasks(plan_id).is_empty()
+        || task_dag
+            .plan(plan_id)
+            .is_some_and(|plan| !plan.failed.is_empty() || !plan.skipped.is_empty())
+}
+
+fn dag_quiescence_reason(plan_id: &str, summary: &DagProgressSummary) -> String {
+    let blocked = summary.describe_blocked();
+    if blocked.is_empty() {
+        format!(
+            "DAG made no future progress for plan {plan_id}: ready={}, active={}, blocked={}, terminal={}",
+            summary.ready, summary.active, summary.blocked, summary.terminal
+        )
+    } else {
+        format!(
+            "DAG made no future progress for plan {plan_id}: {blocked} (ready={}, active={}, blocked={}, terminal={})",
+            summary.ready, summary.active, summary.blocked, summary.terminal
+        )
+    }
 }
 
 fn gate_effect_key(plan_id: &str, task_id: &str, rung: u32, kind: GateCompletionKind) -> String {

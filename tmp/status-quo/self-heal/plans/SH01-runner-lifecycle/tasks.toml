@@ -109,11 +109,11 @@ acceptance = ["Permanent failures are never retryable.", "Attempts progress with
 [[task]]
 id = "SH01-T06"
 title = "Implement progress-aware timeout policy"
-description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines; track useful progress; and terminalize timed-out work before returning."
+description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines. Task, gate, and silence deadlines must cancel and terminalize only their owning attempt/effect; they must never call a global all-plan timeout handler. Only the hard-run deadline and a proven global scheduler deadlock may terminate the whole run. Agent chatter resets silence only; useful progress advances only on durable lifecycle/DAG milestones. Persist cancellation/timeout events before terminal snapshots and return."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
-max_loc = 300
+max_loc = 500
 files = ["crates/roko-core/src/config/timeouts.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
 role = "implementer"
 domain = "execution-engine"
@@ -124,7 +124,7 @@ read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRE
 phase = "test"
 command = "cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Timeout tests must pass."
-acceptance = ["Deadlocks fail on no-progress timeout.", "Hard cap remains independent of progress.", "Timeout emits cancellation and terminal events."]
+acceptance = ["Deadlocks fail on no-progress timeout.", "Hard cap remains independent of progress.", "A task or silence timeout cancels only its exact attempt and leaves unrelated plans running.", "Agent chatter cannot reset scheduler useful-progress time.", "Dispatch initializes attempt-specific silence and task deadlines.", "Timeout emits typed cancellation and timeout terminal events before the terminal snapshot."]
 
 [[task]]
 id = "SH01-T07"

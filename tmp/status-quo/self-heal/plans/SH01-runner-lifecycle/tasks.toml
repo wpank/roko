@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 7
+total = 9
 done = 5
 status = "ready"
 max_parallel = 1
@@ -107,24 +107,64 @@ fail_msg = "Retry lifecycle tests must pass."
 acceptance = ["Permanent failures are never retryable.", "Attempts progress without reuse or gaps.", "Exhaustion clears all active/retrying state."]
 
 [[task]]
-id = "SH01-T06"
-title = "Implement progress-aware timeout policy"
-description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines. Task, gate, and silence deadlines cancel and terminalize only their exact owning attempt/effect; never route them through an all-plan handler. Bridge-backed agents require an attempt cancellation token/abort handle, not only CLI process killing. Gate effects require owned start/deadline state so a lost completion cannot suppress deadlock detection forever. Emit typed cancellation-requested, timeout, and cancelled/timeout terminal events for the exact attempt before writing terminal snapshots; hard-run and scheduler handlers must terminalize attempts and plans before snapshot/shutdown/run.completed. Agent chatter resets silence only; useful progress advances only on durable lifecycle/DAG milestones. Timeout configuration must not infer explicitness by comparing values to defaults, and global task timeout must not be hidden by a parser-injected per-task default."
+id = "SH01-T06A"
+title = "Define unambiguous timeout configuration"
+description = "Add hard-run, task-attempt, gate-effect, agent-silence, and scheduler-no-progress timeout settings with stable serde round trips. Preserve explicit-versus-default precedence without value-equality inference and without serializing implicit defaults as explicit overrides. Ensure parser-injected task defaults cannot hide the global task timeout. This task defines configuration and resolution only; do not wire runtime cancellation."
 status = "ready"
-tier = "integrative"
+tier = "focused"
 model_hint = "codex-default"
-max_loc = 700
-files = ["crates/roko-core/src/config/timeouts.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+max_loc = 260
+files = ["crates/roko-core/src/config/timeouts.rs", "crates/roko-cli/src/task_parser.rs", "crates/roko-cli/src/runner/event_loop.rs"]
 role = "implementer"
 domain = "execution-engine"
 depends_on = ["SH01-T04", "SH01-T05"]
 [task.context]
-read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Timeout policy requirements." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Terminal durability requirement." }]
+read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Timeout configuration requirements." }]
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli runner::event_loop 2>&1"
-fail_msg = "Timeout tests must pass."
-acceptance = ["Deadlocks, including lost gate completions, fail on an owned effect/no-progress deadline.", "Hard cap remains independent of progress.", "A task, gate, or silence timeout cancels only its exact attempt/effect and leaves unrelated plans running.", "CLI and bridge-backed attempts both have effective cancellation handles.", "Agent chatter cannot reset scheduler useful-progress time.", "Dispatch initializes attempt-specific silence and task deadlines without ambiguous default precedence.", "Typed cancellation intent and timeout terminal events are durable before any terminal snapshot or run completion."]
+command = "cargo test -p roko-core config::timeouts 2>&1 && cargo test -p roko-cli task_parser 2>&1"
+fail_msg = "Timeout configuration and precedence tests must pass."
+acceptance = ["Serde round trips preserve both values and precedence.", "An explicitly configured value equal to the default remains distinguishable from omission.", "Global task timeout applies when a task has no authored override.", "Legacy plan timeout migration is deterministic and tested."]
+
+[[task]]
+id = "SH01-T06B"
+title = "Give every attempt and gate an owned cancellation handle"
+description = "Represent CLI agents, bridge-backed agents, and gate effects with attempt-keyed cancellation/abort ownership and start/activity/deadline timestamps. Cancellation must stop provider inference or the exact gate future, not merely remove map entries. Add typed cancellation-requested, timed-out, and cancelled attempt events; do not implement global scheduler policy in this task."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/dispatch/factory.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06A"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Provider cancellation defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Typed lifecycle requirements." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Attempt and gate cancellation ownership tests must pass."
+acceptance = ["CLI and bridge attempts both stop underlying work on cancellation.", "A lost gate completion is cancellable by its owned deadline.", "Cancellation events carry exact plan/task/attempt identity.", "Cancelling one attempt leaves unrelated work active."]
+
+[[task]]
+id = "SH01-T06C"
+title = "Enforce progress-aware deadlines durably"
+description = "Wire hard-run, owner-scoped task/gate/silence, and global scheduler-no-progress deadlines using T06A configuration and T06B ownership. Agent chatter resets silence only; useful progress advances only on durable lifecycle or DAG milestones. Terminalize exact attempts and plans and persist typed timeout/cancellation events before terminal snapshots, shutdown, or run.completed. Gate-map membership alone cannot suppress deadlock detection."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 500
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Progress semantics." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable terminal ordering." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli runner::state 2>&1"
+fail_msg = "Progress-aware deadline tests must pass."
+acceptance = ["Hard cap is independent of progress.", "Chatter cannot reset scheduler progress.", "Owner timeout affects only its exact attempt/effect.", "Lost effects expire rather than blocking forever.", "Typed timeout terminals are durable before terminal snapshots and run completion."]
 
 [[task]]
 id = "SH01-T07"
@@ -137,7 +177,7 @@ max_loc = 180
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
 role = "implementer"
 domain = "observability"
-depends_on = ["SH01-T03", "SH01-T06"]
+depends_on = ["SH01-T03", "SH01-T06C"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/46-RUN-SUMMARY-CONTRADICTS-PLAN-SUMMARY.md", why = "9/5 versus 0/0 reproduction." }]
 [[task.verify]]

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use roko_core::RuntimeEvent;
 use roko_core::agent::ModelSpec;
 use roko_core::config::GatesConfig;
-use roko_core::defaults::{DEFAULT_AGENT_TURN_LIMIT, DEFAULT_RUNNER_MAX_CONCURRENT_PLANS};
+use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
@@ -193,6 +193,166 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 
 // ─── RunContext ──────────────────────────────────────────────────────────
 
+struct RoutedAgentEvent {
+    plan_id: String,
+    task_id: String,
+    agent_id: String,
+    event: AgentEvent,
+}
+
+impl RoutedAgentEvent {
+    fn for_task(plan_id: String, task_id: String, agent_id: String, event: AgentEvent) -> Self {
+        Self {
+            plan_id,
+            task_id,
+            agent_id,
+            event,
+        }
+    }
+}
+
+async fn forward_agent_events(
+    plan_id: String,
+    task_id: String,
+    agent_id: String,
+    mut raw_rx: mpsc::Receiver<AgentEvent>,
+    routed_tx: mpsc::Sender<RoutedAgentEvent>,
+) {
+    while let Some(event) = raw_rx.recv().await {
+        let routed =
+            RoutedAgentEvent::for_task(plan_id.clone(), task_id.clone(), agent_id.clone(), event);
+        if routed_tx.send(routed).await.is_err() {
+            break;
+        }
+    }
+}
+
+struct ActiveAgentAttempt {
+    task_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+#[derive(Clone)]
+struct TaskRuntimeState {
+    agent_active: bool,
+    agent_model: String,
+    agent_provider: String,
+    agent_output: String,
+    session_id: Option<String>,
+    agent_pid: Option<u32>,
+    agent_turn_completed: bool,
+    tokens_in: u64,
+    tokens_out: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    cost_usd: f64,
+    task_agent_calls: u32,
+    task_model_hint: Option<String>,
+    current_prompt_text: String,
+    current_daimon_strategy: Option<StrategyCoordinates>,
+    gate_output: String,
+    task_started_at: Instant,
+    last_dispatch_ms: u64,
+    routing_context: Option<roko_learn::model_router::RoutingContext>,
+}
+
+impl TaskRuntimeState {
+    fn capture(state: &RunState) -> Self {
+        Self {
+            agent_active: state.agent_active,
+            agent_model: state.agent_model.clone(),
+            agent_provider: state.agent_provider.clone(),
+            agent_output: state.agent_output.clone(),
+            session_id: state.session_id.clone(),
+            agent_pid: state.agent_pid,
+            agent_turn_completed: state.agent_turn_completed,
+            tokens_in: state.tokens_in,
+            tokens_out: state.tokens_out,
+            cache_read_tokens: state.cache_read_tokens,
+            cache_write_tokens: state.cache_write_tokens,
+            cost_usd: state.cost_usd,
+            task_agent_calls: state.task_agent_calls,
+            task_model_hint: state.task_model_hint.clone(),
+            current_prompt_text: state.current_prompt_text.clone(),
+            current_daimon_strategy: state.current_daimon_strategy.clone(),
+            gate_output: state.gate_output.clone(),
+            task_started_at: state.task_started_at,
+            last_dispatch_ms: state.last_dispatch_ms,
+            routing_context: state.routing_context.clone(),
+        }
+    }
+
+    fn restore(&self, state: &mut RunState, plan_id: &str, task_id: &str) {
+        state.plan_id = plan_id.to_string();
+        state.current_task = task_id.to_string();
+        state.agent_active = self.agent_active;
+        state.agent_model = self.agent_model.clone();
+        state.agent_provider = self.agent_provider.clone();
+        state.agent_output = self.agent_output.clone();
+        state.session_id = self.session_id.clone();
+        state.agent_pid = self.agent_pid;
+        state.agent_turn_completed = self.agent_turn_completed;
+        state.tokens_in = self.tokens_in;
+        state.tokens_out = self.tokens_out;
+        state.cache_read_tokens = self.cache_read_tokens;
+        state.cache_write_tokens = self.cache_write_tokens;
+        state.cost_usd = self.cost_usd;
+        state.task_agent_calls = self.task_agent_calls;
+        state.task_model_hint = self.task_model_hint.clone();
+        state.current_prompt_text = self.current_prompt_text.clone();
+        state.current_daimon_strategy = self.current_daimon_strategy.clone();
+        state.gate_output = self.gate_output.clone();
+        state.task_started_at = self.task_started_at;
+        state.last_dispatch_ms = self.last_dispatch_ms;
+        state.routing_context = self.routing_context.clone();
+    }
+}
+
+fn task_key(plan_id: &str, task_id: &str) -> String {
+    format!("{plan_id}:{task_id}")
+}
+
+fn queue_pending_gate_task(
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    plan_id: &str,
+    task_id: &str,
+) {
+    if task_id.is_empty() {
+        return;
+    }
+    let pending = pending_gate_tasks.entry(plan_id.to_string()).or_default();
+    if !pending.iter().any(|queued| queued == task_id) {
+        pending.push(task_id.to_string());
+    }
+}
+
+fn remove_pending_gate_task(
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    plan_id: &str,
+    task_id: &str,
+) {
+    let Some(pending) = pending_gate_tasks.get_mut(plan_id) else {
+        return;
+    };
+    pending.retain(|queued| queued != task_id);
+    if pending.is_empty() {
+        pending_gate_tasks.remove(plan_id);
+    }
+}
+
+fn restore_task_runtime(
+    state: &mut RunState,
+    runtimes: &HashMap<String, TaskRuntimeState>,
+    plan_id: &str,
+    task_id: &str,
+) {
+    if let Some(runtime) = runtimes.get(&task_key(plan_id, task_id)) {
+        runtime.restore(state, plan_id, task_id);
+    } else {
+        state.plan_id = plan_id.to_string();
+        state.current_task = task_id.to_string();
+    }
+}
+
 /// Shared context for the dispatch loop, replacing 11 loose parameters.
 struct RunContext<'a> {
     executor: &'a mut ParallelExecutor,
@@ -204,17 +364,21 @@ struct RunContext<'a> {
     tui: &'a TuiBridge,
     state: &'a mut RunState,
     active_agent_tasks: &'a mut HashMap<String, String>,
+    active_agent_attempts: &'a mut HashMap<String, ActiveAgentAttempt>,
     agent_handles: &'a mut HashMap<String, AgentHandle>,
-    agent_tx: &'a mpsc::Sender<AgentEvent>,
+    pending_gate_tasks: &'a mut HashMap<String, Vec<String>>,
+    agent_tx: &'a mpsc::Sender<RoutedAgentEvent>,
     gate_tx: &'a mpsc::Sender<GateCompletion>,
-    fatal_tx: mpsc::Sender<AgentEvent>,
+    fatal_tx: mpsc::Sender<RoutedAgentEvent>,
     paths: &'a PersistPaths,
     merge_queue: &'a MergeQueue,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
     prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
+    task_sem: Arc<tokio::sync::Semaphore>,
     gate_sem: Arc<tokio::sync::Semaphore>,
+    task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -270,7 +434,7 @@ pub async fn run(
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
 
     let exec_config = ExecutorConfig {
-        max_concurrent_plans: DEFAULT_RUNNER_MAX_CONCURRENT_PLANS,
+        max_concurrent_plans: plans.len().max(1),
         max_concurrent_tasks,
         max_auto_fix_iterations: config.max_retries,
         task_timeout_secs,
@@ -470,6 +634,11 @@ pub async fn run(
     // downstream helpers that expect `&RunConfig` work without extra `&`.
     let config = &config;
 
+    // Per-run task semaphore — limits concurrently dispatched agents.
+    let task_sem = Arc::new(tokio::sync::Semaphore::new(
+        config.max_concurrent_tasks.max(1),
+    ));
+
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
     let gate_sem = Arc::new(tokio::sync::Semaphore::new(config.gate_concurrency.max(1)));
 
@@ -504,7 +673,7 @@ pub async fn run(
     }
 
     // Channels.
-    let (agent_tx, mut agent_rx) = mpsc::channel::<AgentEvent>(256);
+    let (agent_tx, mut agent_rx) = mpsc::channel::<RoutedAgentEvent>(256);
     // Dynamic gate channel buffer: max_concurrent_tasks * 7 rungs, clamped to [32, 256].
     let gate_buffer = (config.max_concurrent_tasks * 7).max(32).min(256);
     let (gate_tx, mut gate_rx) = mpsc::channel::<GateCompletion>(gate_buffer);
@@ -622,6 +791,9 @@ pub async fn run(
 
     let mut agent_handles: HashMap<String, AgentHandle> = HashMap::new();
     let mut active_agent_tasks: HashMap<String, String> = HashMap::new();
+    let mut active_agent_attempts: HashMap<String, ActiveAgentAttempt> = HashMap::new();
+    let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
+    let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -794,7 +966,19 @@ pub async fn run(
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
         tokio::select! {
             // ─── Branch 1: Agent events ─────────────────────────────
-            Some(event) = agent_rx.recv() => {
+            Some(routed) = agent_rx.recv() => {
+                let RoutedAgentEvent {
+                    plan_id: event_plan_id,
+                    task_id: event_task_id,
+                    agent_id: event_agent_id,
+                    event,
+                } = routed;
+                restore_task_runtime(
+                    &mut state,
+                    &task_runtime_states,
+                    &event_plan_id,
+                    &event_task_id,
+                );
                 let is_turn_done = matches!(&event, AgentEvent::TurnCompleted { .. });
                 let is_exited = matches!(&event, AgentEvent::Exited { .. });
                 let turn_completed_before_event = state.agent_turn_completed;
@@ -803,8 +987,16 @@ pub async fn run(
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
                 publish_learning_agent_event(&learning_event_bus, &event, &state);
-                if is_turn_done || is_exited {
-                    active_agent_tasks.remove(&state.plan_id);
+                task_runtime_states.insert(task_key(&event_plan_id, &event_task_id), TaskRuntimeState::capture(&state));
+                if is_turn_done {
+                    active_agent_tasks.remove(&task_key(&event_plan_id, &event_task_id));
+                    if let Some(active) = active_agent_attempts.get_mut(&event_agent_id) {
+                        active.task_permit.take();
+                    }
+                }
+                if is_exited {
+                    active_agent_tasks.remove(&task_key(&event_plan_id, &event_task_id));
+                    active_agent_attempts.remove(&event_agent_id);
                 }
 
                 // ── Forward progress-relevant agent events to RuntimeEvent ──
@@ -921,7 +1113,14 @@ pub async fn run(
                                 config,
                                 message,
                             );
+                            task_runtime_states
+                                .remove(&task_key(&event_plan_id, &event_task_id));
                         } else {
+                            queue_pending_gate_task(
+                                &mut pending_gate_tasks,
+                                &event_plan_id,
+                                &event_task_id,
+                            );
                             apply_agent_completion(&mut executor, &plan_id, &tui);
                         }
                         save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
@@ -929,13 +1128,13 @@ pub async fn run(
                 }
 
                 if is_exited {
-                    let exit_code = if let Some(handle) = agent_handles.remove(&state.plan_id) {
+                    let exit_code = if let Some(handle) = agent_handles.remove(&event_agent_id) {
                         let pid = handle.pid;
                         let code = handle.wait().await;
                         roko_agent::process::unregister_pid(pid);
                         code
-                    } else if let AgentEvent::Exited { exit_code } = event {
-                        exit_code
+                    } else if let AgentEvent::Exited { exit_code } = &event {
+                        *exit_code
                     } else {
                         None
                     };
@@ -944,6 +1143,11 @@ pub async fn run(
                     if !turn_completed_before_event && !plan_id.is_empty() {
                         let agent_id = format!("{}/{}", state.plan_id, state.current_task);
                         if exit_code.unwrap_or(0) == 0 {
+                            queue_pending_gate_task(
+                                &mut pending_gate_tasks,
+                                &event_plan_id,
+                                &event_task_id,
+                            );
                             let attempt = state.current_attempt_ref();
                             let run_id = state.run_id().to_string();
                             emit_runner_event(
@@ -998,6 +1202,8 @@ pub async fn run(
                                 config,
                                 message,
                             );
+                            task_runtime_states
+                                .remove(&task_key(&event_plan_id, &event_task_id));
                         }
                     }
 
@@ -1012,6 +1218,12 @@ pub async fn run(
                     &completion.task_id,
                     completion.rung,
                     completion.kind,
+                );
+                restore_task_runtime(
+                    &mut state,
+                    &task_runtime_states,
+                    &completion.plan_id,
+                    &completion.task_id,
                 );
                 state.clear_gate_active(&effect_key);
                 state.gate_output = completion.output.clone();
@@ -1767,6 +1979,23 @@ pub async fn run(
                     }
                 }
 
+                if completion.kind == GateCompletionKind::Gate {
+                    remove_pending_gate_task(
+                        &mut pending_gate_tasks,
+                        &completion.plan_id,
+                        &completion.task_id,
+                    );
+                    if pending_gate_tasks
+                        .get(&completion.plan_id)
+                        .is_some_and(|pending| !pending.is_empty())
+                    {
+                        if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
+                            ps.current_phase = PlanPhase::Gating;
+                        }
+                    }
+                    task_runtime_states.remove(&task_key(&completion.plan_id, &completion.task_id));
+                }
+
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
             }
 
@@ -1802,7 +2031,9 @@ pub async fn run(
                         tui: &tui,
                         state: &mut state,
                         active_agent_tasks: &mut active_agent_tasks,
+                        active_agent_attempts: &mut active_agent_attempts,
                         agent_handles: &mut agent_handles,
+                        pending_gate_tasks: &mut pending_gate_tasks,
                         agent_tx: &agent_tx,
                         gate_tx: &gate_tx,
                         fatal_tx: agent_tx.clone(),
@@ -1812,7 +2043,9 @@ pub async fn run(
                         snapshot_writer: &snapshot_writer,
                         prompt_cache: &prompt_cache,
                         factory: &factory,
+                        task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
+                        task_runtime_states: &mut task_runtime_states,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
@@ -1820,6 +2053,12 @@ pub async fn run(
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
                     if let ActionDispatchOutcome::AgentStarted { plan_id, task_id } = dispatch_outcome {
                         ctx.state.last_dispatch_ms = dispatch_ms;
+                        if let Some(runtime) = ctx
+                            .task_runtime_states
+                            .get_mut(&task_key(&plan_id, &task_id))
+                        {
+                            runtime.last_dispatch_ms = dispatch_ms;
+                        }
                         let action_label = format!("{plan_id}/{task_id}");
                         info!(action = %action_label, dispatch_ms, "agent action dispatched");
                         // Record task start in the run ledger.
@@ -4056,21 +4295,13 @@ async fn dispatch_action(
                 }
             };
 
-            if let Some(active_task) = ctx.active_agent_tasks.get(plan_id.as_str()) {
+            let active_task_key = task_key(plan_id, &task_id);
+            if let Some(active_agent_id) = ctx.active_agent_tasks.get(&active_task_key) {
                 debug!(
                     plan_id = %plan_id,
                     task = %task_id,
-                    active_task = %active_task,
-                    "agent already active for this plan — suppressing duplicate spawn"
-                );
-                return ActionDispatchOutcome::Noop;
-            }
-
-            if ctx.agent_handles.contains_key(plan_id.as_str()) {
-                debug!(
-                    plan_id = %plan_id,
-                    task = %task_id,
-                    "agent already active for this plan — suppressing duplicate spawn"
+                    active_agent_id = %active_agent_id,
+                    "agent already active for this task — suppressing duplicate spawn"
                 );
                 return ActionDispatchOutcome::Noop;
             }
@@ -4133,6 +4364,19 @@ async fn dispatch_action(
                 }
             };
 
+            let task_permit = match ctx.task_sem.clone().try_acquire_owned() {
+                Ok(task_permit) => task_permit,
+                Err(_) => {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        max_concurrent_tasks = ctx.config.max_concurrent_tasks,
+                        "agent task permit unavailable — delaying spawn"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
+            };
+
             if is_dag_task_spawn {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
                 let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
@@ -4169,6 +4413,10 @@ async fn dispatch_action(
                 .unwrap_or(1);
             ctx.state.reset_for_task(plan_id, &task_id);
             ctx.state.set_iteration(plan_id, &task_id, attempt_num);
+            ctx.task_runtime_states.insert(
+                task_key(plan_id, &task_id),
+                TaskRuntimeState::capture(ctx.state),
+            );
             let role = task_def.role.as_deref().unwrap_or("implementer");
 
             if task_should_preflight_verify(task_def, attempt_num) {
@@ -4276,16 +4524,23 @@ async fn dispatch_action(
                         let gate_tx = ctx.gate_tx.clone();
                         let fatal_tx = ctx.fatal_tx.clone();
                         let plan_id_fatal = plan_id.clone();
+                        let task_id_fatal = task_id.clone();
+                        let agent_id_fatal = format!("{plan_id_fatal}/{task_id_fatal}");
                         tokio::spawn(async move {
                             if let Err(e) = gate_tx.send(preflight).await {
                                 error!(plan_id = %plan_id_fatal, err = %e,
                                     "CRITICAL: failed to send preflight gate completion -- sending fatal");
                                 let _ = fatal_tx
-                                    .send(AgentEvent::Error {
-                                        message: format!(
-                                            "gate channel closed for plan {plan_id_fatal}: {e}"
-                                        ),
-                                    })
+                                    .send(RoutedAgentEvent::for_task(
+                                        plan_id_fatal.clone(),
+                                        task_id_fatal,
+                                        agent_id_fatal,
+                                        AgentEvent::Error {
+                                            message: format!(
+                                                "gate channel closed for plan {plan_id_fatal}: {e}"
+                                            ),
+                                        },
+                                    ))
                                     .await;
                             }
                         });
@@ -4341,7 +4596,8 @@ async fn dispatch_action(
                     crate_familiarity: 0.5,
                     has_prior_failure: attempt_num > 1,
                     conductor_load: 0.0,
-                    active_agents: 0,
+                    active_agents: u32::try_from(ctx.active_agent_attempts.len())
+                        .unwrap_or(u32::MAX),
                     ready_queue_depth: 0,
                     max_queue_wait_hours: 0.0,
                     daimon_policy: daimon_policy_for_hook(daimon_hook.as_ref()),
@@ -4383,6 +4639,7 @@ async fn dispatch_action(
                     if is_dag_task_spawn {
                         ctx.task_dag.clear_running(plan_id, &task_id);
                     }
+                    ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
                     if let Err(e) = ctx
                         .executor
                         .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -4542,6 +4799,7 @@ async fn dispatch_action(
                             if is_dag_task_spawn {
                                 ctx.task_dag.clear_running(plan_id, &task_id);
                             }
+                            ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
                             if let Err(e) = ctx
                                 .executor
                                 .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -4621,10 +4879,19 @@ async fn dispatch_action(
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
 
+                    let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
+                    tokio::spawn(forward_agent_events(
+                        plan_id.clone(),
+                        task_id.clone(),
+                        agent_id.clone(),
+                        raw_agent_rx,
+                        ctx.agent_tx.clone(),
+                    ));
+
                     match ctx
                         .factory
                         .dispatcher()
-                        .spawn_streaming_cli_agent(&spawn_config, ctx.agent_tx.clone())
+                        .spawn_streaming_cli_agent(&spawn_config, raw_agent_tx)
                         .await
                     {
                         Ok(handle) => {
@@ -4652,9 +4919,17 @@ async fn dispatch_action(
                                 &task_def.title,
                                 "implementing",
                             );
-                            ctx.agent_handles.insert(plan_id.to_string(), handle);
+                            ctx.agent_handles.insert(agent_id.clone(), handle);
                             ctx.active_agent_tasks
-                                .insert(plan_id.to_string(), task_id.clone());
+                                .insert(active_task_key.clone(), agent_id.clone());
+                            ctx.active_agent_attempts.insert(
+                                agent_id.clone(),
+                                ActiveAgentAttempt {
+                                    task_permit: Some(task_permit),
+                                },
+                            );
+                            ctx.task_runtime_states
+                                .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
                             register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
                             return ActionDispatchOutcome::AgentStarted {
                                 plan_id: plan_id.clone(),
@@ -4667,6 +4942,7 @@ async fn dispatch_action(
                             if is_dag_task_spawn {
                                 ctx.task_dag.clear_running(plan_id, &task_id);
                             }
+                            ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
                             let agent_provider = ctx.state.agent_provider.clone();
                             emit_runner_event(
                                 ctx.paths,
@@ -4745,8 +5021,15 @@ async fn dispatch_action(
                         bare_mode: false,
                         dangerously_skip_permissions: ctx.config.dangerously_skip_permissions,
                     };
-                    ctx.factory
-                        .spawn_shared_agent_bridge(request, ctx.agent_tx.clone());
+                    let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
+                    tokio::spawn(forward_agent_events(
+                        plan_id.clone(),
+                        task_id.clone(),
+                        agent_id.clone(),
+                        raw_agent_rx,
+                        ctx.agent_tx.clone(),
+                    ));
+                    ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx);
                     emit_runner_event(
                         ctx.paths,
                         ctx.state,
@@ -4767,7 +5050,15 @@ async fn dispatch_action(
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     ctx.active_agent_tasks
-                        .insert(plan_id.to_string(), task_id.clone());
+                        .insert(active_task_key.clone(), agent_id.clone());
+                    ctx.active_agent_attempts.insert(
+                        agent_id.clone(),
+                        ActiveAgentAttempt {
+                            task_permit: Some(task_permit),
+                        },
+                    );
+                    ctx.task_runtime_states
+                        .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
                     register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
                     return ActionDispatchOutcome::AgentStarted {
                         plan_id: plan_id.clone(),
@@ -4778,7 +5069,13 @@ async fn dispatch_action(
         }
 
         ExecutorAction::RunGate { plan_id, rung } => {
-            let task_id = ctx.state.current_task.clone();
+            let task_id = ctx
+                .pending_gate_tasks
+                .get(plan_id)
+                .and_then(|pending| pending.first())
+                .cloned()
+                .unwrap_or_else(|| ctx.state.current_task.clone());
+            restore_task_runtime(ctx.state, ctx.task_runtime_states, plan_id, &task_id);
             let gates_config = gates_config_for_run(ctx.config);
             let pipeline_rung = ctx.config.max_gate_rung;
             // Default selected rungs are Cargo-oriented; custom rungs own their command semantics.
@@ -4866,16 +5163,23 @@ async fn dispatch_action(
                 let gate_tx = ctx.gate_tx.clone();
                 let fatal_tx = ctx.fatal_tx.clone();
                 let plan_id_fatal = plan_id.clone();
+                let task_id_fatal = task_id.clone();
+                let agent_id_fatal = format!("{plan_id_fatal}/{task_id_fatal}");
                 tokio::spawn(async move {
                     if let Err(e) = gate_tx.send(completion).await {
                         error!(plan_id = %plan_id_fatal, err = %e,
                             "CRITICAL: failed to send auto-pass gate -- sending fatal");
                         let _ = fatal_tx
-                            .send(AgentEvent::Error {
-                                message: format!(
-                                    "gate channel closed for plan {plan_id_fatal}: {e}"
-                                ),
-                            })
+                            .send(RoutedAgentEvent::for_task(
+                                plan_id_fatal.clone(),
+                                task_id_fatal,
+                                agent_id_fatal,
+                                AgentEvent::Error {
+                                    message: format!(
+                                        "gate channel closed for plan {plan_id_fatal}: {e}"
+                                    ),
+                                },
+                            ))
                             .await;
                     }
                 });

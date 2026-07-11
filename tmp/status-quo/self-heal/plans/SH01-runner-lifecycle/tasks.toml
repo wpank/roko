@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 9
-done = 5
+done = 6
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -110,7 +110,7 @@ acceptance = ["Permanent failures are never retryable.", "Attempts progress with
 id = "SH01-T06A"
 title = "Define unambiguous timeout configuration"
 description = "Add hard-run, task-attempt, gate-effect, agent-silence, and scheduler-no-progress timeout settings with stable serde round trips. Preserve explicit-versus-default precedence without value-equality inference and without serializing implicit defaults as explicit overrides. Ensure parser-injected task defaults cannot hide the global task timeout. This task defines configuration and resolution only; do not wire runtime cancellation."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "codex-default"
 max_loc = 260

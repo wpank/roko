@@ -177,18 +177,18 @@ impl TaskDag {
     /// - its `depends_on` are all in `completed_in_plan`,
     /// - its `depends_on_plan` are all in `completed_plans`.
     ///
-    /// Tasks are ordered by `TaskDef::id` to keep dispatch deterministic.
+    /// Tasks are ordered by `TaskDef::sequence` and then `TaskDef::id` to keep
+    /// dispatch deterministic while preserving author order.
     #[must_use]
     pub fn next_ready_task<'a>(
         &self,
         plan_id: &str,
-        tasks: &'a [&'a TaskDef],
+        tasks: &[&'a TaskDef],
         completed_in_plan: &[String],
         completed_plans: &[String],
     ) -> Option<&'a TaskDef> {
         let plan = self.plans.get(plan_id);
-        let mut ordered: Vec<&'a TaskDef> = tasks.iter().copied().collect();
-        ordered.sort_by(|a, b| a.id.cmp(&b.id));
+        let ordered = ordered_tasks(tasks);
 
         ordered.into_iter().find(|task| {
             if let Some(state) = plan {
@@ -211,13 +211,12 @@ impl TaskDag {
     pub fn ready_tasks<'a>(
         &self,
         plan_id: &str,
-        tasks: &'a [&'a TaskDef],
+        tasks: &[&'a TaskDef],
         completed_in_plan: &[String],
         completed_plans: &[String],
     ) -> Vec<&'a TaskDef> {
         let plan = self.plans.get(plan_id);
-        let mut ordered: Vec<&'a TaskDef> = tasks.iter().copied().collect();
-        ordered.sort_by(|a, b| a.id.cmp(&b.id));
+        let ordered = ordered_tasks(tasks);
 
         ordered
             .into_iter()
@@ -367,6 +366,12 @@ impl TaskDag {
     }
 }
 
+fn ordered_tasks<'a>(tasks: &[&'a TaskDef]) -> Vec<&'a TaskDef> {
+    let mut ordered: Vec<&'a TaskDef> = tasks.to_vec();
+    ordered.sort_by(|a, b| a.sequence.cmp(&b.sequence).then_with(|| a.id.cmp(&b.id)));
+    ordered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +490,48 @@ mod tests {
                 .map(|task| task.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["C"]
+        );
+    }
+
+    #[test]
+    fn ready_resolution_uses_author_sequence_before_id() {
+        let dag = TaskDag::default();
+        let mut a = task("A", &[]);
+        a.sequence = 2;
+        let mut b = task("B", &[]);
+        b.sequence = 1;
+        let mut c = task("C", &[]);
+        c.sequence = 1;
+        let tasks: Vec<&TaskDef> = vec![&a, &b, &c];
+
+        let ready = dag.ready_tasks("p1", &tasks, &[], &[]);
+
+        assert_eq!(
+            ready
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "C", "A"]
+        );
+        assert_eq!(
+            dag.next_ready_task("p1", &tasks, &[], &[])
+                .map(|task| task.id.as_str()),
+            Some("B")
+        );
+    }
+
+    #[test]
+    fn ready_resolution_honors_cross_plan_dependencies() {
+        let dag = TaskDag::default();
+        let mut dependent = task("A", &[]);
+        dependent.depends_on_plan = vec!["base-plan".to_string()];
+        let tasks: Vec<&TaskDef> = vec![&dependent];
+
+        assert!(dag.ready_tasks("p1", &tasks, &[], &[]).is_empty());
+        assert_eq!(
+            dag.next_ready_task("p1", &tasks, &[], &["base-plan".into()])
+                .map(|task| task.id.as_str()),
+            Some("A")
         );
     }
 

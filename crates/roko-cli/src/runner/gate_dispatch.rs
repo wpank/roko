@@ -119,7 +119,10 @@ pub async fn run_gate_once(
         };
 
         let task_verify_only = std::env::var("ROKO_TASK_VERIFY_ONLY").is_ok_and(|value| {
-            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
         });
         let mut verdicts = if task_verify_only {
             Vec::new()

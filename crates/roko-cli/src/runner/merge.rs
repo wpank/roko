@@ -494,6 +494,7 @@ impl PlanMerger {
 
             let completion = GateCompletion {
                 kind: GateCompletionKind::Merge,
+                attempt: None,
                 plan_id,
                 task_id: format!("merge:{}", request.branch_name),
                 rung: RUNG_MERGE,

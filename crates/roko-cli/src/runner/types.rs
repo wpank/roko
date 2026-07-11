@@ -126,6 +126,9 @@ impl RunnerFailureKind {
 #[derive(Debug, Clone)]
 pub struct GateCompletion {
     pub kind: GateCompletionKind,
+    /// Exact task attempt that dispatched this gate. Merge completions do not
+    /// currently belong to a task attempt.
+    pub attempt: Option<TaskAttemptRef>,
     pub plan_id: String,
     pub task_id: String,
     pub rung: u32,

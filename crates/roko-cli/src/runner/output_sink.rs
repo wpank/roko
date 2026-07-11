@@ -322,6 +322,7 @@ impl RunOutputSink for StderrSink {
         use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary};
         let completion = GateCompletion {
             kind: GateCompletionKind::Gate,
+            attempt: None,
             plan_id: String::new(),
             task_id: String::new(),
             rung: result.rung,

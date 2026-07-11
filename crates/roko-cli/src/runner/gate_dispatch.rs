@@ -17,7 +17,9 @@ use tracing::{error, info};
 
 use crate::task_parser::VerifyStep;
 
-use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary, RunnerFailureKind};
+use super::types::{
+    GateCompletion, GateCompletionKind, GateVerdictSummary, RunnerFailureKind, TaskAttemptRef,
+};
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
@@ -26,6 +28,7 @@ pub const RUNG_MERGE: u32 = 1001;
 
 /// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
 pub fn spawn_gate(
+    attempt: TaskAttemptRef,
     plan_id: String,
     task_id: String,
     rung: u32,
@@ -54,6 +57,7 @@ pub fn spawn_gate(
             );
         }
         let completion = run_gate_once(
+            attempt,
             plan_id,
             task_id,
             rung,
@@ -75,6 +79,7 @@ pub fn spawn_gate(
 
 /// Run a gate rung to completion and return its summary.
 pub async fn run_gate_once(
+    attempt: TaskAttemptRef,
     plan_id: String,
     task_id: String,
     rung: u32,
@@ -180,6 +185,7 @@ pub async fn run_gate_once(
 
     GateCompletion {
         kind: GateCompletionKind::Gate,
+        attempt: Some(attempt),
         plan_id,
         task_id,
         rung,
@@ -193,6 +199,7 @@ pub async fn run_gate_once(
 
 /// Spawn plan-level verify steps as a background task.
 pub fn spawn_plan_verify(
+    attempt: TaskAttemptRef,
     plan_id: String,
     workdir: PathBuf,
     verify_steps: Vec<(String, Vec<VerifyStep>)>,
@@ -269,6 +276,7 @@ pub fn spawn_plan_verify(
 
         let completion = GateCompletion {
             kind: GateCompletionKind::PlanVerify,
+            attempt: Some(attempt),
             plan_id,
             task_id: "plan-verify".to_string(),
             rung: RUNG_PLAN_VERIFY,

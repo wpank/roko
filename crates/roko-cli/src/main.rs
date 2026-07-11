@@ -2696,7 +2696,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             }
             let plan_cmd = PlanCmd::Run {
                 plans_dir: plan_dir,
-                engine: PlanEngine::Graph,
+                engine: PlanEngine::RunnerV2,
                 resume_plan: Some(snapshot),
                 workdir: Some(workdir),
                 approval: false,

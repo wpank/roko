@@ -48,6 +48,10 @@ No product code was changed during this audit. Findings are split by failure mod
 38. [61-PREFLIGHT-HAS-NO-DURABLE-HEARTBEAT.md](61-PREFLIGHT-HAS-NO-DURABLE-HEARTBEAT.md) - logs, events, snapshots, and ledger freeze during active gates.
 39. [62-PLAN-STATE-START-TIMESTAMPS-ARE-ZERO.md](62-PLAN-STATE-START-TIMESTAMPS-ARE-ZERO.md) - persisted plan timing is unusable.
 40. [63-SELF-HEAL-VERIFY-COMMANDS-MISUSE-CARGO-FILTERS.md](63-SELF-HEAL-VERIFY-COMMANDS-MISUSE-CARGO-FILTERS.md) - several generated task gates are guaranteed to fail.
+41. [64-TASK-TIMING-AND-EXIT-RECONCILIATION-ARE-WRONG.md](64-TASK-TIMING-AND-EXIT-RECONCILIATION-ARE-WRONG.md) - terminal metrics omit agent time and disagree on exit status.
+42. [65-AGENT-AND-GATE-CARGO-ENVIRONMENTS-DIVERGE.md](65-AGENT-AND-GATE-CARGO-ENVIRONMENTS-DIVERGE.md) - identical verification rebuilds under incompatible Cargo fingerprints.
+43. [66-SECRET-SCRUBBER-CORRUPTS-ORDINARY-IDENTIFIERS.md](66-SECRET-SCRUBBER-CORRUPTS-ORDINARY-IDENTIFIERS.md) - `task-verify` is presented as a redacted API key.
+44. [67-TASK-LOC-BUDGET-IS-NOT-ENFORCED.md](67-TASK-LOC-BUDGET-IS-NOT-ENFORCED.md) - agents exceed declared change budgets without warning or termination.
 
 ---
 

@@ -6,12 +6,15 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use roko_core::config::TimeoutConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_core::defaults::{
     DEFAULT_MAX_AUTO_FIX_ITERATIONS, DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_RUNNER_CONFIG_MAX_RETRIES,
-    DEFAULT_RUNNER_GATE_CONCURRENCY, DEFAULT_RUNNER_MAX_CONCURRENT_TASKS, MODEL_FOCUSED,
+    DEFAULT_RUNNER_GATE_CONCURRENCY, DEFAULT_RUNNER_MAX_CONCURRENT_TASKS,
+    DEFAULT_RUNNER_RETRY_BACKOFF_MAX_SECS, DEFAULT_RUNNER_RETRY_BACKOFF_MULTIPLIER_FALLBACK,
+    DEFAULT_RUNNER_RETRY_BACKOFF_SHIFT_CAP, MODEL_FOCUSED,
 };
 use roko_fs::RokoLayout;
 
@@ -562,6 +565,90 @@ pub enum RetryAction {
     NotRetryable,
 }
 
+/// Single retry policy result for a failed task attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryDecision {
+    pub action: RetryAction,
+    pub failure_kind: RunnerFailureKind,
+    pub current_attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt: Option<u32>,
+    pub cooldown_ms: u64,
+    pub retryable: bool,
+    pub exhausted: bool,
+    pub reason: String,
+}
+
+impl RetryDecision {
+    pub fn for_failure(
+        failure_kind: RunnerFailureKind,
+        current_attempt: u32,
+        retry_budget: u32,
+        reason: impl Into<String>,
+    ) -> Self {
+        let current_attempt = current_attempt.max(1);
+        let retryable = failure_kind.is_retryable();
+        let can_retry = retryable && current_attempt <= retry_budget;
+        let action = if can_retry {
+            RetryAction::RetryAfterBackoff
+        } else if retryable {
+            RetryAction::Exhausted
+        } else {
+            RetryAction::NotRetryable
+        };
+        let next_attempt = can_retry.then(|| current_attempt.saturating_add(1));
+        let cooldown_ms = if can_retry {
+            retry_delay(failure_kind, current_attempt).as_millis() as u64
+        } else {
+            0
+        };
+        Self {
+            action,
+            failure_kind,
+            current_attempt,
+            next_attempt,
+            cooldown_ms,
+            retryable,
+            exhausted: retryable && !can_retry,
+            reason: reason.into(),
+        }
+    }
+
+    pub const fn should_retry(&self) -> bool {
+        matches!(self.action, RetryAction::RetryAfterBackoff)
+    }
+
+    pub const fn terminal_outcome(&self) -> Option<TaskAttemptOutcome> {
+        match self.action {
+            RetryAction::RetryAfterBackoff => None,
+            RetryAction::Exhausted => Some(TaskAttemptOutcome::Exhausted),
+            RetryAction::NotRetryable => Some(TaskAttemptOutcome::Failed),
+        }
+    }
+
+    pub const fn attempt_status(&self) -> TaskAttemptStatus {
+        match self.action {
+            RetryAction::RetryAfterBackoff => TaskAttemptStatus::Retrying,
+            RetryAction::Exhausted => TaskAttemptStatus::Exhausted,
+            RetryAction::NotRetryable => TaskAttemptStatus::Failed,
+        }
+    }
+}
+
+pub fn retry_delay(failure_kind: RunnerFailureKind, attempt: u32) -> Duration {
+    let base = failure_kind.retry_cooldown_secs();
+    if base == 0 {
+        return Duration::ZERO;
+    }
+    let multiplier = 1u64
+        .checked_shl(attempt.min(DEFAULT_RUNNER_RETRY_BACKOFF_SHIFT_CAP))
+        .unwrap_or(DEFAULT_RUNNER_RETRY_BACKOFF_MULTIPLIER_FALLBACK);
+    Duration::from_secs(
+        base.saturating_mul(multiplier)
+            .min(DEFAULT_RUNNER_RETRY_BACKOFF_MAX_SECS),
+    )
+}
+
 /// Snapshot/resume decision made before the event loop starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -864,6 +951,10 @@ pub enum RunnerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_attempt: Option<u32>,
         cooldown_ms: u64,
+        #[serde(default)]
+        retryable: bool,
+        #[serde(default)]
+        exhausted: bool,
         reason: String,
     },
 }
@@ -1136,28 +1227,21 @@ impl RunnerEvent {
         }
     }
 
-    pub fn retry_decision(
-        run_id: &str,
-        attempt: TaskAttemptRef,
-        action: RetryAction,
-        failure_kind: RunnerFailureKind,
-        next_attempt: Option<u32>,
-        cooldown_ms: u64,
-        reason: String,
-    ) -> Self {
+    pub fn retry_decision(run_id: &str, attempt: TaskAttemptRef, decision: RetryDecision) -> Self {
         let stamp = EventStamp::now();
-        let current_attempt = attempt.attempt;
         Self::RetryDecision {
             timestamp: stamp.timestamp,
             timestamp_ms: stamp.timestamp_ms,
             run_id: run_id.to_string(),
             attempt,
-            action,
-            failure_kind,
-            current_attempt,
-            next_attempt,
-            cooldown_ms,
-            reason,
+            action: decision.action,
+            failure_kind: decision.failure_kind,
+            current_attempt: decision.current_attempt,
+            next_attempt: decision.next_attempt,
+            cooldown_ms: decision.cooldown_ms,
+            retryable: decision.retryable,
+            exhausted: decision.exhausted,
+            reason: decision.reason,
         }
     }
 

@@ -1,0 +1,128 @@
+[meta]
+plan = "SH02-isolation-recovery"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH02-T01"
+title = "Enforce effective per-plan concurrency"
+description = "Limit plan concurrency to min(global capacity, plan.max_parallel), count preflight through commit, and release permits on every terminal path."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 250
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/task_dag.rs", "crates/roko-runtime/src/task_scheduler.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = []
+depends_on_plan = ["SH01-runner-lifecycle"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/13-plan-max-parallel-is-ignored.md", why = "Observed concurrency violation." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime task_scheduler 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Concurrency enforcement tests must pass."
+acceptance = ["max_parallel=1 never overlaps task attempts.", "Capacity covers preflight, agent, gate, commit, and merge.", "Different plans can still use global parallelism."]
+
+[[task]]
+id = "SH02-T02"
+title = "Create task-owned worktrees and immutable gate inputs"
+description = "Allocate isolation per task attempt, gate base plus owned diff, and prevent sibling edits or Cargo work from contaminating verification."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 500
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-orchestrator/src/worktree.rs"]
+role = "architect"
+domain = "execution-engine"
+depends_on = ["SH02-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/49-SHARED-WORKTREE-DESTROYS-TASK-OWNERSHIP.md", why = "Isolation failure." }, { path = "tmp/status-quo/issues/51-GATES-FAIL-ON-UNRELATED-CONCURRENT-BREAKAGE.md", why = "Gate contamination." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-orchestrator worktree 2>&1 && cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::gate_dispatch 2>&1"
+fail_msg = "Task isolation tests must pass."
+acceptance = ["Concurrent tasks cannot observe or commit sibling changes.", "Gates distinguish baseline failures from task failures.", "Every diff is attributable to one attempt."]
+
+[[task]]
+id = "SH02-T03"
+title = "Require durable task commit before success"
+description = "Commit only task-owned changes and refuse to publish passed state until the commit or durable artifact is confirmed and addressable."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 260
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-runtime/src/run_ledger.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH02-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/50-PASSED-TASK-HAS-NO-COMMIT.md", why = "T15 false completion." }, { path = "tmp/status-quo/issues/20-MERGE-QUEUE.md", why = "Merge/rollback audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Durable commit tests must pass."
+acceptance = ["Every passed task exposes its commit/artifact ID.", "Commit failure terminalizes as persistence failure.", "Only owned paths enter the task commit."]
+
+[[task]]
+id = "SH02-T04"
+title = "Make worktree resume and reacquisition idempotent"
+description = "Validate and reuse matching registered worktrees, repair stale registration deterministically, and prevent missing/already-checked-out oscillation."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 280
+files = ["crates/roko-cli/src/runner/resume.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-orchestrator/src/worktree.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH02-T02", "SH02-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/05-resume-cannot-reacquire-existing-worktree.md", why = "Resume oscillation." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::resume 2>&1 && cargo test -p roko-orchestrator worktree 2>&1"
+fail_msg = "Worktree resume tests must pass."
+acceptance = ["Matching path/branch/HEAD is reused.", "Stale registration is repaired once.", "Dirty work is preserved with ownership metadata."]
+
+[[task]]
+id = "SH02-T05"
+title = "Replace spawn polling with queued capacity wakeups"
+description = "Reserve capacity before spawn selection/logging, persist queued state, and wake on permit availability instead of retrying every 100ms."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 200
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH02-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/48-SPAWN-BUSY-LOOP-AND-LOG-STORM.md", why = "1,396-line spawn storm." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Capacity wakeup tests must pass."
+acceptance = ["One queued task emits one queued and one spawn transition.", "Permit starvation produces no log storm.", "Scheduling remains fair."]
+
+[[task]]
+id = "SH02-T06"
+title = "Clean crash locks and recover dirty worktrees"
+description = "Atomically release stale PID locks, quarantine attributable dirty work, and make shutdown/resume cleanup deterministic and auditable."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 280
+files = ["crates/roko-cli/src/runner/resume.rs", "crates/roko-cli/src/runner/persist.rs", "crates/roko-orchestrator/src/worktree.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH02-T04"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/53-STALE-LOCK-AND-DIRTY-WORKTREE-BLOCK-RECOVERY.md", why = "Post-timeout cleanup evidence." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::resume 2>&1 && cargo test -p roko-cli runner::persist 2>&1 && cargo test -p roko-orchestrator worktree 2>&1"
+fail_msg = "Crash cleanup tests must pass."
+acceptance = ["Dead singleton locks are repaired safely.", "Dirty work is never silently deleted.", "Kill-and-resume preserves and attributes changes."]

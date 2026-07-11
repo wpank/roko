@@ -1,0 +1,147 @@
+[meta]
+plan = "SH01-runner-lifecycle"
+total = 7
+done = 1
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH01-T01"
+title = "Make task-attempt lifecycle the canonical runtime state"
+description = "Replace plan-scoped task lifecycle with plan/task/attempt state, legal transitions, monotonic attempt allocation, and supersession of stale retry attempts. This is the foundation for every later self-heal task."
+status = "done"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 450
+files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/projection.rs"]
+role = "architect"
+domain = "execution-engine"
+depends_on = []
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/41-PLAN-SCOPED-PHASE-ORPHANS-CONCURRENT-TASKS.md", why = "Primary lifecycle failure." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Required invariants." }, { path = "tmp/status-quo/issues/54-RETRY-CLASSIFICATION-AND-ATTEMPTS-CONTRADICT.md", why = "Attempt allocation failures." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::state 2>&1 && cargo test -p roko-cli runner::projection 2>&1"
+fail_msg = "Task-attempt lifecycle tests must pass."
+acceptance = ["Every attempt has one start and one terminal outcome.", "Concurrent sibling tasks cannot change each other's phase.", "Terminal attempts never remain active or retrying."]
+
+[[task]]
+id = "SH01-T02"
+title = "Make preflight and gate transitions exactly once"
+description = "Introduce attempt-specific preflight results, remove invalid unconditional ImplementationDone transitions, and ensure every gate completion terminalizes its exact attempt even when a higher-level transition fails."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 320
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/01-preflight-success-reenters-same-task.md", why = "Duplicate preflight reproduction." }, { path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost T08 terminal state." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli runner::gate_dispatch 2>&1"
+fail_msg = "Preflight/gate transition tests must pass."
+acceptance = ["A passing preflight emits one terminal sequence and no agent dispatch.", "Gate failure always clears DAG-running state.", "Transition failures are terminal errors, not warnings."]
+
+[[task]]
+id = "SH01-T03"
+title = "Add atomic idempotent task terminalization"
+description = "Create one coordinator that updates attempt state, DAG state, projections, ledger, durable task output, and commit outcome atomically and idempotently."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 400
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-runtime/src/run_ledger.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T01", "SH01-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/04-run-ledger-duplicates-terminal-events.md", why = "Duplicate and missing terminals." }, { path = "tmp/status-quo/issues/50-PASSED-TASK-HAS-NO-COMMIT.md", why = "Durability ordering." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime run_ledger 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Atomic terminalization tests must pass."
+acceptance = ["Repeated completion is an idempotent no-op.", "Success is impossible before durable output/commit.", "Replay equals live terminal state."]
+
+[[task]]
+id = "SH01-T04"
+title = "Detect DAG quiescence and propagate blocked tasks"
+description = "Replace the boolean pending-task check with ready/active/blocked/terminal classification, propagate failed prerequisites, and terminate immediately when no future progress is possible."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 300
+files = ["crates/roko-cli/src/runner/task_dag.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/43-NO-DAG-DEADLOCK-DETECTION.md", why = "22-minute deadlock root cause." }, { path = "tmp/status-quo/issues/40-CRASH-TIMELINE.md", why = "Crash reproduction." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::task_dag 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "DAG quiescence tests must pass."
+acceptance = ["No-active plus no-ready produces a terminal result.", "Failed prerequisites mark downstream tasks blocked/skipped with reasons.", "Cycles and missing dependencies fail deterministically."]
+
+[[task]]
+id = "SH01-T05"
+title = "Unify retry classification and attempt rollover"
+description = "Use one retry decision object for classification, retryability, delay, prior terminalization, next attempt allocation, and exhaustion."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 280
+files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/06-timeout-reports-stale-in-flight-attempt.md", why = "Stale retry evidence." }, { path = "tmp/status-quo/issues/54-RETRY-CLASSIFICATION-AND-ATTEMPTS-CONTRADICT.md", why = "Policy contradictions." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::state 2>&1 && cargo test -p roko-cli runner::gate_dispatch 2>&1"
+fail_msg = "Retry lifecycle tests must pass."
+acceptance = ["Permanent failures are never retryable.", "Attempts progress without reuse or gaps.", "Exhaustion clears all active/retrying state."]
+
+[[task]]
+id = "SH01-T06"
+title = "Implement progress-aware timeout policy"
+description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines; track useful progress; and terminalize timed-out work before returning."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 300
+files = ["crates/roko-core/src/config/timeouts.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T04", "SH01-T05"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Timeout policy requirements." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Terminal durability requirement." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Timeout tests must pass."
+acceptance = ["Deadlocks fail on no-progress timeout.", "Hard cap remains independent of progress.", "Timeout emits cancellation and terminal events."]
+
+[[task]]
+id = "SH01-T07"
+title = "Reconcile truthful run and plan summaries"
+description = "Derive exact per-plan and global totals from terminal task state, including completed, failed, blocked, skipped, cancelled, and orphaned categories."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 180
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH01-T03", "SH01-T06"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/46-RUN-SUMMARY-CONTRADICTS-PLAN-SUMMARY.md", why = "9/5 versus 0/0 reproduction." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Summary reconciliation tests must pass."
+acceptance = ["Global totals equal the sum of plans.", "Every task belongs to exactly one terminal/nonterminal category.", "Blocked and skipped counts include task IDs and reasons."]

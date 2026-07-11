@@ -1,0 +1,88 @@
+[meta]
+plan = "SH05-config-dispatch"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH05-T01"
+title = "Fail fast on ambiguous model configuration"
+description = "Normalize model aliases, reject duplicate slugs and unresolved defaults, and record deterministic routing/fallback decisions before dispatch."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 220
+files = ["crates/roko-core/src/config", "crates/roko-agent/src", "crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+domain = "config"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/55-INVALID-MODEL-CONFIG-CONTINUES-WITH-AMBIGUOUS-FALLBACK.md", why = "Missing/duplicate model evidence." }, { path = "tmp/status-quo/issues/23-CONFIG.md", why = "Configuration audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core config 2>&1 && cargo test -p roko-cli model 2>&1"
+fail_msg = "Model configuration tests must pass."
+acceptance = ["Duplicate slugs fail validation.", "Unresolved default prevents dispatch.", "Fallback choice is explicit and durable."]
+
+[[task]]
+id = "SH05-T02"
+title = "Normalize dispatch lifecycle and transient retry"
+description = "Preserve dispatch parameters and typed streams, implement bounded jittered 429/529 retry, and emit symmetric start/terminal lifecycle events."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 320
+files = ["crates/roko-cli/src/runner/agent_events.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-agent/src"]
+role = "implementer"
+domain = "agent-runtime"
+depends_on = ["SH05-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/11-AGENT-DISPATCH.md", why = "Dispatch audit." }, { path = "tmp/status-quo/issues/54-RETRY-CLASSIFICATION-AND-ATTEMPTS-CONTRADICT.md", why = "Retry contract." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent 2>&1 && cargo test -p roko-cli runner::agent_events 2>&1"
+fail_msg = "Dispatch/retry tests must pass."
+acceptance = ["429/529 retry is bounded and jittered.", "Hook/tool/model parameters reach provider.", "Every dispatch lifecycle is symmetric."]
+
+[[task]]
+id = "SH05-T03"
+title = "Harden process supervision and cancellation"
+description = "Add per-task timeout, process-group cancellation, recursive child cleanup, bounded output channels, and deterministic Drop/shutdown semantics."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 340
+files = ["crates/roko-agent/src", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-runtime/src"]
+role = "implementer"
+domain = "agent-runtime"
+depends_on = ["SH05-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Zombie/cancellation audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent 2>&1 && cargo test -p roko-runtime 2>&1"
+fail_msg = "Process supervision tests must pass."
+acceptance = ["Cancellation kills descendants.", "Drop cannot leak a child.", "Timeout and channel overflow produce terminal events."]
+
+[[task]]
+id = "SH05-T04"
+title = "Enforce and attribute cost budgets"
+description = "Use real per-attempt usage/cost attribution, validate budgets before dispatch, halt durably at exhaustion, and remove fabricated zero-cost success metrics."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 300
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-learn/src", "crates/roko-core/src/config"]
+role = "implementer"
+domain = "economy"
+depends_on = ["SH05-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/35-COST-BUDGET.md", why = "Budget audit." }, { path = "tmp/status-quo/issues/10-live-token-progress-is-not-live.md", why = "Usage attribution prerequisite." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli budget 2>&1 && cargo test -p roko-learn cost 2>&1"
+fail_msg = "Cost budget tests must pass."
+acceptance = ["Zero/exhausted budget prevents dispatch.", "Costs are attributed by run/plan/task/attempt/model.", "Budget halt persists resumable state."]

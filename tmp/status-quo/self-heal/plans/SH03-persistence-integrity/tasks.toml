@@ -1,0 +1,128 @@
+[meta]
+plan = "SH03-persistence-integrity"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH03-T01"
+title = "Persist complete terminal snapshots after reconciliation"
+description = "Terminalize attempts, DAG, plan, and run in memory before snapshot; persist failed, blocked, skipped, active, superseded, timeout, and dirty-worktree state."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/persist.rs", "crates/roko-cli/src/runner/snapshot_writer.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/resume.rs"]
+role = "implementer"
+domain = "storage"
+depends_on = []
+depends_on_plan = ["SH01-runner-lifecycle", "SH02-isolation-recovery"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/45-TIMEOUT-SNAPSHOT-PRECEDES-TERMINAL-STATE.md", why = "Terminal ordering defect." }, { path = "tmp/status-quo/issues/13-STATE-PERSISTENCE.md", why = "Broader persistence audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::persist 2>&1 && cargo test -p roko-cli runner::snapshot_writer 2>&1 && cargo test -p roko-cli runner::resume 2>&1"
+fail_msg = "Terminal snapshot tests must pass."
+acceptance = ["Timeout snapshot is terminal and explains failure.", "Resume restores exact DAG/attempt state.", "Failed and blocked task IDs are durable."]
+
+[[task]]
+id = "SH03-T02"
+title = "Add rotating transition checkpoints"
+description = "Write run-ID-scoped last-known-good, pre-terminal, and terminal checkpoints at meaningful transitions with atomic replacement and retention."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 260
+files = ["crates/roko-cli/src/runner/snapshot_writer.rs", "crates/roko-cli/src/runner/persist.rs"]
+role = "implementer"
+domain = "storage"
+depends_on = ["SH03-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/56-SNAPSHOT-BACKUP-CADENCE-LOSES-RUN-HISTORY.md", why = "Missing hour-long checkpoints." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::snapshot_writer 2>&1"
+fail_msg = "Checkpoint rotation tests must pass."
+acceptance = ["Intermediate checkpoints survive terminal overwrite.", "Retention is bounded and run-scoped.", "Last known-good remains recoverable after injected failure."]
+
+[[task]]
+id = "SH03-T03"
+title = "Make lifecycle ledger complete and idempotent"
+description = "Add run/plan/task/attempt identity and idempotency keys to ledger records; fsync timeout, failure, cancellation, cleanup, and terminal summaries before returning."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 360
+files = ["crates/roko-runtime/src/run_ledger.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/persist.rs"]
+role = "implementer"
+domain = "storage"
+depends_on = ["SH03-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/04-run-ledger-duplicates-terminal-events.md", why = "Duplicate/missing records." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Missing terminal run record." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime run_ledger 2>&1 && cargo test -p roko-cli runner::persist 2>&1"
+fail_msg = "Ledger durability tests must pass."
+acceptance = ["Ledger alone partitions and explains every run.", "Duplicate terminal append is deterministic no-op/error.", "Every start has exactly one terminal after timeout."]
+
+[[task]]
+id = "SH03-T04"
+title = "Repair fresh-run seeded task semantics"
+description = "Define and enforce whether fresh honors plan-declared done tasks; exclude seeded terminals from selection and prevent duplicate attempt/completion events."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 180
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/task_dag.rs", "crates/roko-cli/src/runner/plan_loader.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH03-T01", "SH03-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/02-fresh-run-dispatches-seeded-completed-task.md", why = "T01 redispatch reproduction." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::plan_loader 2>&1 && cargo test -p roko-cli runner::task_dag 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Fresh seeded-state tests must pass."
+acceptance = ["Seeded done tasks are never selected.", "Fresh behavior is explicit and tested.", "Progress counts agree before first dispatch."]
+
+[[task]]
+id = "SH03-T05"
+title = "Recover and clean atomic-write debris"
+description = "Fsync temp and parent directory, recover the newest valid owned artifact, quarantine ambiguous corruption, and clean stale zero-byte temp files."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 240
+files = ["crates/roko-cli/src/runner/persist.rs", "crates/roko-learn/src"]
+role = "implementer"
+domain = "storage"
+depends_on = ["SH03-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/58-ATOMIC-WRITE-DEBRIS-IS-NOT-RECOVERED.md", why = "Temp/corrupt artifact evidence." }, { path = "tmp/status-quo/issues/30-FILESYSTEM-JSONL.md", why = "Filesystem durability audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::persist 2>&1 && cargo test -p roko-learn 2>&1"
+fail_msg = "Atomic recovery tests must pass."
+acceptance = ["Crash between write/fsync/rename selects a valid checkpoint.", "Stale owned temp files are cleaned.", "Ambiguous artifacts are quarantined with metadata."]
+
+[[task]]
+id = "SH03-T06"
+title = "Make StateHub publication ordered and recoverable"
+description = "Commit state before broadcast, add monotonic sequence numbers, atomic mutation APIs, explicit lag gaps, and snapshot resync for TUI/SSE consumers."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-core/src/state_hub.rs", "crates/roko-runtime/src/state_hub.rs", "crates/roko-runtime/src/event_bus.rs", "crates/roko-serve/src/routes/sse.rs"]
+role = "architect"
+domain = "observability"
+depends_on = ["SH03-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/37-STATEHUB-EVENTS.md", why = "Ordering, overflow, and race audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core state_hub 2>&1 && cargo test -p roko-runtime state_hub 2>&1 && cargo test -p roko-serve 2>&1"
+fail_msg = "StateHub sequencing tests must pass."
+acceptance = ["Subscriber event N observes state including N.", "Lag produces explicit gap and resync.", "Concurrent publishers do not overwrite each other."]

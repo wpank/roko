@@ -1,0 +1,110 @@
+[meta]
+plan = "SH06-regression-harness"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH06-T01"
+title = "Build deterministic crash-chain replay fixture"
+description = "Reproduce concurrent completions, failed gate, blocked dependent, retry exhaustion, false spawn pressure, timeout, and terminal reconciliation using fake agents/gates and paused time."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 500
+files = ["crates/roko-cli/tests/runner_crash_recovery.rs", "crates/roko-cli/src/runner"]
+role = "implementer"
+domain = "testing"
+depends_on = []
+depends_on_plan = ["SH01-runner-lifecycle", "SH02-isolation-recovery", "SH03-persistence-integrity", "SH04-runtime-telemetry-tui", "SH05-config-dispatch"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/40-CRASH-TIMELINE.md", why = "Exact reproduction timeline." }, { path = "tmp/status-quo/issues/38-TEST-COVERAGE.md", why = "Coverage gaps." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test runner_crash_recovery -- --nocapture 2>&1"
+fail_msg = "Crash-chain replay must pass."
+acceptance = ["Fixture fails on original orphan/deadlock behavior.", "Fixed runner terminates without stale attempts or missing commits.", "Runtime is deterministic and network-free."]
+
+[[task]]
+id = "SH06-T02"
+title = "Test interruption, dirty worktree, and exact resume"
+description = "Interrupt at agent, gate, commit, snapshot, and merge boundaries; assert cleanup, checkpoint selection, worktree ownership, ledger balance, and final-state equivalence after resume."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/tests/resume_cycle_e2e.rs", "crates/roko-cli/tests/runner_crash_recovery.rs"]
+role = "implementer"
+domain = "testing"
+depends_on = ["SH06-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/45-TIMEOUT-SNAPSHOT-PRECEDES-TERMINAL-STATE.md", why = "Snapshot failure." }, { path = "tmp/status-quo/issues/53-STALE-LOCK-AND-DIRTY-WORKTREE-BLOCK-RECOVERY.md", why = "Recovery artifacts." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test resume_cycle_e2e --test runner_crash_recovery 2>&1"
+fail_msg = "Interruption/resume tests must pass."
+acceptance = ["Interrupted and uninterrupted runs converge.", "No stale lock or orphan child remains.", "Dirty changes remain attributable and resumable."]
+
+[[task]]
+id = "SH06-T03"
+title = "Test connected TUI responsiveness and invariants"
+description = "Replay parallel agent, long preflight, gate failure, lag/resync, token, route, phase, diagnosis, and timeout events into ratatui buffers and operational logs."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/tests/tui_tabs.rs", "crates/roko-cli/src/tui", "crates/roko-core/src/dashboard_snapshot.rs"]
+role = "implementer"
+domain = "testing"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/14-TUI-DASHBOARD.md", why = "TUI audit." }, { path = "tmp/status-quo/issues/03-approval-tui-discards-run-output.md", why = "Connected sink reproduction." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test tui_tabs 2>&1 && cargo test -p roko-core dashboard_snapshot 2>&1"
+fail_msg = "Connected TUI tests must pass."
+acceptance = ["Active work visibly changes within one event tick.", "Panels cannot contradict shared state invariants.", "Lag and terminal exit remain diagnosable."]
+
+[[task]]
+id = "SH06-T04"
+title = "Run subsystem regression and quality gates"
+description = "Run focused workspace suites for runner, runtime, agent, StateHub, serve, and TUI; fix only regressions caused by SH01-SH05 and document unrelated baseline failures."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 300
+files = ["crates/roko-cli", "crates/roko-runtime", "crates/roko-agent", "crates/roko-core", "crates/roko-serve"]
+role = "implementer"
+domain = "testing"
+depends_on = ["SH06-T01", "SH06-T02", "SH06-T03"]
+depends_on_plan = ["SH05-config-dispatch"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/38-TEST-COVERAGE.md", why = "Missing proof inventory." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -p roko-runtime -p roko-agent -p roko-core -p roko-serve 2>&1"
+fail_msg = "Self-heal subsystem suite must pass."
+acceptance = ["All self-heal regression suites pass.", "Unrelated baseline failures are separated and documented.", "No ignored self-heal E2E tests remain."]
+
+[[task]]
+id = "SH06-T05"
+title = "Prove Roko can complete its own smoke repair plan"
+description = "Run a tiny local fake-provider plan through fresh execution, gate failure/retry, commit, terminal snapshot, dashboard events, and resume; assert truthful final artifacts and no leaked processes."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 360
+files = ["crates/roko-cli/tests/e2e_self_host.rs", "crates/roko-cli/tests/runner_crash_recovery.rs"]
+role = "implementer"
+domain = "testing"
+depends_on = ["SH06-T04"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/00-INDEX.md", why = "Complete self-heal acceptance source." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test e2e_self_host --test runner_crash_recovery 2>&1 && cargo clippy -p roko-cli -p roko-runtime --all-targets -- -D warnings 2>&1"
+fail_msg = "Self-host smoke and quality gates must pass."
+acceptance = ["Tiny plan completes without deadlock, duplicate terminal, stale attempt, or missing commit.", "Resume equals uninterrupted result.", "No child, lock, or dirty unowned work remains."]

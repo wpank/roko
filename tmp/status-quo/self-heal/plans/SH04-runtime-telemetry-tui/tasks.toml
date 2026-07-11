@@ -1,0 +1,169 @@
+[meta]
+plan = "SH04-runtime-telemetry-tui"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "SH04-T01"
+title = "Use structured agent identity and attribution"
+description = "Carry run, plan, task, attempt, and agent identity as structured fields through runner events and dashboard reduction; stop parsing opaque slash/colon display IDs."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 360
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/agent_events.rs", "crates/roko-cli/src/runner/tui_bridge.rs", "crates/roko-core/src/dashboard_snapshot.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = []
+depends_on_plan = ["SH01-runner-lifecycle", "SH03-persistence-integrity"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/08-agent-id-contract-drops-task-and-output.md", why = "Identity delimiter defect." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core dashboard_snapshot 2>&1 && cargo test -p roko-cli runner::agent_events 2>&1"
+fail_msg = "Structured attribution tests must pass."
+acceptance = ["Every active agent row has its task and attempt.", "Parallel output/usage lands on the correct agent.", "Display ID formatting cannot affect attribution."]
+
+[[task]]
+id = "SH04-T02"
+title = "Preserve typed agent output channels and severity"
+description = "Separate assistant deltas, reasoning, tools, command stdout/stderr, diagnostics, provider failures, and fatal process errors so normal source output never becomes agent.error."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 320
+files = ["crates/roko-cli/src/runner/agent_events.rs", "crates/roko-cli/src/runner/projection.rs", "crates/roko-cli/src/runner/output_sink.rs", "crates/roko-cli/src/inline/agent_events.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH04-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/59-AGENT-OUTPUT-IS-MISCLASSIFIED-AS-ERROR.md", why = "Severity reproduction." }, { path = "tmp/status-quo/issues/11-AGENT-DISPATCH.md", why = "Dispatch stream audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::agent_events 2>&1 && cargo test -p roko-cli runner::projection 2>&1 && cargo test -p roko-cli runner::output_sink 2>&1"
+fail_msg = "Typed output tests must pass."
+acceptance = ["Code and stderr output remain visible without becoming fatal errors.", "Serialized events retain channel and severity.", "Provider/fatal errors remain distinguishable."]
+
+[[task]]
+id = "SH04-T03"
+title = "Connect approval TUI to structured runner events"
+description = "Replace approval-mode NoopSink with a dashboard event sink while preventing duplicate stderr rendering and preserving explicit quiet/test behavior."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 260
+files = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/runner/output_sink.rs", "crates/roko-cli/src/runner/tui_bridge.rs", "crates/roko-cli/src/tui/app.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH04-T01", "SH04-T02"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/03-approval-tui-discards-run-output.md", why = "NoopSink evidence." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::output_sink 2>&1 && cargo test -p roko-cli tui 2>&1"
+fail_msg = "Approval TUI bridge tests must pass."
+acceptance = ["Approval mode receives starts, output, usage, gates, and terminals.", "No duplicate console output.", "NoopSink remains explicit only."]
+
+[[task]]
+id = "SH04-T04"
+title = "Expose preflight progress and runner diagnoses"
+description = "Publish preflight step start/output/heartbeat/completion and gate classification, retry, blocker, and diagnosis events; separate preflight duration from dispatch time."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 380
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/tui_bridge.rs", "crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-cli/src/tui/state.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH04-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/14-preflight-work-is-invisible-and-counted-as-dispatch.md", why = "Invisible multi-minute preflight." }, { path = "tmp/status-quo/issues/12-runner-v2-diagnosis-feed-is-unwired.md", why = "Missing diagnosis producer." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli tui 2>&1 && cargo test -p roko-core dashboard_snapshot 2>&1"
+fail_msg = "Preflight/diagnosis tests must pass."
+acceptance = ["Long preflight shows step n/N, command, elapsed, and last output.", "dispatch_ms excludes preflight.", "Failed gate produces one diagnosis."]
+
+[[task]]
+id = "SH04-T05"
+title = "Add agent liveness and estimated token progress"
+description = "Track turn and first-output timestamps, last backend event, stream/session freshness, heartbeat states, and prompt-estimated versus provider-final token usage."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 340
+files = ["crates/roko-cli/src/runner/agent_events.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-core/src/dashboard_snapshot.rs", "crates/roko-cli/src/tui/state.rs", "crates/roko-cli/src/tui/views/agents_view.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH04-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/10-live-token-progress-is-not-live.md", why = "0k/200k defect." }, { path = "tmp/status-quo/issues/16-no-agent-liveness-or-last-event-age.md", why = "Missing health states." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::agent_events 2>&1 && cargo test -p roko-cli tui 2>&1 && cargo test -p roko-core dashboard_snapshot 2>&1"
+fail_msg = "Liveness/token tests must pass."
+acceptance = ["Rows show elapsed and last-event age.", "Starting, active, silent, disconnected, and stalled are distinct.", "Estimated and final tokens reconcile without double count."]
+
+[[task]]
+id = "SH04-T06"
+title = "Fix dashboard route layout and phase invariants"
+description = "Centralize panel overhead calculations and reconcile active agent/task/phase state so one route is visible and active work cannot display all phases complete."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 220
+files = ["crates/roko-cli/src/tui/state.rs", "crates/roko-cli/src/tui/views/dashboard_view.rs", "crates/roko-cli/src/tui/widgets/phase_compact.rs"]
+role = "implementer"
+domain = "frontend"
+depends_on = ["SH04-T01"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/09-routes-panel-renders-zero-data-rows.md", why = "Layout arithmetic defect." }, { path = "tmp/status-quo/issues/11-active-agent-can-show-all-phases-complete.md", why = "Cross-panel contradiction." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli tui 2>&1"
+fail_msg = "Dashboard invariant tests must pass."
+acceptance = ["One route renders one row at minimum height.", "Active work never shows all phases complete.", "Narrow terminals retain first data row."]
+
+[[task]]
+id = "SH04-T07"
+title = "Make Git dashboard refresh asynchronous and bounded"
+description = "Move Git diff work to watcher-triggered debounced background jobs, cache bounded results, and load full diff only for the Git/Diff view."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 260
+files = ["crates/roko-cli/src/tui/dashboard.rs", "crates/roko-cli/src/tui/git_watch.rs", "crates/roko-cli/src/tui/app.rs", "crates/roko-cli/src/tui/views/git_view.rs"]
+role = "implementer"
+domain = "frontend"
+depends_on = []
+depends_on_plan = ["SH03-persistence-integrity"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/15-dashboard-refresh-runs-synchronous-full-git-diffs.md", why = "Repeated Git subprocess evidence." }, { path = "tmp/status-quo/issues/14-TUI-DASHBOARD.md", why = "Broader TUI audit." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli tui::git_watch 2>&1 && cargo test -p roko-cli tui::dashboard 2>&1"
+fail_msg = "Async Git refresh tests must pass."
+acceptance = ["UI tick starts no Git subprocess.", "Bursts are coalesced and stale results cannot overwrite new ones.", "Main view uses cheap cached status."]
+
+[[task]]
+id = "SH04-T08"
+title = "Write operational TUI event-health logs"
+description = "Log source connectivity, sequence gaps/resync, refresh latency, agent transitions, scheduler blocked state, terminal outcome, and shutdown reason without logging prompt/output payloads."
+status = "ready"
+tier = "focused"
+model_hint = "codex-default"
+max_loc = 220
+files = ["crates/roko-cli/src/tui/app.rs", "crates/roko-cli/src/tui/ws_client.rs", "crates/roko-cli/src/tui/jsonl_tailer.rs", "crates/roko-cli/src/tui/mod.rs"]
+role = "implementer"
+domain = "observability"
+depends_on = ["SH04-T03"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/57-TUI-LOG-OMITS-RUNTIME-AND-EXIT-STATE.md", why = "Empty crash log evidence." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli tui 2>&1"
+fail_msg = "Operational TUI logging tests must pass."
+acceptance = ["Normal and timeout exits are reconstructable from TUI log.", "Lag/resync is recorded.", "Logs are bounded and exclude sensitive payloads."]

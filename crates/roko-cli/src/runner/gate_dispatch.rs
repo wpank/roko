@@ -118,7 +118,14 @@ pub async fn run_gate_once(
             )
         };
 
-        let mut verdicts = vec![pipeline.verify(&signal, &ctx).await];
+        let task_verify_only = std::env::var("ROKO_TASK_VERIFY_ONLY").is_ok_and(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+        });
+        let mut verdicts = if task_verify_only {
+            Vec::new()
+        } else {
+            vec![pipeline.verify(&signal, &ctx).await]
+        };
         verdicts.extend(run_verify_steps(&signal, &ctx, &task_id, verify_steps).await);
         verdicts
     };

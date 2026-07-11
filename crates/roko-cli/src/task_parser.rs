@@ -150,8 +150,8 @@ struct TaskDefSerde {
     pub context: Option<TaskContext>,
     #[serde(default)]
     pub verify: Vec<VerifyStep>,
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     #[serde(default)]
@@ -184,7 +184,7 @@ impl From<TaskDefSerde> for TaskDef {
             split_into: raw.split_into,
             context: raw.context,
             verify: raw.verify,
-            timeout_secs: raw.timeout_secs,
+            timeout_secs: raw.timeout_secs.unwrap_or(0),
             max_retries: raw.max_retries,
             acceptance: raw.acceptance,
             acceptance_contract: raw.acceptance_contract,
@@ -336,10 +336,6 @@ fn default_status() -> String {
 
 fn default_tier() -> String {
     "focused".into()
-}
-
-fn default_timeout_secs() -> u64 {
-    600
 }
 
 fn default_max_retries() -> u32 {
@@ -933,9 +929,6 @@ impl TasksFile {
             }
 
             // Check numeric bounds.
-            if task.timeout_secs == 0 {
-                issues.push(format!("{task_label}: timeout_secs must be > 0"));
-            }
         }
 
         issues
@@ -1324,7 +1317,7 @@ command = "cargo check -p roko-cli"
             .map(|tool| (*tool).to_string())
             .collect();
         assert_eq!(task.denied_tools, Some(expected_denied));
-        assert_eq!(task.timeout_secs, 600);
+        assert_eq!(task.timeout_secs, 0);
         assert!(task.context.is_some());
         let ctx = task.context.as_ref().unwrap();
         assert_eq!(ctx.read_files.len(), 1);

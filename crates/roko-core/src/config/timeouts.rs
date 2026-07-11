@@ -13,6 +13,26 @@ use serde::{Deserialize, Serialize};
 /// Serialized under `[timeouts]` in `roko.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeoutConfig {
+    /// Hard cap for the whole run. `None` preserves legacy plan-timeout fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_run_secs: Option<u64>,
+
+    /// Default timeout for a task that has no authored override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_attempt_secs: Option<u64>,
+
+    /// Default timeout for an owned gate effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_effect_secs: Option<u64>,
+
+    /// Maximum silence for an active agent attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_silence_secs: Option<u64>,
+
+    /// Maximum interval without a durable scheduler milestone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_no_progress_secs: Option<u64>,
+
     /// Agent dispatch wall-clock timeout (seconds).
     #[serde(default = "default_agent_dispatch_secs")]
     pub agent_dispatch_secs: u64,
@@ -83,6 +103,26 @@ const fn default_plan_total_secs() -> u64 {
 // ── Duration accessors ───────────────────────────────────────────────────
 
 impl TimeoutConfig {
+    pub fn hard_run(&self) -> Duration {
+        Duration::from_secs(self.hard_run_secs.unwrap_or(3_600).max(1))
+    }
+
+    pub fn task_attempt(&self) -> Duration {
+        Duration::from_secs(self.task_attempt_secs.unwrap_or(600).max(1))
+    }
+
+    pub fn gate_effect(&self) -> Duration {
+        Duration::from_secs(self.gate_effect_secs.unwrap_or(900).max(1))
+    }
+
+    pub fn agent_silence(&self) -> Duration {
+        Duration::from_secs(self.agent_silence_secs.unwrap_or(180).max(1))
+    }
+
+    pub fn scheduler_no_progress(&self) -> Duration {
+        Duration::from_secs(self.scheduler_no_progress_secs.unwrap_or(600).max(1))
+    }
+
     /// Agent dispatch as [`Duration`].
     pub fn agent_dispatch(&self) -> Duration {
         Duration::from_secs(self.agent_dispatch_secs)
@@ -132,6 +172,11 @@ impl TimeoutConfig {
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
+            hard_run_secs: None,
+            task_attempt_secs: None,
+            gate_effect_secs: None,
+            agent_silence_secs: None,
+            scheduler_no_progress_secs: None,
             agent_dispatch_secs: default_agent_dispatch_secs(),
             gate_compile_secs: default_gate_compile_secs(),
             gate_test_secs: default_gate_test_secs(),
@@ -180,6 +225,11 @@ mod tests {
     #[test]
     fn serde_roundtrip() {
         let cfg = TimeoutConfig {
+            hard_run_secs: Some(3_600),
+            task_attempt_secs: Some(600),
+            gate_effect_secs: Some(900),
+            agent_silence_secs: Some(180),
+            scheduler_no_progress_secs: Some(600),
             agent_dispatch_secs: 900,
             gate_compile_secs: 180,
             gate_test_secs: 600,

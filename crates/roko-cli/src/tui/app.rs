@@ -578,6 +578,7 @@ impl App {
         let last_data_gen = data.generation;
         let mut tui_state = TuiState::new();
         tui_state.update_from_snapshot(&data);
+        tui_state.workdir = workdir.clone();
         tui_state.run_started = Some(Instant::now());
 
         let mut app = Self {

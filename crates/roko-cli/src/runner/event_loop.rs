@@ -27,7 +27,7 @@ use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
     MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
     PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
-    TransitionError,
+    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
 };
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::{HttpEventSink, RunLedger, WorkflowConfig};
@@ -194,6 +194,8 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 }
 
 // ─── RunContext ──────────────────────────────────────────────────────────
+
+const RUNNER_WORKTREE_IDLE_TTL_SECS: u64 = 30 * 60;
 
 struct RoutedAgentEvent {
     plan_id: String,
@@ -374,6 +376,7 @@ struct RunContext<'a> {
     fatal_tx: mpsc::Sender<RoutedAgentEvent>,
     paths: &'a PersistPaths,
     merge_queue: &'a MergeQueue,
+    worktrees: &'a WorktreeManager,
     gate_thresholds: &'a GateThresholds,
     snapshot_writer: &'a SnapshotWriter,
     prompt_cache: &'a Arc<PromptCache>,
@@ -387,6 +390,35 @@ struct RunContext<'a> {
     /// Playbook IDs per attempt key — populated at dispatch, consumed on gate
     /// terminal to call `PlaybookStore::record_outcome`.
     task_playbook_ids: &'a mut HashMap<String, Vec<String>>,
+}
+
+fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
+    WorktreeManager::new(WorktreeConfig {
+        repo_root: workdir.to_path_buf(),
+        base_branch: "HEAD".to_string(),
+        worktrees_root: workdir.join(".roko").join("worktrees"),
+        max_live: None,
+        idle_ttl: Duration::from_secs(RUNNER_WORKTREE_IDLE_TTL_SECS),
+    })
+}
+
+async fn ensure_plan_workdir(
+    worktrees: &WorktreeManager,
+    plan_id: &str,
+) -> std::result::Result<PathBuf, String> {
+    let handle = worktrees
+        .ensure_for_plan(plan_id)
+        .await
+        .map_err(|err| format!("worktree unavailable for plan {plan_id}: {err}"))?;
+    worktrees.touch(plan_id);
+    Ok(handle.path)
+}
+
+fn tracked_plan_workdir(worktrees: &WorktreeManager, plan_id: &str) -> Option<PathBuf> {
+    worktrees.get(plan_id).map(|handle| {
+        worktrees.touch(plan_id);
+        handle.path
+    })
 }
 
 // Result of dispatching one executor action. Most actions are internal phase
@@ -643,6 +675,7 @@ pub async fn run(
     let task_sem = Arc::new(tokio::sync::Semaphore::new(
         config.max_concurrent_tasks.max(1),
     ));
+    let worktrees = default_runner_worktree_manager(&config.workdir);
 
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
     let gate_sem = Arc::new(tokio::sync::Semaphore::new(config.gate_concurrency.max(1)));
@@ -1560,25 +1593,40 @@ pub async fn run(
                 } else if completion.passed {
                     // Mark this task completed in the DAG and check for more.
                     state.clear_retry_backoff(&completion.plan_id);
-                    let newly_completed =
-                        state.mark_task_completed(&completion.plan_id, &completion.task_id);
+                    let task_workdir = tracked_plan_workdir(&worktrees, &completion.plan_id);
+                    if task_workdir.is_none() {
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            "isolated worktree missing while recording task output"
+                        );
+                    }
                     let task_declared_files = task_index
                         .get(completion.plan_id.as_str())
                         .and_then(|tasks| tasks.get(completion.task_id.as_str()))
                         .map(|task| task.files.clone())
                         .unwrap_or_default();
-                    // Snapshot which files this task produced so downstream
-                    // tasks can be told what their dependencies already created.
-                    let output_diffs = git_diff_entries_since_task_start(&config.workdir)
+                    let output_diffs = task_workdir
+                        .as_deref()
+                        .map(git_diff_entries_since_task_start)
+                        .unwrap_or_default()
                         .into_iter()
                         .filter(|entry| {
                             task_path_allowed_by_declared_files(&entry.path, &task_declared_files)
                         })
                         .collect::<Vec<_>>();
-                    let output_files = output_diffs
-                        .iter()
-                        .map(|entry| entry.path.clone())
-                        .collect();
+                    let newly_completed =
+                        state.mark_task_completed(&completion.plan_id, &completion.task_id);
+                    if task_workdir.is_none() {
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            "skipping task auto-commit because isolated worktree is missing"
+                        );
+                    }
+                    // Snapshot which files this task produced so downstream
+                    // tasks can be told what their dependencies already created.
+                    let output_files = output_diffs.iter().map(|entry| entry.path.clone()).collect();
                     state.record_task_outputs(
                         &completion.plan_id,
                         &completion.task_id,
@@ -1639,12 +1687,14 @@ pub async fn run(
                     tui.task_completed(&completion.plan_id, &completion.task_id, "passed");
 
                     // Commit generated code to git so subsequent tasks can diff.
-                    commit_task_changes(
-                        &config.workdir,
-                        &completion.plan_id,
-                        &completion.task_id,
-                        &task_declared_files,
-                    );
+                    if let Some(task_workdir) = task_workdir.as_deref() {
+                        commit_task_changes(
+                            task_workdir,
+                            &completion.plan_id,
+                            &completion.task_id,
+                            &task_declared_files,
+                        );
+                    }
 
                     let total_task_ms = state.task_elapsed_ms();
                     let dispatch_ms = state.last_dispatch_ms;
@@ -2063,6 +2113,7 @@ pub async fn run(
                         fatal_tx: agent_tx.clone(),
                         paths: &paths,
                         merge_queue: &merge_queue,
+                        worktrees: &worktrees,
                         gate_thresholds: &gate_thresholds,
                         snapshot_writer: &snapshot_writer,
                         prompt_cache: &prompt_cache,
@@ -4262,7 +4313,13 @@ fn task_role_is_read_only(task_def: Option<&TaskDef>) -> bool {
 }
 
 fn task_should_preflight_verify(task_def: &TaskDef, attempt_num: u32) -> bool {
-    attempt_num == 1 && !task_def.verify.is_empty() && !task_role_is_read_only(Some(task_def))
+    let preflight_disabled = std::env::var("ROKO_SKIP_PREFLIGHT").is_ok_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+    });
+    !preflight_disabled
+        && attempt_num == 1
+        && !task_def.verify.is_empty()
+        && !task_role_is_read_only(Some(task_def))
 }
 
 async fn dispatch_action(
@@ -4506,6 +4563,31 @@ async fn dispatch_action(
                 }
             }
 
+            let plan_workdir = match ensure_plan_workdir(ctx.worktrees, plan_id).await {
+                Ok(path) => path,
+                Err(message) => {
+                    error!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        error = %message,
+                        "failed to acquire isolated plan worktree"
+                    );
+                    if is_dag_task_spawn {
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                    }
+                    if let Err(e) = ctx
+                        .executor
+                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                    {
+                        error!(plan_id = %plan_id, error = %e,
+                            "failed to apply Fatal event -- forcing plan terminal");
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    ctx.tui.error(&message);
+                    return ActionDispatchOutcome::Noop;
+                }
+            };
+
             let previous_gate_output = ctx.state.gate_output.clone();
             let attempt_num = ctx
                 .executor
@@ -4522,8 +4604,7 @@ async fn dispatch_action(
 
             if task_should_preflight_verify(task_def, attempt_num) {
                 let gates_config = gates_config_for_run(ctx.config);
-                let has_cargo_toml =
-                    std::fs::metadata(ctx.config.workdir.join("Cargo.toml")).is_ok();
+                let has_cargo_toml = std::fs::metadata(plan_workdir.join("Cargo.toml")).is_ok();
                 if gates_config.has_custom_rungs() || has_cargo_toml {
                     let pipeline_rung = ctx.config.max_gate_rung;
                     info!(
@@ -4536,7 +4617,7 @@ async fn dispatch_action(
                         plan_id.clone(),
                         task_id.clone(),
                         pipeline_rung,
-                        ctx.config.workdir.clone(),
+                        plan_workdir.clone(),
                         gates_config,
                         gate_plan_complexity_for_task(Some(task_def)),
                         task_def.verify.clone(),
@@ -4716,7 +4797,7 @@ async fn dispatch_action(
             let dispatch_ctx = DispatchContext {
                 plan_id: plan_id.clone(),
                 role: role.to_string(),
-                workdir: ctx.config.workdir.clone(),
+                workdir: plan_workdir.clone(),
                 model_hint: None,
                 force_backend: ctx.config.cli_model_override.clone(),
                 budget_remaining_usd: if ctx.config.max_plan_usd > 0.0 {
@@ -4974,6 +5055,7 @@ async fn dispatch_action(
                         model,
                         agent_id.clone(),
                     );
+                    spawn_config.workdir = plan_workdir.clone();
                     spawn_config.max_turns = dispatch_turn_limit;
                     spawn_config.effort = dispatch_effort.clone();
                     if let Some(provider) = cli_provider {
@@ -5107,7 +5189,7 @@ async fn dispatch_action(
                         model_key: requested_model.clone(),
                         prompt: final_prompt,
                         system_prompt,
-                        workdir: ctx.config.workdir.clone(),
+                        workdir: plan_workdir.clone(),
                         agent_id: agent_id.clone(),
                         command: None,
                         timeout_ms: Some(duration_millis(agent_dispatch_timeout(ctx.config))),
@@ -5177,10 +5259,27 @@ async fn dispatch_action(
                 .cloned()
                 .unwrap_or_else(|| ctx.state.current_task.clone());
             restore_task_runtime(ctx.state, ctx.task_runtime_states, plan_id, &task_id);
+            let plan_workdir = match tracked_plan_workdir(ctx.worktrees, plan_id) {
+                Some(path) => path,
+                None => {
+                    let message = format!("isolated worktree missing for plan {plan_id}");
+                    error!(plan_id = %plan_id, task_id = %task_id, "{}", message);
+                    if let Err(e) = ctx
+                        .executor
+                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                    {
+                        error!(plan_id = %plan_id, error = %e,
+                            "failed to apply Fatal event -- forcing plan terminal");
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    ctx.tui.error(&message);
+                    return ActionDispatchOutcome::Noop;
+                }
+            };
             let gates_config = gates_config_for_run(ctx.config);
             let pipeline_rung = ctx.config.max_gate_rung;
             // Default selected rungs are Cargo-oriented; custom rungs own their command semantics.
-            let has_cargo_toml = std::fs::metadata(ctx.config.workdir.join("Cargo.toml")).is_ok();
+            let has_cargo_toml = std::fs::metadata(plan_workdir.join("Cargo.toml")).is_ok();
             if !gates_config.has_custom_rungs() && !has_cargo_toml {
                 info!(plan_id = %plan_id, rung = pipeline_rung, "skipping default gate pipeline (no Cargo.toml in workspace)");
                 record_skipped_gate_rung(
@@ -5292,7 +5391,7 @@ async fn dispatch_action(
                     plan_id.clone(),
                     task_id,
                     pipeline_rung,
-                    ctx.config.workdir.clone(),
+                    plan_workdir,
                     gates_config,
                     complexity,
                     verify_steps,
@@ -5359,6 +5458,24 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Handled;
             }
 
+            let plan_workdir = match tracked_plan_workdir(ctx.worktrees, plan_id) {
+                Some(path) => path,
+                None => {
+                    let message = format!("isolated worktree missing for plan {plan_id}");
+                    error!(plan_id = %plan_id, "{}", message);
+                    if let Err(e) = ctx
+                        .executor
+                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                    {
+                        error!(plan_id = %plan_id, error = %e,
+                            "failed to apply Fatal event -- forcing plan terminal");
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    ctx.tui.error(&message);
+                    return ActionDispatchOutcome::Noop;
+                }
+            };
+
             let effect_key = gate_effect_key(
                 plan_id,
                 "plan-verify",
@@ -5398,7 +5515,7 @@ async fn dispatch_action(
             );
             gate_dispatch::spawn_plan_verify(
                 plan_id.clone(),
-                ctx.config.workdir.clone(),
+                plan_workdir,
                 verify_steps,
                 duration_secs(gate_timeout(ctx.config, 2)),
                 ctx.gate_tx.clone(),
@@ -5454,6 +5571,20 @@ async fn dispatch_action(
         }
 
         ExecutorAction::MergeBranch { plan_id } => {
+            if tracked_plan_workdir(ctx.worktrees, plan_id).is_none() {
+                let message = format!("isolated worktree missing for plan {plan_id}");
+                error!(plan_id = %plan_id, "{}", message);
+                if let Err(e) = ctx
+                    .executor
+                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                {
+                    error!(plan_id = %plan_id, error = %e,
+                        "failed to apply Fatal event -- forcing plan terminal");
+                    ctx.state.force_plan_terminal(plan_id);
+                }
+                ctx.tui.error(&message);
+                return ActionDispatchOutcome::Noop;
+            }
             let files_changed = ctx
                 .executor
                 .plan_state(plan_id)
@@ -5461,7 +5592,7 @@ async fn dispatch_action(
                 .unwrap_or_default();
             let request = MergeRequest::new(
                 plan_id.clone(),
-                format!("roko/plan/{plan_id}"),
+                format_branch_name(plan_id),
                 files_changed,
                 0,
             );

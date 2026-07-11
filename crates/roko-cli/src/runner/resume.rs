@@ -33,8 +33,8 @@ use thiserror::Error;
 use tracing::info;
 
 use super::persist::{
-    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, RunStateSnapshot, TaskDefFingerprint,
-    load_run_state, load_state_snapshot, recover_jsonl,
+    JsonlRecovery, PersistPaths, RUN_STATE_SCHEMA_VERSION, ReplanLedgerSnapshot, RunStateSnapshot,
+    TaskDefFingerprint, load_run_state, load_state_snapshot, recover_jsonl,
 };
 use crate::task_parser::TaskDef;
 
@@ -324,6 +324,8 @@ mod tests {
             completed_tasks: HashMap::new(),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
+            replan_ledger: ReplanLedgerSnapshot::default(),
+            revised_tasks: Vec::new(),
             cascade_router_json: None,
         }
     }

@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 7
-done = 3
+done = 5
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -70,7 +70,7 @@ acceptance = ["Repeated completion is an idempotent no-op.", "Success is impossi
 id = "SH01-T04"
 title = "Detect DAG quiescence and propagate blocked tasks"
 description = "Replace the boolean pending-task check with ready/active/blocked/terminal classification, propagate failed prerequisites, and terminate immediately when no future progress is possible."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 300
@@ -90,7 +90,7 @@ acceptance = ["No-active plus no-ready produces a terminal result.", "Failed pre
 id = "SH01-T05"
 title = "Unify retry classification and attempt rollover"
 description = "Use one retry decision object for classification, retryability, delay, prior terminalization, next attempt allocation, and exhaustion."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 280

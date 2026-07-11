@@ -1591,6 +1591,13 @@ async fn cmd_plan_run_engine(
 
     let mut all_succeeded = true;
     let mut total_output_count = 0usize;
+    let dry_run_stub = true;
+
+    if !cli.quiet && !cli.json {
+        eprintln!(
+            "  warning: Graph Engine plan execution is currently a dry-run stub; no agents or LLMs will be dispatched."
+        );
+    }
 
     for plan in &plans {
         if !cli.quiet && !cli.json {
@@ -1666,12 +1673,19 @@ async fn cmd_plan_run_engine(
                 total_output_count += output_count;
 
                 if !cli.quiet && !cli.json {
+                    let status = if dry_run_stub && output.success {
+                        "DRY-RUN"
+                    } else if output.success {
+                        "SUCCESS"
+                    } else {
+                        "FAILED"
+                    };
                     eprintln!(
                         "  Plan '{}' completed: {} nodes, {} output signals, {}",
                         plan.id,
                         output.node_results.len(),
                         output_count,
-                        if output.success { "SUCCESS" } else { "FAILED" },
+                        status,
                     );
                 }
                 if !output.success {
@@ -1690,6 +1704,7 @@ async fn cmd_plan_run_engine(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "engine": "graph",
+                "dry_run": dry_run_stub,
                 "succeeded": all_succeeded,
                 "plan_count": plan_count,
                 "total_tasks": total_tasks,
@@ -1699,7 +1714,7 @@ async fn cmd_plan_run_engine(
         );
     } else if !cli.quiet {
         eprintln!(
-            "\n\u{25b8} Graph Engine complete: {} plan{}, {} tasks, {} output signals",
+            "\n\u{25b8} Graph Engine complete (dry-run stub): {} plan{}, {} tasks, {} output signals",
             plan_count,
             if plan_count == 1 { "" } else { "s" },
             total_tasks,

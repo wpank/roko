@@ -127,6 +127,13 @@ pub struct RunState {
     // ─── Replan Context ──────────────────────────────────────────────
     /// Accumulated failure context per plan/task for retry prompt enrichment.
     pub replan_contexts: HashMap<String, String>,
+    /// Durable gate-failure replan ledger. Unlike transient retry prompt
+    /// context, this is written into snapshots so duplicate revision requests
+    /// and per-plan caps survive resume.
+    pub replan_ledger: super::persist::ReplanLedgerSnapshot,
+    /// Revised task definitions produced by gate-failure plan revisions.
+    /// Key: `"{plan_id}/{task_id}"`.
+    pub revised_tasks: HashMap<String, super::persist::TaskRevision>,
 
     // ─── Resume Fingerprints ─────────────────────────────────────────
     /// Forensic fingerprints for every task definition known to this
@@ -194,6 +201,8 @@ impl RunState {
             task_started_at: Instant::now(),
             last_dispatch_ms: 0,
             replan_contexts: HashMap::new(),
+            replan_ledger: super::persist::ReplanLedgerSnapshot::default(),
+            revised_tasks: HashMap::new(),
             task_fingerprints: Vec::new(),
             routing_context: None,
             failure_reasons: HashMap::new(),
@@ -669,6 +678,50 @@ impl RunState {
     /// Take (and remove) stored replan context for a task.
     pub fn take_replan_context(&mut self, plan_id: &str, task_id: &str) -> Option<String> {
         self.replan_contexts.remove(&format!("{plan_id}/{task_id}"))
+    }
+
+    /// Whether a gate failure has already been upgraded into a durable task
+    /// revision.
+    pub fn has_seen_replan_failure(&self, failure_key: &str) -> bool {
+        self.replan_ledger
+            .seen_failure_keys
+            .iter()
+            .any(|key| key == failure_key)
+    }
+
+    /// Number of durable gate-failure replans recorded for `plan_id`.
+    pub fn replan_count_for(&self, plan_id: &str) -> u32 {
+        self.replan_ledger
+            .replans_seen
+            .get(plan_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Record a durable task revision and update the replan ledger.
+    pub fn record_task_revision(
+        &mut self,
+        failure_key: String,
+        revision: super::persist::TaskRevision,
+    ) {
+        if !self.has_seen_replan_failure(&failure_key) {
+            self.replan_ledger
+                .seen_failure_keys
+                .push(failure_key.clone());
+        }
+        let plan_count = self
+            .replan_ledger
+            .replans_seen
+            .entry(revision.plan_id.clone())
+            .or_insert(0);
+        *plan_count = plan_count.saturating_add(1);
+        self.replan_ledger
+            .revision_requests
+            .push(revision.revision_request.clone());
+        self.revised_tasks.insert(
+            format!("{}/{}", revision.plan_id, revision.task_id),
+            revision,
+        );
     }
 }
 

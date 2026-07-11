@@ -13,9 +13,11 @@ use roko_core::defaults::{
     DEFAULT_GATE_RETRY_MIN_OBSERVATIONS,
 };
 use roko_fs::RokoLayout;
-use roko_orchestrator::{ExecutorSnapshot, OrchestratorSnapshot};
+use roko_orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use roko_runtime::StateSnapshot;
 use serde::{Deserialize, Serialize};
+
+use crate::task_parser::TaskDef;
 
 use super::types::RunnerEvent;
 
@@ -131,11 +133,62 @@ pub struct RunStateSnapshot {
     /// to detect drift between runs.
     #[serde(default)]
     pub fingerprints: Vec<TaskDefFingerprint>,
+    /// Durable gate-failure replan ledger. This prevents duplicate revision
+    /// requests and preserves the configured per-plan cap across runner
+    /// restarts.
+    #[serde(default)]
+    pub replan_ledger: ReplanLedgerSnapshot,
+    /// Task definitions revised by gate-failure replan requests. The runner
+    /// reapplies these to the in-memory task index on resume so the retry is
+    /// driven by task data, not only an appended prompt paragraph.
+    #[serde(default)]
+    pub revised_tasks: Vec<TaskRevision>,
     /// CascadeRouter snapshot JSON captured at save time.
     ///
     /// `None` for old snapshots or when no router is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_router_json: Option<String>,
+}
+
+/// Durable gate-failure replan ledger embedded in [`RunStateSnapshot`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplanLedgerSnapshot {
+    /// Number of replan revisions already recorded per plan.
+    #[serde(default)]
+    pub replans_seen: HashMap<String, u32>,
+    /// Stable failure keys already handled by a revision request.
+    #[serde(default)]
+    pub seen_failure_keys: Vec<String>,
+    /// Revision requests issued during this run.
+    #[serde(default)]
+    pub revision_requests: Vec<PlanRevisionRequest>,
+}
+
+/// A task definition rewritten in response to a durable plan revision request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRevision {
+    /// Plan containing the task.
+    pub plan_id: String,
+    /// Original task id being revised. The revised task keeps this id so the
+    /// existing DAG and retry counters remain authoritative.
+    pub task_id: String,
+    /// Dedupe key for the gate failure that produced this revision.
+    pub failure_key: String,
+    /// Structured request that explains why this task was revised.
+    pub revision_request: PlanRevisionRequest,
+    /// Revised task data used by dispatch on the next retry and after resume.
+    pub revised_task: TaskDef,
+}
+
+impl PartialEq for TaskRevision {
+    fn eq(&self, other: &Self) -> bool {
+        self.plan_id == other.plan_id
+            && self.task_id == other.task_id
+            && self.failure_key == other.failure_key
+            && self.revision_request == other.revision_request
+            && serde_json::to_value(&self.revised_task).ok()
+                == serde_json::to_value(&other.revised_task).ok()
+    }
 }
 
 /// Forensic fingerprint of a task definition used for strict resume validation.

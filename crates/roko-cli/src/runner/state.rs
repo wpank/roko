@@ -5,16 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::time::Instant;
 
-use roko_core::defaults::{
-    DEFAULT_RUNNER_RETRY_BACKOFF_MAX_SECS, DEFAULT_RUNNER_RETRY_BACKOFF_MULTIPLIER_FALLBACK,
-    DEFAULT_RUNNER_RETRY_BACKOFF_SHIFT_CAP, DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT,
-};
+use roko_core::defaults::DEFAULT_RUNNER_RETRY_STRATEGY_PIVOT_ATTEMPT;
 use roko_learn::model_router::RoutingContext;
 
 use super::types::{
-    AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RunnerEvent, RunnerFailureKind,
-    RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle, TaskAttemptOutcome,
-    TaskAttemptRef, TaskAttemptStatus, TaskLifecycle, TaskLifecycleStatus,
+    AgentDispatchOutcome, PlanLifecycleStatus, RetryAction, RetryDecision, RunnerEvent,
+    RunnerFailureKind, RunnerLifecycleProjection, RunnerRunStatus, TaskAttemptLifecycle,
+    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, TaskLifecycle, TaskLifecycleStatus,
+    retry_delay,
 };
 
 /// Mutable state for the current runner execution.
@@ -405,21 +403,32 @@ impl RunState {
                 attempt,
                 action,
                 failure_kind,
+                current_attempt,
                 next_attempt,
+                cooldown_ms,
+                retryable,
+                exhausted,
+                reason,
                 timestamp_ms,
                 ..
             } => {
-                let status = match action {
-                    RetryAction::RetryAfterBackoff => TaskAttemptStatus::Retrying,
-                    RetryAction::Exhausted => TaskAttemptStatus::Exhausted,
-                    RetryAction::NotRetryable => TaskAttemptStatus::Failed,
+                let decision = RetryDecision {
+                    action: *action,
+                    failure_kind: *failure_kind,
+                    current_attempt: *current_attempt,
+                    next_attempt: *next_attempt,
+                    cooldown_ms: *cooldown_ms,
+                    retryable: *retryable,
+                    exhausted: *exhausted,
+                    reason: reason.clone(),
                 };
+                let status = decision.attempt_status();
                 let key = attempt.key();
                 self.upsert_attempt(attempt, status, *timestamp_ms, None, Some(*failure_kind));
                 if let Some(attempt_state) = self.lifecycle.task_attempts.get_mut(&key) {
                     attempt_state.retry_action = Some(*action);
                 }
-                self.apply_retry_to_task(attempt, *action, *failure_kind, *next_attempt);
+                self.apply_retry_to_task(attempt, &decision, *timestamp_ms);
             }
             RunnerEvent::TaskAttemptCompleted {
                 attempt,
@@ -546,23 +555,35 @@ impl RunState {
         }
     }
 
+    fn supersede_retry_attempts_through(&mut self, attempt: &TaskAttemptRef, timestamp_ms: u64) {
+        for prior in self.lifecycle.task_attempts.values_mut() {
+            if prior.attempt.plan_id == attempt.plan_id
+                && prior.attempt.task_id == attempt.task_id
+                && prior.attempt.attempt < attempt.attempt
+                && prior.status == TaskAttemptStatus::Retrying
+            {
+                prior.status = TaskAttemptStatus::Superseded;
+                prior.completed_at_ms = Some(timestamp_ms);
+            }
+        }
+    }
+
     fn apply_retry_to_task(
         &mut self,
         attempt: &TaskAttemptRef,
-        action: RetryAction,
-        failure_kind: RunnerFailureKind,
-        next_attempt: Option<u32>,
+        decision: &RetryDecision,
+        timestamp_ms: u64,
     ) {
         self.ensure_task_lifecycle(&attempt.plan_id, &attempt.task_id, 0);
         if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
-            task.latest_failure_kind = Some(failure_kind);
-            match action {
+            task.latest_failure_kind = Some(decision.failure_kind);
+            match decision.action {
                 RetryAction::RetryAfterBackoff => {
                     task.status = TaskLifecycleStatus::Retrying;
                     task.completed_at_ms = None;
-                    task.current_attempt = task.current_attempt.max(attempt.attempt);
-                    if let Some(next_attempt) = next_attempt {
-                        task.next_attempt = task.next_attempt.max(next_attempt.max(1));
+                    task.current_attempt = task.current_attempt.max(decision.current_attempt);
+                    if let Some(next_attempt) = decision.next_attempt {
+                        task.next_attempt = next_attempt.max(1);
                     }
                     task.next_attempt = task
                         .next_attempt
@@ -572,9 +593,11 @@ impl RunState {
                 }
                 RetryAction::Exhausted => {
                     task.status = TaskLifecycleStatus::Exhausted;
+                    task.completed_at_ms = Some(timestamp_ms);
                 }
                 RetryAction::NotRetryable => {
                     task.status = TaskLifecycleStatus::Failed;
+                    task.completed_at_ms = Some(timestamp_ms);
                 }
             }
         }
@@ -610,6 +633,9 @@ impl RunState {
         timestamp_ms: u64,
         failure_kind: Option<RunnerFailureKind>,
     ) {
+        if status.is_terminal() {
+            self.supersede_retry_attempts_through(attempt, timestamp_ms);
+        }
         if let Some(task) = self.lifecycle.tasks.get_mut(&attempt.task_key()) {
             if attempt.attempt < task.current_attempt && status == TaskAttemptStatus::Superseded {
                 return;
@@ -727,20 +753,27 @@ impl RunState {
     ) {
         self.last_failure_kind
             .insert(plan_id.to_string(), failure_kind);
-        let base = failure_kind.retry_cooldown_secs();
-        if base == 0 {
+        let delay = retry_delay(failure_kind, attempt);
+        if delay.is_zero() {
             self.retry_backoff_until.remove(plan_id);
             return;
         }
-        let multiplier = 1u64
-            .checked_shl(attempt.min(DEFAULT_RUNNER_RETRY_BACKOFF_SHIFT_CAP))
-            .unwrap_or(DEFAULT_RUNNER_RETRY_BACKOFF_MULTIPLIER_FALLBACK);
-        let delay = Duration::from_secs(
-            base.saturating_mul(multiplier)
-                .min(DEFAULT_RUNNER_RETRY_BACKOFF_MAX_SECS),
-        );
         self.retry_backoff_until
             .insert(plan_id.to_string(), Instant::now() + delay);
+    }
+
+    /// Record retry cooldown and classification from the single policy decision.
+    pub fn set_retry_backoff_from_decision(&mut self, plan_id: &str, decision: &RetryDecision) {
+        self.last_failure_kind
+            .insert(plan_id.to_string(), decision.failure_kind);
+        if !decision.should_retry() || decision.cooldown_ms == 0 {
+            self.retry_backoff_until.remove(plan_id);
+            return;
+        }
+        self.retry_backoff_until.insert(
+            plan_id.to_string(),
+            Instant::now() + Duration::from_millis(decision.cooldown_ms),
+        );
     }
 
     /// Clear retry backoff state for a plan after successful forward progress.
@@ -941,7 +974,7 @@ mod tests {
     use super::RunState;
     use crate::runner::types::{
         AgentCompletionSummary, AgentDispatchOutcome, GateCompletion, GateCompletionKind,
-        RetryAction, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
+        RetryDecision, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
         TaskAttemptStatus, TaskLifecycleStatus,
     };
 
@@ -1046,11 +1079,7 @@ mod tests {
         state.apply_runner_event(&RunnerEvent::retry_decision(
             &run_id,
             first.clone(),
-            RetryAction::RetryAfterBackoff,
-            RunnerFailureKind::Transient,
-            Some(2),
-            10,
-            "retry".to_string(),
+            RetryDecision::for_failure(RunnerFailureKind::Transient, 1, 1, "retry".to_string()),
         ));
         state.apply_runner_event(&RunnerEvent::task_attempt_started(&run_id, second, "task"));
 
@@ -1062,5 +1091,51 @@ mod tests {
             TaskLifecycleStatus::Running
         );
         assert_eq!(state.iteration_for("plan", "T1"), 2);
+    }
+
+    #[test]
+    fn terminal_later_attempt_supersedes_stale_retry_attempt() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let first = TaskAttemptRef::new("plan", "T1", 1);
+        let third = TaskAttemptRef::new("plan", "T1", 3);
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            first.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::agent_completed(
+            &run_id,
+            first.clone(),
+            "plan/T1",
+            AgentDispatchOutcome::Failed,
+            AgentCompletionSummary {
+                message: Some("temporary failure".to_string()),
+                ..AgentCompletionSummary::default()
+            },
+        ));
+        state.apply_runner_event(&RunnerEvent::retry_decision(
+            &run_id,
+            first.clone(),
+            RetryDecision::for_failure(RunnerFailureKind::Transient, 1, 2, "retry".to_string()),
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            third,
+            TaskAttemptOutcome::Passed,
+            None,
+            10,
+            "model",
+            "provider",
+        ));
+
+        let first_state = &state.lifecycle.task_attempts[&first.key()];
+        assert_eq!(first_state.status, TaskAttemptStatus::Superseded);
+        assert!(first_state.completed_at_ms.is_some());
+        assert_eq!(
+            state.lifecycle.tasks["plan:T1"].status,
+            TaskLifecycleStatus::Passed
+        );
     }
 }

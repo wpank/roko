@@ -66,7 +66,7 @@ use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
     GateVerdictSummary, PlanOutcome, PlanRunSummary, PromptAssemblyDiagnostics, ResumeMarker,
-    ResumeOutcome, RetryAction, RunConfig, RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind,
+    ResumeOutcome, RetryDecision, RunConfig, RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind,
     TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, effective_plan_timeout_secs,
 };
 
@@ -1762,41 +1762,58 @@ pub async fn run(
                     let failure_kind = completion
                         .failure_kind
                         .unwrap_or_else(|| RunnerFailureKind::from_output(&completion.output));
-                    let can_retry = executor
+                    let retry_phase_open = executor
                         .plan_state(&completion.plan_id)
-                        .map(|ps| {
-                            ps.current_phase.kind() == PhaseKind::Gating
-                                && ps.iteration <= retry_budget
-                                && failure_kind.is_retryable()
-                        })
+                        .map(|ps| ps.current_phase.kind() == PhaseKind::Gating)
                         .unwrap_or(false);
-                    let retry_started = if can_retry {
+                    let decision_budget = if retry_phase_open { retry_budget } else { 0 };
+                    let decision_probe = RetryDecision::for_failure(
+                        failure_kind,
+                        completion_attempt.attempt,
+                        decision_budget,
+                        "",
+                    );
+                    let decision_reason = if decision_probe.should_retry() {
+                        "gate failed and retry policy allows auto-fix".to_string()
+                    } else if decision_probe.retryable {
+                        format!("gate failed and retries exhausted: {}", completion.output)
+                    } else {
+                        format!(
+                            "gate failed with non-retryable {failure_kind:?} failure: {}",
+                            completion.output
+                        )
+                    };
+                    let mut decision = RetryDecision::for_failure(
+                        failure_kind,
+                        completion_attempt.attempt,
+                        decision_budget,
+                        decision_reason,
+                    );
+                    let retry_started = if decision.should_retry() {
                         match executor.apply_event(&completion.plan_id, &ExecutorEvent::GateFailed)
                         {
                             Ok(phase) => {
-                                let mut next_attempt = None;
-                                let mut cooldown_ms = 0;
-                                let mut failed_attempt = 0;
+                                let failed_attempt = decision.current_attempt;
                                 if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
-                                    let attempt = ps.iteration;
-                                    failed_attempt = attempt;
                                     ps.reset_for_retry();
                                     task_dag.clear_running(
                                         &completion.plan_id,
                                         &completion.task_id,
                                     );
-                                    state.set_retry_backoff(
+                                    let next_attempt = decision.next_attempt.unwrap_or_else(|| {
+                                        decision.current_attempt.saturating_add(1)
+                                    });
+                                    ps.iteration = next_attempt;
+                                    state.set_iteration(
                                         &completion.plan_id,
-                                        failure_kind,
-                                        attempt,
+                                        &completion.task_id,
+                                        next_attempt,
                                     );
-                                    state.set_iteration(&completion.plan_id, &completion.task_id, ps.iteration);
-                                    next_attempt = Some(ps.iteration);
-                                    cooldown_ms = state
-                                        .retry_cooldown_remaining(&completion.plan_id)
-                                        .map(|duration| duration.as_millis() as u64)
-                                        .unwrap_or_default();
                                 }
+                                state.set_retry_backoff_from_decision(
+                                    &completion.plan_id,
+                                    &decision,
+                                );
                                 let run_id = state.run_id().to_string();
                                 emit_runner_event(
                                     &paths,
@@ -1806,11 +1823,7 @@ pub async fn run(
                                     RunnerEvent::retry_decision(
                                         &run_id,
                                         completion_attempt.clone(),
-                                        RetryAction::RetryAfterBackoff,
-                                        failure_kind,
-                                        next_attempt,
-                                        cooldown_ms,
-                                        "gate failed and retry policy allows auto-fix".to_string(),
+                                        decision.clone(),
                                     ),
                                 );
                                 tui.phase_transition(&completion.plan_id, "gating", &format!("{phase:?}"));
@@ -1818,23 +1831,26 @@ pub async fn run(
                                 sink.gate_retry(
                                     &completion.plan_id,
                                     &completion.task_id,
-                                    next_attempt.unwrap_or(
-                                        state.iteration_for(&completion.plan_id, &completion.task_id) + 1,
-                                    ),
-                                    cooldown_ms,
+                                    decision.next_attempt.unwrap_or_else(|| {
+                                        state.iteration_for(&completion.plan_id, &completion.task_id)
+                                    }),
+                                    decision.cooldown_ms,
                                 );
 
                                 info!(
                                     plan_id = %completion.plan_id,
                                     phase = ?phase,
                                     failure_kind = ?failure_kind,
+                                    next_attempt = ?decision.next_attempt,
                                     "gate failed — entering auto-fix"
                                 );
 
                                 // Enrich every retry prompt with failure context so the
                                 // agent understands what went wrong and can adjust.
                                 {
-                                    let attempt_num = state.iteration_for(&completion.plan_id, &completion.task_id) + 1;
+                                    let attempt_num = decision.next_attempt.unwrap_or_else(|| {
+                                        state.iteration_for(&completion.plan_id, &completion.task_id)
+                                    });
                                     let mut replan_context = build_gate_retry_context(
                                         &completion.output,
                                         &state.agent_output,
@@ -1875,7 +1891,7 @@ pub async fn run(
                                         &mut task_index,
                                         &completion.plan_id,
                                         &completion.task_id,
-                                        failed_attempt.max(1),
+                                        failed_attempt,
                                         &completion.verdicts,
                                         &completion.output,
                                         &replan_context,
@@ -1890,6 +1906,15 @@ pub async fn run(
                                 true
                             }
                             Err(e) => {
+                                decision = RetryDecision::for_failure(
+                                    failure_kind,
+                                    completion_attempt.attempt,
+                                    0,
+                                    format!(
+                                        "gate failure retry transition rejected: {e}; {}",
+                                        completion.output
+                                    ),
+                                );
                                 warn!(
                                     plan_id = %completion.plan_id,
                                     task_id = %completion.task_id,
@@ -1905,14 +1930,7 @@ pub async fn run(
                     if !retry_started {
                         state.task_failed();
                         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
-                        let reason = if failure_kind.is_retryable() {
-                            format!("gate failed and retries exhausted: {}", completion.output)
-                        } else {
-                            format!(
-                                "gate failed with non-retryable {failure_kind:?} failure: {}",
-                                completion.output
-                            )
-                        };
+                        let reason = decision.reason.clone();
                         state.record_task_failure(&completion.plan_id, &completion.task_id, &reason);
                         // Record task failure in the run ledger.
                         if let Some(ref mut ledger) = run_ledger {
@@ -1949,15 +1967,7 @@ pub async fn run(
                             RunnerEvent::retry_decision(
                                 &run_id,
                                 completion_attempt.clone(),
-                                if failure_kind.is_retryable() {
-                                    RetryAction::Exhausted
-                                } else {
-                                    RetryAction::NotRetryable
-                                },
-                                failure_kind,
-                                None,
-                                0,
-                                reason.clone(),
+                                decision.clone(),
                             ),
                         );
                         let run_id = state.run_id().to_string();
@@ -1971,11 +1981,9 @@ pub async fn run(
                             RunnerEvent::task_attempt_completed(
                                 &run_id,
                                 completion_attempt.clone(),
-                                if failure_kind.is_retryable() {
-                                    TaskAttemptOutcome::Exhausted
-                                } else {
-                                    TaskAttemptOutcome::Failed
-                                },
+                                decision
+                                    .terminal_outcome()
+                                    .unwrap_or(TaskAttemptOutcome::Failed),
                                 Some(failure_kind),
                                 completion.duration_ms,
                                 agent_model,
@@ -2485,36 +2493,45 @@ fn handle_agent_failure(
     let failure_text = format!("{message}\n{}", state.agent_output);
     let failure_kind = RunnerFailureKind::from_output(&failure_text);
     let retry_budget = config.max_retries;
-    let can_retry = executor
+    let retry_phase_open = executor
         .plan_state(&plan_id)
-        .map(|ps| ps.iteration <= retry_budget && failure_kind.is_retryable())
+        .map(|ps| ps.current_phase.kind() == PhaseKind::Implementing)
         .unwrap_or(false);
     let attempt = state.current_attempt_ref();
     let run_id = state.run_id().to_string();
+    let decision_budget = if retry_phase_open { retry_budget } else { 0 };
+    let decision_probe =
+        RetryDecision::for_failure(failure_kind, attempt.attempt, decision_budget, "");
+    let decision_reason = if decision_probe.should_retry() {
+        "agent turn failed and retry policy allows another attempt".to_string()
+    } else if decision_probe.retryable {
+        format!("agent turn failed and retries exhausted: {message}")
+    } else {
+        format!("agent turn failed with non-retryable {failure_kind:?} failure: {message}")
+    };
+    let decision = RetryDecision::for_failure(
+        failure_kind,
+        attempt.attempt,
+        decision_budget,
+        decision_reason,
+    );
 
-    if can_retry {
-        let mut next_attempt = None;
-        let mut cooldown_ms = 0;
+    if decision.should_retry() {
         if let Some(ps) = executor.plan_state_mut(&plan_id) {
-            let failed_attempt = ps.iteration;
             ps.reset_for_retry();
             ps.current_phase = PlanPhase::Implementing;
             task_dag.clear_running(&plan_id, &task_id);
-            state.set_retry_backoff(&plan_id, failure_kind, failed_attempt);
-            state.set_iteration(&plan_id, &task_id, ps.iteration);
-            next_attempt = Some(ps.iteration);
-            cooldown_ms = state
-                .retry_cooldown_remaining(&plan_id)
-                .map(|duration| duration.as_millis() as u64)
-                .unwrap_or_default();
+            let next_attempt = decision
+                .next_attempt
+                .unwrap_or_else(|| decision.current_attempt.saturating_add(1));
+            ps.iteration = next_attempt;
+            state.set_iteration(&plan_id, &task_id, next_attempt);
         }
 
-        let retry_attempt = next_attempt.unwrap_or_else(|| {
-            state
-                .iteration_for(&plan_id, &task_id)
-                .saturating_add(1)
-                .max(1)
-        });
+        state.set_retry_backoff_from_decision(&plan_id, &decision);
+        let retry_attempt = decision
+            .next_attempt
+            .unwrap_or_else(|| state.iteration_for(&plan_id, &task_id));
         state.set_replan_context(
             &plan_id,
             &task_id,
@@ -2525,36 +2542,24 @@ fn handle_agent_failure(
             state,
             tui,
             config,
-            RunnerEvent::retry_decision(
-                &run_id,
-                attempt,
-                RetryAction::RetryAfterBackoff,
-                failure_kind,
-                next_attempt,
-                cooldown_ms,
-                "agent turn failed and retry policy allows another attempt".to_string(),
-            ),
+            RunnerEvent::retry_decision(&run_id, attempt, decision.clone()),
         );
         warn!(
             plan_id = %plan_id,
             task_id = %task_id,
             failure_kind = ?failure_kind,
-            cooldown_ms,
+            cooldown_ms = decision.cooldown_ms,
             "agent turn failed — retrying task after backoff"
         );
         tui.error(&format!(
             "agent turn failed for {task_id}; retrying after {}s",
-            cooldown_ms / 1000
+            decision.cooldown_ms / 1000
         ));
         return;
     }
 
     state.task_failed();
-    let reason = if failure_kind.is_retryable() {
-        format!("agent turn failed and retries exhausted: {message}")
-    } else {
-        format!("agent turn failed with non-retryable {failure_kind:?} failure: {message}")
-    };
+    let reason = decision.reason.clone();
     state.record_task_failure(&plan_id, &task_id, &reason);
     state.mark_task_failed(&plan_id, &task_id);
     let task_refs = task_refs_for_plan(task_index, &plan_id);
@@ -2587,19 +2592,7 @@ fn handle_agent_failure(
         state,
         tui,
         config,
-        RunnerEvent::retry_decision(
-            &run_id,
-            attempt.clone(),
-            if failure_kind.is_retryable() {
-                RetryAction::Exhausted
-            } else {
-                RetryAction::NotRetryable
-            },
-            failure_kind,
-            None,
-            0,
-            reason.clone(),
-        ),
+        RunnerEvent::retry_decision(&run_id, attempt.clone(), decision.clone()),
     );
     let agent_model = state.agent_model.clone();
     let agent_provider = state.agent_provider.clone();
@@ -2611,11 +2604,9 @@ fn handle_agent_failure(
         RunnerEvent::task_attempt_completed(
             &run_id,
             attempt,
-            if failure_kind.is_retryable() {
-                TaskAttemptOutcome::Exhausted
-            } else {
-                TaskAttemptOutcome::Failed
-            },
+            decision
+                .terminal_outcome()
+                .unwrap_or(TaskAttemptOutcome::Failed),
             Some(failure_kind),
             state.task_elapsed_ms(),
             agent_model,
@@ -2800,34 +2791,25 @@ fn handle_plan_verify_completion(
         let failure_kind = completion
             .failure_kind
             .unwrap_or_else(|| RunnerFailureKind::from_output(&completion.output));
-        let iter = state.iteration_for(&completion.plan_id, &completion.task_id);
-        state.set_retry_backoff(&completion.plan_id, failure_kind, iter);
-        let cooldown_ms = state
-            .retry_cooldown_remaining(&completion.plan_id)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
         let run_id = state.run_id().to_string();
         let attempt = TaskAttemptRef::new(
             completion.plan_id.clone(),
             completion.task_id.clone(),
             state.iteration_for(&completion.plan_id, &completion.task_id),
         );
-        let cur_iter = state.iteration_for(&completion.plan_id, &completion.task_id);
-        let next_attempt = Some(cur_iter.saturating_add(1).max(1));
+        let decision = RetryDecision::for_failure(
+            failure_kind,
+            attempt.attempt,
+            attempt.attempt,
+            "plan verify failed and verify regeneration is available".to_string(),
+        );
+        state.set_retry_backoff_from_decision(&completion.plan_id, &decision);
         emit_runner_event(
             paths,
             state,
             tui,
             config,
-            RunnerEvent::retry_decision(
-                &run_id,
-                attempt,
-                RetryAction::RetryAfterBackoff,
-                failure_kind,
-                next_attempt,
-                cooldown_ms,
-                "plan verify failed and verify regeneration is available".to_string(),
-            ),
+            RunnerEvent::retry_decision(&run_id, attempt, decision),
         );
         match executor.apply_event(&completion.plan_id, &ExecutorEvent::VerifyFailed) {
             Ok(phase) => {

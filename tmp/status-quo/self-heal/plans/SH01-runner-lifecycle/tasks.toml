@@ -109,11 +109,11 @@ acceptance = ["Permanent failures are never retryable.", "Attempts progress with
 [[task]]
 id = "SH01-T06"
 title = "Implement progress-aware timeout policy"
-description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines. Task, gate, and silence deadlines must cancel and terminalize only their owning attempt/effect; they must never call a global all-plan timeout handler. Only the hard-run deadline and a proven global scheduler deadlock may terminate the whole run. Agent chatter resets silence only; useful progress advances only on durable lifecycle/DAG milestones. Persist cancellation/timeout events before terminal snapshots and return."
+description = "Separate hard-run, task, gate, agent-silence, and scheduler-no-progress deadlines. Task, gate, and silence deadlines cancel and terminalize only their exact owning attempt/effect; never route them through an all-plan handler. Bridge-backed agents require an attempt cancellation token/abort handle, not only CLI process killing. Gate effects require owned start/deadline state so a lost completion cannot suppress deadlock detection forever. Emit typed cancellation-requested, timeout, and cancelled/timeout terminal events for the exact attempt before writing terminal snapshots; hard-run and scheduler handlers must terminalize attempts and plans before snapshot/shutdown/run.completed. Agent chatter resets silence only; useful progress advances only on durable lifecycle/DAG milestones. Timeout configuration must not infer explicitness by comparing values to defaults, and global task timeout must not be hidden by a parser-injected per-task default."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
-max_loc = 500
+max_loc = 700
 files = ["crates/roko-core/src/config/timeouts.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
 role = "implementer"
 domain = "execution-engine"
@@ -124,7 +124,7 @@ read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRE
 phase = "test"
 command = "cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Timeout tests must pass."
-acceptance = ["Deadlocks fail on no-progress timeout.", "Hard cap remains independent of progress.", "A task or silence timeout cancels only its exact attempt and leaves unrelated plans running.", "Agent chatter cannot reset scheduler useful-progress time.", "Dispatch initializes attempt-specific silence and task deadlines.", "Timeout emits typed cancellation and timeout terminal events before the terminal snapshot."]
+acceptance = ["Deadlocks, including lost gate completions, fail on an owned effect/no-progress deadline.", "Hard cap remains independent of progress.", "A task, gate, or silence timeout cancels only its exact attempt/effect and leaves unrelated plans running.", "CLI and bridge-backed attempts both have effective cancellation handles.", "Agent chatter cannot reset scheduler useful-progress time.", "Dispatch initializes attempt-specific silence and task deadlines without ambiguous default precedence.", "Typed cancellation intent and timeout terminal events are durable before any terminal snapshot or run completion."]
 
 [[task]]
 id = "SH01-T07"

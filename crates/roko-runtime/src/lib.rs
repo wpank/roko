@@ -92,7 +92,7 @@ pub use roko_core::foundation::{
 };
 pub use run_ledger::{
     AgentOutcome, ArtifactOutcome, CancellationOutcome, EffectErrorKind, EventPersistenceHealth,
-    GateRunOutcome, PhaseTransitionRecord, RunLedger,
+    GateRunOutcome, PhaseTransitionRecord, RunLedger, TaskTerminalOutcome,
 };
 pub use state_hub::{SharedStateHub, StateHub, StateHubSender, shared_state_hub};
 pub use state_snapshot::{STATE_SNAPSHOT_VERSION, StateSnapshot};

@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 25
-done = 21
+done = 22
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -430,7 +430,7 @@ acceptance = ["AgentTermination::Failed returns a usable AgentHandle.", "Unconfi
 id = "SH01-T06B2D3"
 title = "Settle cancellation for every exact resource variant"
 description = "Implement one cancel-attempt primitive that claims an exact owner, emits Cancelling before awaits, and returns Confirmed or Unconfirmed for CLI, Bridge, Dispatching, AwaitingGate, Gate, and Merge resources. Confirmed cleanup settles every handle/token; any kill/join/reservation failure restores the exact resource and claim as CancellationFailed without dropping permits, PID, active markers, or merge reservation."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 460

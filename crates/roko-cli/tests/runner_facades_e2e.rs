@@ -75,6 +75,7 @@ async fn run_config_facades_receive_runner_events() {
         "claude_cli",
     );
     let completion = GateCompletion {
+        effect: None,
         attempt: None,
         kind: GateCompletionKind::Gate,
         plan_id: "p-e2e".into(),
@@ -178,6 +179,7 @@ async fn projection_categorizes_runner_events_correctly() {
             "gate",
             {
                 let completion = GateCompletion {
+                    effect: None,
                     attempt: None,
                     kind: GateCompletionKind::Gate,
                     plan_id: "p".into(),

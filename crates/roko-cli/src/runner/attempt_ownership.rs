@@ -21,6 +21,12 @@ pub enum AttemptPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectRef(pub u64);
 
+impl<R> AttemptOwnership<R> {
+    pub fn current_effect(&self, attempt: &TaskAttemptRef) -> Option<EffectRef> {
+        self.owners.get(attempt).map(|slot| slot.owner.effect)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancellationState {
     None,

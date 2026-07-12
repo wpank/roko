@@ -57,6 +57,14 @@ pub enum GateCompletionKind {
     Merge,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEffectRef {
+    pub attempt: TaskAttemptRef,
+    pub kind: GateCompletionKind,
+    pub rung: u32,
+    pub generation: u64,
+}
+
 /// Coarse runner-level failure kind for retry policy and prompt shaping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,6 +140,7 @@ pub struct GateCompletion {
     /// Exact task attempt that dispatched this gate. Merge completions do not
     /// currently belong to a task attempt.
     pub attempt: Option<TaskAttemptRef>,
+    pub effect: Option<GateEffectRef>,
     pub plan_id: String,
     pub task_id: String,
     pub rung: u32,

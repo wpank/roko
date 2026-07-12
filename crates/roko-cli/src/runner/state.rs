@@ -1018,6 +1018,7 @@ mod tests {
             "task",
         ));
         let completion = GateCompletion {
+            effect: None,
             kind: GateCompletionKind::Gate,
             attempt: Some(attempt.clone()),
             plan_id: "plan".into(),

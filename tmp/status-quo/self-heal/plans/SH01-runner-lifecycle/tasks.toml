@@ -329,7 +329,7 @@ acceptance = ["Transition/restore failure returns the original linear claim and 
 [[task]]
 id = "SH01-T06B2C3C1B"
 title = "Own dormant merge setup and roll back launch failures"
-description = "Use linear MergeLaunch and recoverable claims to prepare a dormant merge producer, insert exact ownership, retain its handle, and only then release the barrier. Insert, claim, prepare, effect validation, transition, and start failures abort and await dormant work, recover or finalize only their own claim, atomically fail/release the exact queue reservation, and continue a bounded drain loop. Successful completion remains for the next task."
+description = "Use linear MergeLaunch and recoverable claims to prepare a dormant merge producer, insert exact ownership, retain its handle, and only then release the barrier. Insert, claim, prepare, effect validation, transition, and start failures abort and await dormant work, recover or finalize only their own claim, atomically fail/release the exact queue reservation, and continue a drain loop bounded by its initial queue snapshot. Successful producers emit exact effect identity so completion claims, awaits, and removes the setup owner before calling the existing merge outcome handler; moving queue and terminal side effects behind that claim remains for the next task."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
@@ -344,7 +344,7 @@ read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG
 phase = "test"
 command = "cargo test -p roko-orchestrator merge_queue 2>&1 && cargo test -p roko-cli runner::attempt_ownership 2>&1 && cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Owned dormant merge setup rollback tests must pass."
-acceptance = ["Exact merge ownership and retained handle exist before launch release.", "Every setup/start failure aborts and awaits dormant work.", "Failure removes or recovers only its exact claim and queue reservation.", "Blocked-with-launch uses the launch plan identity, not the blocked submitter.", "Drain after deterministic setup failure is bounded and cannot recurse forever."]
+acceptance = ["Exact merge ownership and retained handle exist before launch release.", "Every setup/start failure aborts and awaits dormant work.", "Failure removes or recovers only its exact claim and queue reservation.", "Blocked-with-launch uses the launch plan identity, not the blocked submitter.", "Drain iterates until one launch starts or the initial queue bound is exhausted, without recursion.", "Successful exact completion awaits the retained handle and removes setup ownership before legacy outcome handling."]
 
 [[task]]
 id = "SH01-T06B2C3C2"

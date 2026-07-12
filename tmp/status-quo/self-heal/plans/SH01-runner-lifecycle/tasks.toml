@@ -129,7 +129,7 @@ acceptance = ["Serde round trips preserve both values and precedence.", "An expl
 [[task]]
 id = "SH01-T06B1"
 title = "Make process and gate cancellation confirmable"
-description = "Make kill_tree propagate final kill/wait errors and confirm root plus every captured descendant PID has exited; recheck try_wait before escalation so an already-exited race is success. Make AgentHandle kill await readers, treating intentional aborted JoinError as confirmed but panic as failure. Gate commands must run in owned process groups/tree-kill wrappers: kill_on_drop of only the immediate Cargo child is insufficient because rustc/test descendants can survive. Convert blocking generated commands to async. Add child-plus-grandchild and aborted-gate tests that capture PIDs and poll actual disappearance."
+description = "Make kill_tree propagate final kill/wait errors and confirm root plus every captured descendant PID on every success path, including graceful and already-exited roots; never unregister before full-set confirmation. On final kill error, re-run try_wait to accept an exit race. Unix PID probes treat EPERM as alive and only ESRCH as absent. Make AgentHandle await readers, with intentional abort confirmed and panic failed. Gate commands use owned process groups/tree-kill wrappers, not immediate-child-only kill_on_drop. Add child-plus-grandchild and aborted-gate tests that poll every PID until absent."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"

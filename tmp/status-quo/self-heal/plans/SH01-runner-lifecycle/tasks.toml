@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 14
-done = 9
+done = 10
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -190,7 +190,7 @@ acceptance = ["Confirmed wait awaits child, stdout reader, and stderr reader.", 
 id = "SH01-T06B2B2"
 title = "Migrate agent producers to persistent attempt ownership"
 description = "Insert ownership before dispatch and replace string-keyed agent maps with one TaskAttemptRef registry whose resource enum owns CLI, bridge, forwarder, readers, and permit. Route every event with exact attempt and effect identity. A single claimed outcome path settles producers, classifies provider error and only exit Some(0) as success, then transitions successful work to AwaitingGate or exact failures to their failure path. Spawn failure awaits its forwarder. Late buffered events lose eligibility."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 520

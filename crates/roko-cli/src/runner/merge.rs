@@ -493,6 +493,7 @@ impl PlanMerger {
             };
 
             let completion = GateCompletion {
+                effect: None,
                 kind: GateCompletionKind::Merge,
                 attempt: None,
                 plan_id,

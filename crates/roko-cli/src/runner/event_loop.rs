@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::state_hub::StateHub;
@@ -66,9 +67,10 @@ use super::task_dag::{DagConfig, DagProgressSummary, TaskDag, task_status_is_ter
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
-    GateVerdictSummary, PlanOutcome, PlanRunSummary, PromptAssemblyDiagnostics, ResumeMarker,
-    ResumeOutcome, RetryDecision, RunConfig, RunOutcome, RunTotals, RunnerEvent, RunnerFailureKind,
-    TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus, effective_plan_timeout_secs,
+    GateEffectRef, GateVerdictSummary, PlanOutcome, PlanRunSummary, PromptAssemblyDiagnostics,
+    ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome, RunTotals, RunnerEvent,
+    RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus,
+    effective_plan_timeout_secs,
 };
 
 // ─── RunReport ──────────────────────────────────────────────────────────
@@ -197,6 +199,16 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 // ─── RunContext ──────────────────────────────────────────────────────────
 
 const RUNNER_WORKTREE_IDLE_TTL_SECS: u64 = 30 * 60;
+static NEXT_GATE_EFFECT: AtomicU64 = AtomicU64::new(1);
+
+fn new_gate_effect(attempt: TaskAttemptRef, kind: GateCompletionKind, rung: u32) -> GateEffectRef {
+    GateEffectRef {
+        attempt,
+        kind,
+        rung,
+        generation: NEXT_GATE_EFFECT.fetch_add(1, Ordering::Relaxed),
+    }
+}
 
 enum RoutedAgentEvent {
     Agent {
@@ -260,6 +272,10 @@ enum AgentRuntimeResource {
         permit: tokio::sync::OwnedSemaphorePermit,
     },
     AwaitingGate,
+    Gate {
+        effect: GateEffectRef,
+        handle: tokio::task::JoinHandle<()>,
+    },
 }
 
 struct AgentSettlement {
@@ -489,7 +505,7 @@ struct RunContext<'a> {
     task_sem: Arc<tokio::sync::Semaphore>,
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
-    gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
+    legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -946,7 +962,7 @@ pub async fn run(
     let mut attempt_ownership = AttemptOwnership::<AgentRuntimeResource>::default();
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
-    let mut gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
+    let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -1424,13 +1440,73 @@ pub async fn run(
                         completion.task_id.clone(),
                         state.iteration_for(&completion.plan_id, &completion.task_id),
                     )
-                } else if let Some(attempt) = take_matching_gate_attempt(
-                    &mut gate_attempts,
-                    &effect_key,
-                    completion.attempt.as_ref(),
-                ) {
+                } else if completion.effect.is_none() {
+                    let Some(attempt) = take_matching_gate_attempt(
+                        &mut legacy_gate_attempts,
+                        &effect_key,
+                        completion.attempt.as_ref(),
+                    ) else {
+                        warn!("dropping stale legacy gate completion");
+                        continue;
+                    };
                     attempt
                 } else {
+                    let Some(attempt) = completion.attempt.clone() else {
+                        warn!("dropping gate completion without exact attempt");
+                        continue;
+                    };
+                    let Some(gate_effect) = completion.effect.clone() else {
+                        warn!(attempt = %attempt.key(), "dropping gate completion without exact effect");
+                        continue;
+                    };
+                    if gate_effect.attempt != attempt
+                        || attempt.plan_id != completion.plan_id
+                        || attempt.task_id != completion.task_id
+                        || gate_effect.kind != completion.kind
+                        || gate_effect.rung != completion.rung
+                    {
+                        warn!(attempt = %attempt.key(), "dropping mismatched gate effect");
+                        continue;
+                    }
+                    let Ok(mut claim) = attempt_ownership.claim_phase(
+                        &attempt,
+                        AttemptPhase::Gate,
+                        EffectRef(gate_effect.generation),
+                    ) else {
+                        warn!(attempt = %attempt.key(), "dropping stale or duplicate gate completion");
+                        continue;
+                    };
+                    let AgentRuntimeResource::Gate { effect, handle } = claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate)
+                    else {
+                        error!(attempt = %attempt.key(), "gate owner did not retain its join handle");
+                        attempt_ownership.complete_claim(claim).ok();
+                        continue;
+                    };
+                    if effect != gate_effect {
+                        error!(attempt = %attempt.key(), "gate effect identity mismatch");
+                        handle.abort();
+                        let _ = handle.await;
+                        attempt_ownership.complete_claim(claim).ok();
+                        continue;
+                    }
+                    if let Err(err) = handle.await {
+                        error!(attempt = %attempt.key(), %err, "gate producer join failed");
+                        attempt_ownership.complete_claim(claim).ok();
+                        continue;
+                    }
+                    attempt_ownership
+                        .transition_claim(
+                            claim,
+                            AttemptPhase::AwaitingGate,
+                            EffectRef(gate_effect.generation),
+                        )
+                        .expect("settled gate owner must return to awaiting gate");
+                    attempt
+                };
+                if completion.kind != GateCompletionKind::Merge
+                    && completion.attempt.as_ref() != Some(&completion_attempt)
+                {
                     warn!(
                         plan_id = %completion.plan_id,
                         task_id = %completion.task_id,
@@ -1440,7 +1516,7 @@ pub async fn run(
                         "dropping stale or duplicate gate completion"
                     );
                     continue;
-                };
+                }
                 restore_task_runtime(
                     &mut state,
                     &task_runtime_states,
@@ -2300,7 +2376,7 @@ pub async fn run(
                         task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
                         task_runtime_states: &mut task_runtime_states,
-                        gate_attempts: &mut gate_attempts,
+                        legacy_gate_attempts: &mut legacy_gate_attempts,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
@@ -4882,8 +4958,13 @@ async fn dispatch_action(
                         rung = pipeline_rung,
                         "running task verification preflight before agent dispatch"
                     );
-                    let preflight = gate_dispatch::run_gate_once(
+                    let preflight_effect = new_gate_effect(
                         attempt_ref.clone(),
+                        GateCompletionKind::Gate,
+                        pipeline_rung,
+                    );
+                    let mut preflight = gate_dispatch::run_gate_once(
+                        preflight_effect.clone(),
                         plan_id.clone(),
                         task_id.clone(),
                         pipeline_rung,
@@ -4897,6 +4978,7 @@ async fn dispatch_action(
                     .await;
 
                     if preflight.passed {
+                        preflight.effect = None;
                         info!(
                             plan_id = %plan_id,
                             task = %task_id,
@@ -4941,7 +5023,7 @@ async fn dispatch_action(
                                 "preflight gate result found an already active gate effect"
                             );
                         }
-                        ctx.gate_attempts
+                        ctx.legacy_gate_attempts
                             .insert(effect_key.clone(), attempt_ref.clone());
                         emit_runner_event(
                             ctx.paths,
@@ -4973,7 +5055,6 @@ async fn dispatch_action(
                                 error!(plan_id = %plan_id, task = %task_id, err = %e,
                                     "preflight transition failed; terminalizing plan");
                                 ctx.state.clear_gate_active(&effect_key);
-                                ctx.gate_attempts.remove(&effect_key);
                                 ctx.state.record_task_failure(plan_id, &task_id, &message);
                                 ctx.state.mark_task_failed(plan_id, &task_id);
                                 let task_refs = task_refs_for_plan(ctx.task_index, plan_id);
@@ -5624,15 +5705,6 @@ async fn dispatch_action(
 
             let effect_key =
                 gate_effect_key(plan_id, &task_id, pipeline_rung, GateCompletionKind::Gate);
-            if !ctx.state.mark_gate_active(effect_key.clone()) {
-                debug!(
-                    plan_id = %plan_id,
-                    task_id = %task_id,
-                    rung = pipeline_rung,
-                    "gate pipeline already active - suppressing duplicate dispatch"
-                );
-                return ActionDispatchOutcome::Noop;
-            }
             info!(
                 plan_id = %plan_id,
                 requested_rung = *rung,
@@ -5646,8 +5718,41 @@ async fn dispatch_action(
                 task_id.clone(),
                 ctx.state.iteration_for(plan_id, &task_id),
             );
-            ctx.gate_attempts
-                .insert(effect_key.clone(), attempt_ref.clone());
+            let gate_effect =
+                new_gate_effect(attempt_ref.clone(), GateCompletionKind::Gate, pipeline_rung);
+            if !ctx.attempt_ownership.contains(&attempt_ref) {
+                ctx.attempt_ownership
+                    .insert(
+                        attempt_ref.clone(),
+                        AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                        AgentRuntimeResource::AwaitingGate,
+                    )
+                    .expect("new gate owner must be unique");
+            }
+            let prior_effect = ctx
+                .attempt_ownership
+                .current_effect(&attempt_ref)
+                .expect("gate owner must expose current effect");
+            let mut gate_claim = match ctx.attempt_ownership.claim_phase(
+                &attempt_ref,
+                AttemptPhase::AwaitingGate,
+                prior_effect,
+            ) {
+                Ok(claim) => claim,
+                Err(_) => return ActionDispatchOutcome::Noop,
+            };
+            if !ctx.state.mark_gate_active(effect_key.clone()) {
+                ctx.attempt_ownership
+                    .transition_claim(gate_claim, AttemptPhase::AwaitingGate, prior_effect)
+                    .expect("duplicate gate suppression must restore ownership");
+                debug!(
+                    plan_id = %plan_id,
+                    task_id = %task_id,
+                    rung = pipeline_rung,
+                    "gate pipeline already active - suppressing duplicate dispatch"
+                );
+                return ActionDispatchOutcome::Noop;
+            }
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -5666,7 +5771,7 @@ async fn dispatch_action(
                 .and_then(|tasks| tasks.get(task_id.as_str()));
             let is_read_only_role = task_role_is_read_only(task_def);
 
-            if is_read_only_role {
+            let (gate_handle, start_tx) = if is_read_only_role {
                 // Read-only tasks don't produce artifacts — auto-pass the gate.
                 // Running cargo check / structural verify on a researcher task
                 // wastes time and fails on files not yet created.
@@ -5684,6 +5789,7 @@ async fn dispatch_action(
                     plan_id: plan_id.clone(),
                     task_id: task_id.clone(),
                     attempt: Some(attempt_ref.clone()),
+                    effect: Some(gate_effect.clone()),
                     rung: pipeline_rung,
                     passed: true,
                     output: "skipped: read-only role".to_string(),
@@ -5695,24 +5801,30 @@ async fn dispatch_action(
                 let gate_tx = ctx.gate_tx.clone();
                 let fatal_tx = ctx.fatal_tx.clone();
                 let plan_id_fatal = plan_id.clone();
-                tokio::spawn(async move {
+                let fatal_attempt = attempt_ref.clone();
+                let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+                let handle = tokio::spawn(async move {
+                    if start_rx.await.is_err() {
+                        return;
+                    }
                     if let Err(e) = gate_tx.send(completion).await {
                         error!(plan_id = %plan_id_fatal, err = %e,
                             "CRITICAL: failed to send auto-pass gate -- sending fatal");
                         let _ = fatal_tx
                             .send(RoutedAgentEvent::fatal(
-                                attempt_ref.clone(),
+                                fatal_attempt,
                                 format!("gate channel closed for plan {plan_id_fatal}: {e}"),
                             ))
                             .await;
                     }
                 });
+                (handle, start_tx)
             } else {
                 let verify_steps = task_def.map(|task| task.verify.clone()).unwrap_or_default();
                 let complexity = gate_plan_complexity_for_task(task_def);
                 let target_crates = task_target_crates(task_def);
                 gate_dispatch::spawn_gate(
-                    attempt_ref,
+                    gate_effect.clone(),
                     plan_id.clone(),
                     task_id,
                     pipeline_rung,
@@ -5724,7 +5836,40 @@ async fn dispatch_action(
                     ctx.gate_tx.clone(),
                     ctx.gate_sem.clone(),
                     target_crates,
-                );
+                )
+            };
+            gate_claim.replace_resource(AgentRuntimeResource::Gate {
+                effect: gate_effect.clone(),
+                handle: gate_handle,
+            });
+            ctx.attempt_ownership
+                .transition_claim(
+                    gate_claim,
+                    AttemptPhase::Gate,
+                    EffectRef(gate_effect.generation),
+                )
+                .expect("gate dispatch must retain exact owner");
+            if start_tx.send(()).is_err() {
+                ctx.state.clear_gate_active(&effect_key);
+                if let Ok(mut failed_claim) = ctx.attempt_ownership.claim_phase(
+                    &attempt_ref,
+                    AttemptPhase::Gate,
+                    EffectRef(gate_effect.generation),
+                ) {
+                    if let AgentRuntimeResource::Gate { handle, .. } =
+                        failed_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    {
+                        let _ = handle.await;
+                    }
+                    ctx.attempt_ownership.complete_claim(failed_claim).ok();
+                }
+                let message = format!("gate producer failed to start for {}", attempt_ref.key());
+                error!(attempt = %attempt_ref.key(), %message);
+                let _ = ctx
+                    .executor
+                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
+                ctx.tui.error(&message);
+                return ActionDispatchOutcome::Handled;
             }
             ActionDispatchOutcome::Handled
         }
@@ -5820,7 +5965,7 @@ async fn dispatch_action(
                 "plan-verify",
                 ctx.state.iteration_for(plan_id, "plan-verify"),
             );
-            ctx.gate_attempts
+            ctx.legacy_gate_attempts
                 .insert(effect_key.clone(), attempt_ref.clone());
             emit_runner_event(
                 ctx.paths,
@@ -5840,7 +5985,7 @@ async fn dispatch_action(
                 task_count = verify_steps.len(),
                 "dispatching plan verify"
             );
-            gate_dispatch::spawn_plan_verify(
+            let gate_handle = gate_dispatch::spawn_plan_verify(
                 attempt_ref,
                 plan_id.clone(),
                 plan_workdir,
@@ -5849,6 +5994,7 @@ async fn dispatch_action(
                 ctx.gate_tx.clone(),
                 ctx.gate_sem.clone(),
             );
+            drop(gate_handle);
             ActionDispatchOutcome::Handled
         }
 
@@ -6452,6 +6598,10 @@ async fn stop_all_agents(
             }
             AgentRuntimeResource::Dispatching(permit) => drop(permit),
             AgentRuntimeResource::AwaitingGate => {}
+            AgentRuntimeResource::Gate { handle, .. } => {
+                handle.abort();
+                let _ = handle.await;
+            }
         }
         let _ = attempt_ownership.complete_claim(claim);
     }
@@ -8494,5 +8644,16 @@ mod tests_post_gate_reflection_lessons {
                 .any(|error| error.contains("agent bridge failed"))
         );
         assert!(agent_terminal_failure(&turn_completed(false), &settlement).is_some());
+    }
+
+    #[test]
+    fn repeated_gate_dispatches_have_distinct_exact_effects() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let first = new_gate_effect(attempt.clone(), GateCompletionKind::Gate, 2);
+        let second = new_gate_effect(attempt.clone(), GateCompletionKind::Gate, 2);
+        assert_eq!(first.attempt, attempt);
+        assert_eq!(first.kind, second.kind);
+        assert_eq!(first.rung, second.rung);
+        assert_ne!(first.generation, second.generation);
     }
 }

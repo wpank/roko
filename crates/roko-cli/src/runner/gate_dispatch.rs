@@ -11,14 +11,16 @@ use roko_fs::RokoLayout;
 use roko_gate::classify_gate_failure;
 use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info};
 
 use crate::task_parser::VerifyStep;
 
 use super::types::{
-    GateCompletion, GateCompletionKind, GateVerdictSummary, RunnerFailureKind, TaskAttemptRef,
+    GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
+    TaskAttemptRef,
 };
 
 /// Sentinel rung value for plan-level verification (not a per-task rung).
@@ -28,7 +30,7 @@ pub const RUNG_MERGE: u32 = 1001;
 
 /// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
 pub fn spawn_gate(
-    attempt: TaskAttemptRef,
+    effect: GateEffectRef,
     plan_id: String,
     task_id: String,
     rung: u32,
@@ -40,8 +42,12 @@ pub fn spawn_gate(
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
     target_crates: Vec<String>,
-) {
-    tokio::spawn(async move {
+) -> (JoinHandle<()>, oneshot::Sender<()>) {
+    let (start_tx, start_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
         let t_wait = Instant::now();
         let Ok(_permit) = gate_sem.acquire_owned().await else {
             return;
@@ -57,7 +63,7 @@ pub fn spawn_gate(
             );
         }
         let completion = run_gate_once(
-            attempt,
+            effect,
             plan_id,
             task_id,
             rung,
@@ -75,11 +81,12 @@ pub fn spawn_gate(
             return;
         }
     });
+    (handle, start_tx)
 }
 
 /// Run a gate rung to completion and return its summary.
 pub async fn run_gate_once(
-    attempt: TaskAttemptRef,
+    effect: GateEffectRef,
     plan_id: String,
     task_id: String,
     rung: u32,
@@ -185,7 +192,8 @@ pub async fn run_gate_once(
 
     GateCompletion {
         kind: GateCompletionKind::Gate,
-        attempt: Some(attempt),
+        attempt: Some(effect.attempt.clone()),
+        effect: Some(effect),
         plan_id,
         task_id,
         rung,
@@ -206,7 +214,7 @@ pub fn spawn_plan_verify(
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let t_wait = Instant::now();
         let Ok(_permit) = gate_sem.acquire_owned().await else {
@@ -277,6 +285,7 @@ pub fn spawn_plan_verify(
         let completion = GateCompletion {
             kind: GateCompletionKind::PlanVerify,
             attempt: Some(attempt),
+            effect: None,
             plan_id,
             task_id: "plan-verify".to_string(),
             rung: RUNG_PLAN_VERIFY,
@@ -290,7 +299,7 @@ pub fn spawn_plan_verify(
         if let Err(e) = gate_tx.send(completion).await {
             error!(err = %e, "failed to send plan verify completion — channel closed");
         }
-    });
+    })
 }
 
 fn gate_signal(
@@ -469,6 +478,57 @@ fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn barrier_gate() -> (
+        JoinHandle<()>,
+        oneshot::Sender<()>,
+        mpsc::Receiver<GateCompletion>,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.keep();
+        let (tx, rx) = mpsc::channel(1);
+        let effect = GateEffectRef {
+            attempt: TaskAttemptRef::new("plan", "task", 1),
+            kind: GateCompletionKind::Gate,
+            rung: 1,
+            generation: 99,
+        };
+        let (handle, start) = spawn_gate(
+            effect,
+            "plan".to_string(),
+            "task".to_string(),
+            1,
+            workdir,
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            Vec::new(),
+            1,
+            tx,
+            Arc::new(Semaphore::new(1)),
+            Vec::new(),
+        );
+        (handle, start, rx)
+    }
+
+    #[tokio::test]
+    async fn gate_producer_waits_for_owner_start_barrier() {
+        let (handle, start, mut rx) = barrier_gate();
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(start);
+        handle.await.expect("barrier cancellation should be clean");
+    }
+
+    #[tokio::test]
+    async fn gate_start_reports_failure_after_producer_abort() {
+        let (handle, start, _rx) = barrier_gate();
+        handle.abort();
+        let _ = handle.await;
+        assert!(start.send(()).is_err());
+    }
 
     #[test]
     fn retry_recommended_gate_digest_remains_retryable() {

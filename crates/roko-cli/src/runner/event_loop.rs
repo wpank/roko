@@ -2,7 +2,7 @@
 //! events, gate completions, executor ticks, periodic flushes, and
 //! cancellation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -53,7 +53,7 @@ use roko_learn::section_outcome::{
 use roko_neuro::KnowledgeStore;
 
 use super::agent_events::handle_agent_event;
-use super::agent_stream::{AgentHandle, AgentSpawnConfig};
+use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -6238,13 +6238,23 @@ async fn stop_all_agents(
     state: &mut RunState,
     grace: Duration,
 ) {
+    let mut unconfirmed_pids = HashSet::new();
     for (_plan_id, handle) in agent_handles.drain() {
         let pid = handle.pid;
-        handle.kill(grace).await;
-        roko_agent::process::unregister_pid(pid);
+        match handle.kill(grace).await {
+            AgentTermination::Confirmed { .. } => {
+                roko_agent::process::unregister_pid(pid);
+            }
+            AgentTermination::Failed { errors, .. } => {
+                error!(pid, ?errors, "agent termination could not be confirmed");
+                unconfirmed_pids.insert(pid);
+            }
+        }
     }
     if let Some(pid) = state.agent_pid.take() {
-        roko_agent::process::unregister_pid(pid);
+        if !unconfirmed_pids.contains(&pid) {
+            roko_agent::process::unregister_pid(pid);
+        }
     }
     state.agent_active = false;
     state.agent_pid = None;

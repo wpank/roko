@@ -12,6 +12,7 @@ use super::types::TaskAttemptRef;
 pub enum AttemptPhase {
     Dispatching,
     Agent,
+    AgentUnconfirmed,
     AwaitingGate,
     Gate,
 }
@@ -102,6 +103,10 @@ impl<R> AttemptClaim<R> {
         &mut self.resource
     }
 
+    pub fn replace_resource(&mut self, resource: R) -> R {
+        std::mem::replace(&mut self.resource, resource)
+    }
+
     /// Attach the agent selected by a successful dispatch before transitioning
     /// the claim into the Agent phase.
     pub fn set_agent(&mut self, agent_id: impl Into<String>, pid: Option<u32>) {
@@ -126,10 +131,19 @@ pub struct SurvivingAgentMetadata {
     pub agent_ids: Vec<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AttemptOwnership<R> {
     owners: HashMap<TaskAttemptRef, OwnershipSlot<R>>,
     next_nonce: u64,
+}
+
+impl<R> Default for AttemptOwnership<R> {
+    fn default() -> Self {
+        Self {
+            owners: HashMap::new(),
+            next_nonce: 0,
+        }
+    }
 }
 
 impl<R> AttemptOwnership<R> {
@@ -437,8 +451,7 @@ mod tests {
         ownership
             .insert(
                 key.clone(),
-                AttemptOwner::new(AttemptPhase::Agent, AGENT)
-                    .with_agent("agent-1", Some(41)),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("agent-1", Some(41)),
                 "handle",
             )
             .unwrap();

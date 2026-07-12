@@ -3,6 +3,7 @@
 //! Checks for known vulnerabilities in dependencies via `cargo audit`.
 //! Falls back to a pass verdict if `cargo-audit` is not installed.
 
+use crate::cancel_safe_command;
 use crate::payload::GatePayload;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verify, Verdict};
@@ -47,7 +48,7 @@ impl Verify for SecurityScanGate {
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
         };
 
-        let result = match cmd.output().await {
+        let result = match cancel_safe_command::output(cmd).await {
             Ok(output) => output,
             Err(_) => {
                 // cargo-audit not installed; pass through.

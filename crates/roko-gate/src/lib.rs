@@ -83,6 +83,7 @@ pub mod adaptive_threshold;
 
 pub mod acceptance_contract;
 pub mod artifact_store;
+mod cancel_safe_command;
 pub mod clippy_gate;
 pub mod code_exec;
 pub mod compile;

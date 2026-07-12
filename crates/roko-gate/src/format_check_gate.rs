@@ -3,6 +3,7 @@
 //! Stub gate that currently passes through. Designed to run `rustfmt --check`
 //! or equivalent formatters and fail when files are not properly formatted.
 
+use crate::cancel_safe_command;
 use crate::payload::{BuildSystem, GatePayload};
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verify, Verdict};
@@ -55,7 +56,7 @@ impl Verify for FormatCheckGate {
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
         };
 
-        let result = match cmd.output().await {
+        let result = match cancel_safe_command::output(cmd).await {
             Ok(output) => output,
             Err(e) => {
                 return Verdict::fail(&self.name, format!("failed to run cargo fmt: {e}"))

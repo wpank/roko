@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 19
-done = 13
+done = 14
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -270,7 +270,7 @@ acceptance = ["Every task gate completion claims exact ownership before side eff
 id = "SH01-T06B2C3A"
 title = "Own plan verification effects and outcomes"
 description = "Apply structured generated effect ownership to plan verification, including no-step auto-pass. Insert ownership before the barrier-blocked verify producer starts, retain its JoinHandle, and claim and settle it before plan side effects. Every early transition or persistence error finalizes the claim; duplicate, stale, or cross-plan completions are ignored. Keep merge behavior unchanged for the dedicated reservation refactor."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 340

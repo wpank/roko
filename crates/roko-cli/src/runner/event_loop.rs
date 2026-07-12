@@ -6240,6 +6240,9 @@ async fn dispatch_action(
                 PlanMergerConfig::new(ctx.config.workdir.clone(), gate_timeout(ctx.config, 0)),
             );
             match merger.submit(request) {
+                MergeDispatch::AlreadyActive { plan_id } => {
+                    debug!(plan_id = %plan_id, "duplicate active merge submission suppressed");
+                }
                 MergeDispatch::Reserved { launch } => {
                     let plan_id = launch.plan_id().to_string();
                     let branch_name = launch.branch_name().to_string();

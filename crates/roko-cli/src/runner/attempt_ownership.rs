@@ -92,6 +92,20 @@ pub struct AttemptClaim<R> {
     nonce: u64,
 }
 
+pub struct ClaimFailure<R> {
+    pub error: OwnershipError,
+    pub claim: AttemptClaim<R>,
+}
+
+impl<R> std::fmt::Debug for ClaimFailure<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimFailure")
+            .field("error", &self.error)
+            .field("attempt", self.claim.attempt())
+            .finish()
+    }
+}
+
 impl<R> AttemptClaim<R> {
     pub fn attempt(&self) -> &TaskAttemptRef {
         &self.attempt
@@ -275,7 +289,7 @@ impl<R> AttemptOwnership<R> {
         mut claim: AttemptClaim<R>,
         phase: AttemptPhase,
         effect: EffectRef,
-    ) -> Result<(), OwnershipError> {
+    ) -> Result<(), ClaimFailure<R>> {
         claim.owner.transition_to(phase, effect);
         self.restore_claim(claim)
     }
@@ -283,7 +297,7 @@ impl<R> AttemptOwnership<R> {
     pub fn restore_cancellation_failure(
         &mut self,
         mut claim: AttemptClaim<R>,
-    ) -> Result<(), OwnershipError> {
+    ) -> Result<(), ClaimFailure<R>> {
         claim.owner.cancellation = CancellationState::CancellationFailed;
         self.restore_claim(claim)
     }
@@ -328,13 +342,18 @@ impl<R> AttemptOwnership<R> {
         })
     }
 
-    fn restore_claim(&mut self, claim: AttemptClaim<R>) -> Result<(), OwnershipError> {
-        let slot = self
-            .owners
-            .get_mut(&claim.attempt)
-            .ok_or(OwnershipError::Missing)?;
+    fn restore_claim(&mut self, claim: AttemptClaim<R>) -> Result<(), ClaimFailure<R>> {
+        let Some(slot) = self.owners.get_mut(&claim.attempt) else {
+            return Err(ClaimFailure {
+                error: OwnershipError::Missing,
+                claim,
+            });
+        };
         if !slot.claimed || slot.resource.is_some() || slot.claim_nonce != Some(claim.nonce) {
-            return Err(OwnershipError::Occupied);
+            return Err(ClaimFailure {
+                error: OwnershipError::Occupied,
+                claim,
+            });
         }
         slot.owner = claim.owner;
         slot.resource = Some(claim.resource);
@@ -564,5 +583,53 @@ mod tests {
                 agent_ids: vec!["survivor".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn failed_transition_returns_exact_linear_claim_and_resource() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "owned-resource",
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership.owners.remove(&key);
+
+        let failure = ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap_err();
+        assert_eq!(failure.error, OwnershipError::Missing);
+        assert_eq!(failure.claim.attempt(), &key);
+        assert_eq!(failure.claim.resource(), &"owned-resource");
+    }
+
+    #[test]
+    fn stale_nonce_returns_original_claim_without_overwrite() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                73_u32,
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership.owners.get_mut(&key).unwrap().claim_nonce = Some(u64::MAX);
+
+        let failure = ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, GATE)
+            .unwrap_err();
+        assert_eq!(failure.error, OwnershipError::Occupied);
+        assert_eq!(failure.claim.attempt(), &key);
+        assert_eq!(failure.claim.resource(), &73);
     }
 }

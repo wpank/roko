@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 16
+total = 17
 done = 10
 status = "ready"
 max_parallel = 1
@@ -208,8 +208,8 @@ acceptance = ["Ownership exists before dispatch and spans the full agent phase."
 
 [[task]]
 id = "SH01-T06B2C1"
-title = "Own exact gate effects and join handles"
-description = "Introduce a structured gate effect identity containing task attempt, kind, and rung. Make every spawn_* gate API return its JoinHandle. Transition persistent owners from AwaitingGate to Gate before spawning and store the JoinHandle in the exact owner resource; gate spawn failure restores or completes the exact claimed owner. Replace detached task-gate attempt maps and string effect ownership without yet refactoring completion business outcomes."
+title = "Own post-agent gate effects and join handles"
+description = "Introduce a structured gate effect identity containing task attempt, kind, rung, and dispatch generation. Make post-agent standard and read-only gate APIs return a JoinHandle behind a start barrier. Transition persistent owners from AwaitingGate to Gate, retain the JoinHandle, then release work; gate start failure restores or completes the exact claimed owner. Keep legacy preflight and plan-verify matching until their dedicated migrations."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
@@ -224,7 +224,27 @@ read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG
 phase = "test"
 command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Exact gate effect ownership tests must pass."
-acceptance = ["Every task gate effect identity includes exact attempt, kind, and rung.", "Every spawn_* gate API returns a JoinHandle retained by the exact owner.", "Ownership transitions to Gate before subprocess or async gate work starts.", "Gate spawn failure cannot detach work or overwrite another effect.", "Late mismatched effect completions are ineligible."]
+acceptance = ["Every post-agent gate identity includes exact attempt, kind, rung, and dispatch generation.", "Standard and read-only gate APIs return a JoinHandle retained by the exact owner.", "Ownership transitions to Gate before subprocess or async gate work starts.", "Gate start failure cannot detach work or leave an active marker.", "Late mismatched effect completions are ineligible.", "Preflight and plan verification continue through their legacy paths until dedicated migration."]
+
+[[task]]
+id = "SH01-T06B2C1P"
+title = "Run preflight gates asynchronously under exact ownership"
+description = "Replace synchronous run_gate_once preflight execution inside dispatch with a distinct Preflight gate stage and generated effect identity. Insert and claim ownership, retain the barrier-blocked JoinHandle, then release work so the event loop remains responsive. On completion, preflight pass preserves the skip-agent transition while preflight failure transitions the same owner into dispatch eligibility instead of task failure. Start, join, and channel failures finalize exact ownership without stalling the task."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2C1"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/01-preflight-success-reenters-same-task.md", why = "Preflight business semantics." }, { path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost preflight completion." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Owned asynchronous preflight tests must pass."
+acceptance = ["Preflight gate work never blocks the event loop.", "Ownership and JoinHandle retention precede preflight work.", "Preflight pass skips agent exactly once and preflight failure enables agent dispatch.", "Repeated preflight and post-agent effects have different generated identities.", "Start, join, and channel failures cannot leave ownership or active markers stuck."]
 
 [[task]]
 id = "SH01-T06B2C2"
@@ -237,7 +257,7 @@ max_loc = 460
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
 role = "implementer"
 domain = "execution-engine"
-depends_on = ["SH01-T06B2C1"]
+depends_on = ["SH01-T06B2C1P"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost and duplicate gate outcomes." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exactly-once task terminal requirements." }]
 [[task.verify]]

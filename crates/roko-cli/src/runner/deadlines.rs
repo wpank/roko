@@ -96,6 +96,7 @@ pub struct DeadlineExpiry {
     pub effect: Option<EffectRef>,
     pub gate_effect: Option<GateEffectRef>,
     pub limit: Duration,
+    pub deadline_at: MonotonicTime,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,12 +126,14 @@ impl DeadlineTracker {
             return Some(global_expiry(
                 super::types::TimeoutKind::HardRun,
                 policy.hard_run,
+                self.hard_run_started_at,
             ));
         }
         if now.elapsed_since(self.scheduler_progress_at) >= policy.scheduler_no_progress {
             return Some(global_expiry(
                 super::types::TimeoutKind::SchedulerNoProgress,
                 policy.scheduler_no_progress,
+                self.scheduler_progress_at,
             ));
         }
         None
@@ -179,7 +182,7 @@ impl DeadlineTracker {
                 policy.agent_silence,
             ));
         }
-        let (_, kind, limit) = expired.into_iter().min_by_key(|entry| entry.0)?;
+        let (deadline_ms, kind, limit) = expired.into_iter().min_by_key(|entry| entry.0)?;
         Some(DeadlineExpiry {
             kind,
             attempt: Some(attempt.clone()),
@@ -187,11 +190,16 @@ impl DeadlineTracker {
             effect: Some(owner.effect),
             gate_effect,
             limit,
+            deadline_at: MonotonicTime::from_millis(deadline_ms),
         })
     }
 }
 
-fn global_expiry(kind: super::types::TimeoutKind, limit: Duration) -> DeadlineExpiry {
+fn global_expiry(
+    kind: super::types::TimeoutKind,
+    limit: Duration,
+    started_at: MonotonicTime,
+) -> DeadlineExpiry {
     DeadlineExpiry {
         kind,
         attempt: None,
@@ -199,6 +207,11 @@ fn global_expiry(kind: super::types::TimeoutKind, limit: Duration) -> DeadlineEx
         effect: None,
         gate_effect: None,
         limit,
+        deadline_at: MonotonicTime::from_millis(
+            started_at
+                .as_millis()
+                .saturating_add(u64::try_from(limit.as_millis()).unwrap_or(u64::MAX)),
+        ),
     }
 }
 

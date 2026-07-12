@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 17
-done = 12
+done = 13
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -250,7 +250,7 @@ acceptance = ["Preflight gate work never blocks the event loop.", "Ownership and
 id = "SH01-T06B2C2"
 title = "Claim task gate outcomes before terminal effects"
 description = "Refactor task gate completion into one claimed-outcome function with no unfinalized early exits. Settle the owned gate JoinHandle, classify pass, retry, failure, and exhaustion, then either transition the same owner to the next exact effect or complete it before writing one task terminal and DAG outcome. Gate panic or lost completion is a structured failure; late and duplicate completions cannot mutate state."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 460

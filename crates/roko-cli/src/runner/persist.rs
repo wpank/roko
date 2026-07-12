@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::task_parser::TaskDef;
 
-use super::types::RunnerEvent;
+use super::types::{RunnerEvent, RunnerLifecycleProjection};
 
 /// Schema version for the runner-owned `run-state.json` snapshot.
 ///
@@ -125,6 +125,9 @@ pub struct RunStateSnapshot {
     /// already-finished work on resume.
     #[serde(default)]
     pub completed_tasks: HashMap<String, Vec<String>>,
+    /// Durable lifecycle projection, including in-flight cancellation state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<RunnerLifecycleProjection>,
     /// Consecutive snapshot save failures (degradation tracking).
     #[serde(default)]
     pub snapshot_fail_streak: u32,

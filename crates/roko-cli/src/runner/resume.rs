@@ -322,6 +322,7 @@ mod tests {
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
+            lifecycle: None,
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
             replan_ledger: ReplanLedgerSnapshot::default(),

@@ -572,6 +572,44 @@ mod tests {
         assert!(start.send(()).is_err());
     }
 
+    #[tokio::test]
+    async fn closed_semaphore_emits_exact_failed_preflight_completion() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = mpsc::channel(1);
+        let semaphore = Arc::new(Semaphore::new(1));
+        semaphore.close();
+        let effect = GateEffectRef {
+            attempt: TaskAttemptRef::new("plan", "task", 2),
+            kind: GateCompletionKind::Preflight,
+            rung: 3,
+            generation: 101,
+        };
+        let (handle, start) = spawn_gate(
+            effect.clone(),
+            "plan".to_string(),
+            "task".to_string(),
+            3,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            Vec::new(),
+            1,
+            tx,
+            semaphore,
+            Vec::new(),
+        );
+
+        start.send(()).expect("owner starts producer");
+        let completion = rx.recv().await.expect("structured failure completion");
+        handle.await.expect("supervisor exits cleanly");
+        assert!(!completion.passed);
+        assert_eq!(completion.kind, GateCompletionKind::Preflight);
+        assert_eq!(completion.attempt.as_ref(), Some(&effect.attempt));
+        assert_eq!(completion.effect.as_ref(), Some(&effect));
+        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
+        assert!(completion.output.contains("semaphore closed"));
+    }
+
     #[test]
     fn retry_recommended_gate_digest_remains_retryable() {
         let digest = r#"{

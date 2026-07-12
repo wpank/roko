@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 22
-done = 17
+done = 18
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -350,7 +350,7 @@ acceptance = ["Exact merge ownership and retained handle exist before launch rel
 id = "SH01-T06B2C3C2"
 title = "Claim successful merge outcomes before side effects"
 description = "Propagate MergeLaunch generation through the exact Merge GateEffectRef and completion. Claim the matching owner, settle its retained merge/post-regression JoinHandle, and complete the claim before queue, plan, repository-result, snapshot, or terminal side effects. Move queue complete/failed mutation out of the producer. Duplicate, stale, or cross-plan merge completions lose exact eligibility."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 340

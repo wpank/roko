@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 22
-done = 15
+done = 16
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -310,7 +310,7 @@ acceptance = ["submit and drain never spawn work internally.", "Returned launch 
 id = "SH01-T06B2C3C1A"
 title = "Make claims recoverable and merge reservations exact"
 description = "Change ownership transition/restore APIs to return the linear AttemptClaim and resource on failure instead of consuming them. Add an opaque reservation token owned by MergeQueue and carried linearly by MergeLaunch, with atomic conditional fail/release and complete operations that reject stale tokens for a newer same-plan reservation. Keep merge event setup and successful completion on their legacy paths until the following tasks."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 300

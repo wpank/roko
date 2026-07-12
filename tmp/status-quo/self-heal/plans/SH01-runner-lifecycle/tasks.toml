@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 10
-done = 6
+done = 7
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -130,7 +130,7 @@ acceptance = ["Serde round trips preserve both values and precedence.", "An expl
 id = "SH01-T06B1"
 title = "Make process and gate cancellation confirmable"
 description = "Make kill_tree propagate final kill/wait errors and confirm root plus every captured descendant PID on every success path, including graceful and already-exited roots; never unregister before full-set confirmation. On final kill error, re-run try_wait to accept an exit race. Unix PID probes treat EPERM as alive and only ESRCH as absent. Make AgentHandle await readers, with intentional abort confirmed and panic failed. Gate commands use owned process groups/tree-kill wrappers, not immediate-child-only kill_on_drop. Add child-plus-grandchild and aborted-gate tests that poll every PID until absent."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 300

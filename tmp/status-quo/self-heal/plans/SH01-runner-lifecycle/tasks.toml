@@ -229,7 +229,7 @@ acceptance = ["Every post-agent gate identity includes exact attempt, kind, rung
 [[task]]
 id = "SH01-T06B2C1P"
 title = "Run preflight gates asynchronously under exact ownership"
-description = "Replace synchronous run_gate_once preflight execution inside dispatch with a distinct Preflight gate stage and generated effect identity. Insert and claim ownership, retain the barrier-blocked JoinHandle, then release work so the event loop remains responsive. On completion, preflight pass preserves the skip-agent transition while preflight failure transitions the same owner into dispatch eligibility instead of task failure. Start, join, and channel failures finalize exact ownership without stalling the task."
+description = "Replace synchronous run_gate_once preflight execution inside dispatch with a distinct Preflight gate stage and generated effect identity. Insert and claim ownership, retain the barrier-blocked JoinHandle, then release work so the event loop remains responsive. On completion, preflight pass preserves the skip-agent transition while preflight failure transitions the same owner into dispatch eligibility instead of task failure. Start-barrier failure finalizes exact ownership; producer panic and lost completion are handled by the following claimed-outcome task."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
@@ -244,7 +244,7 @@ read_files = [{ path = "tmp/status-quo/issues/01-preflight-success-reenters-same
 phase = "test"
 command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Owned asynchronous preflight tests must pass."
-acceptance = ["Preflight gate work never blocks the event loop.", "Ownership and JoinHandle retention precede preflight work.", "Preflight pass skips agent exactly once and preflight failure enables agent dispatch.", "Repeated preflight and post-agent effects have different generated identities.", "Start, join, and channel failures cannot leave ownership or active markers stuck."]
+acceptance = ["Preflight gate work never blocks the event loop.", "Ownership and JoinHandle retention precede preflight work.", "Preflight pass emits one attempt start and skips agent exactly once; preflight failure enables agent dispatch without a duplicate start.", "Repeated preflight and post-agent effects have different generated identities.", "Start-barrier failure cannot leave ownership or active markers stuck.", "Transition failure finalizes the exact preflight owner."]
 
 [[task]]
 id = "SH01-T06B2C2"

@@ -321,6 +321,32 @@ impl RunState {
                 self.register_attempt_start(attempt, *timestamp_ms);
                 self.upsert_attempt(attempt, *status, *timestamp_ms, None, None);
             }
+            RunnerEvent::TaskAttemptCancellationRequested {
+                attempt,
+                timestamp_ms,
+                ..
+            } => {
+                self.upsert_attempt(
+                    attempt,
+                    TaskAttemptStatus::Cancelling,
+                    *timestamp_ms,
+                    None,
+                    None,
+                );
+            }
+            RunnerEvent::TaskAttemptCancellationFailed {
+                attempt,
+                timestamp_ms,
+                ..
+            } => {
+                self.upsert_attempt(
+                    attempt,
+                    TaskAttemptStatus::CancellationFailed,
+                    *timestamp_ms,
+                    None,
+                    None,
+                );
+            }
             RunnerEvent::AgentDispatchStarted {
                 attempt,
                 agent_id,
@@ -1137,6 +1163,93 @@ mod tests {
         assert_eq!(
             state.lifecycle.tasks["plan:T1"].status,
             TaskLifecycleStatus::Passed
+        );
+    }
+
+    #[test]
+    fn cancellation_failure_is_durable_nonterminal_and_retryable_only() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "T1", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_failed(
+            &run_id,
+            attempt.clone(),
+            "kill not confirmed",
+        ));
+
+        let attempt_state = &state.lifecycle.task_attempts[&attempt.key()];
+        assert_eq!(attempt_state.status, TaskAttemptStatus::CancellationFailed);
+        assert!(!attempt_state.status.is_terminal());
+        assert_eq!(
+            state.lifecycle.tasks["plan:T1"].status,
+            TaskLifecycleStatus::Running
+        );
+
+        let encoded = serde_json::to_string(&state.lifecycle).unwrap();
+        let restored: crate::runner::types::RunnerLifecycleProjection =
+            serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            restored.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::CancellationFailed
+        );
+        assert!(
+            TaskAttemptStatus::CancellationFailed.can_transition_to(TaskAttemptStatus::Cancelling)
+        );
+        assert!(
+            !TaskAttemptStatus::CancellationFailed
+                .can_transition_to(TaskAttemptStatus::AgentRunning)
+        );
+    }
+
+    #[test]
+    fn cancelled_terminal_requires_cancelling_transition() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "T1", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Cancelled,
+            None,
+            0,
+            "",
+            "",
+        ));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Started
+        );
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Cancelled,
+            None,
+            0,
+            "",
+            "",
+        ));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Cancelled
         );
     }
 }

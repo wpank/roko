@@ -4290,6 +4290,8 @@ fn runner_event_run_id(event: &RunnerEvent) -> &str {
         | RunnerEvent::PlanCompleted { run_id, .. }
         | RunnerEvent::TaskAttemptStarted { run_id, .. }
         | RunnerEvent::TaskAttemptCompleted { run_id, .. }
+        | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
+        | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
         | RunnerEvent::AgentDispatchStarted { run_id, .. }
         | RunnerEvent::AgentDispatchCompleted { run_id, .. }
         | RunnerEvent::AgentCompleted { run_id, .. }
@@ -4737,6 +4739,7 @@ fn save_snapshot(
         total_agent_calls: state.total_agent_calls,
         plan_costs: state.plan_costs.clone(),
         completed_tasks: state.completed_tasks.clone(),
+        lifecycle: Some(state.lifecycle.clone()),
         snapshot_fail_streak: state.snapshot_fail_streak,
         fingerprints: state.task_fingerprints.clone(),
         replan_ledger: state.replan_ledger.clone(),
@@ -4800,6 +4803,9 @@ fn restore_state_from_resume_snapshot(
     state.plan_costs = snapshot.plan_costs.clone();
     state.snapshot_fail_streak = snapshot.snapshot_fail_streak;
     state.completed_tasks = snapshot.completed_tasks.clone();
+    if let Some(lifecycle) = snapshot.lifecycle.clone() {
+        state.lifecycle = lifecycle;
+    }
     state.replan_ledger = snapshot.replan_ledger.clone();
     state.revised_tasks = snapshot
         .revised_tasks
@@ -9019,6 +9025,29 @@ depends_on = []
         // Classification should identify this as a test failure
         assert!(result.contains("test_expectation_failure"));
     }
+
+    #[test]
+    fn cancellation_states_remain_in_flight() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        assert_eq!(collect_in_flight_attempts(&state).len(), 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_failed(
+            &run_id,
+            attempt,
+            "still running",
+        ));
+        assert_eq!(collect_in_flight_attempts(&state).len(), 1);
+    }
 }
 
 #[cfg(test)]
@@ -9484,13 +9513,7 @@ mod tests_post_gate_reflection_lessons {
             .unwrap();
         let mut state = RunState::new(1);
 
-        stop_all_agents(
-            &mut ownership,
-            &mut state,
-            &queue,
-            Duration::from_millis(1),
-        )
-        .await;
+        stop_all_agents(&mut ownership, &mut state, &queue, Duration::from_millis(1)).await;
 
         assert!(!ownership.contains(&attempt));
         assert_eq!(queue.metrics().merging, 0);

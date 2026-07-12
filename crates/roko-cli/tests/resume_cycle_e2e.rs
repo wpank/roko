@@ -74,6 +74,7 @@ fn baseline_snapshot(run_id: &str, fingerprints: Vec<TaskDefFingerprint>) -> Run
         total_agent_calls: 1,
         plan_costs: HashMap::new(),
         completed_tasks: HashMap::from([("p1".to_string(), vec!["a".to_string()])]),
+        lifecycle: None,
         snapshot_fail_streak: 0,
         fingerprints,
         replan_ledger: ReplanLedgerSnapshot::default(),

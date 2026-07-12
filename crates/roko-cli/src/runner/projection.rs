@@ -275,6 +275,8 @@ impl Projection {
             | RunnerEvent::PlanCompleted { run_id, .. }
             | RunnerEvent::TaskAttemptStarted { run_id, .. }
             | RunnerEvent::TaskAttemptCompleted { run_id, .. }
+            | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
+            | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
             | RunnerEvent::AgentDispatchStarted { run_id, .. }
             | RunnerEvent::AgentDispatchCompleted { run_id, .. }
             | RunnerEvent::AgentCompleted { run_id, .. }
@@ -287,6 +289,8 @@ impl Projection {
         let attempt = match &event {
             RunnerEvent::TaskAttemptStarted { attempt, .. }
             | RunnerEvent::TaskAttemptCompleted { attempt, .. }
+            | RunnerEvent::TaskAttemptCancellationRequested { attempt, .. }
+            | RunnerEvent::TaskAttemptCancellationFailed { attempt, .. }
             | RunnerEvent::AgentDispatchStarted { attempt, .. }
             | RunnerEvent::AgentDispatchCompleted { attempt, .. }
             | RunnerEvent::AgentCompleted { attempt, .. }
@@ -551,5 +555,31 @@ mod tests {
         }
         let snap = projection.dashboard_snapshot();
         assert!(snap.events.len() <= DASHBOARD_MAX_EVENTS);
+    }
+
+    #[test]
+    fn cancellation_events_preserve_projection_identity_and_payload() {
+        let projection = Projection::new("run-1");
+        let attempt = TaskAttemptRef::new("plan", "task", 3);
+        let requested = RunnerEvent::task_attempt_cancellation_requested("run-1", attempt.clone());
+        let projected = projection.from_runner(requested.clone());
+        assert_eq!(
+            requested.event_type(),
+            "task.attempt.cancellation_requested"
+        );
+        assert_eq!(
+            EventCategory::from_runner_event(&requested),
+            EventCategory::Task
+        );
+        assert_eq!(projected.plan_id.as_deref(), Some("plan"));
+        assert_eq!(projected.task_id.as_deref(), Some("task"));
+        assert_eq!(projected.attempt, Some(3));
+
+        let failed =
+            RunnerEvent::task_attempt_cancellation_failed("run-1", attempt, "kill not confirmed");
+        let encoded = serde_json::to_string(&failed).unwrap();
+        let decoded: RunnerEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.event_type(), "task.attempt.cancellation_failed");
+        assert!(decoded.message().contains("kill not confirmed"));
     }
 }

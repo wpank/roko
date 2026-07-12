@@ -308,9 +308,10 @@ impl EventCategory {
             RunnerEvent::ResumeMarker { .. } => Self::Resume,
             RunnerEvent::RunStarted { .. } | RunnerEvent::RunCompleted { .. } => Self::Run,
             RunnerEvent::PlanStarted { .. } | RunnerEvent::PlanCompleted { .. } => Self::Plan,
-            RunnerEvent::TaskAttemptStarted { .. } | RunnerEvent::TaskAttemptCompleted { .. } => {
-                Self::Task
-            }
+            RunnerEvent::TaskAttemptStarted { .. }
+            | RunnerEvent::TaskAttemptCompleted { .. }
+            | RunnerEvent::TaskAttemptCancellationRequested { .. }
+            | RunnerEvent::TaskAttemptCancellationFailed { .. } => Self::Task,
             RunnerEvent::AgentDispatchStarted { .. }
             | RunnerEvent::AgentDispatchCompleted { .. }
             | RunnerEvent::AgentCompleted { .. } => Self::AgentLifecycle,
@@ -484,6 +485,8 @@ pub enum TaskAttemptStatus {
     Gating,
     GateFailed,
     Retrying,
+    Cancelling,
+    CancellationFailed,
     Passed,
     Failed,
     Exhausted,
@@ -513,7 +516,7 @@ impl TaskAttemptStatus {
                     | Self::Gating
                     | Self::Passed
                     | Self::Failed
-                    | Self::Cancelled
+                    | Self::Cancelling
             ),
             Self::DispatchingAgent => matches!(
                 next,
@@ -521,26 +524,31 @@ impl TaskAttemptStatus {
                     | Self::AgentCompleted
                     | Self::Gating
                     | Self::Failed
-                    | Self::Cancelled
+                    | Self::Cancelling
             ),
             Self::AgentRunning => matches!(
                 next,
-                Self::AgentCompleted | Self::Gating | Self::Failed | Self::Cancelled
+                Self::AgentCompleted | Self::Gating | Self::Failed | Self::Cancelling
             ),
             Self::AgentCompleted => matches!(
                 next,
-                Self::Gating | Self::Passed | Self::Failed | Self::Cancelled
+                Self::Gating | Self::Passed | Self::Failed | Self::Cancelling
             ),
             Self::Gating => matches!(
                 next,
-                Self::Passed | Self::GateFailed | Self::Failed | Self::Cancelled
+                Self::Passed | Self::GateFailed | Self::Failed | Self::Cancelling
             ),
             Self::GateFailed => matches!(
                 next,
-                Self::Retrying | Self::Failed | Self::Exhausted | Self::Cancelled
+                Self::Retrying | Self::Failed | Self::Exhausted | Self::Cancelling
             ),
-            Self::Retrying => matches!(next, Self::Superseded | Self::Failed | Self::Exhausted),
-            Self::Failed => matches!(next, Self::Retrying | Self::Exhausted),
+            Self::Retrying => matches!(
+                next,
+                Self::Superseded | Self::Failed | Self::Exhausted | Self::Cancelling
+            ),
+            Self::CancellationFailed => matches!(next, Self::Cancelling),
+            Self::Cancelling => matches!(next, Self::Cancelled | Self::CancellationFailed),
+            Self::Failed => matches!(next, Self::Retrying | Self::Exhausted | Self::Cancelling),
             Self::Passed | Self::Exhausted | Self::Cancelled | Self::Superseded => false,
         }
     }
@@ -672,7 +680,7 @@ pub enum ResumeOutcome {
 }
 
 /// Durable resume marker for recovery/debugging projections.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResumeMarker {
     pub outcome: ResumeOutcome,
     pub snapshot_path: String,
@@ -693,7 +701,7 @@ pub struct PlanRunSummary {
 }
 
 /// Per-attempt projection maintained by [`RunState`](super::state::RunState).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskAttemptLifecycle {
     #[serde(flatten)]
     pub attempt: TaskAttemptRef,
@@ -710,7 +718,7 @@ pub struct TaskAttemptLifecycle {
 }
 
 /// Materialized lifecycle for one task, independent of a specific attempt.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskLifecycle {
     pub plan_id: String,
     pub task_id: String,
@@ -725,7 +733,7 @@ pub struct TaskLifecycle {
 }
 
 /// Materialized lifecycle projection updated from typed runner events.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunnerLifecycleProjection {
     pub run_id: String,
     pub status: RunnerRunStatus,
@@ -838,6 +846,23 @@ pub enum RunnerEvent {
         model: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         provider: String,
+    },
+    #[serde(rename = "task.attempt.cancellation_requested")]
+    TaskAttemptCancellationRequested {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        #[serde(flatten)]
+        attempt: TaskAttemptRef,
+    },
+    #[serde(rename = "task.attempt.cancellation_failed")]
+    TaskAttemptCancellationFailed {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        #[serde(flatten)]
+        attempt: TaskAttemptRef,
+        reason: String,
     },
     #[serde(rename = "agent.dispatch.started")]
     AgentDispatchStarted {
@@ -1084,6 +1109,31 @@ impl RunnerEvent {
         }
     }
 
+    pub fn task_attempt_cancellation_requested(run_id: &str, attempt: TaskAttemptRef) -> Self {
+        let stamp = EventStamp::now();
+        Self::TaskAttemptCancellationRequested {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            attempt,
+        }
+    }
+
+    pub fn task_attempt_cancellation_failed(
+        run_id: &str,
+        attempt: TaskAttemptRef,
+        reason: impl Into<String>,
+    ) -> Self {
+        let stamp = EventStamp::now();
+        Self::TaskAttemptCancellationFailed {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            attempt,
+            reason: reason.into(),
+        }
+    }
+
     pub fn agent_dispatch_started(
         run_id: &str,
         attempt: TaskAttemptRef,
@@ -1265,6 +1315,8 @@ impl RunnerEvent {
             Self::PlanCompleted { .. } => "plan.completed",
             Self::TaskAttemptStarted { .. } => "task.attempt.started",
             Self::TaskAttemptCompleted { .. } => "task.attempt.completed",
+            Self::TaskAttemptCancellationRequested { .. } => "task.attempt.cancellation_requested",
+            Self::TaskAttemptCancellationFailed { .. } => "task.attempt.cancellation_failed",
             Self::AgentDispatchStarted { .. } => "agent.dispatch.started",
             Self::AgentDispatchCompleted { .. } => "agent.dispatch.completed",
             Self::AgentCompleted { .. } => "agent.completed",
@@ -1285,6 +1337,8 @@ impl RunnerEvent {
             | Self::PlanCompleted { timestamp_ms, .. }
             | Self::TaskAttemptStarted { timestamp_ms, .. }
             | Self::TaskAttemptCompleted { timestamp_ms, .. }
+            | Self::TaskAttemptCancellationRequested { timestamp_ms, .. }
+            | Self::TaskAttemptCancellationFailed { timestamp_ms, .. }
             | Self::AgentDispatchStarted { timestamp_ms, .. }
             | Self::AgentDispatchCompleted { timestamp_ms, .. }
             | Self::AgentCompleted { timestamp_ms, .. }
@@ -1303,6 +1357,8 @@ impl RunnerEvent {
             }
             Self::TaskAttemptStarted { attempt, .. }
             | Self::TaskAttemptCompleted { attempt, .. }
+            | Self::TaskAttemptCancellationRequested { attempt, .. }
+            | Self::TaskAttemptCancellationFailed { attempt, .. }
             | Self::AgentDispatchStarted { attempt, .. }
             | Self::AgentDispatchCompleted { attempt, .. }
             | Self::AgentCompleted { attempt, .. }
@@ -1319,6 +1375,8 @@ impl RunnerEvent {
         match self {
             Self::TaskAttemptStarted { attempt, .. }
             | Self::TaskAttemptCompleted { attempt, .. }
+            | Self::TaskAttemptCancellationRequested { attempt, .. }
+            | Self::TaskAttemptCancellationFailed { attempt, .. }
             | Self::AgentDispatchStarted { attempt, .. }
             | Self::AgentDispatchCompleted { attempt, .. }
             | Self::AgentCompleted { attempt, .. }
@@ -1350,6 +1408,12 @@ impl RunnerEvent {
             }
             Self::TaskAttemptCompleted { outcome, .. } => {
                 format!("task attempt completed: {outcome:?}")
+            }
+            Self::TaskAttemptCancellationRequested { .. } => {
+                "task attempt cancellation requested".to_string()
+            }
+            Self::TaskAttemptCancellationFailed { reason, .. } => {
+                format!("task attempt cancellation failed: {reason}")
             }
             Self::AgentDispatchStarted {
                 agent_id,

@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 28
-done = 25
+done = 26
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -510,7 +510,7 @@ acceptance = ["Task, gate, and silence expiry target only the exact attempt and 
 id = "SH01-T06C3"
 title = "Enforce independent hard-run and scheduler-progress deadlines"
 description = "Replace the fixed plan-total timer with an independent hard-run cap and a scheduler-no-progress clock advanced only after successfully persisted lifecycle or DAG milestones. Agent chatter may update silence but cannot advance scheduler progress. Emit typed timeout state before shutdown, snapshots, or run completion."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 420

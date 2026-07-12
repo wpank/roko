@@ -309,12 +309,12 @@ acceptance = ["submit and drain never spawn work internally.", "Returned launch 
 [[task]]
 id = "SH01-T06B2C3C1"
 title = "Make claim transition errors recoverable and roll back merge launch"
-description = "Change ownership transition/restore APIs to return the linear AttemptClaim and resource on failure instead of consuming them. Use that API in merge launch setup so insert, claim, prepare, transition, and barrier-start failures abort and await dormant work, finalize only the newly created owner, mark the exact merge reservation failed/released, and permit queue drainage. Keep successful merge completion on its legacy handler until the next task."
+description = "Change ownership transition/restore APIs to return the linear AttemptClaim and resource on failure instead of consuming them. Add an opaque reservation token owned by MergeQueue and carried by MergeLaunch, with conditional fail/release and complete operations that reject stale tokens for a newer same-plan reservation. Use both APIs in merge launch setup so insert, claim, prepare, transition, and barrier-start failures abort and await dormant work, finalize only the newly created owner and exact reservation, and permit queue drainage. Keep successful merge completion on its legacy handler until the next task."
 status = "ready"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 340
-files = ["crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+files = ["crates/roko-orchestrator/src/merge_queue.rs", "crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
 role = "architect"
 domain = "execution-engine"
 depends_on = ["SH01-T06B2C3B"]
@@ -322,9 +322,9 @@ depends_on = ["SH01-T06B2C3B"]
 read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost merge completion." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Claim-before-terminal merge ordering." }]
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli runner::attempt_ownership 2>&1 && cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+command = "cargo test -p roko-orchestrator merge_queue 2>&1 && cargo test -p roko-cli runner::attempt_ownership 2>&1 && cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
 fail_msg = "Recoverable claim and merge launch rollback tests must pass."
-acceptance = ["Transition/restore failure returns the original linear claim and resource.", "Exact merge ownership exists before launch release.", "Every merge setup/start failure aborts and awaits dormant work and removes only its own owner.", "Every launch failure marks the exact reservation failed/released.", "Reserved, Blocked-with-launch, and drain paths can continue after launch failure."]
+acceptance = ["Transition/restore failure returns the original linear claim and resource.", "MergeQueue returns an opaque reservation token and stale tokens cannot fail or complete a newer same-plan reservation.", "MergeLaunch carries the exact queue reservation token.", "Exact merge ownership exists before launch release.", "Every merge setup/start failure aborts and awaits dormant work and removes only its own owner.", "Every launch failure marks the exact reservation failed/released.", "Reserved, Blocked-with-launch, and drain paths can continue after launch failure."]
 
 [[task]]
 id = "SH01-T06B2C3C2"

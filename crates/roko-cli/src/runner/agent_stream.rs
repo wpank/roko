@@ -468,6 +468,22 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn wait_reports_stderr_reader_panic_after_confirmed_process_exit() {
+        let stderr_reader = tokio::spawn(async { panic!("stderr reader failed") });
+        tokio::task::yield_now().await;
+        let handle = completed_agent_handle(tokio::spawn(async {}), stderr_reader);
+        let AgentWait::Confirmed { reader_errors, .. } = handle.wait().await else {
+            panic!("process absence must be distinguished from stderr reader failure");
+        };
+        assert!(
+            reader_errors
+                .iter()
+                .any(|error| error.contains("stderr reader task failed"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn wait_reports_unexpected_reader_cancellation() {
         let reader = tokio::spawn(std::future::pending());
         reader.abort();

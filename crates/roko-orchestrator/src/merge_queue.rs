@@ -413,6 +413,19 @@ impl MergeQueue {
         guard.rebuild_order();
     }
 
+    /// Permanently fail a plan after its exact asynchronous owner has been
+    /// settled. This removes queued retry state and releases any locks.
+    pub fn mark_terminal_failed(&self, plan_id: &str, reason: &str) {
+        let mut guard = self.inner.lock();
+        if let Some(entry) = guard.entries.remove(plan_id) {
+            for file in &entry.request.files_changed {
+                guard.locked_files.remove(file);
+            }
+        }
+        guard.failed.insert(plan_id.to_string(), reason.to_string());
+        guard.rebuild_order();
+    }
+
     /// Complete only when `reservation` still owns this plan's merge slot.
     pub fn mark_complete_exact(&self, plan_id: &str, reservation: MergeReservation) -> bool {
         let mut guard = self.inner.lock();
@@ -1037,5 +1050,23 @@ mod tests {
         assert!(!q.mark_complete_exact("plan-a", stale));
         assert!(q.mark_complete_exact("plan-a", new.reservation));
         assert!(q.is_empty());
+    }
+
+    #[test]
+    fn terminal_failure_removes_retry_and_releases_locks() {
+        let q = MergeQueue::new();
+        q.enqueue(req("plan-a", &["shared.rs"], 10));
+        q.enqueue(req("plan-b", &["shared.rs"], 5));
+        let reserved = q.reserve_next_mergeable_exact().unwrap();
+        assert_eq!(reserved.request.plan_id, "plan-a");
+
+        q.mark_terminal_failed("plan-a", "producer panic");
+
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.failed_plans().get("plan-a").unwrap(), "producer panic");
+        assert_eq!(
+            q.reserve_next_mergeable_exact().unwrap().request.plan_id,
+            "plan-b"
+        );
     }
 }

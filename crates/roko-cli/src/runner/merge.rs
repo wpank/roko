@@ -15,11 +15,13 @@
 //! check (for example a `cargo check --workspace`) against the merged
 //! tree before flipping the executor to `MergeSucceeded`.
 
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use futures::FutureExt;
 use roko_orchestrator::{MergeQueue, MergeRequest, MergeReservation, ReservedMerge};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -104,6 +106,12 @@ pub struct MergeProducer {
 pub struct MergeResolution {
     plan_id: String,
     reservation: MergeReservation,
+}
+
+impl MergeResolution {
+    pub(crate) fn fail(self, queue: &MergeQueue, reason: &str) -> bool {
+        queue.mark_failed_exact(&self.plan_id, self.reservation, reason)
+    }
 }
 
 /// Wrapper around [`MergeQueue`] that submits merge requests, runs a
@@ -549,29 +557,45 @@ impl PlanMerger {
             if start_rx.await.is_err() {
                 return;
             }
-            let merge_outcome = merge_backend.merge(&request, &config).await;
-            let outcome = if merge_outcome.passed {
-                let gate_outcome = gate.run(&request, &config).await;
-                RegressionOutcome {
-                    passed: gate_outcome.passed,
-                    summary: format!("{}; {}", merge_outcome.summary, gate_outcome.summary),
-                    failure_kind: gate_outcome.failure_kind,
-                    duration_ms: merge_outcome
-                        .duration_ms
-                        .saturating_add(gate_outcome.duration_ms),
+            let worker = AssertUnwindSafe(async {
+                let merge_outcome = merge_backend.merge(&request, &config).await;
+                if merge_outcome.passed {
+                    let gate_outcome = gate.run(&request, &config).await;
+                    RegressionOutcome {
+                        passed: gate_outcome.passed,
+                        summary: format!("{}; {}", merge_outcome.summary, gate_outcome.summary),
+                        failure_kind: gate_outcome.failure_kind,
+                        duration_ms: merge_outcome
+                            .duration_ms
+                            .saturating_add(gate_outcome.duration_ms),
+                    }
+                } else {
+                    RegressionOutcome {
+                        passed: false,
+                        summary: merge_outcome.summary,
+                        failure_kind: merge_outcome.failure_kind,
+                        duration_ms: merge_outcome.duration_ms,
+                    }
                 }
-            } else {
-                RegressionOutcome {
-                    passed: false,
-                    summary: merge_outcome.summary,
-                    failure_kind: merge_outcome.failure_kind,
-                    duration_ms: merge_outcome.duration_ms,
-                }
+            })
+            .catch_unwind()
+            .await;
+            let (outcome, gate_name) = match worker {
+                Ok(outcome) => (outcome, "post-merge-regression"),
+                Err(_) => (
+                    RegressionOutcome {
+                        passed: false,
+                        summary: "merge producer panicked".to_string(),
+                        failure_kind: Some(RunnerFailureKind::Structural),
+                        duration_ms: 0,
+                    },
+                    "merge-producer-exception",
+                ),
             };
             let passed = outcome.passed;
 
             let summary = GateVerdictSummary {
-                gate_name: "post-merge-regression".to_string(),
+                gate_name: gate_name.to_string(),
                 passed,
                 summary: outcome.summary.clone(),
                 error_digest: None,
@@ -624,6 +648,10 @@ impl PlanMerger {
                 .mark_failed_exact(&resolution.plan_id, resolution.reservation, reason)
         }
     }
+
+    pub fn terminal_fail(&self, plan_id: &str, reason: &str) {
+        self.queue.mark_terminal_failed(plan_id, reason);
+    }
 }
 
 #[cfg(test)]
@@ -644,6 +672,9 @@ mod tests {
         outcome: MergeBackendOutcome,
     }
 
+    #[derive(Debug)]
+    struct PanickingMerge;
+
     #[async_trait::async_trait]
     impl MergeBackend for StubMerge {
         async fn merge(
@@ -652,6 +683,17 @@ mod tests {
             _config: &PlanMergerConfig,
         ) -> MergeBackendOutcome {
             self.outcome.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MergeBackend for PanickingMerge {
+        async fn merge(
+            &self,
+            _request: &MergeRequest,
+            _config: &PlanMergerConfig,
+        ) -> MergeBackendOutcome {
+            panic!("merge backend panic")
         }
     }
 
@@ -1027,6 +1069,34 @@ mod tests {
         drop(producer.start);
         producer.handle.await.unwrap();
         assert!(merger.fail_resolution(producer.resolution, "setup rollback"));
+    }
+
+    #[tokio::test]
+    async fn producer_panic_emits_exact_exceptional_completion() {
+        let cfg = PlanMergerConfig::new(PathBuf::from("/tmp"), Duration::from_secs(5))
+            .with_merge_backend(Arc::new(PanickingMerge))
+            .with_regression_gate(Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1))));
+        let merger = PlanMerger::new(MergeQueue::new(), cfg);
+        let MergeDispatch::Reserved { launch } = merger.submit(MergeRequest::new(
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            0,
+        )) else {
+            panic!("expected reservation");
+        };
+        let expected = launch.effect();
+        let (tx, mut rx) = mpsc::channel(1);
+        let producer = merger.prepare(launch, tx);
+        producer.start.send(()).unwrap();
+
+        let completion = rx.recv().await.unwrap();
+        producer.handle.await.unwrap();
+        assert_eq!(completion.effect.as_ref(), Some(&expected));
+        assert_eq!(completion.attempt.as_ref(), Some(&expected.attempt));
+        assert!(!completion.passed);
+        assert_eq!(completion.verdicts[0].gate_name, "merge-producer-exception");
+        assert!(merger.fail_resolution(producer.resolution, &completion.output));
     }
 
     #[tokio::test]

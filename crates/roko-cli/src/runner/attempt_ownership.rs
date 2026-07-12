@@ -396,6 +396,22 @@ impl<R> AttemptOwnership<R> {
         self.unrecovered_claims.len()
     }
 
+    pub(crate) fn unrecovered_attempts(&self) -> Vec<TaskAttemptRef> {
+        self.unrecovered_claims
+            .iter()
+            .map(|claim| claim.attempt.clone())
+            .collect()
+    }
+
+    pub(crate) fn retry_unrecovered_claims(&mut self) {
+        let claims = std::mem::take(&mut self.unrecovered_claims);
+        for claim in claims {
+            if let Err(claim) = self.force_restore_cancellation_failure(claim) {
+                self.unrecovered_claims.push(claim);
+            }
+        }
+    }
+
     pub fn surviving_agent_metadata(&self) -> SurvivingAgentMetadata {
         let mut agents = self
             .owners
@@ -407,6 +423,13 @@ impl<R> AttemptOwnership<R> {
                     .map(|agent| (attempt.key(), agent.agent_id.clone(), agent.pid))
             })
             .collect::<Vec<_>>();
+        agents.extend(self.unrecovered_claims.iter().filter_map(|claim| {
+            claim
+                .owner
+                .agent
+                .as_ref()
+                .map(|agent| (claim.attempt.key(), agent.agent_id.clone(), agent.pid))
+        }));
         agents.sort_by(|left, right| left.0.cmp(&right.0));
         SurvivingAgentMetadata {
             active: !agents.is_empty(),
@@ -475,7 +498,7 @@ mod tests {
         ownership
             .insert(
                 key.clone(),
-                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("returned", Some(41)),
                 "handle",
             )
             .unwrap();
@@ -628,7 +651,7 @@ mod tests {
         ownership
             .insert(
                 key.clone(),
-                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("returned", Some(41)),
                 "returned-handle",
             )
             .unwrap();
@@ -636,7 +659,7 @@ mod tests {
         ownership.owners.insert(
             key.clone(),
             OwnershipSlot {
-                owner: AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                owner: AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("live", Some(42)),
                 resource: Some("live-handle"),
                 claimed: false,
                 claim_nonce: None,
@@ -648,6 +671,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(refused.resource(), &"returned-handle");
         assert_eq!(ownership.owners[&key].resource, Some("live-handle"));
+        ownership.retain_unrecovered_claim(refused);
+        let survivors = ownership.surviving_agent_metadata();
+        assert!(survivors.pids.contains(&41));
+        assert!(survivors.pids.contains(&42));
+        assert_eq!(ownership.unrecovered_attempts(), vec![key]);
     }
 
     #[test]

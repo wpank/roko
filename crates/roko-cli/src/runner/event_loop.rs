@@ -2757,21 +2757,32 @@ pub async fn run(
             // ─── Branch 6: Cancellation ─────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
-                stop_all_agents(
-                    &mut attempt_ownership,
-                    &mut state,
-                    &merge_queue,
-                    &paths,
-                    &tui,
-                    config,
-                    Duration::from_secs(3),
-                ).await;
-                save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
-                snapshot_writer.flush();
-                shutdown_subsystems(config, &tui).await;
+                loop {
+                    let cancellation = stop_all_agents(
+                        &mut attempt_ownership,
+                        &mut state,
+                        &merge_queue,
+                        &paths,
+                        &tui,
+                        config,
+                        Duration::from_secs(3),
+                    ).await;
+                    if cancellation.all_confirmed() {
+                        break;
+                    }
+                    save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
+                    let pids = attempt_ownership.surviving_agent_metadata().pids;
+                    let _ = persist::save_agent_pids(&paths, &pids);
+                    snapshot_writer.flush();
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
                 let event =
                     build_run_completed_event(&executor, &plans, &state, RunOutcome::Cancelled);
                 emit_runner_event(&paths, &mut state, &tui, config, event);
+                save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
+                let _ = persist::save_agent_pids(&paths, &[]);
+                snapshot_writer.flush();
+                shutdown_subsystems(config, &tui).await;
                 break;
             }
         }
@@ -7195,16 +7206,36 @@ async fn handle_plan_timeout(
         in_flight_attempts = ?in_flight,
         "plan execution exceeded wall-clock timeout"
     );
-    stop_all_agents(
-        attempt_ownership,
-        state,
-        merge_queue,
-        paths,
-        tui,
-        config,
-        Duration::from_secs(3),
-    )
-    .await;
+    loop {
+        let cancellation = stop_all_agents(
+            attempt_ownership,
+            state,
+            merge_queue,
+            paths,
+            tui,
+            config,
+            Duration::from_secs(3),
+        )
+        .await;
+        if cancellation.all_confirmed() {
+            break;
+        }
+        save_snapshot(
+            config,
+            executor,
+            paths,
+            state,
+            merge_queue,
+            gate_thresholds,
+            writer,
+        );
+        let pids = attempt_ownership.surviving_agent_metadata().pids;
+        let _ = persist::save_agent_pids(paths, &pids);
+        writer.flush();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let event = build_run_completed_event(executor, plans, state, RunOutcome::Failed);
+    emit_runner_event(paths, state, tui, config, event);
     save_snapshot(
         config,
         executor,
@@ -7215,9 +7246,8 @@ async fn handle_plan_timeout(
         writer,
     );
     writer.flush();
+    let _ = persist::save_agent_pids(paths, &[]);
     shutdown_subsystems(config, tui).await;
-    let event = build_run_completed_event(executor, plans, state, RunOutcome::Failed);
-    emit_runner_event(paths, state, tui, config, event);
     Err(anyhow::anyhow!(
         "plan execution exceeded wall-clock timeout after {} seconds",
         timeout_secs
@@ -7248,6 +7278,28 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
 enum CancelAttemptOutcome {
     Confirmed,
     Unconfirmed(Vec<String>),
+}
+
+#[derive(Debug)]
+struct CancelAttemptSummary {
+    attempt: TaskAttemptRef,
+    outcome: CancelAttemptOutcome,
+}
+
+#[derive(Debug)]
+struct CancelAllSummary {
+    attempts: Vec<CancelAttemptSummary>,
+    quarantined: Vec<TaskAttemptRef>,
+}
+
+impl CancelAllSummary {
+    fn all_confirmed(&self) -> bool {
+        self.quarantined.is_empty()
+            && self
+                .attempts
+                .iter()
+                .all(|entry| matches!(entry.outcome, CancelAttemptOutcome::Confirmed))
+    }
 }
 
 fn restore_failed_cancellation(
@@ -7519,9 +7571,11 @@ async fn stop_all_agents(
     tui: &TuiBridge,
     config: &RunConfig,
     grace: Duration,
-) {
+) -> CancelAllSummary {
+    ownership.retry_unrecovered_claims();
+    let mut summaries = Vec::new();
     for attempt in ownership.attempts() {
-        if let CancelAttemptOutcome::Unconfirmed(errors) = cancel_exact_attempt(
+        let outcome = cancel_exact_attempt(
             &attempt,
             ownership,
             state,
@@ -7531,14 +7585,20 @@ async fn stop_all_agents(
             config,
             grace,
         )
-        .await
-        {
+        .await;
+        if let CancelAttemptOutcome::Unconfirmed(errors) = &outcome {
             error!(attempt = %attempt.key(), ?errors, "attempt cancellation remains unconfirmed");
         }
+        summaries.push(CancelAttemptSummary { attempt, outcome });
     }
-    state.agent_active = false;
-    state.agent_pid = None;
+    let survivors = ownership.surviving_agent_metadata();
+    state.agent_active = survivors.active;
+    state.agent_pid = survivors.pids.first().copied();
     state.agent_turn_completed = false;
+    CancelAllSummary {
+        attempts: summaries,
+        quarantined: ownership.unrecovered_attempts(),
+    }
 }
 
 async fn run_dream_consolidation_if_enabled(config: &RunConfig) {
@@ -9801,7 +9861,7 @@ mod tests_post_gate_reflection_lessons {
         let state_hub = StateHub::default_capacity();
         let tui = TuiBridge::new(state_hub.sender());
 
-        stop_all_agents(
+        let summary = stop_all_agents(
             &mut ownership,
             &mut state,
             &queue,
@@ -9812,6 +9872,9 @@ mod tests_post_gate_reflection_lessons {
         )
         .await;
 
+        assert!(summary.all_confirmed());
+        assert_eq!(summary.attempts.len(), 1);
+        assert!(summary.quarantined.is_empty());
         assert!(!ownership.contains(&attempt));
         assert_eq!(queue.metrics().merging, 0);
         assert!(queue.snapshot().locked_files.is_empty());

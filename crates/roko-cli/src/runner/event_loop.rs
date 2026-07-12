@@ -9449,4 +9449,51 @@ mod tests_post_gate_reflection_lessons {
         assert!(error.contains("reservation rollback failed"));
         assert!(error.contains("owner cleanup failed"));
     }
+
+    #[tokio::test]
+    async fn shutdown_releases_owned_merge_reservation_and_owner() {
+        let queue = MergeQueue::new();
+        let merger = PlanMerger::new(
+            queue.clone(),
+            PlanMergerConfig::new(PathBuf::from("/tmp"), Duration::from_secs(1)),
+        );
+        let MergeDispatch::Reserved { launch } = merger.submit(MergeRequest::new(
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            0,
+        )) else {
+            panic!("expected merge reservation");
+        };
+        let (tx, _rx) = mpsc::channel(1);
+        let producer = merger.prepare(launch, tx);
+        let effect = producer.effect.clone();
+        let attempt = effect.attempt.clone();
+        let _start = producer.start;
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, EffectRef(effect.generation)),
+                AgentRuntimeResource::Merge {
+                    effect,
+                    handle: Arc::new(std::sync::Mutex::new(Some(producer.handle))),
+                    resolution: Arc::new(std::sync::Mutex::new(Some(producer.resolution))),
+                },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+
+        stop_all_agents(
+            &mut ownership,
+            &mut state,
+            &queue,
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert!(!ownership.contains(&attempt));
+        assert_eq!(queue.metrics().merging, 0);
+        assert!(queue.snapshot().locked_files.is_empty());
+    }
 }

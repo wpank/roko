@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 19
-done = 14
+done = 15
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -290,7 +290,7 @@ acceptance = ["PlanVerify ownership exists before verify work or auto-pass start
 id = "SH01-T06B2C3B"
 title = "Separate merge reservation from process launch"
 description = "Refactor PlanMerger so submit and drain only reserve and return an explicit launch descriptor for the exact plan/request; they must never internally spawn a queued or different plan. The descriptor exposes a barrier-blocked JoinHandle or dormant launch future plus stable effect identity, allowing the event loop to insert ownership and retain the handle before releasing work. Preserve FIFO/priority and blocked-request semantics."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 360

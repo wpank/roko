@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 28
-done = 23
+done = 24
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -470,7 +470,7 @@ acceptance = ["Cancel-all reports every exact confirmed and failed owner.", "Agg
 id = "SH01-T06C1"
 title = "Define timeout semantics and monotonic ownership clocks"
 description = "Add typed timeout kinds and terminal/event vocabulary plus a pure monotonic deadline tracker. Record attempt, phase/effect, and agent-activity clocks in exact ownership and preserve them across linear claims and transitions. Resolve hard-run legacy fallback and authored task overrides deterministically. This foundation does not yet cancel runtime work."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 360

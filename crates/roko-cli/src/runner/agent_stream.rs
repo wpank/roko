@@ -96,13 +96,17 @@ pub struct AgentHandle {
 }
 
 /// Result of attempting to terminate an agent and its stream readers.
-#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub enum AgentTermination {
     /// The process exited and all reader tasks stopped intentionally.
     Confirmed { pid: u32 },
-    /// Process or reader-task termination could not be confirmed.
-    Failed { pid: u32, errors: Vec<String> },
+    /// Process or reader cleanup failed. Ownership is returned for retry.
+    Failed {
+        handle: AgentHandle,
+        process_confirmed: bool,
+        process_errors: Vec<String>,
+        reader_errors: Vec<String>,
+    },
 }
 
 /// Result of naturally waiting for an agent and all stream readers.
@@ -125,42 +129,71 @@ impl AgentHandle {
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
     pub async fn kill(mut self, grace: Duration) -> AgentTermination {
-        let mut errors = Vec::new();
+        let mut process_errors = Vec::new();
 
-        // Stop and reap readers before confirming termination. An abort produces
-        // a cancelled JoinError, which is the expected intentional outcome.
+        let already_absent = matches!(self.child.try_wait(), Ok(Some(_)));
+        if !already_absent {
+            // Use roko-agent's kill_tree which handles process groups properly.
+            if let Err(e) = kill_tree(&mut self.child, grace).await {
+                warn!(pid = self.pid, err = %e, "error killing agent");
+                process_errors.push(format!("process tree termination failed: {e}"));
+            }
+        }
+        let process_confirmed = if already_absent {
+            true
+        } else {
+            match self.child.try_wait() {
+                Ok(Some(_)) => true,
+                Ok(None) => {
+                    process_errors.push("process still running after kill_tree".to_string());
+                    false
+                }
+                Err(e) => {
+                    process_errors.push(format!("failed to confirm process exit: {e}"));
+                    false
+                }
+            }
+        };
+        self.finish_kill(process_confirmed, process_errors).await
+    }
+
+    async fn finish_kill(
+        mut self,
+        process_confirmed: bool,
+        process_errors: Vec<String>,
+    ) -> AgentTermination {
+        if !process_confirmed {
+            return AgentTermination::Failed {
+                handle: self,
+                process_confirmed,
+                process_errors,
+                reader_errors: Vec::new(),
+            };
+        }
+
+        roko_agent::process::unregister_pid(self.pid);
+        let mut reader_errors = Vec::new();
         if let Some(reader_task) = &self.reader_task {
             reader_task.abort();
         }
         if let Some(stderr_reader_task) = &self.stderr_reader_task {
             stderr_reader_task.abort();
         }
-
         if let Some(reader_task) = self.reader_task.take() {
-            collect_reader_result("stdout", reader_task.await, true, &mut errors);
+            collect_reader_result("stdout", reader_task.await, true, &mut reader_errors);
         }
         if let Some(stderr_reader_task) = self.stderr_reader_task.take() {
-            collect_reader_result("stderr", stderr_reader_task.await, true, &mut errors);
+            collect_reader_result("stderr", stderr_reader_task.await, true, &mut reader_errors);
         }
 
-        // Use roko-agent's kill_tree which handles process groups properly.
-        if let Err(e) = kill_tree(&mut self.child, grace).await {
-            warn!(pid = self.pid, err = %e, "error killing agent");
-            errors.push(format!("process tree termination failed: {e}"));
-        } else {
-            match self.child.try_wait() {
-                Ok(Some(_)) => {}
-                Ok(None) => errors.push("process still running after kill_tree".to_string()),
-                Err(e) => errors.push(format!("failed to confirm process exit: {e}")),
-            }
-        }
-
-        if errors.is_empty() {
+        if process_errors.is_empty() && reader_errors.is_empty() {
             AgentTermination::Confirmed { pid: self.pid }
         } else {
             AgentTermination::Failed {
-                pid: self.pid,
-                errors,
+                handle: self,
+                process_confirmed,
+                process_errors,
+                reader_errors,
             }
         }
     }
@@ -398,10 +431,10 @@ mod tests {
         let handle = test_agent_handle(tokio::spawn(std::future::pending()));
         let pid = handle.pid;
 
-        assert_eq!(
+        assert!(matches!(
             handle.kill(Duration::from_millis(10)).await,
-            AgentTermination::Confirmed { pid }
-        );
+            AgentTermination::Confirmed { pid: confirmed } if confirmed == pid
+        ));
     }
 
     #[cfg(unix)]
@@ -411,20 +444,62 @@ mod tests {
         tokio::task::yield_now().await;
         let handle = test_agent_handle(reader_task);
         let pid = handle.pid;
+        roko_agent::process::register_spawned_pid(pid);
 
         let AgentTermination::Failed {
-            pid: failed_pid,
-            errors,
+            handle,
+            process_confirmed,
+            process_errors,
+            reader_errors,
         } = handle.kill(Duration::from_millis(10)).await
         else {
             panic!("expected failed termination");
         };
-        assert_eq!(failed_pid, pid);
+        assert_eq!(handle.pid, pid);
+        assert!(process_confirmed);
+        assert!(process_errors.is_empty());
+        assert!(!roko_agent::process::registered_pids().contains(&pid));
         assert!(
-            errors
+            reader_errors
                 .iter()
                 .any(|error| error.contains("stdout reader task failed"))
         );
+        assert!(matches!(
+            handle.kill(Duration::from_millis(10)).await,
+            AgentTermination::Confirmed { pid: confirmed } if confirmed == pid
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unconfirmed_process_retains_child_readers_and_registration_for_retry() {
+        let handle = test_agent_handle(tokio::spawn(std::future::pending()));
+        let pid = handle.pid;
+        roko_agent::process::register_spawned_pid(pid);
+
+        let AgentTermination::Failed {
+            handle,
+            process_confirmed,
+            process_errors,
+            reader_errors,
+        } = handle
+            .finish_kill(false, vec!["forced process error".to_string()])
+            .await
+        else {
+            panic!("expected retryable termination failure");
+        };
+        assert!(!process_confirmed);
+        assert_eq!(process_errors, vec!["forced process error"]);
+        assert!(reader_errors.is_empty());
+        assert!(handle.reader_task.is_some());
+        assert!(handle.stderr_reader_task.is_some());
+        assert!(roko_agent::process::registered_pids().contains(&pid));
+
+        assert!(matches!(
+            handle.kill(Duration::from_millis(10)).await,
+            AgentTermination::Confirmed { pid: confirmed } if confirmed == pid
+        ));
+        assert!(!roko_agent::process::registered_pids().contains(&pid));
     }
 
     #[cfg(unix)]

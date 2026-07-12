@@ -7253,10 +7253,42 @@ async fn stop_all_agents(
             } => {
                 let pid = handle.pid;
                 match handle.kill(grace).await {
-                    AgentTermination::Confirmed { .. } => roko_agent::process::unregister_pid(pid),
-                    AgentTermination::Failed { errors, .. } => {
-                        error!(pid, ?errors, "agent termination could not be confirmed");
-                        unconfirmed_pids.insert(pid);
+                    AgentTermination::Confirmed { .. } => {}
+                    AgentTermination::Failed {
+                        handle,
+                        process_confirmed,
+                        process_errors,
+                        reader_errors,
+                    } => {
+                        error!(
+                            pid,
+                            ?process_errors,
+                            ?reader_errors,
+                            "agent termination cleanup failed"
+                        );
+                        if !process_confirmed {
+                            unconfirmed_pids.insert(pid);
+                        }
+                        claim.replace_resource(AgentRuntimeResource::Cli {
+                            handle,
+                            forwarder,
+                            permit,
+                        });
+                        if let Err(failure) = attempt_ownership.restore_cancellation_failure(claim)
+                        {
+                            error!(attempt = %attempt.key(), error = ?failure.error, "failed to restore cancellation ownership");
+                            if let Err(claim) =
+                                attempt_ownership.force_restore_cancellation_failure(failure.claim)
+                            {
+                                error!(attempt = %attempt.key(), "refused to overwrite live cancellation owner");
+                                attempt_ownership.retain_unrecovered_claim(claim);
+                                error!(
+                                    retained_claims = attempt_ownership.unrecovered_claim_count(),
+                                    "retained conflicting cancellation claim for later recovery"
+                                );
+                            }
+                        }
+                        continue;
                     }
                 }
                 forwarder.abort();
@@ -9477,6 +9509,59 @@ mod tests_post_gate_reflection_lessons {
 
         assert!(error.contains("reservation rollback failed"));
         assert!(error.contains("owner cleanup failed"));
+    }
+
+    #[test]
+    fn resume_snapshot_restores_cancellation_failure_as_in_flight() {
+        let mut source = RunState::new(1);
+        let run_id = source.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        source.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        source.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        source.apply_runner_event(&RunnerEvent::task_attempt_cancellation_failed(
+            &run_id,
+            attempt.clone(),
+            "kill not confirmed",
+        ));
+        let snapshot = persist::RunStateSnapshot {
+            schema_version: persist::RUN_STATE_SCHEMA_VERSION,
+            run_id,
+            started_at_ms: 0,
+            timestamp_ms: 0,
+            tasks_total: 1,
+            tasks_completed: 0,
+            tasks_failed: 0,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            total_cost_usd: 0.0,
+            total_agent_calls: 0,
+            plan_costs: HashMap::new(),
+            completed_tasks: HashMap::new(),
+            lifecycle: Some(source.lifecycle.clone()),
+            snapshot_fail_streak: 0,
+            fingerprints: Vec::new(),
+            replan_ledger: persist::ReplanLedgerSnapshot::default(),
+            revised_tasks: Vec::new(),
+            cascade_router_json: None,
+        };
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: persist::RunStateSnapshot = serde_json::from_str(&encoded).unwrap();
+        let mut restored = RunState::new(1);
+
+        restore_state_from_resume_snapshot(&mut restored, &decoded, &HashMap::new(), &[]);
+
+        assert_eq!(
+            restored.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::CancellationFailed
+        );
+        assert_eq!(collect_in_flight_attempts(&restored).len(), 1);
     }
 
     #[tokio::test]

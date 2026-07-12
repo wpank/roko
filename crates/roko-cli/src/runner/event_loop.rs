@@ -4311,6 +4311,7 @@ fn runner_event_run_id(event: &RunnerEvent) -> &str {
         | RunnerEvent::TaskAttemptCompleted { run_id, .. }
         | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
         | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
+        | RunnerEvent::TimeoutRecorded { run_id, .. }
         | RunnerEvent::AgentDispatchStarted { run_id, .. }
         | RunnerEvent::AgentDispatchCompleted { run_id, .. }
         | RunnerEvent::AgentCompleted { run_id, .. }

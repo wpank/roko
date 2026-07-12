@@ -347,6 +347,21 @@ impl RunState {
                     None,
                 );
             }
+            RunnerEvent::TimeoutRecorded {
+                timeout,
+                timestamp_ms,
+                ..
+            } => {
+                if let Some(attempt) = &timeout.attempt {
+                    self.upsert_attempt(
+                        attempt,
+                        TaskAttemptStatus::TimedOut,
+                        *timestamp_ms,
+                        None,
+                        None,
+                    );
+                }
+            }
             RunnerEvent::AgentDispatchStarted {
                 attempt,
                 agent_id,
@@ -468,6 +483,7 @@ impl RunState {
                     TaskAttemptOutcome::Failed => TaskAttemptStatus::Failed,
                     TaskAttemptOutcome::Exhausted => TaskAttemptStatus::Exhausted,
                     TaskAttemptOutcome::Cancelled => TaskAttemptStatus::Cancelled,
+                    TaskAttemptOutcome::TimedOut => TaskAttemptStatus::TimedOut,
                 };
                 let key = attempt.key();
                 self.upsert_attempt(attempt, status, *timestamp_ms, None, *failure_kind);
@@ -674,6 +690,7 @@ impl RunState {
                 TaskAttemptStatus::Failed => TaskLifecycleStatus::Failed,
                 TaskAttemptStatus::Exhausted => TaskLifecycleStatus::Exhausted,
                 TaskAttemptStatus::Cancelled => TaskLifecycleStatus::Cancelled,
+                TaskAttemptStatus::TimedOut => TaskLifecycleStatus::TimedOut,
                 TaskAttemptStatus::Superseded => task.status,
                 _ => task.status,
             };
@@ -1000,8 +1017,8 @@ mod tests {
     use super::RunState;
     use crate::runner::types::{
         AgentCompletionSummary, AgentDispatchOutcome, GateCompletion, GateCompletionKind,
-        RetryDecision, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
-        TaskAttemptStatus, TaskLifecycleStatus,
+        OwnerEffectRef, RetryDecision, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome,
+        TaskAttemptRef, TaskAttemptStatus, TaskLifecycleStatus, TimeoutEvent, TimeoutKind,
     };
 
     #[test]
@@ -1289,5 +1306,44 @@ mod tests {
             TaskAttemptStatus::Started
         );
         assert_eq!(state.iteration_for("plan", "T1"), 2);
+    }
+
+    #[test]
+    fn timed_out_terminal_requires_cancelling_transition() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "T1", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        let timeout = TimeoutEvent {
+            kind: TimeoutKind::TaskAttempt,
+            attempt: Some(attempt.clone()),
+            effect: None,
+            owner_effect: Some(OwnerEffectRef(1)),
+            limit_ms: 10,
+            monotonic_elapsed_ms: 10,
+            observed_at_ms: 1,
+        };
+        state.apply_runner_event(&RunnerEvent::timeout_recorded(&run_id, timeout.clone()));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Started
+        );
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        state.apply_runner_event(&RunnerEvent::timeout_recorded(&run_id, timeout));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::TimedOut
+        );
+        assert_eq!(
+            state.lifecycle.tasks["plan:T1"].status,
+            TaskLifecycleStatus::TimedOut
+        );
     }
 }

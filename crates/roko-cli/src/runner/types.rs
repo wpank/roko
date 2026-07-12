@@ -312,6 +312,13 @@ impl EventCategory {
             | RunnerEvent::TaskAttemptCompleted { .. }
             | RunnerEvent::TaskAttemptCancellationRequested { .. }
             | RunnerEvent::TaskAttemptCancellationFailed { .. } => Self::Task,
+            RunnerEvent::TimeoutRecorded { timeout, .. } => {
+                if timeout.attempt.is_some() {
+                    Self::Task
+                } else {
+                    Self::Run
+                }
+            }
             RunnerEvent::AgentDispatchStarted { .. }
             | RunnerEvent::AgentDispatchCompleted { .. }
             | RunnerEvent::AgentCompleted { .. } => Self::AgentLifecycle,
@@ -384,6 +391,10 @@ pub struct TaskAttemptRef {
     pub task_id: String,
     pub attempt: u32,
 }
+
+/// Identity of one concrete asynchronous ownership effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OwnerEffectRef(pub u64);
 
 impl TaskAttemptRef {
     pub fn new(plan_id: impl Into<String>, task_id: impl Into<String>, attempt: u32) -> Self {
@@ -463,13 +474,14 @@ pub enum TaskLifecycleStatus {
     Failed,
     Exhausted,
     Cancelled,
+    TimedOut,
 }
 
 impl TaskLifecycleStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Passed | Self::Failed | Self::Exhausted | Self::Cancelled
+            Self::Passed | Self::Failed | Self::Exhausted | Self::Cancelled | Self::TimedOut
         )
     }
 }
@@ -491,6 +503,7 @@ pub enum TaskAttemptStatus {
     Failed,
     Exhausted,
     Cancelled,
+    TimedOut,
     Superseded,
 }
 
@@ -498,7 +511,12 @@ impl TaskAttemptStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Passed | Self::Failed | Self::Exhausted | Self::Cancelled | Self::Superseded
+            Self::Passed
+                | Self::Failed
+                | Self::Exhausted
+                | Self::Cancelled
+                | Self::TimedOut
+                | Self::Superseded
         )
     }
 
@@ -547,9 +565,16 @@ impl TaskAttemptStatus {
                 Self::Superseded | Self::Failed | Self::Exhausted | Self::Cancelling
             ),
             Self::CancellationFailed => matches!(next, Self::Cancelling),
-            Self::Cancelling => matches!(next, Self::Cancelled | Self::CancellationFailed),
+            Self::Cancelling => matches!(
+                next,
+                Self::Cancelled | Self::TimedOut | Self::CancellationFailed
+            ),
             Self::Failed => matches!(next, Self::Retrying | Self::Exhausted | Self::Cancelling),
-            Self::Passed | Self::Exhausted | Self::Cancelled | Self::Superseded => false,
+            Self::Passed
+            | Self::Exhausted
+            | Self::Cancelled
+            | Self::TimedOut
+            | Self::Superseded => false,
         }
     }
 }
@@ -562,6 +587,35 @@ pub enum TaskAttemptOutcome {
     Failed,
     Exhausted,
     Cancelled,
+    TimedOut,
+}
+
+/// Cause recorded for a deadline expiry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutKind {
+    HardRun,
+    TaskAttempt,
+    GateEffect,
+    AgentSilence,
+    SchedulerNoProgress,
+    LostEffect,
+}
+
+/// Typed timeout fact. Monotonic elapsed time drives enforcement while the
+/// wall-clock timestamp exists only for audit and replay ordering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeoutEvent {
+    pub kind: TimeoutKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<TaskAttemptRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<GateEffectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_effect: Option<OwnerEffectRef>,
+    pub limit_ms: u64,
+    pub monotonic_elapsed_ms: u64,
+    pub observed_at_ms: u64,
 }
 
 /// Result of an agent dispatch lifecycle step.
@@ -864,6 +918,13 @@ pub enum RunnerEvent {
         attempt: TaskAttemptRef,
         reason: String,
     },
+    #[serde(rename = "timeout.recorded")]
+    TimeoutRecorded {
+        timestamp: String,
+        timestamp_ms: u64,
+        run_id: String,
+        timeout: TimeoutEvent,
+    },
     #[serde(rename = "agent.dispatch.started")]
     AgentDispatchStarted {
         timestamp: String,
@@ -1134,6 +1195,16 @@ impl RunnerEvent {
         }
     }
 
+    pub fn timeout_recorded(run_id: &str, timeout: TimeoutEvent) -> Self {
+        let stamp = EventStamp::now();
+        Self::TimeoutRecorded {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            timeout,
+        }
+    }
+
     pub fn agent_dispatch_started(
         run_id: &str,
         attempt: TaskAttemptRef,
@@ -1317,6 +1388,7 @@ impl RunnerEvent {
             Self::TaskAttemptCompleted { .. } => "task.attempt.completed",
             Self::TaskAttemptCancellationRequested { .. } => "task.attempt.cancellation_requested",
             Self::TaskAttemptCancellationFailed { .. } => "task.attempt.cancellation_failed",
+            Self::TimeoutRecorded { .. } => "timeout.recorded",
             Self::AgentDispatchStarted { .. } => "agent.dispatch.started",
             Self::AgentDispatchCompleted { .. } => "agent.dispatch.completed",
             Self::AgentCompleted { .. } => "agent.completed",
@@ -1339,6 +1411,7 @@ impl RunnerEvent {
             | Self::TaskAttemptCompleted { timestamp_ms, .. }
             | Self::TaskAttemptCancellationRequested { timestamp_ms, .. }
             | Self::TaskAttemptCancellationFailed { timestamp_ms, .. }
+            | Self::TimeoutRecorded { timestamp_ms, .. }
             | Self::AgentDispatchStarted { timestamp_ms, .. }
             | Self::AgentDispatchCompleted { timestamp_ms, .. }
             | Self::AgentCompleted { timestamp_ms, .. }
@@ -1367,6 +1440,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.plan_id),
+            Self::TimeoutRecorded { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.plan_id.as_str()),
             Self::ResumeMarker { .. } | Self::RunStarted { .. } | Self::RunCompleted { .. } => None,
         }
     }
@@ -1385,6 +1462,10 @@ impl RunnerEvent {
             | Self::PromptAssembled { attempt, .. }
             | Self::MergeBackendCompleted { attempt, .. }
             | Self::RetryDecision { attempt, .. } => Some(&attempt.task_id),
+            Self::TimeoutRecorded { timeout, .. } => timeout
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.task_id.as_str()),
             _ => None,
         }
     }
@@ -1414,6 +1495,9 @@ impl RunnerEvent {
             }
             Self::TaskAttemptCancellationFailed { reason, .. } => {
                 format!("task attempt cancellation failed: {reason}")
+            }
+            Self::TimeoutRecorded { timeout, .. } => {
+                format!("timeout recorded: {:?}", timeout.kind)
             }
             Self::AgentDispatchStarted {
                 agent_id,

@@ -283,6 +283,11 @@ enum AgentRuntimeResource {
         handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
         resolution: Arc<std::sync::Mutex<Option<MergeResolution>>>,
     },
+    CleanupFailed {
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        gate_effect: Option<GateEffectRef>,
+        errors: Vec<String>,
+    },
 }
 
 async fn finish_merge_handle(
@@ -2756,6 +2761,9 @@ pub async fn run(
                     &mut attempt_ownership,
                     &mut state,
                     &merge_queue,
+                    &paths,
+                    &tui,
+                    config,
                     Duration::from_secs(3),
                 ).await;
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
@@ -7191,6 +7199,9 @@ async fn handle_plan_timeout(
         attempt_ownership,
         state,
         merge_queue,
+        paths,
+        tui,
+        config,
         Duration::from_secs(3),
     )
     .await;
@@ -7233,113 +7244,296 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
     attempts
 }
 
-async fn stop_all_agents(
-    attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+#[derive(Debug)]
+enum CancelAttemptOutcome {
+    Confirmed,
+    Unconfirmed(Vec<String>),
+}
+
+fn restore_failed_cancellation(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    mut claim: AttemptClaim<AgentRuntimeResource>,
+    resource: AgentRuntimeResource,
+) {
+    claim.replace_resource(resource);
+    if let Err(failure) = ownership.restore_cancellation_failure(claim)
+        && let Err(claim) = ownership.force_restore_cancellation_failure(failure.claim)
+    {
+        ownership.retain_unrecovered_claim(claim);
+    }
+}
+
+fn unexpected_cancel_join(
+    label: &str,
+    result: Result<(), tokio::task::JoinError>,
+    errors: &mut Vec<String>,
+) {
+    if let Err(error) = result
+        && !error.is_cancelled()
+    {
+        errors.push(format!("{label} join failed: {error}"));
+    }
+}
+
+fn record_cancellation_failure(
+    attempt: &TaskAttemptRef,
+    errors: Vec<String>,
+    state: &mut RunState,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> CancelAttemptOutcome {
+    let run_id = state.run_id().to_string();
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_cancellation_failed(&run_id, attempt.clone(), errors.join("; ")),
+    );
+    CancelAttemptOutcome::Unconfirmed(errors)
+}
+
+async fn cancel_exact_attempt(
+    attempt: &TaskAttemptRef,
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
     state: &mut RunState,
     merge_queue: &MergeQueue,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
     grace: Duration,
-) {
-    let mut unconfirmed_pids = HashSet::new();
-    for attempt in attempt_ownership.attempts() {
-        let Ok(mut claim) = attempt_ownership.claim_cancellation(&attempt) else {
-            continue;
-        };
-        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
-        match resource {
-            AgentRuntimeResource::Cli {
+) -> CancelAttemptOutcome {
+    let Ok(mut claim) = ownership.claim_cancellation(attempt) else {
+        return CancelAttemptOutcome::Unconfirmed(vec!["exact owner unavailable".to_string()]);
+    };
+    let run_id = state.run_id().to_string();
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_cancellation_requested(&run_id, attempt.clone()),
+    );
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+    match resource {
+        AgentRuntimeResource::Cli {
+            handle,
+            forwarder,
+            permit,
+        } => match handle.kill(grace).await {
+            AgentTermination::Confirmed { .. } => {
+                forwarder.abort();
+                let mut errors = Vec::new();
+                unexpected_cancel_join("CLI forwarder", forwarder.await, &mut errors);
+                if !errors.is_empty() {
+                    claim.clear_agent();
+                    restore_failed_cancellation(
+                        ownership,
+                        claim,
+                        AgentRuntimeResource::CleanupFailed {
+                            permit: Some(permit),
+                            gate_effect: None,
+                            errors: errors.clone(),
+                        },
+                    );
+                    return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+                }
+                drop(permit);
+            }
+            AgentTermination::Failed {
                 handle,
-                forwarder,
-                permit,
+                process_confirmed,
+                process_errors,
+                reader_errors,
             } => {
-                let pid = handle.pid;
-                match handle.kill(grace).await {
-                    AgentTermination::Confirmed { .. } => {}
-                    AgentTermination::Failed {
-                        handle,
-                        process_confirmed,
-                        process_errors,
-                        reader_errors,
-                    } => {
-                        error!(
-                            pid,
-                            ?process_errors,
-                            ?reader_errors,
-                            "agent termination cleanup failed"
-                        );
-                        if !process_confirmed {
-                            unconfirmed_pids.insert(pid);
-                        }
-                        claim.replace_resource(AgentRuntimeResource::Cli {
+                let mut errors = process_errors;
+                errors.extend(reader_errors);
+                if process_confirmed {
+                    forwarder.abort();
+                    unexpected_cancel_join("CLI forwarder", forwarder.await, &mut errors);
+                    drop(handle);
+                    claim.clear_agent();
+                    restore_failed_cancellation(
+                        ownership,
+                        claim,
+                        AgentRuntimeResource::CleanupFailed {
+                            permit: Some(permit),
+                            gate_effect: None,
+                            errors: errors.clone(),
+                        },
+                    );
+                } else {
+                    restore_failed_cancellation(
+                        ownership,
+                        claim,
+                        AgentRuntimeResource::Cli {
                             handle,
                             forwarder,
                             permit,
-                        });
-                        if let Err(failure) = attempt_ownership.restore_cancellation_failure(claim)
-                        {
-                            error!(attempt = %attempt.key(), error = ?failure.error, "failed to restore cancellation ownership");
-                            if let Err(claim) =
-                                attempt_ownership.force_restore_cancellation_failure(failure.claim)
-                            {
-                                error!(attempt = %attempt.key(), "refused to overwrite live cancellation owner");
-                                attempt_ownership.retain_unrecovered_claim(claim);
-                                error!(
-                                    retained_claims = attempt_ownership.unrecovered_claim_count(),
-                                    "retained conflicting cancellation claim for later recovery"
-                                );
-                            }
-                        }
-                        continue;
-                    }
+                        },
+                    );
                 }
-                forwarder.abort();
-                let _ = forwarder.await;
-                drop(permit);
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
-            AgentRuntimeResource::Bridge {
-                bridge,
-                forwarder,
-                permit,
-            } => {
-                bridge.abort();
-                forwarder.abort();
-                let _ = bridge.await;
-                let _ = forwarder.await;
-                drop(permit);
+        },
+        AgentRuntimeResource::Bridge {
+            bridge,
+            forwarder,
+            permit,
+        } => {
+            bridge.abort();
+            forwarder.abort();
+            let mut errors = Vec::new();
+            unexpected_cancel_join("bridge", bridge.await, &mut errors);
+            unexpected_cancel_join("bridge forwarder", forwarder.await, &mut errors);
+            if !errors.is_empty() {
+                claim.clear_agent();
+                restore_failed_cancellation(
+                    ownership,
+                    claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit: Some(permit),
+                        gate_effect: None,
+                        errors: errors.clone(),
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
-            AgentRuntimeResource::Dispatching(permit) => drop(permit),
-            AgentRuntimeResource::AwaitingGate => {}
-            AgentRuntimeResource::Gate { handle, .. } => {
-                handle.abort();
-                let _ = handle.await;
-            }
-            AgentRuntimeResource::Merge {
-                handle, resolution, ..
-            } => {
-                let mut errors = Vec::new();
-                if let Err(error) = finish_merge_handle(&handle, true).await {
-                    errors.push(error);
-                }
-                match take_merge_resolution(&resolution) {
-                    Some(resolution) => {
-                        if !resolution.fail(merge_queue, "runner shutdown during merge") {
-                            errors.push("shutdown merge reservation was stale".to_string());
-                        }
-                    }
-                    None => errors.push("shutdown merge resolution was missing".to_string()),
-                }
-                if !errors.is_empty() {
-                    error!(attempt = %attempt.key(), errors = ?errors, "merge shutdown cleanup failed");
-                }
+            drop(permit);
+        }
+        AgentRuntimeResource::Dispatching(permit) => drop(permit),
+        AgentRuntimeResource::AwaitingGate => {}
+        AgentRuntimeResource::Gate { effect, handle } => {
+            handle.abort();
+            let mut errors = Vec::new();
+            unexpected_cancel_join("gate", handle.await, &mut errors);
+            state.clear_gate_active(&gate_effect_key(
+                &effect.attempt.plan_id,
+                &effect.attempt.task_id,
+                effect.rung,
+                effect.kind,
+            ));
+            if !errors.is_empty() {
+                restore_failed_cancellation(
+                    ownership,
+                    claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit: None,
+                        gate_effect: Some(effect),
+                        errors: errors.clone(),
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
         }
-        if let Err(error) = attempt_ownership.complete_claim(claim) {
-            attempt_ownership.discard_for_cleanup(&attempt);
-            error!(attempt = %attempt.key(), ?error, "shutdown owner cleanup failed");
+        AgentRuntimeResource::Merge {
+            effect,
+            handle,
+            resolution,
+        } => {
+            let mut errors = Vec::new();
+            if let Err(error) = finish_merge_handle(&handle, true).await {
+                errors.push(error);
+            }
+            let resolution_copy = resolution
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match resolution_copy {
+                Some(resolution_copy) => {
+                    if resolution_copy.fail(merge_queue, "runner shutdown during merge") {
+                        let _ = take_merge_resolution(&resolution);
+                    } else {
+                        errors.push("shutdown merge reservation was stale".to_string());
+                    }
+                }
+                None => errors.push("shutdown merge resolution was missing".to_string()),
+            }
+            if !errors.is_empty() {
+                drop((effect, handle, resolution));
+                restore_failed_cancellation(
+                    ownership,
+                    claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit: None,
+                        gate_effect: None,
+                        errors: errors.clone(),
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+        }
+        AgentRuntimeResource::CleanupFailed {
+            permit,
+            gate_effect,
+            errors: _,
+        } => {
+            if let Some(effect) = gate_effect {
+                state.clear_gate_active(&gate_effect_key(
+                    &effect.attempt.plan_id,
+                    &effect.attempt.task_id,
+                    effect.rung,
+                    effect.kind,
+                ));
+            }
+            drop(permit);
         }
     }
-    if let Some(pid) = state.agent_pid.take() {
-        if !unconfirmed_pids.contains(&pid) {
-            roko_agent::process::unregister_pid(pid);
+    if let Err(failure) = ownership.complete_claim_recoverable(claim) {
+        let errors = vec![format!("owner cleanup failed: {:?}", failure.error)];
+        restore_failed_cancellation(
+            ownership,
+            failure.claim,
+            AgentRuntimeResource::CleanupFailed {
+                permit: None,
+                gate_effect: None,
+                errors: errors.clone(),
+            },
+        );
+        return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+    }
+    emit_runner_event(
+        paths,
+        state,
+        tui,
+        config,
+        RunnerEvent::task_attempt_completed(
+            &run_id,
+            attempt.clone(),
+            TaskAttemptOutcome::Cancelled,
+            None,
+            0,
+            "",
+            "",
+        ),
+    );
+    CancelAttemptOutcome::Confirmed
+}
+
+async fn stop_all_agents(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    state: &mut RunState,
+    merge_queue: &MergeQueue,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+    grace: Duration,
+) {
+    for attempt in ownership.attempts() {
+        if let CancelAttemptOutcome::Unconfirmed(errors) = cancel_exact_attempt(
+            &attempt,
+            ownership,
+            state,
+            merge_queue,
+            paths,
+            tui,
+            config,
+            grace,
+        )
+        .await
+        {
+            error!(attempt = %attempt.key(), ?errors, "attempt cancellation remains unconfirmed");
         }
     }
     state.agent_active = false;
@@ -9597,11 +9791,93 @@ mod tests_post_gate_reflection_lessons {
             )
             .unwrap();
         let mut state = RunState::new(1);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
 
-        stop_all_agents(&mut ownership, &mut state, &queue, Duration::from_millis(1)).await;
+        stop_all_agents(
+            &mut ownership,
+            &mut state,
+            &queue,
+            &paths,
+            &tui,
+            &config,
+            Duration::from_millis(1),
+        )
+        .await;
 
         assert!(!ownership.contains(&attempt));
         assert_eq!(queue.metrics().merging, 0);
         assert!(queue.snapshot().locked_files.is_empty());
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_join_failure_restores_cancellation_failed_marker() {
+        let attempt = TaskAttemptRef::new("plan-a", "task-a", 1);
+        let effect = GateEffectRef {
+            attempt: attempt.clone(),
+            kind: GateCompletionKind::Gate,
+            rung: 1,
+            generation: 9,
+        };
+        let handle = tokio::spawn(async { panic!("gate panic") });
+        tokio::task::yield_now().await;
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, EffectRef(9)),
+                AgentRuntimeResource::Gate {
+                    effect: effect.clone(),
+                    handle,
+                },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let effect_key = gate_effect_key("plan-a", "task-a", 1, GateCompletionKind::Gate);
+        assert!(state.mark_gate_active(effect_key.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+
+        assert!(matches!(
+            cancel_exact_attempt(
+                &attempt,
+                &mut ownership,
+                &mut state,
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+                Duration::from_millis(1),
+            )
+            .await,
+            CancelAttemptOutcome::Unconfirmed(_)
+        ));
+        assert_eq!(
+            ownership.cancellation_state(&attempt),
+            Some(crate::runner::attempt_ownership::CancellationState::CancellationFailed)
+        );
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::CancellationFailed
+        );
+        assert!(state.mark_gate_active(effect_key));
     }
 }

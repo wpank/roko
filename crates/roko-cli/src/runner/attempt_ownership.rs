@@ -135,6 +135,10 @@ impl<R> AttemptClaim<R> {
             pid,
         });
     }
+
+    pub fn clear_agent(&mut self) {
+        self.owner.agent = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,11 +320,25 @@ impl<R> AttemptOwnership<R> {
     }
 
     pub fn complete_claim(&mut self, claim: AttemptClaim<R>) -> Result<(), OwnershipError> {
+        self.complete_claim_recoverable(claim)
+            .map_err(|failure| failure.error)
+    }
+
+    pub fn complete_claim_recoverable(
+        &mut self,
+        claim: AttemptClaim<R>,
+    ) -> Result<(), ClaimFailure<R>> {
         let Some(slot) = self.owners.get(&claim.attempt) else {
-            return Err(OwnershipError::Missing);
+            return Err(ClaimFailure {
+                error: OwnershipError::Missing,
+                claim,
+            });
         };
         if !slot.claimed || slot.resource.is_some() || slot.claim_nonce != Some(claim.nonce) {
-            return Err(OwnershipError::Ineligible);
+            return Err(ClaimFailure {
+                error: OwnershipError::Ineligible,
+                claim,
+            });
         }
         self.owners.remove(&claim.attempt);
         Ok(())

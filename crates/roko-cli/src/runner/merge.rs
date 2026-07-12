@@ -17,10 +17,12 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use roko_orchestrator::{MergeQueue, MergeRequest};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use super::gate_dispatch::RUNG_MERGE;
 use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary, RunnerFailureKind};
@@ -28,18 +30,52 @@ use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary, Runne
 // ─── PlanMerger ─────────────────────────────────────────────────────────
 
 /// Outcome of a merge dispatch attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MergeDispatch {
     /// The merge was claimed and submitted to the regression gate. The
     /// caller should expect a `GateCompletion` with the matching plan id
     /// to arrive on the gate channel.
-    Reserved {
-        plan_id: String,
-        branch_name: String,
-    },
+    Reserved { launch: MergeLaunch },
     /// The plan was enqueued but is currently blocked by an in-progress
     /// merge holding one or more of its files.
-    Blocked { plan_id: String },
+    Blocked {
+        plan_id: String,
+        launch: Option<MergeLaunch>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct MergeLaunch {
+    request: MergeRequest,
+    generation: u64,
+}
+
+impl MergeLaunch {
+    pub fn plan_id(&self) -> &str {
+        &self.request.plan_id
+    }
+
+    pub fn branch_name(&self) -> &str {
+        &self.request.branch_name
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+static NEXT_MERGE_LAUNCH: AtomicU64 = AtomicU64::new(1);
+
+fn merge_launch(request: MergeRequest) -> MergeLaunch {
+    MergeLaunch {
+        request,
+        generation: NEXT_MERGE_LAUNCH.fetch_add(1, Ordering::Relaxed),
+    }
+}
+
+pub struct MergeProducer {
+    pub handle: JoinHandle<()>,
+    pub start: oneshot::Sender<()>,
 }
 
 /// Wrapper around [`MergeQueue`] that submits merge requests, runs a
@@ -405,43 +441,40 @@ impl PlanMerger {
     ///   the merge plan id to land on `gate_tx` shortly.
     /// - `MergeDispatch::Blocked` when the plan is queued but waiting for
     ///   another plan's file locks to release.
-    pub fn submit(
-        &self,
-        request: MergeRequest,
-        gate_tx: mpsc::Sender<GateCompletion>,
-    ) -> MergeDispatch {
+    pub fn submit(&self, request: MergeRequest) -> MergeDispatch {
         let plan_id = request.plan_id.clone();
         self.queue.enqueue(request);
 
         let Some(reserved) = self.queue.reserve_next_mergeable() else {
-            return MergeDispatch::Blocked { plan_id };
+            return MergeDispatch::Blocked {
+                plan_id,
+                launch: None,
+            };
         };
         if reserved.plan_id != plan_id {
-            // A higher-priority plan was reserved instead; spawn its
-            // regression gate so it can complete, and report the original
-            // request as still blocked.
-            self.spawn_regression(reserved, gate_tx);
-            return MergeDispatch::Blocked { plan_id };
+            return MergeDispatch::Blocked {
+                plan_id,
+                launch: Some(merge_launch(reserved)),
+            };
         }
 
-        let branch_name = reserved.branch_name.clone();
-        self.spawn_regression(reserved, gate_tx);
         MergeDispatch::Reserved {
-            plan_id,
-            branch_name,
+            launch: merge_launch(reserved),
         }
     }
 
     /// Try to drain the queue further. Useful after a merge completes to
     /// kick off the next non-conflicting plan.
-    pub fn drain_next(&self, gate_tx: mpsc::Sender<GateCompletion>) -> Option<String> {
-        let reserved = self.queue.reserve_next_mergeable()?;
-        let plan_id = reserved.plan_id.clone();
-        self.spawn_regression(reserved, gate_tx);
-        Some(plan_id)
+    pub fn drain_next(&self) -> Option<MergeLaunch> {
+        self.queue.reserve_next_mergeable().map(merge_launch)
     }
 
-    fn spawn_regression(&self, request: MergeRequest, gate_tx: mpsc::Sender<GateCompletion>) {
+    pub fn prepare(
+        &self,
+        launch: MergeLaunch,
+        gate_tx: mpsc::Sender<GateCompletion>,
+    ) -> MergeProducer {
+        let request = launch.request;
         let queue = self.queue.clone();
         let config = self.config.clone();
         let merge_backend = self
@@ -455,7 +488,11 @@ impl PlanMerger {
             .clone()
             .unwrap_or_else(Self::default_regression_gate);
 
-        tokio::spawn(async move {
+        let (start, start_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            if start_rx.await.is_err() {
+                return;
+            }
             let merge_outcome = merge_backend.merge(&request, &config).await;
             let outcome = if merge_outcome.passed {
                 let gate_outcome = gate.run(&request, &config).await;
@@ -511,6 +548,7 @@ impl PlanMerger {
                 tracing::warn!("merge regression completion dropped — gate channel closed");
             }
         });
+        MergeProducer { handle, start }
     }
 }
 
@@ -686,11 +724,14 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["src/lib.rs".to_string()], 0);
 
-        let result = merger.submit(request, tx);
-        assert!(matches!(
-            result,
-            MergeDispatch::Reserved { ref plan_id, .. } if plan_id == "plan-a"
-        ));
+        let MergeDispatch::Reserved { launch } = merger.submit(request) else {
+            panic!("expected reservation");
+        };
+        assert_eq!(launch.plan_id(), "plan-a");
+        let producer = merger.prepare(launch, tx);
+        tokio::task::yield_now().await;
+        assert!(gate.calls.lock().unwrap().is_empty());
+        producer.start.send(()).unwrap();
 
         let completion = rx.recv().await.expect("regression gate completion");
         assert_eq!(completion.plan_id, "plan-a");
@@ -709,8 +750,11 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["src/lib.rs".into()], 0);
 
-        let dispatch = merger.submit(request, tx);
-        assert!(matches!(dispatch, MergeDispatch::Reserved { .. }));
+        let MergeDispatch::Reserved { launch } = merger.submit(request) else {
+            panic!("expected reservation");
+        };
+        let producer = merger.prepare(launch, tx);
+        producer.start.send(()).unwrap();
 
         let completion = rx.recv().await.expect("expected gate completion");
         assert_eq!(completion.plan_id, "plan-a");
@@ -729,8 +773,11 @@ mod tests {
         let req_a = MergeRequest::new("plan-a", "roko/plan-a", vec!["src/lib.rs".into()], 0);
         let req_b = MergeRequest::new("plan-b", "roko/plan-b", vec!["src/lib.rs".into()], 0);
 
-        let dispatch_a = merger.submit(req_a, tx1.clone());
-        assert!(matches!(dispatch_a, MergeDispatch::Reserved { .. }));
+        let MergeDispatch::Reserved { launch } = merger.submit(req_a) else {
+            panic!("expected reservation");
+        };
+        let producer_a = merger.prepare(launch, tx1.clone());
+        producer_a.start.send(()).unwrap();
 
         // Wait for plan-a's regression gate to finish before B is submitted —
         // otherwise we cannot guarantee plan-a holds the lock.
@@ -740,8 +787,11 @@ mod tests {
         // Now submit B. It should not be blocked because plan-a is already
         // released.
         let (tx2, mut rx2) = mpsc::channel(4);
-        let dispatch_b = merger.submit(req_b, tx2);
-        assert!(matches!(dispatch_b, MergeDispatch::Reserved { .. }));
+        let MergeDispatch::Reserved { launch } = merger.submit(req_b) else {
+            panic!("expected reservation");
+        };
+        let producer_b = merger.prepare(launch, tx2);
+        producer_b.start.send(()).unwrap();
         let completion_b = rx2.recv().await.expect("plan-b completion");
         assert_eq!(completion_b.plan_id, "plan-b");
     }
@@ -767,11 +817,50 @@ mod tests {
         assert!(queue.mark_merging("plan-a"));
         let merger = PlanMerger::new(queue.clone(), cfg);
 
-        let (tx, _rx) = mpsc::channel(4);
-        let dispatch = merger.submit(
-            MergeRequest::new("plan-b", "roko/plan-b", vec!["src/lib.rs".into()], 0),
-            tx,
+        let dispatch = merger.submit(MergeRequest::new(
+            "plan-b",
+            "roko/plan-b",
+            vec!["src/lib.rs".into()],
+            0,
+        ));
+        assert!(
+            matches!(dispatch, MergeDispatch::Blocked { ref plan_id, launch: None } if plan_id == "plan-b")
         );
-        assert!(matches!(dispatch, MergeDispatch::Blocked { ref plan_id } if plan_id == "plan-b"));
+    }
+
+    #[tokio::test]
+    async fn submit_cannot_secretly_launch_a_different_reserved_plan() {
+        let gate = Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1)));
+        let merge: Arc<dyn MergeBackend> = Arc::new(StubMerge {
+            outcome: MergeBackendOutcome::pass("merge ok", 1),
+        });
+        let config = PlanMergerConfig::new(PathBuf::from("/tmp"), Duration::from_secs(5))
+            .with_merge_backend(merge)
+            .with_regression_gate(gate.clone());
+        let queue = MergeQueue::new();
+        queue.enqueue(MergeRequest::new(
+            "plan-b",
+            "roko/plan-b",
+            vec!["b.rs".into()],
+            100,
+        ));
+        let merger = PlanMerger::new(queue, config);
+
+        let MergeDispatch::Blocked {
+            plan_id,
+            launch: Some(launch),
+        } = merger.submit(MergeRequest::new(
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            0,
+        ))
+        else {
+            panic!("higher-priority queued plan should be returned as a launch token");
+        };
+        assert_eq!(plan_id, "plan-a");
+        assert_eq!(launch.plan_id(), "plan-b");
+        tokio::task::yield_now().await;
+        assert!(gate.calls.lock().unwrap().is_empty());
     }
 }

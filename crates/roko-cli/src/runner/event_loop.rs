@@ -59,7 +59,7 @@ use super::attempt_ownership::{
     AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
 };
 use super::gate_dispatch;
-use super::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
+use super::merge::{MergeDispatch, MergeLaunch, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
@@ -3350,12 +3350,13 @@ fn handle_merge_completion(
         tui.error(&reason);
     }
 
-    if let Some(next_plan_id) = PlanMerger::new(
+    let merger = PlanMerger::new(
         merge_queue.clone(),
         PlanMergerConfig::new(workdir.to_path_buf(), regression_timeout),
-    )
-    .drain_next(gate_tx.clone())
-    {
+    );
+    if let Some(launch) = merger.drain_next() {
+        let next_plan_id = launch.plan_id().to_string();
+        start_legacy_merge(&merger, launch, gate_tx.clone());
         info!(plan_id = %next_plan_id, "started next queued merge");
     }
     save_snapshot(
@@ -3367,6 +3368,16 @@ fn handle_merge_completion(
         gate_thresholds,
         writer,
     );
+}
+
+fn start_legacy_merge(
+    merger: &PlanMerger,
+    launch: MergeLaunch,
+    gate_tx: mpsc::Sender<GateCompletion>,
+) {
+    let producer = merger.prepare(launch, gate_tx);
+    let _ = producer.start.send(());
+    drop(producer.handle);
 }
 
 fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState) {
@@ -6228,11 +6239,11 @@ async fn dispatch_action(
                 ctx.merge_queue.clone(),
                 PlanMergerConfig::new(ctx.config.workdir.clone(), gate_timeout(ctx.config, 0)),
             );
-            match merger.submit(request, ctx.gate_tx.clone()) {
-                MergeDispatch::Reserved {
-                    plan_id,
-                    branch_name,
-                } => {
+            match merger.submit(request) {
+                MergeDispatch::Reserved { launch } => {
+                    let plan_id = launch.plan_id().to_string();
+                    let branch_name = launch.branch_name().to_string();
+                    start_legacy_merge(&merger, launch, ctx.gate_tx.clone());
                     info!(
                         plan_id = %plan_id,
                         branch = %branch_name,
@@ -6248,7 +6259,10 @@ async fn dispatch_action(
                         ctx.snapshot_writer,
                     );
                 }
-                MergeDispatch::Blocked { plan_id } => {
+                MergeDispatch::Blocked { plan_id, launch } => {
+                    if let Some(launch) = launch {
+                        start_legacy_merge(&merger, launch, ctx.gate_tx.clone());
+                    }
                     info!(
                         plan_id = %plan_id,
                         blocked_conflicts = ?ctx.merge_queue.blocked_conflicts(),

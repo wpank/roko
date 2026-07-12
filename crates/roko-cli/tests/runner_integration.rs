@@ -124,14 +124,21 @@ async fn end_to_end_dag_merge_projection_pipeline() {
     let req2 = MergeRequest::new("beta", "beta-branch", vec!["src/foo.rs".into()], 10);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<GateCompletion>(8);
-    match merger.submit(req1, tx.clone()) {
-        MergeDispatch::Reserved { plan_id, .. } => assert_eq!(plan_id, "alpha"),
+    match merger.submit(req1) {
+        MergeDispatch::Reserved { launch } => {
+            assert_eq!(launch.plan_id(), "alpha");
+            let producer = merger.prepare(launch, tx.clone());
+            producer.start.send(()).unwrap();
+        }
         other => panic!("first merge must be reserved, got {other:?}"),
     }
 
     // Second plan competes for the same file lock — must block.
-    match merger.submit(req2, tx) {
-        MergeDispatch::Blocked { plan_id } => assert_eq!(plan_id, "beta"),
+    match merger.submit(req2) {
+        MergeDispatch::Blocked { plan_id, launch } => {
+            assert_eq!(plan_id, "beta");
+            assert!(launch.is_none());
+        }
         other => panic!("second merge must be blocked, got {other:?}"),
     }
 

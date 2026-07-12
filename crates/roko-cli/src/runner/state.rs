@@ -1252,4 +1252,42 @@ mod tests {
             TaskAttemptStatus::Cancelled
         );
     }
+
+    #[test]
+    fn stale_cancellation_cannot_change_newer_attempt() {
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let stale = TaskAttemptRef::new("plan", "T1", 1);
+        let current = TaskAttemptRef::new("plan", "T1", 2);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            stale.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            current.clone(),
+            "task",
+        ));
+
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            stale.clone(),
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_failed(
+            &run_id,
+            stale.clone(),
+            "late failure",
+        ));
+
+        assert_eq!(
+            state.lifecycle.task_attempts[&stale.key()].status,
+            TaskAttemptStatus::CancellationFailed
+        );
+        assert_eq!(
+            state.lifecycle.task_attempts[&current.key()].status,
+            TaskAttemptStatus::Started
+        );
+        assert_eq!(state.iteration_for("plan", "T1"), 2);
+    }
 }

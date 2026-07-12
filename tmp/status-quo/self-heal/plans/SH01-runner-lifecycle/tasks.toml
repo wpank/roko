@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 17
-done = 11
+done = 12
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -230,7 +230,7 @@ acceptance = ["Every post-agent gate identity includes exact attempt, kind, rung
 id = "SH01-T06B2C1P"
 title = "Run preflight gates asynchronously under exact ownership"
 description = "Replace synchronous run_gate_once preflight execution inside dispatch with a distinct Preflight gate stage and generated effect identity. Insert and claim ownership, retain the barrier-blocked JoinHandle, then release work so the event loop remains responsive. On completion, preflight pass preserves the skip-agent transition while preflight failure transitions the same owner into dispatch eligibility instead of task failure. Start-barrier failure finalizes exact ownership; producer panic and lost completion are handled by the following claimed-outcome task."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 420

@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 17
+total = 19
 done = 13
 status = "ready"
 max_parallel = 1
@@ -267,13 +267,13 @@ fail_msg = "Claimed task gate outcome tests must pass."
 acceptance = ["Every task gate completion claims exact ownership before side effects.", "All claimed paths explicitly transition, restore, or complete ownership.", "Pass, failure, retry, and exhaustion produce at most one terminal outcome.", "Gate join panic or lost completion cannot leave the DAG running forever.", "Late or duplicate completions cannot write a second terminal."]
 
 [[task]]
-id = "SH01-T06B2C3"
-title = "Own plan verification and merge gate outcomes"
-description = "Apply structured effect ownership and claimed completion to plan verification and merge gates, including effects that do not follow an agent turn. Insert ownership before spawn, retain every JoinHandle, settle it before plan or merge side effects, and ensure every early error finalizes its claim. Duplicate or stale plan-level completions are ignored without changing another plan or attempt."
+id = "SH01-T06B2C3A"
+title = "Own plan verification effects and outcomes"
+description = "Apply structured generated effect ownership to plan verification, including no-step auto-pass. Insert ownership before the barrier-blocked verify producer starts, retain its JoinHandle, and claim and settle it before plan side effects. Every early transition or persistence error finalizes the claim; duplicate, stale, or cross-plan completions are ignored. Keep merge behavior unchanged for the dedicated reservation refactor."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
-max_loc = 380
+max_loc = 340
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
 role = "implementer"
 domain = "execution-engine"
@@ -284,7 +284,47 @@ read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG
 phase = "test"
 command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
 fail_msg = "Owned plan verification and merge tests must pass."
-acceptance = ["Plan verify and merge ownership exists before gate work starts.", "Every plan-level gate JoinHandle is settled before outcome side effects.", "All early errors finalize exact ownership.", "Stale plan or merge completions cannot mutate current work."]
+acceptance = ["PlanVerify ownership exists before verify work or auto-pass starts.", "Every verify JoinHandle is retained and settled before plan effects.", "All verify early errors finalize exact ownership.", "Stale or cross-plan verify completions cannot mutate current work.", "Merge remains on its legacy path until the following reservation refactor."]
+
+[[task]]
+id = "SH01-T06B2C3B"
+title = "Separate merge reservation from process launch"
+description = "Refactor PlanMerger so submit and drain only reserve and return an explicit launch descriptor for the exact plan/request; they must never internally spawn a queued or different plan. The descriptor exposes a barrier-blocked JoinHandle or dormant launch future plus stable effect identity, allowing the event loop to insert ownership and retain the handle before releasing work. Preserve FIFO/priority and blocked-request semantics."
+status = "ready"
+tier = "architectural"
+model_hint = "codex-default"
+max_loc = 360
+files = ["crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+role = "architect"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2C3A"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Detached merge work." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Ownership-before-work requirement." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Merge reservation and launch separation tests must pass."
+acceptance = ["submit and drain never spawn work internally.", "Returned launch descriptor identifies the exact reserved plan and request.", "Queued plan B cannot start while submit reports only blocked plan A.", "Launch work remains dormant until caller releases its barrier.", "Existing queue ordering and blocked semantics are preserved."]
+
+[[task]]
+id = "SH01-T06B2C3C"
+title = "Own merge launches and claim merge outcomes"
+description = "Use merge launch descriptors to insert exact generated ownership and retain the merge JoinHandle before releasing work. Claim and settle merge and post-merge regression completions before queue, repository, plan, or terminal side effects. All launch, join, transition, and persistence errors finalize exact ownership; duplicate or stale cross-plan merge completions are ignored."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/merge.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2C3B"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost merge completion." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Claim-before-terminal merge ordering." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
+fail_msg = "Owned merge launch and claimed outcome tests must pass."
+acceptance = ["Exact merge ownership exists before launch release.", "Merge and post-merge JoinHandles settle before side effects.", "All launch and completion errors finalize ownership.", "Stale or cross-plan merge completions cannot mutate current work.", "One winning claim produces at most one merge/plan terminal."]
 
 [[task]]
 id = "SH01-T06B2D"
@@ -297,7 +337,7 @@ max_loc = 420
 files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/projection.rs", "crates/roko-cli/src/runner/event_loop.rs"]
 role = "implementer"
 domain = "execution-engine"
-depends_on = ["SH01-T06B2C3"]
+depends_on = ["SH01-T06B2C3C"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Cancellation confirmation defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Nonterminal cancellation lifecycle." }]
 [[task.verify]]

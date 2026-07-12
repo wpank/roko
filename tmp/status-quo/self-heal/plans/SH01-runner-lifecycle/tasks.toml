@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 14
-done = 8
+done = 9
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -170,7 +170,7 @@ acceptance = ["Claims are linear, nonce-backed, and exact by task attempt, phase
 id = "SH01-T06B2B1"
 title = "Make natural agent wait recoverable and structured"
 description = "Replace consuming best-effort AgentHandle wait with a structured API that awaits the child plus stdout and stderr readers, distinguishes confirmed reap from unconfirmed wait failure, and preserves the handle, reader ownership, and registered PID whenever confirmation fails. Reader panic is a structured failure; PID unregister happens only after confirmed process absence."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 240

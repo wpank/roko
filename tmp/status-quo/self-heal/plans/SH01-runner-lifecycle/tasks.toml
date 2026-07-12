@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 25
-done = 20
+done = 21
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -410,7 +410,7 @@ acceptance = ["Cancelling and CancellationFailed are durable nonterminal statuse
 id = "SH01-T06B2D2"
 title = "Preserve agent ownership when kill is unconfirmed"
 description = "Make AgentHandle termination return the usable handle on AgentTermination::Failed, retaining child, PID, and remaining reader supervision for retry or later cancellation. Confirmed termination unregisters only after process-tree absence. Reader cleanup errors and process-tree errors remain distinct and the failed result cannot silently consume ownership."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 260

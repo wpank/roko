@@ -1522,6 +1522,25 @@ pub async fn run(
 
             // ─── Branch 2: Verify completions ─────────────────────────
             Some(mut completion) = gate_rx.recv() => {
+                if completion.kind == GateCompletionKind::Merge {
+                    let completion_merger = PlanMerger::new(
+                        merge_queue.clone(),
+                        PlanMergerConfig::new(
+                            config.workdir.clone(),
+                            gate_timeout(config, 0),
+                        ),
+                    );
+                    if let Err(error) = finish_owned_merge_completion(
+                        &completion,
+                        &mut attempt_ownership,
+                        &completion_merger,
+                    )
+                    .await
+                    {
+                        warn!(plan_id = %completion.plan_id, %error, "dropping stale or invalid merge completion");
+                        continue;
+                    }
+                }
                 let mut owned_gate_claim = None;
                 let effect_key = gate_effect_key(
                     &completion.plan_id,
@@ -1530,11 +1549,10 @@ pub async fn run(
                     completion.kind,
                 );
                 let completion_attempt = if completion.kind == GateCompletionKind::Merge {
-                    TaskAttemptRef::new(
-                        completion.plan_id.clone(),
-                        completion.task_id.clone(),
-                        state.iteration_for(&completion.plan_id, &completion.task_id),
-                    )
+                    completion
+                        .attempt
+                        .clone()
+                        .expect("settled merge completion has an exact attempt")
                 } else if completion.effect.is_none() {
                     let Some(attempt) = take_matching_gate_attempt(
                         &mut legacy_gate_attempts,
@@ -1882,23 +1900,6 @@ pub async fn run(
                 fire_on_gate_hook(config, &completion, &tui).await;
 
                 if completion.kind == GateCompletionKind::Merge {
-                    let completion_merger = PlanMerger::new(
-                        merge_queue.clone(),
-                        PlanMergerConfig::new(
-                            config.workdir.clone(),
-                            gate_timeout(config, 0),
-                        ),
-                    );
-                    if let Err(error) = finish_owned_merge_completion(
-                        &completion,
-                        &mut attempt_ownership,
-                        &completion_merger,
-                    )
-                    .await
-                    {
-                        error!(plan_id = %completion.plan_id, %error, "dropping invalid merge completion");
-                        continue;
-                    }
                     handle_merge_completion(
                         &completion,
                         &mut executor,
@@ -3539,15 +3540,12 @@ async fn finish_owned_merge_completion(
             .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
         return Err("merge completion resolution already consumed".to_string());
     };
-    if !merger.resolve_completion(resolution, completion.passed, &completion.output) {
-        ownership
-            .complete_claim(claim)
-            .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
-        return Err("merge completion exact reservation was stale".to_string());
-    }
     ownership
         .complete_claim(claim)
         .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
+    if !merger.resolve_completion(resolution, completion.passed, &completion.output) {
+        return Err("merge completion exact reservation was stale".to_string());
+    }
     Ok(())
 }
 

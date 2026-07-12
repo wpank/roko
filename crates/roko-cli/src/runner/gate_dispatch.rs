@@ -1,10 +1,12 @@
 //! Verify dispatch — runs gate rungs as background tokio tasks and sends
 //! results through a channel.
 
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures::FutureExt;
 use roko_core::config::GatesConfig;
 use roko_core::{Body, Engram, EngramBuilder, Kind, Provenance, Verdict, Verify};
 use roko_fs::RokoLayout;
@@ -48,33 +50,51 @@ pub fn spawn_gate(
         if start_rx.await.is_err() {
             return;
         }
-        let t_wait = Instant::now();
-        let Ok(_permit) = gate_sem.acquire_owned().await else {
-            return;
-        };
-        let wait_ms = t_wait.elapsed().as_millis() as u64;
-        if wait_ms > 10 {
-            info!(
-                plan_id = %plan_id,
-                task_id = %task_id,
-                rung,
-                wait_ms,
-                "gate semaphore acquired"
-            );
-        }
-        let completion = run_gate_once(
-            effect,
-            plan_id,
-            task_id,
-            rung,
-            workdir,
-            gates_config,
-            complexity,
-            verify_steps,
-            timeout_secs,
-            target_crates,
-        )
+        let failure_effect = effect.clone();
+        let failure_plan = plan_id.clone();
+        let failure_task = task_id.clone();
+        let worker = AssertUnwindSafe(async move {
+            let t_wait = Instant::now();
+            let _permit = gate_sem
+                .acquire_owned()
+                .await
+                .map_err(|_| "gate semaphore closed before acquisition".to_string())?;
+            let wait_ms = t_wait.elapsed().as_millis() as u64;
+            if wait_ms > 10 {
+                info!(plan_id = %plan_id, task_id = %task_id, rung, wait_ms,
+                    "gate semaphore acquired");
+            }
+            Ok::<_, String>(
+                run_gate_once(
+                    effect,
+                    plan_id,
+                    task_id,
+                    rung,
+                    workdir,
+                    gates_config,
+                    complexity,
+                    verify_steps,
+                    timeout_secs,
+                    target_crates,
+                )
+                .await,
+            )
+        })
+        .catch_unwind()
         .await;
+        let completion = match worker {
+            Ok(Ok(completion)) => completion,
+            Ok(Err(message)) => {
+                failed_gate_completion(failure_effect, failure_plan, failure_task, rung, message)
+            }
+            Err(_) => failed_gate_completion(
+                failure_effect,
+                failure_plan,
+                failure_task,
+                rung,
+                "gate producer panicked".to_string(),
+            ),
+        };
 
         if let Err(e) = gate_tx.send(completion).await {
             error!(err = %e, "failed to send gate completion — channel closed");
@@ -82,6 +102,28 @@ pub fn spawn_gate(
         }
     });
     (handle, start_tx)
+}
+
+fn failed_gate_completion(
+    effect: GateEffectRef,
+    plan_id: String,
+    task_id: String,
+    rung: u32,
+    message: String,
+) -> GateCompletion {
+    GateCompletion {
+        kind: effect.kind,
+        attempt: Some(effect.attempt.clone()),
+        effect: Some(effect),
+        plan_id,
+        task_id,
+        rung,
+        passed: false,
+        failure_kind: Some(RunnerFailureKind::Resource),
+        verdicts: Vec::new(),
+        output: message,
+        duration_ms: 0,
+    }
 }
 
 /// Run a gate rung to completion and return its summary.
@@ -191,7 +233,7 @@ pub async fn run_gate_once(
     );
 
     GateCompletion {
-        kind: GateCompletionKind::Gate,
+        kind: effect.kind,
         attempt: Some(effect.attempt.clone()),
         effect: Some(effect),
         plan_id,

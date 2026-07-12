@@ -9233,4 +9233,16 @@ mod tests_post_gate_reflection_lessons {
             Some(PlanPhase::Gating)
         ));
     }
+
+    #[test]
+    fn merge_cleanup_aggregates_rollback_and_owner_failures() {
+        let error = combine_merge_cleanup(
+            Err("reservation rollback failed".to_string()),
+            Err("owner cleanup failed".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("reservation rollback failed"));
+        assert!(error.contains("owner cleanup failed"));
+    }
 }

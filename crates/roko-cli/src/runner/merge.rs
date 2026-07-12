@@ -809,11 +809,13 @@ mod tests {
 
         let completion = rx.recv().await.expect("regression gate completion");
         producer.handle.await.unwrap();
+        assert_eq!(merger.queue.metrics().merging, 1);
         assert!(merger.resolve_completion(
             producer.resolution,
             completion.passed,
             &completion.output,
         ));
+        assert_eq!(merger.queue.metrics().merging, 0);
         assert_eq!(completion.plan_id, "plan-a");
         assert!(completion.passed);
         assert_eq!(gate.calls.lock().unwrap().len(), 1);

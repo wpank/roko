@@ -155,6 +155,7 @@ pub struct SurvivingAgentMetadata {
 pub struct AttemptOwnership<R> {
     owners: HashMap<TaskAttemptRef, OwnershipSlot<R>>,
     next_nonce: u64,
+    unrecovered_claims: Vec<AttemptClaim<R>>,
 }
 
 impl<R> Default for AttemptOwnership<R> {
@@ -162,6 +163,7 @@ impl<R> Default for AttemptOwnership<R> {
         Self {
             owners: HashMap::new(),
             next_nonce: 0,
+            unrecovered_claims: Vec::new(),
         }
     }
 }
@@ -340,6 +342,40 @@ impl<R> AttemptOwnership<R> {
     ) -> Result<(), ClaimFailure<R>> {
         claim.owner.cancellation = CancellationState::CancellationFailed;
         self.restore_claim(claim)
+    }
+
+    /// Last-resort restoration when a cancellation claim's slot was corrupted.
+    /// The exact returned claim remains authoritative and must not be dropped.
+    pub(crate) fn force_restore_cancellation_failure(
+        &mut self,
+        mut claim: AttemptClaim<R>,
+    ) -> Result<(), AttemptClaim<R>> {
+        if self
+            .owners
+            .get(&claim.attempt)
+            .is_some_and(|slot| !slot.claimed || slot.resource.is_some())
+        {
+            return Err(claim);
+        }
+        claim.owner.cancellation = CancellationState::CancellationFailed;
+        self.owners.insert(
+            claim.attempt,
+            OwnershipSlot {
+                owner: claim.owner,
+                resource: Some(claim.resource),
+                claimed: false,
+                claim_nonce: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn retain_unrecovered_claim(&mut self, claim: AttemptClaim<R>) {
+        self.unrecovered_claims.push(claim);
+    }
+
+    pub(crate) fn unrecovered_claim_count(&self) -> usize {
+        self.unrecovered_claims.len()
     }
 
     pub fn surviving_agent_metadata(&self) -> SurvivingAgentMetadata {
@@ -538,6 +574,62 @@ mod tests {
             ownership.cancellation_state(&key),
             Some(CancellationState::Cancelling)
         );
+    }
+
+    #[test]
+    fn forced_cancellation_restore_recovers_resource_after_nonce_corruption() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "live-handle",
+            )
+            .unwrap();
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        ownership.owners.get_mut(&key).unwrap().claim_nonce = Some(u64::MAX);
+
+        let failure = ownership.restore_cancellation_failure(claim).unwrap_err();
+        ownership
+            .force_restore_cancellation_failure(failure.claim)
+            .unwrap();
+
+        assert_eq!(
+            ownership.cancellation_state(&key),
+            Some(CancellationState::CancellationFailed)
+        );
+        let retry = ownership.claim_cancellation(&key).unwrap();
+        assert_eq!(retry.resource(), &"live-handle");
+    }
+
+    #[test]
+    fn forced_restore_refuses_to_overwrite_live_resource() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "returned-handle",
+            )
+            .unwrap();
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        ownership.owners.insert(
+            key.clone(),
+            OwnershipSlot {
+                owner: AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                resource: Some("live-handle"),
+                claimed: false,
+                claim_nonce: None,
+            },
+        );
+
+        let refused = ownership
+            .force_restore_cancellation_failure(claim)
+            .unwrap_err();
+        assert_eq!(refused.resource(), &"returned-handle");
+        assert_eq!(ownership.owners[&key].resource, Some("live-handle"));
     }
 
     #[test]

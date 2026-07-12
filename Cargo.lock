@@ -6355,6 +6355,7 @@ name = "roko-gate"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libc",
  "roko-agent",
  "roko-core",
  "roko-std",

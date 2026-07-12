@@ -3,6 +3,7 @@
 //! These checks are consumed by gate orchestration only. The implementer agent
 //! never sees the generated symbols or test bodies.
 
+use crate::cancel_safe_command;
 use crate::error::GateError;
 use crate::symbol_gate::{
     SymbolKind, Visibility, first_identifier, normalize_path, parse_visibility, rust_module_path,
@@ -11,7 +12,7 @@ use crate::symbol_gate::{
 use roko_core::Verdict;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::process::Command;
 
 const GENERATED_SYMBOL_GATE: &str = "generated_symbol";
 const GENERATED_TAUTOLOGY_TEST: &str = "generated_tautology_check";
@@ -154,9 +155,8 @@ pub fn check_symbol_exists(check: &GeneratedCheck, workspace: &Path) -> Verdict 
 /// This is a conservative best-effort filter. When the probe test cannot be
 /// staged, compiled, or parsed reliably, the original checks are returned
 /// unchanged to avoid dropping meaningful coverage.
-#[must_use]
-pub fn filter_tautologies(tests: &[GeneratedCheck], workspace: &Path) -> Vec<GeneratedCheck> {
-    let Some(passing) = probe_passing_tests(tests, workspace) else {
+pub async fn filter_tautologies(tests: &[GeneratedCheck], workspace: &Path) -> Vec<GeneratedCheck> {
+    let Some(passing) = probe_passing_tests(tests, workspace).await else {
         return tests.to_vec();
     };
 
@@ -317,7 +317,10 @@ fn prefix_module_path(prefix: &str, suffix: &str) -> String {
     }
 }
 
-fn probe_passing_tests(tests: &[GeneratedCheck], workspace: &Path) -> Option<HashSet<String>> {
+async fn probe_passing_tests(
+    tests: &[GeneratedCheck],
+    workspace: &Path,
+) -> Option<HashSet<String>> {
     let test_cases: Vec<(&str, &str)> = tests
         .iter()
         .filter_map(|check| match check {
@@ -337,14 +340,14 @@ fn probe_passing_tests(tests: &[GeneratedCheck], workspace: &Path) -> Option<Has
     let source = render_probe_source(&test_cases);
     let _staged = StagedTestFile::stage(&test_path, &source).ok()?;
 
-    let output = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .arg("test")
         .arg("--test")
         .arg(GENERATED_TAUTOLOGY_TEST)
         .current_dir(&host_dir)
-        .env("CARGO_TERM_COLOR", "never")
-        .output()
-        .ok()?;
+        .env("CARGO_TERM_COLOR", "never");
+    let output = cancel_safe_command::output(command).await.ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -686,8 +689,8 @@ mod tests {
         write_file(dir, "src/lib.rs", lib_body);
     }
 
-    #[test]
-    fn tautology_filter_discards_preexisting_passing_tests() {
+    #[tokio::test]
+    async fn tautology_filter_discards_preexisting_passing_tests() {
         let tmp = TempDir::new().expect("tempdir");
         init_temp_crate(
             tmp.path(),
@@ -714,7 +717,7 @@ mod tests {
             },
         ];
 
-        let filtered = filter_tautologies(&checks, tmp.path());
+        let filtered = filter_tautologies(&checks, tmp.path()).await;
 
         assert_eq!(filtered.len(), 2);
         assert!(matches!(
@@ -735,8 +738,8 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn tautology_filter_keeps_tests_when_probe_does_not_compile() {
+    #[tokio::test]
+    async fn tautology_filter_keeps_tests_when_probe_does_not_compile() {
         let tmp = TempDir::new().expect("tempdir");
         init_temp_crate(tmp.path(), "demo", "pub fn present() -> bool { true }\n");
 
@@ -747,7 +750,7 @@ mod tests {
             rung: 3,
         }];
 
-        let filtered = filter_tautologies(&checks, tmp.path());
+        let filtered = filter_tautologies(&checks, tmp.path()).await;
 
         assert_eq!(filtered, checks);
     }

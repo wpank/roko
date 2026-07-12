@@ -802,6 +802,9 @@ pub struct RunnerLifecycleProjection {
     pub task_attempts: std::collections::HashMap<String, TaskAttemptLifecycle>,
     #[serde(default)]
     pub last_resume_marker: Option<ResumeMarker>,
+    /// Last durable run-scoped timeout, retained for shutdown/resume diagnosis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_timeout: Option<TimeoutEvent>,
     #[serde(default)]
     pub events_seen: u64,
 }
@@ -817,6 +820,7 @@ impl RunnerLifecycleProjection {
             tasks: std::collections::HashMap::new(),
             task_attempts: std::collections::HashMap::new(),
             last_resume_marker: None,
+            global_timeout: None,
             events_seen: 0,
         }
     }
@@ -1057,6 +1061,22 @@ pub enum RunnerEvent {
 }
 
 impl RunnerEvent {
+    /// Whether durable persistence of this event proves scheduler progress.
+    pub const fn is_scheduler_milestone(&self) -> bool {
+        matches!(
+            self,
+            Self::RunStarted { .. }
+                | Self::PlanStarted { .. }
+                | Self::PlanCompleted { .. }
+                | Self::TaskAttemptStarted { .. }
+                | Self::TaskAttemptCompleted { .. }
+                | Self::GateDispatchStarted { .. }
+                | Self::GateCompleted { .. }
+                | Self::MergeBackendCompleted { .. }
+                | Self::RetryDecision { .. }
+        )
+    }
+
     pub fn resume_marker(run_id: &str, marker: ResumeMarker) -> Self {
         let stamp = EventStamp::now();
         Self::ResumeMarker {
@@ -1894,6 +1914,44 @@ impl std::fmt::Debug for RunConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduler_milestones_exclude_agent_and_timeout_chatter() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        assert!(RunnerEvent::plan_started("run", "plan").is_scheduler_milestone());
+        assert!(RunnerEvent::gate_dispatch_started(
+            "run",
+            attempt.clone(),
+            GateCompletionKind::Gate,
+            1,
+        )
+        .is_scheduler_milestone());
+        assert!(
+            !RunnerEvent::agent_dispatch_started(
+                "run",
+                attempt.clone(),
+                "agent",
+                "implementer",
+                "model",
+            )
+            .is_scheduler_milestone()
+        );
+        assert!(
+            !RunnerEvent::timeout_recorded(
+                "run",
+                TimeoutEvent {
+                    kind: TimeoutKind::SchedulerNoProgress,
+                    attempt: None,
+                    effect: None,
+                    owner_effect: None,
+                    limit_ms: 1,
+                    monotonic_elapsed_ms: 1,
+                    observed_at_ms: 1,
+                },
+            )
+            .is_scheduler_milestone()
+        );
+    }
 
     #[test]
     fn agent_event_type_is_normalized() {

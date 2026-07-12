@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 25
-done = 19
+done = 20
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -390,7 +390,7 @@ acceptance = ["Every merge producer/setup/join/persistence failure uses one exac
 id = "SH01-T06B2D1"
 title = "Make cancellation lifecycle durable and nonterminal"
 description = "Add Cancelling and CancellationFailed task-attempt statuses and typed runner events with legal transitions, projection, snapshot serialization, resume/recovery behavior, and in-flight reporting. CancellationRequested projects to Cancelling and cleanup failure to CancellationFailed; neither is terminal or retry/success/exhaustion."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "codex-default"
 max_loc = 320

@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 9
+total = 10
 done = 6
 status = "ready"
 max_parallel = 1
@@ -127,14 +127,14 @@ fail_msg = "Timeout configuration and precedence tests must pass."
 acceptance = ["Serde round trips preserve both values and precedence.", "An explicitly configured value equal to the default remains distinguishable from omission.", "Global task timeout applies when a task has no authored override.", "Legacy plan timeout migration is deterministic and tested."]
 
 [[task]]
-id = "SH01-T06B"
-title = "Give every attempt and gate an owned cancellation handle"
-description = "Represent CLI agents, bridge-backed agents, and gate effects with attempt-keyed cancellation/abort ownership and start/activity/deadline timestamps. CancellationRequested is a nonterminal Cancelling state, never terminal Cancelled. Store every returned bridge and gate JoinHandle by exact attempt/effect key; on cancellation abort and await that owned handle (or kill/await the CLI process), then emit exactly one TimedOut or Cancelled terminal after stop confirmation. Never discard returned handles or terminalize intent. Do not implement global scheduler policy in this task."
+id = "SH01-T06B1"
+title = "Make process and gate cancellation confirmable"
+description = "Make AgentHandle kill return a structured confirmed/failed result after awaiting process-tree and reader termination. Ensure every gate subprocess used by the pipeline is kill-on-drop or otherwise explicitly cancellable, including format, security, and generated command paths. This task provides cancellation-safe primitives only; do not add the runner ownership registry."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
-max_loc = 420
-files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/dispatch/factory.rs"]
+max_loc = 300
+files = ["crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-gate/src/format_check_gate.rs", "crates/roko-gate/src/security_scan_gate.rs", "crates/roko-gate/src/generated.rs"]
 role = "implementer"
 domain = "execution-engine"
 depends_on = ["SH01-T06A"]
@@ -142,9 +142,29 @@ depends_on = ["SH01-T06A"]
 read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Provider cancellation defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Typed lifecycle requirements." }]
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
-fail_msg = "Attempt and gate cancellation ownership tests must pass."
-acceptance = ["CancellationRequested projects to nonterminal Cancelling.", "Every bridge and gate JoinHandle is retained by exact owner until confirmed completion.", "CLI and bridge attempts both stop and await underlying work on cancellation.", "A lost gate completion is cancellable by its owned deadline.", "Exactly one terminal TimedOut or Cancelled event follows confirmed stop.", "Cancelling one attempt leaves unrelated work active."]
+command = "cargo test -p roko-cli runner::agent_stream 2>&1 && cargo test -p roko-gate 2>&1"
+fail_msg = "Cancellation primitive tests must pass."
+acceptance = ["AgentHandle kill reports failure versus confirmed termination.", "Reader tasks are awaited after abort.", "Every gate child process terminates when its owning future is aborted.", "Tests observe child PID exit rather than only JoinHandle completion."]
+
+[[task]]
+id = "SH01-T06B2"
+title = "Own and cancel work by exact task attempt"
+description = "Create a structured HashMap keyed by TaskAttemptRef that retains CLI, bridge, forwarder, gate, and permit handles. CancellationRequested projects to nonterminal Cancelling. Exact-key cancellation removes ownership first, stops and awaits only that attempt's producers, atomically claims terminalization, then emits exactly one TimedOut or Cancelled terminal. Late events for removed/terminal attempts are ignored. Never use colon-concatenated string keys and never drain unrelated handles."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 520
+files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/dispatch/factory.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B1"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Provider ownership defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exactly-once lifecycle requirements." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
+fail_msg = "Exact-attempt ownership tests must pass."
+acceptance = ["CancellationRequested is nonterminal Cancelling.", "All handles are retained under structured TaskAttemptRef ownership.", "Cancelling attempt one does not affect attempt two or sibling work.", "Bridge, CLI, forwarder, and gate work are awaited before one terminal.", "Completion/cancellation races have one atomic terminal winner.", "Late buffered events cannot mutate a terminal attempt."]
 
 [[task]]
 id = "SH01-T06C"
@@ -157,7 +177,7 @@ max_loc = 500
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs"]
 role = "implementer"
 domain = "execution-engine"
-depends_on = ["SH01-T06B"]
+depends_on = ["SH01-T06B2"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Progress semantics." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable terminal ordering." }]
 [[task.verify]]

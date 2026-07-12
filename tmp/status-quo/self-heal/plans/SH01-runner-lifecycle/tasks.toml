@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 13
+total = 14
 done = 8
 status = "ready"
 max_parallel = 1
@@ -167,14 +167,14 @@ fail_msg = "Exact-attempt ownership primitive tests must pass."
 acceptance = ["Claims are linear, nonce-backed, and exact by task attempt, phase, and effect.", "Logical ownership and its generic resource payload move atomically.", "Cancellation remains observable while cleanup awaits and failed cancellation preserves ownership.", "Occupied keys and stale claims cannot overwrite live ownership.", "Aggregate agent metadata contains only surviving agent-phase owners."]
 
 [[task]]
-id = "SH01-T06B2B"
-title = "Migrate agent producers to persistent attempt ownership"
-description = "Insert ownership before dispatch and replace string-keyed agent maps with one TaskAttemptRef registry whose resource enum owns CLI, bridge, forwarder, reader, and permit handles. Route every agent event with exact attempt and effect identity. TurnCompleted or Exited must synchronously claim the agent phase, settle every producer with structured errors, and transition the same owner to AwaitingGate; late buffered events lose eligibility."
+id = "SH01-T06B2B1"
+title = "Make natural agent wait recoverable and structured"
+description = "Replace consuming best-effort AgentHandle wait with a structured API that awaits the child plus stdout and stderr readers, distinguishes confirmed reap from unconfirmed wait failure, and preserves the handle, reader ownership, and registered PID whenever confirmation fails. Reader panic is a structured failure; PID unregister happens only after confirmed process absence."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
-max_loc = 520
-files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+max_loc = 240
+files = ["crates/roko-cli/src/runner/agent_stream.rs"]
 role = "implementer"
 domain = "execution-engine"
 depends_on = ["SH01-T06B2A"]
@@ -182,9 +182,29 @@ depends_on = ["SH01-T06B2A"]
 read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Provider ownership defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exactly-once lifecycle requirements." }]
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-cli runner::agent_stream 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+command = "cargo test -p roko-cli runner::agent_stream 2>&1"
+fail_msg = "Recoverable structured agent wait tests must pass."
+acceptance = ["Confirmed wait awaits child, stdout reader, and stderr reader.", "Reader panic is reported structurally rather than discarded.", "Unconfirmed child wait preserves the handle and registered PID for retry or cancellation.", "PID unregister occurs only after confirmed process absence.", "No natural wait path detaches a live child or reader task."]
+
+[[task]]
+id = "SH01-T06B2B2"
+title = "Migrate agent producers to persistent attempt ownership"
+description = "Insert ownership before dispatch and replace string-keyed agent maps with one TaskAttemptRef registry whose resource enum owns CLI, bridge, forwarder, readers, and permit. Route every event with exact attempt and effect identity. A single claimed outcome path settles producers, classifies provider error and only exit Some(0) as success, then transitions successful work to AwaitingGate or exact failures to their failure path. Spawn failure awaits its forwarder. Late buffered events lose eligibility."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 520
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2B1"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Provider ownership defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exactly-once lifecycle requirements." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
 fail_msg = "Exact-attempt agent producer ownership tests must pass."
-acceptance = ["Ownership exists before dispatch and spans the full agent phase.", "CLI, bridge, both readers, forwarder, and permit are owned by the exact attempt.", "Natural completion claims before lifecycle side effects and awaits every producer.", "Buffered attempt or effect events cannot mutate the current owner.", "Producer panic or failed wait cannot silently drop ownership."]
+acceptance = ["Ownership exists before dispatch and spans the full agent phase.", "CLI, bridge, both readers, forwarder, and permit are owned by the exact attempt.", "Natural completion claims before lifecycle side effects and awaits every producer.", "Only provider success or exit Some(0) can transition to AwaitingGate.", "Structured settle failures remain owned and are durable failures, never gate-eligible.", "Buffered attempt or effect events cannot mutate the current owner."]
 
 [[task]]
 id = "SH01-T06B2C"
@@ -197,7 +217,7 @@ max_loc = 520
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
 role = "implementer"
 domain = "execution-engine"
-depends_on = ["SH01-T06B2B"]
+depends_on = ["SH01-T06B2B2"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Gate ownership defects." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exactly-once terminal requirements." }]
 [[task.verify]]

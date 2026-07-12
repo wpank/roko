@@ -8419,4 +8419,80 @@ mod tests_post_gate_reflection_lessons {
             Some("stdout reader failed".to_string())
         );
     }
+
+    #[test]
+    fn routed_agent_event_preserves_exact_attempt_and_effect() {
+        let attempt = TaskAttemptRef::new("plan", "task", 2);
+        let effect = EffectRef(17);
+        let routed = RoutedAgentEvent::for_attempt(
+            attempt.clone(),
+            effect,
+            "agent-2".to_string(),
+            AgentEvent::Exited { exit_code: Some(0) },
+        );
+
+        let RoutedAgentEvent::Agent {
+            attempt: routed_attempt,
+            effect: routed_effect,
+            agent_id,
+            ..
+        } = routed
+        else {
+            panic!("expected routed agent event");
+        };
+        assert_eq!(routed_attempt, attempt);
+        assert_eq!(routed_effect, effect);
+        assert_eq!(agent_id, "agent-2");
+    }
+
+    #[test]
+    fn turn_completed_claim_makes_following_exit_ineligible() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let effect = EffectRef(9);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, effect),
+                (),
+            )
+            .unwrap();
+
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Agent, effect)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, effect)
+            .unwrap();
+
+        assert!(!ownership.event_is_eligible(&attempt, AttemptPhase::Agent, effect));
+        assert!(matches!(
+            ownership.claim_phase(&attempt, AttemptPhase::Agent, effect),
+            Err(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn bridge_join_failure_is_not_gateable_and_releases_permit() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let bridge = tokio::spawn(async { panic!("bridge failed") });
+        let forwarder = tokio::spawn(async {});
+        let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {
+            bridge,
+            forwarder,
+            permit,
+        })
+        .await;
+
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(settlement.unconfirmed.is_none());
+        assert!(
+            settlement
+                .errors
+                .iter()
+                .any(|error| error.contains("agent bridge failed"))
+        );
+        assert!(agent_terminal_failure(&turn_completed(false), &settlement).is_some());
+    }
 }

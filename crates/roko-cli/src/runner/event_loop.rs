@@ -55,7 +55,9 @@ use roko_neuro::KnowledgeStore;
 
 use super::agent_events::handle_agent_event;
 use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, AgentWait};
-use super::attempt_ownership::{AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef};
+use super::attempt_ownership::{
+    AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
+};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -278,6 +280,25 @@ enum AgentRuntimeResource {
     },
 }
 
+fn finish_gate_claim(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    claim: &mut Option<(AttemptClaim<AgentRuntimeResource>, EffectRef)>,
+    await_next_gate: bool,
+) {
+    let Some((claim, effect)) = claim.take() else {
+        return;
+    };
+    if await_next_gate {
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, effect)
+            .expect("owned gate claim must transition");
+    } else {
+        ownership
+            .complete_claim(claim)
+            .expect("owned gate claim must complete");
+    }
+}
+
 struct AgentSettlement {
     exit_code: Option<i32>,
     errors: Vec<String>,
@@ -464,6 +485,26 @@ fn remove_pending_gate_task(
     if pending.is_empty() {
         pending_gate_tasks.remove(plan_id);
     }
+}
+
+fn cleanup_finished_task_gate(
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    executor: &mut ParallelExecutor,
+    completion: &GateCompletion,
+) {
+    if completion.kind != GateCompletionKind::Gate {
+        return;
+    }
+    remove_pending_gate_task(pending_gate_tasks, &completion.plan_id, &completion.task_id);
+    if pending_gate_tasks
+        .get(&completion.plan_id)
+        .is_some_and(|pending| !pending.is_empty())
+        && let Some(plan) = executor.plan_state_mut(&completion.plan_id)
+    {
+        plan.current_phase = PlanPhase::Gating;
+    }
+    task_runtime_states.remove(&task_key(&completion.plan_id, &completion.task_id));
 }
 
 fn restore_task_runtime(
@@ -1430,6 +1471,7 @@ pub async fn run(
 
             // ─── Branch 2: Verify completions ─────────────────────────
             Some(mut completion) = gate_rx.recv() => {
+                let mut owned_gate_claim = None;
                 let effect_key = gate_effect_key(
                     &completion.plan_id,
                     &completion.task_id,
@@ -1483,6 +1525,14 @@ pub async fn run(
                     else {
                         error!(attempt = %attempt.key(), "gate owner did not retain its join handle");
                         attempt_ownership.complete_claim(claim).ok();
+                        state.clear_gate_active(&effect_key);
+                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                        cleanup_finished_task_gate(
+                            &mut pending_gate_tasks,
+                            &mut task_runtime_states,
+                            &mut executor,
+                            &completion,
+                        );
                         continue;
                     };
                     if effect != gate_effect {
@@ -1490,29 +1540,40 @@ pub async fn run(
                         handle.abort();
                         let _ = handle.await;
                         attempt_ownership.complete_claim(claim).ok();
+                        state.clear_gate_active(&effect_key);
+                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                        cleanup_finished_task_gate(
+                            &mut pending_gate_tasks,
+                            &mut task_runtime_states,
+                            &mut executor,
+                            &completion,
+                        );
                         continue;
                     }
                     if let Err(err) = handle.await {
                         error!(attempt = %attempt.key(), %err, "gate producer join failed");
                         attempt_ownership.complete_claim(claim).ok();
                         state.clear_gate_active(&effect_key);
-                        if completion.kind == GateCompletionKind::Preflight {
-                            task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
-                        }
+                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                        cleanup_finished_task_gate(
+                            &mut pending_gate_tasks,
+                            &mut task_runtime_states,
+                            &mut executor,
+                            &completion,
+                        );
                         continue;
                     }
-                    attempt_ownership
-                        .transition_claim(
-                            claim,
-                            AttemptPhase::AwaitingGate,
-                            EffectRef(gate_effect.generation),
-                        )
-                        .expect("settled gate owner must return to awaiting gate");
+                    owned_gate_claim = Some((claim, EffectRef(gate_effect.generation)));
                     attempt
                 };
                 if completion.kind != GateCompletionKind::Merge
                     && completion.attempt.as_ref() != Some(&completion_attempt)
                 {
+                    finish_gate_claim(
+                        &mut attempt_ownership,
+                        &mut owned_gate_claim,
+                        false,
+                    );
                     warn!(
                         plan_id = %completion.plan_id,
                         task_id = %completion.task_id,
@@ -1534,15 +1595,11 @@ pub async fn run(
 
                 if completion.kind == GateCompletionKind::Preflight {
                     if !completion.passed {
-                        if let Some(effect) = completion.effect.as_ref()
-                            && let Ok(claim) = attempt_ownership.claim_phase(
-                                &completion_attempt,
-                                AttemptPhase::AwaitingGate,
-                                EffectRef(effect.generation),
-                            )
-                        {
-                            attempt_ownership.complete_claim(claim).ok();
-                        }
+                        finish_gate_claim(
+                            &mut attempt_ownership,
+                            &mut owned_gate_claim,
+                            false,
+                        );
                         task_dag.clear_running(
                             &completion_attempt.plan_id,
                             &completion_attempt.task_id,
@@ -1600,15 +1657,11 @@ pub async fn run(
                         }
                         Err(err) => {
                             let message = format!("preflight transition failed: {err}");
-                            if let Some(effect) = completion.effect.as_ref()
-                                && let Ok(claim) = attempt_ownership.claim_phase(
-                                    &completion_attempt,
-                                    AttemptPhase::AwaitingGate,
-                                    EffectRef(effect.generation),
-                                )
-                            {
-                                attempt_ownership.complete_claim(claim).ok();
-                            }
+                            finish_gate_claim(
+                                &mut attempt_ownership,
+                                &mut owned_gate_claim,
+                                false,
+                            );
                             let _ = executor.apply_event(
                                 &completion.plan_id,
                                 &ExecutorEvent::Fatal(message.clone()),
@@ -1819,8 +1872,21 @@ pub async fn run(
                         max_gate_rung = config.max_gate_rung,
                         "gate rung passed — advancing to next configured rung"
                     );
+                    finish_gate_claim(
+                        &mut attempt_ownership,
+                        &mut owned_gate_claim,
+                        true,
+                    );
                     continue;
                 }
+
+                // Final-rung pass, retry, and terminal failure all consume this
+                // attempt's exact claim before ledger, DAG, or terminal effects.
+                finish_gate_claim(
+                    &mut attempt_ownership,
+                    &mut owned_gate_claim,
+                    false,
+                );
 
                 // ── SectionOutcome recording ────────────────────────────
                 // Terminal gate result (final rung pass or any fail): join
@@ -1957,6 +2023,17 @@ pub async fn run(
                             attempt = completion_attempt.attempt,
                             "duplicate task terminalization ignored"
                         );
+                        finish_gate_claim(
+                            &mut attempt_ownership,
+                            &mut owned_gate_claim,
+                            false,
+                        );
+                        cleanup_finished_task_gate(
+                            &mut pending_gate_tasks,
+                            &mut task_runtime_states,
+                            &mut executor,
+                            &completion,
+                        );
                         continue;
                     }
                     if let TaskTerminalization::PersistenceFailed { reason } = terminalized {
@@ -1990,6 +2067,17 @@ pub async fn run(
                             );
                             state.force_plan_terminal(&completion.plan_id);
                         }
+                        finish_gate_claim(
+                            &mut attempt_ownership,
+                            &mut owned_gate_claim,
+                            false,
+                        );
+                        cleanup_finished_task_gate(
+                            &mut pending_gate_tasks,
+                            &mut task_runtime_states,
+                            &mut executor,
+                            &completion,
+                        );
                         continue;
                     }
                     let ready =
@@ -2403,23 +2491,18 @@ pub async fn run(
                     }
                 }
 
-                if completion.kind == GateCompletionKind::Gate {
-                    remove_pending_gate_task(
-                        &mut pending_gate_tasks,
-                        &completion.plan_id,
-                        &completion.task_id,
-                    );
-                    if pending_gate_tasks
-                        .get(&completion.plan_id)
-                        .is_some_and(|pending| !pending.is_empty())
-                    {
-                        if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
-                            ps.current_phase = PlanPhase::Gating;
-                        }
-                    }
-                    task_runtime_states.remove(&task_key(&completion.plan_id, &completion.task_id));
-                }
+                cleanup_finished_task_gate(
+                    &mut pending_gate_tasks,
+                    &mut task_runtime_states,
+                    &mut executor,
+                    &completion,
+                );
 
+                finish_gate_claim(
+                    &mut attempt_ownership,
+                    &mut owned_gate_claim,
+                    false,
+                );
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
             }
 
@@ -8699,5 +8782,33 @@ mod tests_post_gate_reflection_lessons {
         assert_eq!(first.kind, second.kind);
         assert_eq!(first.rung, second.rung);
         assert_ne!(first.generation, second.generation);
+    }
+
+    #[test]
+    fn owned_gate_claim_finishes_exactly_once_or_awaits_next_rung() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let effect = EffectRef(77);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, effect),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Gate, effect)
+            .unwrap();
+        let mut claim = Some((claim, effect));
+        finish_gate_claim(&mut ownership, &mut claim, true);
+        assert!(ownership.event_is_eligible(&attempt, AttemptPhase::AwaitingGate, effect));
+
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::AwaitingGate, effect)
+            .unwrap();
+        let mut claim = Some((claim, effect));
+        finish_gate_claim(&mut ownership, &mut claim, false);
+        assert!(!ownership.contains(&attempt));
+        finish_gate_claim(&mut ownership, &mut claim, false);
     }
 }

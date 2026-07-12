@@ -1095,9 +1095,14 @@ pub async fn run(
     let mut flush_interval = interval(Duration::from_secs(2));
     let plan_timeout_duration = plan_total_timeout(&config);
     let agent_timeout_duration = agent_dispatch_timeout(&config);
-    let plan_deadline = tokio::time::Instant::now() + plan_timeout_duration;
-    let plan_timeout = tokio::time::sleep_until(plan_deadline);
-    tokio::pin!(plan_timeout);
+    let timeout_config = config
+        .roko_config
+        .as_ref()
+        .map(|config| config.timeouts.clone())
+        .unwrap_or_default();
+    let deadline_policy = DeadlinePolicy::from_config(&timeout_config, plan_timeout_duration);
+    let mut deadline_tracker = DeadlineTracker::new(monotonic_now());
+    let mut observed_scheduler_milestones = state.durable_scheduler_milestones;
 
     info!(
         plan_count = plans.len(),
@@ -1223,9 +1228,29 @@ pub async fn run(
         ))
     };
 
-    let mut timed_out = false;
-
     loop {
+        if state.durable_scheduler_milestones != observed_scheduler_milestones {
+            observed_scheduler_milestones = state.durable_scheduler_milestones;
+            deadline_tracker.record_scheduler_progress(monotonic_now());
+        }
+        let deadline_now = monotonic_now();
+        if let Some(expiry) = deadline_tracker.global_expiry(deadline_now, deadline_policy) {
+            handle_global_timeout(
+                expiry,
+                deadline_now,
+                &executor,
+                &plans,
+                &mut state,
+                &mut attempt_ownership,
+                &paths,
+                &merge_queue,
+                &tui,
+                config,
+                &gate_thresholds,
+                &snapshot_writer,
+            )
+            .await?;
+        }
         // Cancel-safety analysis:
         //   Branch 1 (agent_rx.recv): cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
@@ -2748,25 +2773,7 @@ pub async fn run(
                 }
             }
 
-            // ─── Branch 5: Plan timeout ──────────────────────────────
-            _ = &mut plan_timeout, if !timed_out => {
-                handle_plan_timeout(
-                    &executor,
-                    &plans,
-                    &mut state,
-                    &mut attempt_ownership,
-                    &paths,
-                    &merge_queue,
-                    &tui,
-                    config,
-                    &gate_thresholds,
-                    &snapshot_writer,
-                )
-                .await?;
-                timed_out = true;
-            }
-
-            // ─── Branch 6: Cancellation ─────────────────────────────
+            // ─── Branch 5: Cancellation ─────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
                 loop {
@@ -2797,23 +2804,6 @@ pub async fn run(
                 shutdown_subsystems(config, &tui).await;
                 break;
             }
-        }
-
-        if !timed_out && tokio::time::Instant::now() >= plan_deadline {
-            handle_plan_timeout(
-                &executor,
-                &plans,
-                &mut state,
-                &mut attempt_ownership,
-                &paths,
-                &merge_queue,
-                &tui,
-                config,
-                &gate_thresholds,
-                &snapshot_writer,
-            )
-            .await?;
-            timed_out = true;
         }
 
         if all_plans_terminal(&executor, &plans) {
@@ -3997,7 +3987,7 @@ fn emit_runner_event(
     tui: &TuiBridge,
     config: &RunConfig,
     event: RunnerEvent,
-) {
+) -> bool {
     emit_runner_event_with_facades(
         paths,
         state,
@@ -4007,7 +3997,8 @@ fn emit_runner_event(
         config.http_event_sink.as_ref(),
         event,
         None,
-    );
+        false,
+    )
 }
 
 /// Drop-in for emit sites that do not hold a `&RunConfig` (helpers
@@ -4020,8 +4011,8 @@ fn emit_runner_event_facadeless(
     state: &mut RunState,
     tui: &TuiBridge,
     event: RunnerEvent,
-) {
-    emit_runner_event_with_facades(paths, state, tui, None, None, None, event, None);
+) -> bool {
+    emit_runner_event_with_facades(paths, state, tui, None, None, None, event, None, false)
 }
 
 /// Internal variant accepting the optional projection + feedback facades.
@@ -4034,16 +4025,30 @@ fn emit_runner_event_with_facades(
     http_event_sink: Option<&HttpEventSink>,
     event: RunnerEvent,
     feedback_tasks: Option<&mut tokio::task::JoinSet<()>>,
-) {
+    already_persisted: bool,
+) -> bool {
     state.apply_runner_event(&event);
     tui.runner_event(&event);
-    if let Err(err) = persist::append_runner_event(paths, &event) {
-        warn!(
-            event_type = event.event_type(),
-            error = %err,
-            "failed to append runner lifecycle event"
-        );
-    }
+    let persisted = if already_persisted {
+        true
+    } else {
+        match persist::append_runner_event(paths, &event) {
+            Ok(()) if event.is_scheduler_milestone() => {
+                state.durable_scheduler_milestones =
+                    state.durable_scheduler_milestones.saturating_add(1);
+                true
+            }
+            Ok(()) => true,
+            Err(err) => {
+                warn!(
+                    event_type = event.event_type(),
+                    error = %err,
+                    "failed to append runner lifecycle event"
+                );
+                false
+            }
+        }
+    };
 
     // ── Mirror to projection facade ─────────────────────────────────────
     if let Some(proj) = projection {
@@ -4112,6 +4117,7 @@ fn emit_runner_event_with_facades(
             }
         }
     }
+    persisted
 }
 
 fn runner_event_to_runtime_event(event: &RunnerEvent) -> RuntimeEvent {
@@ -7197,7 +7203,9 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
     }
 }
 
-async fn handle_plan_timeout(
+async fn handle_global_timeout(
+    expiry: crate::runner::deadlines::DeadlineExpiry,
+    now: crate::runner::deadlines::MonotonicTime,
     executor: &ParallelExecutor,
     plans: &[Plan],
     state: &mut RunState,
@@ -7210,14 +7218,47 @@ async fn handle_plan_timeout(
     writer: &SnapshotWriter,
 ) -> Result<()> {
     let in_flight = collect_in_flight_attempts(state);
-    let timeout_secs = duration_secs(plan_total_timeout(config));
+    let timeout_secs = duration_secs(expiry.limit);
     error!(
+        timeout_kind = ?expiry.kind,
         timeout_secs,
         current_plan = %state.plan_id,
         current_task = %state.current_task,
         active_plans = ?executor.active_plans(),
         in_flight_attempts = ?in_flight,
-        "plan execution exceeded wall-clock timeout"
+        "runner global deadline expired"
+    );
+    let limit_ms = u64::try_from(expiry.limit.as_millis()).unwrap_or(u64::MAX);
+    let started_at = expiry.deadline_at.as_millis().saturating_sub(limit_ms);
+    let run_id = state.run_id().to_string();
+    let timeout_event = RunnerEvent::timeout_recorded(
+        &run_id,
+        TimeoutEvent {
+            kind: expiry.kind,
+            attempt: None,
+            effect: None,
+            owner_effect: None,
+            limit_ms,
+            monotonic_elapsed_ms: now.as_millis().saturating_sub(started_at),
+            observed_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        },
+    );
+    if let Err(error) = persist::append_runner_event(paths, &timeout_event) {
+        return Err(anyhow::anyhow!(
+            "failed to persist {:?} timeout; preserving owned effects: {error}",
+            expiry.kind
+        ));
+    }
+    emit_runner_event_with_facades(
+        paths,
+        state,
+        tui,
+        config.projection.as_ref(),
+        config.feedback_facade.as_ref(),
+        config.http_event_sink.as_ref(),
+        timeout_event,
+        None,
+        true,
     );
     loop {
         let cancellation = stop_all_agents(
@@ -7262,8 +7303,9 @@ async fn handle_plan_timeout(
     let _ = persist::save_agent_pids(paths, &[]);
     shutdown_subsystems(config, tui).await;
     Err(anyhow::anyhow!(
-        "plan execution exceeded wall-clock timeout after {} seconds",
-        timeout_secs
+        "runner {:?} deadline exceeded after {} seconds",
+        expiry.kind,
+        timeout_secs,
     ))
 }
 
@@ -7729,7 +7771,7 @@ async fn cancel_exact_attempt(
             config,
             RunnerEvent::timeout_recorded(&run_id, timeout),
         ),
-    }
+    };
     CancelAttemptOutcome::Confirmed
 }
 
@@ -10025,6 +10067,83 @@ mod tests_post_gate_reflection_lessons {
         );
     }
 
+    #[test]
+    fn scheduler_progress_advances_only_after_successful_milestone_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        emit_runner_event_facadeless(
+            &paths,
+            &mut state,
+            &tui,
+            RunnerEvent::task_attempt_started(
+                &run_id,
+                TaskAttemptRef::new("plan", "task", 1),
+                "task",
+            ),
+        );
+
+        assert_eq!(state.durable_scheduler_milestones, 1);
+        assert!(
+            std::fs::read_to_string(&paths.events_jsonl)
+                .unwrap()
+                .contains("task.attempt.started")
+        );
+    }
+
+    #[test]
+    fn failed_milestone_append_does_not_advance_scheduler_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        paths.events_jsonl = dir.path().to_path_buf();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        emit_runner_event_facadeless(
+            &paths,
+            &mut state,
+            &tui,
+            RunnerEvent::task_attempt_started(&run_id, attempt.clone(), "task"),
+        );
+
+        assert_eq!(state.durable_scheduler_milestones, 0);
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Started,
+            "in-memory mutation must not masquerade as durable progress"
+        );
+    }
+
+    #[test]
+    fn cancellation_noise_and_timeout_facts_are_not_scheduler_milestones() {
+        let run_id = "run";
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        assert!(
+            !RunnerEvent::task_attempt_cancellation_requested(run_id, attempt.clone())
+                .is_scheduler_milestone()
+        );
+        assert!(
+            !RunnerEvent::timeout_recorded(
+                run_id,
+                TimeoutEvent {
+                    kind: TimeoutKind::SchedulerNoProgress,
+                    attempt: Some(attempt),
+                    effect: None,
+                    owner_effect: None,
+                    limit_ms: 10,
+                    monotonic_elapsed_ms: 10,
+                    observed_at_ms: 1,
+                },
+            )
+            .is_scheduler_milestone()
+        );
+    }
+
     #[tokio::test]
     async fn confirmed_exact_cleanup_is_durable_before_timed_out_terminal() {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
@@ -10129,6 +10248,237 @@ mod tests_post_gate_reflection_lessons {
         );
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
         assert_eq!(events.matches("timeout.recorded").count(), 1);
+    }
+
+    #[test]
+    fn scheduler_progress_counts_only_successfully_persisted_milestones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+
+        emit_runner_event(
+            &paths,
+            &mut state,
+            &tui,
+            &config,
+            RunnerEvent::plan_started(&run_id, "plan"),
+        );
+        assert_eq!(state.durable_scheduler_milestones, 1);
+
+        emit_runner_event(
+            &paths,
+            &mut state,
+            &tui,
+            &config,
+            RunnerEvent::agent_dispatch_started(
+                &run_id,
+                TaskAttemptRef::new("plan", "task", 1),
+                "agent",
+                "implementer",
+                "model",
+            ),
+        );
+        assert_eq!(state.durable_scheduler_milestones, 1);
+
+        paths.events_jsonl = dir.path().to_path_buf();
+        emit_runner_event(
+            &paths,
+            &mut state,
+            &tui,
+            &config,
+            RunnerEvent::plan_started(&run_id, "unpersisted"),
+        );
+        assert_eq!(state.durable_scheduler_milestones, 1);
+    }
+
+    #[tokio::test]
+    async fn global_timeout_persistence_failure_preserves_owned_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        paths.events_jsonl = dir.path().to_path_buf();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut state = RunState::new(1);
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, EffectRef(9)),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let merge_queue = MergeQueue::new();
+        let writer = SnapshotWriter::new(4);
+        let expiry = crate::runner::deadlines::DeadlineExpiry {
+            kind: TimeoutKind::SchedulerNoProgress,
+            attempt: None,
+            phase: None,
+            effect: None,
+            gate_effect: None,
+            limit: Duration::from_millis(10),
+            deadline_at: crate::runner::deadlines::MonotonicTime::from_millis(20),
+        };
+
+        let result = handle_global_timeout(
+            expiry,
+            crate::runner::deadlines::MonotonicTime::from_millis(20),
+            &executor,
+            &[],
+            &mut state,
+            &mut ownership,
+            &paths,
+            &merge_queue,
+            &tui,
+            &config,
+            &GateThresholds::default(),
+            &writer,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(ownership.contains(&attempt));
+        assert_eq!(
+            state.lifecycle.task_attempts.get(&attempt.key()),
+            None,
+            "an unpersisted timeout must not project a terminal attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn global_timeout_is_persisted_before_cleanup_and_run_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt,
+                AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(91)),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let writer = SnapshotWriter::new(4);
+        let expiry = crate::runner::deadlines::DeadlineExpiry {
+            kind: TimeoutKind::HardRun,
+            attempt: None,
+            phase: None,
+            effect: None,
+            gate_effect: None,
+            limit: Duration::from_millis(10),
+            deadline_at: crate::runner::deadlines::MonotonicTime::from_millis(20),
+        };
+
+        let result = handle_global_timeout(
+            expiry,
+            crate::runner::deadlines::MonotonicTime::from_millis(20),
+            &executor,
+            &[],
+            &mut state,
+            &mut ownership,
+            &paths,
+            &MergeQueue::new(),
+            &tui,
+            &config,
+            &GateThresholds::default(),
+            &writer,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(ownership.attempts().is_empty());
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        let timeout = events.find("timeout.recorded").unwrap();
+        let cancellation = events.find("task.attempt.cancellation_requested").unwrap();
+        let terminal = events.find("run.completed").unwrap();
+        assert!(timeout < cancellation);
+        assert!(cancellation < terminal);
+    }
+
+    #[tokio::test]
+    async fn global_timeout_is_persisted_before_shutdown_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut state = RunState::new(0);
+        let mut ownership = AttemptOwnership::default();
+        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let writer = SnapshotWriter::new(4);
+        let expiry = crate::runner::deadlines::DeadlineExpiry {
+            kind: TimeoutKind::HardRun,
+            attempt: None,
+            phase: None,
+            effect: None,
+            gate_effect: None,
+            limit: Duration::from_millis(10),
+            deadline_at: crate::runner::deadlines::MonotonicTime::from_millis(20),
+        };
+
+        assert!(
+            handle_global_timeout(
+                expiry,
+                crate::runner::deadlines::MonotonicTime::from_millis(20),
+                &executor,
+                &[],
+                &mut state,
+                &mut ownership,
+                &paths,
+                &MergeQueue::new(),
+                &tui,
+                &config,
+                &GateThresholds::default(),
+                &writer,
+            )
+            .await
+            .is_err()
+        );
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        let timeout = events.find("timeout.recorded").unwrap();
+        let completed = events.find("run.completed").unwrap();
+        assert!(timeout < completed);
+        assert_eq!(
+            state
+                .lifecycle
+                .global_timeout
+                .as_ref()
+                .map(|event| event.kind),
+            Some(TimeoutKind::HardRun)
+        );
     }
 
     #[tokio::test]

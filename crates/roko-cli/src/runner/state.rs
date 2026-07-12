@@ -21,6 +21,8 @@ pub struct RunState {
     // ─── Runtime Lifecycle ──────────────────────────────────────────
     /// Typed runtime lifecycle projection updated from runner events.
     pub lifecycle: RunnerLifecycleProjection,
+    /// Successfully persisted lifecycle/DAG milestones observed by the scheduler.
+    pub(crate) durable_scheduler_milestones: u64,
 
     // ─── Agent ──────────────────────────────────────────────────────
     /// Whether an agent process is currently alive.
@@ -159,6 +161,7 @@ impl RunState {
     pub fn new(total_tasks: usize) -> Self {
         Self {
             lifecycle: RunnerLifecycleProjection::new(total_tasks),
+            durable_scheduler_milestones: 0,
             agent_active: false,
             agent_model: String::new(),
             agent_provider: String::new(),
@@ -360,6 +363,8 @@ impl RunState {
                         None,
                         None,
                     );
+                } else {
+                    self.lifecycle.global_timeout = Some(timeout.clone());
                 }
             }
             RunnerEvent::AgentDispatchStarted {

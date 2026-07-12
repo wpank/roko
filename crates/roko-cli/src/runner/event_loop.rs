@@ -8111,6 +8111,24 @@ mod tests {
     }
 
     #[test]
+    fn successful_preflight_advances_to_gate_exactly_once() {
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("preflight"));
+        executor
+            .apply_event("preflight", &ExecutorEvent::Start)
+            .unwrap();
+
+        assert_eq!(
+            advance_preflight_success_to_gate(&mut executor, "preflight").unwrap(),
+            PlanPhase::Gating
+        );
+        assert_eq!(
+            advance_preflight_success_to_gate(&mut executor, "preflight").unwrap(),
+            PlanPhase::Gating
+        );
+    }
+
+    #[test]
     fn fresh_run_seeds_done_tasks_from_plan_status() {
         let tasks = TasksFile::parse_str(
             r#"
@@ -8810,5 +8828,44 @@ mod tests_post_gate_reflection_lessons {
         finish_gate_claim(&mut ownership, &mut claim, false);
         assert!(!ownership.contains(&attempt));
         finish_gate_claim(&mut ownership, &mut claim, false);
+    }
+
+    #[test]
+    fn finished_gate_cleanup_preserves_sibling_pending_work() {
+        let mut pending = HashMap::from([(
+            "plan".to_string(),
+            vec!["done".to_string(), "sibling".to_string()],
+        )]);
+        let state = RunState::new(2);
+        let runtime = TaskRuntimeState::capture(&state);
+        let mut runtimes = HashMap::from([
+            (task_key("plan", "done"), runtime.clone()),
+            (task_key("plan", "sibling"), runtime),
+        ]);
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let completion = GateCompletion {
+            kind: GateCompletionKind::Gate,
+            attempt: Some(TaskAttemptRef::new("plan", "done", 1)),
+            effect: None,
+            plan_id: "plan".to_string(),
+            task_id: "done".to_string(),
+            rung: 1,
+            passed: false,
+            failure_kind: Some(RunnerFailureKind::Resource),
+            verdicts: Vec::new(),
+            output: "producer failed".to_string(),
+            duration_ms: 0,
+        };
+
+        cleanup_finished_task_gate(&mut pending, &mut runtimes, &mut executor, &completion);
+
+        assert_eq!(pending.get("plan"), Some(&vec!["sibling".to_string()]));
+        assert!(!runtimes.contains_key(&task_key("plan", "done")));
+        assert!(runtimes.contains_key(&task_key("plan", "sibling")));
+        assert!(matches!(
+            executor.plan_state("plan").map(|state| &state.current_phase),
+            Some(PlanPhase::Gating)
+        ));
     }
 }

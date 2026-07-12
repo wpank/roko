@@ -25,7 +25,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::gate_dispatch::RUNG_MERGE;
-use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary, RunnerFailureKind};
+use super::types::{
+    GateCompletion, GateCompletionKind, GateEffectRef, GateVerdictSummary, RunnerFailureKind,
+    TaskAttemptRef,
+};
 
 // ─── PlanMerger ─────────────────────────────────────────────────────────
 
@@ -65,6 +68,19 @@ impl MergeLaunch {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    pub fn effect(&self) -> GateEffectRef {
+        GateEffectRef {
+            attempt: TaskAttemptRef::new(
+                self.plan_id(),
+                format!("merge:{}", self.branch_name()),
+                u32::try_from(self.generation).unwrap_or(u32::MAX),
+            ),
+            kind: GateCompletionKind::Merge,
+            rung: RUNG_MERGE,
+            generation: self.generation,
+        }
+    }
 }
 
 static NEXT_MERGE_LAUNCH: AtomicU64 = AtomicU64::new(1);
@@ -78,8 +94,16 @@ fn merge_launch(reserved: ReservedMerge) -> MergeLaunch {
 }
 
 pub struct MergeProducer {
+    pub effect: GateEffectRef,
     pub handle: JoinHandle<()>,
     pub start: oneshot::Sender<()>,
+    pub(crate) resolution: MergeResolution,
+}
+
+#[derive(Clone)]
+pub struct MergeResolution {
+    plan_id: String,
+    reservation: MergeReservation,
 }
 
 /// Wrapper around [`MergeQueue`] that submits merge requests, runs a
@@ -475,6 +499,22 @@ impl PlanMerger {
         self.queue.reserve_next_mergeable_exact().map(merge_launch)
     }
 
+    pub fn drain_bound(&self) -> usize {
+        self.queue
+            .snapshot()
+            .entries
+            .iter()
+            .map(|entry| {
+                usize::try_from(
+                    roko_orchestrator::DEFAULT_MAX_MERGE_RETRIES
+                        .saturating_sub(entry.request.retry_count)
+                        .max(1),
+                )
+                .unwrap_or(usize::MAX)
+            })
+            .sum()
+    }
+
     pub fn fail_launch(&self, launch: MergeLaunch, reason: &str) -> bool {
         self.queue
             .mark_failed_exact(&launch.request.plan_id, launch.reservation, reason)
@@ -485,8 +525,13 @@ impl PlanMerger {
         launch: MergeLaunch,
         gate_tx: mpsc::Sender<GateCompletion>,
     ) -> MergeProducer {
+        let effect = launch.effect();
+        let completion_effect = effect.clone();
+        let resolution = MergeResolution {
+            plan_id: launch.request.plan_id.clone(),
+            reservation: launch.reservation,
+        };
         let request = launch.request;
-        let queue = self.queue.clone();
         let config = self.config.clone();
         let merge_backend = self
             .config
@@ -523,14 +568,7 @@ impl PlanMerger {
                     duration_ms: merge_outcome.duration_ms,
                 }
             };
-            let plan_id = request.plan_id.clone();
             let passed = outcome.passed;
-
-            if passed {
-                queue.mark_complete(&plan_id);
-            } else {
-                queue.mark_failed(&plan_id, &outcome.summary);
-            }
 
             let summary = GateVerdictSummary {
                 gate_name: "post-merge-regression".to_string(),
@@ -541,10 +579,10 @@ impl PlanMerger {
             };
 
             let completion = GateCompletion {
-                effect: None,
+                effect: Some(completion_effect.clone()),
                 kind: GateCompletionKind::Merge,
-                attempt: None,
-                plan_id,
+                attempt: Some(completion_effect.attempt.clone()),
+                plan_id: request.plan_id.clone(),
                 task_id: format!("merge:{}", request.branch_name),
                 rung: RUNG_MERGE,
                 passed,
@@ -559,7 +597,32 @@ impl PlanMerger {
                 tracing::warn!("merge regression completion dropped — gate channel closed");
             }
         });
-        MergeProducer { handle, start }
+        MergeProducer {
+            effect,
+            handle,
+            start,
+            resolution,
+        }
+    }
+
+    pub fn fail_resolution(&self, resolution: MergeResolution, reason: &str) -> bool {
+        self.queue
+            .mark_failed_exact(&resolution.plan_id, resolution.reservation, reason)
+    }
+
+    pub fn resolve_completion(
+        &self,
+        resolution: MergeResolution,
+        passed: bool,
+        reason: &str,
+    ) -> bool {
+        if passed {
+            self.queue
+                .mark_complete_exact(&resolution.plan_id, resolution.reservation)
+        } else {
+            self.queue
+                .mark_failed_exact(&resolution.plan_id, resolution.reservation, reason)
+        }
     }
 }
 
@@ -745,6 +808,12 @@ mod tests {
         producer.start.send(()).unwrap();
 
         let completion = rx.recv().await.expect("regression gate completion");
+        producer.handle.await.unwrap();
+        assert!(merger.resolve_completion(
+            producer.resolution,
+            completion.passed,
+            &completion.output,
+        ));
         assert_eq!(completion.plan_id, "plan-a");
         assert!(completion.passed);
         assert_eq!(gate.calls.lock().unwrap().len(), 1);
@@ -768,6 +837,12 @@ mod tests {
         producer.start.send(()).unwrap();
 
         let completion = rx.recv().await.expect("expected gate completion");
+        producer.handle.await.unwrap();
+        assert!(merger.resolve_completion(
+            producer.resolution,
+            completion.passed,
+            &completion.output,
+        ));
         assert_eq!(completion.plan_id, "plan-a");
         assert!(!completion.passed);
         assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Permanent));
@@ -793,6 +868,12 @@ mod tests {
         // Wait for plan-a's regression gate to finish before B is submitted —
         // otherwise we cannot guarantee plan-a holds the lock.
         let completion_a = rx1.recv().await.expect("plan-a completion");
+        producer_a.handle.await.unwrap();
+        assert!(merger.resolve_completion(
+            producer_a.resolution,
+            completion_a.passed,
+            &completion_a.output,
+        ));
         assert_eq!(completion_a.plan_id, "plan-a");
 
         // Now submit B. It should not be blocked because plan-a is already
@@ -804,6 +885,12 @@ mod tests {
         let producer_b = merger.prepare(launch, tx2);
         producer_b.start.send(()).unwrap();
         let completion_b = rx2.recv().await.expect("plan-b completion");
+        producer_b.handle.await.unwrap();
+        assert!(merger.resolve_completion(
+            producer_b.resolution,
+            completion_b.passed,
+            &completion_b.output,
+        ));
         assert_eq!(completion_b.plan_id, "plan-b");
     }
 
@@ -915,6 +1002,29 @@ mod tests {
             rx.try_recv(),
             Err(mpsc::error::TryRecvError::Empty) | Err(mpsc::error::TryRecvError::Disconnected)
         ));
+    }
+
+    #[tokio::test]
+    async fn prepared_merge_carries_exact_launch_effect_and_resolution() {
+        let merger = merger_with_gate(Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1))));
+        let MergeDispatch::Reserved { launch } = merger.submit(MergeRequest::new(
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            0,
+        )) else {
+            panic!("expected reservation");
+        };
+        let expected = launch.effect();
+        let (tx, _rx) = mpsc::channel(1);
+        let producer = merger.prepare(launch, tx);
+
+        assert_eq!(producer.effect, expected);
+        assert_eq!(producer.effect.attempt.plan_id, "plan-a");
+        assert_eq!(producer.effect.attempt.task_id, "merge:roko/plan-a");
+        drop(producer.start);
+        producer.handle.await.unwrap();
+        assert!(merger.fail_resolution(producer.resolution, "setup rollback"));
     }
 
     #[tokio::test]

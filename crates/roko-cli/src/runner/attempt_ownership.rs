@@ -239,6 +239,25 @@ impl<R> AttemptOwnership<R> {
         self.take_resource(attempt)
     }
 
+    /// Remove an exact, unclaimed owner during setup rollback.
+    pub fn remove_unclaimed(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        phase: AttemptPhase,
+        effect: EffectRef,
+    ) -> Result<R, OwnershipError> {
+        let Some(slot) = self.owners.get(attempt) else {
+            return Err(OwnershipError::Missing);
+        };
+        if slot.claimed || slot.owner.phase != phase || slot.owner.effect != effect {
+            return Err(OwnershipError::Ineligible);
+        }
+        self.owners
+            .remove(attempt)
+            .and_then(|slot| slot.resource)
+            .ok_or(OwnershipError::Ineligible)
+    }
+
     pub fn claim_terminal(
         &mut self,
         attempt: &TaskAttemptRef,
@@ -271,6 +290,27 @@ impl<R> AttemptOwnership<R> {
             resource,
             nonce,
         })
+    }
+
+    /// Recover any unclaimed resource for an exact attempt after setup fails.
+    /// This deliberately ignores phase/effect and must only be used for rollback.
+    pub(crate) fn claim_for_cleanup(
+        &mut self,
+        attempt: &TaskAttemptRef,
+    ) -> Result<AttemptClaim<R>, OwnershipError> {
+        let Some(slot) = self.owners.get(attempt) else {
+            return Err(OwnershipError::Missing);
+        };
+        if slot.claimed || slot.resource.is_none() {
+            return Err(OwnershipError::Ineligible);
+        }
+        self.take_resource(attempt)
+    }
+
+    /// Last-resort setup rollback for an exact attempt whose slot is corrupt
+    /// or unexpectedly claimed. Shared effect resources must be cleaned first.
+    pub(crate) fn discard_for_cleanup(&mut self, attempt: &TaskAttemptRef) -> bool {
+        self.owners.remove(attempt).is_some()
     }
 
     pub fn complete_claim(&mut self, claim: AttemptClaim<R>) -> Result<(), OwnershipError> {
@@ -631,5 +671,46 @@ mod tests {
         assert_eq!(failure.error, OwnershipError::Occupied);
         assert_eq!(failure.claim.attempt(), &key);
         assert_eq!(failure.claim.resource(), &73);
+    }
+
+    #[test]
+    fn cleanup_claim_recovers_exact_unclaimed_resource_regardless_of_phase() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, GATE),
+                "merge-resolution",
+            )
+            .unwrap();
+
+        let claim = ownership.claim_for_cleanup(&key).unwrap();
+        assert_eq!(claim.resource(), &"merge-resolution");
+        assert!(matches!(
+            ownership.claim_for_cleanup(&key),
+            Err(OwnershipError::Ineligible)
+        ));
+        assert!(ownership.discard_for_cleanup(&key));
+        assert!(!ownership.contains(&key));
+        drop(claim);
+    }
+
+    #[test]
+    fn catastrophic_cleanup_discards_claimed_exact_slot() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, GATE),
+                "shared-resource",
+            )
+            .unwrap();
+        let claim = ownership.claim_for_cleanup(&key).unwrap();
+
+        assert!(ownership.discard_for_cleanup(&key));
+        assert!(!ownership.contains(&key));
+        drop(claim);
     }
 }

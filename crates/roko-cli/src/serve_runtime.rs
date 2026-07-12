@@ -975,6 +975,7 @@ fn matching_run_ids(events: &[RunnerEvent], plan_ids: &BTreeSet<String>) -> BTre
 
 fn gate_kind_label(kind: GateCompletionKind) -> &'static str {
     match kind {
+        GateCompletionKind::Preflight => "preflight",
         GateCompletionKind::Gate => "gate",
         GateCompletionKind::PlanVerify => "plan_verify",
         GateCompletionKind::Merge => "merge",

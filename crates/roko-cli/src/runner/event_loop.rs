@@ -506,6 +506,7 @@ struct RunContext<'a> {
     gate_sem: Arc<tokio::sync::Semaphore>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
+    preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -963,6 +964,7 @@ pub async fn run(
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
     let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
+    let mut preflight_attempted: HashSet<TaskAttemptRef> = HashSet::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -1427,7 +1429,7 @@ pub async fn run(
             }
 
             // ─── Branch 2: Verify completions ─────────────────────────
-            Some(completion) = gate_rx.recv() => {
+            Some(mut completion) = gate_rx.recv() => {
                 let effect_key = gate_effect_key(
                     &completion.plan_id,
                     &completion.task_id,
@@ -1493,6 +1495,10 @@ pub async fn run(
                     if let Err(err) = handle.await {
                         error!(attempt = %attempt.key(), %err, "gate producer join failed");
                         attempt_ownership.complete_claim(claim).ok();
+                        state.clear_gate_active(&effect_key);
+                        if completion.kind == GateCompletionKind::Preflight {
+                            task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                        }
                         continue;
                     }
                     attempt_ownership
@@ -1525,6 +1531,93 @@ pub async fn run(
                 );
                 state.clear_gate_active(&effect_key);
                 state.gate_output = completion.output.clone();
+
+                if completion.kind == GateCompletionKind::Preflight {
+                    if !completion.passed {
+                        if let Some(effect) = completion.effect.as_ref()
+                            && let Ok(claim) = attempt_ownership.claim_phase(
+                                &completion_attempt,
+                                AttemptPhase::AwaitingGate,
+                                EffectRef(effect.generation),
+                            )
+                        {
+                            attempt_ownership.complete_claim(claim).ok();
+                        }
+                        task_dag.clear_running(
+                            &completion_attempt.plan_id,
+                            &completion_attempt.task_id,
+                        );
+                        debug!(
+                            attempt = %completion_attempt.key(),
+                            duration_ms = completion.duration_ms,
+                            "preflight failed; exact attempt is eligible for agent dispatch"
+                        );
+                        save_snapshot(
+                            config, &executor, &paths, &mut state, &merge_queue,
+                            &gate_thresholds, &snapshot_writer,
+                        );
+                        continue;
+                    }
+                    if let Some(task) = task_index
+                        .get(&completion.plan_id)
+                        .and_then(|tasks| tasks.get(&completion.task_id))
+                    {
+                        let role = task.role.as_deref().unwrap_or("implementer");
+                        sink.task_started(
+                            &completion.plan_id,
+                            &completion.task_id,
+                            role,
+                            &task.title,
+                            completion_attempt.attempt,
+                        );
+                        tui.task_started(
+                            &completion.plan_id,
+                            &completion.task_id,
+                            &task.title,
+                            "verifying",
+                        );
+                        let run_id = state.run_id().to_string();
+                        emit_runner_event(
+                            &paths,
+                            &mut state,
+                            &tui,
+                            config,
+                            RunnerEvent::task_attempt_started(
+                                &run_id,
+                                completion_attempt.clone(),
+                                &task.title,
+                            ),
+                        );
+                    }
+                    match advance_preflight_success_to_gate(
+                        &mut executor,
+                        &completion.plan_id,
+                    ) {
+                        Ok(_) => {
+                            info!(attempt = %completion_attempt.key(),
+                                "preflight passes; skipping implementation agent");
+                            completion.kind = GateCompletionKind::Gate;
+                        }
+                        Err(err) => {
+                            let message = format!("preflight transition failed: {err}");
+                            if let Some(effect) = completion.effect.as_ref()
+                                && let Ok(claim) = attempt_ownership.claim_phase(
+                                    &completion_attempt,
+                                    AttemptPhase::AwaitingGate,
+                                    EffectRef(effect.generation),
+                                )
+                            {
+                                attempt_ownership.complete_claim(claim).ok();
+                            }
+                            let _ = executor.apply_event(
+                                &completion.plan_id,
+                                &ExecutorEvent::Fatal(message.clone()),
+                            );
+                            tui.error(&message);
+                            continue;
+                        }
+                    }
+                }
 
                 for v in &completion.verdicts {
                     tui.gate_result(
@@ -2377,6 +2470,7 @@ pub async fn run(
                         gate_sem: gate_sem.clone(),
                         task_runtime_states: &mut task_runtime_states,
                         legacy_gate_attempts: &mut legacy_gate_attempts,
+                        preflight_attempted: &mut preflight_attempted,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
@@ -3633,6 +3727,7 @@ fn agent_completion_succeeded(outcome: AgentDispatchOutcome, exit_code: Option<i
 
 fn runtime_gate_name(kind: GateCompletionKind, attempt: &TaskAttemptRef) -> String {
     let kind = match kind {
+        GateCompletionKind::Preflight => "preflight",
         GateCompletionKind::Gate => "gate",
         GateCompletionKind::PlanVerify => "plan_verify",
         GateCompletionKind::Merge => "merge",
@@ -4947,7 +5042,9 @@ async fn dispatch_action(
             );
             let role = task_def.role.as_deref().unwrap_or("implementer");
 
-            if task_should_preflight_verify(task_def, attempt_num) {
+            if task_should_preflight_verify(task_def, attempt_num)
+                && ctx.preflight_attempted.insert(attempt_ref.clone())
+            {
                 let gates_config = gates_config_for_run(ctx.config);
                 let has_cargo_toml = std::fs::metadata(plan_workdir.join("Cargo.toml")).is_ok();
                 if gates_config.has_custom_rungs() || has_cargo_toml {
@@ -4956,14 +5053,50 @@ async fn dispatch_action(
                         plan_id = %plan_id,
                         task = %task_id,
                         rung = pipeline_rung,
-                        "running task verification preflight before agent dispatch"
+                        "dispatching task verification preflight before agent"
                     );
                     let preflight_effect = new_gate_effect(
                         attempt_ref.clone(),
-                        GateCompletionKind::Gate,
+                        GateCompletionKind::Preflight,
                         pipeline_rung,
                     );
-                    let mut preflight = gate_dispatch::run_gate_once(
+                    ctx.attempt_ownership
+                        .insert(
+                            attempt_ref.clone(),
+                            AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                            AgentRuntimeResource::AwaitingGate,
+                        )
+                        .expect("preflight owner must be unique");
+                    let mut gate_claim = ctx
+                        .attempt_ownership
+                        .claim_phase(&attempt_ref, AttemptPhase::AwaitingGate, EffectRef(0))
+                        .expect("preflight owner must be claimable");
+                    let effect_key = gate_effect_key(
+                        plan_id,
+                        &task_id,
+                        pipeline_rung,
+                        GateCompletionKind::Preflight,
+                    );
+                    if !ctx.state.mark_gate_active(effect_key.clone()) {
+                        ctx.attempt_ownership
+                            .complete_claim(gate_claim)
+                            .expect("suppressed preflight must release owner");
+                        return ActionDispatchOutcome::Noop;
+                    }
+                    let run_id = ctx.state.run_id().to_string();
+                    emit_runner_event(
+                        ctx.paths,
+                        ctx.state,
+                        ctx.tui,
+                        ctx.config,
+                        RunnerEvent::gate_dispatch_started(
+                            &run_id,
+                            attempt_ref.clone(),
+                            GateCompletionKind::Preflight,
+                            pipeline_rung,
+                        ),
+                    );
+                    let (gate_handle, start_tx) = gate_dispatch::spawn_gate(
                         preflight_effect.clone(),
                         plan_id.clone(),
                         task_id.clone(),
@@ -4973,134 +5106,45 @@ async fn dispatch_action(
                         gate_plan_complexity_for_task(Some(task_def)),
                         task_def.verify.clone(),
                         duration_secs(gate_timeout(ctx.config, pipeline_rung)),
+                        ctx.gate_tx.clone(),
+                        ctx.gate_sem.clone(),
                         task_target_crates(Some(task_def)),
-                    )
-                    .await;
-
-                    if preflight.passed {
-                        preflight.effect = None;
-                        info!(
-                            plan_id = %plan_id,
-                            task = %task_id,
-                            duration_ms = preflight.duration_ms,
-                            "task verification already passes -- skipping agent"
-                        );
-                        ctx.sink.task_started(
-                            plan_id,
-                            &task_id,
-                            role,
-                            &task_def.title,
-                            attempt_num,
-                        );
-                        ctx.tui
-                            .task_started(plan_id, &task_id, &task_def.title, "verifying");
-                        let attempt_ref =
-                            TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
-                        let run_id = ctx.state.run_id().to_string();
-                        emit_runner_event(
-                            ctx.paths,
-                            ctx.state,
-                            ctx.tui,
-                            ctx.config,
-                            RunnerEvent::task_attempt_started(
-                                &run_id,
-                                attempt_ref.clone(),
-                                &task_def.title,
-                            ),
-                        );
-
-                        let effect_key = gate_effect_key(
-                            plan_id,
-                            &task_id,
-                            pipeline_rung,
-                            GateCompletionKind::Gate,
-                        );
-                        if !ctx.state.mark_gate_active(effect_key.clone()) {
-                            debug!(
-                                plan_id = %plan_id,
-                                task = %task_id,
-                                rung = pipeline_rung,
-                                "preflight gate result found an already active gate effect"
-                            );
-                        }
-                        ctx.legacy_gate_attempts
-                            .insert(effect_key.clone(), attempt_ref.clone());
-                        emit_runner_event(
-                            ctx.paths,
-                            ctx.state,
-                            ctx.tui,
-                            ctx.config,
-                            RunnerEvent::gate_dispatch_started(
-                                &run_id,
-                                attempt_ref.clone(),
-                                GateCompletionKind::Gate,
-                                pipeline_rung,
-                            ),
-                        );
-
-                        match advance_preflight_success_to_gate(ctx.executor, plan_id) {
-                            Ok(phase) => {
-                                ctx.tui.phase_transition(plan_id, "implementing", "gating");
-                                info!(
-                                    plan_id = %plan_id,
-                                    task = %task_id,
-                                    phase = ?phase,
-                                    "preflight verification advanced task to gate"
-                                );
-                            }
-                            Err(e) => {
-                                let message = format!(
-                                    "preflight verification transition failed for {task_id}: {e}"
-                                );
-                                error!(plan_id = %plan_id, task = %task_id, err = %e,
-                                    "preflight transition failed; terminalizing plan");
-                                ctx.state.clear_gate_active(&effect_key);
-                                ctx.state.record_task_failure(plan_id, &task_id, &message);
-                                ctx.state.mark_task_failed(plan_id, &task_id);
-                                let task_refs = task_refs_for_plan(ctx.task_index, plan_id);
-                                ctx.task_dag
-                                    .mark_failed_blocking_downstream(plan_id, &task_id, &task_refs);
-                                if ctx
-                                    .executor
-                                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
-                                    .is_err()
-                                {
-                                    ctx.state.force_plan_terminal(plan_id);
-                                }
-                                ctx.sink.task_failed(plan_id, &task_id, &message);
-                                ctx.tui.task_completed(plan_id, &task_id, "failed");
-                                ctx.tui.error(&message);
-                                return ActionDispatchOutcome::Handled;
-                            }
-                        }
-
-                        let gate_tx = ctx.gate_tx.clone();
-                        let fatal_tx = ctx.fatal_tx.clone();
-                        let plan_id_fatal = plan_id.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = gate_tx.send(preflight).await {
-                                error!(plan_id = %plan_id_fatal, err = %e,
-                                    "CRITICAL: failed to send preflight gate completion -- sending fatal");
-                                let _ = fatal_tx
-                                    .send(RoutedAgentEvent::fatal(
-                                        attempt_ref.clone(),
-                                        format!(
-                                            "gate channel closed for plan {plan_id_fatal}: {e}"
-                                        ),
-                                    ))
-                                    .await;
-                            }
-                        });
-                        return ActionDispatchOutcome::Handled;
-                    }
-
-                    debug!(
-                        plan_id = %plan_id,
-                        task = %task_id,
-                        duration_ms = preflight.duration_ms,
-                        output = %preflight.output,
-                        "task verification preflight failed -- dispatching agent"
                     );
+                    gate_claim.replace_resource(AgentRuntimeResource::Gate {
+                        effect: preflight_effect.clone(),
+                        handle: gate_handle,
+                    });
+                    ctx.attempt_ownership
+                        .transition_claim(
+                            gate_claim,
+                            AttemptPhase::Gate,
+                            EffectRef(preflight_effect.generation),
+                        )
+                        .expect("preflight must retain exact owner");
+                    if start_tx.send(()).is_err() {
+                        ctx.state.clear_gate_active(&effect_key);
+                        if let Ok(mut claim) = ctx.attempt_ownership.claim_phase(
+                            &attempt_ref,
+                            AttemptPhase::Gate,
+                            EffectRef(preflight_effect.generation),
+                        ) {
+                            if let AgentRuntimeResource::Gate { handle, .. } =
+                                claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                            {
+                                let _ = handle.await;
+                            }
+                            ctx.attempt_ownership.complete_claim(claim).ok();
+                        }
+                        let message = format!(
+                            "preflight producer failed to start for {}",
+                            attempt_ref.key()
+                        );
+                        let _ = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
+                        ctx.tui.error(&message);
+                    }
+                    return ActionDispatchOutcome::Handled;
                 }
             }
 

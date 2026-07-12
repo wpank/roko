@@ -49,6 +49,8 @@ pub use roko_agent::AgentRuntimeEvent as AgentEvent;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateCompletionKind {
+    /// Verification-only probe before starting an implementation agent.
+    Preflight,
     /// Gate ladder rung after implementation/autofix.
     Gate,
     /// Plan-level task verify commands after all gates pass.

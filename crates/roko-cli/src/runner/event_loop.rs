@@ -54,6 +54,7 @@ use roko_neuro::KnowledgeStore;
 
 use super::agent_events::handle_agent_event;
 use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, AgentWait};
+use super::attempt_ownership::{AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -197,42 +198,148 @@ pub(crate) fn health_check_timeout(config: &RunConfig) -> Duration {
 
 const RUNNER_WORKTREE_IDLE_TTL_SECS: u64 = 30 * 60;
 
-struct RoutedAgentEvent {
-    plan_id: String,
-    task_id: String,
-    agent_id: String,
-    event: AgentEvent,
+enum RoutedAgentEvent {
+    Agent {
+        attempt: TaskAttemptRef,
+        effect: EffectRef,
+        agent_id: String,
+        event: AgentEvent,
+    },
+    Fatal {
+        attempt: TaskAttemptRef,
+        message: String,
+    },
 }
 
 impl RoutedAgentEvent {
-    fn for_task(plan_id: String, task_id: String, agent_id: String, event: AgentEvent) -> Self {
-        Self {
-            plan_id,
-            task_id,
+    fn for_attempt(
+        attempt: TaskAttemptRef,
+        effect: EffectRef,
+        agent_id: String,
+        event: AgentEvent,
+    ) -> Self {
+        Self::Agent {
+            attempt,
+            effect,
             agent_id,
             event,
         }
     }
+
+    fn fatal(attempt: TaskAttemptRef, message: String) -> Self {
+        Self::Fatal { attempt, message }
+    }
 }
 
 async fn forward_agent_events(
-    plan_id: String,
-    task_id: String,
+    attempt: TaskAttemptRef,
+    effect: EffectRef,
     agent_id: String,
     mut raw_rx: mpsc::Receiver<AgentEvent>,
     routed_tx: mpsc::Sender<RoutedAgentEvent>,
 ) {
     while let Some(event) = raw_rx.recv().await {
         let routed =
-            RoutedAgentEvent::for_task(plan_id.clone(), task_id.clone(), agent_id.clone(), event);
+            RoutedAgentEvent::for_attempt(attempt.clone(), effect, agent_id.clone(), event);
         if routed_tx.send(routed).await.is_err() {
             break;
         }
     }
 }
 
-struct ActiveAgentAttempt {
-    task_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+enum AgentRuntimeResource {
+    Dispatching(tokio::sync::OwnedSemaphorePermit),
+    Cli {
+        handle: AgentHandle,
+        forwarder: tokio::task::JoinHandle<()>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
+    Bridge {
+        bridge: tokio::task::JoinHandle<()>,
+        forwarder: tokio::task::JoinHandle<()>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
+    AwaitingGate,
+}
+
+struct AgentSettlement {
+    exit_code: Option<i32>,
+    errors: Vec<String>,
+    unconfirmed: Option<AgentRuntimeResource>,
+}
+
+async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlement {
+    match resource {
+        AgentRuntimeResource::Cli {
+            handle,
+            forwarder,
+            permit,
+        } => match handle.wait().await {
+            AgentWait::Confirmed {
+                exit_code,
+                reader_errors,
+                ..
+            } => {
+                let mut errors = reader_errors;
+                if let Err(err) = forwarder.await {
+                    errors.push(format!("agent forwarder failed: {err}"));
+                }
+                drop(permit);
+                AgentSettlement {
+                    exit_code,
+                    errors,
+                    unconfirmed: None,
+                }
+            }
+            AgentWait::Unconfirmed { handle, errors } => AgentSettlement {
+                exit_code: None,
+                errors,
+                unconfirmed: Some(AgentRuntimeResource::Cli {
+                    handle,
+                    forwarder,
+                    permit,
+                }),
+            },
+        },
+        AgentRuntimeResource::Bridge {
+            bridge,
+            forwarder,
+            permit,
+        } => {
+            let mut errors = Vec::new();
+            if let Err(err) = bridge.await {
+                errors.push(format!("agent bridge failed: {err}"));
+            }
+            if let Err(err) = forwarder.await {
+                errors.push(format!("agent forwarder failed: {err}"));
+            }
+            drop(permit);
+            AgentSettlement {
+                exit_code: Some(0),
+                errors,
+                unconfirmed: None,
+            }
+        }
+        other => AgentSettlement {
+            exit_code: None,
+            errors: vec!["agent terminal event arrived outside the agent phase".to_string()],
+            unconfirmed: Some(other),
+        },
+    }
+}
+
+fn agent_terminal_failure(event: &AgentEvent, settlement: &AgentSettlement) -> Option<String> {
+    if let AgentEvent::TurnCompleted { is_error: true, .. } = event {
+        return Some("agent reported an error result".to_string());
+    }
+    if let Some(error) = settlement.errors.first() {
+        return Some(error.clone());
+    }
+    match settlement.exit_code {
+        Some(0) => None,
+        Some(code) => Some(format!("agent exited with status {code}")),
+        None => Some("agent exit status was not confirmed".to_string()),
+    }
 }
 
 #[derive(Clone)]
@@ -367,9 +474,7 @@ struct RunContext<'a> {
     sink: &'a dyn RunOutputSink,
     tui: &'a TuiBridge,
     state: &'a mut RunState,
-    active_agent_tasks: &'a mut HashMap<String, String>,
-    active_agent_attempts: &'a mut HashMap<String, ActiveAgentAttempt>,
-    agent_handles: &'a mut HashMap<String, AgentHandle>,
+    attempt_ownership: &'a mut AttemptOwnership<AgentRuntimeResource>,
     pending_gate_tasks: &'a mut HashMap<String, Vec<String>>,
     agent_tx: &'a mpsc::Sender<RoutedAgentEvent>,
     gate_tx: &'a mpsc::Sender<GateCompletion>,
@@ -838,9 +943,7 @@ pub async fn run(
     }
     seed_task_dag_from_run_state(&mut task_dag, &plans, &state);
 
-    let mut agent_handles: HashMap<String, AgentHandle> = HashMap::new();
-    let mut active_agent_tasks: HashMap<String, String> = HashMap::new();
-    let mut active_agent_attempts: HashMap<String, ActiveAgentAttempt> = HashMap::new();
+    let mut attempt_ownership = AttemptOwnership::<AgentRuntimeResource>::default();
     let mut pending_gate_tasks: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
     let mut gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
@@ -1017,37 +1120,93 @@ pub async fn run(
         tokio::select! {
             // ─── Branch 1: Agent events ─────────────────────────────
             Some(routed) = agent_rx.recv() => {
-                let RoutedAgentEvent {
-                    plan_id: event_plan_id,
-                    task_id: event_task_id,
+                let RoutedAgentEvent::Agent {
+                    attempt: event_attempt,
+                    effect: event_effect,
                     agent_id: event_agent_id,
                     event,
-                } = routed;
+                } = routed else {
+                    let RoutedAgentEvent::Fatal { attempt, message } = routed else {
+                        unreachable!()
+                    };
+                    let current = TaskAttemptRef::new(
+                        attempt.plan_id.clone(),
+                        attempt.task_id.clone(),
+                        state.iteration_for(&attempt.plan_id, &attempt.task_id),
+                    );
+                    if current != attempt || state.task_attempt_is_terminal(&attempt) {
+                        warn!(attempt = %attempt.key(), "ignoring stale fatal effect");
+                        continue;
+                    }
+                    restore_task_runtime(
+                        &mut state,
+                        &task_runtime_states,
+                        &attempt.plan_id,
+                        &attempt.task_id,
+                    );
+                    handle_agent_failure(
+                        &mut executor, &mut task_dag, &task_index, &mut state, &paths,
+                        &tui, sink, config, message,
+                    );
+                    continue;
+                };
+                let event_plan_id = event_attempt.plan_id.clone();
+                let event_task_id = event_attempt.task_id.clone();
+                let is_turn_done = matches!(&event, AgentEvent::TurnCompleted { .. });
+                let is_exited = matches!(&event, AgentEvent::Exited { .. });
+                let is_terminal = is_turn_done || is_exited;
+                if !attempt_ownership.event_is_eligible(
+                    &event_attempt,
+                    AttemptPhase::Agent,
+                    event_effect,
+                ) {
+                    debug!(attempt = %event_attempt.key(), effect = event_effect.0,
+                        "ignoring late agent event without exact ownership");
+                    continue;
+                }
+                let mut settlement = None;
+                let mut terminal_failure = None;
+                if is_terminal {
+                    let mut claim = match attempt_ownership.claim_phase(
+                        &event_attempt,
+                        AttemptPhase::Agent,
+                        event_effect,
+                    ) {
+                        Ok(claim) => claim,
+                        Err(_) => continue,
+                    };
+                    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+                    let mut result = settle_agent_resource(resource).await;
+                    terminal_failure = agent_terminal_failure(&event, &result);
+                    if let Some(resource) = result.unconfirmed.take() {
+                        claim.replace_resource(resource);
+                        attempt_ownership
+                            .transition_claim(claim, AttemptPhase::AgentUnconfirmed, event_effect)
+                            .expect("unconfirmed agent ownership must be retained");
+                    } else if terminal_failure.is_some() {
+                        attempt_ownership
+                            .complete_claim(claim)
+                            .expect("confirmed failed agent claim must complete");
+                    } else {
+                        attempt_ownership
+                            .transition_claim(claim, AttemptPhase::AwaitingGate, event_effect)
+                            .expect("successful agent claim must await gate");
+                    }
+                    settlement = Some(result);
+                }
                 restore_task_runtime(
                     &mut state,
                     &task_runtime_states,
                     &event_plan_id,
                     &event_task_id,
                 );
-                let is_turn_done = matches!(&event, AgentEvent::TurnCompleted { .. });
-                let is_exited = matches!(&event, AgentEvent::Exited { .. });
                 let turn_completed_before_event = state.agent_turn_completed;
-                let turn_error = matches!(&event, AgentEvent::TurnCompleted { is_error: true, .. });
+                let turn_error = terminal_failure.is_some();
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
                 publish_learning_agent_event(&learning_event_bus, &event, &state);
                 task_runtime_states.insert(task_key(&event_plan_id, &event_task_id), TaskRuntimeState::capture(&state));
-                if is_turn_done {
-                    active_agent_tasks.remove(&task_key(&event_plan_id, &event_task_id));
-                    if let Some(active) = active_agent_attempts.get_mut(&event_agent_id) {
-                        active.task_permit.take();
-                    }
-                }
-                if is_exited {
-                    active_agent_tasks.remove(&task_key(&event_plan_id, &event_task_id));
-                    active_agent_attempts.remove(&event_agent_id);
-                }
 
                 // ── Forward progress-relevant agent events to RuntimeEvent ──
                 if let Some(http_sink) = config.http_event_sink.as_ref() {
@@ -1098,12 +1257,12 @@ pub async fn run(
                     } = &event
                     {
                         let agent_id = format!("{}/{}", state.plan_id, state.current_task);
-                        let outcome = if *is_error {
+                        let outcome = if turn_error {
                             AgentDispatchOutcome::Failed
                         } else {
                             AgentDispatchOutcome::Completed
                         };
-                        let attempt = state.current_attempt_ref();
+                        let attempt = event_attempt.clone();
                         let run_id = state.run_id().to_string();
                         emit_runner_event(
                             &paths,
@@ -1120,8 +1279,7 @@ pub async fn run(
                                     total_cost_usd: *total_cost_usd,
                                     turns: *num_turns,
                                     exit_code: None,
-                                    message: (*is_error)
-                                        .then(|| "agent reported an error result".to_string()),
+                                    message: terminal_failure.clone(),
                                 },
                             ),
                         );
@@ -1149,7 +1307,7 @@ pub async fn run(
                     let plan_id = state.plan_id.clone();
                     if !plan_id.is_empty() {
                         if turn_error {
-                            let message = agent_failure_message(&state.agent_output)
+                            let message = terminal_failure.clone().or_else(|| agent_failure_message(&state.agent_output))
                                 .unwrap_or_else(|| "agent reported an error result".to_string());
                             fire_on_error_hook(config, &message, "agent_turn", &tui, &state.plan_id, &state.current_task).await;
                             handle_agent_failure(
@@ -1178,39 +1336,18 @@ pub async fn run(
                 }
 
                 if is_exited {
-                    let exit_code = if let Some(handle) = agent_handles.remove(&event_agent_id) {
-                        let pid = handle.pid;
-                        match handle.wait().await {
-                            AgentWait::Confirmed { exit_code, reader_errors, .. } => {
-                                if reader_errors.is_empty() {
-                                    exit_code
-                                } else {
-                                    error!(pid, ?reader_errors, "agent readers did not settle cleanly");
-                                    Some(1)
-                                }
-                            }
-                            AgentWait::Unconfirmed { handle, errors } => {
-                                error!(pid, ?errors, "agent natural completion was not confirmed");
-                                agent_handles.insert(event_agent_id.clone(), handle);
-                                Some(1)
-                            }
-                        }
-                    } else if let AgentEvent::Exited { exit_code } = &event {
-                        *exit_code
-                    } else {
-                        None
-                    };
+                    let exit_code = settlement.as_ref().and_then(|result| result.exit_code);
 
                     let plan_id = state.plan_id.clone();
                     if !turn_completed_before_event && !plan_id.is_empty() {
                         let agent_id = format!("{}/{}", state.plan_id, state.current_task);
-                        if exit_code.unwrap_or(0) == 0 {
+                        if terminal_failure.is_none() && exit_code == Some(0) {
                             queue_pending_gate_task(
                                 &mut pending_gate_tasks,
                                 &event_plan_id,
                                 &event_task_id,
                             );
-                            let attempt = state.current_attempt_ref();
+                            let attempt = event_attempt.clone();
                             let run_id = state.run_id().to_string();
                             emit_runner_event(
                                 &paths,
@@ -1230,11 +1367,11 @@ pub async fn run(
                             );
                             apply_agent_completion(&mut executor, &plan_id, &tui);
                         } else {
-                            let message = format!(
+                            let message = terminal_failure.clone().unwrap_or_else(|| format!(
                                 "agent process exited unsuccessfully: exit_code={}",
                                 exit_code.map_or_else(|| "unknown".into(), |code| code.to_string())
-                            );
-                            let attempt = state.current_attempt_ref();
+                            ));
+                            let attempt = event_attempt.clone();
                             let run_id = state.run_id().to_string();
                             emit_runner_event(
                                 &paths,
@@ -2148,9 +2285,7 @@ pub async fn run(
                         sink,
                         tui: &tui,
                         state: &mut state,
-                        active_agent_tasks: &mut active_agent_tasks,
-                        active_agent_attempts: &mut active_agent_attempts,
-                        agent_handles: &mut agent_handles,
+                        attempt_ownership: &mut attempt_ownership,
                         pending_gate_tasks: &mut pending_gate_tasks,
                         agent_tx: &agent_tx,
                         gate_tx: &gate_tx,
@@ -2216,7 +2351,7 @@ pub async fn run(
             _ = flush_interval.tick() => {
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 {
-                    let pids: Vec<u32> = agent_handles.values().map(|h| h.pid).collect();
+                    let pids = attempt_ownership.surviving_agent_metadata().pids;
                     if !pids.is_empty() {
                         let _ = persist::save_agent_pids(&paths, &pids);
                     }
@@ -2229,7 +2364,7 @@ pub async fn run(
                     &executor,
                     &plans,
                     &mut state,
-                    &mut agent_handles,
+                    &mut attempt_ownership,
                     &paths,
                     &merge_queue,
                     &tui,
@@ -2244,7 +2379,7 @@ pub async fn run(
             // ─── Branch 6: Cancellation ─────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
-                stop_all_agents(&mut agent_handles, &mut state, Duration::from_secs(3)).await;
+                stop_all_agents(&mut attempt_ownership, &mut state, Duration::from_secs(3)).await;
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 snapshot_writer.flush();
                 shutdown_subsystems(config, &tui).await;
@@ -2260,7 +2395,7 @@ pub async fn run(
                 &executor,
                 &plans,
                 &mut state,
-                &mut agent_handles,
+                &mut attempt_ownership,
                 &paths,
                 &merge_queue,
                 &tui,
@@ -4588,11 +4723,10 @@ async fn dispatch_action(
             };
 
             let active_task_key = task_key(plan_id, &task_id);
-            if let Some(active_agent_id) = ctx.active_agent_tasks.get(&active_task_key) {
+            if ctx.attempt_ownership.contains_task(plan_id, &task_id) {
                 debug!(
                     plan_id = %plan_id,
                     task = %task_id,
-                    active_agent_id = %active_agent_id,
                     "agent already active for this task — suppressing duplicate spawn"
                 );
                 return ActionDispatchOutcome::Noop;
@@ -4862,22 +4996,16 @@ async fn dispatch_action(
                         let gate_tx = ctx.gate_tx.clone();
                         let fatal_tx = ctx.fatal_tx.clone();
                         let plan_id_fatal = plan_id.clone();
-                        let task_id_fatal = task_id.clone();
-                        let agent_id_fatal = format!("{plan_id_fatal}/{task_id_fatal}");
                         tokio::spawn(async move {
                             if let Err(e) = gate_tx.send(preflight).await {
                                 error!(plan_id = %plan_id_fatal, err = %e,
                                     "CRITICAL: failed to send preflight gate completion -- sending fatal");
                                 let _ = fatal_tx
-                                    .send(RoutedAgentEvent::for_task(
-                                        plan_id_fatal.clone(),
-                                        task_id_fatal,
-                                        agent_id_fatal,
-                                        AgentEvent::Error {
-                                            message: format!(
-                                                "gate channel closed for plan {plan_id_fatal}: {e}"
-                                            ),
-                                        },
+                                    .send(RoutedAgentEvent::fatal(
+                                        attempt_ref.clone(),
+                                        format!(
+                                            "gate channel closed for plan {plan_id_fatal}: {e}"
+                                        ),
                                     ))
                                     .await;
                             }
@@ -4934,8 +5062,13 @@ async fn dispatch_action(
                     crate_familiarity: 0.5,
                     has_prior_failure: attempt_num > 1,
                     conductor_load: 0.0,
-                    active_agents: u32::try_from(ctx.active_agent_attempts.len())
-                        .unwrap_or(u32::MAX),
+                    active_agents: u32::try_from(
+                        ctx.attempt_ownership
+                            .surviving_agent_metadata()
+                            .agent_ids
+                            .len(),
+                    )
+                    .unwrap_or(u32::MAX),
                     ready_queue_depth: 0,
                     max_queue_wait_hours: 0.0,
                     daimon_policy: daimon_policy_for_hook(daimon_hook.as_ref()),
@@ -5155,6 +5288,25 @@ async fn dispatch_action(
 
             let agent_id = format!("{plan_id}/{task_id}");
             let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
+            let agent_effect = EffectRef(
+                (u64::from(attempt_num) << 32) | u64::from(ctx.state.task_agent_calls + 1),
+            );
+            if ctx
+                .attempt_ownership
+                .insert(
+                    attempt_ref.clone(),
+                    AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
+                    AgentRuntimeResource::Dispatching(task_permit),
+                )
+                .is_err()
+            {
+                error!(attempt = %attempt_ref.key(), "duplicate dispatch ownership suppressed");
+                return ActionDispatchOutcome::Noop;
+            }
+            let mut dispatch_claim = ctx
+                .attempt_ownership
+                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
+                .expect("new dispatch ownership must be claimable");
             let run_id = ctx.state.run_id().to_string();
             emit_runner_event(
                 ctx.paths,
@@ -5218,10 +5370,15 @@ async fn dispatch_action(
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
 
+                    let AgentRuntimeResource::Dispatching(permit) =
+                        dispatch_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    else {
+                        unreachable!("dispatch claim must own permit")
+                    };
                     let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
-                    tokio::spawn(forward_agent_events(
-                        plan_id.clone(),
-                        task_id.clone(),
+                    let forwarder = tokio::spawn(forward_agent_events(
+                        attempt_ref.clone(),
+                        agent_effect,
                         agent_id.clone(),
                         raw_agent_rx,
                         ctx.agent_tx.clone(),
@@ -5243,7 +5400,7 @@ async fn dispatch_action(
                                 ctx.config,
                                 RunnerEvent::agent_dispatch_completed(
                                     &run_id,
-                                    attempt_ref,
+                                    attempt_ref.clone(),
                                     &agent_id,
                                     AgentDispatchOutcome::Spawned,
                                     Some(model_display.clone()),
@@ -5258,15 +5415,15 @@ async fn dispatch_action(
                                 &task_def.title,
                                 "implementing",
                             );
-                            ctx.agent_handles.insert(agent_id.clone(), handle);
-                            ctx.active_agent_tasks
-                                .insert(active_task_key.clone(), agent_id.clone());
-                            ctx.active_agent_attempts.insert(
-                                agent_id.clone(),
-                                ActiveAgentAttempt {
-                                    task_permit: Some(task_permit),
-                                },
-                            );
+                            dispatch_claim.set_agent(agent_id.clone(), Some(handle.pid));
+                            dispatch_claim.replace_resource(AgentRuntimeResource::Cli {
+                                handle,
+                                forwarder,
+                                permit,
+                            });
+                            ctx.attempt_ownership
+                                .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
+                                .expect("CLI dispatch must transition ownership");
                             ctx.task_runtime_states
                                 .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
                             register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
@@ -5276,6 +5433,13 @@ async fn dispatch_action(
                             };
                         }
                         Err(e) => {
+                            forwarder.abort();
+                            if let Err(err) = forwarder.await
+                                && !err.is_cancelled()
+                            {
+                                error!(%err, "spawn failure forwarder did not stop cleanly");
+                            }
+                            drop(permit);
                             error!(err = %e, "failed to spawn agent");
                             let message = format!("agent spawn failed: {e}");
                             if is_dag_task_spawn {
@@ -5305,7 +5469,7 @@ async fn dispatch_action(
                                 ctx.config,
                                 RunnerEvent::task_attempt_completed(
                                     &run_id,
-                                    attempt_ref,
+                                    attempt_ref.clone(),
                                     TaskAttemptOutcome::Failed,
                                     Some(RunnerFailureKind::Resource),
                                     0,
@@ -5322,6 +5486,9 @@ async fn dispatch_action(
                                 &message,
                             );
                             ctx.tui.error(&message);
+                            ctx.attempt_ownership
+                                .complete_claim(dispatch_claim)
+                                .expect("spawn failure must release ownership");
                             if let Err(e2) = ctx.executor.apply_event(
                                 plan_id,
                                 &ExecutorEvent::Fatal(format!("spawn failed: {e}")),
@@ -5360,15 +5527,20 @@ async fn dispatch_action(
                         bare_mode: false,
                         dangerously_skip_permissions: ctx.config.dangerously_skip_permissions,
                     };
+                    let AgentRuntimeResource::Dispatching(permit) =
+                        dispatch_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    else {
+                        unreachable!("dispatch claim must own permit")
+                    };
                     let (raw_agent_tx, raw_agent_rx) = mpsc::channel::<AgentEvent>(64);
-                    tokio::spawn(forward_agent_events(
-                        plan_id.clone(),
-                        task_id.clone(),
+                    let forwarder = tokio::spawn(forward_agent_events(
+                        attempt_ref.clone(),
+                        agent_effect,
                         agent_id.clone(),
                         raw_agent_rx,
                         ctx.agent_tx.clone(),
                     ));
-                    ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx);
+                    let bridge = ctx.factory.spawn_shared_agent_bridge(request, raw_agent_tx);
                     emit_runner_event(
                         ctx.paths,
                         ctx.state,
@@ -5376,7 +5548,7 @@ async fn dispatch_action(
                         ctx.config,
                         RunnerEvent::agent_dispatch_completed(
                             &run_id,
-                            attempt_ref,
+                            attempt_ref.clone(),
                             &agent_id,
                             AgentDispatchOutcome::Spawned,
                             Some(model.clone()),
@@ -5388,14 +5560,15 @@ async fn dispatch_action(
                         .agent_spawned(&agent_id, role, &format!("{provider_id}:{model}"));
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
-                    ctx.active_agent_tasks
-                        .insert(active_task_key.clone(), agent_id.clone());
-                    ctx.active_agent_attempts.insert(
-                        agent_id.clone(),
-                        ActiveAgentAttempt {
-                            task_permit: Some(task_permit),
-                        },
-                    );
+                    dispatch_claim.set_agent(agent_id.clone(), None);
+                    dispatch_claim.replace_resource(AgentRuntimeResource::Bridge {
+                        bridge,
+                        forwarder,
+                        permit,
+                    });
+                    ctx.attempt_ownership
+                        .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
+                        .expect("bridge dispatch must transition ownership");
                     ctx.task_runtime_states
                         .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
                     register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
@@ -5522,22 +5695,14 @@ async fn dispatch_action(
                 let gate_tx = ctx.gate_tx.clone();
                 let fatal_tx = ctx.fatal_tx.clone();
                 let plan_id_fatal = plan_id.clone();
-                let task_id_fatal = task_id.clone();
-                let agent_id_fatal = format!("{plan_id_fatal}/{task_id_fatal}");
                 tokio::spawn(async move {
                     if let Err(e) = gate_tx.send(completion).await {
                         error!(plan_id = %plan_id_fatal, err = %e,
                             "CRITICAL: failed to send auto-pass gate -- sending fatal");
                         let _ = fatal_tx
-                            .send(RoutedAgentEvent::for_task(
-                                plan_id_fatal.clone(),
-                                task_id_fatal,
-                                agent_id_fatal,
-                                AgentEvent::Error {
-                                    message: format!(
-                                        "gate channel closed for plan {plan_id_fatal}: {e}"
-                                    ),
-                                },
+                            .send(RoutedAgentEvent::fatal(
+                                attempt_ref.clone(),
+                                format!("gate channel closed for plan {plan_id_fatal}: {e}"),
                             ))
                             .await;
                     }
@@ -6187,7 +6352,7 @@ async fn handle_plan_timeout(
     executor: &ParallelExecutor,
     plans: &[Plan],
     state: &mut RunState,
-    agent_handles: &mut HashMap<String, AgentHandle>,
+    attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
     paths: &PersistPaths,
     merge_queue: &MergeQueue,
     tui: &TuiBridge,
@@ -6205,7 +6370,7 @@ async fn handle_plan_timeout(
         in_flight_attempts = ?in_flight,
         "plan execution exceeded wall-clock timeout"
     );
-    stop_all_agents(agent_handles, state, Duration::from_secs(3)).await;
+    stop_all_agents(attempt_ownership, state, Duration::from_secs(3)).await;
     save_snapshot(
         config,
         executor,
@@ -6246,22 +6411,49 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
 }
 
 async fn stop_all_agents(
-    agent_handles: &mut HashMap<String, AgentHandle>,
+    attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
     state: &mut RunState,
     grace: Duration,
 ) {
     let mut unconfirmed_pids = HashSet::new();
-    for (_plan_id, handle) in agent_handles.drain() {
-        let pid = handle.pid;
-        match handle.kill(grace).await {
-            AgentTermination::Confirmed { .. } => {
-                roko_agent::process::unregister_pid(pid);
+    for attempt in attempt_ownership.attempts() {
+        let Ok(mut claim) = attempt_ownership.claim_cancellation(&attempt) else {
+            continue;
+        };
+        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+        match resource {
+            AgentRuntimeResource::Cli {
+                handle,
+                forwarder,
+                permit,
+            } => {
+                let pid = handle.pid;
+                match handle.kill(grace).await {
+                    AgentTermination::Confirmed { .. } => roko_agent::process::unregister_pid(pid),
+                    AgentTermination::Failed { errors, .. } => {
+                        error!(pid, ?errors, "agent termination could not be confirmed");
+                        unconfirmed_pids.insert(pid);
+                    }
+                }
+                forwarder.abort();
+                let _ = forwarder.await;
+                drop(permit);
             }
-            AgentTermination::Failed { errors, .. } => {
-                error!(pid, ?errors, "agent termination could not be confirmed");
-                unconfirmed_pids.insert(pid);
+            AgentRuntimeResource::Bridge {
+                bridge,
+                forwarder,
+                permit,
+            } => {
+                bridge.abort();
+                forwarder.abort();
+                let _ = bridge.await;
+                let _ = forwarder.await;
+                drop(permit);
             }
+            AgentRuntimeResource::Dispatching(permit) => drop(permit),
+            AgentRuntimeResource::AwaitingGate => {}
         }
+        let _ = attempt_ownership.complete_claim(claim);
     }
     if let Some(pid) = state.agent_pid.take() {
         if !unconfirmed_pids.contains(&pid) {
@@ -8171,5 +8363,60 @@ mod tests_post_gate_reflection_lessons {
             None
         );
         assert_eq!(attempts.get("effect"), Some(&current));
+    }
+
+    fn turn_completed(is_error: bool) -> AgentEvent {
+        AgentEvent::TurnCompleted {
+            session_id: None,
+            total_cost_usd: None,
+            num_turns: Some(1),
+            is_error,
+        }
+    }
+
+    #[test]
+    fn agent_terminal_classification_requires_confirmed_clean_success() {
+        let clean = AgentSettlement {
+            exit_code: Some(0),
+            errors: Vec::new(),
+            unconfirmed: None,
+        };
+        assert_eq!(agent_terminal_failure(&turn_completed(false), &clean), None);
+        assert_eq!(
+            agent_terminal_failure(&turn_completed(true), &clean),
+            Some("agent reported an error result".to_string())
+        );
+
+        let unknown = AgentSettlement {
+            exit_code: None,
+            errors: Vec::new(),
+            unconfirmed: None,
+        };
+        assert!(
+            agent_terminal_failure(&turn_completed(false), &unknown)
+                .unwrap()
+                .contains("not confirmed")
+        );
+
+        let nonzero = AgentSettlement {
+            exit_code: Some(7),
+            errors: Vec::new(),
+            unconfirmed: None,
+        };
+        assert!(
+            agent_terminal_failure(&turn_completed(false), &nonzero)
+                .unwrap()
+                .contains("status 7")
+        );
+
+        let reader_failure = AgentSettlement {
+            exit_code: Some(0),
+            errors: vec!["stdout reader failed".to_string()],
+            unconfirmed: None,
+        };
+        assert_eq!(
+            agent_terminal_failure(&turn_completed(false), &reader_failure),
+            Some("stdout reader failed".to_string())
+        );
     }
 }

@@ -141,7 +141,7 @@ impl SharedAgentFactory {
         &self,
         request: AgentDispatchRequest,
         event_tx: mpsc::Sender<AgentRuntimeEvent>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let config = Arc::clone(&self.config);
         let semaphores = Arc::clone(&self.semaphores);
         let mcp_tools = self.mcp_tools.clone();
@@ -170,7 +170,7 @@ impl SharedAgentFactory {
                         .await;
                 }
             }
-        });
+        })
     }
 
     /// Pre-discovered MCP tools, if available.

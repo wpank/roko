@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 17
-done = 10
+done = 11
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -210,7 +210,7 @@ acceptance = ["Ownership exists before dispatch and spans the full agent phase."
 id = "SH01-T06B2C1"
 title = "Own post-agent gate effects and join handles"
 description = "Introduce a structured gate effect identity containing task attempt, kind, rung, and dispatch generation. Make post-agent standard and read-only gate APIs return a JoinHandle behind a start barrier. Transition persistent owners from AwaitingGate to Gate, retain the JoinHandle, then release work; gate start failure restores or completes the exact claimed owner. Keep legacy preflight and plan-verify matching until their dedicated migrations."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 360

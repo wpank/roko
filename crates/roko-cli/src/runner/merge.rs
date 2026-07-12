@@ -863,4 +863,40 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(gate.calls.lock().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn dropping_start_token_cannot_run_dormant_merge() {
+        let gate = Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1)));
+        let merger = merger_with_gate(gate.clone());
+        let MergeDispatch::Reserved { launch } = merger.submit(MergeRequest::new(
+            "plan-a", "roko/plan-a", vec!["a.rs".into()], 0,
+        )) else {
+            panic!("expected reservation");
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        let producer = merger.prepare(launch, tx);
+        drop(producer.start);
+        producer.handle.await.expect("dormant producer exits cleanly");
+        assert!(gate.calls.lock().unwrap().is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+                | Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn drain_returns_exact_descriptor_without_spawning() {
+        let gate = Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1)));
+        let merger = merger_with_gate(gate.clone());
+        merger.queue.enqueue(MergeRequest::new(
+            "plan-a", "roko/plan-a", vec!["a.rs".into()], 7,
+        ));
+        let launch = merger.drain_next().expect("queued merge descriptor");
+        assert_eq!(launch.plan_id(), "plan-a");
+        assert_eq!(launch.branch_name(), "roko/plan-a");
+        assert!(launch.generation() > 0);
+        tokio::task::yield_now().await;
+        assert!(gate.calls.lock().unwrap().is_empty());
+    }
 }

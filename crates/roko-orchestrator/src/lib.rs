@@ -78,7 +78,8 @@ pub use executor::{
 };
 pub use merge_queue::{
     DEFAULT_MAX_MERGE_RETRIES, MergeConflict, MergeQueue, MergeQueueEntrySnapshot,
-    MergeQueueMetrics, MergeQueueSnapshot, MergeRequest, MergeStatus,
+    MergeQueueMetrics, MergeQueueSnapshot, MergeRequest, MergeReservation, MergeStatus,
+    ReservedMerge,
 };
 pub use mesh_relay::{MeshRelay, PeerState, SeqNo, SequencedPheromone};
 pub use plan_discovery::{

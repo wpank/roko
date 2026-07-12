@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use roko_orchestrator::{MergeQueue, MergeRequest};
+use roko_orchestrator::{MergeQueue, MergeRequest, MergeReservation, ReservedMerge};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -32,6 +32,8 @@ use super::types::{GateCompletion, GateCompletionKind, GateVerdictSummary, Runne
 /// Outcome of a merge dispatch attempt.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MergeDispatch {
+    /// This plan already owns an active reservation; duplicate submit rejected.
+    AlreadyActive { plan_id: String },
     /// The merge was claimed and submitted to the regression gate. The
     /// caller should expect a `GateCompletion` with the matching plan id
     /// to arrive on the gate channel.
@@ -48,6 +50,7 @@ pub enum MergeDispatch {
 pub struct MergeLaunch {
     request: MergeRequest,
     generation: u64,
+    reservation: MergeReservation,
 }
 
 impl MergeLaunch {
@@ -66,10 +69,11 @@ impl MergeLaunch {
 
 static NEXT_MERGE_LAUNCH: AtomicU64 = AtomicU64::new(1);
 
-fn merge_launch(request: MergeRequest) -> MergeLaunch {
+fn merge_launch(reserved: ReservedMerge) -> MergeLaunch {
     MergeLaunch {
-        request,
+        request: reserved.request,
         generation: NEXT_MERGE_LAUNCH.fetch_add(1, Ordering::Relaxed),
+        reservation: reserved.reservation,
     }
 }
 
@@ -443,15 +447,17 @@ impl PlanMerger {
     ///   another plan's file locks to release.
     pub fn submit(&self, request: MergeRequest) -> MergeDispatch {
         let plan_id = request.plan_id.clone();
-        self.queue.enqueue(request);
+        if !self.queue.enqueue(request) {
+            return MergeDispatch::AlreadyActive { plan_id };
+        }
 
-        let Some(reserved) = self.queue.reserve_next_mergeable() else {
+        let Some(reserved) = self.queue.reserve_next_mergeable_exact() else {
             return MergeDispatch::Blocked {
                 plan_id,
                 launch: None,
             };
         };
-        if reserved.plan_id != plan_id {
+        if reserved.request.plan_id != plan_id {
             return MergeDispatch::Blocked {
                 plan_id,
                 launch: Some(merge_launch(reserved)),
@@ -466,7 +472,12 @@ impl PlanMerger {
     /// Try to drain the queue further. Useful after a merge completes to
     /// kick off the next non-conflicting plan.
     pub fn drain_next(&self) -> Option<MergeLaunch> {
-        self.queue.reserve_next_mergeable().map(merge_launch)
+        self.queue.reserve_next_mergeable_exact().map(merge_launch)
+    }
+
+    pub fn fail_launch(&self, launch: MergeLaunch, reason: &str) -> bool {
+        self.queue
+            .mark_failed_exact(&launch.request.plan_id, launch.reservation, reason)
     }
 
     pub fn prepare(
@@ -808,12 +819,12 @@ mod tests {
             .with_merge_backend(merge)
             .with_regression_gate(gate.clone());
         let queue = MergeQueue::new();
-        queue.enqueue(MergeRequest::new(
+        assert!(queue.enqueue(MergeRequest::new(
             "plan-a",
             "roko/plan-a",
             vec!["src/lib.rs".into()],
             10,
-        ));
+        )));
         assert!(queue.mark_merging("plan-a"));
         let merger = PlanMerger::new(queue.clone(), cfg);
 
@@ -838,12 +849,12 @@ mod tests {
             .with_merge_backend(merge)
             .with_regression_gate(gate.clone());
         let queue = MergeQueue::new();
-        queue.enqueue(MergeRequest::new(
+        assert!(queue.enqueue(MergeRequest::new(
             "plan-b",
             "roko/plan-b",
             vec!["b.rs".into()],
             100,
-        ));
+        )));
         let merger = PlanMerger::new(queue, config);
 
         let MergeDispatch::Blocked {
@@ -864,24 +875,45 @@ mod tests {
         assert!(gate.calls.lock().unwrap().is_empty());
     }
 
+    #[test]
+    fn duplicate_active_submit_is_explicitly_rejected() {
+        let merger = merger_with_gate(Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1))));
+        let request = MergeRequest::new("plan-a", "roko/plan-a", vec!["a.rs".into()], 1);
+        assert!(matches!(
+            merger.submit(request.clone()),
+            MergeDispatch::Reserved { .. }
+        ));
+        assert_eq!(
+            merger.submit(request),
+            MergeDispatch::AlreadyActive {
+                plan_id: "plan-a".to_string()
+            }
+        );
+    }
+
     #[tokio::test]
     async fn dropping_start_token_cannot_run_dormant_merge() {
         let gate = Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1)));
         let merger = merger_with_gate(gate.clone());
         let MergeDispatch::Reserved { launch } = merger.submit(MergeRequest::new(
-            "plan-a", "roko/plan-a", vec!["a.rs".into()], 0,
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            0,
         )) else {
             panic!("expected reservation");
         };
         let (tx, mut rx) = mpsc::channel(1);
         let producer = merger.prepare(launch, tx);
         drop(producer.start);
-        producer.handle.await.expect("dormant producer exits cleanly");
+        producer
+            .handle
+            .await
+            .expect("dormant producer exits cleanly");
         assert!(gate.calls.lock().unwrap().is_empty());
         assert!(matches!(
             rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-                | Err(mpsc::error::TryRecvError::Disconnected)
+            Err(mpsc::error::TryRecvError::Empty) | Err(mpsc::error::TryRecvError::Disconnected)
         ));
     }
 
@@ -889,9 +921,12 @@ mod tests {
     async fn drain_returns_exact_descriptor_without_spawning() {
         let gate = Arc::new(StubGate::new(RegressionOutcome::pass("ok", 1)));
         let merger = merger_with_gate(gate.clone());
-        merger.queue.enqueue(MergeRequest::new(
-            "plan-a", "roko/plan-a", vec!["a.rs".into()], 7,
-        ));
+        assert!(merger.queue.enqueue(MergeRequest::new(
+            "plan-a",
+            "roko/plan-a",
+            vec!["a.rs".into()],
+            7,
+        )));
         let launch = merger.drain_next().expect("queued merge descriptor");
         assert_eq!(launch.plan_id(), "plan-a");
         assert_eq!(launch.branch_name(), "roko/plan-a");

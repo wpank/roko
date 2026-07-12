@@ -141,6 +141,7 @@ pub struct MergeConflict {
 struct QueueEntry {
     request: MergeRequest,
     status: MergeStatus,
+    reservation: Option<MergeReservation>,
 }
 
 /// Protected inner state.
@@ -156,6 +157,20 @@ struct Inner {
     locked_files: BTreeMap<String, String>,
     /// Permanently failed plan IDs with reason.
     failed: BTreeMap<String, String>,
+    next_reservation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Opaque identity for one exact transition from queued to merging.
+pub struct MergeReservation(u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// A request and the exact reservation that owns its current locks.
+pub struct ReservedMerge {
+    /// Reserved merge request.
+    pub request: MergeRequest,
+    /// Opaque reservation identity.
+    pub reservation: MergeReservation,
 }
 
 impl Inner {
@@ -239,17 +254,25 @@ impl MergeQueue {
     ///
     /// If a request for the same `plan_id` already exists, it is
     /// replaced (useful for re-queuing after a plan re-gates).
-    pub fn enqueue(&self, request: MergeRequest) {
+    #[must_use]
+    pub fn enqueue(&self, request: MergeRequest) -> bool {
         let mut guard = self.inner.lock();
         let plan_id = request.plan_id.clone();
+        if guard.entries.get(&plan_id).is_some_and(|entry| {
+            entry.status == MergeStatus::Merging || entry.reservation.is_some()
+        }) {
+            return false;
+        }
         guard.entries.insert(
             plan_id,
             QueueEntry {
                 request,
                 status: MergeStatus::Queued,
+                reservation: None,
             },
         );
         guard.rebuild_order();
+        true
     }
 
     /// Return the next request that does not conflict with any
@@ -276,6 +299,12 @@ impl MergeQueue {
     /// [`mark_merging`](Self::mark_merging) under a single lock so multiple
     /// queue-draining workers cannot race to claim the same request.
     pub fn reserve_next_mergeable(&self) -> Option<MergeRequest> {
+        self.reserve_next_mergeable_exact()
+            .map(|reserved| reserved.request)
+    }
+
+    /// Atomically reserve the next request and return its exact identity.
+    pub fn reserve_next_mergeable_exact(&self) -> Option<ReservedMerge> {
         let mut guard = self.inner.lock();
         let plan_id = guard
             .order
@@ -289,14 +318,20 @@ impl MergeQueue {
             .cloned()?;
 
         let request = guard.entries[&plan_id].request.clone();
+        guard.next_reservation = guard.next_reservation.wrapping_add(1).max(1);
+        let reservation = MergeReservation(guard.next_reservation);
         if let Some(entry) = guard.entries.get_mut(&plan_id) {
             entry.status = MergeStatus::Merging;
+            entry.reservation = Some(reservation);
         }
         for file in &request.files_changed {
             guard.locked_files.insert(file.clone(), plan_id.clone());
         }
         guard.rebuild_order();
-        Some(request)
+        Some(ReservedMerge {
+            request,
+            reservation,
+        })
     }
 
     /// Return a non-mutating batch of mutually non-conflicting requests
@@ -357,6 +392,7 @@ impl MergeQueue {
         // Now mutate.
         if let Some(entry) = guard.entries.get_mut(plan_id) {
             entry.status = MergeStatus::Merging;
+            entry.reservation = None;
         }
         for file in files {
             guard.locked_files.insert(file, plan_id.to_string());
@@ -375,6 +411,55 @@ impl MergeQueue {
             }
         }
         guard.rebuild_order();
+    }
+
+    /// Complete only when `reservation` still owns this plan's merge slot.
+    pub fn mark_complete_exact(&self, plan_id: &str, reservation: MergeReservation) -> bool {
+        let mut guard = self.inner.lock();
+        if !guard.entries.get(plan_id).is_some_and(|entry| {
+            entry.status == MergeStatus::Merging && entry.reservation == Some(reservation)
+        }) {
+            return false;
+        }
+        if let Some(entry) = guard.entries.remove(plan_id) {
+            for file in &entry.request.files_changed {
+                guard.locked_files.remove(file);
+            }
+        }
+        guard.rebuild_order();
+        true
+    }
+
+    /// Fail only when `reservation` still owns this plan's merge slot.
+    pub fn mark_failed_exact(
+        &self,
+        plan_id: &str,
+        reservation: MergeReservation,
+        reason: &str,
+    ) -> bool {
+        let mut guard = self.inner.lock();
+        if !guard.entries.get(plan_id).is_some_and(|entry| {
+            entry.status == MergeStatus::Merging && entry.reservation == Some(reservation)
+        }) {
+            return false;
+        }
+        let files = guard.entries[plan_id].request.files_changed.clone();
+        for file in files {
+            guard.locked_files.remove(&file);
+        }
+        if let Some(entry) = guard.entries.get_mut(plan_id) {
+            entry.request.retry_count += 1;
+            entry.reservation = None;
+            if entry.request.retry_count >= MAX_RETRIES {
+                guard.failed.insert(plan_id.to_string(), reason.to_string());
+                guard.entries.remove(plan_id);
+                guard.rebuild_order();
+                return true;
+            }
+            entry.status = MergeStatus::Queued;
+        }
+        guard.rebuild_order();
+        true
     }
 
     /// Mark a merge as failed. If the retry count has not exceeded the
@@ -403,6 +488,7 @@ impl MergeQueue {
                 return false;
             }
             entry.status = MergeStatus::Queued;
+            entry.reservation = None;
         }
         guard.rebuild_order();
         true
@@ -592,6 +678,7 @@ impl MergeQueue {
                 QueueEntry {
                     request: entry.request,
                     status: entry.status,
+                    reservation: None,
                 },
             );
             if entry.status == MergeStatus::Merging {
@@ -919,5 +1006,36 @@ mod tests {
         q.enqueue(req("plan-a", &["src/a.rs"], 10));
         assert!(q.mark_merging("plan-a"));
         assert!(!q.mark_merging("plan-a"));
+    }
+
+    #[test]
+    fn stale_reservation_cannot_fail_newer_same_plan_merge() {
+        let q = MergeQueue::new();
+        q.enqueue(req("plan-a", &["old.rs"], 1));
+        let old = q.reserve_next_mergeable_exact().unwrap();
+        assert!(q.mark_failed_exact("plan-a", old.reservation, "retry"));
+        let stale = old.reservation;
+        q.enqueue(req("plan-a", &["new.rs"], 1));
+        let new = q.reserve_next_mergeable_exact().unwrap();
+        assert_ne!(stale, new.reservation);
+
+        assert!(!q.mark_failed_exact("plan-a", stale, "stale"));
+        assert!(q.mark_failed_exact("plan-a", new.reservation, "current"));
+        assert_eq!(q.metrics().queued, 1);
+    }
+
+    #[test]
+    fn stale_reservation_cannot_complete_newer_same_plan_merge() {
+        let q = MergeQueue::new();
+        q.enqueue(req("plan-a", &["old.rs"], 1));
+        let old = q.reserve_next_mergeable_exact().unwrap();
+        assert!(q.mark_failed_exact("plan-a", old.reservation, "retry"));
+        let stale = old.reservation;
+        q.enqueue(req("plan-a", &["new.rs"], 1));
+        let new = q.reserve_next_mergeable_exact().unwrap();
+
+        assert!(!q.mark_complete_exact("plan-a", stale));
+        assert!(q.mark_complete_exact("plan-a", new.reservation));
+        assert!(q.is_empty());
     }
 }

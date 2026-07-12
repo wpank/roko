@@ -129,12 +129,12 @@ acceptance = ["Serde round trips preserve both values and precedence.", "An expl
 [[task]]
 id = "SH01-T06B1"
 title = "Make process and gate cancellation confirmable"
-description = "Make AgentHandle kill return a structured confirmed/failed result after awaiting process-tree and reader termination. Ensure every gate subprocess used by the pipeline is kill-on-drop or otherwise explicitly cancellable, including format, security, and generated command paths. This task provides cancellation-safe primitives only; do not add the runner ownership registry."
+description = "Make kill_tree propagate final kill/wait errors and verify actual child exit. Make AgentHandle kill return a structured confirmed/failed result after awaiting process-tree and reader termination; a cancelled JoinError after intentional reader abort is confirmed, while panic/join failure is not. Ensure every gate subprocess is asynchronously cancellable: use tokio Command with kill_on_drop for format/security/generated paths; a blocking std::process wait wrapped only in Drop is not cancellation-safe. This task provides primitives only."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 300
-files = ["crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-gate/src/format_check_gate.rs", "crates/roko-gate/src/security_scan_gate.rs", "crates/roko-gate/src/generated.rs"]
+files = ["crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-agent/src/process/kill.rs", "crates/roko-gate/src/format_check_gate.rs", "crates/roko-gate/src/security_scan_gate.rs", "crates/roko-gate/src/generated.rs"]
 role = "implementer"
 domain = "execution-engine"
 depends_on = ["SH01-T06A"]

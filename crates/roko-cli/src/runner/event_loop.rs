@@ -53,7 +53,7 @@ use roko_learn::section_outcome::{
 use roko_neuro::KnowledgeStore;
 
 use super::agent_events::handle_agent_event;
-use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination};
+use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, AgentWait};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -1180,9 +1180,21 @@ pub async fn run(
                 if is_exited {
                     let exit_code = if let Some(handle) = agent_handles.remove(&event_agent_id) {
                         let pid = handle.pid;
-                        let code = handle.wait().await;
-                        roko_agent::process::unregister_pid(pid);
-                        code
+                        match handle.wait().await {
+                            AgentWait::Confirmed { exit_code, reader_errors, .. } => {
+                                if reader_errors.is_empty() {
+                                    exit_code
+                                } else {
+                                    error!(pid, ?reader_errors, "agent readers did not settle cleanly");
+                                    Some(1)
+                                }
+                            }
+                            AgentWait::Unconfirmed { handle, errors } => {
+                                error!(pid, ?errors, "agent natural completion was not confirmed");
+                                agent_handles.insert(event_agent_id.clone(), handle);
+                                Some(1)
+                            }
+                        }
                     } else if let AgentEvent::Exited { exit_code } = &event {
                         *exit_code
                     } else {

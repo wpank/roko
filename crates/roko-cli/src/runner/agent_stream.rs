@@ -90,7 +90,7 @@ pub struct AgentHandle {
     /// The child process.
     child: Child,
     /// Task reading stdout lines.
-    reader_task: JoinHandle<()>,
+    reader_task: Option<JoinHandle<()>>,
     /// Task reading stderr lines, when stderr was captured.
     stderr_reader_task: Option<JoinHandle<()>>,
 }
@@ -105,6 +105,22 @@ pub enum AgentTermination {
     Failed { pid: u32, errors: Vec<String> },
 }
 
+/// Result of naturally waiting for an agent and all stream readers.
+#[must_use]
+pub enum AgentWait {
+    /// The child is absent. Reader failures remain structured producer errors.
+    Confirmed {
+        pid: u32,
+        exit_code: Option<i32>,
+        reader_errors: Vec<String>,
+    },
+    /// Process absence was not confirmed. Ownership is returned to the caller.
+    Unconfirmed {
+        handle: AgentHandle,
+        errors: Vec<String>,
+    },
+}
+
 impl AgentHandle {
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
@@ -113,14 +129,18 @@ impl AgentHandle {
 
         // Stop and reap readers before confirming termination. An abort produces
         // a cancelled JoinError, which is the expected intentional outcome.
-        self.reader_task.abort();
+        if let Some(reader_task) = &self.reader_task {
+            reader_task.abort();
+        }
         if let Some(stderr_reader_task) = &self.stderr_reader_task {
             stderr_reader_task.abort();
         }
 
-        collect_reader_result("stdout", self.reader_task.await, &mut errors);
+        if let Some(reader_task) = self.reader_task.take() {
+            collect_reader_result("stdout", reader_task.await, true, &mut errors);
+        }
         if let Some(stderr_reader_task) = self.stderr_reader_task.take() {
-            collect_reader_result("stderr", stderr_reader_task.await, &mut errors);
+            collect_reader_result("stderr", stderr_reader_task.await, true, &mut errors);
         }
 
         // Use roko-agent's kill_tree which handles process groups properly.
@@ -146,22 +166,44 @@ impl AgentHandle {
     }
 
     /// Wait for the process to exit and return its exit code.
-    pub async fn wait(self) -> Option<i32> {
-        let mut child = self.child;
-        let reader_task = self.reader_task;
-        let _ = reader_task.await;
-        child.wait().await.ok().and_then(|status| status.code())
+    pub async fn wait(mut self) -> AgentWait {
+        let status = match self.child.wait().await {
+            Ok(status) => status,
+            Err(err) => {
+                return AgentWait::Unconfirmed {
+                    handle: self,
+                    errors: vec![format!("failed to wait for agent process: {err}")],
+                };
+            }
+        };
+        let exit_code = status.code();
+        // A successful wait proves process absence even if reader joining later
+        // reports a separate supervision failure.
+        roko_agent::process::unregister_pid(self.pid);
+        let mut errors = Vec::new();
+        if let Some(reader_task) = self.reader_task.take() {
+            collect_reader_result("stdout", reader_task.await, false, &mut errors);
+        }
+        if let Some(stderr_reader_task) = self.stderr_reader_task.take() {
+            collect_reader_result("stderr", stderr_reader_task.await, false, &mut errors);
+        }
+        AgentWait::Confirmed {
+            pid: self.pid,
+            exit_code,
+            reader_errors: errors,
+        }
     }
 }
 
 fn collect_reader_result(
     stream: &str,
     result: std::result::Result<(), tokio::task::JoinError>,
+    allow_cancelled: bool,
     errors: &mut Vec<String>,
 ) {
     match result {
         Ok(()) => {}
-        Err(err) if err.is_cancelled() => {}
+        Err(err) if err.is_cancelled() && allow_cancelled => {}
         Err(err) => errors.push(format!("{stream} reader task failed: {err}")),
     }
 }
@@ -297,7 +339,7 @@ pub async fn spawn_agent(
     Ok(AgentHandle {
         pid,
         child,
-        reader_task,
+        reader_task: Some(reader_task),
         stderr_reader_task,
     })
 }
@@ -321,8 +363,32 @@ mod tests {
         AgentHandle {
             pid,
             child,
-            reader_task,
+            reader_task: Some(reader_task),
             stderr_reader_task: Some(tokio::spawn(std::future::pending())),
+        }
+    }
+
+    #[cfg(unix)]
+    fn completed_agent_handle(
+        reader_task: JoinHandle<()>,
+        stderr_reader_task: JoinHandle<()>,
+    ) -> AgentHandle {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("exit 7")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        set_process_group(&mut command);
+        let child = command.spawn().expect("spawn completed test child");
+        let pid = child.id().expect("test child pid");
+        roko_agent::process::register_spawned_pid(pid);
+        AgentHandle {
+            pid,
+            child,
+            reader_task: Some(reader_task),
+            stderr_reader_task: Some(stderr_reader_task),
         }
     }
 
@@ -356,6 +422,61 @@ mod tests {
         assert_eq!(failed_pid, pid);
         assert!(
             errors
+                .iter()
+                .any(|error| error.contains("stdout reader task failed"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_confirms_child_and_both_readers() {
+        let handle = completed_agent_handle(tokio::spawn(async {}), tokio::spawn(async {}));
+        let pid = handle.pid;
+        assert!(matches!(
+            handle.wait().await,
+            AgentWait::Confirmed {
+                pid: confirmed_pid,
+                exit_code: Some(7),
+                reader_errors,
+            } if confirmed_pid == pid && reader_errors.is_empty()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_reports_reader_panic_after_confirmed_process_exit() {
+        let reader = tokio::spawn(async { panic!("reader failed") });
+        tokio::task::yield_now().await;
+        let handle = completed_agent_handle(reader, tokio::spawn(async {}));
+        let pid = handle.pid;
+        let AgentWait::Confirmed {
+            pid: confirmed_pid,
+            reader_errors,
+            ..
+        } = handle.wait().await
+        else {
+            panic!("process absence must be distinguished from reader failure");
+        };
+        assert_eq!(confirmed_pid, pid);
+        assert!(
+            reader_errors
+                .iter()
+                .any(|error| error.contains("stdout reader task failed"))
+        );
+        assert!(!roko_agent::process::registered_pids().contains(&pid));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_reports_unexpected_reader_cancellation() {
+        let reader = tokio::spawn(std::future::pending());
+        reader.abort();
+        let handle = completed_agent_handle(reader, tokio::spawn(async {}));
+        let AgentWait::Confirmed { reader_errors, .. } = handle.wait().await else {
+            panic!("child process should be confirmed absent");
+        };
+        assert!(
+            reader_errors
                 .iter()
                 .any(|error| error.contains("stdout reader task failed"))
         );

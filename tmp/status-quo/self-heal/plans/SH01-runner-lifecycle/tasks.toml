@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 22
-done = 18
+done = 19
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -370,7 +370,7 @@ acceptance = ["Merge completion carries exact launch generation and identity.", 
 id = "SH01-T06B2C3C3"
 title = "Terminalize failed merge producers and drain safely"
 description = "Factor one async failed-merge outcome path used by retained-effect mismatch, producer JoinError/panic, start failure, transition error, and persistence failure. It completes or recovers the exact owner, marks the reservation failed, emits one plan failure terminal after the claim, and drains the next exact launch under ownership. No error path may leave an active reservation, claimed slot, detached handle, or nonterminal plan."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 360

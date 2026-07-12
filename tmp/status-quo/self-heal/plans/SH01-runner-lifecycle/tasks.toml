@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 25
+total = 28
 done = 23
 status = "ready"
 max_parallel = 1
@@ -467,24 +467,84 @@ fail_msg = "Cancel-all aggregation tests must pass."
 acceptance = ["Cancel-all reports every exact confirmed and failed owner.", "Aggregate runtime fields derive from survivors.", "Cancelling one attempt cannot clear sibling state.", "Any CancellationFailed forbids Cancelled/success run terminal.", "Terminal events precede terminal snapshot/flush."]
 
 [[task]]
-id = "SH01-T06C"
-title = "Enforce progress-aware deadlines durably"
-description = "Wire hard-run, owner-scoped task/gate/silence, and global scheduler-no-progress deadlines using T06A configuration and T06B ownership. Agent chatter resets silence only; useful progress advances only on durable lifecycle or DAG milestones. Terminalize exact attempts and plans and persist typed timeout/cancellation events before terminal snapshots, shutdown, or run.completed. Gate-map membership alone cannot suppress deadlock detection."
+id = "SH01-T06C1"
+title = "Define timeout semantics and monotonic ownership clocks"
+description = "Add typed timeout kinds and terminal/event vocabulary plus a pure monotonic deadline tracker. Record attempt, phase/effect, and agent-activity clocks in exact ownership and preserve them across linear claims and transitions. Resolve hard-run legacy fallback and authored task overrides deterministically. This foundation does not yet cancel runtime work."
 status = "ready"
-tier = "integrative"
+tier = "architectural"
 model_hint = "codex-default"
-max_loc = 500
-files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs"]
-role = "implementer"
+max_loc = 360
+files = ["crates/roko-cli/src/runner/deadlines.rs", "crates/roko-cli/src/runner/attempt_ownership.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "architect"
 domain = "execution-engine"
 depends_on = ["SH01-T06B2D4"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Progress semantics." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable terminal ordering." }]
 [[task.verify]]
 phase = "test"
+command = "cargo test -p roko-cli --lib runner::deadlines 2>&1 && cargo test -p roko-cli --lib runner::attempt_ownership 2>&1"
+fail_msg = "Timeout semantics and monotonic clock tests must pass."
+acceptance = ["Timeout kinds distinguish hard-run, task-attempt, gate-effect, agent-silence, scheduler-no-progress, and lost-effect causes.", "Enforcement uses monotonic clocks while wall-clock timestamps remain audit data.", "Claims and ownership transitions preserve attempt and activity timing.", "Hard-run fallback and authored task timeout precedence are deterministic.", "Tracker tests use paused or injected time and contain no wall-clock sleeps."]
+
+[[task]]
+id = "SH01-T06C2"
+title = "Enforce exact owner deadlines"
+description = "Scan exact ownership for task-attempt, gate-effect, and agent-silence expiry. Use authored task timeout overrides or global defaults, settle only the exact claimed resource through the cancellation machinery, and durably terminalize the timeout after cleanup confirmation. Failed cleanup must remain nonterminal and recoverable."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 440
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/deadlines.rs", "crates/roko-cli/src/runner/attempt_ownership.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06C1"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Exact owner deadlines." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable timeout ordering." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --lib runner::attempt_ownership 2>&1"
+fail_msg = "Exact owner deadline tests must pass."
+acceptance = ["Task, gate, and silence expiry target only the exact attempt and effect owner.", "Agent chatter resets silence but no other deadline.", "Confirmed cleanup precedes a typed durable TimedOut terminal.", "Failed cleanup preserves ownership and forbids terminal timeout or success.", "Stale and duplicate expiry decisions cannot mutate a replacement owner."]
+
+[[task]]
+id = "SH01-T06C3"
+title = "Enforce independent hard-run and scheduler-progress deadlines"
+description = "Replace the fixed plan-total timer with an independent hard-run cap and a scheduler-no-progress clock advanced only after successfully persisted lifecycle or DAG milestones. Agent chatter may update silence but cannot advance scheduler progress. Emit typed timeout state before shutdown, snapshots, or run completion."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/deadlines.rs", "crates/roko-cli/src/runner/state.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06C2"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Progress and hard-cap semantics." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable timeout ordering." }]
+[[task.verify]]
+phase = "test"
 command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli runner::state 2>&1"
-fail_msg = "Progress-aware deadline tests must pass."
-acceptance = ["Hard cap is independent of progress.", "Chatter cannot reset scheduler progress.", "Owner timeout affects only its exact attempt/effect.", "Lost effects expire rather than blocking forever.", "Typed timeout terminals are durable before terminal snapshots and run completion."]
+fail_msg = "Global deadline tests must pass."
+acceptance = ["Hard cap never resets.", "Only successfully persisted useful lifecycle or DAG milestones reset scheduler progress.", "Output chatter cannot reset scheduler progress.", "Timeout events and state precede cleanup, terminal snapshots, and run completion.", "The legacy fixed plan-total timer is removed from runtime enforcement."]
+
+[[task]]
+id = "SH01-T06C4"
+title = "Expire lost effects and close timeout races"
+description = "Detect missing or stuck owned effects regardless of gate-map membership, expire them through exact ownership, and consistently terminalize or drain siblings. Integrate typed timeout outcomes with ledger replay and projections, with deterministic tests for completion-versus-expiry, stale events, duplicate expiry, lost producers, and resume."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 420
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/projection.rs", "crates/roko-runtime/src/run_ledger.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06C3"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/42-LOST-GATE-COMPLETION-LEAVES-DAG-RUNNING.md", why = "Lost-effect reproduction." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Replay and projection requirements." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli runner::projection 2>&1 && cargo test -p roko-runtime run_ledger 2>&1"
+fail_msg = "Lost-effect timeout and race tests must pass."
+acceptance = ["Gate-map membership cannot hide a missing producer or suppress expiry.", "Completion and expiry have one linear winner.", "Late and duplicate events are idempotent.", "Replay reconstructs the same timeout terminal state as live execution.", "Resume restores deadline intent without comparing wall-clock time as a monotonic clock."]
 
 [[task]]
 id = "SH01-T07"
@@ -497,7 +557,7 @@ max_loc = 180
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
 role = "implementer"
 domain = "observability"
-depends_on = ["SH01-T03", "SH01-T06C"]
+depends_on = ["SH01-T03", "SH01-T06C4"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/46-RUN-SUMMARY-CONTRADICTS-PLAN-SUMMARY.md", why = "9/5 versus 0/0 reproduction." }]
 [[task.verify]]

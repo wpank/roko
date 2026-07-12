@@ -9818,6 +9818,41 @@ mod tests_post_gate_reflection_lessons {
         assert_eq!(collect_in_flight_attempts(&restored).len(), 1);
     }
 
+    #[test]
+    fn cancellation_summary_requires_every_attempt_and_quarantine_to_settle() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let confirmed = CancelAttemptSummary {
+            attempt: attempt.clone(),
+            outcome: CancelAttemptOutcome::Confirmed,
+        };
+        assert!(
+            CancelAllSummary {
+                attempts: vec![confirmed],
+                quarantined: Vec::new(),
+            }
+            .all_confirmed()
+        );
+
+        assert!(
+            !CancelAllSummary {
+                attempts: vec![CancelAttemptSummary {
+                    attempt: attempt.clone(),
+                    outcome: CancelAttemptOutcome::Unconfirmed(vec!["kill not confirmed".into()]),
+                }],
+                quarantined: Vec::new(),
+            }
+            .all_confirmed()
+        );
+
+        assert!(
+            !CancelAllSummary {
+                attempts: Vec::new(),
+                quarantined: vec![attempt],
+            }
+            .all_confirmed()
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_releases_owned_merge_reservation_and_owner() {
         let queue = MergeQueue::new();

@@ -1849,6 +1849,11 @@ pub async fn run(
                 }
 
                 if completion.kind == GateCompletionKind::PlanVerify {
+                    finish_gate_claim(
+                        &mut attempt_ownership,
+                        &mut owned_gate_claim,
+                        false,
+                    );
                     handle_plan_verify_completion(
                         &completion,
                         &mut executor,
@@ -6017,59 +6022,28 @@ async fn dispatch_action(
                 .unwrap_or_default();
 
             if verify_steps.is_empty() {
-                info!(plan_id = %plan_id, "no declared plan verify steps — passing verify phase");
-                match complete_verified_plan_success(
-                    plan_id,
-                    ctx.executor,
-                    ctx.state,
-                    ctx.paths,
-                    ctx.tui,
-                    ctx.config,
-                ) {
-                    Ok(phase) => {
-                        ctx.tui
-                            .phase_transition(plan_id, "verifying", &format!("{phase:?}"));
-                        info!(plan_id = %plan_id, phase = ?phase, "plan verify passed — plan complete");
-                    }
-                    Err(err) => {
-                        warn!(
-                            plan_id = %plan_id,
-                            error = %err,
-                            "transition error while completing plan with no verify steps"
-                        );
-                        let _ = ctx.executor.apply_event(
-                            plan_id,
-                            &ExecutorEvent::Fatal(format!("plan verify transition failed: {err}")),
-                        );
-                    }
-                }
-                save_snapshot(
-                    ctx.config,
-                    ctx.executor,
-                    ctx.paths,
-                    ctx.state,
-                    ctx.merge_queue,
-                    ctx.gate_thresholds,
-                    ctx.snapshot_writer,
-                );
-                return ActionDispatchOutcome::Handled;
+                info!(plan_id = %plan_id, "dispatching owned no-step plan verify");
             }
 
-            let plan_workdir = match tracked_plan_workdir(ctx.worktrees, plan_id) {
-                Some(path) => path,
-                None => {
-                    let message = format!("isolated worktree missing for plan {plan_id}");
-                    error!(plan_id = %plan_id, "{}", message);
-                    if let Err(e) = ctx
-                        .executor
-                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
-                    {
-                        error!(plan_id = %plan_id, error = %e,
+            let plan_workdir = if verify_steps.is_empty() {
+                ctx.config.workdir.clone()
+            } else {
+                match tracked_plan_workdir(ctx.worktrees, plan_id) {
+                    Some(path) => path,
+                    None => {
+                        let message = format!("isolated worktree missing for plan {plan_id}");
+                        error!(plan_id = %plan_id, "{}", message);
+                        if let Err(e) = ctx
+                            .executor
+                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                        {
+                            error!(plan_id = %plan_id, error = %e,
                             "failed to apply Fatal event -- forcing plan terminal");
-                        ctx.state.force_plan_terminal(plan_id);
+                            ctx.state.force_plan_terminal(plan_id);
+                        }
+                        ctx.tui.error(&message);
+                        return ActionDispatchOutcome::Noop;
                     }
-                    ctx.tui.error(&message);
-                    return ActionDispatchOutcome::Noop;
                 }
             };
 
@@ -6079,21 +6053,44 @@ async fn dispatch_action(
                 u32::MAX,
                 GateCompletionKind::PlanVerify,
             );
-            if !ctx.state.mark_gate_active(effect_key.clone()) {
-                debug!(
-                    plan_id = %plan_id,
-                    "plan verify already active — suppressing duplicate dispatch"
-                );
-                return ActionDispatchOutcome::Noop;
-            }
             let run_id = ctx.state.run_id().to_string();
             let attempt_ref = TaskAttemptRef::new(
                 plan_id.clone(),
                 "plan-verify",
                 ctx.state.iteration_for(plan_id, "plan-verify"),
             );
-            ctx.legacy_gate_attempts
-                .insert(effect_key.clone(), attempt_ref.clone());
+            let gate_effect = new_gate_effect(
+                attempt_ref.clone(),
+                GateCompletionKind::PlanVerify,
+                u32::MAX,
+            );
+            if !ctx.attempt_ownership.contains(&attempt_ref) {
+                ctx.attempt_ownership
+                    .insert(
+                        attempt_ref.clone(),
+                        AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                        AgentRuntimeResource::AwaitingGate,
+                    )
+                    .expect("plan verify owner must be unique");
+            }
+            let prior_effect = ctx
+                .attempt_ownership
+                .current_effect(&attempt_ref)
+                .expect("plan verify owner must expose current effect");
+            let mut gate_claim = match ctx.attempt_ownership.claim_phase(
+                &attempt_ref,
+                AttemptPhase::AwaitingGate,
+                prior_effect,
+            ) {
+                Ok(claim) => claim,
+                Err(_) => return ActionDispatchOutcome::Noop,
+            };
+            if !ctx.state.mark_gate_active(effect_key.clone()) {
+                ctx.attempt_ownership
+                    .transition_claim(gate_claim, AttemptPhase::AwaitingGate, prior_effect)
+                    .expect("suppressed plan verify must restore owner");
+                return ActionDispatchOutcome::Noop;
+            }
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -6112,8 +6109,8 @@ async fn dispatch_action(
                 task_count = verify_steps.len(),
                 "dispatching plan verify"
             );
-            let gate_handle = gate_dispatch::spawn_plan_verify(
-                attempt_ref,
+            let (gate_handle, start_tx) = gate_dispatch::spawn_plan_verify(
+                gate_effect.clone(),
                 plan_id.clone(),
                 plan_workdir,
                 verify_steps,
@@ -6121,7 +6118,37 @@ async fn dispatch_action(
                 ctx.gate_tx.clone(),
                 ctx.gate_sem.clone(),
             );
-            drop(gate_handle);
+            gate_claim.replace_resource(AgentRuntimeResource::Gate {
+                effect: gate_effect.clone(),
+                handle: gate_handle,
+            });
+            ctx.attempt_ownership
+                .transition_claim(
+                    gate_claim,
+                    AttemptPhase::Gate,
+                    EffectRef(gate_effect.generation),
+                )
+                .expect("plan verify must retain exact owner");
+            if start_tx.send(()).is_err() {
+                ctx.state.clear_gate_active(&effect_key);
+                if let Ok(mut claim) = ctx.attempt_ownership.claim_phase(
+                    &attempt_ref,
+                    AttemptPhase::Gate,
+                    EffectRef(gate_effect.generation),
+                ) {
+                    if let AgentRuntimeResource::Gate { handle, .. } =
+                        claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    {
+                        let _ = handle.await;
+                    }
+                    ctx.attempt_ownership.complete_claim(claim).ok();
+                }
+                let message = format!("plan verify producer failed to start for {plan_id}");
+                let _ = ctx
+                    .executor
+                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
+                ctx.tui.error(&message);
+            }
             ActionDispatchOutcome::Handled
         }
 
@@ -8864,7 +8891,9 @@ mod tests_post_gate_reflection_lessons {
         assert!(!runtimes.contains_key(&task_key("plan", "done")));
         assert!(runtimes.contains_key(&task_key("plan", "sibling")));
         assert!(matches!(
-            executor.plan_state("plan").map(|state| &state.current_phase),
+            executor
+                .plan_state("plan")
+                .map(|state| &state.current_phase),
             Some(PlanPhase::Gating)
         ));
     }

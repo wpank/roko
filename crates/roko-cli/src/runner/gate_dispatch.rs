@@ -249,99 +249,128 @@ pub async fn run_gate_once(
 
 /// Spawn plan-level verify steps as a background task.
 pub fn spawn_plan_verify(
-    attempt: TaskAttemptRef,
+    effect: GateEffectRef,
     plan_id: String,
     workdir: PathBuf,
     verify_steps: Vec<(String, Vec<VerifyStep>)>,
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let t_wait = Instant::now();
-        let Ok(_permit) = gate_sem.acquire_owned().await else {
+) -> (JoinHandle<()>, oneshot::Sender<()>) {
+    let (start_tx, start_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        if start_rx.await.is_err() {
             return;
-        };
-        let wait_ms = t_wait.elapsed().as_millis() as u64;
-        if wait_ms > 10 {
+        }
+        let failure_effect = effect.clone();
+        let failure_plan = plan_id.clone();
+        let worker = AssertUnwindSafe(async move {
+            let t_wait = Instant::now();
+            let _permit = gate_sem
+                .acquire_owned()
+                .await
+                .map_err(|_| "plan verify semaphore closed before acquisition".to_string())?;
+            let wait_ms = t_wait.elapsed().as_millis() as u64;
+            if wait_ms > 10 {
+                info!(
+                    plan_id = %plan_id,
+                    wait_ms,
+                    "plan verify semaphore acquired"
+                );
+            }
+            let start = Instant::now();
+            let ctx = roko_core::Context::now();
+            let limit = Duration::from_secs(timeout_secs.max(1));
+            let plan_id_for_run = plan_id.clone();
+            let workdir_for_run = workdir.clone();
+
+            let run = async move {
+                let mut all = Vec::new();
+                for (task_id, steps) in verify_steps {
+                    let signal = gate_signal(
+                        &plan_id_for_run,
+                        &task_id,
+                        RUNG_PLAN_VERIFY,
+                        &workdir_for_run,
+                        &[], // plan-level verify runs workspace-wide
+                    );
+                    all.extend(run_verify_steps(&signal, &ctx, &task_id, steps).await);
+                }
+                all
+            };
+
+            let verdicts = match timeout(limit, run).await {
+                Ok(verdicts) => verdicts,
+                Err(_) => vec![
+                    Verdict::fail(
+                        "plan-verify-timeout",
+                        format!("plan verify timed out after {timeout_secs}s"),
+                    )
+                    .with_error_digest(format!("timeout: plan verify exceeded {timeout_secs}s")),
+                ],
+            };
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let passed = verdicts.iter().all(|v| v.passed);
+            let output = render_output(&verdicts);
+            let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
+            let summaries = verdicts
+                .iter()
+                .map(|v| GateVerdictSummary {
+                    gate_name: v.gate.clone(),
+                    passed: v.passed,
+                    summary: v.reason.clone(),
+                    error_digest: v.error_digest.clone(),
+                    failure_kind: (!v.passed)
+                        .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
+                })
+                .collect();
+
             info!(
                 plan_id = %plan_id,
-                wait_ms,
-                "plan verify semaphore acquired"
+                passed,
+                duration_ms,
+                "plan verify completed"
             );
-        }
-        let start = Instant::now();
-        let ctx = roko_core::Context::now();
-        let limit = Duration::from_secs(timeout_secs.max(1));
-        let plan_id_for_run = plan_id.clone();
-        let workdir_for_run = workdir.clone();
 
-        let run = async move {
-            let mut all = Vec::new();
-            for (task_id, steps) in verify_steps {
-                let signal = gate_signal(
-                    &plan_id_for_run,
-                    &task_id,
-                    RUNG_PLAN_VERIFY,
-                    &workdir_for_run,
-                    &[], // plan-level verify runs workspace-wide
-                );
-                all.extend(run_verify_steps(&signal, &ctx, &task_id, steps).await);
-            }
-            all
-        };
-
-        let verdicts = match timeout(limit, run).await {
-            Ok(verdicts) => verdicts,
-            Err(_) => vec![
-                Verdict::fail(
-                    "plan-verify-timeout",
-                    format!("plan verify timed out after {timeout_secs}s"),
-                )
-                .with_error_digest(format!("timeout: plan verify exceeded {timeout_secs}s")),
-            ],
-        };
-        let duration_ms = start.elapsed().as_millis() as u64;
-        let passed = verdicts.iter().all(|v| v.passed);
-        let output = render_output(&verdicts);
-        let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
-        let summaries = verdicts
-            .iter()
-            .map(|v| GateVerdictSummary {
-                gate_name: v.gate.clone(),
-                passed: v.passed,
-                summary: v.reason.clone(),
-                error_digest: v.error_digest.clone(),
-                failure_kind: (!v.passed)
-                    .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
+            Ok::<_, String>(GateCompletion {
+                kind: GateCompletionKind::PlanVerify,
+                attempt: Some(effect.attempt.clone()),
+                effect: Some(effect),
+                plan_id,
+                task_id: "plan-verify".to_string(),
+                rung: RUNG_PLAN_VERIFY,
+                passed,
+                failure_kind,
+                verdicts: summaries,
+                output,
+                duration_ms,
             })
-            .collect();
-
-        info!(
-            plan_id = %plan_id,
-            passed,
-            duration_ms,
-            "plan verify completed"
-        );
-
-        let completion = GateCompletion {
-            kind: GateCompletionKind::PlanVerify,
-            attempt: Some(attempt),
-            effect: None,
-            plan_id,
-            task_id: "plan-verify".to_string(),
-            rung: RUNG_PLAN_VERIFY,
-            passed,
-            failure_kind,
-            verdicts: summaries,
-            output,
-            duration_ms,
+        })
+        .catch_unwind()
+        .await;
+        let completion = match worker {
+            Ok(Ok(completion)) => completion,
+            Ok(Err(message)) => failed_gate_completion(
+                failure_effect,
+                failure_plan,
+                "plan-verify".to_string(),
+                RUNG_PLAN_VERIFY,
+                message,
+            ),
+            Err(_) => failed_gate_completion(
+                failure_effect,
+                failure_plan,
+                "plan-verify".to_string(),
+                RUNG_PLAN_VERIFY,
+                "plan verify producer panicked".to_string(),
+            ),
         };
 
         if let Err(e) = gate_tx.send(completion).await {
             error!(err = %e, "failed to send plan verify completion — channel closed");
         }
-    })
+    });
+    (handle, start_tx)
 }
 
 fn gate_signal(
@@ -570,6 +599,66 @@ mod tests {
         handle.abort();
         let _ = handle.await;
         assert!(start.send(()).is_err());
+    }
+
+    #[tokio::test]
+    async fn plan_verify_is_barriered_and_preserves_exact_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let effect = GateEffectRef {
+            attempt: TaskAttemptRef::new("plan-a", "plan-verify", 1),
+            kind: GateCompletionKind::PlanVerify,
+            rung: RUNG_PLAN_VERIFY,
+            generation: 501,
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        let (handle, start) = spawn_plan_verify(
+            effect.clone(),
+            "plan-a".to_string(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            1,
+            tx,
+            Arc::new(Semaphore::new(1)),
+        );
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        start.send(()).unwrap();
+        let completion = rx.recv().await.unwrap();
+        handle.await.unwrap();
+        assert!(completion.passed);
+        assert_eq!(completion.effect, Some(effect));
+    }
+
+    #[tokio::test]
+    async fn closed_plan_verify_semaphore_emits_exact_resource_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let effect = GateEffectRef {
+            attempt: TaskAttemptRef::new("plan-b", "plan-verify", 1),
+            kind: GateCompletionKind::PlanVerify,
+            rung: RUNG_PLAN_VERIFY,
+            generation: 502,
+        };
+        let semaphore = Arc::new(Semaphore::new(0));
+        semaphore.close();
+        let (tx, mut rx) = mpsc::channel(1);
+        let (handle, start) = spawn_plan_verify(
+            effect.clone(),
+            "plan-b".to_string(),
+            dir.path().to_path_buf(),
+            Vec::new(),
+            1,
+            tx,
+            semaphore,
+        );
+        start.send(()).unwrap();
+        let completion = rx.recv().await.unwrap();
+        handle.await.unwrap();
+        assert!(!completion.passed);
+        assert_eq!(completion.failure_kind, Some(RunnerFailureKind::Resource));
+        assert_eq!(completion.effect, Some(effect));
     }
 
     #[tokio::test]

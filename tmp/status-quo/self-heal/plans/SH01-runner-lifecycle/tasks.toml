@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 22
-done = 16
+done = 17
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -330,7 +330,7 @@ acceptance = ["Transition/restore failure returns the original linear claim and 
 id = "SH01-T06B2C3C1B"
 title = "Own dormant merge setup and roll back launch failures"
 description = "Use linear MergeLaunch and recoverable claims to prepare a dormant merge producer, insert exact ownership, retain its handle, and only then release the barrier. Insert, claim, prepare, effect validation, transition, and start failures abort and await dormant work, recover or finalize only their own claim, atomically fail/release the exact queue reservation, and continue a drain loop bounded by its initial queue snapshot. Successful producers emit exact effect identity so completion claims, awaits, and removes the setup owner before calling the existing merge outcome handler; moving queue and terminal side effects behind that claim remains for the next task."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 360

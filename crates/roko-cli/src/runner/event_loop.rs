@@ -58,6 +58,7 @@ use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, Agent
 use super::attempt_ownership::{
     AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
 };
+use super::deadlines::{DeadlinePolicy, DeadlineTracker, monotonic_now};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -69,10 +70,10 @@ use super::task_dag::{DagConfig, DagProgressSummary, TaskDag, task_status_is_ter
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
-    GateEffectRef, GateVerdictSummary, PlanOutcome, PlanRunSummary, PromptAssemblyDiagnostics,
-    ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome, RunTotals, RunnerEvent,
-    RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef, TaskAttemptStatus,
-    effective_plan_timeout_secs,
+    GateEffectRef, GateVerdictSummary, OwnerEffectRef, PlanOutcome, PlanRunSummary,
+    PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
+    RunTotals, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
+    TaskAttemptStatus, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
 
 // ─── RunReport ──────────────────────────────────────────────────────────
@@ -2727,6 +2728,17 @@ pub async fn run(
 
             // ─── Branch 4: Periodic flush ───────────────────────────
             _ = flush_interval.tick() => {
+                enforce_owned_deadlines(
+                    &mut attempt_ownership,
+                    &mut state,
+                    &mut executor,
+                    &mut task_dag,
+                    &task_index,
+                    &merge_queue,
+                    &paths,
+                    &tui,
+                    config,
+                ).await;
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 {
                     let pids = attempt_ownership.surviving_agent_metadata().pids;
@@ -7267,6 +7279,7 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
                     | TaskAttemptStatus::Failed
                     | TaskAttemptStatus::Exhausted
                     | TaskAttemptStatus::Cancelled
+                    | TaskAttemptStatus::TimedOut
             )
         })
         .map(|attempt| format!("{}:{:?}", attempt.attempt.key(), attempt.status))
@@ -7275,10 +7288,155 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
     attempts
 }
 
+async fn enforce_owned_deadlines(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    state: &mut RunState,
+    executor: &mut ParallelExecutor,
+    task_dag: &mut TaskDag,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    merge_queue: &MergeQueue,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> usize {
+    enforce_owned_deadlines_at(
+        monotonic_now(),
+        ownership,
+        state,
+        executor,
+        task_dag,
+        task_index,
+        merge_queue,
+        paths,
+        tui,
+        config,
+    )
+    .await
+}
+
+async fn enforce_owned_deadlines_at(
+    now: crate::runner::deadlines::MonotonicTime,
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    state: &mut RunState,
+    executor: &mut ParallelExecutor,
+    task_dag: &mut TaskDag,
+    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    merge_queue: &MergeQueue,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> usize {
+    let timeout_config = config
+        .roko_config
+        .as_ref()
+        .map(|config| config.timeouts.clone())
+        .unwrap_or_default();
+    let policy = DeadlinePolicy::from_config(&timeout_config, plan_total_timeout(config));
+    let mut candidates = Vec::new();
+    for candidate in ownership.deadline_candidates() {
+        if !candidate.eligible {
+            continue;
+        }
+        let authored = task_index
+            .get(&candidate.attempt.plan_id)
+            .and_then(|tasks| tasks.get(&candidate.attempt.task_id))
+            .map(|task| task.timeout_secs)
+            .filter(|seconds| *seconds > 0);
+        let gate_effect =
+            ownership
+                .resource(&candidate.attempt)
+                .and_then(|resource| match resource {
+                    AgentRuntimeResource::Gate { effect, .. }
+                    | AgentRuntimeResource::Merge { effect, .. } => Some(effect.clone()),
+                    _ => None,
+                });
+        let owner = AttemptOwner {
+            phase: candidate.phase,
+            effect: candidate.effect,
+            cancellation: candidate.cancellation,
+            agent: None,
+            timing: candidate.timing,
+        };
+        let Some(expiry) = DeadlineTracker::owner_expiry(
+            now,
+            &candidate.attempt,
+            &owner,
+            policy,
+            authored,
+            gate_effect,
+        ) else {
+            continue;
+        };
+        candidates.push((expiry.deadline_at, candidate, expiry));
+    }
+    candidates.sort_by_key(|(deadline, candidate, _)| (*deadline, candidate.attempt.key()));
+    let mut expired = 0;
+    for (_, candidate, expiry) in candidates {
+        let baseline = match expiry.kind {
+            TimeoutKind::TaskAttempt => candidate.timing.attempt_started_at,
+            TimeoutKind::GateEffect => candidate.timing.phase_started_at,
+            TimeoutKind::AgentSilence => candidate.timing.last_agent_activity_at,
+            _ => continue,
+        };
+        let timeout = TimeoutEvent {
+            kind: expiry.kind,
+            attempt: Some(candidate.attempt.clone()),
+            effect: expiry.gate_effect,
+            owner_effect: Some(OwnerEffectRef(candidate.effect.0)),
+            limit_ms: u64::try_from(expiry.limit.as_millis()).unwrap_or(u64::MAX),
+            monotonic_elapsed_ms: u64::try_from(now.elapsed_since(baseline).as_millis())
+                .unwrap_or(u64::MAX),
+            observed_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        };
+        if matches!(
+            cancel_exact_attempt(
+                &candidate.attempt,
+                Some((candidate.phase, candidate.effect)),
+                AttemptCleanupTerminal::TimedOut(timeout),
+                ownership,
+                state,
+                merge_queue,
+                paths,
+                tui,
+                config,
+                Duration::from_secs(3),
+            )
+            .await,
+            CancelAttemptOutcome::Confirmed
+        ) {
+            expired += 1;
+            let plan_id = &candidate.attempt.plan_id;
+            let task_id = &candidate.attempt.task_id;
+            let reason = format!("task timed out: {:?}", expiry.kind);
+            state.task_failed();
+            state.record_task_failure(plan_id, task_id, &reason);
+            state.mark_task_failed(plan_id, task_id);
+            let task_refs = task_refs_for_plan(task_index, plan_id);
+            task_dag.mark_failed_blocking_downstream(plan_id, task_id, &task_refs);
+            if !ready_tasks_for_plan(task_dag, executor, task_index, state, plan_id).is_empty() {
+                if let Some(plan) = executor.plan_state_mut(plan_id) {
+                    plan.current_phase = PlanPhase::Implementing;
+                }
+            } else if let Err(error) =
+                executor.apply_event(plan_id, &ExecutorEvent::Fatal(reason.clone()))
+            {
+                error!(%plan_id, %error, "failed to terminalize timed-out task plan");
+                state.force_plan_terminal(plan_id);
+            }
+        }
+    }
+    expired
+}
+
 #[derive(Debug)]
 enum CancelAttemptOutcome {
     Confirmed,
     Unconfirmed(Vec<String>),
+}
+
+enum AttemptCleanupTerminal {
+    Cancelled,
+    TimedOut(TimeoutEvent),
 }
 
 #[derive(Debug)]
@@ -7349,6 +7507,8 @@ fn record_cancellation_failure(
 
 async fn cancel_exact_attempt(
     attempt: &TaskAttemptRef,
+    expected_owner: Option<(AttemptPhase, EffectRef)>,
+    terminal: AttemptCleanupTerminal,
     ownership: &mut AttemptOwnership<AgentRuntimeResource>,
     state: &mut RunState,
     merge_queue: &MergeQueue,
@@ -7357,7 +7517,7 @@ async fn cancel_exact_attempt(
     config: &RunConfig,
     grace: Duration,
 ) -> CancelAttemptOutcome {
-    let Ok(mut claim) = ownership.claim_cancellation(attempt) else {
+    let Ok(mut claim) = ownership.claim_cancellation_exact(attempt, expected_owner) else {
         return CancelAttemptOutcome::Unconfirmed(vec!["exact owner unavailable".to_string()]);
     };
     let run_id = state.run_id().to_string();
@@ -7546,21 +7706,30 @@ async fn cancel_exact_attempt(
         );
         return record_cancellation_failure(attempt, errors, state, paths, tui, config);
     }
-    emit_runner_event(
-        paths,
-        state,
-        tui,
-        config,
-        RunnerEvent::task_attempt_completed(
-            &run_id,
-            attempt.clone(),
-            TaskAttemptOutcome::Cancelled,
-            None,
-            0,
-            "",
-            "",
+    match terminal {
+        AttemptCleanupTerminal::Cancelled => emit_runner_event(
+            paths,
+            state,
+            tui,
+            config,
+            RunnerEvent::task_attempt_completed(
+                &run_id,
+                attempt.clone(),
+                TaskAttemptOutcome::Cancelled,
+                None,
+                0,
+                "",
+                "",
+            ),
         ),
-    );
+        AttemptCleanupTerminal::TimedOut(timeout) => emit_runner_event(
+            paths,
+            state,
+            tui,
+            config,
+            RunnerEvent::timeout_recorded(&run_id, timeout),
+        ),
+    }
     CancelAttemptOutcome::Confirmed
 }
 
@@ -7578,6 +7747,8 @@ async fn stop_all_agents(
     for attempt in ownership.attempts() {
         let outcome = cancel_exact_attempt(
             &attempt,
+            None,
+            AttemptCleanupTerminal::Cancelled,
             ownership,
             state,
             merge_queue,
@@ -9855,6 +10026,189 @@ mod tests_post_gate_reflection_lessons {
     }
 
     #[tokio::test]
+    async fn confirmed_exact_cleanup_is_durable_before_timed_out_terminal() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let sibling = TaskAttemptRef::new("plan", "sibling", 1);
+        let effect = EffectRef(71);
+        let now = crate::runner::deadlines::MonotonicTime::from_millis(3_000);
+        let started = crate::runner::deadlines::MonotonicTime::from_millis(1_000);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new_at(AttemptPhase::AwaitingGate, effect, started),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        ownership
+            .insert(
+                sibling.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, EffectRef(72), now),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            sibling.clone(),
+            "sibling",
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.task_attempt_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::new(DagConfig::default());
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                now,
+                &mut ownership,
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            1
+        );
+        assert!(!ownership.contains(&attempt));
+        assert!(ownership.contains(&sibling));
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::TimedOut
+        );
+        assert_eq!(
+            state.lifecycle.task_attempts[&sibling.key()].status,
+            TaskAttemptStatus::Started
+        );
+
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        let cancellation = events
+            .find("task.attempt.cancellation_requested")
+            .expect("cancellation request must be durable");
+        let timeout = events
+            .find("timeout.recorded")
+            .expect("timeout terminal must be durable");
+        assert!(cancellation < timeout);
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                now,
+                &mut ownership,
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            0,
+            "duplicate scans must not emit a second timeout"
+        );
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        assert_eq!(events.matches("timeout.recorded").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn gate_timeout_records_exact_gate_and_owner_effects() {
+        let attempt = TaskAttemptRef::new("plan", "gate-task", 1);
+        let gate_effect = GateEffectRef {
+            attempt: attempt.clone(),
+            kind: GateCompletionKind::Gate,
+            rung: 2,
+            generation: 81,
+        };
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new_at(
+                    AttemptPhase::Gate,
+                    EffectRef(81),
+                    crate::runner::deadlines::MonotonicTime::from_millis(1_000),
+                ),
+                AgentRuntimeResource::Gate {
+                    effect: gate_effect.clone(),
+                    handle: tokio::spawn(std::future::pending()),
+                },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "gate-task",
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.gate_effect_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::new(DagConfig::default());
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                crate::runner::deadlines::MonotonicTime::from_millis(2_000),
+                &mut ownership,
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            1
+        );
+
+        let timeout = std::fs::read_to_string(&paths.events_jsonl)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .find_map(|event| match event {
+                RunnerEvent::TimeoutRecorded { timeout, .. } => Some(timeout),
+                _ => None,
+            })
+            .expect("typed gate timeout");
+        assert_eq!(timeout.kind, TimeoutKind::GateEffect);
+        assert_eq!(timeout.effect, Some(gate_effect));
+        assert_eq!(timeout.owner_effect, Some(OwnerEffectRef(81)));
+    }
+
+    #[tokio::test]
     async fn shutdown_releases_owned_merge_reservation_and_owner() {
         let queue = MergeQueue::new();
         let merger = PlanMerger::new(
@@ -9958,6 +10312,16 @@ mod tests_post_gate_reflection_lessons {
         assert!(matches!(
             cancel_exact_attempt(
                 &attempt,
+                Some((AttemptPhase::Gate, EffectRef(9))),
+                AttemptCleanupTerminal::TimedOut(TimeoutEvent {
+                    kind: TimeoutKind::GateEffect,
+                    attempt: Some(attempt.clone()),
+                    effect: Some(effect.clone()),
+                    owner_effect: Some(OwnerEffectRef(9)),
+                    limit_ms: 1,
+                    monotonic_elapsed_ms: 1,
+                    observed_at_ms: 1,
+                }),
                 &mut ownership,
                 &mut state,
                 &MergeQueue::new(),
@@ -9977,6 +10341,9 @@ mod tests_post_gate_reflection_lessons {
             state.lifecycle.task_attempts[&attempt.key()].status,
             TaskAttemptStatus::CancellationFailed
         );
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        assert!(!events.contains("timeout.recorded"));
+        assert!(ownership.contains(&attempt));
         assert!(state.mark_gate_active(effect_key));
     }
 }

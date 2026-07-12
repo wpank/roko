@@ -222,6 +222,16 @@ impl<R> AttemptOwnership<R> {
         self.owners.contains_key(attempt)
     }
 
+    pub(crate) fn resource(&self, attempt: &TaskAttemptRef) -> Option<&R> {
+        self.owners.get(attempt).and_then(|slot| {
+            if slot.claimed {
+                None
+            } else {
+                slot.resource.as_ref()
+            }
+        })
+    }
+
     pub fn contains_task(&self, plan_id: &str, task_id: &str) -> bool {
         self.owners
             .keys()
@@ -339,10 +349,23 @@ impl<R> AttemptOwnership<R> {
         &mut self,
         attempt: &TaskAttemptRef,
     ) -> Result<AttemptClaim<R>, OwnershipError> {
+        self.claim_cancellation_exact(attempt, None)
+    }
+
+    pub fn claim_cancellation_exact(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        expected: Option<(AttemptPhase, EffectRef)>,
+    ) -> Result<AttemptClaim<R>, OwnershipError> {
         let Some(slot) = self.owners.get_mut(attempt) else {
             return Err(OwnershipError::Missing);
         };
-        if slot.claimed || slot.owner.cancellation == CancellationState::Cancelling {
+        if slot.claimed
+            || slot.owner.cancellation == CancellationState::Cancelling
+            || expected.is_some_and(|(phase, effect)| {
+                slot.owner.phase != phase || slot.owner.effect != effect
+            })
+        {
             return Err(OwnershipError::Ineligible);
         }
         slot.claimed = true;
@@ -890,6 +913,29 @@ mod tests {
     }
 
     #[test]
+    fn agent_chatter_advances_only_silence_clock() {
+        let key = attempt(1);
+        let started = MonotonicTime::from_millis(10);
+        let activity = MonotonicTime::from_millis(20);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, started),
+                (),
+            )
+            .unwrap();
+        let before = ownership.deadline_candidates().pop().unwrap().timing;
+
+        assert!(ownership.record_agent_activity(&key, AGENT, activity));
+        let after = ownership.deadline_candidates().pop().unwrap().timing;
+
+        assert_eq!(after.attempt_started_at, before.attempt_started_at);
+        assert_eq!(after.phase_started_at, before.phase_started_at);
+        assert_eq!(after.last_agent_activity_at, activity);
+    }
+
+    #[test]
     fn cancellation_failure_recovery_preserves_all_owner_clocks() {
         let key = attempt(1);
         let started = MonotonicTime::from_millis(10);
@@ -982,6 +1028,69 @@ mod tests {
             cancelling_candidate.cancellation,
             CancellationState::Cancelling
         );
+    }
+
+    #[test]
+    fn stale_deadline_candidate_cannot_claim_replacement_effect() {
+        let key = attempt(1);
+        let old_effect = EffectRef(40);
+        let replacement_effect = EffectRef(41);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(
+                    AttemptPhase::Agent,
+                    old_effect,
+                    MonotonicTime::from_millis(1),
+                ),
+                "replacement-handle",
+            )
+            .unwrap();
+        let stale = ownership.deadline_candidates().pop().unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, old_effect)
+            .unwrap();
+        ownership
+            .transition_claim_at(
+                claim,
+                AttemptPhase::Agent,
+                replacement_effect,
+                MonotonicTime::from_millis(2),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            ownership.claim_cancellation_exact(&key, Some((stale.phase, stale.effect)),),
+            Err(OwnershipError::Ineligible)
+        ));
+        assert!(ownership.event_is_eligible(&key, AttemptPhase::Agent, replacement_effect));
+        let replacement = ownership
+            .claim_phase(&key, AttemptPhase::Agent, replacement_effect)
+            .unwrap();
+        assert_eq!(replacement.resource(), &"replacement-handle");
+    }
+
+    #[test]
+    fn duplicate_deadline_claim_has_one_linear_winner() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "handle",
+            )
+            .unwrap();
+
+        let winner = ownership
+            .claim_cancellation_exact(&key, Some((AttemptPhase::Agent, AGENT)))
+            .unwrap();
+        assert!(matches!(
+            ownership.claim_cancellation_exact(&key, Some((AttemptPhase::Agent, AGENT))),
+            Err(OwnershipError::Ineligible)
+        ));
+        assert_eq!(winner.resource(), &"handle");
     }
 
     #[test]

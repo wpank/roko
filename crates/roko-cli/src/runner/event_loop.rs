@@ -59,7 +59,7 @@ use super::attempt_ownership::{
     AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
 };
 use super::gate_dispatch;
-use super::merge::{MergeDispatch, MergeLaunch, PlanMerger, PlanMergerConfig};
+use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
 use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
@@ -278,6 +278,57 @@ enum AgentRuntimeResource {
         effect: GateEffectRef,
         handle: tokio::task::JoinHandle<()>,
     },
+    Merge {
+        effect: GateEffectRef,
+        handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        resolution: Arc<std::sync::Mutex<Option<MergeResolution>>>,
+    },
+}
+
+async fn finish_merge_handle(
+    handle: &Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    abort: bool,
+) -> std::result::Result<(), String> {
+    let handle = handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(handle) = handle {
+        if abort {
+            handle.abort();
+        }
+        handle
+            .await
+            .or_else(|err| {
+                if abort && err.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            })
+            .map_err(|err| format!("merge producer join failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn take_merge_resolution(
+    resolution: &Arc<std::sync::Mutex<Option<MergeResolution>>>,
+) -> Option<MergeResolution> {
+    resolution
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+fn combine_merge_cleanup(
+    left: std::result::Result<(), String>,
+    right: std::result::Result<(), String>,
+) -> std::result::Result<(), String> {
+    match (left, right) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(left), Err(right)) => Err(format!("{left}; {right}")),
+    }
 }
 
 fn finish_gate_claim(
@@ -1831,6 +1882,23 @@ pub async fn run(
                 fire_on_gate_hook(config, &completion, &tui).await;
 
                 if completion.kind == GateCompletionKind::Merge {
+                    let completion_merger = PlanMerger::new(
+                        merge_queue.clone(),
+                        PlanMergerConfig::new(
+                            config.workdir.clone(),
+                            gate_timeout(config, 0),
+                        ),
+                    );
+                    if let Err(error) = finish_owned_merge_completion(
+                        &completion,
+                        &mut attempt_ownership,
+                        &completion_merger,
+                    )
+                    .await
+                    {
+                        error!(plan_id = %completion.plan_id, %error, "dropping invalid merge completion");
+                        continue;
+                    }
                     handle_merge_completion(
                         &completion,
                         &mut executor,
@@ -1844,7 +1912,9 @@ pub async fn run(
                         config,
                         &gate_thresholds,
                         &snapshot_writer,
-                    );
+                        &mut attempt_ownership,
+                    )
+                    .await;
                     continue;
                 }
 
@@ -3275,7 +3345,7 @@ fn conflict_paths_from_merge_output(output: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn handle_merge_completion(
+async fn handle_merge_completion(
     completion: &GateCompletion,
     executor: &mut ParallelExecutor,
     state: &mut RunState,
@@ -3288,6 +3358,7 @@ fn handle_merge_completion(
     config: &RunConfig,
     gate_thresholds: &GateThresholds,
     writer: &SnapshotWriter,
+    attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
 ) {
     let run_id = state.run_id().to_string();
     if completion.passed {
@@ -3356,8 +3427,12 @@ fn handle_merge_completion(
     );
     if let Some(launch) = merger.drain_next() {
         let next_plan_id = launch.plan_id().to_string();
-        start_legacy_merge(&merger, launch, gate_tx.clone());
-        info!(plan_id = %next_plan_id, "started next queued merge");
+        match start_owned_merge_with_drain(&merger, launch, gate_tx.clone(), attempt_ownership)
+            .await
+        {
+            Ok(_) => info!(plan_id = %next_plan_id, "started next queued merge"),
+            Err(err) => error!(plan_id = %next_plan_id, %err, "failed queued merge launch"),
+        }
     }
     save_snapshot(
         config,
@@ -3370,14 +3445,236 @@ fn handle_merge_completion(
     );
 }
 
-fn start_legacy_merge(
+async fn start_owned_merge_with_drain(
     merger: &PlanMerger,
     launch: MergeLaunch,
     gate_tx: mpsc::Sender<GateCompletion>,
-) {
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+) -> std::result::Result<String, String> {
+    let plan_id = launch.plan_id().to_string();
+    let drain_bound = merger.drain_bound();
+    match start_owned_merge(merger, launch, gate_tx.clone(), ownership).await {
+        Ok(started) => Ok(started),
+        Err(first_error) => {
+            error!(plan_id = %plan_id, error = %first_error, "merge launch setup failed");
+            for _ in 0..drain_bound {
+                let Some(next) = merger.drain_next() else {
+                    break;
+                };
+                let drained_plan_id = next.plan_id().to_string();
+                match start_owned_merge(merger, next, gate_tx.clone(), ownership).await {
+                    Ok(_) => break,
+                    Err(error) => {
+                        error!(plan_id = %drained_plan_id, %error, "bounded merge drain launch failed");
+                    }
+                }
+            }
+            Err(first_error)
+        }
+    }
+}
+
+async fn finish_owned_merge_completion(
+    completion: &GateCompletion,
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    merger: &PlanMerger,
+) -> std::result::Result<(), String> {
+    let attempt = completion
+        .attempt
+        .as_ref()
+        .ok_or_else(|| "merge completion missing exact attempt".to_string())?;
+    let effect = completion
+        .effect
+        .as_ref()
+        .ok_or_else(|| "merge completion missing exact effect".to_string())?;
+    if &effect.attempt != attempt
+        || attempt.plan_id != completion.plan_id
+        || attempt.task_id != completion.task_id
+        || effect.kind != GateCompletionKind::Merge
+        || effect.rung != completion.rung
+    {
+        return Err("merge completion effect identity mismatch".to_string());
+    }
+    let mut claim = ownership
+        .claim_phase(attempt, AttemptPhase::Gate, EffectRef(effect.generation))
+        .map_err(|err| format!("merge completion has no eligible owner: {err:?}"))?;
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+    let AgentRuntimeResource::Merge {
+        effect: owned_effect,
+        handle,
+        resolution,
+    } = resource
+    else {
+        ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
+        return Err("merge owner did not retain its producer".to_string());
+    };
+    if &owned_effect != effect {
+        let rollback = rollback_owned_merge(
+            merger,
+            &handle,
+            &resolution,
+            "merge completion effect mismatch",
+        )
+        .await;
+        let owner_cleanup = ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge owner cleanup failed: {err:?}"));
+        combine_merge_cleanup(rollback, owner_cleanup)?;
+        return Err("merge owner effect identity mismatch".to_string());
+    }
+    if let Err(error) = finish_merge_handle(&handle, false).await {
+        let rollback =
+            rollback_owned_merge(merger, &handle, &resolution, "merge producer join failed").await;
+        let owner_cleanup = ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge owner cleanup failed: {err:?}"));
+        combine_merge_cleanup(rollback, owner_cleanup)?;
+        return Err(error);
+    }
+    let Some(resolution) = take_merge_resolution(&resolution) else {
+        ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
+        return Err("merge completion resolution already consumed".to_string());
+    };
+    if !merger.resolve_completion(resolution, completion.passed, &completion.output) {
+        ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
+        return Err("merge completion exact reservation was stale".to_string());
+    }
+    ownership
+        .complete_claim(claim)
+        .map_err(|err| format!("merge owner cleanup failed: {err:?}"))?;
+    Ok(())
+}
+
+async fn rollback_owned_merge(
+    merger: &PlanMerger,
+    handle: &Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    resolution: &Arc<std::sync::Mutex<Option<MergeResolution>>>,
+    reason: &str,
+) -> std::result::Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(error) = finish_merge_handle(handle, true).await {
+        errors.push(error);
+    }
+    match take_merge_resolution(resolution) {
+        Some(resolution) => {
+            if !merger.fail_resolution(resolution, reason) {
+                errors.push(format!("{reason}: exact merge reservation was missing"));
+            }
+        }
+        None => errors.push(format!("{reason}: exact merge resolution already consumed")),
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(())
+}
+
+async fn start_owned_merge(
+    merger: &PlanMerger,
+    launch: MergeLaunch,
+    gate_tx: mpsc::Sender<GateCompletion>,
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+) -> std::result::Result<String, String> {
+    let plan_id = launch.plan_id().to_string();
     let producer = merger.prepare(launch, gate_tx);
-    let _ = producer.start.send(());
-    drop(producer.handle);
+    let effect = producer.effect.clone();
+    let attempt = effect.attempt.clone();
+    let handle = Arc::new(std::sync::Mutex::new(Some(producer.handle)));
+    let resolution = Arc::new(std::sync::Mutex::new(Some(producer.resolution)));
+    if ownership
+        .insert(
+            attempt.clone(),
+            AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+            AgentRuntimeResource::AwaitingGate,
+        )
+        .is_err()
+    {
+        drop(producer.start);
+        rollback_owned_merge(
+            merger,
+            &handle,
+            &resolution,
+            "merge ownership insertion failed",
+        )
+        .await?;
+        return Err(format!("merge ownership insertion failed for {plan_id}"));
+    }
+    let mut claim = match ownership.claim_phase(&attempt, AttemptPhase::AwaitingGate, EffectRef(0))
+    {
+        Ok(claim) => claim,
+        Err(_) => {
+            let rollback_error = ownership
+                .remove_unclaimed(&attempt, AttemptPhase::AwaitingGate, EffectRef(0))
+                .err();
+            drop(producer.start);
+            let rollback =
+                rollback_owned_merge(merger, &handle, &resolution, "merge ownership claim failed")
+                    .await;
+            let owner_cleanup = if let Some(err) = rollback_error {
+                ownership.discard_for_cleanup(&attempt);
+                Err(format!(
+                    "merge ownership claim cleanup failed for {plan_id}: {err:?}"
+                ))
+            } else {
+                Ok(())
+            };
+            combine_merge_cleanup(rollback, owner_cleanup)?;
+            return Err(format!("merge ownership claim failed for {plan_id}"));
+        }
+    };
+    claim.replace_resource(AgentRuntimeResource::Merge {
+        effect: effect.clone(),
+        handle: handle.clone(),
+        resolution: resolution.clone(),
+    });
+    if let Err(failure) =
+        ownership.transition_claim(claim, AttemptPhase::Gate, EffectRef(effect.generation))
+    {
+        let mut claim = failure.claim;
+        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+        drop(producer.start);
+        let reason = if matches!(resource, AgentRuntimeResource::Merge { .. }) {
+            "merge ownership transition failed"
+        } else {
+            "merge ownership transition lost resource"
+        };
+        let rollback = rollback_owned_merge(merger, &handle, &resolution, reason).await;
+        let owner_cleanup = ownership
+            .complete_claim(claim)
+            .map_err(|err| format!("merge transition owner cleanup failed for {plan_id}: {err:?}"));
+        combine_merge_cleanup(rollback, owner_cleanup)?;
+        return Err(format!("merge ownership transition failed for {plan_id}"));
+    }
+    if producer.start.send(()).is_err() {
+        let cleanup_claim = ownership.claim_for_cleanup(&attempt);
+        let rollback = rollback_owned_merge(
+            merger,
+            &handle,
+            &resolution,
+            "merge producer failed to start",
+        )
+        .await;
+        let owner_cleanup = match cleanup_claim {
+            Ok(claim) => ownership
+                .complete_claim(claim)
+                .map_err(|err| format!("merge start owner cleanup failed for {plan_id}: {err:?}")),
+            Err(err) => {
+                ownership.discard_for_cleanup(&attempt);
+                Err(format!(
+                    "merge start owner recovery failed for {plan_id}: {err:?}"
+                ))
+            }
+        };
+        combine_merge_cleanup(rollback, owner_cleanup)?;
+        return Err(format!("merge producer failed to start for {plan_id}"));
+    }
+    Ok(plan_id)
 }
 
 fn append_agent_event(paths: &PersistPaths, event: &AgentEvent, state: &RunState) {
@@ -6246,12 +6543,23 @@ async fn dispatch_action(
                 MergeDispatch::Reserved { launch } => {
                     let plan_id = launch.plan_id().to_string();
                     let branch_name = launch.branch_name().to_string();
-                    start_legacy_merge(&merger, launch, ctx.gate_tx.clone());
-                    info!(
-                        plan_id = %plan_id,
-                        branch = %branch_name,
-                        "reserved merge queue request"
-                    );
+                    match start_owned_merge_with_drain(
+                        &merger,
+                        launch,
+                        ctx.gate_tx.clone(),
+                        ctx.attempt_ownership,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!(
+                            plan_id = %plan_id,
+                            branch = %branch_name,
+                            "reserved merge queue request"
+                        ),
+                        Err(error) => {
+                            error!(plan_id = %plan_id, %error, "reserved merge launch failed")
+                        }
+                    }
                     save_snapshot(
                         ctx.config,
                         ctx.executor,
@@ -6264,7 +6572,17 @@ async fn dispatch_action(
                 }
                 MergeDispatch::Blocked { plan_id, launch } => {
                     if let Some(launch) = launch {
-                        start_legacy_merge(&merger, launch, ctx.gate_tx.clone());
+                        let launch_plan_id = launch.plan_id().to_string();
+                        if let Err(error) = start_owned_merge_with_drain(
+                            &merger,
+                            launch,
+                            ctx.gate_tx.clone(),
+                            ctx.attempt_ownership,
+                        )
+                        .await
+                        {
+                            error!(plan_id = %launch_plan_id, %error, "unblocked merge launch failed");
+                        }
                     }
                     info!(
                         plan_id = %plan_id,
@@ -6772,6 +7090,9 @@ async fn stop_all_agents(
             AgentRuntimeResource::Gate { handle, .. } => {
                 handle.abort();
                 let _ = handle.await;
+            }
+            AgentRuntimeResource::Merge { handle, .. } => {
+                let _ = finish_merge_handle(&handle, true).await;
             }
         }
         let _ = attempt_ownership.complete_claim(claim);

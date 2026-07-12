@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 28
-done = 24
+done = 25
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -490,7 +490,7 @@ acceptance = ["Timeout kinds distinguish hard-run, task-attempt, gate-effect, ag
 id = "SH01-T06C2"
 title = "Enforce exact owner deadlines"
 description = "Scan exact ownership for task-attempt, gate-effect, and agent-silence expiry. Use authored task timeout overrides or global defaults, settle only the exact claimed resource through the cancellation machinery, and durably terminalize the timeout after cleanup confirmation. Failed cleanup must remain nonterminal and recoverable."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 440

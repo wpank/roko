@@ -618,6 +618,49 @@ mod tests {
     }
 
     #[test]
+    fn mixed_cancellation_preserves_failed_owner_and_sibling_metadata() {
+        let failed = TaskAttemptRef::new("plan", "a-failed", 1);
+        let sibling = TaskAttemptRef::new("plan", "z-sibling", 1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                sibling.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("sibling-agent", Some(52)),
+                "sibling-handle",
+            )
+            .unwrap();
+        ownership
+            .insert(
+                failed.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("failed-agent", Some(51)),
+                "failed-handle",
+            )
+            .unwrap();
+
+        let failed_claim = ownership.claim_cancellation(&failed).unwrap();
+        ownership
+            .restore_cancellation_failure(failed_claim)
+            .unwrap();
+
+        assert_eq!(
+            ownership.surviving_agent_metadata(),
+            SurvivingAgentMetadata {
+                active: true,
+                pids: vec![51, 52],
+                agent_ids: vec!["failed-agent".to_string(), "sibling-agent".to_string()],
+            }
+        );
+        assert_eq!(
+            ownership.cancellation_state(&failed),
+            Some(CancellationState::CancellationFailed)
+        );
+        assert_eq!(
+            ownership.cancellation_state(&sibling),
+            Some(CancellationState::None)
+        );
+    }
+
+    #[test]
     fn forced_cancellation_restore_recovers_resource_after_nonce_corruption() {
         let key = attempt(1);
         let mut ownership = AttemptOwnership::default();
@@ -676,6 +719,52 @@ mod tests {
         assert!(survivors.pids.contains(&41));
         assert!(survivors.pids.contains(&42));
         assert_eq!(ownership.unrecovered_attempts(), vec![key]);
+    }
+
+    #[test]
+    fn quarantined_agent_metadata_has_stable_attempt_order() {
+        let quarantined = TaskAttemptRef::new("plan", "a-quarantined", 1);
+        let live = TaskAttemptRef::new("plan", "z-live", 1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                quarantined.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT)
+                    .with_agent("quarantined-agent", Some(61)),
+                "quarantined-handle",
+            )
+            .unwrap();
+        let claim = ownership.claim_cancellation(&quarantined).unwrap();
+        ownership.owners.insert(
+            quarantined.clone(),
+            OwnershipSlot {
+                owner: AttemptOwner::new(AttemptPhase::Gate, GATE),
+                resource: Some("replacement"),
+                claimed: false,
+                claim_nonce: None,
+            },
+        );
+        let claim = ownership
+            .force_restore_cancellation_failure(claim)
+            .unwrap_err();
+        ownership.retain_unrecovered_claim(claim);
+        ownership
+            .insert(
+                live,
+                AttemptOwner::new(AttemptPhase::Agent, AGENT).with_agent("live-agent", Some(62)),
+                "live-handle",
+            )
+            .unwrap();
+
+        assert_eq!(
+            ownership.surviving_agent_metadata(),
+            SurvivingAgentMetadata {
+                active: true,
+                pids: vec![61, 62],
+                agent_ids: vec!["quarantined-agent".to_string(), "live-agent".to_string()],
+            }
+        );
+        assert_eq!(ownership.unrecovered_attempts(), vec![quarantined]);
     }
 
     #[test]

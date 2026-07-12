@@ -158,6 +158,12 @@ impl<R> AttemptOwnership<R> {
         self.owners.contains_key(attempt)
     }
 
+    pub fn contains_task(&self, plan_id: &str, task_id: &str) -> bool {
+        self.owners
+            .keys()
+            .any(|attempt| attempt.plan_id == plan_id && attempt.task_id == task_id)
+    }
+
     /// Snapshot exact keys so cancel-all can claim each owner independently.
     pub fn attempts(&self) -> Vec<TaskAttemptRef> {
         let mut attempts = self.owners.keys().cloned().collect::<Vec<_>>();
@@ -422,6 +428,63 @@ mod tests {
             Some(CancellationState::CancellationFailed)
         );
         assert!(!ownership.event_is_eligible(&key, AttemptPhase::Agent, AGENT));
+    }
+
+    #[test]
+    fn cancellation_failure_retains_agent_metadata_and_allows_retry() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT)
+                    .with_agent("agent-1", Some(41)),
+                "handle",
+            )
+            .unwrap();
+
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        ownership.restore_cancellation_failure(claim).unwrap();
+        assert_eq!(
+            ownership.surviving_agent_metadata(),
+            SurvivingAgentMetadata {
+                active: true,
+                pids: vec![41],
+                agent_ids: vec!["agent-1".to_string()],
+            }
+        );
+
+        let retry = ownership.claim_cancellation(&key).unwrap();
+        assert_eq!(retry.resource(), &"handle");
+        assert_eq!(
+            ownership.cancellation_state(&key),
+            Some(CancellationState::Cancelling)
+        );
+    }
+
+    #[test]
+    fn stale_claim_nonce_cannot_complete_current_slot() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "handle",
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+
+        let slot = ownership.owners.get_mut(&key).unwrap();
+        slot.claim_nonce = Some(claim.nonce.wrapping_add(1));
+
+        assert_eq!(
+            ownership.complete_claim(claim),
+            Err(OwnershipError::Ineligible)
+        );
+        assert!(ownership.contains(&key));
     }
 
     #[test]

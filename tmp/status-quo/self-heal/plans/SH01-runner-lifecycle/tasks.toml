@@ -1,6 +1,6 @@
 [meta]
 plan = "SH01-runner-lifecycle"
-total = 22
+total = 25
 done = 19
 status = "ready"
 max_parallel = 1
@@ -387,15 +387,15 @@ fail_msg = "Failed merge producer terminal and drainage tests must pass."
 acceptance = ["Every merge producer/setup/join/persistence failure uses one exact failure path.", "No failed reservation or claimed owner remains active.", "No merge handle is detached.", "One claim emits at most one plan failure terminal.", "Queue drainage starts the next exact launch under ownership."]
 
 [[task]]
-id = "SH01-T06B2D"
-title = "Make cancellation failure durable and recoverable"
-description = "Project CancellationRequested to nonterminal Cancelling for each exact owner, stop and await only that owner's resources, and emit Cancelled only after confirmed cleanup. AgentTermination::Failed or producer join failure restores recoverable ownership as CancellationFailed and forbids attempt/run success terminals. Recompute aggregate agent fields from surviving owners and make cancel-all report its structured outcome."
+id = "SH01-T06B2D1"
+title = "Make cancellation lifecycle durable and nonterminal"
+description = "Add Cancelling and CancellationFailed task-attempt statuses and typed runner events with legal transitions, projection, snapshot serialization, resume/recovery behavior, and in-flight reporting. CancellationRequested projects to Cancelling and cleanup failure to CancellationFailed; neither is terminal or retry/success/exhaustion."
 status = "ready"
-tier = "integrative"
+tier = "architectural"
 model_hint = "codex-default"
-max_loc = 420
+max_loc = 320
 files = ["crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/projection.rs", "crates/roko-cli/src/runner/event_loop.rs"]
-role = "implementer"
+role = "architect"
 domain = "execution-engine"
 depends_on = ["SH01-T06B2C3C3"]
 [task.context]
@@ -403,8 +403,68 @@ read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = 
 [[task.verify]]
 phase = "test"
 command = "cargo test -p roko-cli runner::state 2>&1 && cargo test -p roko-cli runner::projection 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
-fail_msg = "Durable cancellation lifecycle tests must pass."
-acceptance = ["Cancelling and CancellationFailed are durable nonterminal attempt states.", "Failed cleanup preserves exact ownership and emits no Cancelled or run.completed success terminal.", "Cancelling one attempt does not clear sibling ownership or aggregate agent state.", "Cancel-all returns failure while any resource remains unconfirmed."]
+fail_msg = "Durable cancellation lifecycle projection tests must pass."
+acceptance = ["Cancelling and CancellationFailed are durable nonterminal statuses.", "Typed events and projection enforce legal transitions.", "Snapshots/resume preserve both states.", "Neither state writes a terminal, retry, success, or exhaustion outcome.", "In-flight diagnostics include both states."]
+
+[[task]]
+id = "SH01-T06B2D2"
+title = "Preserve agent ownership when kill is unconfirmed"
+description = "Make AgentHandle termination return the usable handle on AgentTermination::Failed, retaining child, PID, and remaining reader supervision for retry or later cancellation. Confirmed termination unregisters only after process-tree absence. Reader cleanup errors and process-tree errors remain distinct and the failed result cannot silently consume ownership."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 260
+files = ["crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2D1"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Unconfirmed process ownership." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::agent_stream 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1"
+fail_msg = "Recoverable AgentHandle termination tests must pass."
+acceptance = ["AgentTermination::Failed returns a usable AgentHandle.", "Unconfirmed kill retains PID and child ownership.", "Confirmed kill unregisters only after tree absence.", "Reader and process errors are structured without detaching resources."]
+
+[[task]]
+id = "SH01-T06B2D3"
+title = "Settle cancellation for every exact resource variant"
+description = "Implement one cancel-attempt primitive that claims an exact owner, emits Cancelling before awaits, and returns Confirmed or Unconfirmed for CLI, Bridge, Dispatching, AwaitingGate, Gate, and Merge resources. Confirmed cleanup settles every handle/token; any kill/join/reservation failure restores the exact resource and claim as CancellationFailed without dropping permits, PID, active markers, or merge reservation."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 460
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/attempt_ownership.rs", "crates/roko-cli/src/runner/merge.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2D2"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Per-resource cancellation." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Exact cancellation lifecycle." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli runner::attempt_ownership 2>&1"
+fail_msg = "Exact per-resource cancellation tests must pass."
+acceptance = ["Cancelling is durable before cleanup awaits.", "Confirmed cleanup settles every exact resource before Cancelled.", "Any cleanup failure restores the same resource and CancellationFailed.", "Failed CLI kill retains handle/forwarder/permit/PID.", "Gate and merge cleanup resolves exact markers/tokens."]
+
+[[task]]
+id = "SH01-T06B2D4"
+title = "Aggregate cancel-all and derive surviving runtime state"
+description = "Build cancel-all from exact cancel-attempt outcomes, aggregate every confirmed and failed owner, and recompute agent-active, PID, turn, and ownership state from survivors. Run cancellation/timeout emits Cancelled only when all cleanup confirms; any CancellationFailed forbids run success/Cancelled terminal and returns a structured nonterminal failure after durable events and snapshots in terminal order."
+status = "ready"
+tier = "integrative"
+model_hint = "codex-default"
+max_loc = 380
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/state.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+domain = "execution-engine"
+depends_on = ["SH01-T06B2D3"]
+[task.context]
+read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = "Shutdown aggregation." }, { path = "tmp/status-quo/issues/47-EVENT-AND-ATTEMPT-LIFECYCLES-ARE-INCOMPLETE.md", why = "Run terminal ordering." }]
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::state 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
+fail_msg = "Cancel-all aggregation tests must pass."
+acceptance = ["Cancel-all reports every exact confirmed and failed owner.", "Aggregate runtime fields derive from survivors.", "Cancelling one attempt cannot clear sibling state.", "Any CancellationFailed forbids Cancelled/success run terminal.", "Terminal events precede terminal snapshot/flush."]
 
 [[task]]
 id = "SH01-T06C"
@@ -417,7 +477,7 @@ max_loc = 500
 files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs", "crates/roko-cli/src/runner/state.rs"]
 role = "implementer"
 domain = "execution-engine"
-depends_on = ["SH01-T06B2D"]
+depends_on = ["SH01-T06B2D4"]
 [task.context]
 read_files = [{ path = "tmp/status-quo/issues/44-FIXED-RUN-TIMEOUT-IS-NOT-PROGRESS-AWARE.md", why = "Progress semantics." }, { path = "tmp/status-quo/issues/52-TIMEOUT-ABSENT-FROM-RUN-LEDGER.md", why = "Durable terminal ordering." }]
 [[task.verify]]

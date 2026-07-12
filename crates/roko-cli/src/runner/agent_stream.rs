@@ -91,18 +91,57 @@ pub struct AgentHandle {
     child: Child,
     /// Task reading stdout lines.
     reader_task: JoinHandle<()>,
+    /// Task reading stderr lines, when stderr was captured.
+    stderr_reader_task: Option<JoinHandle<()>>,
+}
+
+/// Result of attempting to terminate an agent and its stream readers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum AgentTermination {
+    /// The process exited and all reader tasks stopped intentionally.
+    Confirmed { pid: u32 },
+    /// Process or reader-task termination could not be confirmed.
+    Failed { pid: u32, errors: Vec<String> },
 }
 
 impl AgentHandle {
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
-    pub async fn kill(mut self, grace: Duration) {
-        // Cancel the reader task.
+    pub async fn kill(mut self, grace: Duration) -> AgentTermination {
+        let mut errors = Vec::new();
+
+        // Stop and reap readers before confirming termination. An abort produces
+        // a cancelled JoinError, which is the expected intentional outcome.
         self.reader_task.abort();
+        if let Some(stderr_reader_task) = &self.stderr_reader_task {
+            stderr_reader_task.abort();
+        }
+
+        collect_reader_result("stdout", self.reader_task.await, &mut errors);
+        if let Some(stderr_reader_task) = self.stderr_reader_task.take() {
+            collect_reader_result("stderr", stderr_reader_task.await, &mut errors);
+        }
 
         // Use roko-agent's kill_tree which handles process groups properly.
         if let Err(e) = kill_tree(&mut self.child, grace).await {
             warn!(pid = self.pid, err = %e, "error killing agent");
+            errors.push(format!("process tree termination failed: {e}"));
+        } else {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => errors.push("process still running after kill_tree".to_string()),
+                Err(e) => errors.push(format!("failed to confirm process exit: {e}")),
+            }
+        }
+
+        if errors.is_empty() {
+            AgentTermination::Confirmed { pid: self.pid }
+        } else {
+            AgentTermination::Failed {
+                pid: self.pid,
+                errors,
+            }
         }
     }
 
@@ -112,6 +151,18 @@ impl AgentHandle {
         let reader_task = self.reader_task;
         let _ = reader_task.await;
         child.wait().await.ok().and_then(|status| status.code())
+    }
+}
+
+fn collect_reader_result(
+    stream: &str,
+    result: std::result::Result<(), tokio::task::JoinError>,
+    errors: &mut Vec<String>,
+) {
+    match result {
+        Ok(()) => {}
+        Err(err) if err.is_cancelled() => {}
+        Err(err) => errors.push(format!("{stream} reader task failed: {err}")),
     }
 }
 
@@ -220,9 +271,9 @@ pub async fn spawn_agent(
     });
 
     // Spawn stderr reader and surface it as durable agent events.
-    if let Some(stderr) = child.stderr.take() {
+    let stderr_reader_task = if let Some(stderr) = child.stderr.take() {
         let stderr_tx = event_tx.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -235,8 +286,10 @@ pub async fn spawn_agent(
                         .await;
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // Register PID for orphan cleanup.
     roko_agent::process::register_spawned_pid(pid);
@@ -245,12 +298,68 @@ pub async fn spawn_agent(
         pid,
         child,
         reader_task,
+        stderr_reader_task,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn test_agent_handle(reader_task: JoinHandle<()>) -> AgentHandle {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        set_process_group(&mut command);
+        let child = command.spawn().expect("spawn test child");
+        let pid = child.id().expect("test child pid");
+        AgentHandle {
+            pid,
+            child,
+            reader_task,
+            stderr_reader_task: Some(tokio::spawn(std::future::pending())),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_confirms_process_and_cancelled_readers() {
+        let handle = test_agent_handle(tokio::spawn(std::future::pending()));
+        let pid = handle.pid;
+
+        assert_eq!(
+            handle.kill(Duration::from_millis(10)).await,
+            AgentTermination::Confirmed { pid }
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_reports_panicked_reader_as_failure() {
+        let reader_task = tokio::spawn(async { panic!("reader failed") });
+        tokio::task::yield_now().await;
+        let handle = test_agent_handle(reader_task);
+        let pid = handle.pid;
+
+        let AgentTermination::Failed {
+            pid: failed_pid,
+            errors,
+        } = handle.kill(Duration::from_millis(10)).await
+        else {
+            panic!("expected failed termination");
+        };
+        assert_eq!(failed_pid, pid);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("stdout reader task failed"))
+        );
+    }
 
     #[test]
     fn parse_system_event() {

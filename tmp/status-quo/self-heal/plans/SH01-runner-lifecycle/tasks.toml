@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 25
-done = 22
+done = 23
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -450,7 +450,7 @@ acceptance = ["Cancelling is durable before cleanup awaits.", "Confirmed cleanup
 id = "SH01-T06B2D4"
 title = "Aggregate cancel-all and derive surviving runtime state"
 description = "Build cancel-all from exact cancel-attempt outcomes, aggregate every confirmed and failed owner, and recompute agent-active, PID, turn, and ownership state from survivors. Run cancellation/timeout emits Cancelled only when all cleanup confirms; any CancellationFailed forbids run success/Cancelled terminal and returns a structured nonterminal failure after durable events and snapshots in terminal order."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 380

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use super::deadlines::{MonotonicTime, OwnershipTiming, monotonic_now};
 use super::types::TaskAttemptRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,15 +47,21 @@ pub struct AttemptOwner {
     pub effect: EffectRef,
     pub cancellation: CancellationState,
     pub agent: Option<AgentOwnership>,
+    pub timing: OwnershipTiming,
 }
 
 impl AttemptOwner {
     pub fn new(phase: AttemptPhase, effect: EffectRef) -> Self {
+        Self::new_at(phase, effect, monotonic_now())
+    }
+
+    pub fn new_at(phase: AttemptPhase, effect: EffectRef, now: MonotonicTime) -> Self {
         Self {
             phase,
             effect,
             cancellation: CancellationState::None,
             agent: None,
+            timing: OwnershipTiming::new(now),
         }
     }
 
@@ -66,7 +73,13 @@ impl AttemptOwner {
         self
     }
 
-    fn transition_to(&mut self, phase: AttemptPhase, effect: EffectRef) {
+    fn transition_to(&mut self, phase: AttemptPhase, effect: EffectRef, now: MonotonicTime) {
+        if self.phase != phase || self.effect != effect {
+            self.timing.transition(now);
+            if phase == AttemptPhase::Agent {
+                self.timing.record_agent_activity(now);
+            }
+        }
         self.phase = phase;
         self.effect = effect;
         self.cancellation = CancellationState::None;
@@ -155,6 +168,17 @@ pub struct SurvivingAgentMetadata {
     pub agent_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadlineCandidate {
+    pub attempt: TaskAttemptRef,
+    pub phase: AttemptPhase,
+    pub effect: EffectRef,
+    pub cancellation: CancellationState,
+    pub claimed: bool,
+    pub eligible: bool,
+    pub timing: OwnershipTiming,
+}
+
 #[derive(Debug)]
 pub struct AttemptOwnership<R> {
     owners: HashMap<TaskAttemptRef, OwnershipSlot<R>>,
@@ -215,6 +239,24 @@ impl<R> AttemptOwnership<R> {
         self.owners.get(attempt).map(|slot| slot.owner.cancellation)
     }
 
+    pub fn deadline_candidates(&self) -> Vec<DeadlineCandidate> {
+        let mut candidates = self
+            .owners
+            .iter()
+            .map(|(attempt, slot)| DeadlineCandidate {
+                attempt: attempt.clone(),
+                phase: slot.owner.phase,
+                effect: slot.owner.effect,
+                cancellation: slot.owner.cancellation,
+                claimed: slot.claimed,
+                eligible: !slot.claimed && slot.owner.cancellation == CancellationState::None,
+                timing: slot.owner.timing,
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|candidate| candidate.attempt.key());
+        candidates
+    }
+
     pub fn event_is_eligible(
         &self,
         attempt: &TaskAttemptRef,
@@ -227,6 +269,26 @@ impl<R> AttemptOwnership<R> {
                 && slot.owner.effect == effect
                 && slot.owner.cancellation == CancellationState::None
         })
+    }
+
+    pub fn record_agent_activity(
+        &mut self,
+        attempt: &TaskAttemptRef,
+        effect: EffectRef,
+        now: MonotonicTime,
+    ) -> bool {
+        let Some(slot) = self.owners.get_mut(attempt) else {
+            return false;
+        };
+        if slot.claimed
+            || slot.owner.phase != AttemptPhase::Agent
+            || slot.owner.effect != effect
+            || slot.owner.cancellation != CancellationState::None
+        {
+            return false;
+        }
+        slot.owner.timing.record_agent_activity(now);
+        true
     }
 
     pub fn claim_phase(
@@ -350,7 +412,18 @@ impl<R> AttemptOwnership<R> {
         phase: AttemptPhase,
         effect: EffectRef,
     ) -> Result<(), ClaimFailure<R>> {
-        claim.owner.transition_to(phase, effect);
+        claim.owner.transition_to(phase, effect, monotonic_now());
+        self.restore_claim(claim)
+    }
+
+    pub fn transition_claim_at(
+        &mut self,
+        mut claim: AttemptClaim<R>,
+        phase: AttemptPhase,
+        effect: EffectRef,
+        now: MonotonicTime,
+    ) -> Result<(), ClaimFailure<R>> {
+        claim.owner.transition_to(phase, effect, now);
         self.restore_claim(claim)
     }
 
@@ -719,6 +792,196 @@ mod tests {
         assert!(survivors.pids.contains(&41));
         assert!(survivors.pids.contains(&42));
         assert_eq!(ownership.unrecovered_attempts(), vec![key]);
+    }
+
+    #[test]
+    fn claims_and_transitions_preserve_monotonic_attempt_clocks() {
+        let key = attempt(1);
+        let started = MonotonicTime::from_millis(10);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, started),
+                "handle",
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        ownership
+            .transition_claim_at(
+                claim,
+                AttemptPhase::Agent,
+                AGENT,
+                MonotonicTime::from_millis(20),
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert_eq!(claim.owner().timing.phase_started_at, started);
+        ownership
+            .transition_claim_at(
+                claim,
+                AttemptPhase::Gate,
+                GATE,
+                MonotonicTime::from_millis(30),
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Gate, GATE)
+            .unwrap();
+        assert_eq!(claim.owner().timing.attempt_started_at, started);
+        assert_eq!(claim.owner().timing.last_agent_activity_at, started);
+        assert_eq!(
+            claim.owner().timing.phase_started_at,
+            MonotonicTime::from_millis(30)
+        );
+    }
+
+    #[test]
+    fn agent_activity_requires_exact_eligible_agent_owner() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, MonotonicTime::from_millis(1)),
+                (),
+            )
+            .unwrap();
+        assert!(!ownership.record_agent_activity(
+            &key,
+            EffectRef(999),
+            MonotonicTime::from_millis(5)
+        ));
+        assert!(ownership.record_agent_activity(&key, AGENT, MonotonicTime::from_millis(6)));
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert_eq!(
+            claim.owner().timing.last_agent_activity_at,
+            MonotonicTime::from_millis(6)
+        );
+    }
+
+    #[test]
+    fn stale_agent_activity_cannot_move_owner_clock_backwards() {
+        let key = attempt(1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, MonotonicTime::from_millis(1)),
+                (),
+            )
+            .unwrap();
+
+        assert!(ownership.record_agent_activity(&key, AGENT, MonotonicTime::from_millis(10)));
+        assert!(ownership.record_agent_activity(&key, AGENT, MonotonicTime::from_millis(5)));
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert_eq!(
+            claim.owner().timing.last_agent_activity_at,
+            MonotonicTime::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn cancellation_failure_recovery_preserves_all_owner_clocks() {
+        let key = attempt(1);
+        let started = MonotonicTime::from_millis(10);
+        let activity = MonotonicTime::from_millis(20);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, started),
+                "handle",
+            )
+            .unwrap();
+        assert!(ownership.record_agent_activity(&key, AGENT, activity));
+
+        let claim = ownership.claim_cancellation(&key).unwrap();
+        ownership.restore_cancellation_failure(claim).unwrap();
+        let retry = ownership.claim_cancellation(&key).unwrap();
+
+        assert_eq!(retry.owner().timing.attempt_started_at, started);
+        assert_eq!(retry.owner().timing.phase_started_at, started);
+        assert_eq!(retry.owner().timing.last_agent_activity_at, activity);
+    }
+
+    #[test]
+    fn entering_agent_resets_phase_and_silence_baselines_only() {
+        let key = attempt(1);
+        let started = MonotonicTime::from_millis(10);
+        let entered = MonotonicTime::from_millis(30);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                key.clone(),
+                AttemptOwner::new_at(AttemptPhase::Dispatching, EffectRef(0), started),
+                (),
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        ownership
+            .transition_claim_at(claim, AttemptPhase::Agent, AGENT, entered)
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&key, AttemptPhase::Agent, AGENT)
+            .unwrap();
+        assert_eq!(claim.owner().timing.attempt_started_at, started);
+        assert_eq!(claim.owner().timing.phase_started_at, entered);
+        assert_eq!(claim.owner().timing.last_agent_activity_at, entered);
+    }
+
+    #[test]
+    fn deadline_candidates_expose_identity_and_ineligibility_without_payload() {
+        let active = attempt(1);
+        let cancelling = TaskAttemptRef::new("plan", "cancel", 1);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                active.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, AGENT, MonotonicTime::from_millis(4)),
+                "active-handle",
+            )
+            .unwrap();
+        ownership
+            .insert(
+                cancelling.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, AGENT),
+                "cancel-handle",
+            )
+            .unwrap();
+        let _claim = ownership.claim_cancellation(&cancelling).unwrap();
+
+        let candidates = ownership.deadline_candidates();
+        let active_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.attempt == active)
+            .unwrap();
+        assert!(active_candidate.eligible);
+        assert_eq!(active_candidate.effect, AGENT);
+        assert_eq!(
+            active_candidate.timing.attempt_started_at,
+            MonotonicTime::from_millis(4)
+        );
+        let cancelling_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.attempt == cancelling)
+            .unwrap();
+        assert!(cancelling_candidate.claimed);
+        assert!(!cancelling_candidate.eligible);
+        assert_eq!(
+            cancelling_candidate.cancellation,
+            CancellationState::Cancelling
+        );
     }
 
     #[test]

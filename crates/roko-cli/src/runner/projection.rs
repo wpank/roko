@@ -277,6 +277,7 @@ impl Projection {
             | RunnerEvent::TaskAttemptCompleted { run_id, .. }
             | RunnerEvent::TaskAttemptCancellationRequested { run_id, .. }
             | RunnerEvent::TaskAttemptCancellationFailed { run_id, .. }
+            | RunnerEvent::TimeoutRecorded { run_id, .. }
             | RunnerEvent::AgentDispatchStarted { run_id, .. }
             | RunnerEvent::AgentDispatchCompleted { run_id, .. }
             | RunnerEvent::AgentCompleted { run_id, .. }
@@ -299,6 +300,9 @@ impl Projection {
             | RunnerEvent::PromptAssembled { attempt, .. }
             | RunnerEvent::MergeBackendCompleted { attempt, .. }
             | RunnerEvent::RetryDecision { attempt, .. } => Some(attempt.attempt),
+            RunnerEvent::TimeoutRecorded { timeout, .. } => {
+                timeout.attempt.as_ref().map(|attempt| attempt.attempt)
+            }
             _ => None,
         };
         let agent_id = match &event {
@@ -581,5 +585,37 @@ mod tests {
         let decoded: RunnerEvent = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.event_type(), "task.attempt.cancellation_failed");
         assert!(decoded.message().contains("kill not confirmed"));
+    }
+
+    #[test]
+    fn timeout_event_roundtrips_exact_projection_identity() {
+        let projection = Projection::new("run-1");
+        let attempt = TaskAttemptRef::new("plan", "task", 2);
+        let timeout = super::super::types::TimeoutEvent {
+            kind: super::super::types::TimeoutKind::GateEffect,
+            attempt: Some(attempt.clone()),
+            effect: Some(super::super::types::GateEffectRef {
+                attempt,
+                kind: super::super::types::GateCompletionKind::Gate,
+                rung: 1,
+                generation: 9,
+            }),
+            owner_effect: Some(super::super::types::OwnerEffectRef(9)),
+            limit_ms: 500,
+            monotonic_elapsed_ms: 500,
+            observed_at_ms: 123,
+        };
+        let event = RunnerEvent::timeout_recorded("run-1", timeout);
+        assert_eq!(event.event_type(), "timeout.recorded");
+        assert_eq!(
+            EventCategory::from_runner_event(&event),
+            EventCategory::Task
+        );
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: RunnerEvent = serde_json::from_str(&encoded).unwrap();
+        let projected = projection.from_runner(decoded);
+        assert_eq!(projected.plan_id.as_deref(), Some("plan"));
+        assert_eq!(projected.task_id.as_deref(), Some("task"));
+        assert_eq!(projected.attempt, Some(2));
     }
 }

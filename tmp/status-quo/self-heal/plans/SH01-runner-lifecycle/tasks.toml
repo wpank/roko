@@ -149,7 +149,7 @@ acceptance = ["AgentHandle kill reports failure versus confirmed termination.", 
 [[task]]
 id = "SH01-T06B2"
 title = "Own and cancel work by exact task attempt"
-description = "Create a structured HashMap keyed by TaskAttemptRef that retains CLI, bridge, forwarder, gate, and permit handles. CancellationRequested projects to nonterminal Cancelling. Exact-key cancellation removes ownership first, stops and awaits only that attempt's producers, atomically claims terminalization, then emits exactly one TimedOut or Cancelled terminal. Late events for removed/terminal attempts are ignored. Never use colon-concatenated string keys and never drain unrelated handles."
+description = "Create a structured HashMap keyed by TaskAttemptRef retaining CLI, bridge, forwarder, gate, and permit handles. Add one synchronous atomic terminal claim used by every natural, cancellation, and timeout path before any await or side effect. CancellationRequested is nonterminal Cancelling. Exact-key cancellation removes ownership, stops/awaits only that owner, and emits a terminal only after confirmed stop; on AgentTermination::Failed preserve recoverable ownership and enter CancellationFailed, never terminalize or drop the handle. Recompute aggregate agent fields from remaining owners instead of clearing global state. Late events without winning ownership/claim are ignored."
 status = "ready"
 tier = "integrative"
 model_hint = "codex-default"
@@ -164,7 +164,7 @@ read_files = [{ path = "tmp/status-quo/issues/28-PROCESS-SUPERVISION.md", why = 
 phase = "test"
 command = "cargo test -p roko-cli runner::gate_dispatch 2>&1 && cargo test -p roko-cli runner::event_loop 2>&1 && cargo test -p roko-cli --test runner_facades_e2e 2>&1"
 fail_msg = "Exact-attempt ownership tests must pass."
-acceptance = ["CancellationRequested is nonterminal Cancelling.", "All handles are retained under structured TaskAttemptRef ownership.", "Cancelling attempt one does not affect attempt two or sibling work.", "Bridge, CLI, forwarder, and gate work are awaited before one terminal.", "Completion/cancellation races have one atomic terminal winner.", "Late buffered events cannot mutate a terminal attempt."]
+acceptance = ["CancellationRequested is nonterminal Cancelling and failed stop is nonterminal CancellationFailed.", "All handles are retained under structured TaskAttemptRef ownership.", "AgentTermination::Failed preserves ownership and emits no success terminal.", "Cancelling attempt one recomputes aggregate state and does not affect siblings.", "Every terminal path uses the same synchronous atomic claim before side effects.", "Bridge, CLI, forwarder, and gate work are awaited before one terminal.", "Late buffered events cannot mutate a terminal attempt."]
 
 [[task]]
 id = "SH01-T06C"

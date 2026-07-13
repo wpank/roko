@@ -2,7 +2,7 @@
 //!
 //! [`DashboardSnapshot`] is the single source of truth for all dashboard
 //! consumers (TUI, WebSocket, SSE, REST). It is updated atomically via
-//! [`apply`] when the [`StateHub`](super::state_hub::StateHub) receives events.
+//! [`apply`] when the `StateHub` (in `roko-cli`) receives events.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -799,7 +799,7 @@ pub struct DashboardEventLogEntry {
 
 /// The full materialized dashboard state.
 ///
-/// Updated atomically by [`StateHub`](super::state_hub::StateHub) via
+/// Updated atomically by `StateHub` (in `roko-cli`) via
 /// `watch::Sender::send_modify`. Consumers (TUI, web, API) borrow this
 /// through a `watch::Receiver` for zero-copy reads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

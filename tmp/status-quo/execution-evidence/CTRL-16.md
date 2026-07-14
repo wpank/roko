@@ -7,6 +7,7 @@
 - Corrected-candidate base: `7f5221e9da762f51d2ab4056f0989b49de76bdea`;
   content-equivalent r1 replay: `bc11d75a84d1d4d90ad1cf988f41d97346c45c1e`.
 - R3 correction parent: `a9ac1f25e99ad80805b5dc266d3b626632291afe`.
+- R4 correction parent: `9044be08f5e732dc376bd0c3c7bd35f55742e5ab`.
 - Branch/worktree: `agent/CTRL-16-r2` / `workers/CTRL-16-r2`.
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`.
 - Reserved scope: `plans/_meta/IMPLEMENTATION_ORDER.md`,
@@ -43,6 +44,14 @@ must reject both lexical and canonical routes before any source check, directory
 creation, or write while continuing to allow an independently configured
 external state directory.
 
+The r3 independent review (`CTRL-16-REVIEW-r3.md`, rejected in integration
+commit `35b1eb455`) accepted the outward-symlink correction but found two release
+blockers. On the case-insensitive APFS host, a mixed-case spelling of a removed
+root bypassed case-sensitive string containment and created the same physical
+lowercase root. The quoted Python heredoc inside command substitution also did
+not parse with stock macOS `/bin/bash` 3.2.57. R4 must close both defects while
+preserving every accepted r1-r3 boundary and ordinary external-state support.
+
 Expected behavior:
 
 - every root presented as runnable has a tracked, non-empty, parseable
@@ -54,7 +63,9 @@ Expected behavior:
 - every active script path refuses the deleted live-demo roots; the retained
   simulation is deterministic, no-network, and can write to isolated state;
   normalized relative/absolute paths, non-existing descendants, repository
-  aliases, and inward/outward symlinks cannot bypass that refusal;
+  aliases, case-insensitive spellings, and inward/outward/chained symlinks cannot
+  bypass that refusal; both stock macOS Bash 3.2 and PATH Bash can parse and run
+  the advertised modes;
 - history and semantic boundaries remain clear: related execution-honesty work
   is not mislabeled as a task-for-task dry-run replacement, and `e2e-smoke` is
   not mislabeled as equivalent to greeting/farewell demo tasks;
@@ -64,8 +75,9 @@ Expected behavior:
 Dependencies: CTRL-01's canonical import (`699df4e0e`), accepted review
 (`c19bd3016`), and merge (`01c00546b`); CTRL-05's architecture reconciliation
 and accepted proof; CTRL-15's corrected ownership/index integration; and the r1
-rejection integrated at `b59e497e7`. The r2 base also contains the separately
-accepted workspace-lock precursor and does not change CTRL-16 semantics.
+rejection integrated at `b59e497e7`. The r2 and r3 rejections are integrated at
+`da5e899b6` and `35b1eb455`. The r2 base also contains the separately accepted
+workspace-lock precursor and does not change CTRL-16 semantics.
 
 Explicit non-goals: implementing a dry-run feature; executing or changing any
 task; manufacturing absent directories; changing manifests, the master,
@@ -148,6 +160,17 @@ accepted replacement, or a task-level supersession.
   does not canonicalize the forbidden roots themselves, so an ordinary external
   state directory is not rejected merely because a removed-root symlink happens
   to target the same external tree.
+- Closed the r3 APFS alias bypass by applying Python `casefold()` after lexical
+  normalization to every configured lexical, canonical, removed-root, and
+  repository-projected comparison. Repository-prefix identity is case-folded as
+  well. This is deliberately conservative for the two removed ASCII names: a
+  mixed-case nonexistent leaf, an existing lowercase fixture reached through an
+  uppercase spelling, or a mixed-case symlink chain is rejected before `mkdir`,
+  while a genuinely independent external directory remains outside both roots.
+- Replaced the Python heredoc nested inside command substitution with an inline
+  `python3 -c` program whose quoting is accepted by macOS Bash 3.2.57. The guard
+  output and exit-status contract is unchanged; both stock and PATH Bash now
+  parse and execute help, fail-closed, rejection, and simulation paths.
 - Clarified that the already-complete W01/P06/P07 names are historical labels,
   not current runnable roots.
 - Added narrowly scoped current-control notices to the two baseline inventory
@@ -179,15 +202,18 @@ The candidate verification contract is:
 7. A disposable `plans` generator run reproduces tracked plans/INDEX.md exactly:
    SHA-256 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8.
 8. Source plans/INDEX.md is byte-unchanged and `git diff --check` passes.
-9. `bash -n` passes; `--help` is truthful; `--live` and an unknown option exit 2
-   before any state or plan mutation; default simulation succeeds against
-   isolated state without network/build/model/plan execution and emits exactly
-   two valid JSON records.
+9. `/bin/bash -n` (3.2.57) and PATH `bash -n` (5.3.3) pass; under both versions,
+   `--help` is truthful, `--live` and an unknown option exit 2 before plan
+   or state mutation, a mixed-case removed-root case exits 2, and default simulation
+   succeeds against isolated state without network/build/model/plan execution
+   and emits exactly two valid JSON records.
 10. A disposable adversarial matrix checks exact and descendant deleted roots,
     lexical `..`, an external symlink into a removed root, a removed-root outward
-    symlink, the same outward route through a repository alias, absent roots in
-    `--live` mode, and a normal external state directory. Every rejected case
-    exits 2 with no target/repository mutation; the normal external case exits 0.
+    symlink, the same outward route through explicit repository and `/tmp` to
+    `/private/tmp` aliases, chained symlinks, mixed-case exact/descendant/chained
+    paths, and a mixed-case route to a pre-existing physical lowercase fixture.
+    Every rejected case exits 2 with no target/repository mutation; normal
+    external state succeeds under both Bash versions.
 11. No active script command passes either absent root to `roko plan run`; the
     cumulative corrected scope is exactly the five reserved paths.
 ```
@@ -207,11 +233,9 @@ top-level strict generator run: exit 1; 94 diagnostics in 32 plans
 top-level diagnostic census: 94 PLAN_031 and no other PLAN code
 generated index SHA-256: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8
 source index before/after: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8
-SCRIPT_SYNTAX_HELP_OK bash_n=0 help=0 no_state
-SCRIPT_LIVE_FAIL_CLOSED_OK exit=2 no_state no_absent_roots
-SCRIPT_UNKNOWN_OK exit=2 no_state
-SCRIPT_STATE_GUARD_MATRIX_OK absolute_exact=2 relative_descendant=2 lexical_dotdot=2 external_symlink_into_removed=2 outward_removed_root=2 repo_alias_outward=2 absent_roots_live=2 normal_external=0 rejected_mutation=0 records=2
-SCRIPT_SIMULATION_OK exits=0/0 deterministic_sha=ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e no_network_build_model_or_plan records=2
+SCRIPT_BASH_MATRIX_OK system=3.2.57 path=5.3.3 syntax=0/0 help=0/0 live=2/2 unknown=2/2 mixed_reject=2/2 repository_unchanged=yes
+SCRIPT_STATE_GUARD_MATRIX_OK case_mode=case_insensitive absolute_exact=2 relative_descendant=2 lexical_dotdot=2 inward_symlink=2 chained_inward=2 outward_removed_root=2 repo_alias_outward=2 tmp_private_alias=2 mixed_exact=2 mixed_descendant=2 mixed_physical_fixture=2 mixed_chain=2 mixed_repo_alias_outward=2 rejected_mutation=0
+SCRIPT_SIMULATION_OK system_exits=0/0 path_exits=0/0 deterministic_sha=ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e no_network_build_model_or_plan records=2
 SCRIPT_PLAN_TREE_UNCHANGED sha=f370c9003b47faa597a2a4c24cf26f926c20891d2d3e6f1481755db85179bba8
 active absent-root plan-run scan: zero matches
 cumulative replay/correction scope: exactly five reserved paths
@@ -227,12 +251,16 @@ validator binary was the integrated binary reporting Git `7303d2f87`; CTRL-15
 changed only control-plane documents, so its parser/generator behavior is the
 reviewed behavior used for the current 30/144 index.
 
-The r3 path matrix likewise ran only in fresh disposable archive copies. It
-pre-created symlinks as fixture state, compared rejected targets/repositories
-before and after each invocation, and removed every archive, external target,
-symlink, log, and simulated state directory afterward. The plan-tree digest is
-the SHA-256 aggregate of sorted relative path, NUL, file bytes, NUL tuples; it
-was identical before and after simulation.
+The r4 path matrix likewise ran only in fresh disposable archive copies on the
+case-insensitive APFS host. It pre-created symlinks and one empty physical
+lowercase removed-root fixture, compared rejected plan trees and external targets
+before and after every invocation, and removed every archive, fixture, external
+target, symlink, log, and simulated state directory afterward. All thirteen
+guard cases exited 2 without mutation. Both Bash versions ran normal external
+state twice, produced the same two-record digest, and left the plan-tree digest
+unchanged. The recorded plan-tree digest uses the sorted relative-path/file-byte
+aggregate from the prior matrix; the r4 per-case before/after tar digests likewise
+matched exactly.
 
 ## Review readiness
 
@@ -245,10 +273,10 @@ was identical before and after simulation.
 - Required reviewer focus: reconstruct the three deleted blobs from Git,
   challenge every current/historical mapping, verify all named runnable roots,
   reproduce Q14 resolution and residue absence/presence checks, exercise all
-  script modes in isolated state, adversarially repeat the lexical/canonical,
-  repo-alias, inward-symlink, and outward-symlink matrix, reproduce TOML/strict/
-  index gates, and confirm no status, count, manifest, ownership, or generated-
-  index change.
+  script modes with stock macOS Bash 3.2 and PATH Bash, adversarially repeat the
+  case-folded lexical/canonical, repo-alias, mixed-case, inward/outward/chained
+  symlink matrix, reproduce TOML/strict/index gates, and confirm no status,
+  count, manifest, ownership, or generated-index change.
 
 ## Integration
 
@@ -257,7 +285,10 @@ was identical before and after simulation.
 - R2 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW-r2.md`, verdict
   `REJECTED`, integrated as `da5e899b6`; the outward-symlink finding is addressed
   above without weakening ordinary external-state support.
-- Fresh r3 review evidence: pending independent review.
+- R3 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW-r3.md`, verdict
+  `REJECTED`, integrated as `35b1eb455`; the case-insensitive APFS bypass and
+  stock Bash 3.2 parse failure are addressed above.
+- Fresh r4 review evidence: pending independent review.
 - Integration commit: pending.
 - Post-merge commands/results: pending integration-owner verification.
 - Final status: `IMPLEMENTED_UNREVIEWED`.

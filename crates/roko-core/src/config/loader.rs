@@ -381,11 +381,25 @@ pub fn normalize_and_validate_dispatch_models(
         normalize_model_reference(fallback, "agent.fallback_model", &keys, &aliases)?;
     }
 
-    for (tier, model) in &mut config.agent.tier_models {
+    let mut tiers = config.agent.tier_models.keys().cloned().collect::<Vec<_>>();
+    tiers.sort_unstable();
+    for tier in tiers {
+        let model = config
+            .agent
+            .tier_models
+            .get_mut(&tier)
+            .expect("tier key was collected from the same map");
         normalize_model_reference(model, &format!("agent.tier_models.{tier}"), &keys, &aliases)?;
     }
 
-    for (role, role_config) in &mut config.agent.roles {
+    let mut roles = config.agent.roles.keys().cloned().collect::<Vec<_>>();
+    roles.sort_unstable();
+    for role in roles {
+        let role_config = config
+            .agent
+            .roles
+            .get_mut(&role)
+            .expect("role key was collected from the same map");
         if let Some(model) = role_config.model.as_mut() {
             normalize_model_reference(
                 model,
@@ -1123,6 +1137,48 @@ default_model = "missing"
             error.to_string(),
             "agent.roles.reviewer.model references unresolved model 'missing'"
         );
+    }
+
+    #[test]
+    fn unresolved_nested_dispatch_models_have_deterministic_first_error() {
+        for reverse_insertion in [false, true] {
+            for _ in 0..64 {
+                let mut tier = dispatch_config_with_model("focused", "provider-model-v1");
+                tier.agent.default_model = "focused".to_string();
+                let entries = if reverse_insertion {
+                    [("zeta", "missing-z"), ("alpha", "missing-a")]
+                } else {
+                    [("alpha", "missing-a"), ("zeta", "missing-z")]
+                };
+                for (name, model) in entries {
+                    tier.agent
+                        .tier_models
+                        .insert(name.to_string(), model.to_string());
+                }
+                let error = normalize_and_validate_dispatch_models(&mut tier).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "agent.tier_models.alpha references unresolved model 'missing-a'"
+                );
+
+                let mut role = dispatch_config_with_model("focused", "provider-model-v1");
+                role.agent.default_model = "focused".to_string();
+                for (name, model) in entries {
+                    role.agent.roles.insert(
+                        name.to_string(),
+                        super::super::schema::RoleOverride {
+                            model: Some(model.to_string()),
+                            ..Default::default()
+                        },
+                    );
+                }
+                let error = normalize_and_validate_dispatch_models(&mut role).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "agent.roles.alpha.model references unresolved model 'missing-a'"
+                );
+            }
+        }
     }
 
     #[test]

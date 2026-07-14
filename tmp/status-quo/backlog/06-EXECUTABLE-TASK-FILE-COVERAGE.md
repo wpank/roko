@@ -100,21 +100,26 @@ per-epic plans.
 
 ## Validation Status
 
-Whole-root validation command:
+Current strict validation commands:
 
 ```sh
-cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans
+cargo run -q -p roko-cli --bin roko -- plan validate --strict tmp/status-quo/backlog/plans
+cargo run -q -p roko-cli --bin roko -- plan validate --strict tmp/status-quo/self-heal/plans
 ```
 
-Result: exit code `0`, with six expected `PLAN_031` warnings for files that tasks are meant to
-create:
+Reviewed results on integrated commit `206e9079812b27f738d95f91d1135d0f663c836f` with the
+prerequisite-aware validator:
 
-- `tmp/status-quo/backlog/decisions/E06-canonical-surface.md` from `E06-T01`
-- `tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md` from `E09-T09`
-- `plans/architecture-core-queue/tasks.toml` from `E11-T01`
-- `.github/workflows/deny.yml` from `E18-T03`
-- `docker/roko.toml` from `E18-T05`
-- `.github/workflows/docs-lint.yml` from `E18-T13`
+- backlog: exit code `0`; `0 diagnostics in 55 plans`
+- self-heal: exit code `0`; `0 diagnostics in 6 plans`
+
+The historical statement that non-strict validation returned six expected `PLAN_031` warnings is
+superseded. CTRL-06 made the validator distinguish dependency-created outputs from true
+prerequisites. Reviewed CTRL-07 then corrected the remaining stale prerequisite paths and producer
+edges; candidate `9458a6920d72e457553e31cd51b9ac89d70d2483` was accepted by review commit
+`81d1af92b` and integrated by `206e90798`. The current strict results were reproduced from a
+disposable repository-shaped root so validation could not alter the sealed source index; see
+`tmp/status-quo/execution-evidence/CTRL-07-LEDGER-RECONCILIATION.md`.
 
 ## Compatibility Rules Applied
 

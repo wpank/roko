@@ -1,7 +1,7 @@
 [meta]
 plan = "E11-chain-isfr"
 total = 5
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -21,7 +21,7 @@ max_parallel = 1
 [[task]]
 id = "E11-T01"
 title = "Confirm reviewed architecture-core-queue recovery and DeFi source links"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5

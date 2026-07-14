@@ -127,7 +127,7 @@ tmp/status-quo/backlog/plans/E11-chain-isfr/tasks.toml
 
 Integration:
 
-- Review evidence: pending independent review.
-- Integration commit: pending.
-- Post-merge verification: pending.
-- Final status: implementation committed for review; E11-T01 deliberately remains `ready` until coordinator reconciliation.
+- Review evidence: `CTRL-05-REVIEW.md`; independently `ACCEPTED` in review commit `e33d36abdad962a9a68a2149465ee9bab6e76ecf`.
+- Integration commit: merge commit `4f7e0e34ceba3e021223881d3ac31ddd6a984123`; candidate and review commits are ancestors.
+- Post-merge verification: canonical queue SHA-256 `3f90263a…`, unique Q14 anchor, all three DeFi source references, ancestry, and focused corrected-validator result `0 diagnostics in 1 plan` passed. The validator side effect was restored to the reviewed sealed `plans/INDEX.md` SHA-256 `7ac5679f…`; integration is clean.
+- Final status: `DONE` for CTRL-05. After this accepted integration proof, the coordinator changed only E11-T01 from `ready` to `done` and the E11 meta count from 0 to 1; the other four E11 tasks remain `ready`.

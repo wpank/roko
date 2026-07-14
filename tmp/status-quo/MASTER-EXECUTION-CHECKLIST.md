@@ -531,7 +531,7 @@ sealed.
 - [ ] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
 - [x] CTRL-03 Canonicalize 36 invalid depends_on_plan names to exact meta.plan IDs.
 - [ ] CTRL-04 Resolve 11 external dependencies on P08/P09/P16/P19/P22/P23/P25/P28.
-- [ ] CTRL-05 Resolve E11’s absent architecture-core-queue prerequisite.
+- [x] CTRL-05 Resolve E11’s absent architecture-core-queue prerequisite.
 - [x] CTRL-06 Make strict validation distinguish intended creation outputs from missing prerequisites.
 - [ ] CTRL-07 Reduce backlog strict validation from 23 diagnostics to zero without placeholders.
 - [ ] CTRL-08 Deduplicate overlapping E01/SH/E02/E09/E14/E46–E48 ownership.

@@ -14,7 +14,8 @@ use roko_core::config::LoadConfigError;
 use roko_core::config::hot_reload;
 use roko_core::config::loader::{
     LoadOptions, load_config_unified, load_config_validated,
-    normalize_and_validate_dispatch_models, resolve_config_source,
+    normalize_and_validate_dispatch_models, normalize_source_and_effective_dispatch_models,
+    resolve_config_source,
 };
 use roko_core::config::schema::RokoConfig;
 
@@ -163,18 +164,20 @@ where
 
     let mut source_updated: RokoConfig = serde_json::from_value(source_value)
         .map_err(|e| ApiError::bad_request(format!("invalid config after merge: {e}")))?;
-    normalize_and_validate_dispatch_models(&mut source_updated).map_err(map_load_config_error)?;
 
     // Derive the prospective live generation entirely before the authoritative
     // write. This reapplies global/env/interpolation/file-secret layers with
     // normal loader precedence while retaining source references separately.
+    // Both projections are then normalized against the complete effective
+    // model namespace so runtime exact keys retain precedence over source-only
+    // slug aliases.
     let mut effective_updated = resolve_config_source(
         source_updated.clone(),
         &config_path,
         &LoadOptions::default(),
     )
     .map_err(map_load_config_error)?;
-    normalize_and_validate_dispatch_models(&mut effective_updated)
+    normalize_source_and_effective_dispatch_models(&mut source_updated, &mut effective_updated)
         .map_err(map_load_config_error)?;
 
     let source_toml = toml::to_string_pretty(&source_updated)
@@ -1237,6 +1240,125 @@ default_model = "first"
     }
 
     #[test]
+    fn put_preserves_effective_exact_key_over_source_alias_after_startup_and_reload() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".roko")).expect("create global config directory");
+        let source = r#"config_version = 2
+
+[providers.local-provider]
+kind = "openai_compat"
+base_url = "https://local.invalid/v1"
+
+[models.local]
+provider = "local-provider"
+slug = "shared"
+
+[agent]
+default_model = "shared"
+
+[server]
+port = 3000
+"#;
+        std::fs::write(
+            home.join(".roko/config.toml"),
+            r#"[providers.global-provider]
+kind = "openai_compat"
+base_url = "https://global.invalid/v1"
+
+[models.shared]
+provider = "global-provider"
+slug = "global-shared"
+"#,
+        )
+        .expect("write global source");
+
+        for mode in ["startup", "reload"] {
+            let workdir = root.path().join(mode).join("project");
+            std::fs::create_dir_all(&workdir).expect("create project directory");
+            std::fs::write(workdir.join("roko.toml"), source).expect("write project source");
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .arg("--exact")
+                .arg(
+                    "routes::config::tests::put_preserves_effective_exact_key_over_source_alias_child",
+                )
+                .arg("--nocapture")
+                .env_clear()
+                .env("HOME", &home)
+                .env("CTRL02_COLLISION_CHILD", mode)
+                .env("CTRL02_WORKDIR", &workdir)
+                .output()
+                .expect("run isolated exact-key test");
+            assert!(
+                output.status.success(),
+                "{mode} child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let source_text =
+                std::fs::read_to_string(workdir.join("roko.toml")).expect("read project source");
+            let committed: RokoConfig = toml::from_str(&source_text).expect("parse project source");
+            assert_eq!(committed.agent.default_model, "shared");
+            assert_eq!(committed.server.port, 4333);
+            assert!(committed.models.contains_key("local"));
+            assert!(!committed.models.contains_key("shared"));
+            assert!(!committed.providers.contains_key("global-provider"));
+            let replica = std::fs::read_to_string(workdir.join("ephemeral/roko.toml"))
+                .expect("read source replica");
+            assert_eq!(replica, source_text, "replica diverged from project source");
+        }
+    }
+
+    #[test]
+    fn put_preserves_effective_exact_key_over_source_alias_child() {
+        let Some(mode) = std::env::var_os("CTRL02_COLLISION_CHILD") else {
+            return;
+        };
+        let mode = mode.to_string_lossy();
+        let workdir =
+            std::path::PathBuf::from(std::env::var_os("CTRL02_WORKDIR").expect("child workdir"));
+        let initial = if mode == "startup" {
+            let mut config = load_config_unified(&workdir).expect("load startup effective config");
+            normalize_and_validate_dispatch_models(&mut config)
+                .expect("validate startup effective config");
+            config
+        } else {
+            RokoConfig::default()
+        };
+        let state = test_state(workdir.clone(), initial);
+        if mode == "reload" {
+            reload_config_from_disk(&state).expect("reload effective config");
+        }
+
+        let before = state.load_roko_config();
+        assert_eq!(before.agent.default_model, "shared");
+        assert_eq!(before.models["shared"].provider, "global-provider");
+
+        let workspace = workdir.join("ephemeral");
+        std::fs::create_dir_all(&workspace).expect("create ephemeral workspace");
+        state.ephemeral_workspaces.blocking_write().insert(
+            "exact-key-replica".to_string(),
+            crate::state::WorkspaceInfo {
+                id: "exact-key-replica".to_string(),
+                path: workspace,
+                created_at: 0,
+                last_accessed_at: 0,
+                status: crate::state::WorkspaceStatus::Active,
+            },
+        );
+
+        update_config_transaction(&state, serde_json::json!({"server": {"port": 4333}}))
+            .expect("commit unrelated PUT");
+
+        let effective = state.load_roko_config();
+        assert_eq!(effective.agent.default_model, "shared");
+        assert_eq!(effective.models["shared"].provider, "global-provider");
+        assert_eq!(effective.models["local"].provider, "local-provider");
+        assert_eq!(effective.server.port, 4333);
+    }
+
+    #[test]
     fn put_preserves_runtime_overlay_sources_after_startup_and_reload() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = root.path().join("home");
@@ -1259,7 +1381,7 @@ provider = "project"
 slug = "project-slug"
 
 [agent]
-default_model = "project-model"
+default_model = "masked-source-model"
 
 [server]
 port = 3000
@@ -1315,6 +1437,10 @@ slug = "global-slug"
                 "PUT source value was not committed"
             );
             assert_eq!(parsed.server.bind, "127.0.0.2");
+            assert_eq!(
+                parsed.agent.default_model, "masked-source-model",
+                "runtime-masked source reference was rejected or rewritten"
+            );
             assert!(!parsed.providers.contains_key("global"));
             assert!(!parsed.models.contains_key("global-model"));
             assert!(!after.contains("literal-file-secret"));
@@ -1340,7 +1466,10 @@ slug = "global-slug"
         let workdir =
             std::path::PathBuf::from(std::env::var_os("CTRL02_WORKDIR").expect("child workdir"));
         let initial = if mode == "startup" {
-            load_config_unified(&workdir).expect("load startup effective config")
+            let mut config = load_config_unified(&workdir).expect("load startup effective config");
+            normalize_and_validate_dispatch_models(&mut config)
+                .expect("validate startup effective config");
+            config
         } else {
             RokoConfig::default()
         };

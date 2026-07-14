@@ -352,43 +352,96 @@ fn validate_provider_references(
 pub fn normalize_and_validate_dispatch_models(
     config: &mut RokoConfig,
 ) -> Result<(), LoadConfigError> {
-    if config.models.is_empty() {
-        return Ok(());
-    }
+    let index = DispatchModelIndex::from_config(config)?;
+    normalize_dispatch_references(config, &index, true)
+}
 
-    let mut slug_owners = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for (key, profile) in &config.models {
-        slug_owners
-            .entry(profile.slug.trim().to_string())
-            .or_default()
-            .push(key.clone());
-    }
+/// Normalize source and effective dispatch references against one runtime namespace.
+///
+/// Config editors must derive `effective` through the complete runtime-layer
+/// pipeline before calling this helper. The effective model registry then
+/// governs both projections, so a runtime-layer exact key cannot be mistaken
+/// for a source-only slug alias. Only dispatch reference strings are changed in
+/// `source`; providers, models, secrets, and other runtime overlays are never
+/// copied into it. Source references masked by runtime field overrides remain
+/// verbatim when unresolved, because only the effective projection governs
+/// live dispatch validity.
+pub fn normalize_source_and_effective_dispatch_models(
+    source: &mut RokoConfig,
+    effective: &mut RokoConfig,
+) -> Result<(), LoadConfigError> {
+    let index = DispatchModelIndex::from_config(effective)?;
+    normalize_dispatch_references(effective, &index, true)?;
+    normalize_dispatch_references(source, &index, false)
+}
 
-    for (slug, owners) in &mut slug_owners {
-        owners.sort_unstable();
-        if owners.len() > 1 {
-            return Err(LoadConfigError::AmbiguousModelSlug {
-                slug: slug.clone(),
-                model_keys: owners.join(", "),
+struct DispatchModelIndex {
+    keys: HashSet<String>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+impl DispatchModelIndex {
+    fn from_config(config: &RokoConfig) -> Result<Self, LoadConfigError> {
+        if config.models.is_empty() {
+            return Ok(Self {
+                keys: HashSet::new(),
+                aliases: std::collections::HashMap::new(),
             });
         }
-    }
 
-    let aliases = slug_owners
-        .into_iter()
-        .filter_map(|(slug, owners)| owners.into_iter().next().map(|key| (slug, key)))
-        .collect::<std::collections::HashMap<_, _>>();
-    let keys = config.models.keys().cloned().collect::<HashSet<_>>();
+        let mut slug_owners = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for (key, profile) in &config.models {
+            slug_owners
+                .entry(profile.slug.trim().to_string())
+                .or_default()
+                .push(key.clone());
+        }
+
+        for (slug, owners) in &mut slug_owners {
+            owners.sort_unstable();
+            if owners.len() > 1 {
+                return Err(LoadConfigError::AmbiguousModelSlug {
+                    slug: slug.clone(),
+                    model_keys: owners.join(", "),
+                });
+            }
+        }
+
+        let aliases = slug_owners
+            .into_iter()
+            .filter_map(|(slug, owners)| owners.into_iter().next().map(|key| (slug, key)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let keys = config.models.keys().cloned().collect::<HashSet<_>>();
+
+        Ok(Self { keys, aliases })
+    }
+}
+
+fn normalize_dispatch_references(
+    config: &mut RokoConfig,
+    index: &DispatchModelIndex,
+    reject_unresolved: bool,
+) -> Result<(), LoadConfigError> {
+    if index.keys.is_empty() {
+        return Ok(());
+    }
 
     normalize_model_reference(
         &mut config.agent.default_model,
         "agent.default_model",
-        &keys,
-        &aliases,
+        &index.keys,
+        &index.aliases,
+        reject_unresolved,
     )?;
 
     if let Some(fallback) = config.agent.fallback_model.as_mut() {
-        normalize_model_reference(fallback, "agent.fallback_model", &keys, &aliases)?;
+        normalize_model_reference(
+            fallback,
+            "agent.fallback_model",
+            &index.keys,
+            &index.aliases,
+            reject_unresolved,
+        )?;
     }
 
     let mut tiers = config.agent.tier_models.keys().cloned().collect::<Vec<_>>();
@@ -399,7 +452,13 @@ pub fn normalize_and_validate_dispatch_models(
             .tier_models
             .get_mut(&tier)
             .expect("tier key was collected from the same map");
-        normalize_model_reference(model, &format!("agent.tier_models.{tier}"), &keys, &aliases)?;
+        normalize_model_reference(
+            model,
+            &format!("agent.tier_models.{tier}"),
+            &index.keys,
+            &index.aliases,
+            reject_unresolved,
+        )?;
     }
 
     let mut roles = config.agent.roles.keys().cloned().collect::<Vec<_>>();
@@ -414,8 +473,9 @@ pub fn normalize_and_validate_dispatch_models(
             normalize_model_reference(
                 model,
                 &format!("agent.roles.{role}.model"),
-                &keys,
-                &aliases,
+                &index.keys,
+                &index.aliases,
+                reject_unresolved,
             )?;
         }
     }
@@ -428,6 +488,7 @@ fn normalize_model_reference(
     field: &str,
     keys: &HashSet<String>,
     aliases: &std::collections::HashMap<String, String>,
+    reject_unresolved: bool,
 ) -> Result<(), LoadConfigError> {
     let reference = model.trim();
     if keys.contains(reference) {
@@ -438,6 +499,9 @@ fn normalize_model_reference(
     }
     if let Some(key) = aliases.get(reference) {
         *model = key.clone();
+        return Ok(());
+    }
+    if !reject_unresolved {
         return Ok(());
     }
     Err(LoadConfigError::UnresolvedModel {
@@ -1115,6 +1179,66 @@ default_model = "missing"
         normalize_and_validate_dispatch_models(&mut config).unwrap();
 
         assert_eq!(config.agent.default_model, "stable-key");
+    }
+
+    #[test]
+    fn effective_exact_key_wins_when_normalizing_retained_source() {
+        let mut source = dispatch_config_with_model("local", "shared");
+        source.agent.default_model = " shared ".to_string();
+        let mut effective = source.clone();
+        effective.models.insert(
+            "shared".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "global-provider".to_string(),
+                slug: "global-model".to_string(),
+                ..Default::default()
+            },
+        );
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "shared");
+        assert_eq!(effective.agent.default_model, "shared");
+        assert_eq!(
+            source.models.len(),
+            1,
+            "effective models leaked into source"
+        );
+        assert!(!source.models.contains_key("shared"));
+    }
+
+    #[test]
+    fn effective_namespace_still_canonicalizes_unique_source_alias() {
+        let mut source = dispatch_config_with_model("local", "provider-model");
+        source.agent.default_model = " provider-model ".to_string();
+        let mut effective = source.clone();
+        effective.models.insert(
+            "global".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "global-provider".to_string(),
+                slug: "global-model".to_string(),
+                ..Default::default()
+            },
+        );
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "local");
+        assert_eq!(effective.agent.default_model, "local");
+        assert!(!source.models.contains_key("global"));
+    }
+
+    #[test]
+    fn masked_unresolved_source_reference_is_retained_after_effective_validation() {
+        let mut source = dispatch_config_with_model("local", "local-model");
+        source.agent.default_model = "masked-source-model".to_string();
+        let mut effective = source.clone();
+        effective.agent.default_model = "local".to_string();
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "masked-source-model");
+        assert_eq!(effective.agent.default_model, "local");
     }
 
     #[test]

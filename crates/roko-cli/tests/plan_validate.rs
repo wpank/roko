@@ -96,6 +96,106 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 }
 
 #[test]
+fn plan_validate_strict_allows_missing_task_outputs() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "new-output",
+        r#"
+[meta]
+plan = "new-output"
+
+[[task]]
+id = "T1"
+title = "Create a new output"
+role = "implementer"
+files = ["crates/new-crate/src/lib.rs", "docs/generated.md"]
+depends_on = []
+verify = [{ phase = "structural", command = "test -f docs/generated.md" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans", "--strict"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("0 diagnostics in 1 plan"),
+        "missing outputs should be accepted: {stdout}"
+    );
+}
+
+#[test]
+fn plan_validate_strict_rejects_missing_context_prerequisites() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "missing-input",
+        r#"
+[meta]
+plan = "missing-input"
+
+[[task]]
+id = "T1"
+title = "Read a required input"
+role = "implementer"
+files = ["docs/generated.md"]
+depends_on = []
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "docs/missing.md", why = "required source" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans", "--strict"]).failure();
+    assert_eq!(assert.get_output().status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("PLAN_031"), "missing PLAN_031: {stdout}");
+    assert!(
+        stdout.contains("requires prerequisite 'docs/missing.md'"),
+        "missing prerequisite detail: {stdout}"
+    );
+}
+
+#[test]
+fn plan_validate_strict_accepts_dependency_created_prerequisite() {
+    let temp = TempDir::new().unwrap();
+    write_plan(
+        temp.path(),
+        "generated-input",
+        r#"
+[meta]
+plan = "generated-input"
+
+[[task]]
+id = "T1"
+title = "Create shared input"
+role = "implementer"
+files = ["generated/shared.md"]
+depends_on = []
+verify = [{ phase = "structural", command = "test -f generated/shared.md" }]
+
+[[task]]
+id = "T2"
+title = "Consume shared input"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = ["T1"]
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/shared.md", why = "T1 output" }]
+"#,
+    );
+
+    let assert = run_validate(&temp, &["plans", "--strict"]).success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("0 diagnostics in 1 plan"),
+        "dependency-created prerequisite should pass: {stdout}"
+    );
+}
+
+#[test]
 fn plan_validate_reports_schema_validation_errors() {
     let temp = TempDir::new().unwrap();
     write_plan(
@@ -411,6 +511,13 @@ fn plan_validate_accepts_architecture_queue_packets() {
     let temp = TempDir::new().unwrap();
     // Create stub crate dir so PLAN_030 file-reference check passes
     std::fs::create_dir_all(temp.path().join("crates/roko-core/src/config")).unwrap();
+    std::fs::create_dir_all(temp.path().join("tmp/architecture-plans")).unwrap();
+    std::fs::write(
+        temp.path()
+            .join("tmp/architecture-plans/06-architecture-implementation.md"),
+        "# source plan\n",
+    )
+    .unwrap();
     write_plan(
         temp.path(),
         "architecture",
@@ -610,7 +717,9 @@ fn plan_validate_accepts_complete_architecture_deferral_metadata() {
     // The stub plan's files entry points at a file we also create.
     std::fs::create_dir_all(temp.path().join("plans/architecture-core-queue")).unwrap();
     std::fs::create_dir_all(temp.path().join("stub")).unwrap();
+    std::fs::create_dir_all(temp.path().join("docs/08-chain")).unwrap();
     std::fs::write(temp.path().join("stub/lib.rs"), "").unwrap();
+    std::fs::write(temp.path().join("docs/08-chain/INDEX.md"), "# chain docs\n").unwrap();
     std::fs::write(
         temp.path().join("plans/architecture-core-queue/tasks.toml"),
         "[meta]\nplan = \"architecture-core-queue\"\n\n[[task]]\nid = \"S1\"\ntitle = \"Stub\"\nrole = \"implementer\"\nfiles = [\"stub/lib.rs\"]\ndepends_on = []\nverify = [{ phase = \"compile\", command = \"echo ok\" }]\n",

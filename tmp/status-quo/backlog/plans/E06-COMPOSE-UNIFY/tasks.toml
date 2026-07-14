@@ -18,7 +18,7 @@ max_loc = 80
 files = ["tmp/status-quo/backlog/decisions/E06-canonical-surface.md"]
 role = "architect"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 
 [task.context]
 read_files = [
@@ -59,7 +59,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 
 [task.context]
 read_files = [
@@ -267,7 +267,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 acceptance = [
     "Runner-v2 prompt composition loads existing attention bidders from .roko/learn/attention-bidders.json when present.",
     "PromptComposer is built with with_learning_bidders on the canonical path; missing or malformed store files degrade to an empty bidder map with a warning, not a crash.",

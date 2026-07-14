@@ -203,7 +203,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 acceptance = [
     "Episode completion for both legacy orchestrate and runner-v2 records positive reinforcement for task-local knowledge IDs when the task/gate succeeds.",
     "The implementation uses KnowledgeStore::reinforce_entry, reinforce_batch, record_usage, or batch_record_usage rather than only writing feedback-service telemetry.",
@@ -314,7 +314,7 @@ max_loc = 90
 files = ["crates/roko-cli/src/knowledge_helpers.rs"]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 acceptance = [
     "record_lifecycle_knowledge uses the admission parameter when present and calls submit_candidate with a lifecycle KnowledgeCandidateRecord.",
     "The direct knowledge_store.add call and the placeholder 'let _ = admission' TODO are removed from record_lifecycle_knowledge.",
@@ -374,7 +374,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 acceptance = [
     "roko-cli and roko-serve depend on roko-neuro with features = [\"hdc\"] or roko-neuro makes hdc a default feature for these binaries.",
     "cargo feature resolution for roko-cli includes roko-neuro/hdc.",
@@ -556,7 +556,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 acceptance = [
     "Adaptive thresholds are flushed after a bounded number of completed runs/tasks, not only in PlanRunner::shutdown.",
     "runtime_feedback.rs consumes RuntimeFeedbackConfig::gate_thresholds_every_n or replaces it with a tested equivalent cadence.",

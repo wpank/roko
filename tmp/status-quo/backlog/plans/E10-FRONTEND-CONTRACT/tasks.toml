@@ -119,7 +119,7 @@ max_loc = 120
 files = ["crates/roko-serve/src/routes/bench.rs"]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01"]
+depends_on_plan = ["E01-execution-engine"]
 
 [task.context]
 read_files = [
@@ -237,7 +237,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E03"]
+depends_on_plan = ["E03-type-consolidation"]
 
 [task.context]
 read_files = [

@@ -26,13 +26,13 @@ Implementation:
 
 Verification:
 - Command: `shasum -a 256 -c /Users/will/.local/state/roko/status-quo-20260714T073140Z/SHA256SUMS`
-- Exit/result: pending candidate verification.
+- Exit/result: exit 0; both patches, both untracked-content archives, and the 3.3 GiB repository bundle match their recorded SHA-256 values.
 - Command: compare each imported path byte-for-byte with the sealed root source and confirm the worker contains no unrelated untracked artifacts.
-- Exit/result: pending candidate verification.
+- Exit/result: exit 0 for all 22 unchanged imports; the only intentional difference in the master is the populated coordinator checkpoint. `bash -n tools/run-status-quo-remediation.sh` and `git diff --cached --check` also exited 0.
 
 Review readiness:
-- Implementation commit: pending.
-- Diff scope reviewed: pending.
+- Implementation commit: `e888da8822aae820632ff1f7767af3840c8d3066`.
+- Diff scope reviewed: 24 files, 7,811 inserted lines; 23 attributed control-plane paths plus this evidence record, with the master checkpoint as the sole intentional source-content delta.
 - Known limitations: the existing root `.git` is write-protected by the execution environment; a writable bare coordinator clone owns the integration branch/worktrees. Final import/merge into original `main` requires that local filesystem permission to be lifted.
 - Required reviewer focus: exact path attribution, byte identity, archive completeness/checksums, absence of logs/secrets, and correctness of the root seal.
 

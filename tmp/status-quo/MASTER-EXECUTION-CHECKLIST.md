@@ -534,7 +534,7 @@ sealed.
 - [x] CTRL-05 Resolve E11’s absent architecture-core-queue prerequisite.
 - [x] CTRL-06 Make strict validation distinguish intended creation outputs from missing prerequisites.
 - [x] CTRL-07 Reduce backlog strict validation from 23 diagnostics to zero without placeholders.
-- [ ] CTRL-08 Deduplicate overlapping E01/SH/E02/E09/E14/E46–E48 ownership.
+- [x] CTRL-08 Deduplicate overlapping E01/SH/E02/E09/E14/E46–E48 ownership.
 - [ ] CTRL-09 Convert DOC-v2-core into an acceptance roll-up or supersede duplicate product tasks.
 - [x] CTRL-10 Establish execution-evidence and reviewer evidence conventions.
 - [x] CTRL-11 Rebuild target/debug/roko from integrated current source.
@@ -1145,18 +1145,18 @@ Before ending any coordinator context, update this section on the integration br
 
 - Run ID: `status-quo-20260714T073140Z`
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
-- Integration HEAD before this checkpoint commit: `915d3c246c93f0227de4f32790b491ecb9aa2029`
+- Integration HEAD before this checkpoint commit: `77829976b`
 - Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
 - Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
 - Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
 - Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
-- Last completed wave/task: the SH01 gate-dispatch CTRL-02 precursor attribution is DONE after integration-native correction, accepted review, merge, and post-merge tests. Wave 0 is active (`CTRL-01`, `CTRL-03`–`CTRL-07`, `CTRL-10`–`CTRL-12`, and `CTRL-14` DONE; four bounded CTRL-02 precursor clusters DONE).
-- Active assignments and worktrees: `CTRL-08` r4 operational ownership deduplication is in fresh independent review after three retained rejection records; `CTRL-09` is paused with isolated uncommitted work until that correction settles; SH01-T06C4 is the next serialized event-loop writer.
+- Last completed wave/task: `CTRL-08` is DONE after three retained rejections, corrected r4 acceptance, integration, and post-merge semantic/strict proof. Wave 0 is active (`CTRL-01`, `CTRL-03`–`CTRL-08`, `CTRL-10`–`CTRL-12`, and `CTRL-14` DONE; four bounded CTRL-02 precursor clusters DONE).
+- Active assignments and worktrees: SH01-T06C4 is the sole serialized event-loop/runtime-ledger writer; `CTRL-09` remains paused with isolated uncommitted work and is now dependency-ready to resume in a new reviewed candidate; CTRL-15/16 remain gated on that result.
 - Accepted but unmerged commits: none. The historical deadline candidate `c2f3f18fb945` and review `739750232d54` remain retained evidence but were superseded by the reviewed integration-based reconstruction after merge preflight found their semantic conflict.
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
-- Next dependency-ready tasks: implement/review SH01-T06C4 atomically across runtime ledger/event loop/projection, finish `CTRL-08` rereview, then resume CTRL-09 and advance the CTRL-15/16 ownership lane.
+- Next dependency-ready tasks: implement/review SH01-T06C4 atomically across runtime ledger/event loop/projection, resume and review CTRL-09, prove CTRL-13 on the integrated combined root, then advance CTRL-15/16.
 - Last global gate results: the rebuilt integration binary reports Git `128dc950c`; all later integrated changes through `1e478eaf1` are evidence/control Markdown only. Fresh-archive self-heal strict reports `0 diagnostics in 6 plans` and backlog strict reports `0 diagnostics in 55 plans`; all 193 tracked TOMLs parse and the sealed `plans/INDEX.md` SHA-256 remains `7ac5679f9ff7a32571ad0ed70e9914b579f12a5f22e4285f4804c20a19077b44`. `cargo fmt --all -- --check` passes; earlier `cargo check --workspace --all-targets` and six-crate baseline testing passed, including 1,324 roko-cli library tests. The two parallel 120-second smoke timeouts passed isolated serial reruns (33.91s and 33.65s). Programme-created cold targets are cleaned after review and active builds remain serialized.
-- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The later-discovered top-level P08-P34/side queue, `.roko/GAPS.md`, and five architecture source copies are preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`); 34 sealed files plus one canonical recovered architecture queue are reviewed and merged, with the historical count caveat assigned to `CTRL-15`. Integration was clean at `915d3c246` before this coordinator-only status edit; every active worker remains confined to its recorded scope.
+- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The later-discovered top-level P08-P34/side queue, `.roko/GAPS.md`, and five architecture source copies are preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`); 34 sealed files plus one canonical recovered architecture queue are reviewed and merged, with the historical count caveat assigned to `CTRL-15`. Integration was clean at `77829976b` before this coordinator-only status edit; every active worker remains confined to its recorded scope.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against

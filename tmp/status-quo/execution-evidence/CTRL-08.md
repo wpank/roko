@@ -198,9 +198,18 @@ Additional release checks:
 
 ## Review handoff
 
-- Candidate commit: recorded at handoff.
-- Independent review must start from this corrected base and re-run all rejection
-  checks, including provider-path/registry identity and serde-semantic acceptance,
-  the combined SCC/reference audit, relevant writer-overlap audit, exact
-  ID/status census, strict validators, and scope guard.
-- Integration/post-merge status: pending independent acceptance and coordinator action.
+- Final candidate: `1e07967a348944a4a4a0a88395e1485ad076d94a`.
+- Independent review: `ACCEPTED` in `CTRL-08-REVIEW-R4.md`; review commit
+  `47c9df0f2666e5316a800b5af0c0095d69b138db`.
+- Integration merge: `515cbff5f71558948d53d9b67d75f1b3f892209e`.
+- Immutable rejected-review evidence is retained as `CTRL-08-REVIEW.md`,
+  `CTRL-08-REVIEW-R2.md`, and `CTRL-08-REVIEW-R3.md`; their original review
+  commits are named above and their evidence-only transfers are integrated at
+  `e853ce0a3`, `41aed0b4b`, and `77829976b`.
+- Post-merge proof: the combined 93-plan universe has zero unresolved references
+  and zero dependency cycles; all 12 roll-ups have real scheduler dependencies,
+  zero files, `quick-reviewer`, and nonempty task-level acceptance with none nested
+  under verify. Strict backlog reports `0 diagnostics in 55 plans`; strict
+  self-heal reports `0 diagnostics in 6 plans`; the sealed source index is unchanged.
+- Final status: `DONE` for ownership deduplication. No implementation task was
+  marked complete; canonical producers and acceptance roll-ups remain `ready`.

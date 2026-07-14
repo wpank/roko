@@ -1,0 +1,366 @@
+[meta]
+plan = "P19-cascade-router-acp"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Add cascade router selection before ACP dispatch
+#
+# The cascade router is already loaded for observation (record_cascade_observation
+# at bridge_events.rs:685), but its select path is never called. Add a function
+# that loads the router and calls route_with_cfactor() to get a CascadeModel,
+# then use the returned primary slug as the dispatch model when the user has not
+# explicitly overridden the model via the session dropdown.
+#
+# The function mirrors the existing record_cascade_observation pattern: load
+# from disk, call, return. No in-memory caching needed (Path A from doc 20).
+#
+# The select call should be gated behind a config flag or env var
+# (ROKO_ACP_CASCADE_SELECT=1) so it can be rolled out incrementally.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T1"
+title = "Add cascade_select_model() function to bridge_events.rs"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 50
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "609-661", why = "acp_routing_context() and cascade_router_model_slugs() — reuse both" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "685-722", why = "record_cascade_observation() — mirrors the load/use/save pattern" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "885-896", why = "route_with_cfactor() signature — the method to call" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1854-1879", why = "load_or_new() — disk-loading entrypoint" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "147-171", why = "CascadeRouter::new() — constructor" },
+]
+symbols = [
+    "CascadeRouter::load_or_new(path: &Path, model_slugs: Vec<String>) -> Self",
+    "CascadeRouter::route_with_cfactor(&self, ctx: &RoutingContext, cfactor: Option<&CFactor>, agent_id: Option<&str>) -> CascadeModel",
+    "fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext",
+    "fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> Vec<String>",
+    "CascadeModel { primary: ModelSpec, fallback_chain: Vec<ModelSpec>, .. }",
+]
+anti_patterns = [
+    "Do NOT call select on the async runtime — use task::spawn_blocking or call synchronously before dispatch.",
+    "Do NOT replace the user's model when env var ROKO_ACP_CASCADE_SELECT is not set — default to opt-in.",
+    "Do NOT hold the CASCADE_ROUTER_IO_LOCK across the select call — load, select, drop. Observation uses its own lock.",
+]
+
+# Add a new function `cascade_select_model()` near line 684, right before
+# `record_cascade_observation`. It should:
+# 1. Check std::env::var("ROKO_ACP_CASCADE_SELECT").is_ok()
+# 2. Build router_path from workdir.join(".roko/learn/cascade-router.json")
+# 3. If path doesn't exist, return None (cold start)
+# 4. Load CascadeRouter::load_or_new(&router_path, model_slugs)
+# 5. Build routing context via acp_routing_context(mode, prompt, effort)
+# 6. Call router.route_with_cfactor(&ctx, None, None)
+# 7. Return Some(cascade_model.primary.slug)
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn cascade_select_model' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "cascade_select_model function not found"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'route_with_cfactor' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "route_with_cfactor not called in bridge_events"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Wire cascade_select_model into handle_session_prompt_inner dispatch
+#
+# In the non-slash-command, non-pipeline dispatch path, call
+# cascade_select_model() before resolving the model. If it returns Some(slug),
+# re-resolve the model using that slug instead of model_key.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T2"
+title = "Wire cascade selection into handle_session_prompt_inner"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1134-1160", why = "handle_session_prompt_inner — where model_key and resolved are set" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1146-1149", why = "model_key and resolve_model call — the override point" },
+    { path = "crates/roko-core/src/agent.rs", lines = "301-372", why = "resolve_model signature — must re-call with cascade slug" },
+]
+symbols = [
+    "fn handle_session_prompt_inner<R, W>(transport, session, params, workdir, roko_config) -> Result<SessionPromptResult>",
+    "fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel",
+    "cascade_select_model() — the T1 function",
+]
+anti_patterns = [
+    "Do NOT skip the cascade when the user explicitly sets a model via /config — respect session overrides.",
+    "Do NOT call cascade_select_model for slash commands — only for direct prompts.",
+    "Do NOT remove the existing model_key variable — keep it for logging and observation.",
+]
+
+# After line 1148 (let resolved = resolve_model(roko_config, &model_key)),
+# insert a block that optionally overrides the resolved model:
+#
+# let (resolved, model_key_for_dispatch) = if !is_slash_command {
+#     if let Some(cascade_slug) = cascade_select_model(
+#         &workdir, roko_config, &session.config_state.agent_mode,
+#         &prompt_text, &session.config_state.effort,
+#     ) {
+#         let cascade_resolved = resolve_model(roko_config, &cascade_slug);
+#         if cascade_resolved.profile.is_some() {
+#             info!(original = %model_key, cascade = %cascade_slug, "cascade router overriding model");
+#             (cascade_resolved, cascade_slug)
+#         } else { (resolved, model_key.clone()) }
+#     } else { (resolved, model_key.clone()) }
+# } else { (resolved, model_key.clone()) };
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cascade_select_model' crates/roko-acp/src/bridge_events.rs | head -5"
+fail_msg = "cascade_select_model not called from handle_session_prompt_inner"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'cascade_select_model' crates/roko-acp/src/bridge_events.rs | grep -v '^0$'"
+fail_msg = "cascade_select_model must be called at least twice (definition + call site)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Normalize model keys in cascade observation to match router arms
+#
+# The observation at bridge_events.rs:1619 passes resolved_for_logging.slug
+# (the wire slug like "gpt-5.4-mini") but the router arms use config keys
+# (like "gpt54-mini"). When these don't match, model_index_for_slug returns
+# None and the observation is silently dropped (line 702-708).
+#
+# Fix: pass the model_key (config key) to record_cascade_observation, not the
+# wire slug. The router arms are populated from config.models.keys() (line 656),
+# so the config key is what matches.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T3"
+title = "Fix model key mismatch in cascade observation recording"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1605-1625", why = "record_cascade_observation call site — model_slug arg is resolved_for_logging.slug" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "655-661", why = "cascade_router_model_slugs — returns config keys, not wire slugs" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "700-708", why = "model_index_for_slug — fails when slug != config key" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1262", why = "model_key_for_logging — the config key that matches router arms" },
+]
+symbols = [
+    "fn record_cascade_observation(router_path, model_slug: String, routing_ctx, success, wall_ms, output_tokens, model_slugs)",
+    "model_key_for_logging — the config key already in scope at line 1262",
+]
+anti_patterns = [
+    "Do NOT change record_cascade_observation's signature — only change what is passed to model_slug.",
+    "Do NOT remove model_key_for_logging — it's used elsewhere in the function.",
+]
+
+# At line 1619, change:
+#   resolved_for_logging.slug,
+# To:
+#   model_key_for_logging.clone(),
+#
+# This makes the observation key match the router arms (both are config keys).
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A5 'record_cascade_observation' crates/roko-acp/src/bridge_events.rs | grep -q 'model_key_for_logging'"
+fail_msg = "record_cascade_observation should use model_key_for_logging, not resolved_for_logging.slug"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Load DaimonState into acp_routing_context
+#
+# Currently acp_routing_context() always uses DaimonPolicy::default()
+# (bridge_events.rs:634). Load from .roko/state/daimon.json instead so
+# affect-based model routing works.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T4"
+title = "Load DaimonState from disk in acp_routing_context"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "609-641", why = "acp_routing_context — where DaimonPolicy::default() is hardcoded" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2048-2057", why = "DaimonState::load_or_new — loads from path or returns default" },
+    { path = "crates/roko-core/src/affect.rs", lines = "67-89", why = "DaimonPolicy struct (core version) — what the routing context expects" },
+]
+symbols = [
+    "fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext",
+    "DaimonState::load_or_new(path: impl AsRef<Path>) -> Self",
+    "DaimonPolicy { affect_confidence: f64, behavioral_state: BehavioralState }",
+    "RoutingContext { daimon_policy: DaimonPolicy, .. }",
+]
+anti_patterns = [
+    "Do NOT add roko-daimon as a direct dependency of roko-acp if it is not already — use the core DaimonPolicy struct which is already imported.",
+    "Do NOT block the async runtime — DaimonState::load_or_new is sync file I/O, call it directly since acp_routing_context is already a sync fn.",
+    "Do NOT persist the loaded state — this is read-only; the orchestrator writes DaimonState.",
+]
+
+# Change acp_routing_context signature to accept workdir:
+#   fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -> RoutingContext
+#
+# Inside, load DaimonState:
+#   let daimon_path = workdir.join(".roko").join("state").join("daimon.json");
+#   let daimon_policy = if daimon_path.exists() {
+#       std::fs::read_to_string(&daimon_path).ok()
+#           .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+#           .and_then(|v| {
+#               let confidence = v.get("affect_confidence")?.as_f64()?;
+#               Some(DaimonPolicy::new(confidence, roko_core::BehavioralState::Engaged))
+#           })
+#           .unwrap_or_default()
+#   } else { DaimonPolicy::default() };
+#
+# Update both call sites (lines ~1607 and wherever else acp_routing_context is called)
+# to pass workdir.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'daimon_path\\|daimon\\.json' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "DaimonState loading not found in bridge_events.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep 'acp_routing_context' crates/roko-acp/src/bridge_events.rs | grep -q 'workdir\\|work_dir'"
+fail_msg = "acp_routing_context call sites must pass workdir"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5: Add cascade router selection info to ACP episode metadata
+#
+# When cascade selection is active, record the routing decision in the episode
+# so it's visible in `roko learn episodes`. Add "cascade_selected_model" and
+# "cascade_stage" to the episode's extra metadata.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T5"
+title = "Record cascade routing decision in ACP episode metadata"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1", "T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "340-442", why = "append_acp_episode — where episode is built and appended" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "1-50", why = "Episode struct — check for metadata/extra field" },
+]
+symbols = [
+    "fn append_acp_episode(...) — the episode recording function",
+    "Episode { extra: HashMap<String, serde_json::Value>, .. } — metadata field",
+]
+anti_patterns = [
+    "Do NOT change the Episode struct — use its existing extra/metadata HashMap.",
+    "Do NOT make the metadata field required — only add it when cascade selection was used.",
+]
+
+# In the cognitive_task closure, after cascade_select_model returns Some,
+# capture the selected slug in a variable. Then in the logging block
+# (after dispatch completes), insert into the episode's extra map:
+#   episode.extra.insert("cascade_selected_model".into(), json!(cascade_slug));
+# This requires threading the cascade_slug through the closure boundaries.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cascade_selected_model' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "cascade_selected_model not recorded in episode"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T6: Add unit test for cascade_select_model and key normalization
+#
+# Verify that:
+# 1. cascade_select_model returns None when env var is not set
+# 2. cascade_select_model returns None when router file doesn't exist
+# 3. record_cascade_observation uses model_key (config key), not wire slug
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T6"
+title = "Add tests for cascade selection and key normalization"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 60
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1", "T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "5112-5130", why = "Existing test module location — add tests here" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "5364-5380", why = "acp_routing_context test — existing pattern to follow" },
+]
+symbols = [
+    "fn cascade_select_model(...) -> Option<String> — the function under test",
+    "#[cfg(test)] mod tests — existing test module",
+]
+anti_patterns = [
+    "Do NOT create integration tests that require a real LLM dispatch.",
+    "Do NOT write to the real .roko/ directory — use tempdir.",
+]
+
+# Add tests:
+# 1. cascade_select_model_returns_none_without_env_var — temp dir, no env var
+# 2. cascade_select_model_returns_none_without_router_file — env var set, no file
+# 3. cascade_select_model_returns_model_with_router — create a router file,
+#    populate with a model, set env var, verify Some is returned
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cascade_select_model_returns_none' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "cascade_select_model test not found"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp cascade_select 2>&1"
+fail_msg = "cascade_select tests must pass"

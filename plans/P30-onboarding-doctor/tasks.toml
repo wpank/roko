@@ -1,0 +1,226 @@
+[meta]
+plan = "P30-onboarding-doctor"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Add OpenAI and Gemini API key checks to roko doctor
+# ─────────────────────────────────────────────────────────────────────────────
+# Currently `run_doctor` only checks `ANTHROPIC_API_KEY` (line 186). There is
+# no check for `OPENAI_API_KEY` or `GEMINI_API_KEY`. The `check_provider_usable`
+# check (line 187) does a composite test via `detect_auth_from_config`, but
+# it only reports a single pass/fail — it doesn't tell the user which specific
+# keys are or aren't set.
+#
+# Add `check_openai_api_key()` and `check_gemini_api_key()` functions, modeled
+# identically on `check_anthropic_api_key()` (lines 720-746). Each returns a
+# DoctorCheck with status Warn (not Fail) when the key is missing, since no
+# single provider is mandatory.
+#
+# Insert the new checks into `run_doctor()` right after `check_anthropic_api_key()`
+# at line 186.
+
+[[task]]
+id = "T1"
+title = "Add OpenAI and Gemini key checks to roko doctor"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor() function — list of checks to extend" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "720-746", why = "check_anthropic_api_key() — template for new checks" },
+]
+symbols = [
+    "pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport>",
+    "fn check_anthropic_api_key() -> DoctorCheck",
+    "DoctorCheck { id, status, message, detail, path, url, fix }",
+]
+anti_patterns = [
+    "Do NOT make missing OpenAI/Gemini keys a Fail — use Warn since they are optional providers.",
+    "Do NOT change the existing check_anthropic_api_key function.",
+    "Do NOT change the DoctorCheck struct — use the existing fields.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'OPENAI_API_KEY' crates/roko-cli/src/doctor.rs && grep -q 'GEMINI_API_KEY' crates/roko-cli/src/doctor.rs"
+fail_msg = "doctor.rs must check both OPENAI_API_KEY and GEMINI_API_KEY"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'check_openai_api_key\\|check_gemini_api_key' crates/roko-cli/src/doctor.rs | grep -qv '^0$'"
+fail_msg = "doctor.rs must define check functions for OpenAI and Gemini API keys"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Add configured-provider key validation to doctor
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing `check_provider_usable` (line 463-485) only checks if ANY
+# provider has working auth. It does not tell the user which configured
+# providers are broken. If roko.toml defines `[providers.anthropic]` and
+# `[providers.openai]`, and OPENAI_API_KEY is missing, the user should see
+# a warning for the openai provider specifically.
+#
+# Add a new `check_configured_providers` function that iterates over
+# `config.effective_providers()`, checks each provider's `api_key_env`
+# against the environment, and emits a Warn-level DoctorCheck for each
+# configured provider whose key is missing.
+#
+# This provides specific guidance: "provider 'openai' configured but
+# OPENAI_API_KEY not set" vs the vague "no LLM provider has working auth".
+
+[[task]]
+id = "T2"
+title = "Add per-provider key validation check to doctor"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 35
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "463-485", why = "Existing check_provider_usable — composite check" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor() — where to insert the new check" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "164-170", why = "LoadedConfig struct — has resolved: Option<Config>" },
+    { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "1275-1285", why = "effective_providers() usage pattern" },
+]
+symbols = [
+    "fn check_provider_usable(workdir: &Path) -> DoctorCheck",
+    "RokoConfig::effective_providers() -> IndexMap<String, ProviderConfig>",
+    "ProviderConfig { api_key_env: Option<String>, kind: ProviderKind }",
+]
+anti_patterns = [
+    "Do NOT replace check_provider_usable — add a new complementary check.",
+    "Do NOT make missing provider keys a Fail — use Warn since the user may not need all providers.",
+    "Do NOT crash if loaded_config.resolved is None — return Skipped.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'check_configured_providers\\|configured_provider' crates/roko-cli/src/doctor.rs"
+fail_msg = "doctor.rs must contain a per-provider key validation check"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'effective_providers' crates/roko-cli/src/doctor.rs"
+fail_msg = "doctor.rs must call effective_providers() to enumerate configured providers"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Add next-step hints to roko init output
+# ─────────────────────────────────────────────────────────────────────────────
+# After `roko init`, the user gets a bare confirmation with no guidance.
+# The solution doc (04-zero-knowledge-onboarding.md) specifies that `roko init`
+# should print next-step guidance after success.
+#
+# In `cmd_init` (crates/roko-cli/src/commands/util.rs), after the init succeeds,
+# print a "Next:" block when stdout is a TTY:
+#   Next: roko develop "describe what you want to build"
+#     or: roko doctor   to verify the setup
+#
+# Use `std::io::IsTerminal` to suppress in pipes/CI.
+
+[[task]]
+id = "T3"
+title = "Print next-step hints after roko init succeeds"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/commands/util.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/util.rs", lines = "200-220", why = "cmd_init function — success path where hints should be added" },
+]
+symbols = [
+    "pub(crate) async fn cmd_init(workdir: Option<PathBuf>, cloud: bool, profile: Option<String>, force: bool) -> Result<()>",
+]
+anti_patterns = [
+    "Do NOT print hints to stdout — use eprintln! so they don't interfere with piped output.",
+    "Do NOT print hints when not a TTY — check std::io::stderr().is_terminal().",
+    "Do NOT change the init logic itself — only add output after success.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko develop\\|roko doctor' crates/roko-cli/src/commands/util.rs"
+fail_msg = "util.rs must print next-step hints mentioning roko develop or roko doctor"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Add next-step hints to roko setup output
+# ─────────────────────────────────────────────────────────────────────────────
+# The `roko setup` wizard (setup.rs) already prints next steps at lines 88-94,
+# but the hints are generic and don't include `roko develop`. Update the
+# next-step section to include `roko develop "..."` as the primary suggestion,
+# matching the solution doc's recommended flow.
+#
+# Also add `roko models` to the hints so the user knows how to discover
+# available models.
+
+[[task]]
+id = "T4"
+title = "Update roko setup next-step hints to include develop and models"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-cli/src/commands/setup.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/setup.rs", lines = "87-98", why = "Current next-step section — needs updating" },
+]
+symbols = [
+    "pub(crate) async fn cmd_setup(cli: &Cli, workdir: Option<PathBuf>, yes: bool) -> Result<i32>",
+]
+anti_patterns = [
+    "Do NOT remove the existing next-step lines — update them in place.",
+    "Do NOT add hints that reference commands that don't exist.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko develop' crates/roko-cli/src/commands/setup.rs"
+fail_msg = "setup.rs must mention 'roko develop' in its next-step hints"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'models' crates/roko-cli/src/commands/setup.rs"
+fail_msg = "setup.rs must mention 'models' in its next-step hints"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"

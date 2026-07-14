@@ -67,16 +67,31 @@ ownership and are not hidden inside the 120-row mapping.
 ## Ownership and scheduling proof
 
 The combined top-level/backlog/self-heal corpus has 93 plan manifests and 881 task
-records. A fresh graph traversal after the new scheduler edges reports:
+records. `TasksFile` exposes task-level `depends_on_plan` as the runtime edge set;
+the separately declared `meta.depends_on_plan` edges are included only in the
+all-declared set. Exact traversals of base `ebcc3add0` and candidate `763f47308`
+produce:
 
 ```text
-unique plan IDs: 93
-unique plan dependency edges: 171
-task-local dependency references: 849
-unresolved task-local references: 0
-unresolved plan references: 0
-cyclic strongly connected components: 0
+                                      raw refs   unique source->target edges
+base task runtime edges                    320                           160
+base meta edges                              2                             2
+base all-declared edges                    322                           162
+candidate task runtime edges               345                           169
+candidate meta edges                         2                             2
+candidate all-declared edges               347                           171
+task/meta overlap (base and candidate)                                     0
+same-plan task references (both)           849
+unresolved same-plan references              0
+unresolved task-runtime/all-declared refs     0 / 0
+runtime/all-declared cyclic SCCs              0 / 0
 ```
+
+The two metadata edges are disjoint from the task-runtime set:
+`E46-github-workflow-integration -> E01-execution-engine` and
+`E48-rate-limit-budgeting -> E01-execution-engine`. The 21 roll-ups add 25 raw
+task references but only nine new unique source-plan pairs. Thus 169 is the
+candidate runtime edge count and 171 is the candidate all-declared edge count.
 
 The write census reports 1,658 retained write claims over 586 unique paths and 161
 paths claimed by tasks from more than one plan. Those are scheduling conflict surfaces,

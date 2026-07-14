@@ -2594,10 +2594,10 @@ impl App {
         self.tui_state.gate_recent_failures = aggregator.recent_failures();
 
         if let Some(state_hub) = &self._state_hub {
-            let mut snapshot = state_hub.current_snapshot();
-            snapshot.gate_trends = self.tui_state.gate_trends.clone();
-            snapshot.gate_recent_failures = self.tui_state.gate_recent_failures.clone();
-            state_hub.apply_snapshot(snapshot);
+            state_hub.update_snapshot(|snapshot| {
+                snapshot.gate_trends = self.tui_state.gate_trends.clone();
+                snapshot.gate_recent_failures = self.tui_state.gate_recent_failures.clone();
+            });
         }
     }
 
@@ -2628,10 +2628,10 @@ impl App {
         self.tui_state.gate_recent_failures = aggregator.recent_failures();
 
         if let Some(state_hub) = &self._state_hub {
-            let mut snapshot = state_hub.current_snapshot();
-            snapshot.gate_trends = self.tui_state.gate_trends.clone();
-            snapshot.gate_recent_failures = self.tui_state.gate_recent_failures.clone();
-            state_hub.apply_snapshot(snapshot);
+            state_hub.update_snapshot(|snapshot| {
+                snapshot.gate_trends = self.tui_state.gate_trends.clone();
+                snapshot.gate_recent_failures = self.tui_state.gate_recent_failures.clone();
+            });
         }
     }
 
@@ -3093,9 +3093,7 @@ impl App {
             return;
         };
 
-        let mut snapshot = state_hub.current_snapshot();
-        snapshot.agent_topology = topology;
-        state_hub.apply_snapshot(snapshot);
+        state_hub.update_snapshot(|snapshot| snapshot.agent_topology = topology);
     }
 
     fn sync_agent_stream_clients(&mut self) {

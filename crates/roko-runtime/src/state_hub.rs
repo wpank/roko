@@ -81,6 +81,9 @@ pub struct StateHub {
     snapshot_tx: watch::Sender<DashboardSnapshot>,
     snapshot_rx: watch::Receiver<DashboardSnapshot>,
     event_bus: EventBus<DashboardEvent>,
+    /// Serializes the snapshot commit, durable append, and sequence assignment
+    /// so subscribers can never observe event N against state older than N.
+    publish_lock: Arc<Mutex<()>>,
     /// Optional on-disk event log for persistence across restarts.
     event_log: Option<SharedEventLog>,
 }
@@ -93,6 +96,7 @@ impl StateHub {
             snapshot_tx,
             snapshot_rx,
             event_bus: EventBus::new(ring_capacity),
+            publish_lock: Arc::new(Mutex::new(())),
             event_log: None,
         }
     }
@@ -122,6 +126,7 @@ impl StateHub {
             snapshot_tx,
             snapshot_rx,
             event_bus: EventBus::new(ring_capacity),
+            publish_lock: Arc::new(Mutex::new(())),
             event_log,
         }
     }
@@ -138,39 +143,64 @@ impl StateHub {
         }
     }
 
-    /// Publish an event: broadcast, record in ring, apply to snapshot, and
+    /// Publish an event: apply it to the snapshot, persist it, then broadcast
+    /// and record it in the replay ring.
     /// optionally persist to the on-disk event log.
     /// Returns the sequence number assigned on the internal event bus.
     pub fn publish(&self, event: DashboardEvent) -> u64 {
-        let seq = self.event_bus.emit(event.clone());
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
         if let Some(log) = &self.event_log {
             if let Ok(mut writer) = log.lock() {
                 writer.append(&event);
             }
         }
-        seq
+        self.event_bus.emit(event)
     }
 
     /// Publish a batch of events atomically (snapshot updates are visible
     /// together after the last event).
     pub fn publish_batch(&self, events: impl IntoIterator<Item = DashboardEvent>) {
+        let events = events.into_iter().collect::<Vec<_>>();
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_tx.send_modify(|snap| {
-            for event in events {
-                self.event_bus.emit(event.clone());
-                snap.apply(&event);
-                if let Some(log) = &self.event_log {
-                    if let Ok(mut writer) = log.lock() {
-                        writer.append(&event);
-                    }
-                }
+            for event in &events {
+                snap.apply(event);
             }
         });
+        for event in events {
+            if let Some(log) = &self.event_log {
+                if let Ok(mut writer) = log.lock() {
+                    writer.append(&event);
+                }
+            }
+            self.event_bus.emit(event);
+        }
     }
 
     /// Replace the current materialized snapshot atomically.
     pub fn apply_snapshot(&self, snapshot: DashboardSnapshot) {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = self.snapshot_tx.send(snapshot);
+    }
+
+    /// Mutate selected snapshot fields atomically without a lossy
+    /// read-modify-write round trip through [`current_snapshot`](Self::current_snapshot).
+    pub fn update_snapshot(&self, update: impl FnOnce(&mut DashboardSnapshot)) {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.snapshot_tx.send_modify(update);
     }
 
     /// Get a receiver for the materialized snapshot.
@@ -264,6 +294,7 @@ impl StateHub {
         StateHubSender {
             snapshot_tx: self.snapshot_tx.clone(),
             bus_sender: self.event_bus.sender(),
+            publish_lock: Arc::clone(&self.publish_lock),
             event_log: self.event_log.clone(),
         }
     }
@@ -287,6 +318,7 @@ impl StateHub {
 pub struct StateHubSender {
     snapshot_tx: watch::Sender<DashboardSnapshot>,
     bus_sender: event_bus::BusSender<DashboardEvent>,
+    publish_lock: Arc<Mutex<()>>,
     event_log: Option<SharedEventLog>,
 }
 
@@ -294,14 +326,17 @@ impl StateHubSender {
     /// Publish an event through the hub.
     /// Returns the sequence number assigned on the internal event bus.
     pub fn publish(&self, event: DashboardEvent) -> u64 {
-        let seq = self.bus_sender.emit(event.clone());
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
         if let Some(log) = &self.event_log {
             if let Ok(mut writer) = log.lock() {
                 writer.append(&event);
             }
         }
-        seq
+        self.bus_sender.emit(event)
     }
 }
 
@@ -406,6 +441,45 @@ mod tests {
             envelope.payload,
             DashboardEvent::PlanStarted { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn broadcast_observes_committed_snapshot() {
+        let hub = Arc::new(StateHub::default_capacity());
+        let mut events = hub.subscribe_events();
+        let observer = Arc::clone(&hub);
+        let observed = tokio::spawn(async move {
+            let envelope = events.recv().await.unwrap();
+            let snapshot = observer.current_snapshot();
+            (envelope.seq, snapshot.plans.contains_key("committed"))
+        });
+
+        assert_eq!(
+            hub.publish(DashboardEvent::PlanStarted {
+                plan_id: "committed".into(),
+            }),
+            0
+        );
+
+        let (seq, was_committed) = observed.await.unwrap();
+        assert_eq!(seq, 0);
+        assert!(was_committed, "event was visible before its state commit");
+    }
+
+    #[test]
+    fn atomic_snapshot_update_preserves_published_state() {
+        let hub = StateHub::default_capacity();
+        hub.publish(DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+        });
+
+        hub.update_snapshot(|snapshot| {
+            snapshot.cascade_router_json = "router-state".into();
+        });
+
+        let snapshot = hub.current_snapshot();
+        assert!(snapshot.plans.contains_key("p1"));
+        assert_eq!(snapshot.cascade_router_json, "router-state");
     }
 
     #[test]

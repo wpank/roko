@@ -333,6 +333,95 @@ fn validate_provider_references(
     Ok(())
 }
 
+/// Normalize agent-facing model aliases to canonical config keys and reject
+/// ambiguity before a caller can construct an agent runtime.
+///
+/// Model keys are stable internal identities. Provider-facing slugs remain
+/// ergonomic aliases only when exactly one configured model owns the slug.
+/// An empty registry retains the legacy CLI-only dispatch path.
+pub fn normalize_and_validate_dispatch_models(
+    config: &mut RokoConfig,
+) -> Result<(), LoadConfigError> {
+    if config.models.is_empty() {
+        return Ok(());
+    }
+
+    let mut slug_owners = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (key, profile) in &config.models {
+        slug_owners
+            .entry(profile.slug.trim().to_string())
+            .or_default()
+            .push(key.clone());
+    }
+
+    for (slug, owners) in &mut slug_owners {
+        owners.sort_unstable();
+        if owners.len() > 1 {
+            return Err(LoadConfigError::AmbiguousModelSlug {
+                slug: slug.clone(),
+                model_keys: owners.join(", "),
+            });
+        }
+    }
+
+    let aliases = slug_owners
+        .into_iter()
+        .filter_map(|(slug, owners)| owners.into_iter().next().map(|key| (slug, key)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let keys = config.models.keys().cloned().collect::<HashSet<_>>();
+
+    normalize_model_reference(
+        &mut config.agent.default_model,
+        "agent.default_model",
+        &keys,
+        &aliases,
+    )?;
+
+    if let Some(fallback) = config.agent.fallback_model.as_mut() {
+        normalize_model_reference(fallback, "agent.fallback_model", &keys, &aliases)?;
+    }
+
+    for (tier, model) in &mut config.agent.tier_models {
+        normalize_model_reference(model, &format!("agent.tier_models.{tier}"), &keys, &aliases)?;
+    }
+
+    for (role, role_config) in &mut config.agent.roles {
+        if let Some(model) = role_config.model.as_mut() {
+            normalize_model_reference(
+                model,
+                &format!("agent.roles.{role}.model"),
+                &keys,
+                &aliases,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_model_reference(
+    model: &mut String,
+    field: &str,
+    keys: &HashSet<String>,
+    aliases: &std::collections::HashMap<String, String>,
+) -> Result<(), LoadConfigError> {
+    let reference = model.trim();
+    if keys.contains(reference) {
+        if reference.len() != model.len() {
+            *model = reference.to_string();
+        }
+        return Ok(());
+    }
+    if let Some(key) = aliases.get(reference) {
+        *model = key.clone();
+        return Ok(());
+    }
+    Err(LoadConfigError::UnresolvedModel {
+        field: field.to_string(),
+        model: reference.to_string(),
+    })
+}
+
 // ─── Hierarchical env override support ───────────────────────────────────
 
 /// Convert a `ROKO__SECTION__FIELD` env var key to a dotted config path.
@@ -795,6 +884,9 @@ schema_version = 2
 provider = "nonexistent"
 slug = "orphan-v1"
 context_window = 4096
+
+[agent]
+default_model = "orphan"
 "#,
         )
         .unwrap();
@@ -808,7 +900,7 @@ context_window = 4096
     }
 
     #[test]
-    fn load_validated_detects_duplicate_slugs() {
+    fn load_validated_rejects_duplicate_slugs() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("roko.toml"),
@@ -829,16 +921,95 @@ context_window = 4096
 provider = "prov"
 slug = "same-slug"
 context_window = 4096
+
+[agent]
+default_model = "model-a"
 "#,
         )
         .unwrap();
 
-        let validated = load_config_validated(dir.path()).unwrap();
-        let has_dup_warning = validated
-            .diagnostics()
-            .iter()
-            .any(|d| d.message.contains("duplicate model slug"));
-        assert!(has_dup_warning, "should warn about duplicate slug");
+        let mut config = load_config_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .unwrap();
+        let error = normalize_and_validate_dispatch_models(&mut config).unwrap_err();
+        assert!(matches!(error, LoadConfigError::AmbiguousModelSlug { .. }));
+        assert!(error.to_string().contains("model-a, model-b"));
+    }
+
+    #[test]
+    fn model_slug_alias_is_normalized_to_canonical_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            r#"
+[providers.prov]
+kind = "openai_compat"
+base_url = "https://example.com/v1"
+
+[models.focused]
+provider = "prov"
+slug = "provider-model-v1"
+
+[agent]
+default_model = "provider-model-v1"
+"#,
+        )
+        .unwrap();
+
+        let mut config = load_config_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .unwrap();
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+        assert_eq!(config.agent.default_model, "focused");
+    }
+
+    #[test]
+    fn unresolved_default_model_is_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            r#"
+[providers.prov]
+kind = "openai_compat"
+base_url = "https://example.com/v1"
+
+[models.focused]
+provider = "prov"
+slug = "provider-model-v1"
+
+[agent]
+default_model = "missing"
+"#,
+        )
+        .unwrap();
+
+        let mut config = load_config_with_options(
+            dir.path(),
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .unwrap();
+        let error = normalize_and_validate_dispatch_models(&mut config).unwrap_err();
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert!(error.to_string().contains("agent.default_model"));
     }
 
     #[test]

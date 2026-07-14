@@ -879,10 +879,7 @@ fn render_live_stream_panel(
         ),
         Some(stream) if stream.completed => ("done", Style::default().fg(theme.success)),
         Some(_) => ("connecting...", Style::default().fg(theme.warning)),
-        None if has_runner_output => (
-            "output (from runner)",
-            Style::default().fg(theme.accent),
-        ),
+        None if has_runner_output => ("output (from runner)", Style::default().fg(theme.accent)),
         None => ("no stream", Style::default().fg(theme.muted)),
     };
     let block = Block::default()

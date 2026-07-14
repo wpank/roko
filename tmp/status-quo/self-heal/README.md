@@ -2,6 +2,10 @@
 
 These plans convert the `tmp/status-quo/issues` audit into executable repair work. Run them in numeric order. Keep `--max-tasks 1` until SH02 proves concurrency and task-owned worktree isolation.
 
+The implementation history, current batch status, and dated audit evidence live
+in [`changelog/`](changelog/README.md). The changelog distinguishes completed
+tasks from partial precursors and planned work.
+
 Do not combine `--fresh` and `--resume-plan`. Prefer a fresh SH01 run after archiving or preserving the existing dirty E01 worktree.
 
 Validation and preview:

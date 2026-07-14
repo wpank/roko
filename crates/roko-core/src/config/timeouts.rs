@@ -211,6 +211,11 @@ mod tests {
     #[test]
     fn duration_accessors_match_secs() {
         let cfg = TimeoutConfig::default();
+        assert_eq!(cfg.hard_run(), Duration::from_secs(3_600));
+        assert_eq!(cfg.task_attempt(), Duration::from_secs(600));
+        assert_eq!(cfg.gate_effect(), Duration::from_secs(900));
+        assert_eq!(cfg.agent_silence(), Duration::from_secs(180));
+        assert_eq!(cfg.scheduler_no_progress(), Duration::from_secs(600));
         assert_eq!(cfg.agent_dispatch(), Duration::from_secs(600));
         assert_eq!(cfg.gate_compile(), Duration::from_secs(600));
         assert_eq!(cfg.gate_test(), Duration::from_secs(900));

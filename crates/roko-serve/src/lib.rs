@@ -966,9 +966,9 @@ fn build_app_state(
             .as_ref()
             .map(|router| router.snapshot_json())
     }) {
-        let mut snapshot = state.state_hub.current_snapshot();
-        snapshot.cascade_router_json = snapshot_json;
-        state.state_hub.apply_snapshot(snapshot);
+        state
+            .state_hub
+            .update_snapshot(|snapshot| snapshot.cascade_router_json = snapshot_json);
     }
     // Seed StateHub with persisted marketplace jobs so the TUI sees them on connect.
     let jobs = scan_marketplace_jobs(&state.workdir);

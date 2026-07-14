@@ -1,0 +1,95 @@
+# Self-heal commit inventory
+
+This is the chronological commit-level record for the self-heal plan catalogue
+and the committed implementation range audited on 2026-07-14. It complements
+the task-oriented changelogs; completion claims still come from the manifests.
+
+- `437be433a` — 2026-07-11 — chore: add roko self-heal issue plans
+- `73d28a644` — 2026-07-11 — fix: stabilize runner worktrees and live telemetry
+- `ed5559931` — 2026-07-11 — [roko] SH01-runner-lifecycle: SH01-T01 completed
+- `d7585011f` — 2026-07-11 — fix: support task-only self-heal verification
+- `e8177218e` — 2026-07-11 — [roko] SH01-runner-lifecycle: SH01-T02 completed
+- `05986ca31` — 2026-07-11 — fix: bind gate completions to task attempts
+- `e4d2e1a67` — 2026-07-11 — docs: catalog self-host runtime defects
+- `c097baa15` — 2026-07-11 — chore: record self-heal lifecycle progress
+- `0417afdfd` — 2026-07-11 — [roko] SH01-runner-lifecycle: SH01-T03 completed
+- `2b841fabc` — 2026-07-11 — fix: suppress false spawn telemetry
+- `fdae72262` — 2026-07-11 — chore: record terminalization task progress
+- `8578ee2f3` — 2026-07-11 — [roko] SH01-runner-lifecycle: SH01-T04 completed
+- `6025aeecf` — 2026-07-11 — [roko] SH01-runner-lifecycle: SH01-T05 completed
+- `ffae59177` — 2026-07-11 — chore: record scheduler and retry progress
+- `2ad19e636` — 2026-07-11 — fix: scope timeout self-heal contract
+- `1a0725bc2` — 2026-07-11 — fix: require complete timeout ownership semantics
+- `9ba6dc86a` — 2026-07-11 — refactor: split timeout self-heal task
+- `cf88a456a` — 2026-07-11 — fix: model authored timeout overrides explicitly
+- `86c957589` — 2026-07-11 — chore: complete timeout configuration self-heal
+- `45fe0b5a8` — 2026-07-11 — fix: require confirmed cancellation ownership
+- `c2a74f5e5` — 2026-07-12 — refactor: split cancellation primitives and ownership
+- `34845164a` — 2026-07-12 — fix: require verified process cancellation primitives
+- `971109753` — 2026-07-12 — fix: require descendant cancellation confirmation
+- `88f8be718` — 2026-07-12 — fix: require full process-tree exit confirmation
+- `e8f30e86c` — 2026-07-12 — fix(gate): cancel subprocess groups on future drop
+- `c4d6752ea` — 2026-07-12 — fix(agent): verify process tree termination
+- `009737cfd` — 2026-07-12 — fix: confirm agent process termination
+- `c7ca176a9` — 2026-07-12 — chore: complete cancellation primitives self-heal
+- `37147f33d` — 2026-07-12 — fix: harden exact-attempt ownership contract
+- `fa0f485d8` — 2026-07-12 — feat(runner): add exact attempt ownership claims
+- `db4e20446` — 2026-07-12 — refactor: split exact ownership self-heal migration
+- `bc00a1a21` — 2026-07-12 — test: harden attempt cancellation ownership
+- `11f0f9991` — 2026-07-12 — refactor: isolate recoverable agent wait self-heal
+- `45864c37e` — 2026-07-12 — fix(agent): preserve ownership on unconfirmed wait
+- `1dbd05baa` — 2026-07-12 — chore: complete recoverable agent wait self-heal
+- `8f94dcf8f` — 2026-07-12 — refactor(runner): own exact agent attempt producers
+- `501b1e2d7` — 2026-07-12 — chore: complete exact agent ownership self-heal
+- `ee25fc1f8` — 2026-07-12 — test(agent): cover stderr reader wait failure
+- `f02058f60` — 2026-07-12 — refactor: split exact gate ownership migration
+- `fc8ffc6bd` — 2026-07-12 — test(runner): cover exact agent terminal ownership
+- `91de5a9aa` — 2026-07-12 — refactor: isolate asynchronous preflight ownership
+- `a7965b2db` — 2026-07-12 — refactor(runner): own exact gate producer effects
+- `239a9ebb1` — 2026-07-12 — chore: complete post-agent gate ownership self-heal
+- `3432f8e27` — 2026-07-12 — fix: scope preflight ownership before lost completion
+- `a8c85c4fa` — 2026-07-12 — refactor(runner): supervise asynchronous preflight gates
+- `c558368f6` — 2026-07-12 — chore: complete asynchronous preflight self-heal
+- `b1a27946a` — 2026-07-12 — test(gate): cover preflight producer failure
+- `1254e337c` — 2026-07-12 — refactor(runner): claim exact gate outcomes
+- `7890b4c73` — 2026-07-12 — chore: complete claimed gate outcome self-heal
+- `e526da486` — 2026-07-12 — refactor: split plan verify and merge ownership
+- `2534bf8bd` — 2026-07-12 — test(runner): cover gate claim cleanup
+- `043afad3e` — 2026-07-12 — refactor(runner): own exact plan verification
+- `ba2fff9f5` — 2026-07-12 — chore: complete plan verification ownership self-heal
+- `a06077f1f` — 2026-07-12 — refactor(runner): separate merge reservation from launch
+- `015489eef` — 2026-07-12 — chore: complete merge reservation self-heal
+- `b6a9a69e9` — 2026-07-12 — refactor: split recoverable merge completion ownership
+- `f0def5f91` — 2026-07-12 — test(merge): cover dormant launch descriptors
+- `81dfcaeb7` — 2026-07-12 — fix: require exact merge reservation recovery
+- `65ba321b5` — 2026-07-12 — refactor: split exact merge reservation foundation
+- `4763c0114` — 2026-07-12 — refactor(runner): add exact merge reservation tokens
+- `9956956eb` — 2026-07-12 — chore: complete exact merge reservation foundation
+- `1f75e328c` — 2026-07-12 — fix: require settled merge setup ownership
+- `1b6a4153b` — 2026-07-12 — fix(runner): own merge launches before start
+- `1d912d678` — 2026-07-12 — chore: complete owned merge launch self-heal
+- `376bf62a2` — 2026-07-12 — fix(runner): settle merge ownership before effects
+- `a380a4897` — 2026-07-12 — chore: complete exact merge completion self-heal
+- `36c8d7978` — 2026-07-12 — test(merge): enforce settlement ordering
+- `e36f06bf7` — 2026-07-12 — fix(runner): unify exceptional merge failure cleanup
+- `bc0349543` — 2026-07-12 — chore: complete exceptional merge cleanup self-heal
+- `a35595f4b` — 2026-07-12 — test(merge): cover shutdown reservation cleanup
+- `552c83ff3` — 2026-07-12 — refactor: split durable cancellation migration
+- `50f2bee46` — 2026-07-12 — feat(runner): persist attempt cancellation lifecycle
+- `8772c19d6` — 2026-07-12 — chore: complete durable cancellation lifecycle self-heal
+- `13b8c0fdb` — 2026-07-12 — fix(runner): preserve agents on failed termination
+- `c404f427f` — 2026-07-12 — chore: complete recoverable agent termination self-heal
+- `ecba41fee` — 2026-07-12 — fix(runner): cancel exact attempt resources
+- `ee96793f9` — 2026-07-12 — chore: complete exact resource cancellation self-heal
+- `c08bd599d` — 2026-07-12 — test(runner): isolate stale cancellation attempts
+- `12466d632` — 2026-07-12 — fix(runner): retain cancellation failures until settled
+- `2e7ffbe41` — 2026-07-12 — chore: complete cancellation aggregation self-heal
+- `3e33082cb` — 2026-07-12 — test(runner): cover cancellation aggregation survivors
+- `4b37fd7d0` — 2026-07-12 — chore: split progress deadline self-heal
+- `a04556835` — 2026-07-12 — feat(runner): define monotonic deadline semantics
+- `39fd27387` — 2026-07-12 — chore: complete deadline semantics self-heal
+- `d2b089f33` — 2026-07-12 — feat(runner): enforce exact owner deadlines
+- `5af07688d` — 2026-07-12 — chore: complete exact deadline self-heal
+- `044e6fa47` — 2026-07-12 — feat(runner): enforce durable global deadlines
+- `1649c18b2` — 2026-07-12 — chore: complete global deadline self-heal
+

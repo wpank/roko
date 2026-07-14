@@ -326,7 +326,7 @@ files = [
     "crates/roko-compose/src/strategy.rs",
 ]
 role = "implementer"
-depends_on = ["E06-T06"]
+depends_on = ["E06-T01", "E06-T06"]
 acceptance = [
     "Warm branch: post-gate runner-v2 code records included prompt sections and calls update_bidders or update_bidders_with_cost before persisting attention-bidders.json.",
     "Downgrade branch: CompositionStrategy::Auto no longer silently flips to Vcg; VCG payment diagnostics remain available for explicit Vcg usage.",

@@ -582,7 +582,7 @@ domain = "cell-unification"
 read_files = [
     { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait — registry stores Arc<dyn Cell>" },
     { path = "crates/roko-graph/src/registry.rs", lines = "1-25", why = "roko-graph CellRegistry — different pattern (factory-based), avoid name conflict" },
-    { path = "crates/roko-core/src/tool.rs", lines = "1-30", why = "ToolRegistry pattern — similar approach for runtime management" },
+    { path = "crates/roko-core/src/tool/registry.rs", lines = "1-110", why = "Current ToolRegistry trait and VecToolRegistry runtime-management pattern after the tool module split" },
 ]
 symbols = [
     "Cell trait (cell.rs:91) — registry holds Arc<dyn Cell>",

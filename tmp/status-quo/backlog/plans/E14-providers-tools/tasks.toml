@@ -417,7 +417,7 @@ max_loc = 200
 files = [
     "crates/roko-agent/src/dispatcher/mod.rs",
     "crates/roko-agent/src/provider/mod.rs",
-    "crates/roko-core/src/config.rs",
+    "crates/roko-core/src/config/provider.rs",
 ]
 role = "implementer"
 depends_on = []
@@ -426,7 +426,7 @@ depends_on = []
 read_files = [
     { path = "crates/roko-agent/src/dispatcher/mod.rs", lines = "1-80", why = "dispatcher dispatch path — insert rate limit check before sending request" },
     { path = "crates/roko-agent/src/provider/mod.rs", lines = "80-150", why = "provider registry — associate rate limit counters per ProviderKind" },
-    { path = "crates/roko-core/src/config.rs", lines = "1-80", why = "roko.toml config — add per-provider rate_limit section (rpm, tpm)" },
+    { path = "crates/roko-core/src/config/provider.rs", lines = "255-325", why = "ProviderConfig is the live [providers.<name>] schema; add the per-provider rate_limit fields beside the existing timeout and max_concurrent limits" },
 ]
 symbols = [
     "ProviderKind — enum for each LLM backend",

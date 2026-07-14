@@ -516,7 +516,7 @@ model_hint = "claude-sonnet-4-5"
 max_loc = 100
 files = [
     "crates/roko-fs/src/layout.rs",
-    "crates/roko-fs/src/substrate.rs",
+    "crates/roko-fs/src/file_substrate.rs",
 ]
 role = "implementer"
 depends_on = []
@@ -524,13 +524,13 @@ depends_on = []
 [task.context]
 read_files = [
     { path = "crates/roko-fs/src/layout.rs", lines = "225-260", why = "RokoLayout::episodes_log and signals_log — canonical paths for both files" },
-    { path = "crates/roko-fs/src/substrate.rs", lines = "1-80", why = "FileSubstrate append behavior; rotation should happen before append when file exceeds threshold" },
+    { path = "crates/roko-fs/src/file_substrate.rs", lines = "1-80", why = "FileSubstrate open/log-writer implementation in the current module; use its serialized append path as the rotation integration pattern" },
     { path = "crates/roko-fs/src/gc.rs", lines = "30-55", why = "RetentionPolicy pattern — mirror the configurable threshold approach" },
 ]
 symbols = [
     "RokoLayout::episodes_log — roko-fs/layout.rs",
     "RokoLayout::signals_log — roko-fs/layout.rs",
-    "FileSubstrate — roko-fs/substrate.rs (append-only JSONL writer)",
+    "FileSubstrate — roko-fs/file_substrate.rs (append-only JSONL writer)",
     "RetentionPolicy — roko-fs/gc.rs (configurable threshold pattern to follow)",
 ]
 anti_patterns = [
@@ -543,12 +543,12 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'rotate|ROTATION_THRESHOLD|MAX_LOG_SIZE|log_rotation' crates/roko-fs/src/layout.rs crates/roko-fs/src/substrate.rs"
+command = "rg -q 'rotate|ROTATION_THRESHOLD|MAX_LOG_SIZE|log_rotation' crates/roko-fs/src/layout.rs crates/roko-fs/src/file_substrate.rs"
 fail_msg = "roko-fs must contain log rotation logic for JSONL files"
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'episodes.jsonl|signals.jsonl' crates/roko-fs/src/layout.rs crates/roko-fs/src/substrate.rs"
+command = "rg -q 'episodes.jsonl|signals.jsonl' crates/roko-fs/src/layout.rs crates/roko-fs/src/file_substrate.rs"
 fail_msg = "rotation must target episodes.jsonl and signals.jsonl"
 
 [[task.verify]]

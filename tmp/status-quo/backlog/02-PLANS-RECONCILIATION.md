@@ -10,6 +10,13 @@
 > [`plans/_meta/EXECUTION-OWNERSHIP.md`](../../../plans/_meta/EXECUTION-OWNERSHIP.md):
 > 99 retained owners and 21 zero-write acceptance roll-ups. Historical analysis
 > below is preserved for provenance and must not be used as current inventory.
+> The current standalone roots are the recovered 24-task
+> `architecture-core-queue`, the three-task `architecture-defi-critical-path`,
+> and the two-task `e2e-smoke`. `dry-run-flag`, `live-demo-phase1`, and
+> `live-demo-phase2` were deleted by `7899494d` and remain absent and
+> non-runnable. They are not indexed, and no empty replacement directories were
+> manufactured. The dry-run proposal has no task-for-task current supersession;
+> the live-demo greeting/farewell tasks are not equivalent to `e2e-smoke`.
 >
 > **The bridge between the authored `plans/` backlog and the status-quo findings.**
 > - Repo HEAD: `5852c93c05` on `main`

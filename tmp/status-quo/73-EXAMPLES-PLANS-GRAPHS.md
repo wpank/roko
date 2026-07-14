@@ -1,5 +1,18 @@
 # Examples, Plans, And Graph Assets
 
+> **Current-control-plane notice (2026-07-14, CTRL-16):** The body below is the
+> preserved deep-pass inventory at `5852c93c05`, not current queue inventory.
+> Current generated truth is 30 executable top-level plans/144 tasks plus two
+> superseded plans/66 excluded tasks. The tracked executable set includes the
+> recovered 24-task `architecture-core-queue`, the three-task
+> `architecture-defi-critical-path`, and the two-task `e2e-smoke`.
+> `dry-run-flag`, `live-demo-phase1`, and `live-demo-phase2` were deleted in
+> `7899494d`; none is a runnable current root, none appears in the index, and
+> `e2e-smoke` is not an equivalent replacement for the synthetic live-demo
+> tasks. Use [`plans/INDEX.md`](../../plans/INDEX.md) for generated counts,
+> [`plans/_meta/IMPLEMENTATION_ORDER.md`](../../plans/_meta/IMPLEMENTATION_ORDER.md)
+> for current queue disposition, and the master checklist for dependency order.
+>
 > **Deep second pass (HEAD `5852c93c05`, 2026-07-08):** on-disk inventory verified. Graph loader (`crates/roko-graph/src/loader.rs:11`) REQUIRES a `[graph]` table (`RawGraphFile.graph` is non-`Option`) plus `[[nodes]]`; the default cell registry (`engine.rs:311`) registers only 14 cell types. Plan loader (`plan_loader.rs`) deserializes via `TasksFile` (`task_parser.rs:698`) which expects `[meta]` + `[[task]]` (serde `rename="task"`, singular). Results: **3 of 7 graph examples are stale-schema and fail to load** (`task-execution`, `conditional-branch`, `parallel-gates` — no `[graph]` table + unregistered cell types); **1 of 33 plan files is stale-schema** (`.roko/prd/plans/self-developing-workflow` uses `[[tasks]]` plural + `[task_groups]`). All 31 `plans/*` dirs and `cursor-composer-backend` use the canonical `[meta]`+`[[task]]` shape and parse cleanly.
 
 This ledger covers runnable-looking assets that can be mistaken for proof.

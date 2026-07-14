@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use roko_core::config::LoadConfigError;
 use roko_core::config::hot_reload;
-use roko_core::config::loader::load_config_unified;
+use roko_core::config::loader::{load_config_unified, normalize_and_validate_dispatch_models};
 use roko_core::config::schema::RokoConfig;
 
 use crate::error::ApiError;
@@ -80,8 +80,13 @@ async fn update_config(
 
     merge_json(&mut current, &partial);
 
-    let updated: RokoConfig = serde_json::from_value(current.clone())
+    let mut updated: RokoConfig = serde_json::from_value(current.clone())
         .map_err(|e| ApiError::bad_request(format!("invalid config after merge: {e}")))?;
+    normalize_and_validate_dispatch_models(&mut updated).map_err(map_load_config_error)?;
+
+    // Reflect canonical model keys in both the persisted file and response.
+    current = serde_json::to_value(&updated)
+        .map_err(|e| ApiError::internal(format!("serialize normalized config: {e}")))?;
 
     // Write to roko.toml.
     let toml_str = toml::to_string_pretty(&updated)
@@ -167,7 +172,8 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
 /// Returns [`LoadConfigError::Read`] when `roko.toml` cannot be read and
 /// [`LoadConfigError::Parse`] when the file contents are not valid config.
 pub fn reload_config_from_disk(state: &AppState) -> Result<Vec<String>, LoadConfigError> {
-    let new_config = load_config_unified(&state.workdir)?;
+    let mut new_config = load_config_unified(&state.workdir)?;
+    normalize_and_validate_dispatch_models(&mut new_config)?;
     let mut warnings = validate_references(&new_config);
 
     // Compute diff and apply only hot-reloadable sections.
@@ -363,6 +369,18 @@ fn mask_secret_field(value: &mut Value, path: &[&str], field: &str, env_var: &st
 mod tests {
     use super::*;
 
+    fn test_state(workdir: std::path::PathBuf, config: RokoConfig) -> Arc<AppState> {
+        use crate::deploy::create_backend;
+        use crate::runtime::NoOpRuntime;
+
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        Arc::new(
+            AppState::new(workdir, Arc::new(NoOpRuntime), config, deploy_backend)
+                .expect("AppState::new"),
+        )
+    }
+
     #[test]
     fn expose_dashboard_config_fields_adds_default_model() {
         let mut config = RokoConfig::default();
@@ -543,5 +561,145 @@ port = 4567
             payload.warnings
         );
         assert!(!payload.timestamp.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_config_rejects_ambiguous_models_as_bad_request() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let state = test_state(workdir.clone(), RokoConfig::default());
+        tokio::fs::write(
+            workdir.join("roko.toml"),
+            r#"
+[providers.provider]
+kind = "openai_compat"
+base_url = "https://example.com/v1"
+
+[models.first]
+provider = "provider"
+slug = "duplicate-slug"
+
+[models.second]
+provider = "provider"
+slug = "duplicate-slug"
+
+[agent]
+default_model = "first"
+"#,
+        )
+        .await
+        .expect("write config");
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/config/reload")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.load_roko_config().models.is_empty());
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(body.contains("ambiguous model slug"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn update_config_rejects_unresolved_model_without_writing() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let state = test_state(workdir.clone(), RokoConfig::default());
+        let patch = serde_json::json!({
+            "models": {
+                "focused": {
+                    "provider": "provider",
+                    "slug": "provider-model-v1"
+                }
+            },
+            "agent": { "default_model": "missing" }
+        });
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(patch.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.load_roko_config().models.is_empty());
+        assert!(
+            !workdir.join("roko.toml").exists(),
+            "invalid config must not be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_config_normalizes_alias_before_store_and_response() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().to_path_buf();
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "focused".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "provider".to_string(),
+                slug: "provider-model-v1".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agent.default_model = "provider-model-v1".to_string();
+        let state = test_state(workdir.clone(), config);
+
+        let response = routes()
+            .with_state(Arc::clone(&state))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.load_roko_config().agent.default_model, "focused");
+        let persisted = tokio::fs::read_to_string(workdir.join("roko.toml"))
+            .await
+            .expect("read config");
+        let persisted: RokoConfig = toml::from_str(&persisted).expect("parse config");
+        assert_eq!(persisted.agent.default_model, "focused");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse body");
+        assert_eq!(payload["agent"]["default_model"], "focused");
+        assert_eq!(payload["default_model"], "focused");
     }
 }

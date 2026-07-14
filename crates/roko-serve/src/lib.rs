@@ -267,6 +267,11 @@ impl ServerBuilder {
     /// `state.cancel.cancel()` was called).
     #[allow(clippy::missing_panics_doc)]
     pub async fn start_background(mut self) -> Result<(Arc<AppState>, JoinHandle<Result<()>>)> {
+        roko_core::config::loader::normalize_and_validate_dispatch_models(
+            &mut self.config.roko_config,
+        )
+        .context("validate model configuration before server startup")?;
+
         // -- PORT env var override (Railway / cloud platforms) -------------
         // The `PORT` env var lets the platform pick a port; it does NOT imply
         // the operator wants a public bind. Per T3-25 we override only the
@@ -2910,7 +2915,10 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_app_state, resolve_bind_with_port_env, serve_api_or_spa_fallback};
+    use super::{
+        ServerBuildConfig, ServerBuilder, build_app_state, resolve_bind_with_port_env,
+        serve_api_or_spa_fallback,
+    };
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
@@ -3067,6 +3075,51 @@ mod tests {
             vec!["claude-sonnet-4-6".to_string()],
         );
         assert_eq!(reloaded.total_observations(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_builder_rejects_ambiguous_models_before_startup() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        for key in ["first", "second"] {
+            config.models.insert(
+                key.to_string(),
+                roko_core::config::schema::ModelProfile {
+                    provider: "provider".to_string(),
+                    slug: "duplicate-slug".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        config.agent.default_model = "first".to_string();
+
+        let build = ServerBuildConfig::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Some("127.0.0.1".to_string()),
+            Some(0),
+        );
+        let error = match ServerBuilder::new(build).start_background().await {
+            Err(error) => error,
+            Ok((state, handle)) => {
+                state.shutdown().await;
+                let _ = handle.await;
+                panic!("ambiguous server config unexpectedly started");
+            }
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("validate model configuration before server startup"),
+            "unexpected error: {error:#}"
+        );
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("ambiguous model slug"),
+            "unexpected error chain: {error_chain}"
+        );
     }
 
     /// T3-25: a `PORT` env override must replace **only** the port, leaving

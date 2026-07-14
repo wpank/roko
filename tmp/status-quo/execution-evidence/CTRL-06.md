@@ -38,7 +38,7 @@ Verification:
 - `git diff --check` — exit 0.
 
 Review readiness:
-- Implementation commit: pending.
+- Implementation commit: `ea018feedcbccca3a3d922d293721134e6c7e829`.
 - Diff scope reviewed: only the three reserved validator source/test files and this evidence record are modified; no manifest or lockfile changed.
 - Known limitations: cross-plan dependency outputs are available only when the producer plan is loaded in the same validation run. Path matching is deliberately exact and lexical, matching the authored schema; aliases or undeclared producers are not inferred.
 - Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.

@@ -1,5 +1,16 @@
 # 02 — Plans ↔ Status-Quo Reconciliation
 
+> **Current-control-plane notice (2026-07-14, CTRL-15):** This document's body is
+> the July 9 baseline analysis at `5852c93c05`; its claims that
+> `architecture-core-queue` is missing and that the generated index contains
+> only 29 plans/120 tasks are superseded. The reviewed recovery now includes the
+> 24-task architecture queue, so a current generated `plans/INDEX.md` reports
+> 30 executable plans/144 tasks. The original sealed 120-task population is
+> reconciled row-for-row in
+> [`plans/_meta/EXECUTION-OWNERSHIP.md`](../../../plans/_meta/EXECUTION-OWNERSHIP.md):
+> 99 retained owners and 21 zero-write acceptance roll-ups. Historical analysis
+> below is preserved for provenance and must not be used as current inventory.
+>
 > **The bridge between the authored `plans/` backlog and the status-quo findings.**
 > - Repo HEAD: `5852c93c05` on `main`
 > - Date: 2026-07-09

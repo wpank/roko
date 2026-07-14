@@ -304,6 +304,11 @@ pub async fn spawn_agent(
         .id()
         .context("agent process exited before PID could be read")?;
 
+    // Register PID for orphan cleanup immediately, before spawning reader
+    // tasks. If a panic occurs between here and the end of this function,
+    // the cleanup handler will still find the PID.
+    roko_agent::process::register_spawned_pid(pid);
+
     let _ = event_tx
         .send(AgentEvent::Started {
             agent_id: config.agent_id.clone(),
@@ -335,7 +340,7 @@ pub async fn spawn_agent(
             for event in parse_stream_line(&line) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
-                    break;
+                    return;
                 }
             }
         }
@@ -366,9 +371,6 @@ pub async fn spawn_agent(
         None
     };
 
-    // Register PID for orphan cleanup.
-    roko_agent::process::register_spawned_pid(pid);
-
     Ok(AgentHandle {
         pid,
         child,
@@ -380,6 +382,36 @@ pub async fn spawn_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn scripted_agent(script: &str) -> (tempfile::TempDir, AgentSpawnConfig) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("create agent test directory");
+        let program = temp.path().join("test-agent");
+        std::fs::write(&program, script).expect("write agent test script");
+        let mut permissions = std::fs::metadata(&program)
+            .expect("read agent test script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&program, permissions).expect("make agent test script executable");
+
+        let config = AgentSpawnConfig {
+            prompt: "test prompt".to_string(),
+            system_prompt: String::new(),
+            model: "test-model".to_string(),
+            workdir: temp.path().to_path_buf(),
+            max_turns: 1,
+            effort: None,
+            program: program.clone(),
+            dangerously_skip_permissions: false,
+            mcp_config: None,
+            resume_session: None,
+            agent_id: "test-agent".to_string(),
+            cli_provider: Some(CliProviderConfig::claude("test-cli", program)),
+        };
+        (temp, config)
+    }
 
     #[cfg(unix)]
     fn test_agent_handle(reader_task: JoinHandle<()>) -> AgentHandle {
@@ -570,6 +602,86 @@ mod tests {
             reader_errors
                 .iter()
                 .any(|error| error.contains("stdout reader task failed"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawned_pid_is_registered_before_started_delivery_completes() {
+        let (temp, config) = scripted_agent(
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$(dirname \"$0\")/pid\"\nsleep 30\n",
+        );
+        let pid_file = temp.path().join("pid");
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(AgentEvent::Exited { exit_code: None })
+            .await
+            .expect("prefill event channel");
+
+        let spawn_task = tokio::spawn(async move { spawn_agent(&config, event_tx).await });
+        let observed_pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&pid_file)
+                    && let Ok(pid) = contents.trim().parse::<u32>()
+                    && roko_agent::process::registered_pids().contains(&pid)
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .ok();
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AgentEvent::Exited { exit_code: None })
+        ));
+        let handle = spawn_task
+            .await
+            .expect("spawn task must not panic")
+            .expect("spawn test agent");
+        let pid = handle.pid;
+        let cleanup_confirmed = matches!(
+            handle.kill(Duration::from_millis(10)).await,
+            AgentTermination::Confirmed { pid: confirmed } if confirmed == pid
+        );
+        assert!(cleanup_confirmed, "test agent cleanup was not confirmed");
+        assert_eq!(
+            observed_pid,
+            Some(pid),
+            "spawned PID was not registered while Started delivery was blocked"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_event_channel_terminates_stdout_reader_before_child_exit() {
+        let (_temp, config) = scripted_agent(
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"assistant\",\"subtype\":\"message\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":null}}'\nsleep 30\n",
+        );
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+        let mut handle = spawn_agent(&config, event_tx)
+            .await
+            .expect("spawn test agent");
+        let pid = handle.pid;
+        let mut reader_task = handle.reader_task.take().expect("stdout reader task");
+
+        let reader_finished = tokio::time::timeout(Duration::from_secs(5), &mut reader_task)
+            .await
+            .is_ok();
+        if !reader_finished {
+            reader_task.abort();
+            let _ = reader_task.await;
+        }
+        assert!(matches!(
+            handle.kill(Duration::from_millis(10)).await,
+            AgentTermination::Confirmed { pid: confirmed } if confirmed == pid
+        ));
+        assert!(
+            reader_finished,
+            "stdout reader remained attached to the live child after its event channel closed"
         );
     }
 

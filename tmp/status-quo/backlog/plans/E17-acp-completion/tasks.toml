@@ -107,7 +107,8 @@ depends_on_plan = ["P19-cascade-router-acp", "E07-learning-knowledge"]
 read_files = [
     { path = "crates/roko-acp/src/bridge_events.rs", lines = "620-720", why = "DaimonPolicy::default() hardcode (:634) [P19 replaces]; record_cascade_observation (:685-718) is observe-only — the telemetry site to pair with a selection call." },
     { path = "crates/roko-acp/src/bridge_events.rs", lines = "1590-1625", why = "resolved slug / cascade_router_model_slugs call site (:1606-1618) where a variant assignment belongs." },
-    { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "395-455", why = "Current ExperimentStore load, active lookup, assign_variant, and record_metric APIs to mirror for ACP selection and outcome recording." },
+    { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "395-455", why = "Current ExperimentStore load, active lookup, and assign_variant APIs to mirror for ACP variant selection." },
+    { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "590-605", why = "ExperimentStore replay boundary and record_metric implementation for the outcome-recording half of the ACP selection/outcome pair." },
 ]
 symbols = [
     "ExperimentStore::assign_variant(experiment_name) -> Option<(variant_id, content)> and record_metric(experiment_id, variant_id, metric) — the selection/outcome pair P19 does not add",

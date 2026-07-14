@@ -131,8 +131,11 @@ documentation-only commit would not change executable behavior and was unnecessa
 
 ## Integration
 
-- Independent review: pending.
-- Integration commit: pending.
-- Post-merge reproduction: pending integration-owner action.
-- Current evidence state: `IMPLEMENTED_UNREVIEWED`; CTRL-11 is not marked `DONE`
-  by this worker.
+- Candidate: `989dc65497d8dd501484d77dd569b9128063d638`.
+- Independent review: `ACCEPTED` in `CTRL-11-CTRL-12-REVIEW.md`; review commit
+  `b9881905582e63c1dad802bb0b5426d648a77746`.
+- Integration merge: `1e478eaf1a6e9b277ad9d890cd6e9805d59a6872`.
+- Post-merge reproduction: exact binary provenance remains Git `128dc950c`; the
+  intervening integrated delta is evidence/control Markdown only, so production
+  source is byte-identical. The binary runs and the integration worktree is clean.
+- Final status: `DONE` for the required current-source rebuild proof.

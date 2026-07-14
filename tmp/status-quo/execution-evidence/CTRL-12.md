@@ -126,8 +126,12 @@ not infer CTRL-13's combined-root dependency-resolution outcome.
 
 ## Integration
 
-- Independent review: pending.
-- Integration commit: pending.
-- Post-merge reproduction: pending integration-owner action.
-- Current evidence state: `IMPLEMENTED_UNREVIEWED`; CTRL-12 is not marked `DONE`
-  by this worker.
+- Candidate: `989dc65497d8dd501484d77dd569b9128063d638`.
+- Independent review: `ACCEPTED` in `CTRL-11-CTRL-12-REVIEW.md`; review commit
+  `b9881905582e63c1dad802bb0b5426d648a77746`.
+- Integration merge: `1e478eaf1a6e9b277ad9d890cd6e9805d59a6872`.
+- Post-merge reproduction: from a fresh immutable integration archive, strict
+  backlog validation reports `0 diagnostics in 55 plans`, strict self-heal reports
+  `0 diagnostics in 6 plans`, and the source `plans/INDEX.md` hash remains sealed.
+- Final status: `DONE` for the two named strict-validation roots. CTRL-13 remains a
+  separate combined-root dependency-resolution task.

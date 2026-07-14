@@ -50,7 +50,15 @@ Review readiness:
 - Required reviewer focus: prove the diff contains only the two source files plus this evidence; confirm timeout blob equivalence; confirm every current integrated precursor hunk survives; rerun the focused gates; and verify the old merge conflict has been eliminated by the new base rather than hidden in a manual merge.
 
 Integration:
-- Review evidence: pending renewed independent review.
-- Integration commit: pending.
-- Post-merge commands/results: pending integration owner.
-- Final status: `IMPLEMENTED_UNREVIEWED` only after candidate commit; not DONE before renewed review, merge, and post-merge proof.
+- Corrected candidate: `51bb0a0e5d0f20bf358198d02e06ecd5cb711f16`.
+- Renewed independent review: `ACCEPTED` in
+  `SH01-T06A-C1-C2-CORRECTION-REVIEW-RENEWED.md`; review commit
+  `58ee07f2b97ec1d08893cf5a510fad965b763d7d`.
+- Integration merge: `df76374841eaed25f6a15df2dd6b690626bb2de2`.
+- Post-merge proof: the first run exposed stale cross-worktree Cargo artifacts (the
+  source already contained all three allegedly missing APIs). Package-scoped Cargo
+  cleanup removed the contaminated target entries; the fresh rebuild then passed
+  deadlines 8/8, timeout config 2/2, exact eligible activity 1/1, and the full
+  event-loop module 46/46. `git diff --check` and integration status are clean.
+- Final status: `DONE` for this bounded CTRL-02 precursor reconstruction. This does
+  not mark any enclosing SH plan task complete.

@@ -294,7 +294,7 @@ mod plan_validation {
         }
 
         #[test]
-        fn plan_validation_nonexistent_file_references_warn() {
+        fn plan_validation_missing_prerequisites_warn_but_missing_outputs_do_not() {
             let temp = TempDir::new().unwrap();
             fs::create_dir_all(temp.path().join("crates/roko-core/src")).unwrap();
             fs::write(
@@ -319,12 +319,18 @@ mod plan_validation {
                     "Validate file refs",
                     Some("implementer"),
                     r#"files = [
-  "crates/roko-core/src/lib.rs",
-  "crates/missing-crate/src/lib.rs",
-  "packages/existing-app/package.json",
-  "packages/missing-app/package.json",
-  "docs/existing.md",
-  "docs/missing.md",
+  "crates/output-crate/src/lib.rs",
+  "docs/generated.md",
+]
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/lib.rs", why = "existing crate input" },
+  { path = "crates/missing-crate/src/lib.rs", why = "missing crate input" },
+  { path = "packages/existing-app/package.json", why = "existing package input" },
+  { path = "packages/missing-app/package.json", why = "missing package input" },
+  { path = "docs/existing.md", why = "existing doc input" },
+  { path = "docs/missing.md", why = "missing doc input" },
 ]
 "#,
                 ),
@@ -360,10 +366,16 @@ mod plan_validation {
                     .any(|diag| diag.message.contains("existing.md")),
                 "existing file should not be reported: {diagnostics:?}"
             );
+            assert!(
+                !diagnostics.iter().any(|diag| {
+                    diag.message.contains("output-crate") || diag.message.contains("generated.md")
+                }),
+                "task outputs may be created and must not be reported: {diagnostics:?}"
+            );
         }
 
         #[test]
-        fn plan_validation_existing_file_references_pass() {
+        fn plan_validation_existing_prerequisites_pass() {
             let temp = TempDir::new().unwrap();
             fs::create_dir_all(temp.path().join("crates/roko-core/src")).unwrap();
             fs::write(
@@ -387,10 +399,13 @@ mod plan_validation {
                     "refs-ok",
                     "Validate existing refs",
                     Some("implementer"),
-                    r#"files = [
-  "crates/roko-core/src/lib.rs",
-  "packages/existing-app/package.json",
-  "docs/existing.md",
+                    r#"files = ["docs/generated.md"]
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/lib.rs", why = "existing crate input" },
+  { path = "packages/existing-app/package.json", why = "existing package input" },
+  { path = "docs/existing.md", why = "existing doc input" },
 ]
 "#,
                 ),
@@ -400,6 +415,115 @@ mod plan_validation {
             assert!(
                 diagnostics.is_empty(),
                 "existing references should not be reported: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn plan_validation_dependency_created_prerequisite_passes() {
+            let temp = TempDir::new().unwrap();
+            let tasks_path = write_tasks_file(
+                temp.path(),
+                "dependency-output",
+                r#"
+[meta]
+plan = "dependency-output"
+
+[[task]]
+id = "T1"
+title = "Create input"
+role = "implementer"
+files = ["generated/input.md"]
+depends_on = []
+verify = [{ phase = "structural", command = "test -f generated/input.md" }]
+
+[[task]]
+id = "T2"
+title = "Consume input"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = ["T1"]
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/input.md", why = "created by T1" }]
+"#,
+            );
+
+            let diagnostics = validate_file_references(&tasks_path, temp.path()).unwrap();
+            assert!(
+                diagnostics.is_empty(),
+                "declared dependency output should satisfy prerequisite: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn plan_validation_loaded_plan_dependency_output_passes_but_unrelated_output_fails() {
+            let temp = TempDir::new().unwrap();
+            write_tasks_file(
+                temp.path(),
+                "foundation",
+                r#"
+[meta]
+plan = "foundation"
+
+[[task]]
+id = "F1"
+title = "Create shared input"
+role = "implementer"
+files = ["generated/shared.md"]
+depends_on = []
+verify = [{ phase = "structural", command = "test -f generated/shared.md" }]
+"#,
+            );
+            write_tasks_file(
+                temp.path(),
+                "consumer",
+                r#"
+[meta]
+plan = "consumer"
+
+[[task]]
+id = "T1"
+title = "Consume declared plan output"
+role = "implementer"
+files = ["src/declared.rs"]
+depends_on = []
+depends_on_plan = ["foundation"]
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/shared.md", why = "foundation output" }]
+
+[[task]]
+id = "T2"
+title = "Consume unrelated plan output"
+role = "implementer"
+files = ["src/undeclared.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/shared.md", why = "producer not declared" }]
+"#,
+            );
+
+            let report = validate_plans_dir_with_workdir(
+                &temp.path().join("plans"),
+                None,
+                Some(temp.path()),
+            )
+            .unwrap();
+            assert_eq!(report.totals.warnings, 1, "unexpected report: {report:?}");
+            let diagnostics = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .collect::<Vec<_>>();
+            assert_eq!(diagnostics[0].task_id.as_deref(), Some("T2"));
+            assert!(
+                diagnostics[0]
+                    .message
+                    .contains("not created by a declared dependency")
             );
         }
 

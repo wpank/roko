@@ -1,0 +1,715 @@
+[meta]
+plan = "E23-agent-cognitive-autonomy"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── T01: Agent lifecycle type-state machine ──────────────────────────
+
+[[task]]
+id = "E23-T01"
+title = "Implement agent lifecycle type-state machine with compile-time state enforcement"
+description = """
+Add type-state types for agent lifecycle to crates/roko-agent/src/lifecycle.rs.
+The existing AgentCoreManifest (lifecycle.rs:18-27) and AgentExtendedManifest
+(lifecycle.rs:120-153) provide creation config. This task adds the runtime
+state machine that enforces legal transitions at compile time.
+
+States (each a distinct Rust struct):
+- Initializing { manifest: AgentCoreManifest, created_at: Instant }
+- Bootstrapping { manifest, capabilities: Vec<String> }
+- Ready { manifest, capabilities }
+- Running { manifest, capabilities, started_at: Instant, tick_count: u64 }
+- Draining { manifest, reason: DrainReason, drain_started: Instant }
+- Terminated { manifest, reason: TerminationReason, backup: Option<BackupHandle> }
+
+Transitions consume self and produce the next state:
+- Initializing -> Bootstrapping via validate(capabilities) -> Result<Bootstrapping>
+- Bootstrapping -> Ready via bootstrap_complete() -> Ready
+- Ready -> Running via start() -> Running
+- Running -> Draining via drain(reason) -> Draining
+- Running -> Terminated via terminate(reason) -> Terminated (emergency)
+- Draining -> Terminated via complete_drain(backup) -> Terminated
+
+Wrap all states in an AgentLifecycle enum for runtime storage where
+compile-time enforcement isn't possible (e.g., serialization).
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-agent/src/lifecycle.rs"]
+depends_on = []
+max_loc = 200
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/lifecycle.rs", lines = "1-40", why = "AgentCoreManifest: prompt, mode, domain, schema_version" },
+    { path = "crates/roko-agent/src/lifecycle.rs", lines = "42-49", why = "DeploymentMode enum (Hosted, SelfHosted)" },
+    { path = "crates/roko-agent/src/lifecycle.rs", lines = "120-176", why = "AgentExtendedManifest with all optional fields" },
+    { path = "crates/roko-agent/src/lifecycle.rs", lines = "335-350", why = "BudgetConfig with spending limits and degradation policy" },
+    { path = "docs/v2-depth/07-agent-runtime/26-agent-lifecycle-type-state.md", lines = "1-60", why = "Type-state spec: 6 states, transitions as consuming methods" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-30", why = "Agent = Space + Extensions + Memory + adaptive clock + vitality" },
+]
+symbols = [
+    "AgentCoreManifest (lifecycle.rs:18) -- core manifest carried through all states",
+    "DeploymentMode (lifecycle.rs:44) -- Hosted vs SelfHosted, influences bootstrapping",
+    "AgentExtendedManifest (lifecycle.rs:121) -- extended manifest with budget, inference, neuro config",
+    "BudgetConfig (lifecycle.rs:336) -- spending limits referenced by Terminated backup",
+]
+anti_patterns = [
+    "Do NOT use a single enum for states -- use distinct types for compile-time enforcement of transitions",
+    "Do NOT break existing AgentCoreManifest consumers -- the type-state wraps the manifest, doesn't replace it",
+    "Do NOT add async methods to the type-state transitions -- they are pure state transformations",
+    "Do NOT add I/O (file, network) to transitions -- those are orchestrated by the caller",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct Initializing' crates/roko-agent/src/lifecycle.rs && grep -q 'pub struct Running' crates/roko-agent/src/lifecycle.rs && grep -q 'pub struct Terminated' crates/roko-agent/src/lifecycle.rs && grep -q 'pub struct Draining' crates/roko-agent/src/lifecycle.rs"
+fail_msg = "Type-state structs Initializing, Running, Draining, Terminated must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'fn.*self)' crates/roko-agent/src/lifecycle.rs | grep -qE '[3-9]|[0-9]{2}'"
+fail_msg = "Type-state transitions must consume self (at least 3 consuming methods)"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum AgentLifecycle' crates/roko-agent/src/lifecycle.rs"
+fail_msg = "AgentLifecycle enum wrapper must exist for runtime storage"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+# ── T02: Behavioral phases with vitality ─────────────────────────────
+
+[[task]]
+id = "E23-T02"
+title = "Implement behavioral phases (Thriving/Stable/Conservation/Declining/Terminal) driven by vitality"
+description = """
+Add BehavioralPhase enum and VitalityTracker to roko-daimon/src/lib.rs.
+
+The existing VitalityPhase (mortality.rs:126-138) maps to Nietzsche phases
+(Camel/Lion/Child) -- that is a philosophical model. BehavioralPhase is the
+operational model driven by remaining_budget / initial_budget:
+
+- Thriving (v >= 0.8): full tier access, unlimited goals, high exploration
+- Stable (0.5 <= v < 0.8): full tier access, max 5 active goals
+- Conservation (0.3 <= v < 0.5): T0/T1 only, max 3 goals, reduced exploration
+- Declining (0.1 <= v < 0.3): T0 only, max 1 goal, no exploration
+- Terminal (v < 0.1): no dispatch, 0 goals, shutdown preparation
+
+Add hysteresis (5% band) to prevent rapid oscillation at boundaries:
+transition up requires exceeding threshold by 5%, down requires dropping
+below by 5%. Store last_phase and last_transition_at in VitalityTracker.
+
+Add to DaimonState (lib.rs:1973-2009): vitality_tracker: VitalityTracker field.
+Add DaimonState::behavioral_phase() -> BehavioralPhase accessor.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-daimon/src/lib.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-daimon/src/mortality.rs", lines = "120-151", why = "Existing VitalityPhase (Camel/Lion/Child) -- separate dimension, do NOT duplicate" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "1971-2009", why = "DaimonState struct with all current fields -- add vitality_tracker here" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2003-2005", why = "BehavioralStateTracker -- existing tracker with hysteresis pattern to follow" },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-energy-and-vitality.md", lines = "1-80", why = "Energy zones spec with phase thresholds and constraints" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-30", why = "Vitality = remaining_budget / initial_budget" },
+]
+symbols = [
+    "VitalityPhase (mortality.rs:126) -- Nietzsche phases (Camel/Lion/Child), do NOT replace",
+    "DaimonState (lib.rs:1973) -- top-level daimon struct, add vitality_tracker field",
+    "BehavioralStateTracker (lib.rs:2005) -- existing tracker with hysteresis, follow this pattern",
+    "BehavioralState (roko-core) -- existing enum (Engaged/Cautious/etc), different concept",
+]
+anti_patterns = [
+    "Do NOT replace VitalityPhase -- BehavioralPhase is a separate operational dimension",
+    "Do NOT use floating-point equality for phase thresholds -- use >= and < with hysteresis band",
+    "Do NOT confuse BehavioralPhase with roko-core::BehavioralState -- they are different enums",
+    "Do NOT add BehavioralPhase to roko-core -- it belongs in roko-daimon",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum BehavioralPhase' crates/roko-daimon/src/lib.rs && grep -q 'Thriving' crates/roko-daimon/src/lib.rs && grep -q 'Conservation' crates/roko-daimon/src/lib.rs && grep -q 'Terminal' crates/roko-daimon/src/lib.rs"
+fail_msg = "BehavioralPhase enum with Thriving, Conservation, Terminal must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'VitalityTracker' crates/roko-daimon/src/lib.rs && grep -q 'hysteresis\\|HYSTERESIS' crates/roko-daimon/src/lib.rs"
+fail_msg = "VitalityTracker with hysteresis support must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-daimon 2>&1"
+fail_msg = "roko-daimon must compile"
+
+# ── T03: CorticalState as live perception surface ────────────────────
+
+[[task]]
+id = "E23-T03"
+title = "Extend CorticalState with cognitive energy and EFE fields"
+description = """
+The existing CorticalState (heartbeat.rs:228-250) is a lock-free shared
+perception surface using atomic fields. All fields are AtomicU32/U8/U16/I8/U64.
+Add these new atomic fields at the end of the struct:
+
+- cognitive_energy: AtomicU32 (f32 bits, 0.0-1.0 current energy level)
+- fatigue_penalty: AtomicU32 (f32 bits, accumulated fatigue)
+- efe_last_tier: AtomicU8 (0=T0, 1=T1, 2=T2 -- last EFE-selected tier)
+
+Add accessor methods following the existing pattern:
+- cognitive_energy() -> f32 using load_f32 helper
+- set_cognitive_energy(f32) using store_f32
+- fatigue_penalty() -> f32
+- set_fatigue_penalty(f32)
+- efe_last_tier() -> u8
+
+These fields enable the EFE router (T05) and cognitive energy budget (T04)
+to read the agent's current perception without lock contention.
+
+Update CorticalState::new (heartbeat.rs:255-280) to initialize new fields:
+cognitive_energy = 1.0f32 (fully charged), fatigue_penalty = 0.0f32,
+efe_last_tier = 0 (T0 default).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-runtime/src/heartbeat.rs"]
+depends_on = []
+max_loc = 40
+
+[task.context]
+read_files = [
+    { path = "crates/roko-runtime/src/heartbeat.rs", lines = "226-280", why = "CorticalState struct with all atomic fields and new() constructor" },
+    { path = "crates/roko-runtime/src/heartbeat.rs", lines = "282-299", why = "pad() and set_pad() methods -- follow this pattern for new accessors" },
+    { path = "docs/v2-depth/07-agent-runtime/24-attention-auction-and-cortical-state.md", lines = "1-40", why = "CorticalState spec with all perception surface fields" },
+]
+symbols = [
+    "CorticalState (heartbeat.rs:228) -- lock-free shared perception surface, #[repr(C, align(64))]",
+    "load_f32 (heartbeat.rs) -- helper for reading AtomicU32 as f32 via from_bits",
+    "AtomicU32 -- used for f32 storage via to_bits/from_bits throughout CorticalState",
+    "PersonalityPreset (heartbeat.rs) -- personality parameter for new() constructor",
+]
+anti_patterns = [
+    "Do NOT add Mutex or RwLock -- CorticalState is lock-free by design using atomics only",
+    "Do NOT change existing field layouts -- add new fields at the end of the struct",
+    "Do NOT change the #[repr(C, align(64))] attribute -- it's needed for cache-line alignment",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cognitive_energy.*AtomicU32' crates/roko-runtime/src/heartbeat.rs && grep -q 'fatigue_penalty.*AtomicU32' crates/roko-runtime/src/heartbeat.rs && grep -q 'efe_last_tier.*AtomicU8' crates/roko-runtime/src/heartbeat.rs"
+fail_msg = "cognitive_energy, fatigue_penalty, and efe_last_tier fields must exist in CorticalState"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-runtime 2>&1"
+fail_msg = "roko-runtime must compile"
+
+# ── T04: CognitiveEnergy budget allocation ───────────────────────────
+
+[[task]]
+id = "E23-T04"
+title = "Implement CognitiveEnergy struct with depletion and recovery modes"
+description = """
+Add CognitiveEnergy struct to crates/roko-daimon/src/lib.rs with fields:
+- current: f64 (0.0..=1.0, current energy level)
+- max: f64 (1.0 default, maximum capacity)
+- fatigue: f64 (0.0..=1.0, accumulated fatigue that increases depletion cost)
+- recovery_mode: RecoveryMode
+
+Add RecoveryMode enum:
+- Gamma: fast partial recovery (+0.05 per recovery call, does NOT reset fatigue)
+- Theta: moderate recovery (+0.15 per recovery, does NOT reset fatigue)
+- Delta: full recovery (reset to max, AND reset fatigue to 0.0)
+
+Implement deplete(cost: f64) method with depletion table from spec:
+- T0 tick: 0.01
+- T1 tick: 0.05
+- T2 tick: 0.15
+- tool_call: 0.03
+- context_assembly: 0.02
+- gate_check: 0.04
+- dream_cycle: -0.30 (recovery, not depletion)
+
+Effective cost = base_cost * (1.0 + fatigue * intensity_factor).
+Fatigue accumulates: fatigue = fatigue * 0.95 + cost * 0.1 (exponential decay
+with new accumulation). Only Delta recovery resets fatigue to zero.
+
+When current drops below 0.0, clamp to 0.0 and log a conservation warning.
+Add to DaimonState (lib.rs:1973): cognitive_energy: CognitiveEnergy field.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-daimon/src/lib.rs"]
+depends_on = ["E23-T02"]
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-daimon/src/lib.rs", lines = "1971-2009", why = "DaimonState struct -- add cognitive_energy field" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2017-2035", why = "DaimonState::new() -- initialize cognitive_energy" },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-energy-and-vitality.md", lines = "1-80", why = "Energy spec with depletion table, recovery modes, fatigue mechanics" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-50", why = "Agent overview: vitality scalar drives behavioral phases" },
+]
+symbols = [
+    "DaimonState (lib.rs:1973) -- parent struct, add cognitive_energy field",
+    "BehavioralPhase (lib.rs, from T02) -- phase constrains tier access based on energy",
+    "VitalityPhase (mortality.rs:126) -- different concept (Nietzsche phases), do not confuse",
+]
+anti_patterns = [
+    "Do NOT clamp negative energy to zero silently -- emit a tracing::warn conservation warning",
+    "Do NOT allow energy to exceed max -- clamp in recover() method",
+    "Do NOT reset fatigue on Gamma or Theta recovery -- only Delta resets fatigue",
+    "Do NOT make CognitiveEnergy thread-safe internally -- DaimonState is already &mut self-accessed",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CognitiveEnergy' crates/roko-daimon/src/lib.rs && grep -q 'pub enum RecoveryMode' crates/roko-daimon/src/lib.rs && grep -q 'fn deplete' crates/roko-daimon/src/lib.rs"
+fail_msg = "CognitiveEnergy with RecoveryMode and deplete method must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Gamma' crates/roko-daimon/src/lib.rs && grep -q 'Theta' crates/roko-daimon/src/lib.rs && grep -q 'Delta' crates/roko-daimon/src/lib.rs"
+fail_msg = "RecoveryMode must have Gamma, Theta, and Delta variants"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-daimon 2>&1"
+fail_msg = "roko-daimon must compile"
+
+# ── T05: Dual-process EFE routing ────────────────────────────────────
+
+[[task]]
+id = "E23-T05"
+title = "Implement EFE tier routing: epistemic + pragmatic - cost"
+description = """
+Add EfeRouter to crates/roko-learn/src/active_inference.rs alongside the
+existing BeliefState (active_inference.rs:18-24).
+
+The existing active_inference module has a BeliefState with 90 latent states
+(3 tiers x 3 skill levels x 10 confidence levels) and an observe() method
+that does Bayesian updating. EfeRouter uses this infrastructure.
+
+EfeRouter computes Expected Free Energy for each tier (T0/T1/T2):
+  EFE(tier) = -epistemic_value(tier) - pragmatic_value(tier) + cost(tier) + regime_penalty(tier)
+
+Where:
+- epistemic_value = information gain from uncertainty reduction (high when
+  surprise_rate is high, measured from CorticalState)
+- pragmatic_value = expected task completion probability (from BeliefState)
+- cost = token_estimate * price_per_million (tier-dependent)
+- regime_penalty = 0.0 for Calm/Normal, 0.1 for Volatile, 0.5 for Crisis
+
+The router returns the tier with lowest EFE (most efficient allocation of
+cognitive resources). When surprise is low and task is routine, T0 wins.
+When uncertainty is high, T2 wins despite higher cost.
+
+EfeRouter struct:
+- belief: BeliefState
+- cost_table: HashMap<ModelTier, f64> (price per million tokens)
+- route(surprise_rate: f32, regime: u8, task_difficulty: f64) -> ModelTier
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-learn/src/active_inference.rs"]
+depends_on = ["E23-T03"]
+max_loc = 120
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/active_inference.rs", lines = "1-80", why = "Existing BeliefState, STATE_COUNT, observe() method" },
+    { path = "crates/roko-learn/src/active_inference.rs", lines = "10-12", why = "ModelTier and TaskRequirements imports from roko-core" },
+    { path = "docs/v2-depth/07-agent-runtime/dual-process-and-efe-routing.md", lines = "1-50", why = "EFE cascade spec: formula, regime penalties" },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-timescales.md", lines = "1-50", why = "Three timescales (gamma/theta/delta) and EFE formula" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-50", why = "Dual-process: T0 reflexive, T1 deliberative, T2 reflective" },
+]
+symbols = [
+    "BeliefState (active_inference.rs:19) -- existing 90-state belief distribution",
+    "ModelTier (roko-core) -- T0/T1/T2 tier enum",
+    "TaskRequirements (roko-core) -- task difficulty estimation",
+    "Regime (roko-core/roko-runtime) -- Calm/Normal/Volatile/Crisis enum",
+]
+anti_patterns = [
+    "Do NOT hardcode model names -- use ModelTier abstraction throughout",
+    "Do NOT ignore the regime penalty -- it prevents expensive T2 calls during Crisis",
+    "Do NOT replace BeliefState -- EfeRouter uses it as an input, not a replacement",
+    "Do NOT require CorticalState as a direct dependency -- pass surprise_rate and regime as scalars",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct EfeRouter\\|pub fn efe_route\\|fn route' crates/roko-learn/src/active_inference.rs"
+fail_msg = "EFE routing function or struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'epistemic\\|pragmatic\\|regime_penalty' crates/roko-learn/src/active_inference.rs"
+fail_msg = "EFE computation must include epistemic, pragmatic, and regime penalty terms"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T06: Emergent goals via reinforcement ────────────────────────────
+
+[[task]]
+id = "E23-T06"
+title = "Wire GoalTree into DaimonState for emergent goal tracking"
+description = """
+The GoalTree (goals.rs:170) and GoalNode (goals.rs:86-107) already exist with
+full lifecycle support. GoalSeed (goals.rs:25-41) captures nascent patterns.
+GoalStatus has Active, Completed, Suspended, Pruned variants (goals.rs:112-121).
+
+Wire them into DaimonState so that:
+1. New goal seeds are created from repeated high-reward patterns via
+   DaimonState::observe_pattern(pattern: &str, reward: f64)
+2. Seeds are promoted to GoalTree when is_promotable() returns true
+   (goals.rs:68 -- min_observations and min_score thresholds)
+3. Goals progress Active->Completed/Pruned based on success/failure counts
+   via DaimonState::update_goals(task_outcome: bool, reward: f64)
+4. Active goal count is bounded by behavioral phase from T02:
+   Thriving=unlimited, Stable=5, Conservation=3, Declining=1, Terminal=0
+5. When active goals exceed the phase limit, lowest-priority goals are
+   suspended (GoalStatus::Suspended)
+
+Add fields to DaimonState (lib.rs:1973):
+- goal_tree: GoalTree
+- goal_seeds: Vec<GoalSeed>
+
+Add methods:
+- observe_pattern(&mut self, pattern: &str, reward: f64)
+- update_goals(&mut self, task_outcome: bool, reward: f64)
+- active_goals(&self) -> Vec<&GoalNode>
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-daimon/src/lib.rs", "crates/roko-daimon/src/goals.rs"]
+depends_on = ["E23-T02"]
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-daimon/src/goals.rs", lines = "19-81", why = "GoalSeed: new, observe, is_promotable, should_prune, decay" },
+    { path = "crates/roko-daimon/src/goals.rs", lines = "84-160", why = "GoalNode: from_seed, update_progress, is_active; GoalStatus enum" },
+    { path = "crates/roko-daimon/src/goals.rs", lines = "170-200", why = "GoalTree struct with the tree structure" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "1971-2009", why = "DaimonState fields -- add goal_tree and goal_seeds" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2017-2035", why = "DaimonState::new() -- initialize goals" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "57-58", why = "goals module already declared and GoalTree/GoalSeed exported" },
+]
+symbols = [
+    "GoalTree (goals.rs:170) -- existing goal tree, use directly",
+    "GoalNode (goals.rs:86) -- individual goal with status and priority",
+    "GoalSeed (goals.rs:25) -- seed from which goals emerge via observe()",
+    "GoalStatus (goals.rs:112) -- Active/Completed/Suspended/Pruned",
+    "DaimonState (lib.rs:1973) -- parent struct, add goal_tree and goal_seeds",
+    "BehavioralPhase (from T02) -- constrains max active goals per phase",
+]
+anti_patterns = [
+    "Do NOT reimplement GoalSeed/GoalNode/GoalTree -- use existing implementations directly",
+    "Do NOT allow goals beyond the phase-constrained max -- suspend excess goals",
+    "Do NOT prune goals that are merely suspended -- they may be reactivated when phase improves",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'goal_tree' crates/roko-daimon/src/lib.rs && grep -q 'goal_seeds' crates/roko-daimon/src/lib.rs && grep -q 'update_goals\\|observe_pattern' crates/roko-daimon/src/lib.rs"
+fail_msg = "goal_tree, goal_seeds fields and update_goals/observe_pattern methods must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'active_goals' crates/roko-daimon/src/lib.rs"
+fail_msg = "active_goals accessor must exist in DaimonState"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-daimon 2>&1"
+fail_msg = "roko-daimon must compile"
+
+# ── T07: Three cognitive timescales (gamma/theta/delta) ──────────────
+
+[[task]]
+id = "E23-T07"
+title = "Add CognitiveTimescale config and adaptive clock structs"
+description = """
+Add CognitiveTimescale enum and AdaptiveClock struct to
+crates/roko-runtime/src/heartbeat.rs alongside the existing CorticalState.
+
+CognitiveTimescale enum:
+- Gamma: fast reactive loop (100-500ms base interval)
+- Theta: reflective loop (500ms-16s base interval)
+- Delta: consolidation loop (60-600s base interval)
+
+Each timescale has a regime-dependent multiplier:
+- Gamma: Crisis=0.25x (faster), Volatile=0.5x, Normal=1.0x, Calm=4.0x (slower)
+- Theta: adaptive to gamma tick count (every N gamma ticks = 1 theta tick)
+- Delta: Crisis=0.5x (faster consolidation), others=1.0x
+
+AdaptiveClock struct:
+- timescale: CognitiveTimescale
+- base_interval: Duration
+- current_interval: Duration
+- last_fired: Option<Instant>
+- gamma_ticks_since_theta: u32 (for theta adaptation)
+
+Methods:
+- new(timescale, base_interval) -> Self
+- adapt(&mut self, regime: Regime) -- adjust current_interval based on regime
+- next_fire_at(&self) -> Option<Instant> -- when this clock should fire next
+- should_fire(&self) -> bool -- true if now >= next_fire_at
+- fire(&mut self) -- mark as fired, reset timer
+
+Use the existing Regime enum from CorticalState (heartbeat.rs:243, stored as
+AtomicU8). The Regime values are: Calm=0, Normal=1, Volatile=2, Crisis=3.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-runtime/src/heartbeat.rs"]
+depends_on = ["E23-T03"]
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-runtime/src/heartbeat.rs", lines = "226-280", why = "CorticalState with regime field (AtomicU8) -- provides regime for adaptation" },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-timescales.md", lines = "1-50", why = "Three timescale spec: gamma, theta, delta intervals and regime multipliers" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-50", why = "Agent clock architecture: three nested loops at different timescales" },
+]
+symbols = [
+    "CorticalState (heartbeat.rs:228) -- provides regime for clock adaptation",
+    "Regime (roko-core) -- Calm/Normal/Volatile/Crisis enum",
+    "AtomicU8 (heartbeat.rs:243) -- how regime is stored in CorticalState",
+]
+anti_patterns = [
+    "Do NOT hardcode intervals -- make them configurable with spec defaults",
+    "Do NOT add tokio timers or runtime dependencies -- this is pure clock calculation",
+    "Do NOT conflate CognitiveTimescale with RecoveryMode (from T04) -- they are different dimensions",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum CognitiveTimescale' crates/roko-runtime/src/heartbeat.rs && grep -q 'Gamma' crates/roko-runtime/src/heartbeat.rs && grep -q 'Theta' crates/roko-runtime/src/heartbeat.rs && grep -q 'Delta' crates/roko-runtime/src/heartbeat.rs"
+fail_msg = "CognitiveTimescale enum with Gamma, Theta, Delta must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct AdaptiveClock' crates/roko-runtime/src/heartbeat.rs && grep -q 'fn adapt\\|fn should_fire\\|fn fire' crates/roko-runtime/src/heartbeat.rs"
+fail_msg = "AdaptiveClock with adapt, should_fire, and fire methods must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-runtime 2>&1"
+fail_msg = "roko-runtime must compile"
+
+# ── T08: Energy-affect coupling ──────────────────────────────────────
+
+[[task]]
+id = "E23-T08"
+title = "Wire CognitiveEnergy into affect appraisal for bidirectional coupling"
+description = """
+Add energy-affect coupling to DaimonState so that energy and affect mutually
+influence each other. The existing modulate methods (lib.rs:2143-2154) and
+affect appraisal already handle affect -> dispatch. This adds the bidirectional
+energy <-> affect loop.
+
+Add method DaimonState::apply_energy_affect_coupling(&mut self):
+1. Low energy (< 0.3) attenuates arousal by 20%:
+   self.state.pad.arousal *= 0.8 when cognitive_energy.current < 0.3
+   (exhaustion dampens emotional reactivity)
+2. High arousal (> 0.7) increases depletion rate by 1.5x:
+   effective_cost = base_cost * 1.5 when |self.state.pad.arousal| > 0.7
+   (agitation burns energy faster -- store the multiplier in CognitiveEnergy)
+3. Delta recovery during dreams resets fatigue AND shifts PAD toward neutral:
+   On recover(Delta), also call self.state.pad = lerp(self.state.pad, neutral, 0.3)
+   (deep rest calms the affect state)
+
+Call apply_energy_affect_coupling() after each appraise() call in the
+AffectEngine impl for DaimonState. The coupling is always applied but
+only has effect when thresholds are crossed.
+
+The existing apply_dream_depotentiation (lib.rs:2158-2172) already handles
+dream-time arousal reduction -- coordinate with it for Delta recovery.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-daimon/src/lib.rs"]
+depends_on = ["E23-T04"]
+max_loc = 50
+
+[task.context]
+read_files = [
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2143-2172", why = "Existing modulate_with_strategy and apply_dream_depotentiation methods" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2188-2200", why = "AffectEngine trait: appraise, query, modulate -- coupling called after appraise" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "1971-2009", why = "DaimonState fields including state: AffectState with PAD vector" },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-energy-and-vitality.md", lines = "55-80", why = "Energy-affect coupling spec: bidirectional influence" },
+]
+symbols = [
+    "DaimonState (lib.rs:1973) -- houses both CognitiveEnergy (from T04) and AffectState",
+    "AffectState (lib.rs) -- contains PAD vector with arousal component",
+    "CognitiveEnergy (from T04) -- energy pool with fatigue and depletion",
+    "AffectEngine trait (lib.rs:2189) -- appraise/query/modulate, coupling called after appraise",
+    "apply_dream_depotentiation (lib.rs:2158) -- coordinate with Delta recovery",
+]
+anti_patterns = [
+    "Do NOT create circular infinite loops between energy and affect updates -- apply coupling once per appraise, not recursively",
+    "Do NOT modify CognitiveEnergy inside apply_energy_affect_coupling -- only modify affect state. The depletion multiplier is stored as a field, read during deplete().",
+    "Do NOT duplicate the dream depotentiation logic -- reuse apply_dream_depotentiation for the affect part",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'energy_affect_coupling\\|apply_energy_affect' crates/roko-daimon/src/lib.rs"
+fail_msg = "Energy-affect coupling method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-daimon 2>&1"
+fail_msg = "roko-daimon must compile"
+
+# ── T09: Wire cognitive autonomy into orchestrate.rs ─────────────────
+
+[[task]]
+id = "E23-T09"
+title = "Wire behavioral phase and cognitive energy into orchestrate.rs dispatch"
+description = """
+In orchestrate.rs, the dispatch_agent_with function (line 15184) already reads
+DaimonState for affect modulation. Extend it to integrate the new cognitive
+autonomy types from T02, T04, and T05.
+
+Changes to dispatch_agent_with:
+1. Check behavioral phase before dispatching: if DaimonState.behavioral_phase()
+   returns Terminal, skip the task with a warning and return a SkippedOutcome.
+2. After each successful agent dispatch, call
+   daimon.cognitive_energy.deplete(tier_cost) where tier_cost comes from the
+   depletion table in T04, based on which tier was actually used.
+3. Pass vitality (cognitive_energy.current) to the CascadeRouter as a
+   routing hint: when vitality < 0.5, add a cost_weight_multiplier of 1.5
+   to bias toward cheaper models.
+4. If BehavioralPhase is Conservation or Declining, override the model tier
+   to T0 or T1 respectively (per phase constraints in T02).
+
+All changes must be backward-compatible: when DaimonState has no
+CognitiveEnergy configured (or when cognitive_energy is at default 1.0),
+behavior is unchanged from current.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-cli/src/orchestrate.rs"]
+depends_on = ["E23-T02", "E23-T04", "E23-T05"]
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15182-15220", why = "dispatch_agent_with function: budget check, task loading" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "1-50", why = "Module imports and struct definitions" },
+    { path = "docs/v2/05-AGENT.md", lines = "1-50", why = "Agent spec: vitality drives behavioral phases and model selection" },
+]
+symbols = [
+    "dispatch_agent_with (orchestrate.rs:15184) -- main dispatch function to extend",
+    "DaimonState (roko-daimon) -- affect engine state with new cognitive_energy field",
+    "BehavioralPhase (roko-daimon, from T02) -- constrains dispatch tier",
+    "CascadeRouter (roko-learn) -- model routing, add vitality as cost hint",
+    "CognitiveEnergy (roko-daimon, from T04) -- deplete after dispatch",
+]
+anti_patterns = [
+    "Do NOT break existing dispatch for agents without cognitive energy configured",
+    "Do NOT make cognitive energy mandatory -- default to fully charged (1.0) when absent",
+    "Do NOT modify CascadeRouter internals -- pass vitality as an external hint parameter",
+    "Do NOT skip tasks silently in Terminal phase -- log at warn level and return explicit SkippedOutcome",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cognitive_energy\\|behavioral_phase\\|BehavioralPhase' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "Cognitive energy / behavioral phase integration must exist in orchestrate.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'deplete\\|Terminal' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "Energy depletion and Terminal phase check must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T10: Unit tests for cognitive autonomy ───────────────────────────
+
+[[task]]
+id = "E23-T10"
+title = "Add unit tests for type-state machine, behavioral phases, and energy depletion"
+description = """
+Add tests covering the cognitive autonomy subsystem. Place tests in the
+same files as their implementations using #[cfg(test)] mod tests.
+
+Tests for roko-daimon/src/lib.rs:
+1. BehavioralPhase::from_vitality returns correct phase for each range
+   (Thriving at 0.85, Stable at 0.6, Conservation at 0.4, Declining at 0.2, Terminal at 0.05)
+2. Hysteresis prevents rapid oscillation: transitioning from Stable to
+   Conservation requires dropping below 0.3-0.05=0.25, not 0.3
+3. CognitiveEnergy::deplete reduces energy by correct amount per depletion type
+4. Fatigue accumulates across multiple deplete() calls
+5. Only Delta recovery resets fatigue to zero (Gamma/Theta leave fatigue unchanged)
+6. Energy-affect coupling: arousal attenuated by 20% when energy < 0.3
+7. Goal count bounded by behavioral phase (max 5 in Stable, 0 in Terminal)
+
+Tests for roko-agent/src/lifecycle.rs:
+8. Initializing -> Bootstrapping -> Ready -> Running transition chain works
+9. Running -> Draining -> Terminated transition produces correct TerminationReason
+10. Running -> Terminated (emergency) bypass works
+11. Verify that invalid transitions don't compile (comment-documented, not executable)
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-daimon/src/lib.rs", "crates/roko-agent/src/lifecycle.rs"]
+depends_on = ["E23-T01", "E23-T02", "E23-T04", "E23-T08"]
+max_loc = 100
+
+[task.context]
+read_files = [
+    { path = "crates/roko-daimon/src/mortality.rs", lines = "140-151", why = "Existing VitalityPhase::from_vitality test pattern to follow" },
+    { path = "crates/roko-daimon/src/goals.rs", lines = "42-82", why = "GoalSeed methods used in goal count tests" },
+]
+symbols = [
+    "CognitiveEnergy (lib.rs, from T04) -- test deplete/recover methods",
+    "BehavioralPhase (lib.rs, from T02) -- test from_vitality with hysteresis",
+    "Initializing/Running/Terminated (lifecycle.rs, from T01) -- test state transitions",
+    "VitalityPhase::from_vitality (mortality.rs:143) -- existing test pattern to follow",
+]
+anti_patterns = [
+    "Do NOT test private internals -- test the public API surface only",
+    "Do NOT use #[should_panic] for type-state enforcement -- compile-time enforcement can't be tested at runtime",
+    "Do NOT depend on real LLM calls or file I/O -- pure unit tests only",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-daimon -- behavioral_phase 2>&1 | tail -5"
+fail_msg = "Behavioral phase tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-daimon -- cognitive_energy 2>&1 | tail -5"
+fail_msg = "Cognitive energy tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent -- lifecycle 2>&1 | tail -5"
+fail_msg = "Lifecycle type-state tests must pass"

@@ -1,0 +1,675 @@
+[meta]
+plan = "E25-learning-loops-advanced"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── T01: L3 HDC defragmentation — knowledge consolidation ───────────
+
+[[task]]
+id = "E25-T01"
+title = "Implement L3 HDC defragmentation via k-medoids clustering over knowledge entries"
+description = """
+Add a defragment function to roko-learn that consolidates fragmented knowledge.
+Use the existing k_medoids clustering from hdc_clustering.rs over knowledge
+entries' HDC vectors. For each cluster:
+1. Bundle the cluster's vectors into a consolidated representative using
+   HdcVector::bundle (majority-vote over the cluster members)
+2. Merge metadata (tags union, max confidence, earliest created_at)
+3. Mark original cluster members as superseded (add superseded_by field
+   pointing to the new entry's id)
+4. Preserve provenance links to original entries via source_entries Vec
+
+This implements L3 consolidation from 07-LEARNING.md: turning N similar
+entries into 1 distilled entry. The similarity threshold for clustering
+should use HdcVector::similarity > 0.7 (same as TEMPLATE_SUGGESTION_MIN_SIMILARITY
+in episode_logger.rs:50). Triggered during dream cycles or manually via CLI.
+
+Implementation steps:
+- Add DefragConfig struct (similarity_threshold: f64, min_cluster_size: usize)
+- Add DefragResult struct (consolidated: Vec<ConsolidatedEntry>, superseded_count: usize)
+- Add ConsolidatedEntry struct (vector, metadata, source_entry_ids)
+- Add pub fn defragment(entries: &[KnowledgeEntry], config: &DefragConfig) -> DefragResult
+- Call k_medoids internally to find clusters, then bundle each cluster
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-learn/src/hdc_clustering.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/hdc_clustering.rs", lines = "1-80", why = "KMedoidsConfig (line 38), HdcCluster (line 56), ClusterResult (line 67), k_medoids signature (line 81)" },
+  { path = "crates/roko-learn/src/hdc_clustering.rs", lines = "81-152", why = "k_medoids implementation — understand assign/update loop and output format" },
+  { path = "crates/roko-primitives/src/hdc.rs", lines = "1-40", why = "HdcVector::similarity(), HdcVector::bundle(), HdcVector::from_seed() — core operations needed" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "44-52", why = "TEMPLATE_SUGGESTION_MIN_SIMILARITY=0.7 — reuse same threshold" },
+  { path = "crates/roko-neuro/src/lib.rs", lines = "1-40", why = "KnowledgeEntry struct and its HDC vector field — the input type for defragmentation" },
+  { path = "docs/v2/07-LEARNING.md", lines = "1-25", why = "L3 consolidation: 'turning episodes into durable knowledge'" },
+]
+symbols = [
+  "k_medoids — PAM clustering function (hdc_clustering.rs:81)",
+  "KMedoidsConfig — clustering configuration with k and max_iterations (hdc_clustering.rs:38)",
+  "HdcCluster — cluster result with medoid_index, medoid, members (hdc_clustering.rs:56)",
+  "ClusterResult — output of k_medoids with clusters Vec (hdc_clustering.rs:67)",
+  "HdcVector::similarity — cosine-like similarity over 10240-bit vectors",
+  "HdcVector::bundle — majority-vote bundle of multiple vectors",
+]
+anti_patterns = [
+  "Do NOT delete original entries immediately — mark them as superseded with a superseded_by field",
+  "Do NOT consolidate entries from different knowledge kinds",
+  "Do NOT allocate a full n*n distance matrix for large entry sets — add a max_entries parameter with a sane default (e.g. 500)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'defragment\\|DefragConfig\\|ConsolidatedEntry' crates/roko-learn/src/hdc_clustering.rs"
+fail_msg = "HDC defragmentation function and types must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn -- defragment 2>&1 | tail -5"
+fail_msg = "Defragmentation tests must pass"
+
+# ── T02: Hindsight relabeling for episodes ───────────────────────────
+
+[[task]]
+id = "E25-T02"
+title = "Implement hindsight relabeling for past episode outcomes"
+description = """
+Add a hindsight_relabel module to roko-learn that retroactively adjusts
+episode quality scores when later information reveals the initial assessment
+was wrong. Cases:
+1. A task marked successful that later caused a regression (downstream gate
+   failure references the same files) -> downgrade success to false
+2. A task marked failed whose approach was reused successfully in a later
+   playbook -> upgrade by appending a positive adjustment
+3. An episode whose heuristic was later falsified (playbook rule
+   contradicted) -> reduce confidence via EpisodeAdjustment
+
+The relabeler reads the episode log via EpisodeLogger::read_all(), cross-
+references with current gate verdicts (GateVerdict in episode_logger.rs:89)
+and PlaybookRules state, and emits EpisodeAdjustment records appended to
+the episode log (not modifying existing records — append-only contract).
+
+Implementation steps:
+- Add EpisodeAdjustment struct: original_episode_id, adjustment_kind (enum),
+  old_value, new_value, reason, timestamp
+- Add HindsightRelabeler struct with scan(episodes, rules) -> Vec<EpisodeAdjustment>
+- Staleness limit: only relabel episodes < 30 days old
+- The scan is O(n*m) where n=recent episodes, m=gate verdicts — keep the
+  staleness window small
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-learn/src/hindsight.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "1-50", why = "Module docs, LoggerError, MAX_EXTRA_BYTES — understand logger contract" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "89-120", why = "GateVerdict struct (line 90) — passed/gate/signature fields used to detect regressions" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "163-270", why = "Episode struct — all fields: success (line 230), failure_reason (line 242), gate_verdicts (line 224), task_id (line 184)" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "61-101", why = "Rule struct — confidence, validations, contradictions fields for falsification detection" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "246-260", why = "MatchContext struct — files, tags, category, error_signature, role" },
+  { path = "docs/v2/07-LEARNING.md", lines = "1-25", why = "L3 loop: 'hindsight relabeling' is part of knowledge consolidation" },
+]
+symbols = [
+  "Episode — full episode record with success, gate_verdicts, task_id (episode_logger.rs:168)",
+  "EpisodeLogger — append-only JSONL logger with read_all() (episode_logger.rs:1)",
+  "GateVerdict — per-gate pass/fail with signature (episode_logger.rs:89)",
+  "Rule — playbook rule with confidence, contradictions (playbook_rules.rs:67)",
+  "LoggerError — error type for append/read operations (episode_logger.rs:57)",
+]
+anti_patterns = [
+  "Do NOT modify existing episode records in place — append EpisodeAdjustment records (append-only log)",
+  "Do NOT relabel episodes older than 30 days — staleness limit",
+  "Do NOT create a new file for adjustments — append to the same episodes.jsonl using EpisodeLogger::append",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-learn/src/hindsight.rs && grep -q 'HindsightRelabeler\\|EpisodeAdjustment' crates/roko-learn/src/hindsight.rs"
+fail_msg = "Hindsight relabeling module must exist with HindsightRelabeler and EpisodeAdjustment"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T03: L4 c-factor governance — config evolution ──────────────────
+
+[[task]]
+id = "E25-T03"
+title = "Implement c-factor governance: evolve agent configs from collective feedback"
+description = """
+Add a CFactorGovernance struct to roko-learn/src/cfactor.rs that uses
+c-factor scores to recommend config adjustments:
+
+1. If agent contribution_score < -0.1 for 3 consecutive windows ->
+   recommend model downgrade or role reassignment (using AgentDispatchBias::PreferStronger)
+2. If overall c-factor trend is declining for 5 windows ->
+   recommend increasing gate strictness
+3. If specific pathology detected (CollectivePathology::Groupthink,
+   EchoChamber, Cascade) -> recommend diversity injection
+
+Output CFactorRecommendation records with: target (agent/system), action
+(AdjustModel/AdjustGate/InjectDiversity), confidence, evidence Vec<String>.
+
+The governance struct holds a sliding window of CFactor snapshots (VecDeque,
+cap 20). Methods:
+- push_snapshot(cfactor: CFactor) — add to window
+- recommendations() -> Vec<CFactorRecommendation> — compute from window
+- agent_trend(agent_id: &str) -> Option<f64> — trend over window
+
+Uses existing types:
+- AgentCFactorContribution (cfactor.rs:39) for per-agent scores
+- AgentDispatchBias (cfactor.rs:52) for routing preferences
+- CollectivePathology (cfactor.rs:63) for pathology detection
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-learn/src/cfactor.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "1-60", why = "CFactor struct (line 16), AgentCFactorContribution (line 39), AgentDispatchBias (line 52)" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "62-123", why = "CollectivePathology enum (line 63) — Cascade/Groupthink/EchoChamber/Deadlock/Hallucination variants" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "125-175", why = "CFactorRegression (line 127) — regression alerting pattern to follow" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "177-222", why = "CFactor impl — dispatch_bias_for_agent() (line 209) uses -0.05/+0.05 thresholds" },
+]
+symbols = [
+  "CFactor — composite score with overall, components, agent_contributions, pathologies (cfactor.rs:16)",
+  "AgentCFactorContribution — per-agent leave-one-out score (cfactor.rs:39)",
+  "AgentDispatchBias — PreferStronger/PreferCheaper/Neutral routing hint (cfactor.rs:52)",
+  "CollectivePathology — Cascade/Groupthink/EchoChamber/Deadlock/Hallucination (cfactor.rs:63)",
+  "CFactorComponents — gate_pass_rate, cost_efficiency, speed, etc. (cfactor.rs:95)",
+  "CFactorRegression — regression alert struct (cfactor.rs:127)",
+]
+anti_patterns = [
+  "Do NOT auto-apply recommendations — output them for human or orchestrator review",
+  "Do NOT use c-factor from a single window — require 3+ windows for confidence",
+  "Do NOT duplicate the regression detection in CFactorRegression — governance is complementary, not overlapping",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CFactorGovernance\\|CFactorRecommendation' crates/roko-learn/src/cfactor.rs"
+fail_msg = "CFactorGovernance struct must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T04: Experiment lifecycle — significance testing + auto-promote ──
+
+[[task]]
+id = "E25-T04"
+title = "Add statistical significance testing and auto-promote to PromptExperiment"
+description = """
+Extend PromptExperiment in roko-learn/src/prompt_experiment.rs to:
+1. Compute chi-squared significance test when both variants have
+   >= min_trials_per_variant observations (using existing check_conclusion
+   at line 254 as the hook point)
+2. Auto-promote winner when p-value < 0.05 and effect_size > min_effect_size
+3. Archive concluded experiments with full statistics
+4. Add early stopping: if one variant has >95% probability of winning
+   after 50+ trials, conclude early (Bayesian sequential testing using
+   the existing Wilson CI from confidence_interval_95 at line 85)
+
+The existing UCB1 variant selection (assign_variant at line 188) stays
+unchanged. The new logic runs after each outcome recording in
+record_outcome (line 217) to check for significance.
+
+Implementation steps:
+- Add fn chi_squared_test(stats_a: &VariantStats, stats_b: &VariantStats) -> (f64, f64)
+  returning (chi2_statistic, p_value)
+- Add fn early_stopping_check(&self) -> Option<String> using Wilson CI overlap
+- Modify check_conclusion() to use chi_squared_test when min_trials met
+- Add ExperimentArchive struct with concluded_at, final_stats, p_value, effect_size
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/prompt_experiment.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "1-18", why = "Module docs, DEFAULT_STATIC_OVERRIDES_PATH" },
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "53-102", why = "VariantStats struct (line 54), success_rate() (line 64), ucb_score() (line 74), confidence_interval_95() (line 85) — existing stats infrastructure" },
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "124-158", why = "ExperimentStatus enum (line 126), PromptExperiment struct (line 135) — min_trials_per_variant (line 155), min_effect_size (line 157)" },
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "216-234", why = "record_outcome() — hook point where significance testing runs after each outcome" },
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "250-280", why = "check_conclusion() — current winner logic using success_rate delta, to be enhanced with chi-squared" },
+]
+symbols = [
+  "PromptExperiment — experiment struct with variants, stats, status (prompt_experiment.rs:135)",
+  "ExperimentStatus — Running/Concluded enum (prompt_experiment.rs:126)",
+  "VariantStats — trials, successes, success_rate(), ucb_score(), confidence_interval_95() (prompt_experiment.rs:54)",
+  "record_outcome — outcome recorder that triggers check_conclusion (prompt_experiment.rs:217)",
+  "check_conclusion — current winner check, hook for significance testing (prompt_experiment.rs:254)",
+  "ExperimentStore — persistence layer for experiments (read below at ~line 395)",
+]
+anti_patterns = [
+  "Do NOT add external stats library dependency — implement chi-squared inline (it is a simple formula)",
+  "Do NOT auto-promote if fewer than min_trials_per_variant samples",
+  "Do NOT change the UCB1 selection logic — only enhance the conclusion check",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'chi_squared\\|significance\\|auto_promote\\|early_stopping' crates/roko-learn/src/prompt_experiment.rs"
+fail_msg = "Significance testing must exist in prompt_experiment"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T05: Playbook formalization — when/then action patterns ─────────
+
+[[task]]
+id = "E25-T05"
+title = "Add when/then pattern matching to PlaybookStore for L2 substrate"
+description = """
+Extend Playbook and PlaybookStore to support when/then patterns that can
+match incoming task descriptions and suggest action sequences:
+
+1. Add when_pattern (Option<String> — keyword set or simple glob) and
+   then_steps alias field to Playbook (the steps Vec already exists).
+   when_pattern is optional for backward compat (serde default = None).
+2. Add PlaybookStore::match_playbooks(task_description: &str) -> Vec<&Playbook>
+   that returns playbooks whose when_pattern words overlap with the task
+   description words (case-insensitive word intersection).
+3. Rank matched playbooks by (success_rate * keyword_overlap_score) descending.
+   success_rate() is already implemented at Playbook line 240.
+
+This turns playbooks from passive records into active L2 strategy suggestions
+that the composer can inject into the system prompt.
+
+The existing PlaybookStore (playbook.rs:662) uses a root directory and
+per-id JSON files. match_playbooks loads all playbooks via list_all() and
+filters by keyword match, then sorts by rank.
+
+Implementation steps:
+- Add when_pattern: Option<String> field to Playbook with #[serde(default)]
+- Add fn keyword_overlap(pattern: &str, text: &str) -> f64 helper
+- Add pub async fn match_playbooks(&self, task_description: &str, limit: usize) -> io::Result<Vec<Playbook>>
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/playbook.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/playbook.rs", lines = "40-56", why = "PlaybookStep struct (line 46) — index, description, action_kind, expected_signals" },
+  { path = "crates/roko-learn/src/playbook.rs", lines = "185-248", why = "Playbook struct (line 191) — id, name, goal, steps, success_count, failure_count, success_rate() (line 240)" },
+  { path = "crates/roko-learn/src/playbook.rs", lines = "250-304", why = "QueryContext struct (line 256) — existing query mechanism with to_query_text() (line 292)" },
+  { path = "crates/roko-learn/src/playbook.rs", lines = "642-705", why = "PlaybookStore struct (line 662) — root, new() (line 674), save() (line 715)" },
+]
+symbols = [
+  "Playbook — named sequence with id, goal, steps, success_count (playbook.rs:191)",
+  "PlaybookStep — action step with index, description, action_kind (playbook.rs:46)",
+  "PlaybookStore — JSON-file backed store with save, load, list (playbook.rs:662)",
+  "QueryContext — existing query metadata for playbook selection (playbook.rs:256)",
+  "success_rate — existing method returning Option<f64> (playbook.rs:240)",
+]
+anti_patterns = [
+  "Do NOT break existing playbook creation — when_pattern must be Option with #[serde(default)]",
+  "Do NOT use the regex crate — simple case-insensitive word intersection is sufficient",
+  "Do NOT modify the existing save/load format — just add the optional field",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'when_pattern\\|match_playbooks' crates/roko-learn/src/playbook.rs"
+fail_msg = "when_pattern and match_playbooks must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T06: Variance Inequality check for c-factor validity ────────────
+
+[[task]]
+id = "E25-T06"
+title = "Add Variance Inequality validation to c-factor computation"
+description = """
+Add a variance_inequality_check function to roko-learn/src/cfactor.rs that
+validates whether the c-factor score is meaningful:
+
+The Variance Inequality states: Var(collective) < mean(Var(individual_agents))
+If this inequality is violated, the c-factor is not capturing real collective
+synergy — it may be noise or dominated by a single strong agent.
+
+Compute from the same episode data used by compute_cfactor (cfactor.rs:234):
+1. variance_collective: variance of overall task outcome scores across the window
+2. mean_variance_individual: mean of per-agent outcome score variances
+3. If variance_collective >= mean_variance_individual, flag the c-factor
+   as potentially invalid and attach a ValidationWarning
+
+Add VICheck result struct with:
+- valid: bool (true when inequality holds)
+- ratio: f64 (variance_collective / mean_variance_individual)
+- warning: Option<String> (human-readable explanation when invalid)
+
+Add the check as a method on CFactor: fn variance_inequality_check(&self, episodes: &[Episode]) -> VICheck
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/cfactor.rs"]
+depends_on = []
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "14-31", why = "CFactor struct — overall, components, agent_contributions, episode_count" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "39-48", why = "AgentCFactorContribution — agent_id, episode_count, contribution_score" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "94-123", why = "CFactorComponents — gate_pass_rate, cost_efficiency, speed, etc." },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "224-250", why = "TaskAggregate helper struct and compute_cfactor entry point" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "168-270", why = "Episode struct — success (line 230), agent_id (line 181), usage (line 227)" },
+]
+symbols = [
+  "CFactor — score struct to add validation to (cfactor.rs:16)",
+  "CFactorComponents — component breakdown (cfactor.rs:95)",
+  "AgentCFactorContribution — per-agent leave-one-out contribution (cfactor.rs:39)",
+  "Episode — episode records with success, agent_id, usage fields (episode_logger.rs:168)",
+  "TaskAggregate — internal aggregation helper (cfactor.rs:224)",
+]
+anti_patterns = [
+  "Do NOT block c-factor computation on validation — compute first, then validate separately",
+  "Do NOT require more than 5 episodes for the check — return VICheck { valid: true } for insufficient data",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'variance_inequality\\|VICheck' crates/roko-learn/src/cfactor.rs"
+fail_msg = "Variance Inequality check must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T07: Autocatalytic compounding metrics ───────────────────────────
+
+[[task]]
+id = "E25-T07"
+title = "Implement autocatalytic compounding metrics for self-improvement tracking"
+description = """
+Add AutocatalyticMetrics struct to roko-learn that tracks the seven
+compounding mechanisms from the spec (07-LEARNING.md section on compounding):
+
+1. knowledge_reuse_rate: fraction of tasks where episode.extra contains
+   "knowledge_used" or playbook_hits > 0
+2. playbook_hit_rate: fraction of tasks matched by an existing playbook
+   (episodes with non-empty extra["playbook_id"])
+3. cache_hit_rate: inference cache hit ratio from GatewayEvent.cache_hit
+4. routing_accuracy: fraction of tasks where initial model choice
+   matched the eventual successful model (from episodes)
+5. gate_pass_rate: fraction of tasks passing gates on first attempt
+   (episodes where success=true and no extra["replan"])
+6. error_dedup_rate: fraction of gate failures with a previously seen
+   error signature (from GateVerdict.signature)
+7. cost_per_success: total cost / successful tasks (should decrease)
+
+Compute from existing episode log (EpisodeLogger::read_all) and efficiency
+events (AgentEfficiencyEvent from efficiency.rs:7). Store as a time
+series in .roko/learn/compounding.jsonl.
+
+Add AutocatalyticMetrics struct with all 7 fields as f64, plus
+computed_at: DateTime<Utc> and episode_window: usize.
+Add fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/aggregate.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/aggregate.rs", lines = "1-40", why = "Module docs, JsonlCursor struct (line 21), MAX_EFFICIENCY_BUCKETS (line 17)" },
+  { path = "crates/roko-learn/src/efficiency.rs", lines = "1-60", why = "AgentEfficiencyEvent (line 7), PromptSectionMeta (line 35), ToolCallMeta (line 52)" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "168-270", why = "Episode struct — success, gate_verdicts, usage, extra HashMap for metadata" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "89-100", why = "GateVerdict — gate, passed, signature fields" },
+  { path = "crates/roko-agent/src/gateway_events.rs", lines = "14-43", why = "GatewayEvent — cache_hit (line 35), cost_usd (line 31), model (line 22)" },
+]
+symbols = [
+  "Episode — episode records for computing metrics (episode_logger.rs:168)",
+  "AgentEfficiencyEvent — per-turn efficiency data (efficiency.rs:7)",
+  "GateVerdict — gate/passed/signature for error dedup rate (episode_logger.rs:89)",
+  "GatewayEvent — cache_hit, cost_usd for cache and cost metrics (gateway_events.rs:16)",
+  "JsonlCursor — incremental JSONL reader (aggregate.rs:21)",
+]
+anti_patterns = [
+  "Do NOT compute metrics that require data not available in the episode log — degrade gracefully to 0.0",
+  "Do NOT scan the entire episode log every time — use JsonlCursor for incremental reads",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AutocatalyticMetrics\\|compounding\\|knowledge_reuse_rate' crates/roko-learn/src/aggregate.rs"
+fail_msg = "Autocatalytic compounding metrics must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T08: PlaybookRules constraint checking ───────────────────────────
+
+[[task]]
+id = "E25-T08"
+title = "Wire PlaybookRules into playbook matching for constraint validation"
+description = """
+Wire the existing PlaybookRules (playbook_rules.rs:305) into the new
+PlaybookStore::match_playbooks so that matched playbooks are validated
+against rules before being returned:
+
+1. After keyword matching from T05, build a MatchContext (playbook_rules.rs:248)
+   from the task description and available metadata
+2. Call PlaybookRules::select(ctx, limit) to get applicable rules
+3. Filter out playbooks whose goal or step action_kinds conflict with
+   any active rule's triggers (e.g. a rule says "avoid HashMap" but the
+   playbook step uses HashMap)
+4. Sort remaining by (success_rate * rule_confidence * keyword_overlap)
+   descending, capping at the requested limit
+
+This ensures that playbook suggestions are contextually appropriate, not
+just keyword-matched.
+
+Implementation: Add PlaybookStore::match_with_rules(description, rules, limit)
+that wraps match_playbooks and applies rule filtering.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/playbook.rs", "crates/roko-learn/src/playbook_rules.rs"]
+depends_on = ["E25-T05"]
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "28-59", why = "Triggers struct — file_globs, tags, categories, error_signatures, roles (line 36)" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "298-334", why = "PlaybookRules struct (line 305) — open(), rules RwLock, TOML persistence" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "362-379", why = "PlaybookRules::select(ctx, limit) — trigger matching and ranking" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "246-260", why = "MatchContext struct — files, tags, category, error_signature, role" },
+  { path = "crates/roko-learn/src/playbook.rs", lines = "642-681", why = "PlaybookStore struct and constructor" },
+]
+symbols = [
+  "PlaybookRules — TOML-backed rule store with select() (playbook_rules.rs:305)",
+  "PlaybookStore — JSON-file backed playbook store (playbook.rs:662)",
+  "MatchContext — trigger matching context with files, tags, category (playbook_rules.rs:248)",
+  "Triggers — file_globs, tags, categories, error_signatures, roles (playbook_rules.rs:36)",
+  "Rule — rule with confidence, triggers, body text (playbook_rules.rs:67)",
+]
+anti_patterns = [
+  "Do NOT duplicate rule matching logic — call PlaybookRules::select()",
+  "Do NOT make PlaybookStore depend on PlaybookRules at construction — pass rules as parameter to match_with_rules",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PlaybookRules\\|match_with_rules' crates/roko-learn/src/playbook.rs"
+fail_msg = "PlaybookRules must be used in playbook.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ── T09: Wire learning loops into orchestrate.rs ────────────────────
+
+[[task]]
+id = "E25-T09"
+title = "Wire c-factor governance and playbook matching into orchestrate.rs dispatch"
+description = """
+Extend orchestrate.rs to: (1) after each plan run, compute c-factor and
+check governance recommendations via CFactorGovernance, (2) before
+dispatching an agent, query PlaybookStore::match_playbooks for the task
+description and inject matched playbook steps into the system prompt via
+the existing enrichment path, (3) log autocatalytic metrics after each
+plan completion using AutocatalyticMetrics.
+
+The existing orchestrate.rs already queries playbooks at dispatch time
+(search for "playbook" in orchestrate.rs). Extend this to use the new
+when/then matching from T05. The existing dispatch_agent_with function
+handles enrichment — add playbook match results there.
+
+Implementation steps:
+1. After plan run completion, instantiate CFactorGovernance and push the
+   latest CFactor snapshot. Log recommendations.
+2. In dispatch_agent_with, call PlaybookStore::match_playbooks with the
+   task description. Inject top 3 matches into system prompt.
+3. After plan completion, compute AutocatalyticMetrics and append to
+   .roko/learn/compounding.jsonl.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-cli/src/orchestrate.rs"]
+depends_on = ["E25-T03", "E25-T05", "E25-T07"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/orchestrate.rs", lines = "1-50", why = "Module imports and top-level structure" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "14-31", why = "CFactor struct for governance input" },
+  { path = "crates/roko-learn/src/playbook.rs", lines = "642-681", why = "PlaybookStore for match_playbooks" },
+  { path = "crates/roko-learn/src/aggregate.rs", lines = "1-20", why = "Where compounding metrics should be computed" },
+]
+symbols = [
+  "dispatch_agent_with — main dispatch function in orchestrate.rs",
+  "CFactorGovernance — governance recommendations from T03",
+  "PlaybookStore::match_playbooks — playbook matching from T05",
+  "AutocatalyticMetrics — compounding metrics from T07",
+  "CFactorSummary — existing c-factor summary used in orchestrate.rs",
+]
+anti_patterns = [
+  "Do NOT block dispatch on c-factor computation — run governance checks asynchronously post-plan",
+  "Do NOT inject more than 3 playbook matches into the system prompt — cap the results",
+  "Do NOT add new dependencies to roko-cli Cargo.toml if the types are already re-exported through roko-learn",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'match_playbooks\\|CFactorGovernance\\|AutocatalyticMetrics' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "Learning loop integration must exist in orchestrate.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T10: Unit tests for learning loops advanced features ────────────
+
+[[task]]
+id = "E25-T10"
+title = "Add unit tests for defragmentation, hindsight relabeling, and variance inequality"
+description = """
+Add tests covering:
+1. HDC defragmentation consolidates similar entries into one (test
+   that k_medoids groups similar HdcVectors and bundle produces a
+   representative)
+2. Hindsight relabeling produces EpisodeAdjustment for a regression
+   case (episode marked success but later gate failure on same files)
+3. CFactorGovernance produces recommendations for declining agents
+   (3 consecutive negative contribution_scores)
+4. Significance testing concludes experiment at p < 0.05 (chi-squared
+   test with sufficient sample sizes)
+5. Early stopping triggers at >95% probability after 50+ trials (Wilson
+   CI non-overlap)
+6. Variance Inequality check flags invalid c-factor scores (when
+   Var(collective) >= mean(Var(individual)))
+7. Autocatalytic metrics compute correctly from episode data (all 7
+   metrics produce values in [0.0, 1.0] or reasonable positive range)
+
+Place tests in respective modules using #[cfg(test)] mod tests.
+Existing test patterns can be found in:
+- hdc_clustering.rs:262 (k_medoids tests)
+- episode_logger.rs (episode creation tests)
+- cfactor.rs (if present)
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/cfactor.rs", "crates/roko-learn/src/prompt_experiment.rs", "crates/roko-learn/src/hdc_clustering.rs"]
+depends_on = ["E25-T01", "E25-T02", "E25-T03", "E25-T04", "E25-T06"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/hdc_clustering.rs", lines = "262-300", why = "Existing test patterns — empty_input, single_vector, test setup with HdcVector::from_seed" },
+  { path = "crates/roko-learn/src/hdc_clustering.rs", lines = "348-418", why = "synthetic_three_cluster_recovery test — pattern for testing cluster quality" },
+  { path = "crates/roko-learn/src/episode_logger.rs", lines = "271-300", why = "Episode::new() constructor — how to create test episodes" },
+  { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "160-183", why = "PromptExperiment::new() — how to create test experiments" },
+  { path = "crates/roko-learn/src/cfactor.rs", lines = "146-175", why = "Default impls for CFactorComponents and CFactor — use for test setup" },
+]
+symbols = [
+  "k_medoids — clustering to test (hdc_clustering.rs:81)",
+  "CFactorGovernance — governance to test (cfactor.rs, from T03)",
+  "PromptExperiment — experiment to test (prompt_experiment.rs:135)",
+  "VICheck — variance inequality result to test (cfactor.rs, from T06)",
+  "AutocatalyticMetrics — compounding metrics to test (aggregate.rs, from T07)",
+  "HindsightRelabeler — relabeling to test (hindsight.rs, from T02)",
+]
+anti_patterns = [
+  "Do NOT depend on external services — all tests must be pure unit tests with no I/O",
+  "Do NOT create real files — use tempdir for any filesystem-dependent tests",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn -- cfactor 2>&1 | tail -5"
+fail_msg = "C-factor tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn -- experiment 2>&1 | tail -5"
+fail_msg = "Experiment tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn -- defragment 2>&1 | tail -5"
+fail_msg = "Defragmentation tests must pass"

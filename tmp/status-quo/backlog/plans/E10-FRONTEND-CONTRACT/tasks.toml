@@ -1,0 +1,392 @@
+[meta]
+plan = "E10-FRONTEND-CONTRACT"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T01: Fix the /api/share 404 — align frontend to server's /api/shared
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# pages/Share.tsx:103 fetches `/api/share/${token}` but the server route is
+# `/api/shared/{token}` (routes/shared_runs.rs:874, handler get_shared_run).
+# The client-side React route stays `share/:token` (main.tsx:119-120) — only the
+# DATA fetch URL is wrong. One-word rename in the frontend; do NOT rename the
+# server route (other callers may depend on `shared`).
+#
+[[task]]
+id = "E10-T01"
+title = "Align Share.tsx fetch to /api/shared/{token}"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["demo/demo-app/src/pages/Share.tsx"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "demo/demo-app/src/pages/Share.tsx", lines = "95-115", why = "The get<Receipt>(`/api/share/${token}`) call at :103 — the 404 site" },
+    { path = "crates/roko-serve/src/routes/shared_runs.rs", lines = "860-880", why = "Server owns `/api/shared/{token}` → get_shared_run; this is the correct name" },
+]
+symbols = ["get_shared_run"]
+anti_patterns = [
+    "Do NOT rename the SERVER route to `share` — align the frontend to the existing `shared`.",
+    "Do NOT touch the client-side React route `share/:token` in main.tsx — only the fetch URL is wrong.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/api/shared/' demo/demo-app/src/pages/Share.tsx && ! grep -q '/api/share/' demo/demo-app/src/pages/Share.tsx"
+fail_msg = "Share.tsx must fetch /api/shared/{token}, not /api/share/{token}"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/api/shared/{token}' crates/roko-serve/src/routes/shared_runs.rs"
+fail_msg = "server route /api/shared/{token} must still exist as the contract target"
+
+acceptance = ["Loading /share/<token> in the demo fetches /api/shared/<token> and renders the transcript instead of a 404."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T02: Fix the /ws/agents 404 — add a server WS alias
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# IsfrTabDrawer.tsx:101 opens `new WebSocket(`${WS_BASE}/ws/agents`)` but ws.rs
+# only registers `/ws` and `/roko-ws` (routes/ws.rs:24-25), both → ws_upgrade.
+# Add `/ws/agents` as a third alias to the SAME ws_upgrade handler so the drawer's
+# agent stream connects. Do NOT fork a new handler — the upgrade already fans out
+# dashboard/agent events.
+#
+[[task]]
+id = "E10-T02"
+title = "Add /ws/agents WS alias to ws_upgrade"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 6
+files = ["crates/roko-serve/src/routes/ws.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "20-40", why = "routes() registers /ws and /roko-ws → ws_upgrade; add /ws/agents alias here" },
+    { path = "demo/demo-app/src/pages/isfr/IsfrTabDrawer.tsx", lines = "95-110", why = "Frontend opens WS at `${WS_BASE}/ws/agents` — the path the alias must match" },
+]
+symbols = ["ws_upgrade", "routes"]
+anti_patterns = [
+    "Do NOT write a new upgrade handler — reuse ws_upgrade (same dashboard-event fan-out).",
+    "Do NOT nest under /api — ws routes live at /ws (frontend uses WS_BASE, not the /api prefix).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"/ws/agents\"' crates/roko-serve/src/routes/ws.rs"
+fail_msg = "ws.rs must register the /ws/agents route"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile after adding the /ws/agents alias"
+
+acceptance = ["With `roko serve` running, the ISFR tab drawer's WebSocket to /ws/agents upgrades (101) instead of 404-ing, and receives agent events."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T03: Fix the /api/bench/matrix 404 — wire the built MatrixRun engine
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# useMatrixBench.ts:151 POSTs `/api/bench/matrix` to start a matrix (model×suite)
+# run, but routes/bench.rs registers no matrix route at all. The engine already
+# exists: bench.rs:1432 `struct MatrixRun`, :1473 `save_matrix_run`, :1480
+# `load_matrix_run`, :1492 `list_matrix_runs`, and the SSE emits MatrixRunStarted/
+# MatrixLaneCompleted/MatrixRunCompleted (events.rs:532-556). This is a WIRE task:
+# add a `POST /bench/matrix` route + `start_matrix_run` handler that kicks the
+# existing engine and returns the matrix_id, mirroring how `start_bench_run`
+# (routes/bench.rs:36) drives a single run. Emit the matrix events on the same
+# StateHub the /bench/events SSE already streams.
+#
+[[task]]
+id = "E10-T03"
+title = "Add POST /api/bench/matrix route wiring MatrixRun engine"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-5"
+max_loc = 120
+files = ["crates/roko-serve/src/routes/bench.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/bench.rs", lines = "30-60", why = "routes() table + start_bench_run pattern to mirror for the matrix start handler" },
+    { path = "crates/roko-serve/src/bench.rs", lines = "1400-1510", why = "MatrixRun type + save/load/list_matrix_run — the engine to drive" },
+    { path = "crates/roko-serve/src/events.rs", lines = "530-560", why = "MatrixRunStarted/MatrixLaneCompleted/MatrixRunCompleted events to emit on StateHub" },
+    { path = "demo/demo-app/src/hooks/useMatrixBench.ts", lines = "140-170", why = "The POST body/response shape the frontend expects from /api/bench/matrix" },
+]
+symbols = ["MatrixRun", "save_matrix_run", "list_matrix_runs", "start_bench_run", "MatrixRunStarted"]
+anti_patterns = [
+    "Do NOT reimplement matrix orchestration — call the existing MatrixRun engine in bench.rs.",
+    "Do NOT invent a new event channel — publish MatrixRun* on the StateHub the /bench/events SSE already reads.",
+    "Do NOT change the request shape unilaterally — match useMatrixBench.ts's POST body.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/bench/matrix' crates/roko-serve/src/routes/bench.rs"
+fail_msg = "routes/bench.rs must register POST /bench/matrix"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile after adding the matrix route + handler"
+
+[[task.verify]]
+phase = "integration"
+command = "grep -q '/api/bench/matrix' demo/demo-app/src/hooks/useMatrixBench.ts && grep -q '/bench/matrix' crates/roko-serve/src/routes/bench.rs"
+fail_msg = "frontend call and server route must both name /bench/matrix (contract closed)"
+
+acceptance = ["POST /api/bench/matrix returns a matrix_id (200), a MatrixRun is persisted via save_matrix_run, and MatrixRunStarted appears on /api/bench/events."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T04: Fix the /api/isfr/stream 404 — add an ISFR-filtered SSE route
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# lib/isfr-api.ts exposes isfrStreamUrl() => /api/isfr/stream, but routes/isfr.rs
+# only registers status/current/history/sources. Add GET /isfr/stream under the
+# existing /api prefix. Reuse the StateHub broadcast stream and SSE headers from
+# routes/sse.rs; filter to the three ISFR DashboardEvent variants so this route
+# does not become a second unfiltered dashboard event stream.
+#
+[[task]]
+id = "E10-T04"
+title = "Add GET /api/isfr/stream SSE route"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = ["crates/roko-serve/src/routes/isfr.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/isfr.rs", lines = "1-35", why = "Current ISFR route table; add `/isfr/stream` here under the existing /api prefix" },
+    { path = "crates/roko-serve/src/routes/sse.rs", lines = "1-90", why = "Reference SSE response headers, StateHub subscribe/replay pattern, keepalive setup" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "151-170", why = "ISFR DashboardEvent variants to filter: rate/source health/keeper state" },
+    { path = "demo/demo-app/src/lib/isfr-api.ts", lines = "100-120", why = "Frontend contract: isfrStreamUrl() calls `/api/isfr/stream`" },
+]
+symbols = ["sse_response_headers", "state.state_hub.subscribe_events", "DashboardEvent::IsfrRateComputed", "DashboardEvent::IsfrSourceHealthChanged", "DashboardEvent::IsfrKeeperStateChanged"]
+anti_patterns = [
+    "Do NOT add a second unfiltered `/api/events` clone; `/api/isfr/stream` must filter to ISFR events only.",
+    "Do NOT create a separate event bus for ISFR; reuse AppState.state_hub so replay and live events match the dashboard stream.",
+    "Do NOT rename the frontend URL or use camelCase route spelling; the contract is exactly `/api/isfr/stream`.",
+    "Do NOT break existing `/api/isfr/status`, `/current`, `/history`, or `/sources` routes.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"/isfr/stream\"' crates/roko-serve/src/routes/isfr.rs"
+fail_msg = "routes/isfr.rs must register GET /isfr/stream"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'IsfrRateComputed' crates/roko-serve/src/routes/isfr.rs && grep -q 'IsfrSourceHealthChanged' crates/roko-serve/src/routes/isfr.rs && grep -q 'IsfrKeeperStateChanged' crates/roko-serve/src/routes/isfr.rs"
+fail_msg = "ISFR stream handler must filter to the three ISFR DashboardEvent variants"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile after adding the ISFR SSE route"
+
+acceptance = [
+    "GET /api/isfr/stream returns SSE frames for ISFR rate/source/keeper events.",
+    "The handler reuses StateHub and the shared SSE no-buffer headers/keepalive behavior.",
+    "No new unfiltered dashboard SSE manager is introduced.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T05: Make snake_case the canonical wire shape at one adapter boundary
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The server serializes ServerEvent and DashboardEvent with snake_case field
+# names (`rename_all = "snake_case"`, plus `prompt_preview`). The frontend type
+# file currently declares camelCase payload fields and parseServerEvent converts
+# the wire shape recursively. Replace that drift with one explicit transport
+# adapter: preserve snake_case as the wire type and map to any camelCase UI store
+# shape only at the DataHub boundary.
+#
+[[task]]
+id = "E10-T05"
+title = "Adopt snake_case canonical wire with one transport adapter"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 110
+files = [
+    "demo/demo-app/src/transport/types.ts",
+    "demo/demo-app/src/transport/sse.ts",
+    "demo/demo-app/src/app/bootstrap.ts",
+    "demo/demo-app/src/app/DataHub.ts",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/events.rs", lines = "1-100", why = "ServerEvent uses serde tag + rename_all=snake_case; frontend wire types must match this contract" },
+    { path = "crates/roko-serve/src/events.rs", lines = "220-245", why = "RunStarted prompt_preview field is explicitly renamed and must not disappear in the frontend adapter" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "24-65", why = "DashboardEvent also serializes as snake_case; E03 canonical event shape feeds this task" },
+    { path = "demo/demo-app/src/transport/types.ts", lines = "1-240", why = "Current camelCase ServerEvent union and recursive snakeToCamelObj converter to replace" },
+    { path = "demo/demo-app/src/app/bootstrap.ts", lines = "1-55", why = "SSE -> parseServerEvent -> DataHub boundary where the one adapter belongs" },
+    { path = "demo/demo-app/src/app/DataHub.ts", lines = "1-120", why = "Store uses camelCase UI shape; keep any conversion here instead of in scattered consumers" },
+]
+symbols = ["ServerEvent", "DashboardEvent", "parseServerEvent", "prompt_preview", "useDataHub.handleServerEvent"]
+anti_patterns = [
+    "Do NOT add per-component casing conversions; there must be one transport/DataHub adapter boundary.",
+    "Do NOT keep recursive snakeToCamel conversion as the canonical wire parser; it hides server contract drift.",
+    "Do NOT rename server routes or serde fields from the frontend.",
+    "Do NOT depend locally on an E03 task id; E03 is a cross-plan prerequisite and must stay in depends_on_plan.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'prompt_preview' demo/demo-app/src/transport/types.ts && ! grep -q 'snakeToCamelObj' demo/demo-app/src/transport/types.ts"
+fail_msg = "transport/types.ts must model the snake_case wire contract directly and remove recursive snake-to-camel parsing"
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'promptPreview|compositeBps|sourceCount|lastRateBps' demo/demo-app/src/transport"
+fail_msg = "transport-layer wire types must not use camelCase payload fields for server events"
+
+[[task.verify]]
+phase = "test"
+command = "cd demo/demo-app && npm run build"
+fail_msg = "demo app TypeScript build must pass after the wire casing adapter change"
+
+acceptance = [
+    "Transport wire types use server snake_case field names, including prompt_preview.",
+    "Any camelCase conversion needed by UI state happens once at the DataHub/adapter boundary.",
+    "Frontend build passes and no component-level ad hoc casing mappers are added.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T06: Remove the deprecated EventStreamProvider duplicate SSE manager
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# main.tsx bootstraps the DataHub transport before React render and also mounts
+# EventStreamProvider, which constructs a second `/api/events` EventSource via
+# hooks/useEventStream.ts. Remove the legacy provider/context path and migrate
+# consumers to DataHub selectors/actions or the new single transport subscription
+# surface. Dedicated non-dashboard streams (bench/workflow-specific endpoints)
+# are out of scope; this task is about the duplicate `/api/events` manager.
+#
+[[task]]
+id = "E10-T06"
+title = "Remove deprecated EventStreamProvider and leave one dashboard SSE manager"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 180
+files = [
+    "demo/demo-app/src/main.tsx",
+    "demo/demo-app/src/contexts/EventStreamContext.tsx",
+    "demo/demo-app/src/hooks/useEventStream.ts",
+    "demo/demo-app/src/app/DataHub.ts",
+]
+role = "implementer"
+depends_on = ["E10-T05"]
+
+[task.context]
+read_files = [
+    { path = "demo/demo-app/src/main.tsx", lines = "80-130", why = "bootstrapTransport() already opens the DataHub SSE; remove the nested EventStreamProvider wrapper/import" },
+    { path = "demo/demo-app/src/contexts/EventStreamContext.tsx", lines = "1-75", why = "Deprecated context that creates the second EventStreamManager" },
+    { path = "demo/demo-app/src/hooks/useEventStream.ts", lines = "70-175", why = "Legacy createEventStreamManager opens `/api/events`; remove or retire this path" },
+    { path = "demo/demo-app/src/app/bootstrap.ts", lines = "30-55", why = "Canonical single `/api/events` EventSource path through SseAdapter -> DataHub" },
+    { path = "demo/demo-app/src/app/DataHub.ts", lines = "120-260", why = "Selectors/actions should replace EventStreamContext consumers where events update UI state" },
+]
+symbols = ["EventStreamProvider", "useEventStreamContext", "useContextEventSubscription", "createEventStreamManager", "SseAdapter", "useDataHub"]
+anti_patterns = [
+    "Do NOT leave EventStreamProvider mounted around the app; that is the double-connect bug.",
+    "Do NOT keep a hidden `/api/events` EventSource in hooks/useEventStream.ts after consumers migrate.",
+    "Do NOT remove dedicated bench/workflow EventSource code unless it is also consuming `/api/events`; those streams have separate contracts.",
+    "Do NOT reintroduce casing conversion in migrated consumers; use the E10-T05 adapter contract.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'EventStreamProvider|useEventStreamContext|useContextEventSubscription|createEventStreamManager' demo/demo-app/src"
+fail_msg = "legacy EventStreamProvider/context/useEventStream manager references must be removed from the demo app"
+
+[[task.verify]]
+phase = "structural"
+command = "[ \"$(rg -c '/api/events' demo/demo-app/src | awk -F: '{s += $2} END {print s + 0}')\" -eq 1 ] && grep -q '/api/events' demo/demo-app/src/app/bootstrap.ts"
+fail_msg = "exactly one dashboard /api/events connection should remain, owned by app/bootstrap.ts"
+
+[[task.verify]]
+phase = "test"
+command = "cd demo/demo-app && npm run build"
+fail_msg = "demo app build must pass after migrating EventStreamContext consumers to DataHub"
+
+acceptance = [
+    "main.tsx no longer imports or renders EventStreamProvider.",
+    "No code path creates a second `/api/events` EventSource outside app/bootstrap.ts.",
+    "Consumers formerly using EventStreamContext read from DataHub selectors/actions or an equivalent single-manager surface.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E10-T07: Honor replay query params sent by the frontend SSE adapter
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# transport/sse.ts reconnects with `?lastEventId=<id>` and older callers may use
+# `?n=<id>`. routes/sse.rs currently reads only the Last-Event-ID header, which
+# browser EventSource cannot set manually. Add query parsing as a fallback to the
+# header; keep the header as the highest-precedence source when both are present.
+#
+[[task]]
+id = "E10-T07"
+title = "Make sse.rs honor ?n= and ?lastEventId= replay fallback"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-serve/src/routes/sse.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/sse.rs", lines = "1-55", why = "SSE handler currently reads Last-Event-ID header only; add Query extractor fallback here" },
+    { path = "demo/demo-app/src/transport/sse.ts", lines = "95-120", why = "Frontend reconnect appends lastEventId as a query param because EventSource cannot set headers" },
+]
+symbols = ["Last-Event-ID", "lastEventId", "n", "replay_from"]
+anti_patterns = [
+    "Do NOT make E10-T07 depend on E10-T05; replay parsing is an independent server-side fix.",
+    "Do NOT ignore the Last-Event-ID header; it should stay highest precedence.",
+    "Do NOT treat invalid query strings as 400s; fall back to 0 and keep the stream open.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'lastEventId' crates/roko-serve/src/routes/sse.rs && grep -q 'n:' crates/roko-serve/src/routes/sse.rs"
+fail_msg = "sse.rs must parse lastEventId and n query params as replay fallbacks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile after adding SSE replay query parsing"
+
+acceptance = [
+    "Last-Event-ID header remains the primary replay cursor.",
+    "`?lastEventId=` and `?n=` work as fallback replay cursors for browser EventSource clients.",
+    "Invalid or missing replay values fall back to 0 without failing the SSE request.",
+]

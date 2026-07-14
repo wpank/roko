@@ -1,0 +1,756 @@
+[meta]
+plan = "E02-STORAGE-CONVERGENCE"
+total = 12
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# E02-T01: Unify the signal store (HIGHEST IMPACT — fixes empty dashboards)
+# ────────────────────────────────────────────────────────────────────
+# Runner v2 appends flat {"kind":"GateVerdict",...} rows to signals.jsonl
+# (event_loop.rs:1147-1168 via layout.signals_path()), while every serve
+# reader + dashboard reads engrams.jsonl. The verdicts never reach the
+# panels. Make the runner write verdicts to the SAME store the dashboards
+# read, and stop touching signals.jsonl.
+#
+# CROSS-EPIC: depends (soft) on E03's GateVerdict-shape decision. If E03
+# has landed the Engram provenance mapping, encode verdicts as Engram
+# records to layout.engrams_path(). If E03 has NOT landed, ship the safe
+# interim: a dedicated typed .roko/gate-verdicts.jsonl written via a new
+# layout.gate_verdicts_path() helper AND repoint the readers at it — still
+# one writer, one reader path, no schema-mix.
+
+[[task]]
+id = "E02-T01"
+title = "Runner v2 writes gate verdicts to the canonical log; stop writing signals.jsonl"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-fs/src/layout.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1140-1175", why = "The gate-verdict append: writes flat JSON to layout.signals_path() — the split-brain source" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "5040-5060", why = "GateVerdictSummary — the typed verdict already flowing here; source for the Engram/typed row" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "200-221", why = "engrams_path (canonical), engrams_path_legacy + signals_path (both -> signals.jsonl). Add gate_verdicts_path() here if using interim path" },
+    { path = "crates/roko-fs/src/file_substrate.rs", lines = "40-95", why = "How Engram records are appended/compacted to engrams.jsonl — mirror for verdict-as-Engram" },
+    { path = "crates/roko-serve/src/routes/status/gates.rs", lines = "80-95", why = "A dashboard reader — must resolve to the SAME path the writer now uses" },
+]
+symbols = [
+    "signals_path — fn signals_path(&self) -> PathBuf (roko-fs/src/layout.rs:219, returns signals.jsonl)",
+    "engrams_path — fn engrams_path(&self) -> PathBuf (roko-fs/src/layout.rs:204)",
+    "GateVerdictSummary — struct in runner/event_loop.rs (the typed verdict payload)",
+]
+anti_patterns = [
+    "Do NOT keep writing signals.jsonl 'as well' — the whole point is one store. Remove the layout.signals_path() append.",
+    "Do NOT invent an Engram schema inline. If E03's GateVerdict->Engram mapping is unavailable, use the typed .roko/gate-verdicts.jsonl interim and repoint readers — do not fold flat rows into engrams.jsonl.",
+    "Do NOT touch commands/util.rs init-migration here — that is E02-T02.",
+    "Do NOT delete signals_path()/engrams_path_legacy() from layout.rs yet — the init migration (E02-T02) still needs them as read/rename inputs.",
+]
+
+# verify: the verdict WRITE and the dashboard READ must hit the same file,
+# and signals.jsonl must no longer be the verdict sink.
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'signals_path()' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Runner v2 must no longer append gate verdicts via layout.signals_path()"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'engrams_path\\(\\)|gate_verdicts_path\\(\\)' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Gate verdicts must be written to engrams_path() (or the typed gate_verdicts_path()) — the store dashboards read"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-fs 2>&1"
+fail_msg = "Must compile after repointing the verdict writer"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner:: 2>&1"
+fail_msg = "Runner event-loop tests must pass with the new verdict sink"
+
+# ────────────────────────────────────────────────────────────────────
+# E02-T02: Guard init migration against schema-mixing
+# ────────────────────────────────────────────────────────────────────
+# roko init renames signals.jsonl -> engrams.jsonl wholesale when engrams
+# is absent (util.rs:135-150). If signals.jsonl holds GateVerdict rows,
+# that folds a non-Engram schema into the Engram store. Only migrate rows
+# that parse as Engram; leave (or quarantine) the rest.
+
+[[task]]
+id = "E02-T02"
+title = "Guard signals->engrams init migration to only move rows that parse as Engram"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-cli/src/commands/util.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/util.rs", lines = "130-155", why = "The signals.jsonl -> engrams.jsonl rename — must become a parse-filtered copy" },
+    { path = "crates/roko-core/src/engram.rs", lines = "55-75", why = "Engram struct — deserialize target used to test each row" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "200-221", why = "engrams_path / signals_path source and target of the migration" },
+]
+symbols = [
+    "Engram — struct (roko-core/src/engram.rs:63) with serde derive — parse test per line",
+]
+anti_patterns = [
+    "Do NOT delete signals.jsonl rows that fail to parse — leave the file in place (or move to signals.jsonl.legacy) so no data is lost.",
+    "Do NOT rename wholesale anymore — read line-by-line, only append rows that deserialize as Engram to engrams.jsonl.",
+    "Do NOT change the runner writer here — that is E02-T01.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'serde_json::from_str::<Engram>|from_str.*Engram' crates/roko-cli/src/commands/util.rs"
+fail_msg = "Migration must parse-test each row as Engram before moving it"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -nE 'fs::rename\\([^)]*signals' crates/roko-cli/src/commands/util.rs"
+fail_msg = "Must not wholesale-rename signals.jsonl into engrams.jsonl anymore"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after guarding the migration"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli init 2>&1"
+fail_msg = "Init/migration tests must pass; add a GateVerdict-only fixture case"
+
+# ────────────────────────────────────────────────────────────────────
+# E02-T03: Fix executor.json reader drift
+# ────────────────────────────────────────────────────────────────────
+# save_executor_snapshot has ZERO runtime caller; Runner v2 writes only
+# state/state-snapshot.json (StateSnapshot.executor_json). But serve's
+# workspace route reads state/executor.json (workspaces.rs:323) and emits
+# "executor.json: <error>" for every real workspace. Repoint the readers
+# at state-snapshot.json (extract .executor_json) and remove the dead
+# executor_snapshot() helper.
+
+[[task]]
+id = "E02-T03"
+title = "Repoint executor.json readers at state-snapshot.json; drop executor_snapshot() helper"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = [
+    "crates/roko-serve/src/routes/workspaces.rs",
+    "crates/roko-serve/src/dashboard_snapshot.rs",
+    "crates/roko-fs/src/layout.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/workspaces.rs", lines = "318-335", why = "Reads state/executor.json and pushes 'executor.json: <error>' — repoint at state-snapshot.json.executor_json" },
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "40-90", why = "state_snapshot_json path + StateSnapshot with executor_json field — the real source" },
+    { path = "crates/roko-serve/src/dashboard_snapshot.rs", lines = "1270-1300", why = "StateHub bootstrap also reads executor snapshot — same repoint" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "375-385", why = "executor_snapshot() helper (:382) — remove once no reader references executor.json" },
+]
+symbols = [
+    "StateSnapshot — struct with executor_json/orchestrator_json/run_state_json/gate_thresholds_json fields (runner/persist.rs)",
+    "executor_snapshot — fn (roko-fs/src/layout.rs:~382) returning state/executor.json — to be removed",
+]
+anti_patterns = [
+    "Do NOT make the snapshot writer ALSO emit executor.json — repoint readers instead (one file, not two).",
+    "Do NOT break the resume default path (main.rs:2659) — repoint it at state-snapshot.json too, do not leave it pointing at executor.json.",
+    "Do NOT remove executor_snapshot() until grep confirms no remaining executor.json reader.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -rn 'executor.json' crates/roko-serve/src crates/roko-fs/src"
+fail_msg = "No serve/fs code should reference executor.json after repointing"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'state-snapshot|state_snapshot|executor_json' crates/roko-serve/src/routes/workspaces.rs"
+fail_msg = "Workspace route must read state-snapshot.json.executor_json"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-fs 2>&1"
+fail_msg = "Must compile after repointing readers and removing executor_snapshot()"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve workspaces 2>&1"
+fail_msg = "Workspace-detail tests must pass; no executor.json error for a real workspace"
+
+[[task]]
+id = "E02-T12"
+title = "Cold-substrate archival moves engrams out of the hot store (prune-after-archive + dedup append)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = [
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-fs/src/cold_substrate.rs",
+    "crates/roko-fs/src/file_substrate.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/lib.rs", lines = "2162-2187", why = "run_cold_archival_tick: archives candidates but never deletes them from the hot substrate — the copy-not-move bug" },
+    { path = "crates/roko-serve/src/lib.rs", lines = "2084-2160", why = "start_cold_archival_timer: the hourly loop (called at :344 and :800) that keeps re-archiving the same rows" },
+    { path = "crates/roko-fs/src/cold_substrate.rs", lines = "218-242", why = "archive_batch: append_to_archive with no dedup against the cold index — the unbounded-append source" },
+    { path = "crates/roko-fs/src/file_substrate.rs", lines = "88-119", why = "compact(): rewrites the hot log from the in-memory index — use after removing archived ids to reclaim disk" },
+    { path = "crates/roko-fs/src/file_substrate.rs", lines = "317-325", why = "prune(threshold): removes from the in-memory index only — model a delete-by-ids path on this" },
+]
+symbols = [
+    "run_cold_archival_tick — fn (roko-serve/src/lib.rs:2166): must prune archived ids from the hot store after archive_batch",
+    "ArchiveColdSubstrate::archive_batch — fn (roko-fs/src/cold_substrate.rs:218): dedup against self.index before append_to_archive",
+    "FileSubstrate::compact — fn (roko-fs/src/file_substrate.rs:88): shrink the hot log after removal",
+]
+anti_patterns = [
+    "Do NOT leave the archived engrams in the hot store 'for safety' — that is the copy-not-move bug; the whole point is to MOVE them.",
+    "Do NOT delete from the hot store BEFORE the archive_batch succeeds — archive first, then prune, so a failure cannot lose data.",
+    "Do NOT skip the dedup guard in archive_batch — without it a crash between archive and prune re-grows the cold file on the next tick.",
+    "Do NOT change the query cutoff / max_age / batch_size semantics here — only make the archived rows actually leave the hot store.",
+]
+
+# verify: archived rows must LEAVE the hot store, and a repeat tick must be a no-op
+# on the cold file (no unbounded re-append).
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'compact\\(\\)|delete|prune|remove' crates/roko-serve/src/lib.rs | grep -i cold || grep -nE 'hot\\.(compact|delete|prune|remove)' crates/roko-serve/src/lib.rs"
+fail_msg = "run_cold_archival_tick must remove archived engrams from the hot substrate after archiving"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'contains|index.*get|already.*archived|dedup' crates/roko-fs/src/cold_substrate.rs"
+fail_msg = "archive_batch must dedup against the cold index so re-runs do not re-append"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-fs 2>&1"
+fail_msg = "Must compile after the prune-after-archive + dedup changes"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-fs cold 2>&1"
+fail_msg = "Cold-substrate tests must pass; add a case asserting a second archive of the same batch archives 0 and the cold file size is unchanged, and that the hot store no longer contains the archived ids"
+
+# ---------------------------------------------------------------------------
+# E02-T04: Materialize gate-thresholds.json from the live runner
+# ---------------------------------------------------------------------------
+# Runner v2 already keeps GateThresholds in memory and embeds them in
+# state-snapshot.json, while serve, TUI, and ACP still read the standalone
+# .roko/learn/gate-thresholds.json. Materialize that file during runner
+# snapshot/update instead of teaching every reader a second fallback.
+[[task]]
+id = "E02-T04"
+title = "Materialize gate-thresholds.json from runner snapshots"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/persist.rs",
+]
+role = "implementer"
+depends_on = ["E02-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "35-80", why = "PersistPaths already contains gate_thresholds_json from layout.gate_thresholds_path()" },
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "157-242", why = "GateThresholds type, load path, and save/load helpers to extend" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1120-1135", why = "thresholds are updated after gate completion" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3336-3425", why = "save_snapshot serializes gate_thresholds_json into state-snapshot.json but does not materialize the standalone file" },
+    { path = "crates/roko-serve/src/routes/learning/mod.rs", lines = "102-125", why = "serve reader expects .roko/learn/gate-thresholds.json" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1288-1296", why = "dashboard bootstrap reads the standalone thresholds file" },
+]
+symbols = [
+    "GateThresholds::load",
+    "PersistPaths::gate_thresholds_json",
+    "save_snapshot",
+    "emit_gate_thresholds_event",
+]
+anti_patterns = [
+    "Do not leave thresholds only inside state-snapshot.json while readers expect gate-thresholds.json.",
+    "Do not update serve/TUI/ACP with three separate ad hoc snapshot fallbacks in this task.",
+    "Do not write invalid partial JSON; use the same atomic write pattern as other runner state.",
+    "Do not remove the embedded state-snapshot field; resume still uses it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'save_gate_thresholds|GateThresholds::save|gate_thresholds\\.save' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/persist.rs"
+fail_msg = "runner must save GateThresholds to .roko/learn/gate-thresholds.json"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'gate_thresholds_json' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/persist.rs"
+fail_msg = "gate threshold persistence must use PersistPaths.gate_thresholds_json"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after threshold materialization"
+
+acceptance = [
+    "Every runner snapshot or gate-threshold update writes a valid .roko/learn/gate-thresholds.json file.",
+    "state-snapshot.json still embeds gate_thresholds_json for resume.",
+    "serve/TUI/ACP readers can read non-empty thresholds after a plan run without bespoke fallback logic.",
+    "The write is atomic or otherwise crash-safe in the same style as runner persistence.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T05: Collapse episodes to the root log
+# ---------------------------------------------------------------------------
+# The live runner and FeedbackService already write .roko/episodes.jsonl, while
+# RokoLayout::episodes_path and serve projection docs still call
+# .roko/memory/episodes.jsonl the main store. Make the root log canonical and
+# keep memory/episodes only as a legacy migration input.
+[[task]]
+id = "E02-T05"
+title = "Collapse episodes to root and repoint serve projection off memory"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = [
+    "crates/roko-fs/src/layout.rs",
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-learn/src/feedback_service.rs",
+    "crates/roko-orchestrator/src/service_factory.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/layout.rs", lines = "223-330", why = "root_episodes_path is live; episodes_path still returns memory/episodes.jsonl and labels it main" },
+    { path = "crates/roko-serve/src/lib.rs", lines = "1006-1135", why = "serve projection reports memory/episodes.jsonl as the episode source" },
+    { path = "crates/roko-learn/src/feedback_service.rs", lines = "136-145", why = "FeedbackService already writes the root episodes log" },
+    { path = "crates/roko-orchestrator/src/service_factory.rs", lines = "136-150", why = "service factory path helper already uses root .roko/episodes.jsonl" },
+    { path = "crates/roko-cli/src/commands/util.rs", lines = "870-880", why = "status command probes all three episode locations; keep only migration/fallback behavior intentional" },
+]
+symbols = [
+    "RokoLayout::root_episodes_path",
+    "RokoLayout::episodes_path",
+    "FeedbackService::from_roko_dir_with_episodes",
+]
+anti_patterns = [
+    "Do not create a fourth episode path.",
+    "Do not make both root and memory logs grow after a run.",
+    "Do not delete legacy memory/episodes data without a migration or explicit fallback.",
+    "Do not leave serve descriptions claiming memory/episodes.jsonl is canonical.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "awk '/pub fn episodes_path/{flag=1} flag{print} /}/{if(flag){exit}}' crates/roko-fs/src/layout.rs | grep -E 'root_episodes_path|root.join'"
+fail_msg = "RokoLayout::episodes_path must resolve to the root episodes log or delegate to root_episodes_path"
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'memory/episodes\\.jsonl' crates/roko-serve/src/lib.rs"
+fail_msg = "serve projection must not describe memory/episodes.jsonl as the canonical episode log"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-fs -p roko-serve -p roko-learn -p roko-orchestrator 2>&1"
+fail_msg = "episode path convergence must compile across layout, serve, learn, and orchestrator"
+
+acceptance = [
+    "RokoLayout::episodes_path resolves to .roko/episodes.jsonl or delegates to root_episodes_path.",
+    "serve projection and labels name the root episode log as canonical.",
+    "memory/episodes.jsonl is treated only as legacy/migration input and does not grow during a run.",
+    "FeedbackService and runner episode sinks continue writing the same root path.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T06: Consolidate Daimon state path
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E02-T06"
+title = "Consolidate daimon state to daimon/affect.json and alias orchestrator state"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 45
+files = [
+    "crates/roko-orchestrator/src/service_factory.rs",
+    "crates/roko-serve/src/state.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/service_factory.rs", lines = "220-240", why = "orchestrator still loads .roko/state/daimon.json" },
+    { path = "crates/roko-serve/src/state.rs", lines = "40-52", why = "serve canonical affect_path helper uses .roko/daimon/affect.json" },
+    { path = "crates/roko-serve/src/state.rs", lines = "930-940", why = "AppState loads DaimonState from the canonical affect path" },
+    { path = "crates/roko-daimon/src/lib.rs", lines = "2910-2942", why = "DaimonState persistence tests use daimon/affect.json" },
+]
+symbols = [
+    "DaimonState::load_or_new",
+    "AppState::affect_engine",
+    "affect_path",
+]
+anti_patterns = [
+    "Do not make .roko/state/daimon.json and .roko/daimon/affect.json both authoritative.",
+    "Do not migrate by copy-only; after migration one path must be the writer.",
+    "Do not change the DaimonState JSON shape in this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'join(\"daimon\").join(\"affect.json\")' crates/roko-orchestrator/src/service_factory.rs"
+fail_msg = "orchestrator must load DaimonState from .roko/daimon/affect.json"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'join(\"state\").join(\"daimon.json\")' crates/roko-orchestrator/src/service_factory.rs"
+fail_msg = "orchestrator must not keep .roko/state/daimon.json as the active path"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-orchestrator -p roko-serve 2>&1"
+fail_msg = "daimon path consolidation must compile"
+
+acceptance = [
+    "The active daimon writer is .roko/daimon/affect.json.",
+    "Existing .roko/state/daimon.json is read only as a migration/alias input, if at all.",
+    "A run mutates one daimon file, not two.",
+    "serve and orchestrator agree on the same DaimonState persistence path.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T07: Retention coverage for the largest unbounded artifacts
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E02-T07"
+title = "Add retention for events, logs, run ledger, and backup files"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = [
+    "crates/roko-serve/src/retention.rs",
+    "crates/roko-fs/src/layout.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E03-type-consolidation"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/retention.rs", lines = "1-70", why = "retention policy shape and compaction strategies" },
+    { path = "crates/roko-serve/src/retention.rs", lines = "115-176", why = "default_retention_policies currently omits the largest artifacts" },
+    { path = "crates/roko-serve/src/retention.rs", lines = "520-545", why = "retention tests assert default policy names" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "233-246", why = "layout helpers for events.jsonl and roko.log" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "397-412", why = "run-ledger path and legacy event snapshot helper" },
+]
+symbols = [
+    "default_retention_policies",
+    "CompactionStrategy::Rotate",
+    "CompactionStrategy::TailKeep",
+    "RokoLayout::events_jsonl_path",
+    "RokoLayout::run_ledger_path",
+]
+anti_patterns = [
+    "Do not add retention for episodes only; this task is about the missing largest artifacts.",
+    "Do not use Manual for unbounded append-only logs.",
+    "Do not leave state/*.bak.* unlimited.",
+    "If E03 RetentionPolicy consolidation has not landed, stop and either land it first or keep this task blocked.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for name in events.jsonl roko.log chain-watcher.log run-ledger.jsonl; do grep -q \"$name\" crates/roko-serve/src/retention.rs || exit 1; done"
+fail_msg = "default retention policies must cover events.jsonl, roko.log, chain-watcher.log, and run-ledger.jsonl"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qi 'bak' crates/roko-serve/src/retention.rs"
+fail_msg = "retention must include a cap or cleanup policy for state/*.bak.* files"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve retention 2>&1"
+fail_msg = "retention policy tests must pass and cover the new artifacts"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-fs 2>&1"
+fail_msg = "retention changes must compile"
+
+acceptance = [
+    "default_retention_policies includes events.jsonl, roko.log, chain-watcher.log, and state/run-ledger.jsonl.",
+    "state/*.bak.* files have an explicit count or age cap.",
+    "The retention tests assert the new artifacts so future regressions are caught.",
+    "The policy uses the shared RetentionPolicy shape from E03-T06 rather than introducing another duplicate type.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T08: Keep feed_tick heartbeats out of durable events.jsonl
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E02-T08"
+title = "Stop feed_tick heartbeats from polluting events.jsonl"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = [
+    "crates/roko-serve/src/feed_agents/mod.rs",
+    "crates/roko-serve/src/state.rs",
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-core/src/dashboard_snapshot.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/feed_agents/mod.rs", lines = "80-96", why = "feed agents publish ServerEvent::FeedTick heartbeats" },
+    { path = "crates/roko-serve/src/state.rs", lines = "836-846", why = "StateHub event log writes to .roko/events.jsonl" },
+    { path = "crates/roko-serve/src/lib.rs", lines = "1596-1612", why = "ServerEvent::FeedTick is converted into DashboardEvent::FeedTick" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1218-1226", why = "DashboardSnapshot treats FeedTick as non-state-changing noise" },
+]
+symbols = [
+    "ServerEvent::FeedTick",
+    "DashboardEvent::FeedTick",
+    "StateHub::with_event_log",
+]
+anti_patterns = [
+    "Do not drop operational events such as ChainBlock, ChainTx, or gate failures.",
+    "Do not keep serializing every heartbeat to .roko/events.jsonl.",
+    "Do not solve this only by increasing retention; the feed_tick writes should be filtered or moved to an ephemeral sink.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'FeedTick.*(skip|drop|coalesce|ephemeral|non_persistent)|should_persist.*FeedTick|persist.*FeedTick' crates/roko-serve/src/state.rs crates/roko-serve/src/lib.rs crates/roko-serve/src/feed_agents/mod.rs"
+fail_msg = "serve must explicitly filter, coalesce, or route FeedTick away from durable events.jsonl"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-core 2>&1"
+fail_msg = "feed_tick filtering must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve feed_tick 2>&1"
+fail_msg = "feed_tick persistence behavior must have a focused test"
+
+acceptance = [
+    "FeedTick no longer appends one durable event row per heartbeat to .roko/events.jsonl.",
+    "Stateful orchestration and chain events still persist to the event log.",
+    "The dashboard can still show live feed health through an ephemeral or coalesced path.",
+    "A test proves FeedTick does not grow events.jsonl while another non-heartbeat event still does.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T09: Runtime-events route contract
+# ---------------------------------------------------------------------------
+# Runtime-events writers now exist in AppState and workflow routes, so this is
+# no longer a pure absent-writer task. Make the two run routes explicit about
+# reading the same path JsonlLogger writes, and add missing-file semantics/tests.
+[[task]]
+id = "E02-T09"
+title = "Resolve runtime-events.jsonl route contract and writer coverage"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = [
+    "crates/roko-serve/src/routes/runs.rs",
+    "crates/roko-serve/src/routes/shared_runs.rs",
+    "crates/roko-serve/src/state.rs",
+    "crates/roko-runtime/src/jsonl_logger.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/runs.rs", lines = "15-45", why = "/api/dashboard/runs reads runtime-events.jsonl" },
+    { path = "crates/roko-serve/src/routes/shared_runs.rs", lines = "118-190", why = "/api/runs/{id} falls back to runtime events when no active transcript exists" },
+    { path = "crates/roko-serve/src/routes/shared_runs.rs", lines = "321-345", why = "transcript_from_runtime_events reads runtime-events.jsonl directly" },
+    { path = "crates/roko-serve/src/state.rs", lines = "952-982", why = "AppState constructs runtime_event_logger from the layout root" },
+    { path = "crates/roko-runtime/src/jsonl_logger.rs", lines = "15-40", why = "JsonlLogger::from_roko_dir path contract" },
+]
+symbols = [
+    "JsonlLogger::from_roko_dir",
+    "AppState::runtime_event_logger",
+    "transcript_from_runtime_events",
+    "get_dashboard_runs",
+]
+anti_patterns = [
+    "Do not add a second runtime event filename.",
+    "Do not make the routes silently return fake data when the file is absent.",
+    "Do not remove the routes unless every router/client reference is removed in the same task.",
+    "Do not bypass the LogScrubber on shared transcript output.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'runtime_event_logger|JsonlLogger::from_roko_dir|runtime-events.jsonl' crates/roko-serve/src/routes/runs.rs crates/roko-serve/src/routes/shared_runs.rs crates/roko-serve/src/state.rs crates/roko-runtime/src/jsonl_logger.rs"
+fail_msg = "routes and writer must agree on JsonlLogger/runtime-events.jsonl path contract"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve runtime_events 2>&1"
+fail_msg = "runtime-events route contract tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve -p roko-runtime 2>&1"
+fail_msg = "runtime event route/writer contract must compile"
+
+acceptance = [
+    "/api/dashboard/runs and /api/runs/{id} either both read the JsonlLogger path or are both removed with router/client references cleaned up.",
+    "When the runtime event file is missing, route behavior is explicit and tested.",
+    "At least one live serve workflow path writes RuntimeEvents to the same file the routes read.",
+    "Shared run transcripts remain scrubbed before response serialization.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T10: Retire state/events.json, not live run-state or RunLedger
+# ---------------------------------------------------------------------------
+# The original title listed run-state.json and RunLedger, but those are live at
+# current HEAD. Scope this task to the dead second event snapshot:
+# state/events.json and RokoLayout::event_log_snapshot.
+[[task]]
+id = "E02-T10"
+title = "Retire dead state/events.json event snapshot path"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 55
+files = [
+    "crates/roko-cli/src/runner/persist.rs",
+    "crates/roko-fs/src/layout.rs",
+    "crates/roko-core/src/dashboard_snapshot.rs",
+]
+role = "implementer"
+depends_on = ["E02-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/layout.rs", lines = "397-412", why = "event_log_snapshot returns .roko/state/events.json; remove or repoint" },
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "45-82", why = "PersistPaths keeps both events_json and events_jsonl" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1268-1282", why = "dashboard bootstrap reads state/events.json" },
+    { path = "crates/roko-serve/src/state.rs", lines = "836-846", why = "live event log is .roko/events.jsonl" },
+    { path = "crates/roko-runtime/src/run_ledger.rs", lines = "18-52", why = "RunLedger is live; do not delete it under this task" },
+]
+symbols = [
+    "RokoLayout::event_log_snapshot",
+    "PersistPaths::events_json",
+    "RokoLayout::events_jsonl_path",
+    "RunLedger",
+]
+anti_patterns = [
+    "Do not delete run-state.json persistence; it is still the legacy resume fallback.",
+    "Do not delete roko_runtime::RunLedger; event_loop.rs actively persists it.",
+    "Do not keep dashboard readers pointed at never-written state/events.json.",
+    "Do not add another events snapshot file; use events.jsonl or the unified snapshot.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'event_log_snapshot\\(|state/events\\.json|join\\(\"events\\.json\"\\)' crates/roko-cli/src/runner/persist.rs crates/roko-fs/src/layout.rs crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "dead state/events.json snapshot helper and readers must be removed or repointed"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'events_jsonl_path|events.jsonl|read_event_entries' crates/roko-cli/src/runner/persist.rs crates/roko-fs/src/layout.rs crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "event readers/writers must converge on .roko/events.jsonl or the unified snapshot"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-fs -p roko-core 2>&1"
+fail_msg = "event snapshot retirement must compile"
+
+acceptance = [
+    "No live reader expects .roko/state/events.json.",
+    "RokoLayout::event_log_snapshot and PersistPaths::events_json are removed or repointed to the live event log contract.",
+    "run-state.json and roko_runtime::RunLedger remain intact because they are live at current HEAD.",
+    "Dashboard bootstrap reads .roko/events.jsonl or state-snapshot data, not a never-written events.json file.",
+]
+
+# ---------------------------------------------------------------------------
+# E02-T11: LayoutVersion::V2 migration and doctor audit
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E02-T11"
+title = "Introduce LayoutVersion::V2 migration and roko doctor state audit"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 150
+files = [
+    "crates/roko-fs/src/layout.rs",
+    "crates/roko-cli/src/doctor.rs",
+]
+role = "implementer"
+depends_on = ["E02-T01", "E02-T03", "E02-T04", "E02-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/layout.rs", lines = "29-57", why = "LayoutVersion currently only has V1 and CURRENT = V1" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "468-505", why = "ensure_dirs/read_version write and parse .roko/VERSION" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "31-60", why = "DoctorStatus and DoctorCheck shape" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "416-464", why = "layout basics check to extend with version/state audit" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "1130-1195", why = "doctor tests and output assertions" },
+]
+symbols = [
+    "LayoutVersion::CURRENT",
+    "RokoLayout::version_file",
+    "RokoLayout::read_version",
+    "DoctorCheck",
+    "DoctorStatus",
+]
+anti_patterns = [
+    "Do not make P24-T3 a local dependency; copy its DoctorCheck pattern if it exists.",
+    "Do not bump VERSION without a migration/audit path for V1 workspaces.",
+    "Do not mark unknown state files OK by default; classify canonical, legacy, orphan, or warn.",
+    "Do not reintroduce memory/episodes or signals.jsonl as canonical during migration.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'V2' crates/roko-fs/src/layout.rs"
+fail_msg = "LayoutVersion::V2 must be introduced"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'CURRENT.*V2|V2.*CURRENT' crates/roko-fs/src/layout.rs"
+fail_msg = "LayoutVersion::CURRENT must point at V2"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'state.*audit|canonical.*legacy|legacy.*canonical|LayoutVersion::V2' crates/roko-cli/src/doctor.rs"
+fail_msg = "roko doctor must include a state layout audit for canonical, legacy, and orphan files"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-fs -p roko-cli 2>&1"
+fail_msg = "layout V2 and doctor audit must compile"
+
+acceptance = [
+    ".roko/VERSION is written as 2 for newly ensured workspaces.",
+    "V1 workspaces are migrated or explicitly audited into V2 canonical paths.",
+    "roko doctor lists canonical, legacy, and orphan .roko state files with actionable status.",
+    "The doctor audit depends on E02-T01, T03, T04, and T05 convergence decisions and does not resurrect superseded paths.",
+]

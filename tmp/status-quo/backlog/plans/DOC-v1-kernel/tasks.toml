@@ -1,0 +1,588 @@
+[meta]
+plan = "DOC-v1-kernel"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+# Encapsulates the docs/v1 kernel corpus into executable backlog-reconciliation
+# tasks. These tasks do not implement product features; they reconcile PRD docs
+# into the status-quo executable backlog, adding DOC follow-ups only when the
+# E01-E18 plans do not already cover the requirement.
+
+[[task]]
+id = "DOC-V1-ROOT-OVERVIEW"
+title = "Reconcile docs/v1 root overview and positioning docs into backlog coverage"
+description = "Read the root overview, status, comparison, use-case, quickstart, and run-anywhere docs. For each source, update the coverage ledger with concrete E01-E18 task refs, add or refine DOC follow-up tasks in this plan if an actionable docs/config/ops gap is missing, or record a no-op/deferred mapping with a reason."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 220
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E02-STORAGE-CONVERGENCE",
+    "E03-type-consolidation",
+    "E04-security-perimeter",
+    "E05-gate-adaptivity-live",
+    "E06-COMPOSE-UNIFY",
+    "E07-learning-knowledge",
+    "E08-conductor-supervision",
+    "E09-OBSERVABILITY",
+    "E10-FRONTEND-CONTRACT",
+    "E11-chain-isfr",
+    "E12-DEAD-CODE-CLEANUP",
+    "E13-SPEC-DEBT-V2",
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E16-prd-self-hosting-gaps",
+    "E17-acp-completion",
+    "E18-DOCS-CONFIG-OPS",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for this source cluster." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/COMPARISON.md", why = "Root positioning source requiring backlog mapping or explicit no-op." },
+    { path = "docs/v1/EXECUTIVE-SUMMARY.md", why = "Root thesis and roadmap source requiring backlog mapping or explicit no-op." },
+    { path = "docs/v1/INDEX.md", why = "Root index and canonical framing source requiring backlog mapping or explicit no-op." },
+    { path = "docs/v1/QUICKSTART.md", why = "Root onboarding source requiring docs/runtime truth mapping." },
+    { path = "docs/v1/STATUS.md", why = "Root implementation status source requiring E01-E18 mapping." },
+    { path = "docs/v1/USE-CASES.md", why = "Root use-case source requiring backlog mapping or explicit no-op." },
+    { path = "docs/v1/VISION-RUN-ANYWHERE.md", why = "Root deployment/portability source requiring backlog mapping." },
+]
+symbols = [
+    "Coverage ledger statuses: mapped, doc-follow-up, deferred, no-op.",
+    "DOC follow-up tasks belong in tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml.",
+]
+anti_patterns = [
+    "Do not edit product code or docs/v1 source files; this is backlog reconciliation only.",
+    "Do not use depends_on for E01-E18 task ids; cross-plan prerequisites belong in depends_on_plan.",
+    "Do not leave a source row as pending after reconciling it; choose mapped, doc-follow-up, deferred, or no-op with a reason.",
+]
+acceptance = [
+    "All seven root overview source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+    "Any newly added DOC follow-up task is roko-compatible and has files plus verify when role = implementer.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in docs/v1/COMPARISON.md docs/v1/EXECUTIVE-SUMMARY.md docs/v1/INDEX.md docs/v1/QUICKSTART.md docs/v1/STATUS.md docs/v1/USE-CASES.md docs/v1/VISION-RUN-ANYWHERE.md; do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every root overview source path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after root overview reconciliation."
+
+[[task]]
+id = "DOC-V1-ROOT-REFERENCE"
+title = "Reconcile docs/v1 root API, CLI, integration, and benchmark docs"
+description = "Read the root reference-style docs and map their requirements to E01-E18 backlog tasks, especially interface/API, integration, benchmark, provider, and docs/ops coverage. Add or refine DOC follow-up tasks only when the executable backlog lacks a concrete docs/config/ops task; otherwise record mapped, no-op, or deferred coverage with reasons."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 180
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E09-OBSERVABILITY",
+    "E10-FRONTEND-CONTRACT",
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E16-prd-self-hosting-gaps",
+    "E17-acp-completion",
+    "E18-DOCS-CONFIG-OPS",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for this source cluster." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/API-REFERENCE.md", why = "HTTP API source requiring E10/E18 or DOC follow-up mapping." },
+    { path = "docs/v1/BENCHMARKS.md", why = "Benchmark/evaluation source requiring E09/E16/E18 mapping." },
+    { path = "docs/v1/CLI-REFERENCE.md", why = "CLI source requiring E01/E18 mapping." },
+    { path = "docs/v1/INTEGRATION-GUIDE.md", why = "Integration source requiring interface/provider/docs mapping." },
+]
+symbols = [
+    "Root references are reconciled to executable backlog coverage, not rewritten in place.",
+]
+anti_patterns = [
+    "Do not update API/CLI docs in this task; record backlog coverage only.",
+    "Do not create product implementation tasks in this DOC plan unless the missing work is purely documentation/config/ops hygiene.",
+    "Do not duplicate an E10/E14/E15/E18 task; map to it when it already owns the gap.",
+]
+acceptance = [
+    "All four root reference source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in docs/v1/API-REFERENCE.md docs/v1/BENCHMARKS.md docs/v1/CLI-REFERENCE.md docs/v1/INTEGRATION-GUIDE.md; do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every root reference source path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after root reference reconciliation."
+
+[[task]]
+id = "DOC-V1-ARCHITECTURE"
+title = "Reconcile docs/v1/00-architecture into executable backlog coverage"
+description = "Read every 00-architecture markdown source and reconcile its kernel architecture requirements against the E01-E18 backlog. Update the ledger with concrete mapped task refs, add/refine DOC-v1 follow-ups when only documentation/config/ops backlog is missing, or record deferred/no-op rationale for target-state material that should not become M0-M2 work."
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-6"
+max_loc = 420
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E02-STORAGE-CONVERGENCE",
+    "E03-type-consolidation",
+    "E04-security-perimeter",
+    "E05-gate-adaptivity-live",
+    "E06-COMPOSE-UNIFY",
+    "E07-learning-knowledge",
+    "E08-conductor-supervision",
+    "E09-OBSERVABILITY",
+    "E10-FRONTEND-CONTRACT",
+    "E11-chain-isfr",
+    "E12-DEAD-CODE-CLEANUP",
+    "E13-SPEC-DEBT-V2",
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E16-prd-self-hosting-gaps",
+    "E17-acp-completion",
+    "E18-DOCS-CONFIG-OPS",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for architecture sources." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/00-architecture/00-vision-and-thesis.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/01-naming-and-glossary.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/02-engram-data-type.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/02b-pulse-ephemeral-event.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/03-score-7-axis-appraisal.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/04-decay-variants.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/05-provenance-and-attestation.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/06-synapse-traits.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/07-substrate-trait.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/07b-bus-transport-fabric.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/08-scorer-gate-router-composer-policy.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/09-universal-cognitive-loop.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/10-three-cognitive-speeds.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/11-dual-process-and-active-inference.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/12-five-layer-taxonomy.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/13-cognitive-cross-cuts.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/14-c-factor-collective-intelligence.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/15-crate-map.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/16-autocatalytic-and-cybernetics.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/17-design-principles-and-frontier-summary.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/18-decay-tier-matrix.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/19-compositional-kinds.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/20-configuration-schema.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/21-performance-numerical-stability.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/22-error-handling-recovery.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/23-architectural-analysis-improvements.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/24-cross-section-integration-map.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/25-attention-as-currency.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/26-cognitive-immune-system.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/27-temporal-knowledge-topology.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/28-emergent-goal-structures.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/29-cognitive-energy-model.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/30-cross-pollination-innovations.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/31-implementation-readiness-audit.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/32-comprehensive-test-strategy.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/33-refactor-plan-phases.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/34-synergy-integration-map.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/35-consolidated-roadmap.md", why = "Architecture source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/00-architecture/INDEX.md", why = "Architecture index requiring backlog mapping or explicit deferral." },
+]
+symbols = [
+    "Map runtime-truth gaps to E01-E18 where possible; reserve DOC follow-ups for backlog/docs parity gaps.",
+]
+anti_patterns = [
+    "Do not turn every target-state idea into implementation work; deferred rows need a reason.",
+    "Do not duplicate existing E01-E18 implementation tasks.",
+    "Do not edit docs/v1 architecture sources.",
+]
+acceptance = [
+    "All 39 architecture source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1/00-architecture -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every docs/v1/00-architecture markdown path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after architecture reconciliation."
+
+[[task]]
+id = "DOC-V1-ORCHESTRATION"
+title = "Reconcile docs/v1/01-orchestration into executable backlog coverage"
+description = "Read every 01-orchestration markdown source and reconcile plan discovery, DAG scheduling, executor actions, worktree isolation, merge, recovery, event log, conductor, and stigmergy requirements against the existing executable backlog. Update the ledger with mapped E01-E18 refs, DOC follow-ups, or no-op/deferred reasons."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 260
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E02-STORAGE-CONVERGENCE",
+    "E04-security-perimeter",
+    "E08-conductor-supervision",
+    "E09-OBSERVABILITY",
+    "E11-chain-isfr",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for orchestration sources." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/01-orchestration/00-layer-overview.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/01-plan-discovery.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/02-unified-task-dag.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/03-parallel-executor.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/04-plan-phases.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/05-executor-actions.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/06-runtime-harness.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/07-worktree-isolation.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/08-merge-queue.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/09-snapshot-recovery.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/10-event-log.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/11-conductor-integration.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/12-stigmergy-niche.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/13-cross-domain-orchestration.md", why = "Orchestration source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/01-orchestration/INDEX.md", why = "Orchestration index requiring backlog mapping or explicit deferral." },
+]
+symbols = [
+    "Primary related plans: E01 execution, E02 storage, E08 conductor, E09 observability, E11 queue recovery.",
+]
+anti_patterns = [
+    "Do not map orchestration sources to local DOC task ids only; ledger rows need actual E01-E18 coverage or a reason.",
+    "Do not create a new implementation epic from target-state orchestration docs.",
+]
+acceptance = [
+    "All 15 orchestration source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1/01-orchestration -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every docs/v1/01-orchestration markdown path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after orchestration reconciliation."
+
+[[task]]
+id = "DOC-V1-AGENTS"
+title = "Reconcile docs/v1/02-agents into executable backlog coverage"
+description = "Read every 02-agents markdown source and reconcile agent traits, providers, chat types, roles, pools, MCP, tool loop, harness, translation, routing, SDK/extensibility, creation sites, provider integrations, gaps, and domain profiles against E01-E18. Update the ledger with mapped refs, DOC follow-ups, or no-op/deferred reasons."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 300
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E04-security-perimeter",
+    "E06-COMPOSE-UNIFY",
+    "E07-learning-knowledge",
+    "E12-DEAD-CODE-CLEANUP",
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E16-prd-self-hosting-gaps",
+    "E17-acp-completion",
+    "E18-DOCS-CONFIG-OPS",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for agent sources." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/02-agents/00-agent-trait.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/01-provider-registry.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/02-provider-adapters.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/03-chat-types.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/04-agent-roles.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/05-agent-pools.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/06-mcp-integration.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/07-tool-loop.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/08-harness-engineering.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/09-format-translation.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/10-temperament-profiling.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/11-dual-process-routing.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/12-extensibility.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/13-creation-sites.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/14-provider-integrations.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/15-status-gaps.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/16-domain-profiles.md", why = "Agent source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/02-agents/INDEX.md", why = "Agent index requiring backlog mapping or explicit deferral." },
+]
+symbols = [
+    "Primary related plans: E14 providers/tools, E15 MCP, E17 ACP, E04 safety, E07 learning, E18 docs/config.",
+]
+anti_patterns = [
+    "Do not create duplicate provider/MCP/ACP implementation tasks when E14/E15/E17 already own them.",
+    "Do not edit docs/v1 agent sources.",
+]
+acceptance = [
+    "All 18 agent source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1/02-agents -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every docs/v1/02-agents markdown path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after agent reconciliation."
+
+[[task]]
+id = "DOC-V1-COMPOSITION"
+title = "Reconcile docs/v1/03-composition into executable backlog coverage"
+description = "Read every 03-composition markdown source and reconcile composer trait, prompt assembly, role templates, enrichment, token budgeting, U-shape placement, active inference, foraging, VCG auction, distributed context, affect modulation, and gaps against E01-E18. Update the ledger with mapped refs, DOC follow-ups, or no-op/deferred reasons."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 260
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E06-COMPOSE-UNIFY",
+    "E07-learning-knowledge",
+    "E13-SPEC-DEBT-V2",
+    "E14-providers-tools",
+    "E17-acp-completion",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for composition sources." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/03-composition/00-composer-trait.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/01-prompt-composer.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/02-system-prompt-builder-7-layer.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/03-role-templates.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/04-enrichment-pipeline-13-step.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/05-token-budget-management.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/06-lost-in-the-middle-u-shape.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/07-active-inference-context-selection.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/08-5-stage-assembly-pipeline.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/09-predictive-foraging-mvt.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/10-vcg-attention-auction.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/11-distributed-context-engineering.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/12-affect-modulated-retrieval.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/13-current-status-and-gaps.md", why = "Composition source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/03-composition/INDEX.md", why = "Composition index requiring backlog mapping or explicit deferral." },
+]
+symbols = [
+    "Primary related plans: E06 compose unification, E07 learning, E13 spec debt, E17 ACP prompt behavior.",
+]
+anti_patterns = [
+    "Do not duplicate E06 prompt-surface tasks.",
+    "Do not turn speculative context-selection research into immediate implementation work without an existing E01-E18 owner or explicit deferral.",
+]
+acceptance = [
+    "All 15 composition source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1/03-composition -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every docs/v1/03-composition markdown path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after composition reconciliation."
+
+[[task]]
+id = "DOC-V1-VERIFICATION"
+title = "Reconcile docs/v1/04-verification into executable backlog coverage"
+description = "Read every 04-verification markdown source and reconcile gate traits, gate implementations, rung selection, gate pipeline, artifact store, ratcheting, adaptive thresholds, reward models, gate feedback, evaluation lifecycle, autonomous eval generation, EvoSkills, causal replay, and verdict signals against E01-E18. Update the ledger with mapped refs, DOC follow-ups, or no-op/deferred reasons."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 260
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E04-security-perimeter",
+    "E05-gate-adaptivity-live",
+    "E09-OBSERVABILITY",
+    "E16-prd-self-hosting-gaps",
+    "E18-DOCS-CONFIG-OPS",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema, valid roles/tiers, depends_on vs depends_on_plan, and verification requirements." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Authoritative E01-E18 task universe to map source requirements onto." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Existing executable plan coverage and validation expectations." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger rows to update for verification sources." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Append/refine only DOC-v1 follow-up tasks here if coverage is missing." },
+    { path = "docs/v1/04-verification/00-gate-trait.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/01-gate-implementations.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/02-6-rung-selector.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/03-gate-pipeline.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/04-artifact-store.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/05-ratcheting.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/06-adaptive-thresholds.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/07-process-reward-models.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/08-agent-feedback-from-gates.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/09-evaluation-lifecycle.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/10-autonomous-eval-generation.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/11-evoskills.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/12-forensic-ai-causal-replay.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/15-verdicts-as-signals.md", why = "Verification source requiring backlog mapping or explicit deferral." },
+    { path = "docs/v1/04-verification/INDEX.md", why = "Verification index requiring backlog mapping or explicit deferral." },
+]
+symbols = [
+    "Primary related plans: E05 gate adaptivity, E01 runner verify path, E09 observability, E16 pipeline, E18 CI.",
+]
+anti_patterns = [
+    "Do not duplicate E05 live gate adaptivity tasks.",
+    "Do not treat target-state EvoSkills/causal replay as immediate implementation unless already covered or intentionally deferred.",
+]
+acceptance = [
+    "All 15 verification source rows name concrete E01-E18 refs, DOC follow-up tasks, or a no-op/deferred reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1/04-verification -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every docs/v1/04-verification markdown path must appear in the docs-v1-kernel coverage ledger."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after verification reconciliation."
+
+[[task]]
+id = "DOC-V1-KERNEL-AUDIT"
+title = "Audit docs/v1 kernel source coverage and plan validity"
+description = "After the cluster reconciliation tasks run, audit that the docs-v1-kernel ledger exactly covers the current root and kernel-directory markdown corpus, that no source rows remain pending without a reason, and that the plan still validates after any DOC follow-up tasks were added or refined."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md",
+]
+role = "implementer"
+domain = "docs"
+depends_on = [
+    "DOC-V1-ROOT-OVERVIEW",
+    "DOC-V1-ROOT-REFERENCE",
+    "DOC-V1-ARCHITECTURE",
+    "DOC-V1-ORCHESTRATION",
+    "DOC-V1-AGENTS",
+    "DOC-V1-COMPOSITION",
+    "DOC-V1-VERIFICATION",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Task schema used for final validation of any added DOC follow-up tasks." },
+    { path = "tmp/status-quo/backlog/06-EXECUTABLE-TASK-FILE-COVERAGE.md", why = "Validation status conventions for executable backlog coverage." },
+    { path = "tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md", why = "Ledger to audit for exact source coverage and resolved statuses." },
+    { path = "tmp/status-quo/backlog/plans/DOC-v1-kernel/tasks.toml", why = "Plan to audit for roko-compatible DOC follow-up tasks." },
+]
+symbols = [
+    "Source corpus = docs/v1/*.md plus docs/v1/00-architecture, 01-orchestration, 02-agents, 03-composition, 04-verification markdown files.",
+]
+anti_patterns = [
+    "Do not mark pending rows as mapped without concrete E01-E18 refs, DOC follow-up task ids, or a no-op/deferred reason.",
+    "Do not add validation-only commands that can pass while source paths are missing from the ledger.",
+]
+acceptance = [
+    "Ledger covers exactly 113 source docs from the defined corpus.",
+    "No source rows remain pending-reconciliation after audit unless the row also records an explicit deferred reason.",
+    "The DOC-v1-kernel plan validates.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v1 -maxdepth 1 -type f -name '*.md' | sort; find docs/v1/00-architecture docs/v1/01-orchestration docs/v1/02-agents docs/v1/03-composition docs/v1/04-verification -type f -name '*.md' | sort); do grep -Fq \"$p\" tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md || exit 1; done"
+fail_msg = "Every source path in the docs/v1 kernel corpus must appear in the coverage ledger."
+
+[[task.verify]]
+phase = "structural"
+command = "python3 - <<'PY'\nfrom pathlib import Path\nledger = Path('tmp/status-quo/backlog/source-coverage/docs-v1-kernel.md').read_text()\nroots = [Path('docs/v1')]\npaths = sorted(Path('docs/v1').glob('*.md'))\nfor d in ['00-architecture','01-orchestration','02-agents','03-composition','04-verification']:\n    paths.extend(sorted((Path('docs/v1') / d).rglob('*.md')))\nrows = [line for line in ledger.splitlines() if line.startswith('| `docs/v1/')]\nmissing = [str(p) for p in paths if str(p) not in ledger]\nif missing:\n    raise SystemExit('missing ledger paths: ' + ', '.join(missing))\nif len(rows) != len(paths):\n    raise SystemExit(f'expected {len(paths)} source rows, found {len(rows)}')\nPY"
+fail_msg = "The coverage ledger must have exactly one source row per docs/v1 kernel markdown file."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-kernel"
+fail_msg = "DOC-v1-kernel plan must validate after the final audit."

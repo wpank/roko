@@ -1,0 +1,648 @@
+[meta]
+plan = "E45-orchestrator-mori-parity"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─── T01: Wire structured review verdict parsing into runner ───
+
+[[task]]
+id = "E45-T01"
+title = "Wire ReviewVerdict parsing from agent output into runner event loop"
+description = """
+Types exist in roko-gate (review_verdict.rs). The parse function exists:
+`parse_structured_review_verdict()` at review_verdict.rs:184. Types:
+- ReviewDecision (Approve/Revise/Skip) at :12
+- IssueCategory (10 variants: CompileError, TestFailure, LintViolation, etc.) at :24-46
+- ReviewIssue (category, gate, rung, message, file, line, suggestion, blocking) at :49-69
+- ReviewVerdict (decision, summary, issues, blocking_count, advisory_count) at :73-87
+- ParsedReviewVerdict (evidence, raw_output, source, parse_error) at :137-147
+- ReviewParseSource (Json, JsonCodeBlock, TomlCodeBlock, FailClosed) at :122-133
+
+Wire into runner event loop:
+1. After agent completion in agent_events.rs, call parse_structured_review_verdict() on
+   the agent output text.
+2. Feed parsed verdict into executor phase transition logic.
+3. **Express mode** — when all issues are quick-fixable categories (CompileError,
+   LintViolation, FormatViolation, SymbolMissing but NOT TestFailure, SecurityIssue,
+   PerformanceRegression, NeedsHumanReview), skip strategist and dispatch directly to
+   implementer with the structured issues as context.
+4. **Fallback** — parse_structured_review_verdict already handles malformed output via
+   FailClosed source. The fallback treats raw text as a Revise verdict.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/agent_events.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-gate/src/review_verdict.rs", lines = "12-69", why = "ReviewDecision, IssueCategory (10 variants), ReviewIssue struct" },
+  { path = "crates/roko-gate/src/review_verdict.rs", lines = "73-100", why = "ReviewVerdict, RungResult structs" },
+  { path = "crates/roko-gate/src/review_verdict.rs", lines = "122-160", why = "ReviewParseSource, ParsedReviewVerdict, passed() check" },
+  { path = "crates/roko-gate/src/review_verdict.rs", lines = "177-184", why = "parse_structured_review_verdict() — the existing parse function" },
+  { path = "crates/roko-cli/src/runner/agent_events.rs", lines = "20-80", why = "handle_agent_event() — where review parsing should be wired" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "326-376", why = "Gap 1: Structured review spec with express mode" },
+]
+symbols = [
+  "parse_structured_review_verdict — existing parser at review_verdict.rs:184",
+  "ParsedReviewVerdict — typed result with evidence + source at :137",
+  "ReviewDecision — Approve/Revise/Skip at :12",
+  "IssueCategory — 10 variants at :24 (CompileError, TestFailure, LintViolation, etc.)",
+  "ReviewParseSource — Json/JsonCodeBlock/TomlCodeBlock/FailClosed at :122",
+  "handle_agent_event — event handler at agent_events.rs:25",
+]
+anti_patterns = [
+  "Do NOT make parsing failure a hard error — FailClosed is the fallback, not an error",
+  "Do NOT implement express mode for TestFailure or SecurityIssue — these are never quick-fixable",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'parse_structured_review\\|ReviewVerdict\\|express_mode\\|quick_fixable\\|IssueCategory' crates/roko-cli/src/runner/agent_events.rs"
+fail_msg = "Review verdict parsing or express mode must be wired"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T02: Wire compile error auto-fix path (cargo fix before agent) ───
+
+[[task]]
+id = "E45-T02"
+title = "Add cargo fix auto-fix path before agent retry on compile failures"
+description = """
+Types exist in roko-gate compile_errors.rs:
+- CompileError struct at :160-176 (category, code, message, file, line, suggestion)
+- ErrorCategory enum at :9-34 (11 categories)
+- GateFailureClassification at :179-209 (gate, primary, compile_errors, cargo_fix_candidate)
+- classify_gate_failure() at :491 — classifies raw gate output
+
+Wire into runner gate_dispatch.rs:
+1. After gate failure, call classify_gate_failure() on the gate output.
+2. If classification.cargo_fix_candidate is true (already computed by classifier), run
+   `cargo fix --allow-dirty` + `cargo fmt` via tokio::process::Command.
+3. If cargo fix resolves ALL errors (rerun gate, all pass), skip agent retry entirely.
+4. If cargo fix exits non-zero or doesn't fix everything, pass the CLASSIFIED errors
+   (not raw cargo output) to the agent retry prompt. Use render_failure_classification()
+   (already imported at event_loop.rs:25) to format them.
+5. Never use `--allow-staged` — only `--allow-dirty`.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/gate_dispatch.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-gate/src/compile_errors.rs", lines = "9-34", why = "ErrorCategory enum — 11 categories" },
+  { path = "crates/roko-gate/src/compile_errors.rs", lines = "160-209", why = "CompileError, GateFailureClassification structs with cargo_fix_candidate" },
+  { path = "crates/roko-gate/src/compile_errors.rs", lines = "491-500", why = "classify_gate_failure() function" },
+  { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "1-74", why = "Gate dispatch: spawn_gate(), run_gate_once() — where auto-fix path goes" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "25", why = "classify_gate_failure, render_failure_classification already imported" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "377-397", why = "Gap 2: Compile error auto-fix spec" },
+]
+symbols = [
+  "classify_gate_failure — classifies raw output at compile_errors.rs:491",
+  "GateFailureClassification — has cargo_fix_candidate bool at :203",
+  "CompileError — individual error with category, code, suggestion at :160",
+  "render_failure_classification — formats classification for prompt (imported at event_loop.rs:25)",
+  "spawn_gate — background gate task at gate_dispatch.rs:28",
+  "run_gate_once — gate execution at gate_dispatch.rs:77",
+]
+anti_patterns = [
+  "Do NOT use --allow-staged — only --allow-dirty",
+  "Do NOT pass raw cargo output to agent — pass classified errors via render_failure_classification",
+  "Do NOT retry cargo fix if it exits non-zero — fall through to agent immediately",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cargo.*fix\\|apply_rustc_fixes\\|auto_fix\\|cargo_fix_candidate' crates/roko-cli/src/runner/gate_dispatch.rs"
+fail_msg = "Auto-fix path with cargo fix must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T03: Wire error pattern sharing between parallel agents ───
+
+[[task]]
+id = "E45-T03"
+title = "Wire error pattern sharing via discovered-patterns.json for parallel agents"
+description = """
+Types exist in roko-gate error_patterns.rs:
+- FailurePatternRecord at :17 (key, gate, classification, digest, suggestion)
+- error_key() at :36 — normalized key from error code + file path
+- records_from_classification() at :53 — builds patterns from GateFailureClassification
+
+Wire into runner event loop (event_loop.rs):
+1. After gate failure, call records_from_classification() on the classification from T02.
+2. Append records to `.roko/learn/discovered-patterns.json` (JSONL format).
+3. Before agent dispatch, read last 5 unresolved patterns from the file and inject into
+   the system prompt as "Known error patterns from parallel tasks".
+4. Add `is_mostly_passing()` check — if >90% pass rate with >20 tests and >=1 failure,
+   recommend targeted fix (not full replan). This decision feeds into the retry strategy.
+5. Error dedup by key — two errors with same code in same file are the SAME pattern.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-gate/src/error_patterns.rs", lines = "1-79", why = "FailurePatternRecord, error_key(), records_from_classification() — all types" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-69", why = "Event loop imports and structure — gate failure handling" },
+  { path = "crates/roko-cli/src/runner/persist.rs", lines = "1-30", why = "PersistPaths — where discovered-patterns.json path should be added" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "399-425", why = "Gap 3: Error pattern sharing spec with dedup and is_mostly_passing" },
+]
+symbols = [
+  "FailurePatternRecord — structured pattern at error_patterns.rs:17",
+  "error_key() — normalized key (error_code::file_path) at :36",
+  "records_from_classification() — builds patterns from classification at :53",
+  "PersistPaths — path struct for learned artifacts",
+]
+anti_patterns = [
+  "Do NOT share raw error output — share classified FailurePatternRecord only",
+  "Do NOT inject more than 5 patterns — bounded context for agent prompt",
+  "Do NOT count same error in same file as different patterns",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'discovered.patterns\\|error_pattern\\|is_mostly_passing\\|FailurePatternRecord' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Error pattern sharing must be wired in event loop"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T04: Wire post-gate reflection loop ───
+
+[[task]]
+id = "E45-T04"
+title = "Wire post-gate reflection loop with dedup and cost guard"
+description = """
+Types exist in roko-learn post_gate_reflection.rs:
+- PostGateReflectionRecord at :52 (reflection_id, plan_id, task_id, trigger_gate, outcome,
+  failure_pattern_ids, proposed_lesson, confidence, evidence_count)
+- ReflectionGateOutcome at :26 (Passed/Failed)
+- ReflectionAdmissionStatus at :35 (Candidate/Admissible/Admitted/Rejected*)
+- PostGateReflectionStore is already imported at event_loop.rs:47
+
+Wire into runner event loop:
+1. After gate failure, BEFORE replan, check if error_digest matches a previous reflection's
+   failure_pattern_ids. If match found, skip re-generating (dedup).
+2. If no dedup match, spawn a lightweight reflection agent (haiku model, max_tokens=500).
+   Prompt: "Analyze this gate failure. What went wrong? What should the next attempt do
+   differently? Gate output: {error_digest}. Files changed: {file_list}. Previous attempts:
+   {iteration_count}."
+3. Store reflection in PostGateReflectionStore (use the existing store API).
+4. On retry, inject last reflection into agent's system prompt as:
+   "Lessons from previous attempt: {proposed_lesson}"
+5. Cost guard: use the cheapest available model, max_tokens=500.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = ["E45-T02"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/post_gate_reflection.rs", lines = "1-80", why = "ReflectionGateOutcome, ReflectionAdmissionStatus, PostGateReflectionRecord" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "46-52", why = "PostGateReflectionStore already imported" },
+  { path = "crates/roko-cli/src/runner/state.rs", lines = "57-80", why = "RunState — plan_id, current_task, iterations HashMap" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "427-445", why = "Gap 4: Post-gate reflection spec with dedup and cost guard" },
+]
+symbols = [
+  "PostGateReflectionStore — store for records, imported at event_loop.rs:47",
+  "PostGateReflectionRecord — reflection with proposed_lesson at post_gate_reflection.rs:52",
+  "ReflectionGateOutcome — Passed/Failed enum at :26",
+  "RunState.iterations — per-task iteration count at state.rs:79",
+]
+anti_patterns = [
+  "Do NOT use expensive models for reflection — haiku only, max_tokens=500",
+  "Do NOT regenerate reflection if error_digest matches previous pattern ids (dedup)",
+  "Do NOT block the event loop on reflection agent — spawn as background task",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'reflection.*inject\\|inject_reflection\\|Lessons from previous\\|PostGateReflection' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Post-gate reflection injection into retry prompt must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T05: Implement context injection scoping per role ───
+
+[[task]]
+id = "E45-T05"
+title = "Implement role-filtered context injection scoping"
+description = """
+Different roles should get different context sizes. LearningConfig (learning.rs:12) already
+has file_intel_max_entries (:33) and warning_max_entries (:36). What's MISSING:
+
+1. **ContextScopingConfig struct** — with per-role limits:
+   | Role | file_intel | warnings | error_patterns |
+   |------|-----------|----------|---------------|
+   | Implementer | 10 | 5 | 5 |
+   | Reviewer | 3 | 3 | 3 |
+   | Strategist | 0 | 0 | 0 |
+
+2. **Loadable from roko.toml** — under `[knowledge]` section. Fall back to the table above
+   when not specified.
+
+3. **Wire into prompt assembly** — the event loop builds prompts before agent dispatch. The
+   scoping config should filter what context sections are included based on the current
+   agent role (AgentRole enum from roko_core).
+
+4. **Plan-scoped playbook matching** — `collect_plan_playbook_scope()` should narrow rule
+   matching to the plan's touched files, not all rules globally.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/learning.rs", lines = "1-70", why = "LearningConfig with file_intel_max_entries, warning_max_entries, knowledge flags" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-69", why = "Event loop where agent dispatch assembles prompts" },
+  { path = "crates/roko-cli/src/runner/state.rs", lines = "20-70", why = "RunState — agent_model, agent_provider, agent role context" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "447-482", why = "Gap 5: Context scoping spec with role-filtered table and KnowledgeConfig" },
+]
+symbols = [
+  "LearningConfig — at learning.rs:12 with file_intel_max_entries and flags",
+  "AgentRole — Implementer/Reviewer/Strategist from roko_core, imported at event_loop.rs:19",
+  "PlaybookStore — imported at event_loop.rs:46 for rule matching",
+]
+anti_patterns = [
+  "Do NOT give strategist file-level context — it only sees plan-level",
+  "Do NOT create a separate config struct if LearningConfig can be extended",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ContextScoping\\|role_context_limits\\|context_scope\\|per_role' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Context scoping per role must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T06: Wire warm agent pool into runner dispatch ───
+
+[[task]]
+id = "E45-T06"
+title = "Wire WarmPool into runner for pre-spawned agent transitions"
+description = """
+WarmPool exists at dispatch/warm_pool.rs with full LRU container semantics:
+- WarmAgent struct at :47 (id, model, spawned_at, ttl, is_expired())
+- WarmPool struct at :79 (inner Mutex<WarmPoolInner>)
+- WarmPoolStats at :67 (size, roles_with_warm_agents, max_per_role)
+- take/insert/evict semantics documented in module header
+
+What's MISSING: wiring into the runner event loop.
+
+1. **During gate execution** — after dispatching a gate in gate_dispatch.rs, pre-spawn the
+   next phase's agent in background. E.g., when running compile gate after implementer,
+   pre-spawn a reviewer agent. Use the WarmPool::insert() path.
+
+2. **On gate pass** — call WarmPool::take(role) to get the pre-spawned agent. If available,
+   use it instead of cold-spawning. Expected: promote is <100ms vs 5-15s for cold spawn.
+   If take() returns None, fall back to cold spawn.
+
+3. **On gate failure** — call evict on the warm pool to kill the pre-spawned agent. No
+   point keeping a reviewer warm if we're replanning. Ensure no leaked processes.
+
+4. **TTL management** — WarmAgent has a TTL field. Periodically call evict_expired() on
+   the pool (e.g., on each event loop tick). Expired agents are shut down cleanly.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/dispatch/warm_pool.rs", lines = "1-80", why = "WarmPool, WarmAgent, WarmPoolStats — full container with take/insert/evict" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-69", why = "Event loop where gate results and agent dispatch happen" },
+  { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "28-74", why = "spawn_gate() — where pre-spawn trigger should go" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "483-507", why = "Gap 6: Warm agent spawning spec with cold spawn bottleneck profile" },
+]
+symbols = [
+  "WarmPool — LRU container at warm_pool.rs:79",
+  "WarmAgent — pre-spawned agent slot at :47 (id, model, spawned_at, ttl)",
+  "WarmPoolStats — summary at :67 (size, roles_with_warm_agents)",
+  "spawn_gate() — background gate dispatch at gate_dispatch.rs:28",
+]
+anti_patterns = [
+  "Do NOT leak warm agents on gate failure — always evict",
+  "Do NOT block the event loop on warm agent spawn — background task",
+  "Do NOT assume warm agent is always available — fall back to cold spawn",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'warm_pool\\|WarmPool\\|promote_warm\\|pre_spawn\\|evict_expired' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "WarmPool must be wired into event loop"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T07: Wire neuro store into cascade router for knowledge-biased model selection ───
+
+[[task]]
+id = "E45-T07"
+title = "Wire KnowledgeStore queries into CascadeRouter for model bias"
+description = """
+CascadeRouter already has route_with_knowledge() at cascade_router.rs:942 and
+route_with_knowledge_among() at :977. These accept `Option<&KnowledgeRoutingAdvice>`.
+The KnowledgeRoutingAdvice type is defined in cascade/types.rs and exported.
+
+What's MISSING: the runner doesn't build KnowledgeRoutingAdvice from the neuro store.
+
+1. At dispatch time in event_loop.rs, before calling route_with_knowledge(), query
+   KnowledgeStore::query() (knowledge_store.rs:634) with the task description, limit=3.
+2. Build a KnowledgeRoutingAdvice from the query results:
+   - If entries mention model preferences (check tags for model names), set model_bias hints
+   - If entries describe failure patterns, set negative_bias hints
+3. Pass the built KnowledgeRoutingAdvice to route_with_knowledge().
+4. Add config toggle `cascade_router.consult_knowledge` (default true). When false, pass
+   None for knowledge parameter.
+5. Performance: knowledge query should complete in <10ms. Use existing query() which is
+   synchronous file scan. If too slow, add caching.
+
+The function build_knowledge_routing_advice() may already exist — check
+knowledge_helpers.rs (imported at event_loop.rs:43).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/cascade_router.rs", lines = "942-992", why = "route_with_knowledge() and route_with_knowledge_among() — existing API" },
+  { path = "crates/roko-learn/src/cascade_router.rs", lines = "80-104", why = "CascadeRouter struct fields — no knowledge_store field yet" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "634-700", why = "KnowledgeStore::query(), query_similar() — retrieval interface" },
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "42-51", why = "Imports: build_knowledge_routing_advice already imported at :43" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "533-549", why = "Gap 8: Neuro store -> cascade router bias spec" },
+]
+symbols = [
+  "CascadeRouter::route_with_knowledge — at cascade_router.rs:942",
+  "KnowledgeRoutingAdvice — type imported from cascade/types.rs",
+  "KnowledgeStore::query — keyword retrieval at knowledge_store.rs:634",
+  "build_knowledge_routing_advice — helper already imported at event_loop.rs:43",
+  "neuro_prompt_task_category — helper at event_loop.rs:43",
+]
+anti_patterns = [
+  "Do NOT make knowledge query synchronous if it blocks >10ms — add caching or async",
+  "Do NOT bypass existing route_with_knowledge() — use the existing API",
+  "Do NOT duplicate build_knowledge_routing_advice if it already exists in knowledge_helpers",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'knowledge_routing_advice\\|consult_knowledge\\|KnowledgeRoutingAdvice' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Knowledge routing advice must be built and passed to cascade router"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T08: Wire provider pass-rate into model scoring ───
+
+[[task]]
+id = "E45-T08"
+title = "Wire provider pass-rate metrics into CascadeRouter model scoring"
+description = """
+Bias model selection toward providers with higher historical pass rates.
+
+CascadeRouter stages 2 (Confidence) and 3 (UCB) both score model candidates.
+The confidence_stats (cascade_router.rs:87) tracks per-model ModelStats.
+
+1. Add `compute_provider_metrics(episodes: &[Episode]) -> HashMap<String, ProviderMetrics>`
+   that computes per-provider: pass_rate, avg_cost_usd, avg_duration. Require minimum 5
+   episodes per provider before metrics are used.
+
+2. In CascadeRouter stages 2-3, multiply model score by the provider's pass_rate. A provider
+   with 0.9 pass_rate boosts its models; a provider with 0.6 penalizes them.
+
+3. ProviderHealthRegistry (imported at cascade_router.rs:75) may already have pass-rate data.
+   Check if ProviderHealthTracker data is available; if so, use it instead of recomputing
+   from episodes.
+
+4. Add the provider_pass_rate multiplier as a configurable weight in the routing config.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/cascade_router.rs"]
+depends_on = ["E45-T07"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/cascade_router.rs", lines = "80-104", why = "CascadeRouter struct — confidence_stats, pareto_frontier fields" },
+  { path = "crates/roko-learn/src/cascade_router.rs", lines = "692-700", why = "route() dispatches to route_static/confidence/ucb per stage" },
+  { path = "crates/roko-learn/src/provider_health.rs", lines = "1-40", why = "ProviderHealthRegistry — may have pass-rate data already" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "570-585", why = "Gap 10: Provider pass-rate bias spec" },
+]
+symbols = [
+  "CascadeRouter — struct at cascade_router.rs:83",
+  "ModelStats — per-model statistics at cascade/types.rs",
+  "ProviderHealthRegistry — provider health tracking at provider_health.rs",
+  "RoutingContext — context passed to route() at cascade_router.rs:118",
+]
+anti_patterns = [
+  "Do NOT use provider metrics with fewer than 5 episodes — insufficient data",
+  "Do NOT replace existing scoring — multiply by pass_rate as additional factor",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'provider_pass_rate\\|provider_metrics\\|compute_provider_metrics\\|ProviderMetrics' crates/roko-learn/src/cascade_router.rs"
+fail_msg = "Provider pass-rate bias must exist in cascade_router"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ─── T09: Wire reflection-derived playbook rules with confidence tracking ───
+
+[[task]]
+id = "E45-T09"
+title = "Wire reflection-derived playbook rules with confidence decay"
+description = """
+Types exist in roko-learn playbook_rules.rs:
+- Rule at :67 (rule_id, title, body, triggers, confidence, validations, contradictions,
+  balance, demurrage_rate)
+- Triggers at :35 (file_globs, tags, categories, error_signatures, roles)
+- ReflectionPlaybookCandidate at :109 (candidate_id, rule_id, title, body, triggers,
+  confidence, evidence_count, admission_status)
+- CandidateAdmissionConfig at :136 (min_evidence_count=3, min_confidence=0.65)
+- CandidateAdmissionDecision at :154 (Admitted/RejectedLowEvidence/RejectedNoTriggers/
+  RejectedNoLesson)
+
+Wire after PostGateReflectionStore records (from T04):
+1. If reflection mentions file paths, create ReflectionPlaybookCandidate with trigger_files
+   glob patterns.
+2. If reflection mentions error types, create candidate with trigger_tags.
+3. New rules start at confidence 0.5. Boost +0.05 on gate pass (validations++). Penalize
+   -0.10 on gate fail (contradictions++). The existing Rule struct has both fields.
+4. Remove rules below confidence 0.2 — UNLESS they were manually created (check source
+   field or absence of source_reflection_ids).
+5. Run candidate extraction after every 3 new reflections.
+6. Persist to `.roko/learn/playbook-rules.json` with source: "reflection" tag.
+7. Use existing CandidateAdmissionConfig (min_evidence_count=3) and the
+   admit_reflection_candidate() API if it exists on PlaybookRules.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-learn/src/playbook_rules.rs"]
+depends_on = ["E45-T04"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "1-13", why = "Module doc: confidence dynamics (+0.05 validation, -0.10 contradiction)" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "35-59", why = "Triggers struct with file_globs, tags, categories, error_signatures" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "67-101", why = "Rule struct with confidence, validations, contradictions, balance" },
+  { path = "crates/roko-learn/src/playbook_rules.rs", lines = "108-175", why = "ReflectionPlaybookCandidate, CandidateAdmissionConfig, CandidateAdmissionDecision" },
+  { path = "crates/roko-learn/src/post_gate_reflection.rs", lines = "52-80", why = "PostGateReflectionRecord — feeds playbook extraction" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "587-604", why = "Gap 11: Reflection-derived playbook rules spec" },
+]
+symbols = [
+  "Rule — playbook rule at playbook_rules.rs:67",
+  "Triggers — matching conditions at :35",
+  "ReflectionPlaybookCandidate — candidate rule at :109",
+  "CandidateAdmissionConfig — min_evidence=3, min_confidence=0.65 at :136",
+  "CandidateAdmissionDecision — Admitted/Rejected* enum at :154",
+  "PostGateReflectionRecord — reflection input at post_gate_reflection.rs:52",
+]
+anti_patterns = [
+  "Do NOT remove manually created rules even if confidence drops below 0.2",
+  "Do NOT duplicate the confidence dynamics — use the existing +0.05/-0.10 pattern",
+  "Do NOT run candidate extraction on every reflection — batch every 3",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'reflection.*playbook\\|source.*reflection\\|admit_reflection\\|CandidateAdmission' crates/roko-learn/src/playbook_rules.rs"
+fail_msg = "Reflection-derived playbook rules with admission must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+# ─── T10: Wire A-MAC 5-factor admission gate for neuro store ───
+
+[[task]]
+id = "E45-T10"
+title = "Wire A-MAC 5-factor admission gate into KnowledgeStore ingestion"
+description = """
+admission.rs has LightAdmissionGate (:38) with evaluate() (:65) checking confidence,
+novelty (1-similarity), and source_trust. It also has the full evidence-based admission
+pipeline: KnowledgeCandidateRecord (:289), KnowledgeEvidence (:153), KnowledgeEvidenceSource
+(:74), and EvidencePolarity (:104). What's MISSING is the 5-factor validation per spec:
+
+1. **Similarity (dedup)** — cosine sim >0.95 = reject as duplicate. When HDC feature is
+   enabled, use HdcVector similarity. Without HDC, use existing tag+keyword overlap from
+   KnowledgeStore (MIN_TAG_OVERLAP=1, MIN_KEYWORD_OVERLAP=2 at knowledge_store.rs:52-55).
+
+2. **Novelty** — cosine sim <0.3 to ALL existing entries = novel (passes). The existing
+   LightAdmissionGate.min_novelty (default 0.3 at :43) covers this.
+
+3. **Contradiction** — high topic similarity (>0.7) + negative assertion similarity (<-0.3)
+   against existing entries with confidence >0.8. The existing anti-knowledge detection in
+   knowledge_store.rs (:56-71) has ANTI_KNOWLEDGE_*_THRESHOLD constants. Extend to check
+   topic+assertion vectors when HDC is available.
+
+4. **Relevance** — keyword match against domain tags. Use KnowledgeScope.tags() (:268)
+   for tag matching.
+
+5. **Confidence** — gate pass rate of the generating episode. Use
+   KnowledgeEvidenceSource.trust_weight() (:92) for source-weighted confidence.
+
+Return type: `AdmissionResult { Admit | Reject { reason: String } }`. Log all rejections
+with reason for debugging.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-neuro/src/admission.rs"]
+depends_on = []
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "crates/roko-neuro/src/admission.rs", lines = "38-70", why = "LightAdmissionGate struct and evaluate() — existing lightweight gate" },
+  { path = "crates/roko-neuro/src/admission.rs", lines = "74-101", why = "KnowledgeEvidenceSource enum with trust_weight() per source" },
+  { path = "crates/roko-neuro/src/admission.rs", lines = "247-285", why = "KnowledgeScope struct with tags() method" },
+  { path = "crates/roko-neuro/src/admission.rs", lines = "289-320", why = "KnowledgeCandidateRecord — raw candidate awaiting admission" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "52-71", why = "MIN_TAG_OVERLAP, MIN_KEYWORD_OVERLAP, HDC similarity thresholds" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "634-700", why = "query(), query_similar() for similarity checks" },
+  { path = "crates/roko-neuro/src/hdc.rs", lines = "1-57", why = "KnowledgeHdcEncoder, RoleFillerEncoder, ResonancePair, ResonanceDetector" },
+  { path = "docs/v2/27-ORCHESTRATOR.md", lines = "606-649", why = "Gap 12: A-MAC 5-factor admission spec with contradiction detection" },
+]
+symbols = [
+  "LightAdmissionGate — lightweight pre-filter at admission.rs:38",
+  "KnowledgeEvidenceSource — 6 source types with trust weights at :74",
+  "KnowledgeCandidateRecord — candidate struct at :289",
+  "KnowledgeScope — scope with tags() at :247",
+  "ANTI_KNOWLEDGE_WARN_THRESHOLD — 0.5 at knowledge_store.rs:60",
+  "ANTI_KNOWLEDGE_DISCOUNT_THRESHOLD — 0.7 at :63",
+  "ANTI_KNOWLEDGE_REJECT_THRESHOLD — 0.9 at :66",
+  "MIN_TAG_OVERLAP — 1 at :52, MIN_KEYWORD_OVERLAP — 2 at :55",
+  "KnowledgeHdcEncoder — HDC encoding at hdc.rs:9",
+]
+anti_patterns = [
+  "Do NOT skip contradiction check for pre-HDC entries — fall back to keyword overlap",
+  "Do NOT replace LightAdmissionGate — extend it with the 5-factor validation",
+  "Do NOT silently reject — log all rejections with reason",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'contradiction\\|five_factor\\|AmacGate\\|admission_gate\\|AdmissionResult\\|Reject.*reason' crates/roko-neuro/src/admission.rs"
+fail_msg = "5-factor admission gate with contradiction check must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- admission 2>&1"
+fail_msg = "Admission gate tests must pass"

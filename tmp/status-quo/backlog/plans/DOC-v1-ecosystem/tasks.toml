@@ -1,0 +1,594 @@
+[meta]
+plan = "DOC-v1-ecosystem"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+
+[[task]]
+id = "DOC-V1-ECO-01"
+title = "Bind v1 references into research-to-runtime evidence"
+description = "Turn the v1 references corpus into executable research, citation, and evidence plumbing work. Preserve the references as provenance while wiring research outputs, knowledge admission, and evidence records so downstream technical-analysis and safety tasks can cite concrete source material."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "research"
+files = [
+    "crates/roko-cli/src/commands/research.rs",
+    "crates/roko-cli/src/research.rs",
+    "crates/roko-agent/src/perplexity/deep_research.rs",
+    "crates/roko-serve/src/routes/research.rs",
+    "crates/roko-neuro/src/knowledge_store.rs",
+]
+depends_on = []
+depends_on_plan = ["E07-learning-knowledge", "E16-prd-self-hosting-gaps"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/21-references/00-lifecycle-and-finite-agency.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/01-memory-consolidation.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/02-affective-computing.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/03-dreams-and-offline-learning.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/04-coordination-and-multi-agent.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/05-biological-analogues.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/06-self-learning-systems.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/07-context-engineering.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/08-security-and-provenance.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/09-hdc-vsa.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/10-market-microstructure.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/11-streaming-algorithms.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/12-signal-processing.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/13-philosophy.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/14-agent-harnesses-and-tool-use.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/15-cybernetics-and-vsm.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/16-active-inference.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/17-process-reward-models.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/18-collective-intelligence.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/19-regulatory-compliance.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/20-cognitive-architectures.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/21-mechanism-design.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/22-protocol-standards.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/23-generational-and-evolutionary.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/24-additions-2025.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/25-research-to-runtime.md", why = "v1 source for references/evidence coverage" },
+    { path = "docs/v1/21-references/INDEX.md", why = "v1 source for references/evidence coverage" },
+]
+symbols = ["Research evidence records", "Knowledge admission provenance", "Citation-backed runtime claims"]
+anti_patterns = [
+    "Do NOT flatten references into uncited prose; preserve source identifiers in evidence records.",
+    "Do NOT add live web calls to tests; use fixtures or recorded evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/21-references/00-lifecycle-and-finite-agency.md docs/v1/21-references/01-memory-consolidation.md docs/v1/21-references/02-affective-computing.md docs/v1/21-references/03-dreams-and-offline-learning.md docs/v1/21-references/04-coordination-and-multi-agent.md docs/v1/21-references/05-biological-analogues.md docs/v1/21-references/06-self-learning-systems.md docs/v1/21-references/07-context-engineering.md docs/v1/21-references/08-security-and-provenance.md docs/v1/21-references/09-hdc-vsa.md docs/v1/21-references/10-market-microstructure.md docs/v1/21-references/11-streaming-algorithms.md docs/v1/21-references/12-signal-processing.md docs/v1/21-references/13-philosophy.md docs/v1/21-references/14-agent-harnesses-and-tool-use.md docs/v1/21-references/15-cybernetics-and-vsm.md docs/v1/21-references/16-active-inference.md docs/v1/21-references/17-process-reward-models.md docs/v1/21-references/18-collective-intelligence.md docs/v1/21-references/19-regulatory-compliance.md docs/v1/21-references/20-cognitive-architectures.md docs/v1/21-references/21-mechanism-design.md docs/v1/21-references/22-protocol-standards.md docs/v1/21-references/23-generational-and-evolutionary.md docs/v1/21-references/24-additions-2025.md docs/v1/21-references/25-research-to-runtime.md docs/v1/21-references/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/21-references source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-02"
+title = "Enforce the v1 safety spine across execution surfaces"
+description = "Implement the safety spine described by the v1 safety corpus: capability authorization, audit custody, taint propagation, prompt and path hardening, sandbox policy, adaptive risk, witness DAGs, formal checks, and forensic review hooks across agent, ACP, and service execution."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-agent/src/safety/mod.rs",
+    "crates/roko-agent/src/safety/authz.rs",
+    "crates/roko-agent/src/safety/contract.rs",
+    "crates/roko-agent/src/safety/network.rs",
+    "crates/roko-agent/src/safety/scrub.rs",
+    "crates/roko-agent/src/safety/witness.rs",
+    "crates/roko-serve/src/routes/middleware.rs",
+    "crates/roko-acp/src/builtin_tools.rs",
+]
+depends_on = ["DOC-V1-ECO-01"]
+depends_on_plan = ["E04-security-perimeter", "E05-gate-adaptivity-live", "E17-acp-completion"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/11-safety/00-defense-in-depth.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/01-capability-tokens.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/02-audit-chain.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/03-taint-tracking.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/04-permits-allowlists.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/05-loop-detection.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/06-sandboxing.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/07-prompt-security.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/08-threat-model.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/09-adaptive-risk.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/10-mev-protection.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/11-temporal-logic.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/12-witness-dag.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/13-formal-verification.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/14-cognitive-kernel-safety.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/15-forensic-ai.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/16-critical-integration-gap.md", why = "v1 source for safety coverage" },
+    { path = "docs/v1/11-safety/INDEX.md", why = "v1 source for safety coverage" },
+]
+symbols = ["SafetyContract", "ToolPermission", "Capability token", "Witness DAG", "Taint propagation"]
+anti_patterns = [
+    "Do NOT leave allow-by-default fallbacks for mutating or networked operations.",
+    "Do NOT treat audit/custody records as best-effort logs; fail closed where provenance is required.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/11-safety/00-defense-in-depth.md docs/v1/11-safety/01-capability-tokens.md docs/v1/11-safety/02-audit-chain.md docs/v1/11-safety/03-taint-tracking.md docs/v1/11-safety/04-permits-allowlists.md docs/v1/11-safety/05-loop-detection.md docs/v1/11-safety/06-sandboxing.md docs/v1/11-safety/07-prompt-security.md docs/v1/11-safety/08-threat-model.md docs/v1/11-safety/09-adaptive-risk.md docs/v1/11-safety/10-mev-protection.md docs/v1/11-safety/11-temporal-logic.md docs/v1/11-safety/12-witness-dag.md docs/v1/11-safety/13-formal-verification.md docs/v1/11-safety/14-cognitive-kernel-safety.md docs/v1/11-safety/15-forensic-ai.md docs/v1/11-safety/16-critical-integration-gap.md docs/v1/11-safety/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/11-safety source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-03"
+title = "Normalize v1 interfaces, config, realtime, and UX contracts"
+description = "Convert the v1 interfaces corpus into a single surface contract across CLI, config resolution, HTTP, WebSocket/SSE, TUI, web portal, onboarding, SDK, IDE, StateHub projections, and rich UX primitives. Treat layered configuration as the prerequisite inside this task before changing user-facing surfaces."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-cli/src/commands/config_cmd.rs",
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-serve/src/routes/config.rs",
+    "crates/roko-serve/src/routes/sse.rs",
+    "crates/roko-serve/src/routes/ws.rs",
+    "crates/roko-cli/src/tui/app.rs",
+    "demo/demo-app/src/main.tsx",
+]
+depends_on = ["DOC-V1-ECO-02"]
+depends_on_plan = ["E10-FRONTEND-CONTRACT", "E17-acp-completion", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/12-interfaces/00-cli-overview.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/01-cli-command-reference.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/02-roko-new-scaffolders.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/03-progressive-help-and-explain.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/04-configuration-layered-resolution.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/05-http-api-roko-serve.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/06-websocket-streaming.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/07-rosedust-design-language.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/08-tui-main-layout.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/09-tui-29-screens.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/10-spectre-creature-visualization.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/11-spectre-rendering-per-interface.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/12-spectre-as-collective-display.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/13-web-portal.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/14-agent-onboarding-flow.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/15-generative-interfaces-a2ui.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/16-sonification-reframed.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/17-accessibility-and-current-status.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/18-ux-innovation-proposals.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/19-rust-sdk-developer-ux.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/20-ide-integration-strategy.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/21-user-ux-running-agents.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/22-statehub-projection-layer.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/23-rich-ux-primitives.md", why = "v1 source for interfaces/config/surfaces coverage" },
+    { path = "docs/v1/12-interfaces/INDEX.md", why = "v1 source for interfaces/config/surfaces coverage" },
+]
+symbols = ["Layered configuration", "StateHub projection", "CLI verb set", "SSE/WebSocket cursor protocol"]
+anti_patterns = [
+    "Do NOT introduce surface-specific verb drift; keep CLI, TUI, web, and API nouns aligned.",
+    "Do NOT change user-visible routes without preserving compatibility adapters or tests.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/12-interfaces/00-cli-overview.md docs/v1/12-interfaces/01-cli-command-reference.md docs/v1/12-interfaces/02-roko-new-scaffolders.md docs/v1/12-interfaces/03-progressive-help-and-explain.md docs/v1/12-interfaces/04-configuration-layered-resolution.md docs/v1/12-interfaces/05-http-api-roko-serve.md docs/v1/12-interfaces/06-websocket-streaming.md docs/v1/12-interfaces/07-rosedust-design-language.md docs/v1/12-interfaces/08-tui-main-layout.md docs/v1/12-interfaces/09-tui-29-screens.md docs/v1/12-interfaces/10-spectre-creature-visualization.md docs/v1/12-interfaces/11-spectre-rendering-per-interface.md docs/v1/12-interfaces/12-spectre-as-collective-display.md docs/v1/12-interfaces/13-web-portal.md docs/v1/12-interfaces/14-agent-onboarding-flow.md docs/v1/12-interfaces/15-generative-interfaces-a2ui.md docs/v1/12-interfaces/16-sonification-reframed.md docs/v1/12-interfaces/17-accessibility-and-current-status.md docs/v1/12-interfaces/18-ux-innovation-proposals.md docs/v1/12-interfaces/19-rust-sdk-developer-ux.md docs/v1/12-interfaces/20-ide-integration-strategy.md docs/v1/12-interfaces/21-user-ux-running-agents.md docs/v1/12-interfaces/22-statehub-projection-layer.md docs/v1/12-interfaces/23-rich-ux-primitives.md docs/v1/12-interfaces/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/12-interfaces source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-04"
+title = "Close v1 tool, MCP, plugin, and profile execution gaps"
+description = "Implement the v1 tool ecosystem as one audited tool plane: builtin categories, safety hooks, domain profiles, wallet-backed tools, MCP server passthrough, service integrations, plugin SDK/loading, event sources, and template bundles."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-core/src/tool/registry.rs",
+    "crates/roko-core/src/config/tools.rs",
+    "crates/roko-agent/src/mcp/config.rs",
+    "crates/roko-agent/src/mcp/bridge.rs",
+    "crates/roko-agent/src/process/mcp.rs",
+    "crates/roko-std/src/tool/handlers.rs",
+    "crates/roko-mcp-code/src/lib.rs",
+]
+depends_on = ["DOC-V1-ECO-02", "DOC-V1-ECO-03"]
+depends_on_plan = ["E14-providers-tools", "E15-mcp-config", "E17-acp-completion"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/18-tools/00-tool-architecture.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/01-builtin-tools.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/02-tool-categories.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/03-chain-domain-tools.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/04-safety-hooks.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/05-tool-profiles.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/06-wallet-management.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/07-tool-testing.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/08-service-integrations.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/09-mcp-architecture.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/10-mcp-github.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/11-mcp-slack.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/12-mcp-scripts.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/13-mcp-stdio.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/14-plugin-sdk.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/15-16-agent-templates.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/15-event-sources.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/16-plugin-loading.md", why = "v1 source for tools/MCP/plugin coverage" },
+    { path = "docs/v1/18-tools/INDEX.md", why = "v1 source for tools/MCP/plugin coverage" },
+]
+symbols = ["ToolDef", "ToolRegistry", "McpConfig", "Plugin SDK", "Tool profile"]
+anti_patterns = [
+    "Do NOT advertise a tool unless dispatch has an executable handler or a typed unavailable result.",
+    "Do NOT bypass the safety hooks established by DOC-V1-ECO-02 for plugin or MCP tools.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/18-tools/00-tool-architecture.md docs/v1/18-tools/01-builtin-tools.md docs/v1/18-tools/02-tool-categories.md docs/v1/18-tools/03-chain-domain-tools.md docs/v1/18-tools/04-safety-hooks.md docs/v1/18-tools/05-tool-profiles.md docs/v1/18-tools/06-wallet-management.md docs/v1/18-tools/07-tool-testing.md docs/v1/18-tools/08-service-integrations.md docs/v1/18-tools/09-mcp-architecture.md docs/v1/18-tools/10-mcp-github.md docs/v1/18-tools/11-mcp-slack.md docs/v1/18-tools/12-mcp-scripts.md docs/v1/18-tools/13-mcp-stdio.md docs/v1/18-tools/14-plugin-sdk.md docs/v1/18-tools/15-16-agent-templates.md docs/v1/18-tools/15-event-sources.md docs/v1/18-tools/16-plugin-loading.md docs/v1/18-tools/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/18-tools source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-05"
+title = "Land v1 identity-economy primitives and market ledgers"
+description = "Implement the identity and economy docs as chain-backed identity, passport, reputation, marketplace, commerce, micropayment, auction, hiring, clearing, futures, and regulatory-status work. This task supplies the economy substrate required by the chain task."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "chain"
+files = [
+    "crates/roko-chain/src/identity_economy_identity.rs",
+    "crates/roko-chain/src/identity_economy_markets.rs",
+    "crates/roko-chain/src/reputation_registry.rs",
+    "crates/roko-chain/src/futures_market.rs",
+    "crates/roko-chain/src/korai_token.rs",
+    "crates/roko-chain/src/marketplace.rs",
+    "contracts/src/IdentityRegistry.sol",
+    "contracts/src/ReputationRegistry.sol",
+    "contracts/src/ValidationRegistry.sol",
+    "contracts/src/FeeDistributor.sol",
+]
+depends_on = ["DOC-V1-ECO-02", "DOC-V1-ECO-04"]
+depends_on_plan = ["E11-chain-isfr", "E14-providers-tools"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/14-identity-economy/00-vision-and-a16z-framing.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/01-erc-8004-three-registries.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/02-korai-passport.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/03-passport-tiers.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/04-reputation-7-domain-ema.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/05-knowledge-marketplace.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/06-commerce-bazaar.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/07-mpp-machine-payment-protocol.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/08-x402-micropayments.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/09-agent-economy.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/10-korai-tokenomics.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/11-vickrey-reputation-auction.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/12-three-hiring-models.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/13-isfr-clearing-settlement.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/14-knowledge-futures-market.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/15-regulatory-moat-and-current-status.md", why = "v1 source for identity/economy coverage" },
+    { path = "docs/v1/14-identity-economy/INDEX.md", why = "v1 source for identity/economy coverage" },
+]
+symbols = ["ERC-8004 registries", "Korai passport", "Seven-domain reputation", "ISFR settlement", "Knowledge futures"]
+anti_patterns = [
+    "Do NOT split reputation semantics between incompatible Rust and Solidity definitions.",
+    "Do NOT land market mechanisms without custody, audit, and safety checks from prerequisite tasks.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/14-identity-economy/00-vision-and-a16z-framing.md docs/v1/14-identity-economy/01-erc-8004-three-registries.md docs/v1/14-identity-economy/02-korai-passport.md docs/v1/14-identity-economy/03-passport-tiers.md docs/v1/14-identity-economy/04-reputation-7-domain-ema.md docs/v1/14-identity-economy/05-knowledge-marketplace.md docs/v1/14-identity-economy/06-commerce-bazaar.md docs/v1/14-identity-economy/07-mpp-machine-payment-protocol.md docs/v1/14-identity-economy/08-x402-micropayments.md docs/v1/14-identity-economy/09-agent-economy.md docs/v1/14-identity-economy/10-korai-tokenomics.md docs/v1/14-identity-economy/11-vickrey-reputation-auction.md docs/v1/14-identity-economy/12-three-hiring-models.md docs/v1/14-identity-economy/13-isfr-clearing-settlement.md docs/v1/14-identity-economy/14-knowledge-futures-market.md docs/v1/14-identity-economy/15-regulatory-moat-and-current-status.md docs/v1/14-identity-economy/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/14-identity-economy source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-06"
+title = "Land v1 technical-analysis oracle primitives"
+description = "Convert the v1 technical-analysis docs into generalized oracle and witness primitives across chain, coding, research, HDC signal geometry, spectral liquidity, adaptive metabolism, causal microstructure, adversarial robustness, active inference, and sheaf/tropical analysis."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-learn/src/oracles/mod.rs",
+    "crates/roko-learn/src/oracles/chain.rs",
+    "crates/roko-learn/src/oracles/coding.rs",
+    "crates/roko-learn/src/oracles/research.rs",
+    "crates/roko-learn/src/oracles/witness.rs",
+    "crates/roko-learn/src/oracles/selector.rs",
+    "crates/roko-chain/src/nelson_siegel.rs",
+    "crates/roko-chain/src/trace_rank.rs",
+    "crates/roko-chain/src/triage.rs",
+]
+depends_on = ["DOC-V1-ECO-01", "DOC-V1-ECO-02"]
+depends_on_plan = ["E07-learning-knowledge", "E09-OBSERVABILITY", "E13-SPEC-DEBT-V2"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/20-technical-analysis/00-vision-ta-generalized.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/01-oracle-trait.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/02-chain-oracles.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/03-coding-oracles.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/04-research-oracles.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/05-witness-as-ta-generalized.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/06-hyperdimensional-ta.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/07-spectral-liquidity-manifolds.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/08-adaptive-signal-metabolism.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/09-causal-microstructure-discovery.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/10-predictive-geometry-and-resonant-patterns.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/11-adversarial-signal-robustness.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/12-somatic-ta-and-emergent-multiscale.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/13-predictive-foraging-and-active-inference.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/14-sheaf-tropical-geometry.md", why = "v1 source for technical-analysis coverage" },
+    { path = "docs/v1/20-technical-analysis/INDEX.md", why = "v1 source for technical-analysis coverage" },
+]
+symbols = ["Oracle trait", "Witness as generalized TA", "HDC signal geometry", "Adversarial robustness"]
+anti_patterns = [
+    "Do NOT couple generalized oracle traits to chain-only market data.",
+    "Do NOT claim predictive validity without evidence hooks from DOC-V1-ECO-01.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/20-technical-analysis/00-vision-ta-generalized.md docs/v1/20-technical-analysis/01-oracle-trait.md docs/v1/20-technical-analysis/02-chain-oracles.md docs/v1/20-technical-analysis/03-coding-oracles.md docs/v1/20-technical-analysis/04-research-oracles.md docs/v1/20-technical-analysis/05-witness-as-ta-generalized.md docs/v1/20-technical-analysis/06-hyperdimensional-ta.md docs/v1/20-technical-analysis/07-spectral-liquidity-manifolds.md docs/v1/20-technical-analysis/08-adaptive-signal-metabolism.md docs/v1/20-technical-analysis/09-causal-microstructure-discovery.md docs/v1/20-technical-analysis/10-predictive-geometry-and-resonant-patterns.md docs/v1/20-technical-analysis/11-adversarial-signal-robustness.md docs/v1/20-technical-analysis/12-somatic-ta-and-emergent-multiscale.md docs/v1/20-technical-analysis/13-predictive-foraging-and-active-inference.md docs/v1/20-technical-analysis/14-sheaf-tropical-geometry.md docs/v1/20-technical-analysis/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/20-technical-analysis source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-07"
+title = "Land v1 code-intelligence indexing and context server"
+description = "Implement the code-intelligence docs as parser, symbol extraction, dependency graph, PageRank importance, HDC fingerprints, code-context assembly, MCP context server, index DB scaling, and snapshot optimization work."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-index/src/parser.rs",
+    "crates/roko-index/src/symbol.rs",
+    "crates/roko-index/src/graph.rs",
+    "crates/roko-index/src/hdc.rs",
+    "crates/roko-index/src/sqlite.rs",
+    "crates/roko-index/src/workspace.rs",
+    "crates/roko-mcp-code/src/lib.rs",
+    "crates/roko-cli/src/index.rs",
+]
+depends_on = ["DOC-V1-ECO-03", "DOC-V1-ECO-04"]
+depends_on_plan = ["E07-learning-knowledge", "E15-mcp-config"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/15-code-intelligence/00-vision.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/01-tree-sitter-parsing.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/02-symbol-extraction.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/03-dependency-graph.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/04-pagerank-symbol-importance.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/05-hdc-fingerprints.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/06-context-assembly-from-code.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/07-mcp-context-server.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/08-index-db-scaling.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/09-snapshot-optimization.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/10-current-status-and-gaps.md", why = "v1 source for code-intelligence coverage" },
+    { path = "docs/v1/15-code-intelligence/INDEX.md", why = "v1 source for code-intelligence coverage" },
+]
+symbols = ["Tree-sitter parser", "Symbol graph", "HDC fingerprints", "MCP code context server"]
+anti_patterns = [
+    "Do NOT build a second code-index storage format if roko-index can own the schema.",
+    "Do NOT make MCP context assembly bypass tool permission and profile controls.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/15-code-intelligence/00-vision.md docs/v1/15-code-intelligence/01-tree-sitter-parsing.md docs/v1/15-code-intelligence/02-symbol-extraction.md docs/v1/15-code-intelligence/03-dependency-graph.md docs/v1/15-code-intelligence/04-pagerank-symbol-importance.md docs/v1/15-code-intelligence/05-hdc-fingerprints.md docs/v1/15-code-intelligence/06-context-assembly-from-code.md docs/v1/15-code-intelligence/07-mcp-context-server.md docs/v1/15-code-intelligence/08-index-db-scaling.md docs/v1/15-code-intelligence/09-snapshot-optimization.md docs/v1/15-code-intelligence/10-current-status-and-gaps.md docs/v1/15-code-intelligence/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/15-code-intelligence source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-08"
+title = "Land v1 coordination and collective-intelligence substrate"
+description = "Implement coordination docs as stigmergy, pheromone kinds/scopes, git-mediated traces, mesh sync, morphogenetic specialization, permissioned subnets, scaling, exponential flywheel, and collective-intelligence metrics across bus, substrate, conductor, and relay surfaces."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-orchestrator/src/coordination.rs",
+    "crates/roko-core/src/cfactor.rs",
+    "crates/roko-core/src/bus_backends.rs",
+    "crates/roko-core/src/pulse.rs",
+    "crates/roko-serve/src/feed_agents/mod.rs",
+    "apps/agent-relay/src/bus.rs",
+    "apps/mirage-rs/src/chain/pheromone.rs",
+]
+depends_on = ["DOC-V1-ECO-03", "DOC-V1-ECO-07"]
+depends_on_plan = ["E08-conductor-supervision", "E09-OBSERVABILITY"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/13-coordination/00-stigmergy-theory.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/01-stigmergy-beyond-termites.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/02-git-as-stigmergy.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/03-digital-pheromones.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/04-pheromone-kinds.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/05-pheromone-scope.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/06-agent-mesh-sync.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/07-morphogenetic-specialization.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/08-permissioned-subnets.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/09-stigmergy-scaling.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/10-exponential-flywheel.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/11-collective-intelligence-metrics.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/12-current-status-and-gaps.md", why = "v1 source for coordination coverage" },
+    { path = "docs/v1/13-coordination/INDEX.md", why = "v1 source for coordination coverage" },
+]
+symbols = ["Pheromone", "Stigmergy", "C-factor", "Agent mesh sync", "Permissioned subnet"]
+anti_patterns = [
+    "Do NOT add coordination channels that cannot be audited or replayed.",
+    "Do NOT make C-factor or pheromone metrics surface-only; persist enough evidence for learning loops.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/13-coordination/00-stigmergy-theory.md docs/v1/13-coordination/01-stigmergy-beyond-termites.md docs/v1/13-coordination/02-git-as-stigmergy.md docs/v1/13-coordination/03-digital-pheromones.md docs/v1/13-coordination/04-pheromone-kinds.md docs/v1/13-coordination/05-pheromone-scope.md docs/v1/13-coordination/06-agent-mesh-sync.md docs/v1/13-coordination/07-morphogenetic-specialization.md docs/v1/13-coordination/08-permissioned-subnets.md docs/v1/13-coordination/09-stigmergy-scaling.md docs/v1/13-coordination/10-exponential-flywheel.md docs/v1/13-coordination/11-collective-intelligence-metrics.md docs/v1/13-coordination/12-current-status-and-gaps.md docs/v1/13-coordination/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/13-coordination source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-09"
+title = "Land v1 Chain, Korai, ISFR, and wallet runtime"
+description = "Implement the chain docs as Korai chain/client/wallet, HDC precompile, ERC-8004 registries, peer scoring, job market, power-of-two routing, auction/reputation, ChainWitness, curiosity/triage, Mirage EVM simulation, chain heartbeat, x402, ISFR settlement, and futures work. This task waits for safety, interfaces/config, tooling, economy, TA, and coordination prerequisites."
+status = "ready"
+tier = "architectural"
+role = "implementer"
+domain = "chain"
+files = [
+    "crates/roko-chain/src/lib.rs",
+    "crates/roko-chain/src/alloy_impl.rs",
+    "crates/roko-chain/src/client.rs",
+    "crates/roko-chain/src/block_watcher.rs",
+    "crates/roko-chain/src/isfr.rs",
+    "crates/roko-chain/src/isfr_keeper.rs",
+    "crates/roko-chain/src/x402.rs",
+    "crates/roko-chain/src/tools.rs",
+    "contracts/script/Deploy.s.sol",
+    "apps/mirage-rs/src/precompiles/hdc.rs",
+]
+depends_on = ["DOC-V1-ECO-02", "DOC-V1-ECO-03", "DOC-V1-ECO-04", "DOC-V1-ECO-05", "DOC-V1-ECO-06", "DOC-V1-ECO-08"]
+depends_on_plan = ["E11-chain-isfr", "E14-providers-tools", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/08-chain/00-vision-and-framing.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/01-korai-chain-spec.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/02-korai-token-economics.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/03-hdc-on-chain-precompile.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/06-erc-8004-registries.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/09-peer-scoring-3-layer.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/10-spore-job-market.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/11-sparrow-power-of-two-choices.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/12-three-hiring-models.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/13-vickrey-reputation-auction.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/14-reputation-system-7-domain.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/15-chainwitness-event-watching.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/16-triage-curiosity-midas.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/17-chain-client-wallet-traits.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/18-mirage-rs-evm-simulator.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/19-chain-agent-heartbeat.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/20-x402-micropayments.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/21-isfr-clearing-settlement.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/23-knowledge-futures-market.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/24-current-status-and-6-contracts.md", why = "v1 source for chain coverage" },
+    { path = "docs/v1/08-chain/INDEX.md", why = "v1 source for chain coverage" },
+]
+symbols = ["Korai chain", "ChainWitness", "HDC precompile", "ISFR clearing", "x402 micropayments"]
+anti_patterns = [
+    "Do NOT wire chain-domain tools before handlers, config, and safety prerequisites are satisfied.",
+    "Do NOT diverge ERC-8004 registry semantics between docs/v1/08-chain and docs/v1/14-identity-economy.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/08-chain/00-vision-and-framing.md docs/v1/08-chain/01-korai-chain-spec.md docs/v1/08-chain/02-korai-token-economics.md docs/v1/08-chain/03-hdc-on-chain-precompile.md docs/v1/08-chain/06-erc-8004-registries.md docs/v1/08-chain/09-peer-scoring-3-layer.md docs/v1/08-chain/10-spore-job-market.md docs/v1/08-chain/11-sparrow-power-of-two-choices.md docs/v1/08-chain/12-three-hiring-models.md docs/v1/08-chain/13-vickrey-reputation-auction.md docs/v1/08-chain/14-reputation-system-7-domain.md docs/v1/08-chain/15-chainwitness-event-watching.md docs/v1/08-chain/16-triage-curiosity-midas.md docs/v1/08-chain/17-chain-client-wallet-traits.md docs/v1/08-chain/18-mirage-rs-evm-simulator.md docs/v1/08-chain/19-chain-agent-heartbeat.md docs/v1/08-chain/20-x402-micropayments.md docs/v1/08-chain/21-isfr-clearing-settlement.md docs/v1/08-chain/23-knowledge-futures-market.md docs/v1/08-chain/24-current-status-and-6-contracts.md docs/v1/08-chain/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/08-chain source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."
+
+[[task]]
+id = "DOC-V1-ECO-10"
+title = "Land v1 deployment shapes and production operations"
+description = "Implement the deployment docs as packaging, native, WASM/edge, Docker, launchd, systemd, Fly/cloud, embedded, subscription config, multi-repo coordination, secrets, remote orchestrator, hardening, port allocation, and observability work. This task waits for safety, config/interfaces, and tooling prerequisites."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "code"
+files = [
+    "crates/roko-cli/src/deployment.rs",
+    "crates/roko-cli/src/commands/server.rs",
+    "crates/roko-serve/src/deploy/mod.rs",
+    "crates/roko-serve/src/deploy/manual.rs",
+    "crates/roko-serve/src/routes/deployments.rs",
+    "crates/roko-core/src/secrets/resolve.rs",
+    "crates/roko-core/src/obs/metrics.rs",
+    "Dockerfile",
+    "docker/docker-compose.yml",
+    ".github/workflows/deploy-fly.yml",
+    "fly.toml",
+]
+depends_on = ["DOC-V1-ECO-02", "DOC-V1-ECO-03", "DOC-V1-ECO-04"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE", "E09-OBSERVABILITY", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v1/19-deployment/00-packaging-and-distribution.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/01-native-x86-arm.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/02-wasm-browser-edge.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/03-docker.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/04-daemon-launchd-macos.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/05-daemon-systemd-linux.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/06-cloud-fly-io.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/07-edge-embedded.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/08-subscription-configuration.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/09-multi-repo-coordination.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/10-secret-management.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/11-remote-orchestrator.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/12-production-hardening.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/13-current-status-and-port-allocation.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/14-observability-and-telemetry.md", why = "v1 source for deployment coverage" },
+    { path = "docs/v1/19-deployment/INDEX.md", why = "v1 source for deployment coverage" },
+]
+symbols = ["Deployment profile", "Secret resolution", "Remote orchestrator", "Production hardening", "Observability"]
+anti_patterns = [
+    "Do NOT ship a deployment profile that bypasses auth, secrets, retention, or observability gates.",
+    "Do NOT hardcode a single runtime shape; preserve laptop, server, container, cluster, and edge profiles.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''for p in docs/v1/19-deployment/00-packaging-and-distribution.md docs/v1/19-deployment/01-native-x86-arm.md docs/v1/19-deployment/02-wasm-browser-edge.md docs/v1/19-deployment/03-docker.md docs/v1/19-deployment/04-daemon-launchd-macos.md docs/v1/19-deployment/05-daemon-systemd-linux.md docs/v1/19-deployment/06-cloud-fly-io.md docs/v1/19-deployment/07-edge-embedded.md docs/v1/19-deployment/08-subscription-configuration.md docs/v1/19-deployment/09-multi-repo-coordination.md docs/v1/19-deployment/10-secret-management.md docs/v1/19-deployment/11-remote-orchestrator.md docs/v1/19-deployment/12-production-hardening.md docs/v1/19-deployment/13-current-status-and-port-allocation.md docs/v1/19-deployment/14-observability-and-telemetry.md docs/v1/19-deployment/INDEX.md; do grep -Fq "$p" tmp/status-quo/backlog/source-coverage/docs-v1-ecosystem.md || exit 1; grep -Fq "path = \"$p\"" tmp/status-quo/backlog/plans/DOC-v1-ecosystem/tasks.toml || exit 1; done'''
+fail_msg = "Every docs/v1/19-deployment source must appear in the coverage ledger and this task context."
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-ecosystem"
+fail_msg = "DOC-v1-ecosystem plan must validate."

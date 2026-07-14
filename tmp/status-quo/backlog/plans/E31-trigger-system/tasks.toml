@@ -1,0 +1,537 @@
+[meta]
+plan = "E31-trigger-system"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── T01: Define TriggerProtocol trait and core types in roko-core ───────
+[[task]]
+id = "E31-T01"
+title = "Add TriggerProtocol trait, TriggerBinding, TriggerEvent, and TriggerState types"
+description = """
+The v2 spec (13-TRIGGERS.md SS1-2) defines the Trigger protocol: arm/disarm
+operations, TriggerBinding (persistent TOML config), TriggerEvent (fired
+event), TriggerHandle, TriggerState, and TriggerSource enum (7 kinds).
+
+Create `crates/roko-core/src/trigger.rs` with:
+  - `pub trait TriggerProtocol: Send + Sync` with `arm(&self, binding, bus) -> Result<TriggerHandle>` and `disarm(&self, handle) -> Result<()>`
+  - `TriggerHandle` struct: id, binding, armed_at, state
+  - `TriggerState` enum: Armed, Firing, Cooldown { until }, Disarmed, Failed { error }
+  - `TriggerEvent` struct: trigger_id, fired_at, payload (serde_json::Value), source, space_id, trace_id
+  - `TriggerSource` enum with 7 variants: Cron, Webhook, FileWatch, Bus, ChainEvent, Manual, SignalPattern
+  - `TriggerBinding` struct: name, kind (TriggerKind), graph, input_mapping, concurrency, filter, enabled, space, auth
+  - `TriggerKind` enum wrapping per-kind config structs (CronTrigger, WebhookTrigger, etc.)
+
+Register `pub mod trigger;` in lib.rs and add re-exports. Use async_trait
+(already in roko-core Cargo.toml). Use placeholder String types where
+CellRef/GraphRef/SpaceId/etc. don't exist yet.
+
+Note: roko-plugin already has a `TriggerDef` enum at manifest.rs:156-192
+with 3 variants (Cron/FileWatch/Webhook). The core types here are
+protocol-level with full spec fidelity (7 source kinds, state machine,
+etc.) -- distinct from the manifest-level stubs.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/trigger.rs", "crates/roko-core/src/lib.rs"]
+depends_on = []
+max_loc = 150
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/lib.rs", lines = "62-163", why = "Module declarations -- add `pub mod trigger;` after existing modules" },
+  { path = "crates/roko-core/src/extension.rs", lines = "22-42", why = "Pattern: typed structs with Serialize/Deserialize derives" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "155-192", why = "Existing TriggerDef enum (3 variants: Cron/FileWatch/Webhook) -- do NOT duplicate, core types are separate concern" },
+  { path = "crates/roko-core/src/traits.rs", lines = "15-60", why = "async_trait pattern for Store trait -- follow same pattern for TriggerProtocol" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "31-82", why = "TriggerProtocol trait, TriggerHandle, TriggerState, TriggerEvent, TriggerSource spec definitions" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "110-156", why = "TriggerBinding, TriggerInputMapping, InputFieldMapping struct specs" },
+]
+symbols = [
+  "TriggerDef — existing 3-variant enum in roko-plugin manifest.rs:158 (Cron/FileWatch/Webhook)",
+  "Store trait — async_trait pattern at traits.rs:37 to follow",
+  "Kind enum — kind.rs:26 (non_exhaustive, serde rename_all)",
+  "async_trait — already in roko-core Cargo.toml dependencies",
+]
+anti_patterns = [
+  "Do NOT duplicate TriggerDef from roko-plugin -- core types are protocol-level, plugin's are manifest-level",
+  "Do NOT add runtime/bus dependencies to roko-core -- keep types pure (no tokio, no Bus handle in the trait signature types)",
+  "Do NOT use chrono directly -- use chrono behind a feature flag or std::time types; check existing patterns in Cargo.toml",
+  "Use serde_json::Value for payload fields, not concrete types",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub trait TriggerProtocol' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerProtocol trait must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct TriggerBinding' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerBinding struct must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum TriggerSource' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerSource enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct TriggerHandle' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerHandle struct must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum TriggerState' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerState enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod trigger' crates/roko-core/src/lib.rs"
+fail_msg = "trigger module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T02: Define ConcurrencyPolicy and TriggerFilter types ───────────────
+[[task]]
+id = "E31-T02"
+title = "Add ConcurrencyPolicy, TriggerFilter, and RateLimit types to trigger module"
+description = """
+The v2 spec (13-TRIGGERS.md SS4,6) defines concurrency policies and filter
+types. Add to `crates/roko-core/src/trigger.rs`:
+
+  - `ConcurrencyPolicy` enum: Queue { max_depth: Option<usize> }, Skip,
+    CancelRunning, Parallel { max_concurrent: Option<usize> }
+  - `TriggerFilter` struct: event_kind (Option<Vec<Kind>>), where_clause
+    (Option<String> -- Expr is just a string), matches (Option<BTreeMap<String, Value>>),
+    debounce (Option<Duration>), rate_limit (Option<RateLimit>),
+    custom_filter (Option<String> -- CellRef placeholder)
+  - `RateLimit` struct: max_fires (u32), window (Duration),
+    on_limit (RateLimitAction)
+  - `RateLimitAction` enum: Drop, Queue, Warn
+
+The ConcurrencyPolicy is referenced by TriggerBinding.concurrency field
+from T01. Make it serde-compatible for TOML deserialization with both
+string shorthand ("skip") and struct form ({ kind = "queue", max_depth = 50 }).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/trigger.rs"]
+depends_on = ["E31-T01"]
+max_loc = 55
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/trigger.rs", lines = "1-60", why = "Types from T01 -- add alongside" },
+  { path = "crates/roko-core/src/kind.rs", lines = "23-109", why = "Kind enum for event_kind filter field" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "444-493", why = "ConcurrencyPolicy enum with 4 variants and TOML examples" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "553-621", why = "TriggerFilter, RateLimit, RateLimitAction, filter evaluation order" },
+]
+symbols = [
+  "TriggerBinding.concurrency — field from T01 that will hold ConcurrencyPolicy",
+  "TriggerBinding.filter — field from T01 that will hold Option<TriggerFilter>",
+  "Kind — enum at kind.rs:26 used in event_kind filter",
+]
+anti_patterns = [
+  "Do NOT use chrono::Duration -- use std::time::Duration with serde_with or manual millis conversion",
+  "Do NOT make ConcurrencyPolicy only deserializable as struct -- support both string shorthand and struct form per spec",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ConcurrencyPolicy' crates/roko-core/src/trigger.rs"
+fail_msg = "ConcurrencyPolicy enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct TriggerFilter' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerFilter struct must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum RateLimitAction' crates/roko-core/src/trigger.rs"
+fail_msg = "RateLimitAction enum must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T03: Define TriggerAuth and SecretRef types ─────────────────────────
+[[task]]
+id = "E31-T03"
+title = "Add TriggerAuth enum and SecretRef enum to trigger module"
+description = """
+The v2 spec (13-TRIGGERS.md SS8) defines auth types for trigger sources.
+Add to `crates/roko-core/src/trigger.rs`:
+
+  - `TriggerAuth` enum: None, HmacSha256 { secret: SecretRef, header: String },
+    BearerToken { secret: SecretRef }, MutualTls { cert: PathBuf, key: SecretRef }
+  - `SecretRef` enum: Env(String), Store { key: String }, File(PathBuf)
+
+These ensure secrets never appear in TOML -- only references.
+
+Check if roko-core already has a SecretRef-like type in the secrets module
+(crates/roko-core/src/secrets.rs) before defining a new one. If one exists,
+import and use it. If not, define here.
+"""
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+files = ["crates/roko-core/src/trigger.rs"]
+depends_on = ["E31-T01"]
+max_loc = 30
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/trigger.rs", lines = "1-30", why = "Existing trigger types from T01 for alignment" },
+  { path = "crates/roko-core/src/secrets.rs", lines = "1-50", why = "Check for existing SecretRef-like type to avoid duplication" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "649-699", why = "TriggerAuth and SecretRef enum specs, TOML examples" },
+]
+symbols = [
+  "TriggerBinding.auth — Optional<TriggerAuth> field from T01",
+  "secrets module — check for existing SecretRef type at crates/roko-core/src/secrets.rs",
+]
+anti_patterns = [
+  "Do NOT store actual secret values -- only references (env var names, store keys, file paths)",
+  "Do NOT duplicate SecretRef if one already exists in roko-core::secrets -- import instead",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum TriggerAuth' crates/roko-core/src/trigger.rs"
+fail_msg = "TriggerAuth enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SecretRef' crates/roko-core/src/trigger.rs"
+fail_msg = "SecretRef must be referenced (either defined or imported)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T04: Evolve conductor watchers toward Trigger Cell specialization ───
+[[task]]
+id = "E31-T04"
+title = "Add TriggerCellAdapter wrapper so conductor watchers can be used as trigger sources"
+description = """
+The v2 spec (13-TRIGGERS.md SS9) describes conductor watchers as internal
+triggers. Currently the 10 watchers in roko-conductor implement the React
+trait (pure function: `decide(&self, &[Engram], &Context) -> Vec<Engram>`).
+
+The watchers module (crates/roko-conductor/src/watchers/mod.rs) has 10
+watchers: GhostTurn, ReviewLoop, IterationLoop, TestFailureBudget,
+ContextWindowPressure, CompileFailRepeat, StuckPattern, TimeOverrun,
+CostOverrun, SpecDrift. The conductor (conductor.rs:60) composes them
+via `Vec<Box<dyn React>>` and applies an InterventionPolicy (WorstSeverityPolicy
+at conductor.rs:64).
+
+Add a `TriggerCellAdapter` in `crates/roko-conductor/src/adapter.rs` that
+wraps any watcher's output (WatcherOutput with Severity enum) into a
+TriggerEvent-compatible form. This bridge lets existing watchers
+participate in the trigger system without rewriting them. The adapter maps:
+  - Severity::Info (interventions.rs:33) -> no trigger (skip)
+  - Severity::Warning (interventions.rs:35) -> trigger with metadata action=Restart
+  - Severity::Critical (interventions.rs:37) -> trigger with metadata action=Fail
+
+Register the new module in conductor's mod.rs.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-conductor/src/adapter.rs", "crates/roko-conductor/src/lib.rs"]
+depends_on = ["E31-T01"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-conductor/src/conductor.rs", lines = "44-78", why = "Conductor struct: watchers Vec<Box<dyn React>>, policy, circuit_breaker" },
+  { path = "crates/roko-conductor/src/conductor.rs", lines = "95-107", why = "default_watchers() -- the 10 registered watcher instances" },
+  { path = "crates/roko-conductor/src/interventions.rs", lines = "20-67", why = "Severity enum (Info=0/Warning=1/Critical=2) and WatcherOutput struct (watcher, severity, description, metric)" },
+  { path = "crates/roko-conductor/src/watchers/mod.rs", lines = "1-28", why = "All 10 watcher module declarations and re-exports" },
+  { path = "crates/roko-conductor/src/watchers/ghost_turn.rs", lines = "1-30", why = "Example watcher: GhostTurnWatcher implements React" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "703-779", why = "Conductor watcher table, Intervention struct, InterventionAction enum, BanditPolicy/WorstSeverityPolicy" },
+]
+symbols = [
+  "Conductor — composite React at conductor.rs:60 with watchers and policy fields",
+  "Severity — enum at interventions.rs:31 (Info=0, Warning=1, Critical=2)",
+  "WatcherOutput — struct at interventions.rs:58 (watcher, severity, description, metric)",
+  "GhostTurnWatcher — example watcher at watchers/ghost_turn.rs implementing React",
+  "default_watchers — function at conductor.rs:95 creating all 10 watcher Box<dyn React> instances",
+]
+anti_patterns = [
+  "Do NOT rewrite existing watchers -- wrap them",
+  "Do NOT add roko-core trigger dependency to roko-conductor if it creates a dependency cycle -- check Cargo.toml first",
+  "Do NOT make the adapter require async -- keep it sync like React::decide()",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'TriggerCellAdapter' crates/roko-conductor/src/"
+fail_msg = "TriggerCellAdapter must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-conductor 2>&1"
+fail_msg = "roko-conductor must compile"
+
+# ── T05: Implement TriggerBinding TOML persistence ──────────────────────
+[[task]]
+id = "E31-T05"
+title = "Implement TriggerBinding TOML load/save for .roko/triggers/ directory"
+description = """
+The v2 spec (13-TRIGGERS.md SS2) requires trigger bindings to persist in
+`.roko/triggers/*.toml` and survive restart.
+
+First, add a `triggers_dir()` method to `RokoLayout` in
+`crates/roko-fs/src/layout.rs` (after extensions_dir at line 190) returning
+`.roko/triggers/`. Add "triggers" to `ensure_dirs` list.
+
+Then add trigger persistence functions -- either in roko-fs or in a new
+`crates/roko-core/src/trigger.rs` section:
+  - `load_trigger_bindings(dir: &Path) -> Result<Vec<TriggerBinding>>`
+  - `save_trigger_binding(dir: &Path, binding: &TriggerBinding) -> Result<()>`
+
+Use the same TOML serde pattern as `load_manifest` in roko-plugin
+(manifest.rs:211). TriggerBinding already has Serialize/Deserialize derives
+from T01-T03. Add a roundtrip unit test.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-fs/src/layout.rs", "crates/roko-core/src/trigger.rs"]
+depends_on = ["E31-T01", "E31-T02", "E31-T03"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-fs/src/layout.rs", lines = "62-98", why = "RokoLayout struct and constructor pattern" },
+  { path = "crates/roko-fs/src/layout.rs", lines = "188-200", why = "extensions_dir() method -- add triggers_dir() after it" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "206-231", why = "load_manifest / parse_manifest -- TOML load pattern to follow" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "293-342", why = "discover_plugins -- directory scan pattern (scan for *.toml files)" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "158-168", why = "Trigger persistence spec: .roko/triggers/*.toml, re-arm on startup" },
+]
+symbols = [
+  "RokoLayout — filesystem layout struct at layout.rs:64",
+  "extensions_dir — method at layout.rs:190 returning .roko/extensions/",
+  "discover_plugins — directory scan at manifest.rs:297 (pattern for scanning .toml files)",
+  "load_manifest — TOML parsing at manifest.rs:211 (pattern for reading .toml files)",
+]
+anti_patterns = [
+  "Do NOT add runtime logic to roko-fs -- keep it as pure I/O and path resolution",
+  "Do NOT use serde_json for trigger files -- triggers are TOML (matches spec)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'triggers_dir\\|triggers' crates/roko-fs/src/layout.rs"
+fail_msg = "triggers_dir must be added to RokoLayout"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'load_trigger_bindings\\|fn load_trigger' crates/roko-core/src/trigger.rs"
+fail_msg = "Trigger loading function must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-fs -p roko-core 2>&1"
+fail_msg = "roko-fs and roko-core must compile"
+
+# ── T06: Add trigger CLI subcommands skeleton ───────────────────────────
+[[task]]
+id = "E31-T06"
+title = "Add roko trigger list/show/create/fire CLI subcommand stubs"
+description = """
+The v2 spec (13-TRIGGERS.md SS11) defines 9 trigger CLI commands. Add the
+skeleton for the 4 most important: list, show, create, fire.
+
+1. Create `crates/roko-cli/src/commands/trigger.rs` with:
+   - `TriggerCmd` enum with List, Show { name }, Create { file }, Fire { name, payload }
+   - `dispatch_trigger(cli, cmd) -> Result<()>` handler function
+   - list: load bindings from .roko/triggers/ via RokoLayout::triggers_dir(), print table
+   - show: load a single binding by name, print details
+   - create: read a TOML file, parse as TriggerBinding, save to .roko/triggers/
+   - fire: load the named binding, print confirmation (actual trigger engine wiring comes later)
+
+2. Register `pub mod trigger;` in commands/mod.rs (currently at line 29, after `util`)
+
+3. Add `Trigger(TriggerCmd)` variant to the main CLI enum in the Cli
+   struct and route it to dispatch_trigger. Check the Cli struct location
+   (likely in crates/roko-cli/src/lib.rs or main.rs).
+
+Follow the pattern used by `plan.rs` and other subcommand modules.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/commands/trigger.rs", "crates/roko-cli/src/commands/mod.rs"]
+depends_on = ["E31-T05"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/commands/mod.rs", lines = "1-30", why = "Command module registration -- add pub mod trigger; here" },
+  { path = "crates/roko-cli/src/commands/plan.rs", lines = "1-50", why = "Pattern: PlanCmd enum with subcommands and dispatch function" },
+  { path = "crates/roko-cli/src/commands/feed.rs", lines = "1-40", why = "Another subcommand pattern example" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "812-850", why = "CLI surface spec: 9 commands, examples" },
+]
+symbols = [
+  "commands/mod.rs — module registry, 29 modules currently declared",
+  "plan.rs — pattern for subcommand dispatch (PlanCmd enum)",
+  "RokoLayout::triggers_dir — from T05 for binding file discovery",
+]
+anti_patterns = [
+  "Do NOT implement full trigger engine -- just the CLI surface for CRUD + manual fire",
+  "Do NOT add more than the 4 specified subcommands (list/show/create/fire)",
+  "Do NOT hard-code paths -- use RokoLayout for all .roko/ paths",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod trigger' crates/roko-cli/src/commands/mod.rs"
+fail_msg = "trigger command module must be declared"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'TriggerCmd\\|dispatch_trigger' crates/roko-cli/src/commands/trigger.rs"
+fail_msg = "TriggerCmd enum and dispatch function must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T07: Add trigger API routes to roko-serve ───────────────────────────
+[[task]]
+id = "E31-T07"
+title = "Add GET/POST /triggers API route stubs to roko-serve"
+description = """
+The v2 spec (13-TRIGGERS.md SS11) defines 10 API endpoints. Add stubs for
+the 4 core routes:
+  - GET /api/triggers — list all trigger bindings (read from .roko/triggers/)
+  - GET /api/triggers/{name} — show trigger details
+  - POST /api/triggers — create a new trigger binding (accept JSON body)
+  - POST /api/triggers/{name}/fire — manual fire (return 202 Accepted stub)
+
+Create `crates/roko-serve/src/routes/triggers.rs` with the 4 handlers.
+Register the module in routes/mod.rs (currently has ~47 modules at lines 7-51).
+Add the trigger routes to the axum Router in build_router.
+
+Follow the pattern of existing route modules like projections.rs (routes at
+projections.rs:21-26) which returns `Router<Arc<AppState>>`.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/triggers.rs", "crates/roko-serve/src/routes/mod.rs"]
+depends_on = ["E31-T05"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-51", why = "Route module declarations -- add mod triggers; here" },
+  { path = "crates/roko-serve/src/routes/projections.rs", lines = "1-42", why = "Pattern: routes() fn returning Router<Arc<AppState>>, handler signatures" },
+  { path = "crates/roko-serve/src/routes/jobs.rs", lines = "1-30", why = "Another route module pattern: CRUD routes with JSON" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "853-866", why = "API endpoint table: 10 endpoints with methods and paths" },
+]
+symbols = [
+  "routes/mod.rs — module registry with ~47 route modules",
+  "projections.rs:21 — routes() fn pattern: Router::new().route(...)",
+  "AppState — shared state type from crate::state::AppState",
+  "ApiError — error type from crate::error::ApiError",
+]
+anti_patterns = [
+  "Do NOT implement trigger execution logic in serve -- that belongs in roko-runtime",
+  "Do NOT add more than the 4 specified route stubs",
+  "Do NOT break existing route registration -- just add .merge(triggers::routes())",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mod triggers' crates/roko-serve/src/routes/mod.rs"
+fail_msg = "triggers route module must be declared"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'fn routes' crates/roko-serve/src/routes/triggers.rs"
+fail_msg = "triggers routes() function must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ── T08: Add trigger event Bus topics and graduation policy ─────────────
+[[task]]
+id = "E31-T08"
+title = "Define trigger event topic constants and graduation policy"
+description = """
+The v2 spec (13-TRIGGERS.md SS7) defines 10 trigger event topics published
+as Pulses on Bus. Add to `crates/roko-core/src/trigger.rs`:
+
+1. A `trigger_topic(name: &str, event: &str) -> String` function that
+   constructs topic strings like `trigger.{name}.fired`. Use this instead
+   of format! macros scattered through callers.
+
+2. `TriggerEventKind` enum with 10 variants matching the spec:
+   Armed, Fired, Filtered, Skipped, Queued, RateLimited, Error,
+   Disarmed, FlowStarted, FlowCompleted
+
+3. `GRADUATION_EVENTS` const array listing the 8 event kinds that
+   graduate to Signals: Armed, Fired, Skipped, RateLimited, Error,
+   Disarmed, FlowStarted, FlowCompleted
+
+4. `TriggerGraduationPolicy` with a `fn should_graduate(kind: &TriggerEventKind) -> bool`
+   method that checks membership in the graduation set. Filtered and
+   Queued do NOT graduate (they're noise/ephemeral per spec).
+"""
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+files = ["crates/roko-core/src/trigger.rs"]
+depends_on = ["E31-T01"]
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/trigger.rs", lines = "1-30", why = "Existing trigger types from T01 -- add alongside" },
+  { path = "crates/roko-core/src/kind.rs", lines = "23-109", why = "Kind enum for understanding signal categories" },
+  { path = "crates/roko-core/src/config/graduation.rs", lines = "1-30", why = "Existing GraduationConfig/GraduationPolicy if relevant pattern" },
+  { path = "docs/v2/13-TRIGGERS.md", lines = "624-643", why = "10 trigger event topics table with graduation policy (Yes/No per event)" },
+]
+symbols = [
+  "TriggerEvent — event struct from T01 that these topics describe",
+  "Kind — signal kind enum at kind.rs:26",
+  "GraduationPolicy — existing concept at config/graduation.rs (may provide pattern)",
+]
+anti_patterns = [
+  "Do NOT use format! in callers for topic construction -- provide trigger_topic() function",
+  "Do NOT make graduation policy configurable yet -- hardcode the spec defaults first",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn trigger_topic' crates/roko-core/src/trigger.rs"
+fail_msg = "trigger_topic function must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TriggerEventKind\\|TriggerGraduationPolicy\\|GraduationPolicy' crates/roko-core/src/trigger.rs"
+fail_msg = "Trigger event kind and graduation policy must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'should_graduate' crates/roko-core/src/trigger.rs"
+fail_msg = "should_graduate method must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"

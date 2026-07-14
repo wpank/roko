@@ -1,0 +1,630 @@
+[meta]
+plan = "E09-OBSERVABILITY"
+total = 11
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T01: Thread the built MetricRegistry into RunConfig.metrics (THE fix)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# commands/plan.rs:379-380 already builds a MetricRegistry and calls
+# register_standard_metrics(&metrics) — then throws it away by passing
+# `metrics: None` when constructing RunConfig at :569. The gate-verdict counter
+# at runner/event_loop.rs:1024-1037 is guarded by `if let Some(ref metrics) =
+# config.metrics`, so it never records. `grep 'metrics: Some' crates/` → 0.
+#
+# Change EXACTLY the one field at plan.rs:569:
+#   metrics: None,
+# to:
+#   metrics: Some(metrics.clone()),
+#
+# The `metrics` binding is already in scope (declared :379). Do NOT rebuild it.
+#
+[[task]]
+id = "E09-T01"
+title = "Thread MetricRegistry into RunConfig.metrics (plan.rs)"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "376-570", why = "Registry built at :379-380 but RunConfig.metrics is None at :569 — the drop site" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1015-1040", why = "Gate-verdict counter is guarded by `if let Some(ref metrics) = config.metrics` — dead until this is Some" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1336-1339", why = "RunConfig.metrics field type: Option<Arc<MetricRegistry>>" },
+]
+symbols = ["MetricRegistry", "RunConfig", "register_standard_metrics"]
+anti_patterns = [
+    "Do NOT construct a new MetricRegistry — reuse the `metrics` binding already declared at plan.rs:379.",
+    "Do NOT change the field type in types.rs; it is already Option<Arc<MetricRegistry>>.",
+    "Do NOT touch serve_runtime.rs here — that is E09-T03.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'metrics: Some(metrics.clone())' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "RunConfig.metrics must be Some(metrics.clone()) in plan.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after wiring the metric registry"
+
+acceptance = ["After a runner-v2 plan run, the gate-verdict counter increments; grep 'metrics: Some' crates/ is no longer empty."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T02: Dump the runner metric registry to disk at end of run
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# CLI plan runs have no /metrics HTTP endpoint, so even with E09-T01 the
+# counters live only in memory and vanish when the process exits. Render the
+# registry to a Prometheus text file at the end of the runner-v2 plan run, so a
+# post-mortem operator (or a scrape sidecar) can read it. Legacy orchestrate.rs
+# already does this at :5937-5944 (`.roko/metrics/prometheus.txt`) — mirror that
+# path so both engines write the same file.
+#
+# After the runner returns its PlanRunSummary in commands/plan.rs (post-run,
+# after the run_config was consumed), write:
+#   std::fs::write(layout.metrics_dir().join("prometheus.txt"),
+#                  metrics.render_prometheus())
+# Best-effort (`let _ =`); a failed write must not fail the run.
+#
+[[task]]
+id = "E09-T02"
+title = "Write runner metrics to .roko/metrics/prometheus.txt post-run"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 25
+files = ["crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = ["E09-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "376-600", why = "Registry in scope; find the post-run point after the runner returns to add the dump" },
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "263-300", why = "MetricRegistry::render_prometheus — the renderer to call" },
+]
+symbols = ["MetricRegistry", "render_prometheus"]
+anti_patterns = [
+    "Do NOT panic or `?`-propagate on write failure — use best-effort `let _ =`; observability must never fail a run.",
+    "Do NOT invent a new path — reuse the layout metrics dir (same file legacy orchestrate.rs:5937-5944 writes).",
+    "Do NOT move the registry — clone the Arc if you need it after the runner consumed run_config.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'prometheus.txt' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "post-run Prometheus dump path must be present in plan.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding the metrics dump"
+
+acceptance = ["After `roko plan run <dir>` on the runner-v2 path, `.roko/metrics/prometheus.txt` exists and contains a `roko_gate_verdicts_total` line."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T03: Thread the serve AppState registry into the serve-launched runner
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# serve_runtime.rs:628 builds RunConfig with `metrics: None` too, so runs
+# launched from `roko serve` also never populate the registry that backs the
+# live `GET /metrics` scrape. AppState already owns a MetricRegistry
+# (roko-serve/src/state.rs:947-950); pass that same Arc down so serve-launched
+# runs increment counters visible on the running server's /metrics endpoint.
+#
+# Locate the RunConfig construction in serve_runtime.rs and set:
+#   metrics: Some(app_state.metrics.clone()),
+# using whatever the in-scope AppState/registry handle is named.
+#
+[[task]]
+id = "E09-T03"
+title = "Thread serve AppState MetricRegistry into serve_runtime RunConfig"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-5"
+max_loc = 10
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+role = "implementer"
+depends_on = ["E09-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", lines = "600-640", why = "RunConfig built with metrics: None at :628 — the serve-side drop site" },
+    { path = "crates/roko-serve/src/state.rs", lines = "940-960", why = "AppState owns the MetricRegistry that backs GET /metrics — reuse this exact Arc" },
+]
+symbols = ["MetricRegistry", "RunConfig", "AppState"]
+anti_patterns = [
+    "Do NOT build a fresh registry — the whole point is to share AppState's registry so counters appear on the LIVE /metrics scrape.",
+    "Do NOT change the /metrics route or state.rs; only wire the existing Arc into RunConfig.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'metrics: None' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "serve_runtime RunConfig must no longer pass metrics: None"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after sharing the serve registry"
+
+acceptance = ["With `roko serve` running, launching a plan and then `curl -s localhost:6677/metrics | grep roko_gate_verdicts_total` shows non-zero gate-verdict counters."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T04: Stop writing feed/chain pulse noise to persistent events.jsonl
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The persistent StateHub log now lives in roko-runtime. Serve creates that hub
+# at state.rs:839-846 and the bridge in lib.rs maps ServerEvent::FeedTick and
+# ServerEvent::ChainBlock into DashboardEvent before the hub appends to
+# .roko/events.jsonl. Keep these events live on SSE/WS/in-memory replay, but do
+# not append high-volume FeedTick or ChainBlock pulses to disk.
+#
+[[task]]
+id = "E09-T04"
+title = "Stop persisting feed_tick and chain_block to events.jsonl"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 45
+files = ["crates/roko-runtime/src/state_hub.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "35-165", why = "EventLogWriter append site and StateHub publish/publish_batch persistence path; add the disk-only filter here" },
+    { path = "crates/roko-serve/src/state.rs", lines = "839-846", why = "Serve creates the persistent `.roko/events.jsonl` StateHub used by SSE/WS and replay" },
+    { path = "crates/roko-serve/src/lib.rs", lines = "1535-1620", why = "ServerEvent::FeedTick and ServerEvent::ChainBlock are mapped into DashboardEvent before reaching StateHub" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "151-210", why = "DashboardEvent variants to filter from disk only: Isfr*, ChainBlock, FeedTick" },
+]
+symbols = ["EventLogWriter::append", "StateHub::publish", "StateHub::publish_batch", "DashboardEvent::FeedTick", "DashboardEvent::ChainBlock"]
+anti_patterns = [
+    "Do NOT stop broadcasting FeedTick or ChainBlock to live SSE/WS subscribers; only skip the on-disk EventLogWriter append.",
+    "Do NOT filter all chain events — ChainTx and ChainContractEvent can stay persistent unless this task explicitly proves they are firehose noise too.",
+    "Do NOT move persistence out of StateHub or create a second events log path.",
+    "Do NOT filter ISFR rate/source/keeper events; those are user-visible rate state, not feed heartbeat noise.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'should_persist' crates/roko-runtime/src/state_hub.rs && grep -q 'DashboardEvent::FeedTick' crates/roko-runtime/src/state_hub.rs && grep -q 'DashboardEvent::ChainBlock' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "StateHub must contain an explicit persistence filter for FeedTick and ChainBlock"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime state_hub 2>&1"
+fail_msg = "StateHub tests must cover persistent event-log filtering without breaking replay/broadcast behavior"
+
+acceptance = [
+    "FeedTick and ChainBlock still reach the StateHub broadcast ring and live subscribers.",
+    ".roko/events.jsonl no longer receives FeedTick or ChainBlock records.",
+    "A StateHub test proves skipped disk persistence for the noisy variants and retained persistence for a resume-critical event.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T05: Rotate roko.log and chain-watcher.log by day
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# CLI tracing opens `.roko/roko.log` with OpenOptions append mode. Serve starts
+# the chain watcher and redirects stdout/stderr into `.roko/chain-watcher.log`,
+# also append-only. Replace both with day-based rolling writers so unattended
+# serve/runner sessions do not grow a single unbounded file.
+#
+[[task]]
+id = "E09-T05"
+title = "Add day-based rotation for roko.log and chain-watcher.log"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = ["crates/roko-cli/src/main.rs", "crates/roko-serve/src/lib.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "2080-2130", why = "Current `.roko/roko.log` append-only tracing layer setup" },
+    { path = "crates/roko-cli/src/main.rs", lines = "3050-3110", why = "Workspace observability bootstrap; keep directory creation behavior compatible with rolling log output" },
+    { path = "crates/roko-serve/src/lib.rs", lines = "440-475", why = "Current chain-watcher subprocess stdout/stderr redirection to append-only `.roko/chain-watcher.log`" },
+]
+symbols = ["tracing_appender::rolling::daily", "non_blocking", "chain-watcher.log", "roko.log"]
+anti_patterns = [
+    "Do NOT remove secret redaction from the CLI tracing layer.",
+    "Do NOT rotate into a different directory tree; keep logs under the workspace `.roko/` directory.",
+    "Do NOT make log initialization fatal for normal commands; preserve best-effort behavior where current code uses `.ok()`.",
+    "Do NOT change chain-watcher process arguments or environment except for log writer plumbing.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'tracing_appender::rolling::daily' crates/roko-cli/src/main.rs && grep -q 'roko.log' crates/roko-cli/src/main.rs"
+fail_msg = "CLI log setup must use tracing_appender daily rotation for roko.log"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'chain-watcher.log' crates/roko-serve/src/lib.rs && (grep -q 'rolling::daily' crates/roko-serve/src/lib.rs || grep -q 'tracing_appender' crates/roko-serve/src/lib.rs)"
+fail_msg = "serve chain-watcher logging must use a daily rotating writer"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-serve 2>&1"
+fail_msg = "roko-cli and roko-serve must compile after log rotation changes"
+
+acceptance = [
+    "CLI/TUI tracing writes through a daily rotating writer under `.roko/` instead of one unbounded append file.",
+    "chain-watcher subprocess output is captured in a day-rotated `.roko/chain-watcher.log*` series.",
+    "Log setup remains best-effort and does not abort normal CLI/serve startup when the file writer cannot be opened.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T06: Make ROKO_LOG the authoritative verbosity variable
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# roko-chain-watcher already reads ROKO_LOG directly, but agent-relay still uses
+# RUST_LOG/default-env semantics. Align the standalone binaries with the CLI's
+# documented ROKO_LOG precedence and update the doctor/help surface so operators
+# have one knob for all roko-owned binaries.
+#
+[[task]]
+id = "E09-T06"
+title = "Make ROKO_LOG authoritative across roko binaries"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 35
+files = ["apps/roko-chain-watcher/src/main.rs", "apps/agent-relay/src/main.rs", "crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "apps/roko-chain-watcher/src/main.rs", lines = "35-55", why = "Reference standalone binary already using EnvFilter::try_from_env(\"ROKO_LOG\")" },
+    { path = "apps/agent-relay/src/main.rs", lines = "35-50", why = "Standalone relay still uses try_from_default_env; align it with ROKO_LOG" },
+    { path = "crates/roko-cli/src/main.rs", lines = "2288-2300", why = "CLI RUST_LOG/ROKO_LOG precedence helper to reference in docs/help text" },
+    { path = "crates/roko-cli/src/main.rs", lines = "2888-2955", why = "Log env var documentation block; add/confirm ROKO_LOG authority for all roko binaries" },
+]
+symbols = ["ROKO_LOG", "EnvFilter::try_from_env", "tracing_log_directive_from"]
+anti_patterns = [
+    "Do NOT make RUST_LOG override ROKO_LOG for roko-owned binaries; ROKO_LOG must be the documented authoritative knob.",
+    "Do NOT remove existing sane defaults when ROKO_LOG is absent.",
+    "Do NOT touch unrelated application env vars such as ROKO_AGENT_RELAY_BIND.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'try_from_env(\"ROKO_LOG\")' apps/agent-relay/src/main.rs && grep -q 'try_from_env(\"ROKO_LOG\")' apps/roko-chain-watcher/src/main.rs"
+fail_msg = "agent-relay and roko-chain-watcher must both read ROKO_LOG explicitly"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ROKO_LOG' crates/roko-cli/src/main.rs && (grep -qi 'authoritative' crates/roko-cli/src/main.rs || grep -qi 'all roko binaries' crates/roko-cli/src/main.rs || grep -qi 'standalone' crates/roko-cli/src/main.rs)"
+fail_msg = "CLI help/docs in main.rs must document ROKO_LOG as the shared logging knob"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p agent-relay -p roko-chain-watcher 2>&1"
+fail_msg = "standalone binaries must compile after log env alignment"
+
+acceptance = [
+    "ROKO_LOG controls verbosity for roko-cli/serve, roko-chain-watcher, and agent-relay.",
+    "RUST_LOG may remain as compatibility only where the CLI helper already supports it, but it must not be the only path for standalone binaries.",
+    "The logging env var documentation names ROKO_LOG as the primary operator-facing knob.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T07: Bound the persistent dashboard event log
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# E09-T04 removes the worst firehose variants from `.roko/events.jsonl`, but the
+# file is still append-only. Add a conservative size cap / compaction path for
+# the StateHub event log so long-running serve sessions do not grow without
+# bound. Keep replay semantics intact by preserving the most recent complete
+# JSONL records.
+#
+[[task]]
+id = "E09-T07"
+title = "GC/cap .roko/events.jsonl after feed noise is filtered"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = ["crates/roko-runtime/src/state_hub.rs", "crates/roko-fs/src/layout.rs"]
+role = "implementer"
+depends_on = ["E09-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "35-150", why = "EventLogWriter owns appends; add cap/rotation/compaction at this boundary" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "198-245", why = "Replay-from-log code; preserve complete JSONL records after trimming" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "225-240", why = "Canonical `.roko/events.jsonl` layout helper; add any companion path here if split logs are chosen" },
+    { path = "crates/roko-cli/src/runner/resume.rs", lines = "420-450", why = "Resume tests pre-populate events.jsonl; avoid breaking partial-line recovery assumptions" },
+]
+symbols = ["EventLogWriter", "RokoLayout::events_log", "StateHub::replay_from_log"]
+anti_patterns = [
+    "Do NOT truncate in the middle of a JSON line; replay must never ingest partial JSON caused by compaction.",
+    "Do NOT remove the latest run/gate/task events needed for dashboard replay and resume diagnostics.",
+    "Do NOT create a second canonical dashboard event log unless layout.rs names it and readers are updated.",
+    "Do NOT reintroduce FeedTick or ChainBlock persistence while adding the cap.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_event_log' crates/roko-runtime/src/state_hub.rs || grep -q 'EVENT_LOG_MAX' crates/roko-runtime/src/state_hub.rs || grep -q 'compact_event_log' crates/roko-runtime/src/state_hub.rs || grep -q 'rotate_event_log' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "StateHub EventLogWriter must contain an explicit size cap, compaction, or rotation mechanism"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime state_hub 2>&1"
+fail_msg = "StateHub tests must cover capped event-log append and replay of complete JSONL records"
+
+acceptance = [
+    ".roko/events.jsonl has a bounded growth policy after noisy variants are filtered.",
+    "Compaction/rotation preserves recent complete events and does not produce partial JSONL lines.",
+    "Replay tests still reconstruct dashboard state from the capped log.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T08: Attach filesystem observability sinks to runner-v2 tool execution
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# bootstrap_observability_dirs creates `.roko/traces/` and `.roko/metrics/`, and
+# roko-fs has FsObservabilitySinks, JsonlTraceSink, and JsonlMetricsSink, but
+# runner-v2 does not attach those sinks to the live tool/agent path. Either wire
+# them into runner-v2 or remove the misleading bootstrap. Preferred: wire them.
+#
+[[task]]
+id = "E09-T08"
+title = "Attach FsObservabilitySinks in runner-v2 tool loop"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 140
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/types.rs",
+    "crates/roko-fs/src/observability.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "3050-3110", why = "Directory bootstrap currently creates trace/metrics dirs even when runner-v2 never writes them" },
+    { path = "crates/roko-fs/src/observability.rs", lines = "1-95", why = "FsObservabilitySinks constructors and initialize behavior to reuse" },
+    { path = "crates/roko-fs/src/trace_sink.rs", lines = "71-115", why = "JsonlTraceSink root/path behavior expected by the tool loop" },
+    { path = "crates/roko-fs/src/tool_metrics_sink.rs", lines = "54-90", why = "JsonlMetricsSink path behavior for `.roko/metrics/tool_metrics.jsonl`" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2500-2760", why = "Runner-v2 agent/tool dispatch area; attach sinks where tool calls are observed, not only at startup" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1330-1365", why = "RunConfig extension point if the sinks need to be threaded through config" },
+]
+symbols = ["FsObservabilitySinks", "JsonlTraceSink", "JsonlMetricsSink", "RunConfig"]
+anti_patterns = [
+    "Do NOT leave `.roko/traces/` and `.roko/metrics/` as empty bootstrap-only directories.",
+    "Do NOT wire sinks only into legacy orchestrate.rs; this task is runner-v2.",
+    "Do NOT let trace/metrics write failures fail agent execution; filesystem observability is best-effort.",
+    "If the team chooses deletion instead of wiring, remove the bootstrap and the unused sink exports in the same task and adjust verification accordingly.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FsObservabilitySinks' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/types.rs"
+fail_msg = "runner-v2 must explicitly thread or construct FsObservabilitySinks"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'tool_metrics.jsonl' crates/roko-cli/src/runner/event_loop.rs || grep -q 'trace_sink' crates/roko-cli/src/runner/event_loop.rs || grep -q 'metrics_sink' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner-v2 event/tool loop must write through trace and/or tool metrics sinks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after runner-v2 observability sink wiring"
+
+acceptance = [
+    "A runner-v2 task that performs tool/agent work emits filesystem-backed trace and/or tool metrics records under `.roko/`.",
+    "The existing bootstrap directories are no longer misleadingly empty on normal runner-v2 runs.",
+    "Observability sink errors are logged/debugged but never fail the task run.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T09: Design v2 telemetry-as-Lens pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This is a design-doc task only. E13 consumes this decision when defining the
+# actual Lens trait and MetricRegistry adapter. Do not implement Lens runtime
+# code here; reconcile the live MetricRegistry and StateHub with the v2 Lens
+# vocabulary so the follow-up implementation tasks have a narrow contract.
+#
+[[task]]
+id = "E09-T09"
+title = "Design telemetry-as-Lens pipeline doc"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-sonnet-4-5"
+max_loc = 140
+files = ["tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md"]
+role = "architect"
+depends_on = ["E09-T01", "E09-T02", "E09-T03", "E09-T04", "E09-T05", "E09-T06", "E09-T07", "E09-T08"]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/epics/E09-OBSERVABILITY.md", lines = "1-55", why = "Obs-signal map and E09 task breakdown; design must account for every live signal fixed in T01-T08" },
+    { path = "docs/v2/15-TELEMETRY.md", lines = "1-90", why = "Spec vocabulary: Lens, LensScope, Observe, StateHub projections, passive observation constraints" },
+    { path = "docs/v2/15-TELEMETRY.md", lines = "728-885", why = "StateHub projection and surface contract sections the design must reconcile with current code" },
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "255-320", why = "Current MetricRegistry reality to adapt, not replace" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "75-165", why = "Current StateHub publish/persist/replay reality that Lens output must feed" },
+    { path = "tmp/status-quo/backlog/plans/E13-SPEC-DEBT-V2/tasks.toml", lines = "1-95", why = "Downstream E13-T01 consumes this design; do not duplicate implementation there" },
+]
+symbols = ["MetricRegistry", "Lens", "LensScope", "CollectorLens", "TransformLens", "ExportLens", "StateHub"]
+anti_patterns = [
+    "Do NOT write Rust runtime code in this task; the deliverable is one design document.",
+    "Do NOT make E09 depend on E13; E13 consumes this document after E09-T09.",
+    "Do NOT propose replacing MetricRegistry wholesale; describe an adapter/migration path.",
+    "Do NOT leave ownership ambiguous between CollectorLens, TransformLens, ExportLens, MetricRegistry, and StateHub.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md"
+fail_msg = "E09 telemetry Lens design document must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '## Current State' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md && grep -q '## Lens Pipeline' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md && grep -q '## MetricRegistry Adapter' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md && grep -q '## StateHub Projection Contract' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md && grep -q '## Migration Plan' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md && grep -q '## Open Questions' tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md"
+fail_msg = "design doc must contain the required sections: Current State, Lens Pipeline, MetricRegistry Adapter, StateHub Projection Contract, Migration Plan, Open Questions"
+
+acceptance = [
+    "Design doc exists at tmp/status-quo/backlog/decisions/E09-telemetry-lens-pipeline.md.",
+    "The doc reconciles current MetricRegistry/StateHub behavior with CollectorLens, TransformLens, and ExportLens responsibilities.",
+    "The doc explicitly states that E13 consumes the design and that no runtime Lens code is implemented in E09-T09.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T10: Log rotation for episodes.jsonl and signals.jsonl
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# episodes.jsonl and signals.jsonl are append-only files that grow without
+# bound during long self-hosting sessions. Add size-based rotation that
+# renames the current file to a timestamped backup and starts a fresh file
+# when either exceeds 100 MB. This is separate from E09-T07 (events.jsonl
+# cap inside StateHub) — these files are managed by roko-fs layout and the
+# episode/signal writers.
+#
+[[task]]
+id = "E09-T10"
+title = "Add log rotation for episodes.jsonl and signals.jsonl (>100MB)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = [
+    "crates/roko-fs/src/layout.rs",
+    "crates/roko-fs/src/substrate.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/layout.rs", lines = "225-260", why = "RokoLayout::episodes_log and signals_log — canonical paths for both files" },
+    { path = "crates/roko-fs/src/substrate.rs", lines = "1-80", why = "FileSubstrate append behavior; rotation should happen before append when file exceeds threshold" },
+    { path = "crates/roko-fs/src/gc.rs", lines = "30-55", why = "RetentionPolicy pattern — mirror the configurable threshold approach" },
+]
+symbols = [
+    "RokoLayout::episodes_log — roko-fs/layout.rs",
+    "RokoLayout::signals_log — roko-fs/layout.rs",
+    "FileSubstrate — roko-fs/substrate.rs (append-only JSONL writer)",
+    "RetentionPolicy — roko-fs/gc.rs (configurable threshold pattern to follow)",
+]
+anti_patterns = [
+    "Do NOT truncate mid-line; rotation must happen at JSONL line boundaries.",
+    "Do NOT delete old rotated files automatically — that is GC's job. Only rename the current file.",
+    "Do NOT make rotation blocking on the hot path; check file size periodically (e.g., every N appends), not on every write.",
+    "Do NOT change the canonical file paths in RokoLayout; rotated files get a timestamp suffix.",
+    "Do NOT break existing readers of episodes.jsonl or signals.jsonl; the current-name file always exists after rotation (empty or with new data).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'rotate|ROTATION_THRESHOLD|MAX_LOG_SIZE|log_rotation' crates/roko-fs/src/layout.rs crates/roko-fs/src/substrate.rs"
+fail_msg = "roko-fs must contain log rotation logic for JSONL files"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'episodes.jsonl|signals.jsonl' crates/roko-fs/src/layout.rs crates/roko-fs/src/substrate.rs"
+fail_msg = "rotation must target episodes.jsonl and signals.jsonl"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-fs 2>&1"
+fail_msg = "roko-fs must compile after adding log rotation"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-fs rotation 2>&1"
+fail_msg = "log rotation tests must pass"
+
+acceptance = [
+    "When episodes.jsonl or signals.jsonl exceeds 100 MB, the file is renamed to <name>.<timestamp>.jsonl and a fresh file is created.",
+    "The threshold is configurable (default 100 MB).",
+    "Rotation happens at JSONL line boundaries, never mid-record.",
+    "Existing readers and the GC engine can discover rotated files via the timestamp suffix pattern.",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E09-T11: Track target/ directory size in metrics
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The Rust target/ directory grows continuously during self-hosted builds and
+# can easily exceed 10-20 GB. Add a periodic metric that reports the target/
+# directory size so it shows up in the MetricRegistry and the prometheus.txt
+# dump. This enables operators and the conductor DiskSpaceWatcher (E08-T08)
+# to track build artifact bloat and trigger cleanup.
+#
+[[task]]
+id = "E09-T11"
+title = "Add target/ directory size tracking to MetricRegistry"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-core/src/obs/metrics.rs",
+]
+role = "implementer"
+depends_on = ["E09-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "1-80", why = "MetricRegistry API — gauge or counter registration pattern for the target/ size metric" },
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "263-300", why = "render_prometheus — confirm the new metric will appear in the Prometheus dump" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "646-790", why = "Existing tick/flush intervals; add a periodic target/ size measurement alongside" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1738-1860", why = "Tick branch in the event loop; measure target/ size on a slow interval (e.g., every 60s)" },
+]
+symbols = [
+    "MetricRegistry — roko-core/obs/metrics.rs",
+    "register_standard_metrics — pre-defined metric set to extend",
+    "Gauge or IntGauge — metric type for a point-in-time size measurement",
+]
+anti_patterns = [
+    "Do NOT walk the entire target/ tree on every tick — use fs::metadata on the top-level directory or a cached du-like scan on a slow interval (60s+).",
+    "Do NOT fail the run if target/ does not exist or size cannot be measured; set the gauge to 0 and log a debug warning.",
+    "Do NOT add the metric to roko-fs; it belongs in the runner or CLI layer since target/ is a workspace concept, not a .roko/ concept.",
+    "Do NOT measure on every event loop tick; use a separate slow interval to avoid performance impact.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'target.*size|target_dir.*bytes|roko_target_dir_size' crates/roko-cli/src/runner/event_loop.rs crates/roko-core/src/obs/metrics.rs"
+fail_msg = "runner or metrics must contain a target/ directory size metric"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "roko-cli and roko-core must compile after adding target/ size metric"
+
+acceptance = [
+    "A gauge metric roko_target_dir_size_bytes (or similar) is registered in MetricRegistry.",
+    "The metric is updated periodically (every 60s or configurable interval) during runner-v2 execution.",
+    "The metric appears in .roko/metrics/prometheus.txt after a plan run.",
+    "If target/ does not exist, the metric reads 0 without error.",
+]

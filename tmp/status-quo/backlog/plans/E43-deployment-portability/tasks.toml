@@ -1,0 +1,449 @@
+[meta]
+plan = "E43-deployment-portability"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─── T01: Brain export — portable agent knowledge via JSONL backup ───
+
+[[task]]
+id = "E43-T01"
+title = "Enhance brain export with Merkle root integrity and sorted confidence output"
+description = """
+KnowledgeStore already has `export()` and `import()` (knowledge_store.rs:891-926, :941-964).
+The existing export writes a BackupHeader + JSONL entries, and import validates the header
+version and applies a confidence discount. What is MISSING per spec:
+
+1. **Merkle root** — compute a content hash (SHA-256) over all exported entry IDs in sorted
+   order, include as `merkle_root` field in BackupHeader. Import verifies this root before
+   proceeding.
+2. **Confidence-sorted output** — entries should be sorted by confidence descending in the
+   export so truncated imports get the most valuable knowledge first.
+3. **CLI subcommand** — wire `roko knowledge export <output_path>` as a CLI subcommand that
+   calls `KnowledgeStore::export()` with a default ExportFilter. Ensure the existing
+   `roko knowledge backup` path delegates to or reuses this.
+4. **Secret filtering** — add an ExportFilter predicate that excludes entries whose tags
+   contain "secret" or "api_key".
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-neuro/src/knowledge_store.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "891-926", why = "Existing export() with BackupHeader + JSONL writer" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "120-175", why = "KnowledgeStore struct, KnowledgeStats, KnowledgeQueryHit types" },
+  { path = "crates/roko-neuro/src/lib.rs", lines = "37-77", why = "Public API: KnowledgeEntry, KnowledgeTier, INSIGHT_HALF_LIFE_DAYS" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "1-70", why = "Brain export spec with Merkle-CRDT" },
+]
+symbols = [
+  "KnowledgeStore — append-only JSONL store at knowledge_store.rs:122",
+  "KnowledgeEntry — entry with id, confidence, tier, tags at lib.rs",
+  "BackupHeader — version + entry_count + created_at header struct",
+  "ExportFilter — existing filter struct that export() uses",
+]
+anti_patterns = [
+  "Do NOT export entries whose tags contain 'secret' or 'api_key'",
+  "Do NOT create a new export path — extend the existing export() method",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'merkle_root\\|content_hash.*sorted\\|fn export' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "Export must include merkle_root computation"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- export 2>&1"
+fail_msg = "Export tests must pass"
+
+# ─── T02: Brain import with selective decay and dedup ───
+
+[[task]]
+id = "E43-T02"
+title = "Enhance brain import with Merkle verification, decay, and dedup"
+description = """
+KnowledgeStore::import() exists (knowledge_store.rs:941-964) and already applies a confidence
+discount and resets tier to Transient. What is MISSING per spec:
+
+1. **Merkle root verification** — before ingesting, recompute the merkle root from entry IDs
+   in the imported file and verify it matches the header's merkle_root field. Reject if mismatch.
+2. **Configurable decay factor** — the existing `ImportOptions.confidence_discount` defaults
+   to 0.85. Update the default to 0.80 per spec. Ensure the CLI allows override via
+   `--decay-factor 0.8`.
+3. **HDC dedup** — before ingesting each entry, check cosine similarity against existing
+   entries. Skip entries with HDC cosine sim >0.95 (duplicate). This requires the `hdc` feature.
+   Without `hdc`, fall back to tag+keyword overlap dedup (existing logic).
+4. **Contradiction skip** — skip entries whose topic contradicts existing high-confidence
+   (>0.8) entries. Use the existing anti-knowledge conflict detection pattern from ingest().
+5. **Import summary log** — log: entries_imported, entries_skipped_dedup, entries_skipped_contradiction.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-neuro/src/knowledge_store.rs"]
+depends_on = ["E43-T01"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "941-964", why = "Existing import() with BackupHeader validation and confidence discount" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "481-520", why = "ingest()/ingest_with_source() — has anti-knowledge conflict logic" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "56-71", why = "HDC similarity thresholds: ANTI_KNOWLEDGE_*_THRESHOLD constants" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "634-700", why = "query() and query_similar() — HDC-based retrieval for dedup" },
+  { path = "crates/roko-neuro/src/admission.rs", lines = "38-70", why = "LightAdmissionGate.evaluate() — novelty check (1-similarity)" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "1-70", why = "Brain import spec with selective decay" },
+]
+symbols = [
+  "KnowledgeStore::import — existing import at :941",
+  "ImportOptions — confidence_discount, source_label fields",
+  "BackupHeader — version field checked at :956",
+  "LightAdmissionGate — min_novelty threshold at admission.rs:43",
+  "AntiKnowledgeConflict — conflict record struct at :94",
+]
+anti_patterns = [
+  "Do NOT blindly overwrite existing entries — always dedup first",
+  "Do NOT skip HDC dedup when hdc feature is disabled — fall back to tag overlap",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'merkle.*verify\\|dedup\\|contradiction.*skip\\|cosine_sim' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "Import must include merkle verification and dedup logic"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- import 2>&1"
+fail_msg = "Import tests must pass"
+
+# ─── T03: Daemon lifecycle — systemd/launchd install ───
+
+[[task]]
+id = "E43-T03"
+title = "Verify and enhance daemon install/uninstall for platform service configs"
+description = """
+daemon.rs already has daemon_install() at :485, daemon_uninstall() at :505, with
+platform-specific helpers: daemon_install_launchd() at :525 and daemon_uninstall_launchd()
+at :557. The launchd and systemd submodules exist (declared at :32-36). Verify that:
+
+1. **Service config generation** — the generated plist (macOS) or systemd unit (Linux)
+   includes: auto-restart on failure, WorkingDirectory from config, RUST_LOG=info env var,
+   port binding from roko.toml `server.port`.
+2. **DaemonCmd variants** — DaemonCmd (daemon.rs:47-68) has Status, Stop, Restart, Reload,
+   ListSubscriptions, PauseSubscription, ResumeSubscription. Verify Install/Uninstall are
+   handled as separate CLI subcommands, not DaemonCmd variants (they run before daemon starts).
+3. **Stale PID cleanup** — daemon_start() at :300 already checks for stale daemon info and
+   calls cleanup_stale_runtime_files(). Verify this handles the edge case where PID file
+   exists but process is dead.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/daemon.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/daemon.rs", lines = "1-36", why = "Module doc + launchd/systemd submodule declarations" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "47-84", why = "DaemonCmd IPC enum and DaemonResponse struct" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "162-185", why = "DaemonConfig with socket_path() and pid_path()" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "298-318", why = "daemon_start() — stale PID check, cleanup, spawn_detached_child" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "485-570", why = "daemon_install/uninstall + platform-specific helpers" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "306-465", why = "Daemon lifecycle spec with systemd and launchd configs" },
+]
+symbols = [
+  "DaemonCmd — IPC protocol enum at daemon.rs:47",
+  "DaemonConfig — runtime_dir + session_id at :163",
+  "DaemonInfo — pid, port, session_id, started_at at :189",
+  "daemon_install() — platform dispatch at :485",
+  "daemon_uninstall() — platform dispatch at :505",
+  "daemon_install_launchd() — plist generation at :525",
+]
+anti_patterns = [
+  "Do NOT hardcode paths — derive from DaemonConfig and runtime detection",
+  "Do NOT add Install/Uninstall to DaemonCmd — they run outside daemon process",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'daemon_install\\|daemon_uninstall\\|WorkingDirectory\\|auto.restart\\|RUST_LOG' crates/roko-cli/src/daemon.rs"
+fail_msg = "Daemon install must generate platform-appropriate service config"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T04: Daemon health check with PID + HTTP probe ───
+
+[[task]]
+id = "E43-T04"
+title = "Implement daemon health check combining PID liveness and HTTP probe"
+description = """
+`roko daemon status` currently uses DaemonCmd::Status (daemon.rs:49) via IPC. Enhance with:
+
+1. **PID liveness** — DaemonInfo has pid:u32 (daemon.rs:192). Use the existing `sysinfo`
+   dependency (imported at daemon.rs:20) to check if PID is alive. The pattern already exists
+   in daemon_start() at :304 (`pid_is_alive(info.pid)`). Reuse this.
+2. **HTTP health probe** — probe `/api/health` on the daemon's port (DaemonInfo.port at :194).
+   Use reqwest with a 3-second timeout. Report response latency.
+3. **Stale PID file** — if PID is dead but DaemonInfo file exists, clean up and report
+   "stopped (stale PID file cleaned)". The cleanup pattern exists at :312
+   (cleanup_stale_runtime_files).
+4. **Status output** — report: running/stopped, PID, uptime (from DaemonInfo.started_at),
+   health response latency ms. Wire into the existing DaemonStatus display at :288-295.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/daemon.rs"]
+depends_on = ["E43-T03"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/daemon.rs", lines = "187-200", why = "DaemonInfo with pid, port, started_at fields" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "273-296", why = "DaemonStatus struct and Display impl" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "298-318", why = "daemon_start — existing pid_is_alive check and cleanup" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "20", why = "sysinfo import for PID checking" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "440-465", why = "DaemonHealthCell spec" },
+]
+symbols = [
+  "DaemonInfo — pid, port, session_id, started_at at :189",
+  "DaemonStatus — session_id, state, socket_path, commands_processed, pid at :275",
+  "pid_is_alive() — existing helper used at :304",
+  "cleanup_stale_runtime_files() — used at :312",
+]
+anti_patterns = [
+  "Do NOT block forever on health probe — use 3-second timeout",
+  "Do NOT duplicate pid_is_alive — reuse the existing helper",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'health_probe\\|api/health\\|latency_ms\\|response_time' crates/roko-cli/src/daemon.rs"
+fail_msg = "Health check with HTTP probe must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T05: Log rotation for daemon output ───
+
+[[task]]
+id = "E43-T05"
+title = "Add log rotation for daemon stdout/stderr output"
+description = """
+The daemon redirects stdout/stderr to a log file. Add rotation:
+
+1. **Rotation trigger** — when the log file exceeds 10MB, rotate.
+2. **File naming** — daemon.log -> daemon.log.1 -> daemon.log.2 ... daemon.log.5.
+   Keep at most 5 rotated files.
+3. **Atomic rotation** — use rename (not copy+truncate) to avoid partial writes.
+4. **Wire into start** — call rotation check in daemon_start() before opening the log
+   file for the new session.
+5. **`roko daemon logs`** — DaemonCmd already has the structure for it. Implement
+   `--lines N` (default 50) that tails the daemon log. Use tokio::fs for async read.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/daemon.rs"]
+depends_on = ["E43-T03"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/daemon.rs", lines = "162-185", why = "DaemonConfig with runtime_dir for log file path" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "298-318", why = "daemon_start() — where rotation should be called before opening log" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "47-68", why = "DaemonCmd enum — where Logs variant would be added" },
+]
+symbols = [
+  "DaemonConfig — runtime_dir at :164, used to derive log path",
+  "DaemonCmd — IPC protocol enum at :47, add Logs variant",
+  "daemon_start() — foreground/background start at :300",
+]
+anti_patterns = [
+  "Do NOT use a logging framework for rotation — simple file rename is sufficient",
+  "Do NOT copy+truncate — use atomic rename",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'rotate\\|log_rotation\\|MAX_LOG_SIZE\\|daemon.log' crates/roko-cli/src/daemon.rs"
+fail_msg = "Log rotation logic must exist in daemon.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T06: Secrets rotation protocol ───
+
+[[task]]
+id = "E43-T06"
+title = "Implement secrets rotation with hot-swap signal to running daemon"
+description = """
+Add `roko config secrets rotate <key>` that:
+
+1. **Prompt for new value** — read from stdin (or --value flag for non-interactive).
+2. **Store encrypted** — write to ~/.roko/secrets/ using the existing secrets storage
+   (check what roko config set-secret uses).
+3. **Hot-swap signal** — send DaemonCmd::Reload (daemon.rs:55) via the IPC socket to the
+   running daemon so provider connections re-establish with the new key. The IPC path
+   already exists (DaemonConfig.socket_path at :174).
+4. **Audit logging** — append rotation event to ~/.roko/secrets/audit.jsonl with fields:
+   key_name, rotated_at, rotated_by (user from env). Do NOT log the secret value.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/commands/server.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/daemon.rs", lines = "47-68", why = "DaemonCmd::Reload variant for hot-swap signal" },
+  { path = "crates/roko-cli/src/daemon.rs", lines = "162-185", why = "DaemonConfig.socket_path() for IPC" },
+  { path = "crates/roko-cli/src/commands/server.rs", lines = "1-40", why = "Server commands context for secrets CLI" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "1-70", why = "Secrets management spec" },
+]
+symbols = [
+  "DaemonCmd::Reload — IPC reload command at daemon.rs:55",
+  "DaemonConfig::socket_path — IPC socket path at :174",
+  "DaemonResponse — IPC response struct at :73",
+]
+anti_patterns = [
+  "Do NOT store plaintext secrets in audit log — only log key names and timestamps",
+  "Do NOT bypass DaemonCmd IPC — use the existing socket protocol",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'secrets.*rotate\\|rotate_secret\\|SecretRotation\\|audit.jsonl' crates/roko-cli/src/"
+fail_msg = "Secrets rotation command must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T07: Three deployment tier advisor ───
+
+[[task]]
+id = "E43-T07"
+title = "Implement deployment tier advisor recommending Solo/Team/Production"
+description = """
+Add a tier_recommend() function that evaluates workspace configuration and recommends
+Solo/Team/Production tier. Wire into `roko doctor` and `roko status` output.
+
+1. **Tier logic** (from spec table):
+   - Solo: <=10 agents + no relay configured
+   - Team: <=50 agents + relay configured
+   - Production: >50 agents or multi-instance config
+
+2. **Input data** — from RokoConfig: count agents in config.agents, check
+   config.relay presence, check config.server settings.
+
+3. **Output** — add a ScalingTier enum (Solo/Team/Production) and
+   TierRecommendation struct with tier + reasoning string.
+
+4. **Wire into status.rs** — SessionStatus (status.rs:18-42) should include an
+   optional tier_recommendation field. Display in display_text() at :65.
+
+5. **Advisory only** — do NOT enforce tier. Just recommend and explain why.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/status.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/status.rs", lines = "1-80", why = "SessionStatus struct and display_text() method" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "9-68", why = "Three scaling tiers spec with selection criteria table" },
+]
+symbols = [
+  "SessionStatus — status data model at status.rs:18",
+  "display_text() — human-readable status formatting at :65",
+]
+anti_patterns = [
+  "Do NOT enforce tier — only advise with explanation",
+  "Do NOT add network calls — tier is computed from local config only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'tier_recommend\\|ScalingTier\\|TierRecommendation\\|Solo\\|Team\\|Production' crates/roko-cli/src/status.rs"
+fail_msg = "Tier recommendation function must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T08: Docker and Railway deployment configs ───
+
+[[task]]
+id = "E43-T08"
+title = "Add Dockerfile and Railway deploy template"
+description = """
+Create deployment artifacts for containerized roko-serve:
+
+1. **Multi-stage Dockerfile** — builder stage compiles release binary with
+   `cargo build --release -p roko-cli`, runtime stage uses `gcr.io/distroless/cc-debian12`.
+   Expose port 6677. Set RUST_LOG=info. Copy only the binary, not source.
+2. **railway.toml** — build command, health check endpoint `/api/health`, deploy config.
+3. **`roko deploy docker`** — CLI subcommand that runs `docker build -t roko-serve:latest .`
+   and optionally `docker push`. Check if commands/util.rs has existing deploy scaffolding.
+4. **Config respect** — the Dockerfile should read port from ROKO_PORT env var (default 6677),
+   matching roko.toml server.port.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["Dockerfile", "railway.toml", "crates/roko-cli/src/commands/util.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/commands/server.rs", lines = "1-50", why = "Server/deploy commands — check for existing deploy subcommand" },
+  { path = "docs/v2/25-DEPLOYMENT.md", lines = "1-70", why = "Deployment config spec with Docker and Railway" },
+]
+symbols = [
+  "RokoConfig.server.port — configured HTTP port, default 6677",
+]
+anti_patterns = [
+  "Do NOT embed secrets in Dockerfile — use runtime env vars only",
+  "Do NOT copy source code into runtime stage — binary only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f Dockerfile && grep -q 'distroless\\|roko-cli\\|6677' Dockerfile"
+fail_msg = "Multi-stage Dockerfile must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"

@@ -1,0 +1,167 @@
+[meta]
+plan = "E13-SPEC-DEBT-V2"
+total = 3
+done = 0
+status = "ready"
+milestone = "M3+"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E13-T01: Define the `Lens` protocol (trait + scope) — the telemetry unifier
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `rg 'trait Lens|struct .*Lens|LensScope|CollectorLens|TransformLens|ExportLens'
+#   crates/ apps/` → 0 hits at HEAD 5852c93c05. This is the single widest
+# zero-code v2 gap: 09/15-TELEMETRY, 03-GRAPH (conductor-as-Lens), 10-LEARNING
+# (c-factor-as-Lens), 16/20-SURFACES and 21-MARKETPLACE all describe an "X-as-Lens"
+# pipeline that has no trait to hang on. This task defines ONLY the trait + scope
+# type (the shape 5 specs agree on) — no concrete lenses, no consumers. That is
+# E13-T02. Deliverable is a compiling trait + module doc that the depth docs can
+# finally point at.
+#
+# Nearest reality to reconcile against: the hand-rolled MetricRegistry
+# (crates/roko-core/src/obs/metrics.rs:263, 889 LOC). The Lens trait must be able
+# to *wrap* it in E13-T02 without changing MetricRegistry's public API.
+#
+[[task]]
+id = "E13-T01"
+title = "Define trait Lens + LensScope in roko-core (no consumers)"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-1"
+max_loc = 90
+files = ["crates/roko-core/src/obs/lens.rs", "crates/roko-core/src/obs/mod.rs"]
+role = "architect"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "255-320", why = "MetricRegistry (:263) — the hand-rolled reality the Lens trait must be able to wrap in E13-T02 without breaking its API" },
+    { path = "crates/roko-core/src/obs/mod.rs", lines = "1-40", why = "obs module root — register the new lens submodule here" },
+    { path = "tmp/status-quo/backlog/epics/E09-OBSERVABILITY.md", lines = "1-40", why = "E09-T09 is the plumbing-level continuation; keep the Collector/Transform/Export vocabulary consistent" },
+]
+symbols = ["MetricRegistry", "LensScope", "Lens"]
+anti_patterns = [
+    "Do NOT add any concrete lens impls or wire MetricRegistry — that is strictly E13-T02.",
+    "Do NOT change MetricRegistry's public surface; the trait must adapt to it, not vice versa.",
+    "Do NOT rename Signal/Engram or Cell/Block here — orthogonal (E03 / E13-T03).",
+    "Keep it a trait + scope type + doc; resist building a whole pipeline engine.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'trait Lens' crates/roko-core/src/obs/lens.rs && grep -q 'LensScope' crates/roko-core/src/obs/lens.rs"
+fail_msg = "obs/lens.rs must define both `trait Lens` and a `LensScope` type"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile with the new Lens trait module"
+
+acceptance = ["`rg 'trait Lens' crates/` is no longer 0 hits; roko-core compiles; MetricRegistry API is unchanged; no concrete lens impls added yet."]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E13-T02: Adapt MetricRegistry as the first CollectorLens (proof of shape)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# With `trait Lens` defined (E13-T01), prove it wraps real telemetry by making
+# the existing MetricRegistry (obs/metrics.rs:263) the first concrete lens: a
+# CollectorLens that projects registry snapshots into the LensScope shape and
+# feeds StateHub. This is the "adapt, don't rebuild" pattern — MetricRegistry
+# keeps recording exactly as it does today; the lens is a read-side adapter over
+# it. Requires E09-T01 (the registry must actually be threaded into RunConfig and
+# recording) for the adapter to have live data.
+#
+[[task]]
+id = "E13-T02"
+title = "Wrap MetricRegistry as the first CollectorLens feeding StateHub"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-opus-4-1"
+max_loc = 140
+files = ["crates/roko-core/src/obs/lens.rs", "crates/roko-core/src/obs/metrics.rs"]
+role = "implementer"
+depends_on = ["E13-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/obs/lens.rs", lines = "1-90", why = "The trait + LensScope defined in E13-T01 — implement CollectorLens against it" },
+    { path = "crates/roko-core/src/obs/metrics.rs", lines = "255-340", why = "MetricRegistry snapshot/render surface to project from — read-only adapter, do not mutate its API" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "50-130", why = "StateHub publish surface — the lens sink target (matches E09 obs-signal map)" },
+]
+symbols = ["MetricRegistry", "Lens", "LensScope", "CollectorLens", "StateHub"]
+anti_patterns = [
+    "Do NOT re-implement metric recording — the lens is a read-side adapter over the existing MetricRegistry.",
+    "Do NOT change MetricRegistry's recording API or field layout.",
+    "Do NOT build TransformLens/ExportLens here — one concrete CollectorLens is the deliverable.",
+    "Do NOT couple to serve-only state; the adapter lives in roko-core so both CLI and serve can use it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CollectorLens' crates/roko-core/src/obs/lens.rs && grep -q 'impl .*Lens.* for' crates/roko-core/src/obs/lens.rs"
+fail_msg = "obs/lens.rs must define a CollectorLens that impls the Lens trait over MetricRegistry"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile with the MetricRegistry-backed CollectorLens"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core lens 2>&1"
+fail_msg = "the CollectorLens must have a passing unit test proving it projects MetricRegistry state into LensScope"
+
+acceptance = ["A CollectorLens wraps MetricRegistry and projects its snapshot into LensScope; a unit test proves the projection; MetricRegistry's own API is untouched; the trait is demonstrably not vaporware."]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E13-T03: Decide Cell vs Block naming without renaming code
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E13-T03"
+title = "Resolve Cell/Block naming drift in a decision doc"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-1"
+max_loc = 120
+files = ["tmp/status-quo/backlog/references"]
+role = "architect"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = ["A decision doc exists under tmp/status-quo/backlog/references/ that names the canonical term for the execution primitive, explains how the two current Cell traits differ, reconciles the v2-depth Block vocabulary, and explicitly states that no Rust rename is performed in this task."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "85-125", why = "roko-core Cell trait: the protocol/supertrait shape that v2 docs mostly describe." },
+    { path = "crates/roko-graph/src/cell.rs", lines = "68-110", why = "roko-graph Cell trait: graph-node execution shape; document the incompatibility instead of merging it here." },
+    { path = "docs/v2/00-INDEX.md", lines = "248-384", why = "Current v2 naming table says Cell, not Module/Block, but records a prior Cell rename from Block." },
+    { path = "docs/v2/15-TELEMETRY.md", lines = "15-55", why = "Lens/Observe docs still use Cell terminology; keep E13-T03 independent from Lens implementation." },
+    { path = "tmp/status-quo/31-GRAPH-CELLS-ENGINE.md", lines = "1-120", why = "Status-quo graph/cell/engine context for the naming decision." },
+]
+symbols = [
+    "roko_core::cell::Cell",
+    "roko_graph::cell::Cell",
+    "Block",
+    "Lens",
+]
+anti_patterns = [
+    "Do NOT rename Rust traits, modules, or docs outside the new decision document in this task.",
+    "Do NOT make this depend on E13-T01 or E13-T02; Cell/Block naming is orthogonal to Lens.",
+    "Do NOT declare both Cell and Block canonical; the document must make one explicit recommendation and name any aliases/deprecations.",
+    "Do NOT resolve the two Cell traits by merging code here; record the follow-up migration shape only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f tmp/status-quo/backlog/references/E13-cell-block-naming.md"
+fail_msg = "E13-T03 must create the Cell/Block naming decision document."
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'Cell' tmp/status-quo/backlog/references/E13-cell-block-naming.md && rg -q 'Block' tmp/status-quo/backlog/references/E13-cell-block-naming.md && rg -q 'canonical|Canonical|Decision|decision' tmp/status-quo/backlog/references/E13-cell-block-naming.md"
+fail_msg = "The decision doc must discuss Cell, Block, and the canonical naming decision."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'pub trait Block|struct Block|enum Block' crates/roko-core/src crates/roko-graph/src"
+fail_msg = "E13-T03 is a decision-only task; it must not introduce Block Rust types."

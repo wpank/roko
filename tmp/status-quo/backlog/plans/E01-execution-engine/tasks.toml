@@ -1,0 +1,983 @@
+[meta]
+plan = "E01-execution-engine"
+total = 16
+done = 6
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E01-T01: Flip `plan run` default engine to runner-v2  (THE self-hosting unblock)
+# ─────────────────────────────────────────────────────────────────────────────
+# Enum `#[default]` is already RunnerV2 (main.rs:1301) but clap's
+# `default_value = "graph"` at main.rs:1361 overrides it, so a bare
+# `roko plan run plans/` routes to the Graph dry-run stub. Change that one
+# literal to "runner-v2". This is the line P11 missed.
+[[task]]
+id = "E01-T01"
+title = "Flip plan run default engine to runner-v2"
+status = "done"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = []
+domain = "execution-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1294-1304", why = "PlanEngine enum — #[default] is already RunnerV2; confirms the enum is not the bug" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1356-1365", why = "clap `default_value = \"graph\"` at :1361 is the override to change" },
+]
+symbols = [
+    "PlanEngine — enum { Graph, RunnerV2 }; RunnerV2 has #[default]",
+]
+anti_patterns = [
+    "Do NOT delete the Graph variant or its --engine graph selectability.",
+    "Do NOT change the enum #[default] — it is already RunnerV2. Only the clap default_value literal changes.",
+    "Do NOT touch the resume PlanCmd::Run at main.rs:2699 (that is E01-T02).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'default_value = \"runner-v2\"' crates/roko-cli/src/main.rs"
+fail_msg = "clap default_value must be runner-v2"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'default_value = \"graph\"' crates/roko-cli/src/main.rs"
+fail_msg = "no clap arg may still default to graph"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+[[task.verify]]
+phase = "integration"
+command = "grep -q 'default_value = \"runner-v2\"' crates/roko-cli/src/main.rs"
+fail_msg = "runner-v2 must be the default engine"
+
+acceptance = [
+    "main.rs:1361 reads default_value = \"runner-v2\"",
+    "bare `roko plan run <dir>` routes to the Runner v2 block, not cmd_plan_run_engine",
+    "a no-flag run appends to .roko/episodes.jsonl",
+    "--engine graph is still explicitly selectable",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E01-T02: Fix `roko resume` to route to RunnerV2
+# ─────────────────────────────────────────────────────────────────────────────
+# `roko resume` builds PlanCmd::Run { engine: PlanEngine::Graph, .. } at
+# main.rs:2697-2708. The Graph path prints "snapshots will be ignored" and
+# dry-runs, so resume silently discards the snapshot. Route to RunnerV2, which
+# auto-resumes from .roko/state/executor.json.
+[[task]]
+id = "E01-T02"
+title = "Route roko resume to PlanEngine::RunnerV2"
+status = "done"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["E01-T01"]
+domain = "execution-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "2695-2710", why = "roko resume builds PlanCmd::Run with hardcoded PlanEngine::Graph at :2699" },
+]
+symbols = [
+    "Command::Resume handler — constructs PlanCmd::Run { engine, resume_plan, .. }",
+]
+anti_patterns = [
+    "Do NOT change any other field of the PlanCmd::Run struct literal.",
+    "Do NOT alter snapshot-location logic above line 2697.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "sed -n '2696,2709p' crates/roko-cli/src/main.rs | grep -q 'PlanEngine::RunnerV2'"
+fail_msg = "resume must construct engine: PlanEngine::RunnerV2"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "main.rs:2699 uses PlanEngine::RunnerV2",
+    "roko resume honors .roko/state/executor.json and skips completed tasks",
+    "no 'snapshots will be ignored' warning on resume",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E01-T03: Make the Graph path honest (defense in depth)
+# ─────────────────────────────────────────────────────────────────────────────
+# When --engine graph resolves task-executor to a dry_run:true cell, warn
+# loudly instead of printing a bare SUCCESS. Prevents fabricated success if
+# anyone selects graph explicitly.
+[[task]]
+id = "E01-T03"
+title = "Warn on Graph dry-run stub instead of fabricating SUCCESS"
+status = "done"
+tier = "focused"
+model_hint = "claude-sonnet-5"
+max_loc = 40
+files = [
+    "crates/roko-cli/src/commands/plan.rs",
+    "crates/roko-graph/src/cells/task_executor.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+domain = "execution-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1567-1715", why = "cmd_plan_run_engine — Graph path that prints SUCCESS" },
+    { path = "crates/roko-graph/src/cells/task_executor.rs", lines = "28-95", why = "dry_run:true stub; live branch falls back to dry-run + warn" },
+]
+symbols = [
+    "TaskExecutorCell — dry_run field default true",
+    "cmd_plan_run_engine — Graph execution entry",
+]
+anti_patterns = [
+    "Do NOT implement live dispatch in the Graph cell here — only warn and mark the run as dry-run.",
+    "Do NOT change the default engine (that is E01-T01).",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-graph 2>&1"
+fail_msg = "roko-cli and roko-graph must compile"
+
+[[task.verify]]
+phase = "integration"
+command = "grep -q 'dry-run' crates/roko-cli/src/commands/plan.rs && grep -q 'dry.run' crates/roko-graph/src/cells/task_executor.rs"
+fail_msg = "plan.rs and task_executor.rs must contain dry-run warnings"
+
+acceptance = [
+    "roko plan run <dir> --engine graph emits a visible dry-run/no-op warning to stderr",
+    "the warning names --engine runner-v2 as the real path",
+    "the run report marks itself dry-run, not SUCCESS",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T04: Wire a real intra-plan DAG scheduler
+# -----------------------------------------------------------------------------
+# runner/task_dag.rs already contains TaskDag::ready_tasks, next_ready_task,
+# mark_running, and dependency tests, but event_loop.rs only imports
+# task_status_is_terminal and still resolves sentinel "next" by walking the flat
+# task_index map. Use TaskDag in the live event loop so depends_on and
+# depends_on_plan govern dispatch readiness.
+[[task]]
+id = "E01-T04"
+title = "Wire a real intra-plan DAG scheduler"
+status = "done"
+tier = "architectural"
+model_hint = "claude-opus-4-6"
+max_loc = 180
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/task_dag.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "470-510", why = "task_index construction; currently no TaskDag state is created for loaded plans" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3908-3960", why = "SpawnAgent sentinel resolution walks task_index directly instead of TaskDag" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4048-4120", why = "preflight path after task resolution; mark running before agent/preflight dispatch" },
+    { path = "crates/roko-cli/src/runner/task_dag.rs", lines = "145-244", why = "TaskDag API to instantiate and call from the live event loop" },
+    { path = "crates/roko-cli/src/runner/task_dag.rs", lines = "380-510", why = "existing dependency-readiness tests; extend with live-order cases if needed" },
+]
+symbols = [
+    "TaskDag::ready_tasks",
+    "TaskDag::next_ready_task",
+    "TaskDag::mark_running",
+    "TaskDef::is_ready_with_plan_deps",
+]
+anti_patterns = [
+    "Do not keep a second ad hoc readiness implementation beside TaskDag in event_loop.rs.",
+    "Do not dispatch a task until every depends_on task is terminal-successful for the same plan.",
+    "Do not ignore depends_on_plan; pass completed plan ids into the DAG readiness query.",
+    "Do not use alphabetical order when TaskDef::sequence is available for author-order tie breaking.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'TaskDag::new|TaskDag::default|task_dag\\.(ready_tasks|next_ready_task|mark_running)' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event_loop.rs must instantiate/use TaskDag on the live dispatch path"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::task_dag 2>&1"
+fail_msg = "TaskDag dependency and double-dispatch tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after wiring TaskDag"
+
+acceptance = [
+    "TaskDag is constructed or restored during runner setup and is consulted before each SpawnAgent dispatch.",
+    "Two independent ready tasks in one plan can become ready together; a dependent task remains blocked until its prerequisites finish.",
+    "Running tasks are marked in TaskDag so the same task cannot be dispatched twice concurrently.",
+    "TaskDag tests cover independent branches, blocked dependents, terminal statuses, and double-dispatch prevention.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T05: Configurable agent concurrency independent of plan count
+# -----------------------------------------------------------------------------
+# --max-tasks / runner.max_concurrent_tasks is computed in commands/plan.rs and
+# stored in RunConfig, but event_loop.rs still hands DEFAULT_RUNNER_MAX_CONCURRENT_PLANS
+# to ExecutorConfig and only uses a semaphore for gates. Add an agent/task
+# dispatch throttle that uses max_concurrent_tasks; keep gate_concurrency separate.
+[[task]]
+id = "E01-T05"
+title = "Make agent concurrency configurable and separate from max_concurrent_plans"
+status = "done"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+    "crates/roko-cli/src/runner/types.rs",
+    "crates/roko-core/src/defaults.rs",
+]
+role = "implementer"
+depends_on = ["E01-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "330-510", why = "--max-tasks and config.runner.max_concurrent_tasks are resolved into RunConfig" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "238-278", why = "ExecutorConfig still uses DEFAULT_RUNNER_MAX_CONCURRENT_PLANS while max_concurrent_tasks is separate" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "470-505", why = "gate semaphore is created; add a distinct agent/task semaphore near setup" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1260-1290", why = "RunConfig fields for max_concurrent_tasks and gate_concurrency" },
+    { path = "crates/roko-core/src/defaults.rs", lines = "305-318", why = "hardcoded DEFAULT_RUNNER_MAX_CONCURRENT_PLANS and task/gate defaults" },
+]
+symbols = [
+    "RunConfig::max_concurrent_tasks",
+    "RunConfig::gate_concurrency",
+    "DEFAULT_RUNNER_MAX_CONCURRENT_PLANS",
+    "ExecutorConfig::max_concurrent_plans",
+]
+anti_patterns = [
+    "Do not use gate_concurrency as the agent-dispatch throttle.",
+    "Do not leave DEFAULT_RUNNER_MAX_CONCURRENT_PLANS as the effective cap for agents.",
+    "Do not spawn more concurrent agents than --max-tasks allows, even when several DAG tasks are ready.",
+    "Do not serialize all tasks through one current_task slot after TaskDag reports multiple ready branches.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'max_concurrent_tasks.*(Semaphore|acquire|permit)|task.*permit|agent.*permit|Semaphore::new\\(config.max_concurrent_tasks' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner must throttle agent/task dispatch using RunConfig.max_concurrent_tasks"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'DEFAULT_RUNNER_MAX_CONCURRENT_PLANS' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event_loop.rs must not hardcode DEFAULT_RUNNER_MAX_CONCURRENT_PLANS as the live execution cap"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "roko-cli and roko-core must compile after concurrency wiring"
+
+acceptance = [
+    "--max-tasks N limits the number of in-flight agents/tasks to N across the runner.",
+    "Gate concurrency remains separately controlled by RunConfig.gate_concurrency.",
+    "ExecutorConfig no longer relies on DEFAULT_RUNNER_MAX_CONCURRENT_PLANS as the effective agent cap.",
+    "A regression test or focused unit test covers a plan with more ready DAG tasks than the configured cap.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T06: Turn gate-failure replan into a durable revision
+# -----------------------------------------------------------------------------
+# The live runner currently enriches the next retry prompt with replan_context
+# only. Port the durable revision behavior from the legacy PlanRunner so a
+# repeated terminal gate failure produces a task/plan revision that is persisted
+# and replayable after resume.
+[[task]]
+id = "E01-T06"
+title = "Upgrade gate-failure replan from prompt append to task or plan revision"
+status = "done"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 140
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/state.rs",
+    "crates/roko-cli/src/runner/persist.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1540-1605", why = "current prompt-only gate failure path stores replan_context" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3336-3430", why = "save_snapshot builds the durable StateSnapshot; revised task data must survive resume" },
+    { path = "crates/roko-cli/src/runner/state.rs", lines = "120-205", why = "runner mutable state fields; add durable revision state here if needed" },
+    { path = "crates/roko-cli/src/runner/state.rs", lines = "660-672", why = "set/take replan_context API currently used only for prompt append" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "5543-5705", why = "legacy gate-failure plan revision behavior to port, not reintroduce wholesale" },
+]
+symbols = [
+    "build_gate_retry_context",
+    "PlanRevisionReason::GateFailureLimit",
+    "PlanRunner::build_gate_failure_plan_revision",
+    "RunnerState::set_replan_context",
+]
+anti_patterns = [
+    "Do not satisfy this by only appending more text to the retry prompt.",
+    "Do not import the whole legacy PlanRunner; port the revision contract into runner/.",
+    "Do not lose the existing failure context prompt injection; it should accompany the durable revision.",
+    "Do not create an unbounded replan loop; keep the existing retry and replan caps authoritative.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'PlanRevision|revision_request|replan_ledger|revised_task|split_into|TaskDef.*revision' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/state.rs crates/roko-cli/src/runner/persist.rs"
+fail_msg = "runner must persist a real gate-failure task/plan revision, not just prompt text"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'set_replan_context' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "existing retry-prompt context should still be threaded alongside the durable revision"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after durable replan wiring"
+
+acceptance = [
+    "A terminal gate-failing task produces a durable task or plan revision record.",
+    "The revision is included in the runner snapshot or an adjacent runner-owned ledger and is restored on resume.",
+    "The next agent attempt sees both the structured revision and the existing gate-failure context.",
+    "A repeated identical failure is capped or deduplicated instead of generating unbounded revisions.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T07: Worktree isolation for runner execution
+# -----------------------------------------------------------------------------
+# The worktree manager exists in roko-orchestrator, while runner/merge.rs still
+# has an explicit in-place fallback. After the real DAG and task cap exist, route
+# plan/task execution through per-plan worktrees and make MergeBranch merge the
+# generated branch instead of validating a shared dirty tree.
+[[task]]
+id = "E01-T07"
+title = "Wire per-plan worktree isolation into the runner"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 160
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/merge.rs",
+    "crates/roko-orchestrator/src/worktree.rs",
+]
+role = "implementer"
+depends_on = ["E01-T04", "E01-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "216-340", why = "WorktreeManager create/ensure APIs and canonical branch naming" },
+    { path = "crates/roko-cli/src/runner/merge.rs", lines = "140-210", why = "GitMergeBackend currently accepts in-place mode when the branch is absent" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4240-4395", why = "agent dispatch setup; pass the isolated worktree path to each spawned agent" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4950-4975", why = "MergeBranch action builds the branch name and merger config" },
+]
+symbols = [
+    "WorktreeManager::ensure_for_plan",
+    "WorktreeManager::create_for_plan",
+    "MergeRequest::new",
+    "GitMergeBackend",
+]
+anti_patterns = [
+    "Do not let two concurrent plans edit the same checkout.",
+    "Do not keep in-place merge fallback for isolated runner-v2 execution.",
+    "Do not create worktrees before the DAG/task cap can prevent runaway parallel branches.",
+    "Do not merge without running the existing post-merge regression gate.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'WorktreeManager|ensure_for_plan|create_for_plan' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/merge.rs"
+fail_msg = "runner must call WorktreeManager for isolated plan execution"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'in-place runner mode' crates/roko-cli/src/runner/merge.rs"
+fail_msg = "merge backend must no longer pass absent-branch in-place mode as success"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-orchestrator worktree 2>&1"
+fail_msg = "worktree manager tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-orchestrator 2>&1"
+fail_msg = "runner and worktree crates must compile together"
+
+acceptance = [
+    "Each concurrently executing plan gets a deterministic worktree and branch.",
+    "Agent dispatch uses the worktree path as the task workdir instead of the shared root checkout.",
+    "MergeBranch merges the plan branch back through GitMergeBackend and still runs the regression gate.",
+    "Parallel plans do not observe each other's uncommitted edits.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T08: Enrich live gate dispatch
+# -----------------------------------------------------------------------------
+# The live runner gate path is in runner/gate_dispatch.rs. It currently passes
+# RungExecutionInputs::default() into GatePipelineBuilder; the richer rung input
+# assembly lives in legacy orchestrate.rs and the gate crate consumes it in
+# roko-gate/src/rung_dispatch.rs.
+[[task]]
+id = "E01-T08"
+title = "Wire enrich_rung_config into live gate dispatch"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 130
+files = [
+    "crates/roko-cli/src/runner/gate_dispatch.rs",
+    "crates/roko-gate/src/rung_dispatch.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "70-150", why = "run_gate_once builds default inputs today" },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "45-112", why = "RungExecutionInputs fields and default use in the builder" },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "223-410", why = "rich rung consumers that need real inputs instead of defaults" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "18492-18635", why = "legacy enrich_rung_config and RungExecutionInputs construction to port selectively" },
+]
+symbols = [
+    "gate_dispatch::run_gate_once",
+    "RungExecutionInputs",
+    "RungExecutionConfig",
+    "GatePipelineBuilder::from_config_with_execution",
+]
+anti_patterns = [
+    "Do not add a new runner/rung_dispatch.rs path; that file does not exist.",
+    "Do not leave RungExecutionInputs::default() on the live runner gate path.",
+    "Do not wire only custom rungs; default configured rungs need the enriched inputs too.",
+    "Do not make rungs 3-6 pass by stubbed Verdict::pass when required inputs are missing.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'enrich_rung_config|build_rung_execution_inputs|RungExecutionInputs \\{' crates/roko-cli/src/runner/gate_dispatch.rs"
+fail_msg = "live gate dispatch must build enriched RungExecutionInputs"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'RungExecutionInputs::default()' crates/roko-cli/src/runner/gate_dispatch.rs"
+fail_msg = "runner gate_dispatch must not use default rung inputs on the live gate path"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-gate rung_dispatch 2>&1"
+fail_msg = "rung dispatch tests must pass with enriched input plumbing"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-gate 2>&1"
+fail_msg = "roko-cli and roko-gate must compile after gate enrichment wiring"
+
+acceptance = [
+    "run_gate_once builds RungExecutionInputs from task/run context and passes them into GatePipelineBuilder::from_config_with_execution.",
+    "The live runner path no longer relies on RungExecutionInputs::default().",
+    "Rungs beyond compile/test can receive source roots, target crates, verifier config, and any required oracle inputs.",
+    "Missing rich inputs fail closed or degrade explicitly instead of stub-passing.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T09: Regression test for bare default plan run
+# -----------------------------------------------------------------------------
+[[task]]
+id = "E01-T09"
+title = "Regression test that bare default plan run does real work"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["crates/roko-cli/tests/default_engine.rs"]
+role = "implementer"
+depends_on = ["E01-T01", "E01-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/tests/common/mod.rs", lines = "1-120", why = "test helpers for isolated roko CLI workspaces and sample tasks.toml content" },
+    { path = "crates/roko-cli/tests/runner_facades_e2e.rs", lines = "1-140", why = "existing runner-v2 integration test style" },
+    { path = "crates/roko-cli/tests/resume_cycle_e2e.rs", lines = "1-140", why = "resume-state assertions and isolated process patterns" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1356-1365", why = "engine clap default under test" },
+]
+symbols = [
+    "common::init_workspace",
+    "common::run_roko_isolated",
+    "PlanEngine::RunnerV2",
+]
+anti_patterns = [
+    "Do not pass --engine in the regression test; the point is the bare default.",
+    "Do not assert only process exit status; assert runner artifacts that Graph dry-run does not write.",
+    "Do not require network or real LLM access; use the existing isolated/mock fixture pattern.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'default_engine_does_real_work|bare_default_plan_run' crates/roko-cli/tests/default_engine.rs"
+fail_msg = "a named default-engine regression test must be added"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test default_engine default_engine_does_real_work 2>&1"
+fail_msg = "bare default plan run regression test must pass"
+
+acceptance = [
+    "The test invokes `roko plan run <dir>` without --engine.",
+    "The test asserts runner-v2 artifacts such as .roko/episodes.jsonl and state snapshot output.",
+    "The test fails if the Graph dry-run shape is produced.",
+    "The test uses local mock/isolation helpers and does not call a live model provider.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T10: Reconcile docs with the real runner engine
+# -----------------------------------------------------------------------------
+# Wait for T06 and T08 so docs do not claim gate-replan and rich rung
+# enrichment are live before they are actually on the runner-v2 path.
+[[task]]
+id = "E01-T10"
+title = "Reconcile CLAUDE.md, GAPS, and docs to the real runner engine"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 80
+files = [
+    "CLAUDE.md",
+    ".roko/GAPS.md",
+    "docs/v2/INTEGRATION-GUIDE.md",
+    "docs/v2/04-EXECUTION.md",
+]
+role = "implementer"
+depends_on = ["E01-T01", "E01-T02", "E01-T06", "E01-T08"]
+
+[task.context]
+read_files = [
+    { path = "CLAUDE.md", lines = "10-45", why = "status table still credits wired execution/gates/replan to orchestrate.rs" },
+    { path = "CLAUDE.md", lines = "90-100", why = "self-hosting run/resume commands" },
+    { path = ".roko/GAPS.md", lines = "1-25", why = "Task 102 runner-v2/Graph engine notes to reconcile" },
+    { path = "docs/v2/INTEGRATION-GUIDE.md", lines = "350-380", why = "plan run flow still describes orchestrate.rs as the main loop" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "460-475", why = "plan run/resume examples" },
+]
+symbols = [
+    "runner/",
+    "roko-graph",
+    "roko resume",
+    "enrich_rung_config",
+]
+anti_patterns = [
+    "Do not claim orchestrate.rs is the live execution hub.",
+    "Do not document gate-failure replan or rung enrichment as wired until E01-T06 and E01-T08 are complete.",
+    "Do not remove the explicit --engine graph escape hatch from docs; mark it as the dry-run/graph path.",
+    "Do not broaden this into a full docs rewrite outside the listed engine/resume rows.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'orchestrate.rs.*Wired|Called from orchestrate.rs|orchestrate.rs\\).*main orchestration loop|via orchestrate.rs' CLAUDE.md .roko/GAPS.md docs/v2/INTEGRATION-GUIDE.md docs/v2/04-EXECUTION.md"
+fail_msg = "target docs must stop presenting orchestrate.rs as the live runner execution hub"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'runner/|runner-v2|roko-graph' CLAUDE.md .roko/GAPS.md docs/v2/INTEGRATION-GUIDE.md docs/v2/04-EXECUTION.md"
+fail_msg = "target docs must name the real runner-v2/roko-graph split"
+
+acceptance = [
+    "CLAUDE.md status rows point to runner/ for live plan execution and roko-graph for the explicit graph path.",
+    "The self-hosting workflow uses the corrected default plan run and resume commands.",
+    ".roko/GAPS.md Task 102 no longer frames runner-v2 as the legacy feature gate problem.",
+    "The touched docs distinguish completed runner-v2 behavior from any remaining post-E01 follow-up work.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T11: Enforce cost budget from config before plan execution starts
+# -----------------------------------------------------------------------------
+# runner.cost_budget_usd in roko.toml and --cost-budget CLI flag set a spend
+# ceiling, but the runner never checks it before dispatching agents. Add an
+# upfront budget guard that reads the configured cost ceiling (RunConfig or
+# roko.toml runner section), validates it is positive, and aborts plan execution
+# with a clear error if the budget is zero or already exhausted. During
+# execution, accumulate per-turn cost from efficiency events and halt dispatch
+# when the running total exceeds the ceiling.
+[[task]]
+id = "E01-T11"
+title = "Enforce cost budget from config before plan execution starts"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/types.rs",
+    "crates/roko-core/src/config.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1260-1310", why = "RunConfig fields — check for existing cost_budget or add one" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "470-510", why = "runner setup — insert budget validation before first dispatch" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3908-3960", why = "SpawnAgent path — check accumulated cost against ceiling before dispatching" },
+    { path = "crates/roko-core/src/config.rs", lines = "1-80", why = "roko.toml runner config section where cost_budget_usd may already exist or needs adding" },
+]
+symbols = [
+    "RunConfig — runner configuration struct",
+    "ExecutorConfig — runtime executor setup",
+    "EfficiencyEvent — per-turn cost tracking already emitted",
+]
+anti_patterns = [
+    "Do NOT silently ignore a zero or negative budget — fail with an explicit error before any agent spawns.",
+    "Do NOT skip budget checks mid-run; accumulate cost from efficiency events and halt when exceeded.",
+    "Do NOT hardcode a default budget — None means unlimited; only enforce when explicitly configured.",
+    "Do NOT block on cost calculation if efficiency events are not yet emitted — use best-effort accumulation.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'cost_budget\\|budget_exceeded\\|budget_remaining\\|CostBudget' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/types.rs"
+fail_msg = "runner must implement cost budget tracking and enforcement"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "roko-cli and roko-core must compile after cost budget wiring"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli budget 2>&1"
+fail_msg = "a test must assert that a zero or exhausted budget prevents agent dispatch"
+
+acceptance = [
+    "A configured cost_budget_usd = 0.0 aborts plan execution with a clear error before any agent spawns.",
+    "During execution, accumulated cost from efficiency events is checked before each agent dispatch.",
+    "When accumulated cost exceeds the budget, the runner halts with a budget-exceeded error and saves state for resume.",
+    "No budget configured (None) means unlimited — no enforcement overhead.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T12: Add retry-with-backoff wrapper for agent dispatch failures (429/529)
+# -----------------------------------------------------------------------------
+# Agent dispatch via the runner can fail with transient provider errors (HTTP 429
+# rate limit, 529 overloaded). Currently the runner treats these as terminal task
+# failures. Add a retry wrapper with exponential backoff that catches retriable
+# status codes and re-dispatches with jitter before marking a task as failed.
+[[task]]
+id = "E01-T12"
+title = "Add retry-with-backoff wrapper for agent dispatch failures (429/529)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 130
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-agent/src/dispatcher/mod.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4048-4120", why = "agent dispatch path — wrap this with retry logic for retriable errors" },
+    { path = "crates/roko-agent/src/dispatcher/mod.rs", lines = "1-80", why = "dispatcher error types — identify which errors are retriable (429, 529, timeout)" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1540-1605", why = "gate failure retry path — reference for how retries are currently structured" },
+]
+symbols = [
+    "AgentDispatchError — dispatcher error enum",
+    "SpawnAgent — event loop action that triggers dispatch",
+    "RunConfig::max_retries — existing retry cap field if present",
+]
+anti_patterns = [
+    "Do NOT retry non-retriable errors (auth failures, invalid config, 400s) — only 429, 529, and connection timeouts.",
+    "Do NOT use fixed delay — use exponential backoff with jitter (base 1s, max 60s).",
+    "Do NOT retry indefinitely — cap at 5 retries by default, configurable via runner.dispatch_max_retries.",
+    "Do NOT block the event loop during backoff — use tokio::time::sleep and yield between retries.",
+    "Do NOT lose the original error context — log each retry attempt with the status code and backoff duration.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'retry\\|backoff\\|retriable\\|Retriable\\|is_retriable\\|dispatch_max_retries' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner must implement retry-with-backoff for retriable agent dispatch failures"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q '429\\|529\\|rate.limit\\|overloaded\\|Too Many Requests' crates/roko-cli/src/runner/event_loop.rs crates/roko-agent/src/dispatcher/mod.rs"
+fail_msg = "retriable status codes (429, 529) must be explicitly recognized"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-agent 2>&1"
+fail_msg = "roko-cli and roko-agent must compile after retry wrapper addition"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli retry_backoff 2>&1"
+fail_msg = "a test must assert that a 429 error triggers retry with backoff and a 400 does not"
+
+acceptance = [
+    "A 429 or 529 response from agent dispatch triggers exponential backoff retry (base 1s, max 60s, jitter).",
+    "Retries are capped at 5 by default, configurable via runner.dispatch_max_retries in roko.toml.",
+    "Non-retriable errors (400, 401, 403) immediately fail the task without retry.",
+    "Each retry attempt is logged with the status code, attempt number, and backoff duration.",
+    "The event loop is not blocked during backoff — async sleep yields control.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T13: Wire roko-mcp-github as a default MCP server for plan execution
+# -----------------------------------------------------------------------------
+# The roko-mcp-github binary exists (crates/roko-mcp-github/) but is not
+# registered as a default MCP server during plan execution. The runner should
+# auto-include it in the MCP config passed to agents so every plan-executing
+# agent has GitHub tools (create PR, push branch, read issues) available
+# without manual .mcp.json configuration.
+[[task]]
+id = "E01-T13"
+title = "Wire roko-mcp-github as a default MCP server for plan execution"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-mcp-github/src/main.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "4254-4302", why = "resolve_mcp_config_path builds the MCP config for agents; add roko-mcp-github as a default entry" },
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "1-40", why = "Binary entry point; confirm the command name and expected args for MCP stdio transport" },
+    { path = "crates/roko-mcp-github/Cargo.toml", lines = "1-15", why = "Package name and binary target for the MCP server" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig shape: name, command, args, env — construct one for roko-mcp-github" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4240-4395", why = "Agent dispatch setup; confirm MCP config is threaded to spawned agents" },
+]
+symbols = [
+    "resolve_mcp_config_path — orchestrate.rs:4254",
+    "McpServerConfig { name, command, args, env } — config.rs:14",
+    "roko-mcp-github — binary in crates/roko-mcp-github/",
+]
+anti_patterns = [
+    "Do NOT hardcode the binary path; use which::which or cargo_bin discovery, with a graceful skip if the binary is not found.",
+    "Do NOT override user-configured MCP servers; append the default GitHub server only if no server named 'github' is already configured.",
+    "Do NOT require GITHUB_TOKEN at config time; the MCP server should handle missing auth at runtime with a clear error.",
+    "Do NOT add roko-mcp-github as a build dependency of roko-cli; it is a separate binary discovered at runtime.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko-mcp-github|mcp.github|github.*mcp' crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner or orchestrate must register roko-mcp-github as a default MCP server"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding default GitHub MCP server"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- mcp_github_default 2>&1"
+fail_msg = "a test must verify roko-mcp-github is included in the default MCP config when the binary exists"
+
+acceptance = [
+    "roko-mcp-github is auto-included in the MCP config passed to plan-executing agents when the binary is discoverable.",
+    "User-configured MCP servers are not overridden; the default is additive.",
+    "If the roko-mcp-github binary is absent, the runner proceeds without it and logs a debug-level note.",
+    "GITHUB_TOKEN from the environment or per-server env config is passed through to the MCP server process.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T14: Auto-create branches per plan run using worktree branch naming
+# -----------------------------------------------------------------------------
+# When a plan starts execution, the runner should auto-create a git branch
+# using the existing format_branch_name convention from worktree.rs
+# (roko/plan/<plan_id>). This ensures each plan run operates on an isolated
+# branch that can later be pushed and PR'd. The branch should be created
+# even when worktree isolation (E01-T07) is not yet wired, as a preparatory
+# step for the full GitHub workflow.
+[[task]]
+id = "E01-T14"
+title = "Auto-create git branches per plan run using worktree.rs branch naming"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-orchestrator/src/worktree.rs",
+]
+role = "implementer"
+depends_on = ["E01-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "150-158", why = "format_branch_name(plan_id) -> roko/plan/<plan_id> — the canonical branch naming convention to reuse" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "470-510", why = "Runner setup path; create the branch here before task dispatch begins" },
+    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "315-319", why = "create_for_plan already uses format_branch_name; reuse the naming but allow branch-only mode without full worktree" },
+]
+symbols = [
+    "format_branch_name(plan_id) -> String — worktree.rs:156",
+    "WorktreeManager::create_for_plan — worktree.rs:316",
+]
+anti_patterns = [
+    "Do NOT create a worktree here; this task is branch-only. E01-T07 owns worktree isolation.",
+    "Do NOT fail the plan run if branch creation fails (e.g., branch already exists from a previous run); log a warning and proceed.",
+    "Do NOT invent a new branch naming convention; reuse format_branch_name from worktree.rs.",
+    "Do NOT create branches when --dry-run or --engine graph is active.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'format_branch_name|roko/plan/' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event_loop.rs must use format_branch_name to create per-plan branches"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'git.*branch|git.*checkout.*-b|Command.*branch' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event_loop.rs must issue a git branch creation command at plan start"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding auto-branch creation"
+
+acceptance = [
+    "Each plan run creates a branch named roko/plan/<plan_id> before dispatching any tasks.",
+    "If the branch already exists (resume case), the runner checks it out without error.",
+    "The branch name convention matches format_branch_name from worktree.rs.",
+    "No branch is created for --engine graph or dry-run modes.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T15: Pre-run disk space check
+# -----------------------------------------------------------------------------
+# Before starting plan execution, check available disk space and refuse to
+# start if less than 2 GB is free. Agent runs generate artifacts (worktrees,
+# episodes, metrics, snapshots) that can fill a disk quickly; a pre-flight
+# check avoids partial runs that fail mid-execution and leave orphaned state.
+[[task]]
+id = "E01-T15"
+title = "Add pre-run disk space check (refuse to start if <2GB free)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+domain = "execution-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "744-790", why = "Run setup area where pre-flight checks should go before spawning agents" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "330-510", why = "RunConfig construction; disk threshold could be configurable here" },
+    { path = "crates/roko-fs/src/layout.rs", lines = "1-50", why = "RokoLayout root path — the filesystem to check for available space" },
+]
+symbols = [
+    "fs2::available_space or nix::sys::statvfs — platform disk space query",
+    "RunConfig — runner/types.rs; add optional min_disk_bytes field",
+    "RokoLayout::root — the path to query for available space",
+]
+anti_patterns = [
+    "Do NOT silently skip the check on unsupported platforms — log a warning and continue.",
+    "Do NOT make the threshold hardcoded without a config override path.",
+    "Do NOT fail the check inside the event loop after agents are already spawned; check before setup.",
+    "Do NOT use unstable std APIs; prefer fs2 or nix for cross-platform disk space queries.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'available_space|free_space|disk_space|min_disk' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/commands/plan.rs"
+fail_msg = "runner must contain a pre-run disk space check"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding disk space check"
+
+acceptance = [
+    "roko plan run refuses to start with a clear error when available disk space is below 2 GB (or configured threshold).",
+    "The threshold is configurable via RunConfig or roko.toml runner section.",
+    "The check runs before agent spawn, not after partial execution.",
+    "On platforms where disk space cannot be queried, a warning is logged and execution proceeds.",
+]
+
+# -----------------------------------------------------------------------------
+# E01-T16: Auto-trigger GC at plan start
+# -----------------------------------------------------------------------------
+# The GcEngine in roko-fs/gc.rs has should_auto_gc, scan, and collect methods
+# but they are only callable via `roko knowledge gc`. Wire an automatic GC
+# trigger at plan start so stale episodes, old runs, and excess cache entries
+# are cleaned before execution begins, preventing disk bloat during long
+# self-hosting sessions.
+[[task]]
+id = "E01-T16"
+title = "Auto-trigger GcEngine at plan start"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
+role = "implementer"
+depends_on = ["E01-T01"]
+domain = "execution-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/gc.rs", lines = "95-210", why = "GcEngine::new, should_auto_gc, scan, collect — the API to call at plan start" },
+    { path = "crates/roko-fs/src/gc.rs", lines = "30-55", why = "RetentionPolicy defaults (200 episodes, 7-day runs, 500MB threshold)" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "744-790", why = "Run setup area; trigger GC here before agent dispatch" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "376-410", why = "Layout and config are available here; construct GcEngine from them" },
+]
+symbols = [
+    "GcEngine::new(layout, policy) — roko-fs/gc.rs:105",
+    "GcEngine::should_auto_gc — roko-fs/gc.rs:186",
+    "GcEngine::collect — the actual cleanup method",
+    "RetentionPolicy::default — safe defaults for auto-triggered GC",
+]
+anti_patterns = [
+    "Do NOT block plan execution on GC failure — GC is best-effort.",
+    "Do NOT run GC unconditionally every time; use should_auto_gc to gate it.",
+    "Do NOT build a new GcEngine when the layout already provides one — reuse if available.",
+    "Do NOT change RetentionPolicy defaults; use config overrides if needed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'GcEngine|should_auto_gc|auto_gc' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/commands/plan.rs"
+fail_msg = "runner must call GcEngine at plan start"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding auto-GC trigger"
+
+acceptance = [
+    "Plan start calls GcEngine::should_auto_gc and, if true, runs GcEngine::collect with default or configured policy.",
+    "GC results are logged (items removed, bytes freed) at info level.",
+    "GC failure does not prevent plan execution — errors are logged and swallowed.",
+    "The GC trigger respects the existing RetentionPolicy from config or defaults.",
+]

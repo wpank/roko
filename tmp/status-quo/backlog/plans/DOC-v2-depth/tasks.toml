@@ -1,0 +1,1201 @@
+[meta]
+plan = "DOC-v2-depth"
+total = 24
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "DOC-V2D-ROOT"
+title = "Cover root v2-depth prompts, guide, and index"
+description = "Backlog-authoring slice for the root docs/v2-depth markdown files. Read the root index, guide, ingest prompt, and research prompt corpus, then keep the source-coverage ledger and this plan aligned. This is planning coverage, not product implementation."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = []
+depends_on_plan = ["E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/GUIDE.md", why = "Depth-layer authoring rules and source-pool guidance." },
+    { path = "docs/v2-depth/INDEX.md", why = "Master mapping from source docs into the unified depth structure." },
+    { path = "docs/v2-depth/INGEST-PROMPT.md", why = "Root ingestion prompt that explains how source docs become depth docs." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT.md", why = "Primary root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-2.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-3.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-4.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-5.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-6.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-7.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-8.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-9.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-10.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-11.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-12.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-13.md", why = "Root research prompt source." },
+    { path = "docs/v2-depth/RESEARCH-PROMPT-14.md", why = "Root research prompt source." },
+]
+symbols = ["Depth layer", "Ingest prompt", "Research prompt corpus"]
+anti_patterns = [
+    "Do NOT edit docs/v2-depth source files in this task.",
+    "Do NOT turn research-prompt coverage into product implementation work.",
+    "Do NOT use local depends_on for E01-E18 prerequisites; use depends_on_plan only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-ROOT' || exit 1; done"
+fail_msg = "coverage ledger must map every root docs/v2-depth markdown file to DOC-V2D-ROOT"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every root docs/v2-depth markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All root docs/v2-depth markdown files are represented in the ledger and in this task's read_files."]
+
+[[task]]
+id = "DOC-V2D-00-INDEX"
+title = "Cover v2-depth foundation, vision, and index docs"
+description = "Backlog-authoring slice for docs/v2-depth/00-index. Preserve foundation, vocabulary, positioning, readiness, topology, and self-improving-system test strategy coverage in the ledger and task context."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-ROOT"]
+depends_on_plan = ["E13-SPEC-DEBT-V2", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/00-index/INDEX.md", why = "Directory index for foundation depth docs." },
+    { path = "docs/v2-depth/00-index/05-vision-and-positioning.md", why = "Vision and positioning source coverage." },
+    { path = "docs/v2-depth/00-index/architectural-thesis.md", why = "Architectural thesis source coverage." },
+    { path = "docs/v2-depth/00-index/design-principles-algebra.md", why = "Design principles and algebra source coverage." },
+    { path = "docs/v2-depth/00-index/implementation-readiness.md", why = "Implementation readiness source coverage." },
+    { path = "docs/v2-depth/00-index/integration-topology.md", why = "Integration topology source coverage." },
+    { path = "docs/v2-depth/00-index/test-strategy-for-self-improving-systems.md", why = "Self-improving system test strategy source coverage." },
+]
+symbols = ["Signal", "Block", "Graph", "Lens", "Loop"]
+anti_patterns = [
+    "Do NOT duplicate spec-layer definitions; capture only depth-derived backlog coverage.",
+    "Do NOT rewrite canonical vocabulary from docs/v2 in this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/00-index -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-00-INDEX' || exit 1; done"
+fail_msg = "coverage ledger must map every 00-index markdown file to DOC-V2D-00-INDEX"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/00-index -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 00-index markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 00-index depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-01-SIGNAL"
+title = "Cover v2-depth signal algebra and economics docs"
+description = "Backlog-authoring slice for docs/v2-depth/01-signal. Track Signal algebra, scoring, provenance, taint, decay, and demurrage depth coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-00-INDEX"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE", "E03-type-consolidation", "E05-gate-adaptivity-live"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/01-signal/INDEX.md", why = "Directory index for signal depth docs." },
+    { path = "docs/v2-depth/01-signal/demurrage-economics.md", why = "Signal decay and demurrage source coverage." },
+    { path = "docs/v2-depth/01-signal/provenance-and-taint.md", why = "Provenance and taint source coverage." },
+    { path = "docs/v2-depth/01-signal/scoring-and-calibration.md", why = "Scoring and calibration source coverage." },
+    { path = "docs/v2-depth/01-signal/signal-algebra.md", why = "Signal algebra source coverage." },
+]
+symbols = ["Signal", "Score protocol", "Provenance", "Taint", "Demurrage"]
+anti_patterns = [
+    "Do NOT reintroduce Engram terminology where the depth docs require Signal.",
+    "Do NOT conflate storage convergence tasks with signal semantics coverage.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/01-signal -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-01-SIGNAL' || exit 1; done"
+fail_msg = "coverage ledger must map every 01-signal markdown file to DOC-V2D-01-SIGNAL"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/01-signal -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 01-signal markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 01-signal depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-02-BLOCK"
+title = "Cover v2-depth block, compose, verify, and protocol docs"
+description = "Backlog-authoring slice for docs/v2-depth/02-block. Track Block protocol algebra, Store/Bus duality, Compose, enrichment, context selection, attention auctions, Verify, gates, artifacts, ratcheting, and verdict coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-01-SIGNAL"]
+depends_on_plan = ["E05-gate-adaptivity-live", "E06-COMPOSE-UNIFY", "E14-providers-tools"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/02-block/INDEX.md", why = "Directory index for block depth docs." },
+    { path = "docs/v2-depth/02-block/active-inference-context-selection.md", why = "Active inference context-selection source coverage." },
+    { path = "docs/v2-depth/02-block/compose-protocol-and-builder.md", why = "Compose protocol and builder source coverage." },
+    { path = "docs/v2-depth/02-block/distributed-and-affect-composition.md", why = "Distributed and affect-modulated composition source coverage." },
+    { path = "docs/v2-depth/02-block/enrichment-pipeline.md", why = "Enrichment pipeline source coverage." },
+    { path = "docs/v2-depth/02-block/eval-lifecycle-and-generation.md", why = "Evaluation lifecycle and generation source coverage." },
+    { path = "docs/v2-depth/02-block/gate-feedback-and-retry.md", why = "Gate feedback and retry source coverage." },
+    { path = "docs/v2-depth/02-block/positional-effects-and-retrieval.md", why = "Positional effects and retrieval source coverage." },
+    { path = "docs/v2-depth/02-block/process-reward-and-artifacts.md", why = "Process reward and artifacts source coverage." },
+    { path = "docs/v2-depth/02-block/protocol-algebra.md", why = "Protocol algebra source coverage." },
+    { path = "docs/v2-depth/02-block/ratcheting-and-adaptive-thresholds.md", why = "Ratcheting and adaptive thresholds source coverage." },
+    { path = "docs/v2-depth/02-block/store-and-bus-duality.md", why = "Store and Bus duality source coverage." },
+    { path = "docs/v2-depth/02-block/vcg-attention-auction.md", why = "VCG attention auction source coverage." },
+    { path = "docs/v2-depth/02-block/verdicts-as-signals.md", why = "Verdicts as Signals source coverage." },
+    { path = "docs/v2-depth/02-block/verify-as-universal-oracle.md", why = "Verify as universal oracle source coverage." },
+    { path = "docs/v2-depth/02-block/verify-cells-and-pipeline.md", why = "Verify cells and pipeline source coverage." },
+]
+symbols = ["Block", "Compose protocol", "Verify protocol", "Store protocol", "Verdict"]
+anti_patterns = [
+    "Do NOT split Compose/Verify coverage into product implementation here.",
+    "Do NOT depend locally on E05, E06, or E14 task ids; those are cross-plan prerequisites.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/02-block -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-02-BLOCK' || exit 1; done"
+fail_msg = "coverage ledger must map every 02-block markdown file to DOC-V2D-02-BLOCK"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/02-block -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 02-block markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 02-block depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-03-GRAPH"
+title = "Cover v2-depth graph orchestration docs"
+description = "Backlog-authoring slice for docs/v2-depth/03-graph. Track plan discovery, DAGs, phases, parallel execution, worktrees, merge, snapshots, event logs, conductor integration, stigmergy, and cross-domain orchestration."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-02-BLOCK"]
+depends_on_plan = ["E01-execution-engine", "E08-conductor-supervision"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/03-graph/INDEX.md", why = "Directory index for graph depth docs." },
+    { path = "docs/v2-depth/03-graph/event-log-and-conductor.md", why = "Event log and conductor source coverage." },
+    { path = "docs/v2-depth/03-graph/parallel-executor.md", why = "Parallel executor source coverage." },
+    { path = "docs/v2-depth/03-graph/plan-discovery-and-dag.md", why = "Plan discovery and DAG source coverage." },
+    { path = "docs/v2-depth/03-graph/plan-phases-and-actions.md", why = "Plan phases and actions source coverage." },
+    { path = "docs/v2-depth/03-graph/snapshot-and-recovery.md", why = "Snapshot and recovery source coverage." },
+    { path = "docs/v2-depth/03-graph/stigmergy-and-cross-domain.md", why = "Stigmergy and cross-domain orchestration source coverage." },
+    { path = "docs/v2-depth/03-graph/worktree-isolation-and-merge.md", why = "Worktree isolation and merge source coverage." },
+]
+symbols = ["Graph", "DAG", "Flow", "Conductor", "Worktree"]
+anti_patterns = [
+    "Do NOT make graph coverage depend locally on E01 or E08 task ids.",
+    "Do NOT claim runtime DAG behavior is implemented by ledger coverage alone.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/03-graph -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-03-GRAPH' || exit 1; done"
+fail_msg = "coverage ledger must map every 03-graph markdown file to DOC-V2D-03-GRAPH"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/03-graph -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 03-graph markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 03-graph depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-04-SPECIALIZATIONS"
+title = "Cover v2-depth specialization index docs"
+description = "Backlog-authoring slice for docs/v2-depth/04-specializations. Preserve the specialization index as a covered source even where no deeper specialization docs exist yet."
+status = "ready"
+tier = "mechanical"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-02-BLOCK", "DOC-V2D-03-GRAPH"]
+depends_on_plan = ["E14-providers-tools"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/04-specializations/INDEX.md", why = "Directory index and source coverage for specialization depth." },
+]
+symbols = ["Specialization", "Block", "Domain"]
+anti_patterns = [
+    "Do NOT fabricate missing specialization docs.",
+    "Do NOT add source paths that do not exist under docs/v2-depth/04-specializations.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/04-specializations -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-04-SPECIALIZATIONS' || exit 1; done"
+fail_msg = "coverage ledger must map every 04-specializations markdown file to DOC-V2D-04-SPECIALIZATIONS"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/04-specializations -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 04-specializations markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 04-specializations depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-05-EXECUTION-ENGINE"
+title = "Cover v2-depth execution engine docs"
+description = "Backlog-authoring slice for docs/v2-depth/05-execution-engine. Track cognitive-loop-as-graph, resilience, numerics, and execution-engine index coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-03-GRAPH"]
+depends_on_plan = ["E01-execution-engine", "E05-gate-adaptivity-live"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/05-execution-engine/INDEX.md", why = "Directory index for execution-engine depth docs." },
+    { path = "docs/v2-depth/05-execution-engine/cognitive-loop-as-graph.md", why = "Cognitive loop as graph source coverage." },
+    { path = "docs/v2-depth/05-execution-engine/resilience-and-numerics.md", why = "Resilience and numerics source coverage." },
+]
+symbols = ["Execution engine", "Cognitive loop", "Flow", "Resilience"]
+anti_patterns = [
+    "Do NOT convert execution-engine coverage into runtime code changes in this plan.",
+    "Do NOT bypass E01/E05 as cross-plan prerequisites.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/05-execution-engine -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-05-EXECUTION-ENGINE' || exit 1; done"
+fail_msg = "coverage ledger must map every 05-execution-engine markdown file to DOC-V2D-05-EXECUTION-ENGINE"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/05-execution-engine -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 05-execution-engine markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 05-execution-engine depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-06-TRIGGER-SYSTEM"
+title = "Cover v2-depth trigger system index docs"
+description = "Backlog-authoring slice for docs/v2-depth/06-trigger-system. Preserve trigger-system index coverage and its dependency on Graph and runtime foundations."
+status = "ready"
+tier = "mechanical"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-03-GRAPH"]
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/06-trigger-system/INDEX.md", why = "Directory index and source coverage for trigger-system depth." },
+]
+symbols = ["Trigger protocol", "Graph", "Flow"]
+anti_patterns = [
+    "Do NOT fabricate trigger-system source docs beyond the existing index.",
+    "Do NOT encode E01 as a local dependency.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/06-trigger-system -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-06-TRIGGER-SYSTEM' || exit 1; done"
+fail_msg = "coverage ledger must map every 06-trigger-system markdown file to DOC-V2D-06-TRIGGER-SYSTEM"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/06-trigger-system -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 06-trigger-system markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 06-trigger-system depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-07-AGENT-RUNTIME"
+title = "Cover v2-depth agent runtime, daimon, conductor, heartbeat, and lifecycle docs"
+description = "Backlog-authoring slice for docs/v2-depth/07-agent-runtime. Track agent runtime, providers, roles, tool loop, MCP, conductor, affect, heartbeat, lifecycle, energy, and mesh transfer coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-05-EXECUTION-ENGINE", "DOC-V2D-06-TRIGGER-SYSTEM"]
+depends_on_plan = ["E07-learning-knowledge", "E08-conductor-supervision", "E14-providers-tools", "E15-mcp-config", "E17-acp-completion"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/07-agent-runtime/INDEX.md", why = "Directory index for agent-runtime depth docs." },
+    { path = "docs/v2-depth/07-agent-runtime/14-conductor-as-verify-pipeline.md", why = "Conductor as Verify pipeline source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/15-circuit-breaker-and-interventions.md", why = "Circuit breaker and interventions source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/16-diagnosis-and-stuck-detection.md", why = "Diagnosis and stuck-detection source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/17-adaptive-supervision-loop.md", why = "Adaptive supervision loop source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/18-affect-as-functor.md", why = "Affect as functor source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/19-behavioral-states-and-routing.md", why = "Behavioral states and routing source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/20-somatic-landscape.md", why = "Somatic landscape source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/21-collective-contagion.md", why = "Collective contagion source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/22-heartbeat-as-hot-graph.md", why = "Heartbeat as hot graph source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/23-t0-probes-as-verify-cells.md", why = "T0 probes as Verify cells source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/24-attention-auction-and-cortical-state.md", why = "Attention auction and cortical state source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/25-active-inference-state-space.md", why = "Active inference state space source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/26-agent-lifecycle-type-state.md", why = "Agent lifecycle type-state source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/27-knowledge-transfer-and-mesh.md", why = "Knowledge transfer and mesh source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/28-funding-budgets-and-operator-model.md", why = "Funding, budgets, and operator model source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/agent-cell-and-providers.md", why = "Agent cell and providers source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/agent-pools-and-roles.md", why = "Agent pools and roles source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/chat-types-and-streaming.md", why = "Chat types and streaming source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-energy-and-vitality.md", why = "Cognitive energy and vitality source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/cognitive-timescales.md", why = "Cognitive timescales source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/cross-cut-functors.md", why = "Cross-cut functors source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/dual-process-and-efe-routing.md", why = "Dual-process and EFE routing source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/extensibility-and-creation.md", why = "Extensibility and creation source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/harness-and-format-engineering.md", why = "Harness and format engineering source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/provider-integrations-and-profiles.md", why = "Provider integrations and profiles source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/temperament-and-dual-process.md", why = "Temperament and dual-process source coverage." },
+    { path = "docs/v2-depth/07-agent-runtime/tool-loop-and-mcp.md", why = "Tool loop and MCP source coverage." },
+]
+symbols = ["Agent", "Conductor", "Daimon", "Heartbeat", "Tool loop", "MCP"]
+anti_patterns = [
+    "Do NOT use this coverage task to implement provider, conductor, or ACP runtime code.",
+    "Do NOT place E07, E08, E14, E15, or E17 task ids in depends_on.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/07-agent-runtime -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-07-AGENT-RUNTIME' || exit 1; done"
+fail_msg = "coverage ledger must map every 07-agent-runtime markdown file to DOC-V2D-07-AGENT-RUNTIME"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/07-agent-runtime -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 07-agent-runtime markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 07-agent-runtime depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-08-EXTENSION-SYSTEM"
+title = "Cover v2-depth extension system index docs"
+description = "Backlog-authoring slice for docs/v2-depth/08-extension-system. Preserve extension-system index coverage as the bridge between agent extensibility and platform catalogs."
+status = "ready"
+tier = "mechanical"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-07-AGENT-RUNTIME"]
+depends_on_plan = ["E14-providers-tools", "E15-mcp-config"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/08-extension-system/INDEX.md", why = "Directory index and source coverage for extension-system depth." },
+]
+symbols = ["Extension system", "Plugin", "MCP"]
+anti_patterns = [
+    "Do NOT fabricate extension-system docs beyond the existing index.",
+    "Do NOT encode provider or MCP prerequisites as local task ids.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/08-extension-system -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-08-EXTENSION-SYSTEM' || exit 1; done"
+fail_msg = "coverage ledger must map every 08-extension-system markdown file to DOC-V2D-08-EXTENSION-SYSTEM"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/08-extension-system -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 08-extension-system markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 08-extension-system depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-09-TELEMETRY"
+title = "Cover v2-depth telemetry and Lens docs"
+description = "Backlog-authoring slice for docs/v2-depth/09-telemetry. Track observability-as-Lens pipeline coverage and its index."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-03-GRAPH", "DOC-V2D-07-AGENT-RUNTIME"]
+depends_on_plan = ["E09-OBSERVABILITY", "E13-SPEC-DEBT-V2"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/09-telemetry/INDEX.md", why = "Directory index for telemetry depth docs." },
+    { path = "docs/v2-depth/09-telemetry/01-observability-as-lens-pipeline.md", why = "Observability as Lens pipeline source coverage." },
+]
+symbols = ["Telemetry", "Lens", "MetricRegistry", "Observe protocol"]
+anti_patterns = [
+    "Do NOT implement Lens runtime code in this coverage task.",
+    "Do NOT use E09 or E13 task ids as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/09-telemetry -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-09-TELEMETRY' || exit 1; done"
+fail_msg = "coverage ledger must map every 09-telemetry markdown file to DOC-V2D-09-TELEMETRY"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/09-telemetry -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 09-telemetry markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 09-telemetry depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-10-LEARNING-LOOPS"
+title = "Cover v2-depth learning loops docs"
+description = "Backlog-authoring slice for docs/v2-depth/10-learning-loops. Track episodes, playbooks, bandits, cascade routing, metrics, drift, provider health, missing loops, calibration, self-improvement, heuristics, and autocatalytic learning coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-05-EXECUTION-ENGINE", "DOC-V2D-07-AGENT-RUNTIME"]
+depends_on_plan = ["E05-gate-adaptivity-live", "E07-learning-knowledge"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/10-learning-loops/INDEX.md", why = "Directory index for learning-loop depth docs." },
+    { path = "docs/v2-depth/10-learning-loops/autocatalytic-compounding.md", why = "Autocatalytic compounding source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/bandit-routing-and-cascade.md", why = "Bandit routing and cascade source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/c-factor-as-lens.md", why = "C-factor as Lens source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/drift-and-stability.md", why = "Drift and stability source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/episodes-and-playbooks.md", why = "Episodes and playbooks source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/heuristics-and-falsifiers.md", why = "Heuristics and falsifiers source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/metrics-baselines-and-regression.md", why = "Metrics, baselines, and regression source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/missing-loops-and-calibration.md", why = "Missing loops and calibration source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/provider-health-and-pareto.md", why = "Provider health and Pareto source coverage." },
+    { path = "docs/v2-depth/10-learning-loops/self-improvement-frameworks.md", why = "Self-improvement frameworks source coverage." },
+]
+symbols = ["Learning loop", "Episode", "Playbook", "Bandit", "Cascade router"]
+anti_patterns = [
+    "Do NOT implement learning persistence or router changes in this coverage task.",
+    "Do NOT encode E05 or E07 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/10-learning-loops -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-10-LEARNING-LOOPS' || exit 1; done"
+fail_msg = "coverage ledger must map every 10-learning-loops markdown file to DOC-V2D-10-LEARNING-LOOPS"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/10-learning-loops -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 10-learning-loops markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 10-learning-loops depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-11-MEMORY"
+title = "Cover v2-depth memory, HDC, dreams, and stigmergy docs"
+description = "Backlog-authoring slice for docs/v2-depth/11-memory. Track knowledge-as-Signal, HDC algebra, lifecycle, antiknowledge, transfer, dream cycles, replay, consolidation, threat simulation, stigmergy, mesh sync, and collective metrics coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-01-SIGNAL", "DOC-V2D-10-LEARNING-LOOPS"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE", "E07-learning-knowledge"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/11-memory/INDEX.md", why = "Directory index for memory depth docs." },
+    { path = "docs/v2-depth/11-memory/01-knowledge-as-signal.md", why = "Knowledge as Signal source coverage." },
+    { path = "docs/v2-depth/11-memory/02-hdc-algebra-and-retrieval.md", why = "HDC algebra and retrieval source coverage." },
+    { path = "docs/v2-depth/11-memory/03-knowledge-lifecycle-loop.md", why = "Knowledge lifecycle loop source coverage." },
+    { path = "docs/v2-depth/11-memory/04-antiknowledge-and-immunity.md", why = "Antiknowledge and immunity source coverage." },
+    { path = "docs/v2-depth/11-memory/05-cross-domain-transfer.md", why = "Cross-domain transfer source coverage." },
+    { path = "docs/v2-depth/11-memory/06-dream-cycle-as-loop.md", why = "Dream cycle as Loop source coverage." },
+    { path = "docs/v2-depth/11-memory/07-replay-and-counterfactual-cells.md", why = "Replay and counterfactual cells source coverage." },
+    { path = "docs/v2-depth/11-memory/08-hypnagogia-and-creativity.md", why = "Hypnagogia and creativity source coverage." },
+    { path = "docs/v2-depth/11-memory/09-consolidation-and-staging.md", why = "Consolidation and staging source coverage." },
+    { path = "docs/v2-depth/11-memory/10-threat-simulation-and-nightmares.md", why = "Threat simulation source coverage." },
+    { path = "docs/v2-depth/11-memory/11-stigmergy-as-bus.md", why = "Stigmergy as Bus source coverage." },
+    { path = "docs/v2-depth/11-memory/12-pheromone-mechanics-and-interference.md", why = "Pheromone mechanics and interference source coverage." },
+    { path = "docs/v2-depth/11-memory/13-morphogenetic-specialization-as-loop.md", why = "Morphogenetic specialization as Loop source coverage." },
+    { path = "docs/v2-depth/11-memory/14-mesh-sync-and-subnets.md", why = "Mesh sync and subnets source coverage." },
+    { path = "docs/v2-depth/11-memory/15-collective-metrics-as-lens.md", why = "Collective metrics as Lens source coverage." },
+]
+symbols = ["Memory", "HDC", "Knowledge", "Dream cycle", "Stigmergy"]
+anti_patterns = [
+    "Do NOT implement memory storage changes in this coverage task.",
+    "Do NOT encode E02 or E07 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/11-memory -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-11-MEMORY' || exit 1; done"
+fail_msg = "coverage ledger must map every 11-memory markdown file to DOC-V2D-11-MEMORY"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/11-memory -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 11-memory markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 11-memory depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-12-CONNECTIVITY"
+title = "Cover v2-depth connectivity docs"
+description = "Backlog-authoring slice for docs/v2-depth/12-connectivity. Track relay wire protocol, topic namespace, chain event projection, relay deployment, and coordination pattern coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-03-GRAPH", "DOC-V2D-17-SECURITY"]
+depends_on_plan = ["E10-FRONTEND-CONTRACT", "E15-mcp-config", "E17-acp-completion"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/12-connectivity/INDEX.md", why = "Directory index for connectivity depth docs." },
+    { path = "docs/v2-depth/12-connectivity/01-relay-wire-protocol.md", why = "Relay wire protocol source coverage." },
+    { path = "docs/v2-depth/12-connectivity/02-topic-namespace.md", why = "Topic namespace source coverage." },
+    { path = "docs/v2-depth/12-connectivity/03-chain-event-projection.md", why = "Chain event projection source coverage." },
+    { path = "docs/v2-depth/12-connectivity/04-relay-deployment.md", why = "Relay deployment source coverage." },
+    { path = "docs/v2-depth/12-connectivity/05-coordination-patterns.md", why = "Coordination patterns source coverage." },
+]
+symbols = ["Connect protocol", "Relay", "Topic namespace", "Chain event"]
+anti_patterns = [
+    "Do NOT implement relay, API, or MCP wiring here.",
+    "Do NOT use cross-plan task ids as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/12-connectivity -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-12-CONNECTIVITY' || exit 1; done"
+fail_msg = "coverage ledger must map every 12-connectivity markdown file to DOC-V2D-12-CONNECTIVITY"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/12-connectivity -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 12-connectivity markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 12-connectivity depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-13-BUILTIN-CATALOG"
+title = "Cover v2-depth builtin catalog docs"
+description = "Backlog-authoring slice for docs/v2-depth/13-builtin-catalog. Track tool architecture, MCP, plugin SPI, domain tools, profiles, event sources, and templates coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-07-AGENT-RUNTIME", "DOC-V2D-12-CONNECTIVITY"]
+depends_on_plan = ["E14-providers-tools", "E15-mcp-config"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/13-builtin-catalog/INDEX.md", why = "Directory index for builtin-catalog depth docs." },
+    { path = "docs/v2-depth/13-builtin-catalog/01-tool-architecture-as-cell-protocol.md", why = "Tool architecture as protocol source coverage." },
+    { path = "docs/v2-depth/13-builtin-catalog/02-mcp-as-connect-protocol.md", why = "MCP as Connect protocol source coverage." },
+    { path = "docs/v2-depth/13-builtin-catalog/03-plugin-spi-as-extension.md", why = "Plugin SPI as extension source coverage." },
+    { path = "docs/v2-depth/13-builtin-catalog/04-domain-tools-and-profiles.md", why = "Domain tools and profiles source coverage." },
+    { path = "docs/v2-depth/13-builtin-catalog/05-event-sources-and-templates.md", why = "Event sources and templates source coverage." },
+]
+symbols = ["Builtin catalog", "Tool", "MCP", "Plugin SPI"]
+anti_patterns = [
+    "Do NOT implement missing tool handlers in this coverage task.",
+    "Do NOT encode E14 or E15 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/13-builtin-catalog -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-13-BUILTIN-CATALOG' || exit 1; done"
+fail_msg = "coverage ledger must map every 13-builtin-catalog markdown file to DOC-V2D-13-BUILTIN-CATALOG"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/13-builtin-catalog -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 13-builtin-catalog markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 13-builtin-catalog depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-14-CONFIG"
+title = "Cover v2-depth config docs"
+description = "Backlog-authoring slice for docs/v2-depth/14-config. Track config-as-Signal, layered resolution, reload, and config index coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-05-EXECUTION-ENGINE", "DOC-V2D-17-SECURITY"]
+depends_on_plan = ["E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/14-config/INDEX.md", why = "Directory index for config depth docs." },
+    { path = "docs/v2-depth/14-config/02-layered-resolution-and-reload.md", why = "Layered resolution and reload source coverage." },
+    { path = "docs/v2-depth/14-config/config-as-signal.md", why = "Config as Signal source coverage." },
+]
+symbols = ["Config", "Signal", "Layered resolution", "Reload"]
+anti_patterns = [
+    "Do NOT implement config parser changes in this coverage task.",
+    "Do NOT use E18 task ids as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/14-config -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-14-CONFIG' || exit 1; done"
+fail_msg = "coverage ledger must map every 14-config markdown file to DOC-V2D-14-CONFIG"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/14-config -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 14-config markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 14-config depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-15-MARKETPLACE"
+title = "Cover v2-depth marketplace docs"
+description = "Backlog-authoring slice for docs/v2-depth/15-marketplace. Track agent identity, reputation, knowledge marketplace, payments, tokenomics, and agent economy coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-11-MEMORY", "DOC-V2D-12-CONNECTIVITY"]
+depends_on_plan = ["E11-chain-isfr", "E14-providers-tools"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/15-marketplace/INDEX.md", why = "Directory index for marketplace depth docs." },
+    { path = "docs/v2-depth/15-marketplace/01-agent-identity-as-signal.md", why = "Agent identity as Signal source coverage." },
+    { path = "docs/v2-depth/15-marketplace/02-reputation-as-score-protocol.md", why = "Reputation as Score protocol source coverage." },
+    { path = "docs/v2-depth/15-marketplace/03-knowledge-marketplace-as-store.md", why = "Knowledge marketplace as Store source coverage." },
+    { path = "docs/v2-depth/15-marketplace/04-payment-protocols-as-connect.md", why = "Payment protocols as Connect source coverage." },
+    { path = "docs/v2-depth/15-marketplace/05-tokenomics-as-demurrage-store.md", why = "Tokenomics as demurrage Store source coverage." },
+    { path = "docs/v2-depth/15-marketplace/06-agent-economy-as-loop.md", why = "Agent economy as Loop source coverage." },
+]
+symbols = ["Marketplace", "Agent identity", "Reputation", "Payment", "Tokenomics"]
+anti_patterns = [
+    "Do NOT implement chain or payment logic in this coverage task.",
+    "Do NOT encode E11 or E14 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/15-marketplace -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-15-MARKETPLACE' || exit 1; done"
+fail_msg = "coverage ledger must map every 15-marketplace markdown file to DOC-V2D-15-MARKETPLACE"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/15-marketplace -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 15-marketplace markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 15-marketplace depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-16-SURFACES"
+title = "Cover v2-depth surfaces docs"
+description = "Backlog-authoring slice for docs/v2-depth/16-surfaces. Track Lens composition, CLI command graph, TUI architecture, Rosedust/Spectre, HTTP realtime API, generative interfaces, and DX coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-09-TELEMETRY", "DOC-V2D-12-CONNECTIVITY", "DOC-V2D-14-CONFIG"]
+depends_on_plan = ["E10-FRONTEND-CONTRACT", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/16-surfaces/INDEX.md", why = "Directory index for surfaces depth docs." },
+    { path = "docs/v2-depth/16-surfaces/01-surfaces-as-lens-composition.md", why = "Surfaces as Lens composition source coverage." },
+    { path = "docs/v2-depth/16-surfaces/02-cli-and-command-graph.md", why = "CLI and command graph source coverage." },
+    { path = "docs/v2-depth/16-surfaces/03-tui-screen-architecture.md", why = "TUI screen architecture source coverage." },
+    { path = "docs/v2-depth/16-surfaces/04-rosedust-and-spectre.md", why = "Rosedust and Spectre source coverage." },
+    { path = "docs/v2-depth/16-surfaces/05-http-api-and-realtime.md", why = "HTTP API and realtime source coverage." },
+    { path = "docs/v2-depth/16-surfaces/06-generative-interfaces-and-a2ui.md", why = "Generative interfaces and A2UI source coverage." },
+    { path = "docs/v2-depth/16-surfaces/07-developer-experience-and-onboarding.md", why = "Developer experience and onboarding source coverage." },
+]
+symbols = ["Surface", "Lens", "CLI", "TUI", "HTTP API"]
+anti_patterns = [
+    "Do NOT implement frontend or API contract changes in this coverage task.",
+    "Do NOT encode E10 or E18 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/16-surfaces -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-16-SURFACES' || exit 1; done"
+fail_msg = "coverage ledger must map every 16-surfaces markdown file to DOC-V2D-16-SURFACES"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/16-surfaces -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 16-surfaces markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 16-surfaces depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-17-SECURITY"
+title = "Cover v2-depth security docs"
+description = "Backlog-authoring slice for docs/v2-depth/17-security. Track immune-system graph, defense-in-depth, taint, IFC, audit witness, forensics, adaptive risk, prompt security, CaMeL, cognitive kernel, and formal methods coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-02-BLOCK", "DOC-V2D-03-GRAPH", "DOC-V2D-07-AGENT-RUNTIME"]
+depends_on_plan = ["E04-security-perimeter", "E15-mcp-config", "E17-acp-completion"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/17-security/INDEX.md", why = "Directory index for security depth docs." },
+    { path = "docs/v2-depth/17-security/02-defense-in-depth-as-pipeline.md", why = "Defense in depth as pipeline source coverage." },
+    { path = "docs/v2-depth/17-security/03-capability-taint-and-ifc.md", why = "Capability taint and IFC source coverage." },
+    { path = "docs/v2-depth/17-security/04-audit-witness-and-forensics.md", why = "Audit witness and forensics source coverage." },
+    { path = "docs/v2-depth/17-security/05-adaptive-risk-as-loop.md", why = "Adaptive risk as Loop source coverage." },
+    { path = "docs/v2-depth/17-security/06-prompt-security-and-camel.md", why = "Prompt security and CaMeL source coverage." },
+    { path = "docs/v2-depth/17-security/07-cognitive-kernel-and-formal-methods.md", why = "Cognitive kernel and formal methods source coverage." },
+    { path = "docs/v2-depth/17-security/immune-system-as-graph.md", why = "Immune system as Graph source coverage." },
+]
+symbols = ["Security", "Taint", "IFC", "CaMeL", "Audit witness"]
+anti_patterns = [
+    "Do NOT implement security policy or ACP permission changes in this coverage task.",
+    "Do NOT encode E04, E15, or E17 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/17-security -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-17-SECURITY' || exit 1; done"
+fail_msg = "coverage ledger must map every 17-security markdown file to DOC-V2D-17-SECURITY"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/17-security -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 17-security markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 17-security depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-18-REGISTRIES"
+title = "Cover v2-depth registry and chain docs"
+description = "Backlog-authoring slice for docs/v2-depth/18-registries. Track chain domain plugins, HDC on-chain verification, job markets, reputation, triage, payments, gossip, privacy, simulation, and liveness coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-12-CONNECTIVITY", "DOC-V2D-15-MARKETPLACE", "DOC-V2D-17-SECURITY"]
+depends_on_plan = ["E11-chain-isfr", "E14-providers-tools"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/18-registries/INDEX.md", why = "Directory index for registry depth docs." },
+    { path = "docs/v2-depth/18-registries/01-chain-as-domain-plugin.md", why = "Chain as domain plugin source coverage." },
+    { path = "docs/v2-depth/18-registries/02-hdc-on-chain-and-verification.md", why = "HDC on-chain and verification source coverage." },
+    { path = "docs/v2-depth/18-registries/03-job-market-and-hiring.md", why = "Job market and hiring source coverage." },
+    { path = "docs/v2-depth/18-registries/04-reputation-and-peer-scoring.md", why = "Reputation and peer scoring source coverage." },
+    { path = "docs/v2-depth/18-registries/05-chain-witness-and-triage.md", why = "Chain witness and triage source coverage." },
+    { path = "docs/v2-depth/18-registries/06-payments-and-settlement.md", why = "Payments and settlement source coverage." },
+    { path = "docs/v2-depth/18-registries/07-gossip-and-privacy.md", why = "Gossip and privacy source coverage." },
+    { path = "docs/v2-depth/18-registries/08-simulation-and-liveness.md", why = "Simulation and liveness source coverage." },
+]
+symbols = ["Registry", "Chain", "HDC", "Reputation", "Settlement"]
+anti_patterns = [
+    "Do NOT implement chain registry or contract work in this coverage task.",
+    "Do NOT encode E11 or E14 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/18-registries -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-18-REGISTRIES' || exit 1; done"
+fail_msg = "coverage ledger must map every 18-registries markdown file to DOC-V2D-18-REGISTRIES"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/18-registries -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 18-registries markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 18-registries depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-19-ARENAS"
+title = "Cover v2-depth arenas index docs"
+description = "Backlog-authoring slice for docs/v2-depth/19-arenas. Preserve arenas index coverage and its relation to learning, registries, and evaluation spaces."
+status = "ready"
+tier = "mechanical"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-10-LEARNING-LOOPS", "DOC-V2D-18-REGISTRIES"]
+depends_on_plan = ["E11-chain-isfr", "E13-SPEC-DEBT-V2"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/19-arenas/INDEX.md", why = "Directory index and source coverage for arenas depth." },
+]
+symbols = ["Arena", "Evaluation", "Registry"]
+anti_patterns = [
+    "Do NOT fabricate arena docs beyond the existing index.",
+    "Do NOT encode E11 or E13 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/19-arenas -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-19-ARENAS' || exit 1; done"
+fail_msg = "coverage ledger must map every 19-arenas markdown file to DOC-V2D-19-ARENAS"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/19-arenas -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 19-arenas markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 19-arenas depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-20-DEPLOYMENT"
+title = "Cover v2-depth deployment docs"
+description = "Backlog-authoring slice for docs/v2-depth/20-deployment. Track five-shape deployment, daemon/subscription system, cloud/edge deployment, hardening, observability, and deployment index coverage."
+status = "ready"
+tier = "focused"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-14-CONFIG", "DOC-V2D-16-SURFACES", "DOC-V2D-17-SECURITY", "DOC-V2D-18-REGISTRIES"]
+depends_on_plan = ["E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/20-deployment/INDEX.md", why = "Directory index for deployment depth docs." },
+    { path = "docs/v2-depth/20-deployment/01-five-shape-deployment-as-config-signal.md", why = "Five-shape deployment as config Signal source coverage." },
+    { path = "docs/v2-depth/20-deployment/02-daemon-and-subscription-system.md", why = "Daemon and subscription system source coverage." },
+    { path = "docs/v2-depth/20-deployment/03-cloud-and-edge-deployment.md", why = "Cloud and edge deployment source coverage." },
+    { path = "docs/v2-depth/20-deployment/04-production-hardening-and-observability.md", why = "Production hardening and observability source coverage." },
+]
+symbols = ["Deployment", "Daemon", "Subscription", "Cloud", "Edge"]
+anti_patterns = [
+    "Do NOT implement deployment command or Docker changes in this coverage task.",
+    "Do NOT encode E18 task ids as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/20-deployment -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-20-DEPLOYMENT' || exit 1; done"
+fail_msg = "coverage ledger must map every 20-deployment markdown file to DOC-V2D-20-DEPLOYMENT"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/20-deployment -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 20-deployment markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 20-deployment depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-21-ROADMAP"
+title = "Cover v2-depth roadmap and research-to-runtime docs"
+description = "Backlog-authoring slice for docs/v2-depth/21-roadmap. Track roadmap, emergent goals, temporal knowledge graphs, oracle scoring, HDC pattern metabolism, causal discovery, robustness, geometry, academic foundations, research-to-runtime bridge, and verification strategy coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-10-LEARNING-LOOPS", "DOC-V2D-11-MEMORY", "DOC-V2D-17-SECURITY", "DOC-V2D-20-DEPLOYMENT"]
+depends_on_plan = ["E13-SPEC-DEBT-V2", "E18-DOCS-CONFIG-OPS"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/21-roadmap/INDEX.md", why = "Directory index for roadmap depth docs." },
+    { path = "docs/v2-depth/21-roadmap/03-oracle-as-score-cell.md", why = "Oracle as Score cell source coverage." },
+    { path = "docs/v2-depth/21-roadmap/04-hdc-pattern-encoding-and-metabolism.md", why = "HDC pattern encoding and metabolism source coverage." },
+    { path = "docs/v2-depth/21-roadmap/05-causal-discovery-and-adversarial-robustness.md", why = "Causal discovery and adversarial robustness source coverage." },
+    { path = "docs/v2-depth/21-roadmap/06-advanced-geometry-and-integration.md", why = "Advanced geometry and integration source coverage." },
+    { path = "docs/v2-depth/21-roadmap/07-academic-foundations-by-protocol.md", why = "Academic foundations by protocol source coverage." },
+    { path = "docs/v2-depth/21-roadmap/08-research-to-runtime-bridge.md", why = "Research-to-runtime bridge source coverage." },
+    { path = "docs/v2-depth/21-roadmap/09-test-strategy-and-verification.md", why = "Test strategy and verification source coverage." },
+    { path = "docs/v2-depth/21-roadmap/emergent-goals-and-energy.md", why = "Emergent goals and energy source coverage." },
+    { path = "docs/v2-depth/21-roadmap/temporal-knowledge-graph.md", why = "Temporal knowledge graph source coverage." },
+]
+symbols = ["Roadmap", "Research-to-runtime", "Oracle", "HDC", "Verification strategy"]
+anti_patterns = [
+    "Do NOT treat roadmap coverage as immediate product implementation.",
+    "Do NOT encode E13 or E18 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/21-roadmap -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-21-ROADMAP' || exit 1; done"
+fail_msg = "coverage ledger must map every 21-roadmap markdown file to DOC-V2D-21-ROADMAP"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/21-roadmap -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 21-roadmap markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 21-roadmap depth docs are represented in the ledger and in read_files."]
+
+[[task]]
+id = "DOC-V2D-22-CODE-INTELLIGENCE"
+title = "Cover v2-depth code intelligence docs"
+description = "Backlog-authoring slice for docs/v2-depth/22-code-intelligence. Track code-intelligence cell pipeline, symbol graph, importance, HDC fingerprints, search/context assembly, MCP server, persistence, and index coverage."
+status = "ready"
+tier = "integrative"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v2-depth.md",
+]
+depends_on = ["DOC-V2D-11-MEMORY", "DOC-V2D-13-BUILTIN-CATALOG", "DOC-V2D-21-ROADMAP"]
+depends_on_plan = ["E13-SPEC-DEBT-V2", "E15-mcp-config"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2-depth/22-code-intelligence/INDEX.md", why = "Directory index for code-intelligence depth docs." },
+    { path = "docs/v2-depth/22-code-intelligence/01-code-intelligence-as-cell-pipeline.md", why = "Code intelligence as cell pipeline source coverage." },
+    { path = "docs/v2-depth/22-code-intelligence/02-symbol-graph-and-importance.md", why = "Symbol graph and importance source coverage." },
+    { path = "docs/v2-depth/22-code-intelligence/03-hdc-fingerprints-and-similarity.md", why = "HDC fingerprints and similarity source coverage." },
+    { path = "docs/v2-depth/22-code-intelligence/04-search-and-context-assembly.md", why = "Search and context assembly source coverage." },
+    { path = "docs/v2-depth/22-code-intelligence/05-mcp-server-and-persistence.md", why = "MCP server and persistence source coverage." },
+]
+symbols = ["Code intelligence", "Symbol graph", "HDC fingerprint", "MCP server"]
+anti_patterns = [
+    "Do NOT implement code-indexing or MCP server changes in this coverage task.",
+    "Do NOT encode E13 or E15 as local dependencies.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/22-code-intelligence -maxdepth 1 -type f -name '*.md' | sort); do grep -F \"$p\" tmp/status-quo/backlog/source-coverage/docs-v2-depth.md | grep -Fq 'DOC-V2D-22-CODE-INTELLIGENCE' || exit 1; done"
+fail_msg = "coverage ledger must map every 22-code-intelligence markdown file to DOC-V2D-22-CODE-INTELLIGENCE"
+
+[[task.verify]]
+phase = "structural"
+command = "for p in $(find docs/v2-depth/22-code-intelligence -maxdepth 1 -type f -name '*.md' | sort); do grep -Fq \"path = \\\"$p\\\"\" tmp/status-quo/backlog/plans/DOC-v2-depth/tasks.toml || exit 1; done"
+fail_msg = "tasks.toml must include every 22-code-intelligence markdown file in context.read_files"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-depth 2>&1"
+fail_msg = "DOC-v2-depth plan must validate"
+timeout_ms = 120000
+
+acceptance = ["All 22-code-intelligence depth docs are represented in the ledger and in read_files."]

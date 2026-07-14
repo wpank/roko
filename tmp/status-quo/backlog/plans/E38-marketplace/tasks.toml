@@ -1,0 +1,539 @@
+[meta]
+plan = "E38-marketplace"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── E38-T01: Define marketplace artifact types and ArtifactRef ──
+#
+# The spec (21-MARKETPLACE §5) defines 11 publishable artifact kinds and
+# an artifact ref format (@publisher/name@version). Signal (signal.rs)
+# re-exports from engram.rs (line 6). MarketplaceJob (marketplace.rs:49)
+# and MarketplaceListing (identity_economy_identity.rs) exist but no
+# artifact type system. Add the core artifact types to roko-core so they
+# are usable without chain dependencies.
+
+[[task]]
+id = "E38-T01"
+title = "Add ArtifactKind enum and ArtifactRef type to roko-core"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 70
+files = ["crates/roko-core/src/signal.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/signal.rs", lines = "1-7", why = "Signal is a re-export from engram.rs (line 6): Engram as Signal, EngramBuilder as SignalBuilder, HdcFingerprint. Artifact types can be added here or in a new artifact.rs module" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "258-276", why = "11 publishable artifact kinds table: Snippet, Prompt Preset, Criterion, Cell(composition), Cell(script/WASM), Profile, Graph, Rack, Trigger Binding, Space Template, Knowledge Bundle" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "288-309", why = "Artifact identity: @publisher/name@version format, ArtifactLineage struct with forked_from, composed_from, forked_at, onchain_attestation" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "312-324", why = "On-chain attribution via ERC-8004: fork chain provenance, reputation flows upstream" },
+]
+symbols = [
+    "Signal — signal.rs:6, re-export of Engram (content-addressed data unit)",
+    "HdcFingerprint — signal.rs:6, re-exported HDC vector type",
+]
+anti_patterns = [
+    "Do NOT add chain/crypto dependencies to roko-core — keep types pure data",
+    "Do NOT implement publishing logic — just the type definitions",
+    "Do NOT modify the Signal/Engram re-export — add new types alongside or in a new module",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'ArtifactKind' crates/roko-core/src/"
+fail_msg = "ArtifactKind enum must exist in roko-core"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'ArtifactRef' crates/roko-core/src/"
+fail_msg = "ArtifactRef struct must exist in roko-core"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'Snippet' crates/roko-core/src/"
+fail_msg = "Snippet variant must exist in ArtifactKind"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rq 'ArtifactLineage' crates/roko-core/src/"
+fail_msg = "ArtifactLineage struct must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["ArtifactKind enum with 11 variants (Snippet, PromptPreset, Criterion, CellComposition, CellScript, Profile, Graph, Rack, TriggerBinding, SpaceTemplate, KnowledgeBundle); ArtifactRef struct with publisher: String, name: String, version: String fields and Display impl for @publisher/name@version format; ArtifactLineage struct with forked_from: Option<ArtifactRef>, composed_from: Vec<ArtifactRef>, forked_at: Option<DateTime<Utc>>; all derive Serialize, Deserialize, Clone, Debug"]
+
+
+# ── E38-T02: Extend TraceRank with marketplace reputation integration ──
+#
+# trace_rank.rs has PaymentEdge (line 43), TraceRankConfig (line 65),
+# and TraceRankResult (line 96). The spec (21-MARKETPLACE §6.5) adds
+# fork-chain attribution: when a fork earns reputation, a portion flows
+# upstream. Extend TraceRank to accept fork lineage edges alongside
+# payment edges.
+
+[[task]]
+id = "E38-T02"
+title = "Add fork-chain attribution edges to TraceRank algorithm"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["crates/roko-chain/src/trace_rank.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/trace_rank.rs", lines = "1-100", why = "PaymentEdge (line 43) with from, to, amount, quality, block fields; TraceRankConfig (line 65) with damping, blend_weight; TraceRankResult (line 96) with ranks HashMap" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "317-324", why = "Fork chain provenance: reputation flows upstream via ERC-8004 when a fork earns reputation" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "694-730", why = "Fork lineage chain: preservation, fork chain visualization, composition by reference" },
+]
+symbols = [
+    "PaymentEdge — trace_rank.rs:43, directed payment edge with weight() method at line 58",
+    "TraceRankConfig — trace_rank.rs:65, algorithm parameters (damping, max_iterations, blend_weight)",
+    "TraceRankResult — trace_rank.rs:96, converged ranks + iteration count",
+]
+anti_patterns = [
+    "Do NOT change the existing PaymentEdge struct — add a ForkAttributionEdge alongside",
+    "Do NOT change the convergence algorithm — convert fork edges to weighted edges and feed into the same graph",
+    "Do NOT change TraceRankConfig defaults — add an upstream_share field with default",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'ForkAttributionEdge|fork_edge' crates/roko-chain/src/trace_rank.rs"
+fail_msg = "Fork attribution edge type must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'upstream_share' crates/roko-chain/src/trace_rank.rs"
+fail_msg = "upstream_share config field must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- fork_attribution 2>&1"
+fail_msg = "fork attribution must have a test"
+
+acceptance = ["ForkAttributionEdge struct with original_author: u256, fork_author: u256, artifact_ref: String, reputation_earned: f64, block: u64; TraceRankConfig gains upstream_share: f64 field (default 0.1); method to convert ForkAttributionEdge into PaymentEdge (fork_author->original_author, amount=reputation_earned*upstream_share, quality=1.0); test verifies upstream author gains reputation when fork succeeds"]
+
+
+# ── E38-T03: Add 5-tier Package SPI type definitions ──
+#
+# The spec (21-MARKETPLACE §2) defines 5 tiers of package authoring
+# (Prompts, Config, Declarative Tools, WASM, Native Rust). Each tier
+# has sandboxing and distribution rules.
+#
+# extension.rs has the Extension trait with 8 hook layers (line 1).
+# InferenceRequest (line 29), InferenceResponse (line 46), GateEvent
+# (line 67) are the typed hook parameters. PackageTier describes what
+# execution level an extension or cell operates at.
+
+[[task]]
+id = "E38-T03"
+title = "Define PackageTier enum and per-tier capability constraints"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/extension.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "1-80", why = "Extension hook types — InferenceRequest (line 29), InferenceResponse (line 46), GateEvent (line 67). PackageTier describes extension packaging level" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "24-147", why = "5-tier Package SPI: Tier 1 Prompts (no execution), Tier 2 Config (no execution), Tier 3 Declarative (subprocess/HTTP), Tier 4 WASM (sandboxed), Tier 5 Rust (native). Tier comparison table at lines 136-146" },
+]
+symbols = [
+    "InferenceRequest — extension.rs:29, typed hook parameter (shows pattern of types in this file)",
+    "GateEvent — extension.rs:67, another typed parameter struct",
+]
+anti_patterns = [
+    "Do NOT add actual WASM runtime — just the tier classification types",
+    "Do NOT add sandboxing logic — just the tier metadata and capability constraints",
+    "Do NOT name variants with numbers — use descriptive names (Prompt, ConfigProfile, Declarative, Wasm, NativeRust)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PackageTier' crates/roko-core/src/extension.rs"
+fail_msg = "PackageTier enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -cE 'Prompt|ConfigProfile|Declarative|Wasm|NativeRust' crates/roko-core/src/extension.rs | grep -q '[45]'"
+fail_msg = "All 5 tiers must be present"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'executes_code' crates/roko-core/src/extension.rs"
+fail_msg = "executes_code() method must exist on PackageTier"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["PackageTier enum with Prompt, ConfigProfile, Declarative, Wasm, NativeRust variants; each has methods: executes_code() -> bool (false for Prompt/ConfigProfile, true for others), sandboxing_level() -> &str (None/None/OS-process/WASM+fuel/Process-level), marketplace_publishable() -> bool (true for all except NativeRust); all derive Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq"]
+
+
+# ── E38-T04: Add publish pipeline validation types ──
+#
+# The spec (21-MARKETPLACE §7) defines publish as a Pipeline of Verify
+# Cells: checksum, signature, capability check, semver, schema validate,
+# store. verdict.rs has Verdict (line 51) with passed, reason, gate,
+# score, detail, test_count, error_digest, duration_ms fields.
+#
+# Define the pipeline stage types and validation result types used by
+# both the CLI publish command and the serve publish endpoint.
+
+[[task]]
+id = "E38-T04"
+title = "Define publish pipeline stage types and validation results"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/verdict.rs"]
+role = "implementer"
+depends_on = ["E38-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/verdict.rs", lines = "1-100", why = "Verdict struct (line 51) with passed, reason, gate, score fields; TestCount (line 18); Verdict::pass()/fail() constructors — publish pipeline produces verdicts per stage" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "327-407", why = "Publish Pipeline: 6 Verify Cells (ChecksumVerify, SignatureVerify, CapabilityDisclosure, SemverVerify, SchemaVerify, ArtifactStore) with typed I/O per cell" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "409-437", why = "CLI publish surface showing the 6 stages and their output" },
+]
+symbols = [
+    "Verdict — verdict.rs:51, existing verify result with passed, reason, gate, score, detail",
+    "TestCount — verdict.rs:18, structured test count (passed/failed/ignored)",
+    "Verdict::pass() — verdict.rs:75, constructor for passing verdict",
+    "Verdict::fail() — verdict.rs:90, constructor for failing verdict",
+]
+anti_patterns = [
+    "Do NOT implement actual verification logic — just the pipeline stage types",
+    "Do NOT duplicate existing Verdict — reference it (PublishStageResult can contain a Verdict)",
+    "Do NOT add chain/crypto dependencies — keep these as pure data types in roko-core",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'PublishStage|PublishPipeline' crates/roko-core/src/verdict.rs"
+fail_msg = "Publish pipeline stage types must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -cE 'Checksum|Signature|CapabilityCheck|SemverCheck|SchemaValidate|Store' crates/roko-core/src/verdict.rs | grep -q '[56]'"
+fail_msg = "All 6 verification stages must be present"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["PublishStage enum with Checksum, Signature, CapabilityCheck, SemverCheck, SchemaValidate, Store variants; PublishStageResult struct with stage: PublishStage, verdict: Verdict, detail: Option<String>; PublishPipelineResult struct with stages: Vec<PublishStageResult>, overall_passed: bool, artifact_ref: Option<ArtifactRef>, total_duration_ms: u64"]
+
+
+# ── E38-T05: Add marketplace economics types (take-rate, revenue bands) ──
+#
+# The spec (21-MARKETPLACE §3) defines transparent take-rate: 0% up to
+# $1M lifetime, 12-15% above. marketplace.rs has MarketplaceConfig
+# (line 104) with direct_hire_premium and platform_fee_fraction,
+# Marketplace struct (line 129), settle_job() (line 448). Add the
+# revenue/economics types for the v2 marketplace alongside.
+
+[[task]]
+id = "E38-T05"
+title = "Add marketplace economics types: take-rate schedule, revenue tracking"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-chain/src/marketplace.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "1-60", why = "MarketplaceJob (line 49) with job_id, state, poster_passport_id, budget; JobState enum (line 29)" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "100-155", why = "MarketplaceConfig (line 104) with platform_fee_fraction; Marketplace struct (line 129) with jobs, escrow, disputes HashMaps" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "440-480", why = "settle_job() at line 448 — computes agent_payment and platform_fee from payment and config" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "720-770", why = "SettlementResult (line 738) with agent_payment, platform_fee, quality_score; ExpirationResult (line 751) with refund, poster" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "150-210", why = "Take-rate structure: 0% to $1M lifetime per-creator, 12-15% above; mandatory published metrics; creator owns customer" },
+]
+symbols = [
+    "MarketplaceConfig — marketplace.rs:104, config with platform_fee_fraction",
+    "Marketplace — marketplace.rs:129, marketplace manager with jobs/escrow/disputes",
+    "SettlementResult — marketplace.rs:738, payment result struct (agent_payment, platform_fee)",
+    "ExpirationResult — marketplace.rs:751, refund result struct",
+]
+anti_patterns = [
+    "Do NOT change existing MarketplaceJob, MarketplaceConfig, or SettlementResult structs",
+    "Do NOT add database dependencies — keep in-memory like existing patterns",
+    "Do NOT use floating-point for currency amounts — use u64 cents or a Money struct",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'TakeRateSchedule|take_rate' crates/roko-chain/src/marketplace.rs"
+fail_msg = "TakeRateSchedule must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'CreatorRevenue|creator_revenue' crates/roko-chain/src/marketplace.rs"
+fail_msg = "Creator revenue tracking type must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- take_rate 2>&1"
+fail_msg = "take-rate calculation must have a test"
+
+acceptance = ["TakeRateSchedule struct with free_band_cents: u64 (100_000_000 = $1M), above_band_rate: f64 (0.12-0.15); compute_take_rate(lifetime_revenue_cents: u64, new_revenue_cents: u64) -> u64 returns take amount in cents; test verifies $0 take on $999k, correct fraction on $1M+1 (non-retroactive); CreatorRevenue struct tracks lifetime_revenue_cents, take_paid_cents, net_revenue_cents"]
+
+
+# ── E38-T06: Add marketplace browse/search endpoint to roko-serve ──
+#
+# The spec (21-MARKETPLACE §8) defines faceted browse: Featured, Trending,
+# All tabs with filters by Kind, Category, Tags, Capabilities, etc.
+# routes/jobs.rs (line 18) shows the CRUD pattern with routes() returning
+# Router<Arc<AppState>>. routes/mod.rs (line 23) lists all submodules.
+# Add marketplace browse/search route stubs in a new marketplace module.
+
+[[task]]
+id = "E38-T06"
+title = "Add marketplace browse and search routes to roko-serve"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = [
+    "crates/roko-serve/src/routes/marketplace.rs",
+    "crates/roko-serve/src/routes/mod.rs",
+]
+role = "implementer"
+depends_on = ["E38-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/jobs.rs", lines = "1-50", why = "Pattern: routes() -> Router<Arc<AppState>> at line 18, Router::new() with chained .route() calls; query types with Deserialize; handlers return Json<Value> or Result<impl IntoResponse, ApiError>" },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-52", why = "Module declarations (line 7-47) — add 'mod marketplace;' here; Router assembly uses pub fn routes() pattern" },
+    { path = "crates/roko-serve/src/state.rs", lines = "1-30", why = "AppState struct fields — handlers take State<Arc<AppState>>" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "443-458", why = "Browse facets: Featured, Trending, All with filters by Kind, Category, Tags, Capabilities, License, gate pass rate, publisher, recency" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "969-986", why = "CLI surface: roko market browse/show/install/uninstall/upgrade/fork/publish/unpublish/deprecate/mirror/verify/analytics/revenue" },
+]
+symbols = [
+    "routes() -> Router<Arc<AppState>> — jobs.rs:18, pattern for route module (return a Router with handler chains)",
+    "AppState — state.rs, shared server state passed via State<Arc<AppState>>",
+    "ApiError — error.rs, error type for handlers returning Result",
+]
+anti_patterns = [
+    "Do NOT add to the existing jobs routes — marketplace artifacts are separate from Spore jobs",
+    "Do NOT implement full search logic — stub handlers returning empty results with correct JSON shapes",
+    "Do NOT add a database dependency — return in-memory stub data",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mod marketplace' crates/roko-serve/src/routes/mod.rs"
+fail_msg = "marketplace module must be declared in routes/mod.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'market_browse|marketplace' crates/roko-serve/src/routes/marketplace.rs"
+fail_msg = "Marketplace browse handler must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["New routes/marketplace.rs with routes() -> Router<Arc<AppState>>; GET /marketplace/browse (query: tab, kind, tags, capabilities); GET /marketplace/search (query: q); GET /marketplace/artifacts/{ref} (show detail); POST /marketplace/publish (stub, returns 201); POST /marketplace/fork (stub); all return correct status codes and JSON shapes; mod marketplace declared in routes/mod.rs"]
+
+
+# ── E38-T07: Add fork and lineage tracking to marketplace ──
+#
+# The spec (21-MARKETPLACE §11) makes forking the primary adaptation
+# mechanism with full lineage tracking. marketplace.rs has Marketplace
+# struct (line 129) managing jobs/escrow/disputes. Add fork lineage
+# types and a fork operation alongside.
+
+[[task]]
+id = "E38-T07"
+title = "Add fork lineage chain types and fork operation to marketplace"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-chain/src/marketplace.rs"]
+role = "implementer"
+depends_on = ["E38-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "100-155", why = "Marketplace struct (line 129) with jobs/escrow/disputes HashMaps — add fork_chains field" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "155-165", why = "Marketplace::new() and Default impl — initialize fork_chains" },
+    { path = "crates/roko-chain/src/identity_economy_identity.rs", lines = "1-50", why = "AgentId (line 18), Blake3Hash (line 21), Signature (line 24) types — reuse for fork lineage" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "694-730", why = "Fork: lineage preservation, fork chain visualization (alice->bob->carol->you), composition by reference for knowledge bundles" },
+]
+symbols = [
+    "Marketplace — marketplace.rs:129, marketplace manager to extend with fork tracking",
+    "MarketplaceConfig — marketplace.rs:104, config for marketplace behavior",
+    "AgentId — identity_economy_identity.rs:18, u256 alias for passport IDs",
+]
+anti_patterns = [
+    "Do NOT add ERC-8004 chain calls — keep as in-memory lineage tracking",
+    "Do NOT change existing MarketplaceJob, Marketplace::post_job, or settle_job methods",
+    "Do NOT add the fork_chains field to Marketplace Default — initialize it empty in a separate method or constructor update",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'ForkChainEntry|fork_artifact' crates/roko-chain/src/marketplace.rs"
+fail_msg = "Fork chain type or fork_artifact method must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fork_chain' crates/roko-chain/src/marketplace.rs"
+fail_msg = "fork_chain traversal method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- fork 2>&1"
+fail_msg = "fork operation must have a test"
+
+acceptance = ["ForkChainEntry struct with original_ref: String, fork_ref: String, forked_by: u256, forked_at: u64, changes_summary: String; Marketplace gains fork_chains: HashMap<String, ForkChainEntry>; fork_artifact(original_ref, new_ref, forker, block, summary) creates entry with lineage; fork_chain(artifact_ref) -> Vec<ForkChainEntry> returns full ancestor chain; test verifies 3-level fork chain traversal (A->B->C->D, query D returns [A,B,C])"]
+
+
+# ── E38-T08: Add capability declaration three-layer intersection ──
+#
+# The spec (21-MARKETPLACE §14) defines three-layer capability
+# intersection: Cell declares, Graph allows, Space grants. Only the
+# intersection of all three is effective (fail closed).
+#
+# policy_manifest.rs has RolePolicyManifest (line 42), RoleProfile,
+# PromptPolicy — policy types. The capability intersection logic belongs
+# near these policy types.
+
+[[task]]
+id = "E38-T08"
+title = "Implement three-layer capability intersection for marketplace artifacts"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/policy_manifest.rs"]
+role = "implementer"
+depends_on = ["E38-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/policy_manifest.rs", lines = "1-100", why = "RolePolicyManifest (line 42), RoleProfile, PromptPolicy — policy types; capability declarations live near policy. AgentRole and ToolPermissions imported at line 14" },
+    { path = "crates/roko-core/src/agent.rs", lines = "1-30", why = "ToolPermissions type imported by policy_manifest — defines what tools a role can access" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "789-831", why = "Three-layer capability intersection: Cell declares required[], Graph allows allowed[], Space grants per-cap booleans. Missing at any layer = denied (fail closed)" },
+]
+symbols = [
+    "RolePolicyManifest — policy_manifest.rs:42, manifest with roles and prompt policies",
+    "RoleProfile — policy_manifest.rs, per-role profile with capabilities",
+    "ToolPermissions — agent.rs, imported at policy_manifest.rs:14, per-role tool access",
+]
+anti_patterns = [
+    "Do NOT add runtime enforcement — just the intersection computation function",
+    "Do NOT duplicate existing ToolPermissions — intersect_capabilities works with generic capability identifiers (strings)",
+    "Do NOT use HashSet intersection if ordering matters — preserve deterministic output order",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'intersect_capabilities|CapabilityIntersection' crates/roko-core/src/policy_manifest.rs"
+fail_msg = "Capability intersection function or type must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'EffectiveCapabilities' crates/roko-core/src/policy_manifest.rs"
+fail_msg = "EffectiveCapabilities result type must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- capability_intersect 2>&1"
+fail_msg = "capability intersection must have a test"
+
+acceptance = ["CapabilityDeclaration struct with name: String, constraints: Value; EffectiveCapabilities struct with granted: Vec<CapabilityDeclaration>, denied: Vec<String>; intersect_capabilities(cell_declared: &[CapabilityDeclaration], graph_allowed: &[String], space_granted: &HashMap<String, bool>) -> EffectiveCapabilities; missing at any layer = denied (fail closed); test verifies: all three present = granted, missing one = denied, empty graph allow list = all denied"]
+
+
+# ── E38-T09: Add marketplace CLI subcommand stubs ──
+#
+# The spec (21-MARKETPLACE §16) defines `roko market` CLI surface with
+# browse, install, publish, fork, etc. main.rs (line 1) is the CLI
+# entrypoint with clap subcommands. No marketplace subcommands exist.
+# Add the subcommand stubs wired to the clap command tree.
+
+[[task]]
+id = "E38-T09"
+title = "Add roko market CLI subcommand stubs (browse, install, publish, fork)"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["E38-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1-100", why = "Main CLI entrypoint with clap (Parser, Subcommand at line 21); imports at lines 17-67; exit codes at lines 77-82. Find the Subcommand enum to add Market variant" },
+    { path = "crates/roko-cli/src/main.rs", lines = "100-200", why = "CLI struct and Subcommand enum — add Market subcommand with nested MarketCmd enum" },
+    { path = "docs/v2/21-MARKETPLACE.md", lines = "969-986", why = "CLI surface: roko market browse/show/install/uninstall/upgrade/fork/publish/unpublish/deprecate/mirror/verify/analytics/revenue" },
+]
+symbols = [
+    "Cli — main.rs, top-level clap Parser struct",
+    "Commands — main.rs, Subcommand enum dispatched by main()",
+]
+anti_patterns = [
+    "Do NOT implement full marketplace logic — stubs that print 'not yet implemented' and exit 0",
+    "Do NOT change existing subcommand routing — add Market alongside existing variants",
+    "Do NOT add dependencies beyond what's already imported — stubs just println!",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'Market|market' crates/roko-cli/src/main.rs"
+fail_msg = "Market subcommand must exist in main.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'Browse|Install|Publish|Fork' crates/roko-cli/src/main.rs"
+fail_msg = "Marketplace sub-subcommands (Browse, Install, Publish, Fork) must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["Market variant in Commands enum with MarketCmd nested Subcommand; MarketCmd has Browse{query, tag, kind, featured}, Show{artifact_ref}, Install{artifact_ref}, Uninstall{artifact_ref}, Fork{artifact_ref, new_name}, Publish{local_name}, Verify{artifact_ref} variants; each prints a stub message ('roko market <cmd>: not yet implemented') and exits 0; --help shows all marketplace subcommands"]

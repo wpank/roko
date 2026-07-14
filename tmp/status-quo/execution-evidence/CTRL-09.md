@@ -88,7 +88,8 @@ dependency universe and checks local references plus plan SCCs:
 ```text
 plans=93 (32 top-level, 55 backlog, 6 self-heal)
 tasks=881; statuses=33 done, 752 ready, 96 skipped
-unique plan edges=162
+unique plan edges=160
+edge derivation=133 base + 27 candidate additions - 0 removals = 160
 unresolved local references=0
 unresolved plan references=0
 cyclic strongly connected components=0

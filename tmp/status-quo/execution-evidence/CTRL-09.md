@@ -139,3 +139,13 @@ The candidate is ready for independent review. Review must reproduce the actual
 `TasksFile` semantic parse, ownership/coverage census, combined graph/SCC
 check, disposable strict roots, scope, sealed-index hash, and preservation
 comparison. Integration and canonical status updates remain coordinator-owned.
+
+## Integrated disposition
+
+The DOC roll-up candidate and corrected r3 were integrated as `a96ffa21d` and
+`560c1bb17`; the historical r3 review was integrated as `e84037ef0`. Integration
+proof then exposed the task-edge versus meta-edge counting ambiguity. The
+reviewed correction chain `4a4a7b68d` / `7f2105c45` supersedes only those graph
+count claims and preserves the accepted manifest/coverage result. Fresh
+post-merge semantic, graph, TOML, strict-root, and sealed-index controls pass as
+recorded in `CTRL-09-POSTMERGE-CORRECTION.md`. Final canonical status: `DONE`.

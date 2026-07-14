@@ -1,10 +1,10 @@
 # CTRL-09 post-merge graph-count correction
 
 > [!IMPORTANT]
-> **Status: BLOCKED pending fresh independent review.** This correction does
-> not alter the accepted DOC-v2 manifest or coverage behavior and does not make
-> CTRL-09 terminal. Canonical status remains coordinator-owned until a fresh
-> reviewer accepts this immutable candidate and post-merge proof is rerun.
+> **Status: DONE after fresh independent review and integrated post-merge
+> proof.** This correction does not alter the accepted DOC-v2 manifest or
+> coverage behavior. It makes the graph evidence exact before canonical
+> CTRL-09 completion.
 
 ## Scope and lineage
 
@@ -177,11 +177,21 @@ The sealed index hash is
 No validator was run against the source tree, and no generated index or other
 artifact was created.
 
-## Review handoff
+## Integrated disposition
 
-A fresh reviewer must reproduce both graph definitions, verify the two exact
-meta pairs are disjoint from the task pair set, inspect all four changed paths,
-confirm the DOC manifest and coverage ledger are byte-for-byte unchanged, and
-verify the sealed index and clean scope. Until that review is accepted and
-integrated post-merge proof passes, this correction remains blocked and CTRL-09
-must not be marked terminal on the strength of the superseded count claims.
+- Fresh independent review accepted the correction in
+  `ae41a1f12e26bf74af4472de7ea2625836a0e51f`; integrated correction and review
+  commits are `4a4a7b68d` and `7f2105c45`.
+- Post-merge proof reproduced 93 plans, 881 tasks, 849 local references, 320
+  task-level plan references, two meta-level plan references, 160 unique
+  runtime edges, 162 unique all-declared edges, zero unresolved references,
+  and zero cyclic SCCs under either graph definition.
+- The ten DOC roll-ups remain `ready` with 34 unique docs-only writers, exact
+  coverage-ledger representation, and complete E19-E45 dependency coverage.
+  All 193 TOMLs parse.
+- Disposable strict validation reported zero diagnostics for the 55-plan
+  backlog, six-plan self-heal root, and the DOC-v2-core plan. The source index
+  remained sealed at the recorded SHA-256 and integration was clean.
+- Final status: `DONE`. The two earlier count reviews remain visible with
+  prominent supersession notices; their valid manifest/coverage findings are
+  retained without allowing the obsolete graph wording to remain canonical.

@@ -527,7 +527,7 @@ Only coordinator/integration agents check these boxes after merged verification.
 These may use parallel analysis/implementation agents after the baseline is safely
 sealed.
 
-- [ ] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
+- [x] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
 - [ ] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
 - [x] CTRL-03 Canonicalize 36 invalid depends_on_plan names to exact meta.plan IDs.
 - [ ] CTRL-04 Resolve 11 external dependencies on P08/P09/P16/P19/P22/P23/P25/P28.
@@ -1145,18 +1145,18 @@ Before ending any coordinator context, update this section on the integration br
 
 - Run ID: `status-quo-20260714T073140Z`
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
-- Integration HEAD before this checkpoint commit: `871b3bbb002044d8bd3f22bd005734f6e6758861`
+- Integration HEAD before this checkpoint commit: `01c00546bc57a485ff53553d0fe53006afa8ed42`
 - Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
 - Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
 - Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
 - Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
-- Last completed wave/task: reviewed `SH01-T06B2A` precursor reconstruction; Wave 0 is active (`CTRL-03` DONE, `CTRL-01` reopened after a concealed canonical-queue discovery).
-- Active assignments and worktrees: process candidate `fa828276a535` and corrected `CTRL-06` candidate `5014afa2cd2c` are in independent review; the deadline/config/activity reconstruction is being proved in `workers/CTRL-02-SH01-DEADLINES`.
+- Last completed wave/task: reopened `CTRL-01` recovery/import is DONE after reviewed integration; Wave 0 is active (`CTRL-01` and `CTRL-03` DONE, two bounded CTRL-02 precursor clusters DONE).
+- Active assignments and worktrees: corrected `CTRL-06` candidate `7f62204e50bf` is in final independent rereview; the deadline/config/activity reconstruction is being proved in `workers/CTRL-02-SH01-DEADLINES`.
 - Accepted but unmerged commits: none.
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
-- Next dependency-ready tasks: finish and integrate the two active reviews and deadline reconstruction; import/review the newly discovered ignored canonical P08-P34 queue, `.roko/GAPS.md`, and architecture queue source; then continue serial `CTRL-02` reconstruction and the CTRL-04/05/08/09/14/15/16 ownership lane.
+- Next dependency-ready tasks: finish and integrate the CTRL-06 final review and deadline reconstruction; continue serial CTRL-02 reconstruction; resolve CTRL-05/07 now that the canonical architecture and P08-P34 queues are visible; then continue the CTRL-04/08/09/14/15/16 ownership lane.
 - Last global gate results: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, and self-heal strict validation pass. Corrected CTRL-06 validation reaches 55 plans with 16 genuine prerequisite diagnostics. A six-crate baseline run passed 1,324 roko-cli library tests and many integrations; its two parallel 120-second smoke timeouts both pass in isolated serial reruns (33.91s and 33.65s). Parallel cold target directories exhausted disk space; only programme-created completed-lane Cargo artifacts were cleaned, restoring approximately 27 GiB, and active lanes now serialize on the populated shared target.
-- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. A later dependency probe found 34 ignored top-level plan files (the P08-P34/side queue), ignored `.roko/GAPS.md`, and five byte-identical ignored architecture-core-queue source copies; all are now preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`) and await reviewed attribution/import. Integration is clean before this checkpoint-only edit; every active worker is confined to its recorded scope.
+- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The later-discovered top-level P08-P34/side queue, `.roko/GAPS.md`, and five architecture source copies are preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`); 34 sealed files plus one canonical recovered architecture queue are now reviewed, committed, and merged with the historical count caveat assigned to CTRL-15. Integration is clean before this checkpoint edit; every active worker is confined to its recorded scope.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against

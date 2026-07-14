@@ -157,7 +157,7 @@ No compilation gate is required for this byte-preserving control-plane import. S
 
 Integration:
 
-- Review evidence: pending independent review
-- Integration commit: pending
-- Post-merge verification: pending
-- Final status: implementation committed; not DONE before accepted review and integrated proof
+- Review evidence: `CTRL-01-IGNORED-CANONICAL-IMPORT-REVIEW.md`; independently `ACCEPTED` in review commit `c19bd30160443759f96d8fef6149cc9b146a5bde`.
+- Integration commit: merge commit `01c00546bc57a485ff53553d0fe53006afa8ed42`; candidate and review commits are ancestors of the integration branch.
+- Post-merge verification: all 34 sealed files match byte-for-byte, all five architecture sources and the recovered canonical copy match SHA-256 `3f90263a…`, all 32 TOMLs parse with matching meta totals (210 task records), canonical paths are visible while runtime/nested `.roko` remains ignored, ancestry/diff/status checks pass, and integration is clean.
+- Final status: `DONE` for the CTRL-01 recovery/import scope. CTRL-15 still owns current ownership/count/status reconciliation for the imported queue.

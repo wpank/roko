@@ -31,6 +31,11 @@ use roko_orchestrator::{
     TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
 };
 use roko_runtime::event_bus::PlanRevisionReason;
+use roko_runtime::run_ledger::{
+    TaskTimeoutTerminal as RuntimeTaskTimeoutTerminal, TimeoutEffectKind,
+    TimeoutEffectRef as RuntimeTimeoutEffectRef, TimeoutLedgerEntry, TimeoutTaskAttemptRef,
+    TimeoutTerminalKind, TimeoutTerminalReplay,
+};
 use roko_runtime::{CommitOutcome, HttpEventSink, RunLedger, TaskTerminalOutcome, WorkflowConfig};
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -1069,6 +1074,14 @@ pub async fn run(
                 snapshot,
                 &task_index,
                 &resume_report.drifted_tasks,
+            );
+        }
+        let replayed = replay_timeout_terminals(&paths.run_ledger_jsonl, &mut state)
+            .context("replay durable timeout terminals during resume")?;
+        if replayed > 0 {
+            info!(
+                replayed_timeout_terminals = replayed,
+                "reconciled timeout terminals recorded after the last snapshot"
             );
         }
     } else {
@@ -4949,6 +4962,10 @@ fn seed_task_dag_from_run_state(task_dag: &mut TaskDag, plans: &[Plan], state: &
         for task_id in state.plan_completed_tasks(&plan.id) {
             task_dag.mark_complete(&plan.id, task_id);
         }
+        let task_refs = plan.tasks.tasks.iter().collect::<Vec<_>>();
+        for task_id in state.plan_failed_tasks(&plan.id) {
+            task_dag.mark_failed_blocking_downstream(&plan.id, task_id, &task_refs);
+        }
     }
 }
 
@@ -7234,6 +7251,238 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
     }
 }
 
+fn runtime_timeout_kind(kind: TimeoutKind) -> TimeoutTerminalKind {
+    match kind {
+        TimeoutKind::HardRun => TimeoutTerminalKind::HardRun,
+        TimeoutKind::TaskAttempt => TimeoutTerminalKind::TaskAttempt,
+        TimeoutKind::GateEffect => TimeoutTerminalKind::GateEffect,
+        TimeoutKind::AgentSilence => TimeoutTerminalKind::AgentSilence,
+        TimeoutKind::SchedulerNoProgress => TimeoutTerminalKind::SchedulerNoProgress,
+        TimeoutKind::LostEffect => TimeoutTerminalKind::LostEffect,
+    }
+}
+
+fn runner_timeout_kind(kind: TimeoutTerminalKind) -> TimeoutKind {
+    match kind {
+        TimeoutTerminalKind::HardRun => TimeoutKind::HardRun,
+        TimeoutTerminalKind::TaskAttempt => TimeoutKind::TaskAttempt,
+        TimeoutTerminalKind::GateEffect => TimeoutKind::GateEffect,
+        TimeoutTerminalKind::AgentSilence => TimeoutKind::AgentSilence,
+        TimeoutTerminalKind::SchedulerNoProgress => TimeoutKind::SchedulerNoProgress,
+        TimeoutTerminalKind::LostEffect => TimeoutKind::LostEffect,
+    }
+}
+
+fn runtime_timeout_effect_kind(kind: GateCompletionKind) -> TimeoutEffectKind {
+    match kind {
+        GateCompletionKind::Preflight => TimeoutEffectKind::Preflight,
+        GateCompletionKind::Gate => TimeoutEffectKind::Gate,
+        GateCompletionKind::PlanVerify => TimeoutEffectKind::PlanVerify,
+        GateCompletionKind::Merge => TimeoutEffectKind::Merge,
+    }
+}
+
+fn runner_timeout_effect_kind(kind: TimeoutEffectKind) -> GateCompletionKind {
+    match kind {
+        TimeoutEffectKind::Preflight => GateCompletionKind::Preflight,
+        TimeoutEffectKind::Gate => GateCompletionKind::Gate,
+        TimeoutEffectKind::PlanVerify => GateCompletionKind::PlanVerify,
+        TimeoutEffectKind::Merge => GateCompletionKind::Merge,
+    }
+}
+
+fn runtime_timeout_attempt(attempt: &TaskAttemptRef) -> TimeoutTaskAttemptRef {
+    TimeoutTaskAttemptRef {
+        plan_id: attempt.plan_id.clone(),
+        task_id: attempt.task_id.clone(),
+        attempt: attempt.attempt,
+    }
+}
+
+fn runner_timeout_attempt(attempt: &TimeoutTaskAttemptRef) -> TaskAttemptRef {
+    TaskAttemptRef::new(
+        attempt.plan_id.clone(),
+        attempt.task_id.clone(),
+        attempt.attempt,
+    )
+}
+
+fn timeout_ledger_entry(run_id: &str, timeout: &TimeoutEvent) -> Result<TimeoutLedgerEntry> {
+    let attempt = timeout
+        .attempt
+        .as_ref()
+        .context("task timeout terminal requires an exact attempt")?;
+    if let Some(effect) = &timeout.effect
+        && effect.attempt != *attempt
+    {
+        anyhow::bail!("timeout effect does not belong to its terminal attempt");
+    }
+    let effect = timeout
+        .effect
+        .as_ref()
+        .map(|effect| RuntimeTimeoutEffectRef {
+            attempt: runtime_timeout_attempt(&effect.attempt),
+            kind: runtime_timeout_effect_kind(effect.kind),
+            rung: effect.rung,
+            generation: effect.generation,
+        });
+    Ok(TimeoutLedgerEntry::timeout_recorded(
+        run_id,
+        RuntimeTaskTimeoutTerminal {
+            kind: runtime_timeout_kind(timeout.kind),
+            attempt: runtime_timeout_attempt(attempt),
+            effect,
+            owner_effect: timeout.owner_effect.map(|effect| effect.0),
+            limit_ms: timeout.limit_ms,
+            monotonic_elapsed_ms: timeout.monotonic_elapsed_ms,
+            observed_at_ms: timeout.observed_at_ms,
+        },
+    ))
+}
+
+fn timeout_event_from_ledger(entry: &TimeoutLedgerEntry) -> Result<TimeoutEvent> {
+    let timeout = entry.timeout();
+    if let Some(effect) = &timeout.effect
+        && effect.attempt != timeout.attempt
+    {
+        anyhow::bail!("durable timeout effect does not belong to its terminal attempt");
+    }
+    Ok(TimeoutEvent {
+        kind: runner_timeout_kind(timeout.kind),
+        attempt: Some(runner_timeout_attempt(&timeout.attempt)),
+        effect: timeout.effect.as_ref().map(|effect| GateEffectRef {
+            attempt: runner_timeout_attempt(&effect.attempt),
+            kind: runner_timeout_effect_kind(effect.kind),
+            rung: effect.rung,
+            generation: effect.generation,
+        }),
+        owner_effect: timeout.owner_effect.map(OwnerEffectRef),
+        limit_ms: timeout.limit_ms,
+        monotonic_elapsed_ms: timeout.monotonic_elapsed_ms,
+        observed_at_ms: timeout.observed_at_ms,
+    })
+}
+
+fn timeout_audit_timestamp(observed_at_ms: u64) -> String {
+    i64::try_from(observed_at_ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH)
+        .to_rfc3339()
+}
+
+fn timeout_runner_event(entry: &TimeoutLedgerEntry) -> Result<RunnerEvent> {
+    let timeout = timeout_event_from_ledger(entry)?;
+    Ok(RunnerEvent::TimeoutRecorded {
+        timestamp: timeout_audit_timestamp(timeout.observed_at_ms),
+        timestamp_ms: timeout.observed_at_ms,
+        run_id: entry.run_id().to_string(),
+        timeout,
+    })
+}
+
+fn load_timeout_terminal_replay(path: &std::path::Path) -> Result<TimeoutTerminalReplay> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TimeoutTerminalReplay::default());
+        }
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut replay = TimeoutTerminalReplay::default();
+    for (index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("parsing {} line {}", path.display(), index + 1))?;
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some("timeout_recorded") {
+            continue;
+        }
+        // Global timeout audit entries have no exact attempt and are not task
+        // terminals. They remain in JSONL but do not participate in this replay.
+        if value
+            .get("timeout")
+            .and_then(|timeout| timeout.get("attempt"))
+            .is_none_or(serde_json::Value::is_null)
+        {
+            continue;
+        }
+        let entry: TimeoutLedgerEntry = serde_json::from_value(value).with_context(|| {
+            format!(
+                "decoding typed timeout at {} line {}",
+                path.display(),
+                index + 1
+            )
+        })?;
+        replay.record(entry)?;
+    }
+    Ok(replay)
+}
+
+fn persist_timeout_terminal(path: &std::path::Path, entry: &TimeoutLedgerEntry) -> Result<bool> {
+    let mut replay = load_timeout_terminal_replay(path)?;
+    if !replay.record(entry.clone())? {
+        return Ok(false);
+    }
+    persist::append_jsonl(path, entry)?;
+    Ok(true)
+}
+
+fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Result<usize> {
+    let replay = load_timeout_terminal_replay(path)?;
+    let run_id = state.run_id().to_string();
+    let mut applied = 0;
+    for entry in replay
+        .entries()
+        .iter()
+        .filter(|entry| entry.run_id() == run_id.as_str())
+    {
+        let event = timeout_runner_event(entry)?;
+        let timeout = entry.timeout();
+        let attempt = runner_timeout_attempt(&timeout.attempt);
+        let attempt_key = attempt.key();
+        match state
+            .lifecycle
+            .task_attempts
+            .get(&attempt_key)
+            .map(|attempt| attempt.status)
+        {
+            Some(TaskAttemptStatus::TimedOut) => continue,
+            Some(status) if status.is_terminal() => {
+                anyhow::bail!(
+                    "durable timeout terminal conflicts with {:?} for {}",
+                    status,
+                    attempt_key
+                );
+            }
+            _ => {}
+        }
+        let timestamp = timeout_audit_timestamp(timeout.observed_at_ms);
+        state.apply_runner_event(&RunnerEvent::TaskAttemptCancellationRequested {
+            timestamp,
+            timestamp_ms: timeout.observed_at_ms,
+            run_id: entry.run_id().to_string(),
+            attempt: attempt.clone(),
+        });
+        state.apply_runner_event(&event);
+        if !state
+            .plan_failed_tasks(&attempt.plan_id)
+            .contains(&attempt.task_id)
+        {
+            state.task_failed();
+            state.mark_task_failed(&attempt.plan_id, &attempt.task_id);
+            state.record_task_failure(
+                &attempt.plan_id,
+                &attempt.task_id,
+                &format!("task timed out: {:?}", runner_timeout_kind(timeout.kind)),
+            );
+        }
+        applied += 1;
+    }
+    Ok(applied)
+}
+
 async fn handle_global_timeout(
     expiry: crate::runner::deadlines::DeadlineExpiry,
     now: crate::runner::deadlines::MonotonicTime,
@@ -7446,6 +7695,12 @@ async fn enforce_owned_deadlines_at(
     candidates.sort_by_key(|(deadline, candidate, _)| (*deadline, candidate.attempt.key()));
     let mut expired = 0;
     for (_, candidate, expiry) in candidates {
+        // The initial scan is only a candidate snapshot. A completion, an
+        // earlier timeout, or bounded sibling drainage may have consumed or
+        // replaced this exact owner before we reach it.
+        if !ownership.event_is_eligible(&candidate.attempt, candidate.phase, candidate.effect) {
+            continue;
+        }
         let baseline = match expiry.kind {
             TimeoutKind::TaskAttempt => candidate.timing.attempt_started_at,
             TimeoutKind::GateEffect => candidate.timing.phase_started_at,
@@ -7579,6 +7834,11 @@ enum CancelAttemptOutcome {
 enum AttemptCleanupTerminal {
     Cancelled,
     TimedOut(TimeoutEvent),
+}
+
+enum PreparedAttemptTerminal {
+    Cancelled,
+    TimedOut(RunnerEvent),
 }
 
 #[derive(Debug)]
@@ -7839,20 +8099,36 @@ async fn cancel_exact_attempt(
     // after external-resource cleanup succeeds, while the exact claim remains
     // held. Persistence failure can then restore that claim for retry instead
     // of losing the owner or publishing a terminal timeout event.
-    if let AttemptCleanupTerminal::TimedOut(timeout) = &terminal
-        && let Err(error) = persist::append_jsonl(
-            &paths.run_ledger_jsonl,
-            &serde_json::json!({
-                "kind": "timeout_recorded",
-                "run_id": run_id,
-                "timeout": timeout,
-            }),
-        )
-    {
-        let errors = vec![format!("failed to persist timeout ledger entry: {error}")];
-        restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
-        return record_cancellation_failure(attempt, errors, state, paths, tui, config);
-    }
+    let timeout_entry = if let AttemptCleanupTerminal::TimedOut(timeout) = &terminal {
+        match timeout_ledger_entry(&run_id, timeout).and_then(|entry| {
+            persist_timeout_terminal(&paths.run_ledger_jsonl, &entry).map(|_| entry)
+        }) {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                let errors = vec![format!("failed to persist timeout ledger entry: {error}")];
+                restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+        }
+    } else {
+        None
+    };
+    let prepared_terminal = match (&terminal, timeout_entry.as_ref()) {
+        (AttemptCleanupTerminal::Cancelled, _) => PreparedAttemptTerminal::Cancelled,
+        (AttemptCleanupTerminal::TimedOut(_), Some(entry)) => match timeout_runner_event(entry) {
+            Ok(event) => PreparedAttemptTerminal::TimedOut(event),
+            Err(error) => {
+                let errors = vec![format!("failed to convert durable timeout entry: {error}")];
+                restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+        },
+        (AttemptCleanupTerminal::TimedOut(_), None) => {
+            let errors = vec!["durable timeout entry was not prepared".to_string()];
+            restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
+            return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+        }
+    };
     if let Err(failure) = ownership.complete_claim_recoverable(claim) {
         let errors = vec![format!("owner cleanup failed: {:?}", failure.error)];
         restore_failed_cancellation(
@@ -7866,8 +8142,8 @@ async fn cancel_exact_attempt(
         );
         return record_cancellation_failure(attempt, errors, state, paths, tui, config);
     }
-    match terminal {
-        AttemptCleanupTerminal::Cancelled => emit_runner_event(
+    match prepared_terminal {
+        PreparedAttemptTerminal::Cancelled => emit_runner_event(
             paths,
             state,
             tui,
@@ -7882,13 +8158,9 @@ async fn cancel_exact_attempt(
                 "",
             ),
         ),
-        AttemptCleanupTerminal::TimedOut(timeout) => emit_runner_event(
-            paths,
-            state,
-            tui,
-            config,
-            RunnerEvent::timeout_recorded(&run_id, timeout),
-        ),
+        PreparedAttemptTerminal::TimedOut(event) => {
+            emit_runner_event(paths, state, tui, config, event)
+        }
     };
     CancelAttemptOutcome::Confirmed
 }
@@ -10125,6 +10397,81 @@ mod tests_post_gate_reflection_lessons {
     }
 
     #[test]
+    fn completion_and_expiry_have_one_linear_winner_in_both_orderings() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let phase = AttemptPhase::Gate;
+        let effect = EffectRef(78);
+
+        let mut completion_first = AttemptOwnership::default();
+        completion_first
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(phase, effect),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let completion_claim = completion_first
+            .claim_phase(&attempt, phase, effect)
+            .unwrap();
+        completion_first
+            .complete_claim_recoverable(completion_claim)
+            .unwrap();
+        assert!(
+            completion_first
+                .claim_cancellation_exact(&attempt, Some((phase, effect)))
+                .is_err(),
+            "expiry must lose after exact completion claims first"
+        );
+
+        let mut expiry_first = AttemptOwnership::default();
+        expiry_first
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(phase, effect),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let expiry_claim = expiry_first
+            .claim_cancellation_exact(&attempt, Some((phase, effect)))
+            .unwrap();
+        expiry_first
+            .complete_claim_recoverable(expiry_claim)
+            .unwrap();
+        assert!(
+            expiry_first.claim_phase(&attempt, phase, effect).is_err(),
+            "completion must lose after exact expiry claims first"
+        );
+    }
+
+    #[test]
+    fn stale_effect_cannot_complete_or_expire_replacement_owner() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let old_effect = EffectRef(79);
+        let replacement_effect = EffectRef(80);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, replacement_effect),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+
+        assert!(!ownership.event_is_eligible(&attempt, AttemptPhase::Gate, old_effect));
+        assert!(
+            ownership
+                .claim_phase(&attempt, AttemptPhase::Gate, old_effect)
+                .is_err()
+        );
+        assert!(
+            ownership
+                .claim_cancellation_exact(&attempt, Some((AttemptPhase::Gate, old_effect)),)
+                .is_err()
+        );
+        assert!(ownership.event_is_eligible(&attempt, AttemptPhase::Gate, replacement_effect));
+    }
+
+    #[test]
     fn finished_gate_cleanup_preserves_sibling_pending_work() {
         let mut pending = HashMap::from([(
             "plan".to_string(),
@@ -10408,6 +10755,12 @@ mod tests_post_gate_reflection_lessons {
             1
         );
         assert!(!ownership.contains(&attempt));
+        assert!(
+            ownership
+                .claim_phase(&attempt, AttemptPhase::AwaitingGate, effect)
+                .is_err(),
+            "late or duplicate completion must lose eligibility after expiry"
+        );
         assert!(
             !ownership.contains(&sibling),
             "terminal timeout must drain sibling runtime ownership"
@@ -10809,8 +11162,14 @@ mod tests_post_gate_reflection_lessons {
             sibling.clone(),
             "sibling",
         ));
-        let gate_key = gate_effect_key("plan", "lost-gate", 1, GateCompletionKind::Gate);
-        assert!(state.mark_gate_active(gate_key));
+        let stale_gate_key = gate_effect_key("plan", "stale-task", 7, GateCompletionKind::Gate);
+        assert!(state.mark_gate_active(stale_gate_key.clone()));
+        assert!(!state.active_gate_effects.contains(&gate_effect_key(
+            "plan",
+            "lost-gate",
+            1,
+            GateCompletionKind::Gate,
+        )));
         let dir = tempfile::tempdir().unwrap();
         let paths = PersistPaths::from_workdir(dir.path()).unwrap();
         let mut roko_config = roko_core::config::RokoConfig::default();
@@ -10851,6 +11210,10 @@ mod tests_post_gate_reflection_lessons {
             state.lifecycle.task_attempts[&attempt.key()].status,
             TaskAttemptStatus::TimedOut
         );
+        assert!(
+            state.active_gate_effects.contains(&stale_gate_key),
+            "unrelated stale gate bookkeeping must neither hide nor be consumed by exact expiry"
+        );
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
         let persisted_events = events
             .lines()
@@ -10864,9 +11227,16 @@ mod tests_post_gate_reflection_lessons {
             1
         );
         let mut replayed = RunState::new(1);
-        for event in &persisted_events {
-            replayed.apply_runner_event(event);
-        }
+        replayed.lifecycle.run_id = run_id.clone();
+        replayed.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "lost-gate",
+        ));
+        assert_eq!(
+            replay_timeout_terminals(&paths.run_ledger_jsonl, &mut replayed).unwrap(),
+            1
+        );
         assert_eq!(
             replayed.lifecycle.task_attempts[&attempt.key()].status,
             state.lifecycle.task_attempts[&attempt.key()].status,
@@ -10882,10 +11252,33 @@ mod tests_post_gate_reflection_lessons {
             .filter(|entry| entry["kind"] == "timeout_recorded")
             .collect::<Vec<_>>();
         assert_eq!(timeout_entries.len(), 1);
-        let persisted_timeout: TimeoutEvent =
-            serde_json::from_value(timeout_entries[0]["timeout"].clone()).unwrap();
+        let typed_entry: TimeoutLedgerEntry =
+            serde_json::from_value((*timeout_entries[0]).clone()).unwrap();
+        assert!(!persist_timeout_terminal(&paths.run_ledger_jsonl, &typed_entry).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&paths.run_ledger_jsonl)
+                .unwrap()
+                .matches("timeout_recorded")
+                .count(),
+            1,
+            "duplicate durable timeout writes must be idempotent"
+        );
+        let persisted_timeout = timeout_event_from_ledger(&typed_entry).unwrap();
         assert_eq!(persisted_timeout.kind, TimeoutKind::LostEffect);
         assert_eq!(persisted_timeout.effect, Some(gate_effect));
+
+        let live_timeout = persisted_events
+            .iter()
+            .find(|event| matches!(event, RunnerEvent::TimeoutRecorded { .. }))
+            .unwrap()
+            .clone();
+        let replay_timeout = timeout_runner_event(&typed_entry).unwrap();
+        let projection = crate::runner::projection::Projection::new(&run_id);
+        assert_eq!(
+            projection.normalize_runner_event(live_timeout),
+            projection.normalize_runner_event(replay_timeout),
+            "typed ledger replay and live timeout must project identically"
+        );
     }
 
     #[tokio::test]
@@ -10951,6 +11344,96 @@ mod tests_post_gate_reflection_lessons {
         );
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
         assert!(!events.contains("\"type\":\"timeout.recorded\""));
+    }
+
+    #[tokio::test]
+    async fn unconfirmable_sibling_drain_is_bounded_to_initial_snapshot() {
+        let expired = TaskAttemptRef::new("plan", "a-expired", 1);
+        let sibling = TaskAttemptRef::new("plan", "z-sibling", 1);
+        let now = crate::runner::deadlines::MonotonicTime::from_millis(2_000);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                expired.clone(),
+                AttemptOwner::new_at(
+                    AttemptPhase::AwaitingGate,
+                    EffectRef(101),
+                    crate::runner::deadlines::MonotonicTime::from_millis(1_000),
+                ),
+                AgentRuntimeResource::AwaitingGate,
+            )
+            .unwrap();
+        let sibling_effect = GateEffectRef {
+            attempt: sibling.clone(),
+            kind: GateCompletionKind::Gate,
+            rung: 1,
+            generation: 102,
+        };
+        let sibling_handle = tokio::spawn(async { panic!("unconfirmable sibling") });
+        tokio::task::yield_now().await;
+        ownership
+            .insert(
+                sibling.clone(),
+                AttemptOwner::new_at(AttemptPhase::Gate, EffectRef(102), now),
+                AgentRuntimeResource::Gate {
+                    effect: sibling_effect,
+                    handle: sibling_handle,
+                },
+            )
+            .unwrap();
+
+        let mut state = RunState::new(2);
+        let run_id = state.run_id().to_string();
+        for attempt in [&expired, &sibling] {
+            state.apply_runner_event(&RunnerEvent::task_attempt_started(
+                &run_id,
+                attempt.clone(),
+                &attempt.task_id,
+            ));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.task_attempt_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::new(DagConfig::default());
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                now,
+                &mut ownership,
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            1
+        );
+        assert!(!ownership.contains(&expired));
+        assert!(ownership.contains(&sibling));
+        assert_eq!(
+            state.lifecycle.task_attempts[&sibling.key()].status,
+            TaskAttemptStatus::CancellationFailed
+        );
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        assert_eq!(
+            events.matches("task.attempt.cancellation_failed").count(),
+            1,
+            "one initial sibling snapshot must not retry an unconfirmable owner recursively"
+        );
     }
 
     #[tokio::test]

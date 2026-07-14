@@ -34,7 +34,7 @@ pub const PROJECTION_OUTPUT_PREVIEW_BYTES: usize =
     roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT;
 
 /// One normalized event delivered through the projection facade.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectionEvent {
     /// Stable run id this event belongs to.
     pub run_id: String,
@@ -224,6 +224,12 @@ impl Projection {
     /// Convenience helper for emitting runner lifecycle events.
     pub fn publish_runner_event(&self, event: RunnerEvent) -> Result<(), ProjectionError> {
         self.publish(RawRuntimeEvent::Runner(event))
+    }
+
+    /// Normalize a runner event without publishing it. Replay uses this same
+    /// path so durable and live timeout terminals cannot drift by consumer.
+    pub(super) fn normalize_runner_event(&self, event: RunnerEvent) -> ProjectionEvent {
+        self.from_runner(event)
     }
 
     fn normalize(&self, raw: RawRuntimeEvent) -> ProjectionEvent {
@@ -611,11 +617,13 @@ mod tests {
             EventCategory::from_runner_event(&event),
             EventCategory::Task
         );
+        let live = projection.normalize_runner_event(event.clone());
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: RunnerEvent = serde_json::from_str(&encoded).unwrap();
-        let projected = projection.from_runner(decoded);
+        let projected = projection.normalize_runner_event(decoded);
         assert_eq!(projected.plan_id.as_deref(), Some("plan"));
         assert_eq!(projected.task_id.as_deref(), Some("task"));
         assert_eq!(projected.attempt, Some(2));
+        assert_eq!(projected, live, "replay and live projection must match");
     }
 }

@@ -1145,17 +1145,17 @@ Before ending any coordinator context, update this section on the integration br
 
 - Run ID: `status-quo-20260714T073140Z`
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
-- Integration HEAD before this checkpoint commit: `e736f324bf6f1c6840d9d011c9189fe26e4cf052`
+- Integration HEAD before this checkpoint commit: `af6a8576778c85376008f8521e413c0bb27ae7a3`
 - Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
 - Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
 - Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
 - Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
-- Last completed wave/task: `CTRL-01`; Wave 0 is active.
-- Active assignments and worktrees: `SH01-T06B2A` precursor reconstruction in `workers/CTRL-02-SH01-T06B2A`; `CTRL-06` validator repair in `workers/CTRL-06`; `CTRL-03` candidate worktree plus `reviews/CTRL-03-ace630cebebc` awaiting independent review.
-- Accepted but unmerged commits: none; `CTRL-03` is merged and post-merge verified; `CTRL-06` and `SH01-T06B2A` are in independent review.
+- Last completed wave/task: `CTRL-03`; Wave 0 is active (`CTRL-01` and `CTRL-03` DONE).
+- Active assignments and worktrees: `SH01-T06B2A` candidate `c71eb14f1aaa` in independent review; `CTRL-06` candidate `5e837e25e78b` in independent review; the next process reconstruction is active in `workers/CTRL-02-SH01-PROCESS`.
+- Accepted but unmerged commits: none.
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
-- Next dependency-ready tasks: independently review `CTRL-03`; review `CTRL-06` and `SH01-T06B2A` when their candidates land; continue serial `CTRL-02` reconstruction and the CTRL-04/05/08/09/14/15/16 ownership lane.
-- Last global gate results: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, and self-heal strict validation pass. Backlog strict reaches 55 plans with 25 assigned Wave 0 diagnostics. A six-crate baseline test run passed 1,324 roko-cli library tests and many integrations, then two parallel smoke plan-run tests hit their 120-second harness timeout with empty output; isolated serial retry is running as the first distinct remedy.
+- Next dependency-ready tasks: finish `CTRL-06`/`SH01-T06B2A` reviews and correction cycles, merge accepted candidates, continue serial `CTRL-02` reconstruction, then the CTRL-04/05/08/09/14/15/16 ownership lane.
+- Last global gate results: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, and self-heal strict validation pass. Backlog strict reaches 55 plans with 25 assigned Wave 0 diagnostics before CTRL-06. A six-crate baseline run passed 1,324 roko-cli library tests and many integrations; its two parallel 120-second smoke timeouts both pass in isolated serial reruns (33.91s and 33.65s).
 - Dirty/untracked state: sealed original remains unchanged with 23 visible attributed control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts; integration is clean before this checkpoint-only edit; every active worker is confined to its recorded scope.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 

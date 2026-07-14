@@ -1,0 +1,713 @@
+[meta]
+plan = "E22-execution-runtime"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T01: Define the 7 cognitive loop Cell types
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec defines the cognitive loop as 7 typed Cells: Sense, Assess,
+# Compose, Act, Verify, Persist, React. Currently only PassthroughCell stubs
+# exist (registered in engine.rs:360-368 as COGNITIVE_LOOP_STUBS). This task
+# replaces those stubs with proper Cell implementations that declare typed
+# I/O schemas per the spec.
+[[task]]
+id = "E22-T01"
+title = "Define 7 cognitive loop Cell structs with typed I/O schemas"
+description = """Create a new module crates/roko-graph/src/cells/cognitive.rs with 7 Cell
+structs: SenseCell, AssessCell, ComposeCell, ActCell, VerifyCell, PersistCell,
+ReactCell. Each defines input_schema and output_schema per the spec. Implement
+Cell trait stubs (execute returns todo/unimplemented for now). Register all 7
+in the cells/mod.rs exports, replacing the PassthroughCell registrations in
+engine.rs default_registry().
+
+The roko-graph Cell trait (cell.rs:74-106) requires: cell_id, cell_name,
+cell_version, protocols, estimated_cost, estimated_duration, and execute.
+The roko-core Cell trait (cell.rs:59-83) defines TypeSchema for I/O contracts.
+
+Each cell must declare its protocols list per spec:
+- SenseCell: ["Observe"] (reads Store + Bus)
+- AssessCell: ["Score"] (relevance scoring)
+- ComposeCell: ["Compose"] (prompt assembly)
+- ActCell: ["Connect"] (agent dispatch)
+- VerifyCell: ["Verify"] (gate execution)
+- PersistCell: ["Store"] (Signal persistence)
+- ReactCell: ["React", "Trigger"] (event emission + reactions)"""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 200
+files = [
+    "crates/roko-graph/src/cells/cognitive.rs",
+    "crates/roko-graph/src/cells/mod.rs",
+    "crates/roko-graph/src/engine.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E20-cell-unification"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/cells/mod.rs", lines = "1-19", why = "Cell module exports -- add cognitive module here" },
+    { path = "crates/roko-graph/src/cells/stubs.rs", lines = "1-77", why = "Existing PassthroughCell and COGNITIVE_LOOP_STUBS array to replace" },
+    { path = "crates/roko-graph/src/cell.rs", lines = "68-106", why = "roko-graph Cell trait: cell_id, cell_name, execute, etc." },
+    { path = "crates/roko-core/src/cell.rs", lines = "59-83", why = "TypeSchema enum (Any, OfKind, JsonSchema) for I/O declarations" },
+    { path = "crates/roko-core/src/cell.rs", lines = "22-57", why = "CellContext with bus, store, cancel, budget_remaining" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "360-368", why = "COGNITIVE_LOOP_STUBS registration in default_registry -- replace these" },
+    { path = "docs/v2-depth/05-execution-engine/cognitive-loop-as-graph.md", lines = "19-65", why = "Spec: each step as a Cell with I/O schemas and protocol conformance" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-60", why = "Cognitive loop overview and the 7-Cell Hot Graph definition" },
+]
+symbols = [
+    "Cell trait (roko-graph cell.rs:74) -- each cognitive cell implements this",
+    "TypeSchema (roko-core cell.rs:62) -- used for input/output schema declarations",
+    "CellContext (roko-graph cell.rs:20) -- runtime context passed to execute()",
+    "PassthroughCell (stubs.rs:18) -- existing stub to replace",
+    "COGNITIVE_LOOP_STUBS (stubs.rs:69) -- registry names to map to real implementations",
+]
+anti_patterns = [
+    "Do NOT implement the full execution logic -- T01 is struct definitions and I/O schemas only.",
+    "Do NOT couple to specific LLM backends -- ActCell is abstract over agent dispatch.",
+    "Do NOT hardcode the loop wiring -- that's the Graph definition (T02), not the Cell.",
+    "Do NOT remove PassthroughCell entirely -- it's still useful for testing. Only replace the cognitive loop registrations.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SenseCell\\|AssessCell\\|ComposeCell\\|ActCell\\|VerifyCell\\|PersistCell\\|ReactCell' crates/roko-graph/src/cells/cognitive.rs"
+fail_msg = "all 7 cognitive loop cell types must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod cognitive' crates/roko-graph/src/cells/mod.rs"
+fail_msg = "cognitive module must be declared in cells/mod.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub use cognitive' crates/roko-graph/src/cells/mod.rs"
+fail_msg = "cognitive types must be re-exported from cells/mod.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T02: Define the cognitive loop as a Hot Graph TOML
+# ─────────────────────────────────────────────────────────────────────────────
+# The cognitive loop is a Hot Graph with 7 nodes wired in sequence with
+# conditional edges. The existing TOML graph loader (loader.rs:9-17) parses
+# RawGraphFile with graph/nodes/edges sections. HotPolicy (hot.rs:29-51)
+# controls tick behavior.
+[[task]]
+id = "E22-T02"
+title = "Author cognitive-loop.toml Graph definition"
+description = """Create a TOML graph definition at .roko/graphs/cognitive-loop.toml that
+wires the 7 cognitive cells: sense->assess->compose->act->verify->persist->react
+with edges. Mark it as Hot with theta-level tick interval (10s default).
+Add failure edges from verify->react (for gate failure feedback) using
+EdgeCondition::Failure. Add a T0 short-circuit edge from sense->react with
+an OutputEquals condition for empty sensed material.
+
+The TOML format follows RawGraphFile (loader.rs:11): [graph] section with name,
+description, labels; [[nodes]] with id, cell_type, config; [[edges]] with from,
+to, and optional [edges.condition]. The condition format uses RawEdgeCondition
+(loader.rs:54-65): type = "success"|"failure"|"always"|"output_equals"."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = [".roko/graphs/cognitive-loop.toml"]
+role = "implementer"
+depends_on = ["E22-T01"]
+depends_on_plan = ["E21-graph-engine"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/loader.rs", lines = "9-76", why = "TOML format: RawGraphFile, RawNode, RawEdge, RawEdgeCondition" },
+    { path = "crates/roko-graph/src/types.rs", lines = "14-31", why = "EdgeCondition variants: Success, Failure, OutputEquals, Always" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "29-51", why = "HotPolicy: tick_interval_ms, max_ticks, persist_tick_state" },
+    { path = "docs/v2-depth/05-execution-engine/cognitive-loop-as-graph.md", lines = "1-18", why = "Spec: the loop is a concrete Hot Graph, not a metaphor" },
+    { path = "crates/roko-graph/src/loader.rs", lines = "133-165", why = "Example TOML: ci-pipeline with nodes, edges, conditions" },
+]
+symbols = [
+    "RawGraphFile (loader.rs:11) -- TOML deserialization struct",
+    "RawNode (loader.rs:33) -- id, cell_type, config, inputs, outputs",
+    "RawEdge (loader.rs:46) -- from, to, condition",
+    "RawEdgeCondition (loader.rs:55) -- Success, Failure, Always, OutputEquals",
+    "HotPolicy (hot.rs:30) -- tick_interval_ms, max_ticks, persist_tick_state",
+]
+anti_patterns = [
+    "Do NOT make it a one-shot graph -- the cognitive loop is inherently Hot (tick-driven).",
+    "Do NOT hardcode LLM model names in ActCell config -- model routing is external.",
+    "Do NOT use the graph.labels field for hot policy -- use a dedicated [graph.hot] section if the loader supports it, otherwise put hot config in graph.labels.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f .roko/graphs/cognitive-loop.toml"
+fail_msg = "cognitive-loop.toml must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c '\\[\\[nodes\\]\\]' .roko/graphs/cognitive-loop.toml | grep -q '^7$'"
+fail_msg = "cognitive loop TOML must define exactly 7 nodes"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'sense' .roko/graphs/cognitive-loop.toml && grep -q 'verify' .roko/graphs/cognitive-loop.toml && grep -q 'react' .roko/graphs/cognitive-loop.toml"
+fail_msg = "cognitive loop TOML must define sense, verify, and react nodes"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T03: Implement T0 short-circuit optimization
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec defines T0 short-circuit: ~80% of cognitive loop ticks detect
+# "nothing changed" in SENSE and skip directly to REACT without invoking
+# ASSESS, COMPOSE, or ACT. The SenseCell output determines whether a full
+# tick is needed. This is wired through the graph's conditional edges (T02).
+[[task]]
+id = "E22-T03"
+title = "Implement T0 short-circuit in SenseCell for no-change ticks"
+description = """Add T0 short-circuit logic to SenseCell (cells/cognitive.rs): if the
+current tick's sensed material is empty (no new Signals, no new Pulses, no
+external input), emit an output Engram tagged with "t0_short_circuit" = true.
+This tag is read by the conditional edge in cognitive-loop.toml (from T02) to
+skip the assess->compose->act->verify->persist chain and jump directly to react.
+
+Add a T0 counter (AtomicU64) to SenseCell for observability, incremented
+on each short-circuit tick. Log at trace level on short-circuit.
+
+The short-circuit check must NOT fire when:
+- A deadline is approaching (budget_remaining < threshold in CellContext)
+- The React cell requested a forced full tick in the previous iteration"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-graph/src/cells/cognitive.rs"]
+role = "implementer"
+depends_on = ["E22-T01"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/cells/cognitive.rs", lines = "1-50", why = "SenseCell from T01 -- add T0 detection logic" },
+    { path = "crates/roko-graph/src/cell.rs", lines = "20-27", why = "CellContext with budget_remaining for deadline proximity check" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-50", why = "Spec: T0 short-circuit handling ~80% of ticks at near-zero cost" },
+    { path = "docs/v2-depth/05-execution-engine/cognitive-loop-as-graph.md", lines = "24-65", why = "SenseCell spec: output schema includes sensed material emptiness" },
+]
+symbols = [
+    "SenseCell (cognitive.rs) -- add T0 detection and short-circuit emission",
+    "CellContext::budget_remaining (cell.rs:26) -- check for deadline proximity",
+    "Engram (roko-core) -- tagged output for conditional edge evaluation",
+]
+anti_patterns = [
+    "Do NOT suppress ReactCell on T0 ticks -- React always runs (it handles maintenance tasks).",
+    "Do NOT skip T0 detection when there's a deadline approaching -- force a full tick instead.",
+    "Do NOT add the short-circuit logic to GraphEngine -- it lives in SenseCell's execute method.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 't0_short_circuit\\|T0\\|short_circuit' crates/roko-graph/src/cells/cognitive.rs"
+fail_msg = "T0 short-circuit logic must exist in cognitive.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T04: Add error taxonomy with typed error categories
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec defines an error taxonomy for Cell execution failures.
+# The existing GraphError (types.rs:162-215) handles graph-level structural
+# errors. CellError is for per-Cell execution classification.
+[[task]]
+id = "E22-T04"
+title = "Add CellError taxonomy for cognitive loop error classification"
+description = """Add a CellError enum to roko-graph/src/error.rs with variants:
+- Transient { message, retry_after_ms } -- transient failure, retry with backoff
+- Permanent { message } -- unrecoverable failure, abort
+- ResourceExhausted { resource, message, wait_ms } -- wait for resource
+- Timeout { message, elapsed_ms } -- retry with longer timeout
+- PolicyViolation { policy, message } -- escalate to supervisor
+- BudgetExceeded { limit, consumed, message } -- degrade gracefully
+
+Add an ErrorRecovery enum: Retry { max_attempts, backoff_ms }, Skip { reason },
+Escalate { to }, Abort { reason }. Add a method CellError::suggested_recovery()
+that returns the default ErrorRecovery for each variant.
+
+Keep existing GraphError unchanged -- CellError is a sibling enum for Cell-level
+errors, convertible to GraphError::NodeFailed for graph-level reporting."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = ["crates/roko-graph/src/error.rs"]
+role = "implementer"
+depends_on = []
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/error.rs", lines = "1-9", why = "Current error module: re-exports GraphError, defines Result alias" },
+    { path = "crates/roko-graph/src/types.rs", lines = "162-215", why = "GraphError enum with structural and execution variants" },
+    { path = "crates/roko-core/src/error/mod.rs", lines = "1-60", why = "RokoError taxonomy pattern to follow for consistency" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-50", why = "Error taxonomy spec: Transient, Permanent, ResourceExhausted, etc." },
+]
+symbols = [
+    "GraphError (types.rs:163) -- existing graph-level errors, keep unchanged",
+    "GraphError::NodeFailed (types.rs:181) -- CellError converts to this for reporting",
+    "GraphError::BudgetExceeded (types.rs:195) -- existing budget error variant",
+]
+anti_patterns = [
+    "Do NOT remove or modify GraphError -- CellError is a companion enum for Cell execution.",
+    "Do NOT add a catch-all Other variant -- force explicit error classification.",
+    "Do NOT use anyhow::Error -- CellError must be a concrete enum for pattern matching in recovery.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum CellError' crates/roko-graph/src/error.rs && grep -q 'Transient' crates/roko-graph/src/error.rs && grep -q 'pub enum ErrorRecovery' crates/roko-graph/src/error.rs"
+fail_msg = "CellError enum with Transient variant and ErrorRecovery enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'suggested_recovery' crates/roko-graph/src/error.rs"
+fail_msg = "CellError must have a suggested_recovery() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T05: Add error recovery state machine to GraphEngine
+# ─────────────────────────────────────────────────────────────────────────────
+# Wire the CellError taxonomy into GraphEngine. Currently engine.rs:194-213
+# treats all errors the same (mark as Failed, add to failed_nodes set).
+# This task adds error classification and per-variant recovery strategies.
+[[task]]
+id = "E22-T05"
+title = "Wire CellError recovery state machine into GraphEngine"
+description = """Modify GraphEngine::execute (engine.rs:132-225) to classify errors from
+Cell execution. When a cell's execute() returns Err, try to downcast to
+CellError and apply the suggested recovery strategy:
+
+- Retry: re-execute the cell with exponential backoff (base_ms * 2^attempt),
+  up to max_retries. Track retry count per node in a HashMap<NodeId, u32>.
+- Skip: mark the node as Skipped (not Failed), so dependents can still run
+  if they don't require this node's output.
+- Escalate: emit a warning log and mark as Failed (future: bus pulse for
+  supervisor notification).
+- Abort: stop the entire graph execution immediately.
+
+For non-CellError errors (plain RokoError), default to the current behavior
+(mark as Failed, skip dependents). This preserves backward compatibility.
+
+Respect max_retries from a configurable GraphPolicy (add to GraphEngine struct)."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E22-T04"]
+depends_on_plan = ["E21-graph-engine"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "109-225", why = "GraphEngine struct and execute() loop -- add recovery handling" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "254-300", why = "has_failed_ancestor and gather_inputs -- understanding dependency flow" },
+    { path = "crates/roko-graph/src/error.rs", lines = "1-9", why = "CellError and ErrorRecovery from T04" },
+    { path = "crates/roko-graph/src/types.rs", lines = "162-215", why = "GraphError::NodeFailed for error conversion" },
+]
+symbols = [
+    "GraphEngine (engine.rs:111) -- add retry tracking and recovery handling",
+    "GraphEngine::execute (engine.rs:132) -- modify the node execution loop",
+    "CellError (error.rs) -- classify errors from T04",
+    "ErrorRecovery (error.rs) -- Retry/Skip/Escalate/Abort strategies from T04",
+    "failed_nodes HashSet (engine.rs:140) -- adjust skip-propagation for Skip vs Failed",
+]
+anti_patterns = [
+    "Do NOT retry without backoff -- use exponential backoff with jitter.",
+    "Do NOT retry Permanent errors -- they are not retriable by definition.",
+    "Do NOT suppress error context -- preserve the full error chain for debugging.",
+    "Do NOT break existing tests (engine.rs:514-635) -- they use plain RokoError, not CellError.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'retry\\|ErrorRecovery\\|CellError' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must handle CellError recovery"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'backoff\\|retry_count\\|max_retries' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must implement retry with backoff"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph -- engine 2>&1 | tail -5"
+fail_msg = "existing engine tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T06: Add per-loop budget enforcement
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing BudgetTracker (budget.rs:17-177) already tracks tokens, cost,
+# and deadlines. This task wires it into the Hot Graph tick loop so each tick
+# enforces budget limits, and adds graceful degradation (skip optional nodes
+# rather than hard-aborting).
+[[task]]
+id = "E22-T06"
+title = "Add per-tick budget enforcement to Hot Graph execution"
+description = """Wire BudgetTracker (budget.rs:17-177) into the Hot Graph tick loop
+(hot.rs:145-208). Before each tick, check BudgetTracker::check(). When
+budget is exhausted:
+
+1. Instead of breaking the entire loop, skip expensive nodes (Act, Compose)
+   while still running cheap nodes (Sense, React) for observability.
+2. Emit a BudgetExhausted pulse (future: via Bus, for now log at warn level).
+3. Pass remaining budget to CellContext::budget_remaining for each node.
+
+Add a BudgetEnforcer struct that wraps BudgetTracker with Hot-Graph-specific
+logic: categorize nodes as essential (Sense, React) vs. expensive (Act,
+Compose), and skip expensive nodes when budget is exhausted.
+
+Wire into HotGraphHandle: add a budget field and update it after each tick
+using BudgetTracker::record() with the tick's actual cost."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = [
+    "crates/roko-graph/src/hot.rs",
+    "crates/roko-graph/src/budget.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E21-graph-engine"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/hot.rs", lines = "105-223", why = "start_hot function and tick loop -- add budget enforcement here" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "53-103", why = "HotGraphHandle -- add budget tracking field" },
+    { path = "crates/roko-graph/src/budget.rs", lines = "15-177", why = "BudgetTracker: from_config, check, record, remaining_cost_usd" },
+    { path = "crates/roko-graph/src/cell.rs", lines = "20-27", why = "CellContext::budget_remaining -- pass remaining budget per tick" },
+    { path = "crates/roko-graph/src/types.rs", lines = "332-344", why = "GraphConfig with max_tokens, max_cost_usd, deadline" },
+]
+symbols = [
+    "BudgetTracker (budget.rs:17) -- existing tracker with check/record/remaining_cost_usd",
+    "BudgetLimits (budget.rs:31) -- max_tokens, max_cost_usd, deadline",
+    "HotGraphHandle (hot.rs:57) -- add budget field for tracking",
+    "start_hot (hot.rs:117) -- accept optional BudgetTracker parameter",
+    "CellContext::budget_remaining (cell.rs:26) -- set from tracker per tick",
+]
+anti_patterns = [
+    "Do NOT hard-abort on budget exhaustion -- degrade gracefully by skipping expensive nodes.",
+    "Do NOT track budget in USD only -- BudgetTracker already tracks tokens and cost separately.",
+    "Do NOT break existing hot.rs tests (hot.rs:225-334) -- they don't use budgets.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'BudgetEnforcer\\|budget_remaining\\|budget' crates/roko-graph/src/hot.rs"
+fail_msg = "budget enforcement must exist in hot graph execution"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph -- hot_graph 2>&1 | tail -5"
+fail_msg = "existing hot graph tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T07: Add deterministic replay support for Activity nodes
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec defines the Workflow/Activity split for deterministic replay.
+# Currently the engine treats all nodes identically (engine.rs:144-214).
+# The Node struct (types.rs:55-70) has no NodeKind field yet -- that comes
+# from E21. This task adds the recording/replaying infrastructure.
+[[task]]
+id = "E22-T07"
+title = "Add Activity replay recorder and replayer for deterministic execution"
+description = """Add an ActivityRecorder that writes Activity node outputs to a JSONL file
+keyed by (graph_id, run_id, node_id, tick). Add an ActivityReplayer that
+reads recorded outputs and substitutes them during replay instead of
+re-executing the Activity.
+
+Create a new file crates/roko-graph/src/replay.rs with:
+- RecordEntry { graph_id, run_id, node_id, tick, engrams: Vec<Engram> }
+- ActivityRecorder { path: PathBuf, writer: BufWriter } with record() method
+- ActivityReplayer { entries: HashMap<(String, String, u64), Vec<Engram>> }
+  with load(path) and lookup(node_id, tick) methods
+
+Wire into GraphEngine: accept optional recorder/replayer. During execution,
+if replayer has a matching entry for an Activity node, use the recorded
+output instead of executing. If recorder is present, write every Activity
+node output after execution.
+
+Workflow nodes always re-execute (they derive deterministically from inputs).
+Activity nodes are non-deterministic (LLM calls, network I/O) and need recording."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-graph/src/replay.rs",
+    "crates/roko-graph/src/engine.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E21-graph-engine"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "109-225", why = "GraphEngine -- add optional recorder/replayer fields and wire into node execution" },
+    { path = "crates/roko-graph/src/types.rs", lines = "54-70", why = "Node struct -- will need NodeKind from E21 to distinguish Workflow/Activity" },
+    { path = "crates/roko-graph/src/types.rs", lines = "252-311", why = "NodeOutput with data, status, tokens_used -- recording format reference" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-50", why = "Spec: Workflow/Activity split for deterministic replay" },
+]
+symbols = [
+    "GraphEngine (engine.rs:111) -- add optional recorder/replayer fields",
+    "Node (types.rs:56) -- needs NodeKind discrimination (from E21)",
+    "NodeOutput (types.rs:253) -- reference for serialization format",
+    "Engram (roko-core) -- the actual output data to record/replay",
+]
+anti_patterns = [
+    "Do NOT record Workflow node outputs -- they re-derive deterministically from inputs.",
+    "Do NOT require replay for normal execution -- recording is always-on, replay is opt-in.",
+    "Do NOT break existing tests that don't use replay -- recorder and replayer are optional.",
+    "Do NOT load the entire replay file into memory eagerly -- stream it or lazy-load.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-graph/src/replay.rs && grep -q 'ActivityRecorder\\|ActivityReplayer' crates/roko-graph/src/replay.rs"
+fail_msg = "replay.rs with ActivityRecorder and ActivityReplayer must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T08: Add FlowHandle for live execution tracking
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec defines Flow as a live execution instance of a Graph. The
+# existing HotGraphHandle (hot.rs:57-103) is the pattern to follow.
+# FlowHandle provides status(), cancel(), and await_completion().
+[[task]]
+id = "E22-T08"
+title = "Add FlowHandle for live Graph execution tracking"
+description = """Add a FlowHandle struct to engine.rs with:
+- run_id: String (unique per execution)
+- graph_id: String (from GraphMetadata.name)
+- started_at: Instant
+- node_statuses: Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>>
+- budget_consumed: Arc<AtomicU64> (microdollars, same pattern as BudgetTracker)
+- cancel: CancellationToken (from tokio-util)
+- result: Arc<parking_lot::Mutex<Option<GraphOutput>>>
+
+Methods:
+- status() -> FlowStatus { node_statuses, elapsed, budget_consumed }
+- cancel() -- triggers CancellationToken
+- await_completion() -> GraphOutput -- async, waits for result
+
+Add GraphEngine::start() -> FlowHandle that spawns execution on a tokio task
+and returns the handle immediately (similar to start_hot in hot.rs:117-223).
+Keep existing execute() for synchronous use. FlowHandle is the async equivalent.
+
+Follow HotGraphHandle (hot.rs:57-103) as the pattern: CancellationToken for
+cancel, parking_lot::Mutex for shared state, JoinHandle for background task."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = []
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "17-72", why = "NodeStatus, NodeResult, GraphOutput -- types FlowHandle tracks" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "109-121", why = "GraphEngine struct -- add start() method alongside execute()" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "53-103", why = "HotGraphHandle pattern: cancel, tick, last_output, join_handle" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "117-223", why = "start_hot implementation pattern -- FlowHandle::start follows this" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-50", why = "Spec: Flow as live execution instance with lifecycle events" },
+]
+symbols = [
+    "GraphEngine (engine.rs:111) -- add start() method returning FlowHandle",
+    "HotGraphHandle (hot.rs:57) -- pattern to follow for cancel/wait/status",
+    "NodeStatus (engine.rs:18) -- tracked per-node in FlowHandle",
+    "GraphOutput (engine.rs:62) -- final result stored in FlowHandle",
+    "CancellationToken (tokio-util) -- already used in HotGraphHandle",
+]
+anti_patterns = [
+    "Do NOT merge FlowHandle with HotGraphHandle -- they serve different lifecycle patterns.",
+    "Do NOT block on await_completion -- it must be async (use JoinHandle).",
+    "Do NOT remove existing execute() method -- start() is an async alternative.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct FlowHandle' crates/roko-graph/src/engine.rs"
+fail_msg = "FlowHandle struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn cancel' crates/roko-graph/src/engine.rs && grep -q 'fn status' crates/roko-graph/src/engine.rs && grep -q 'await_completion' crates/roko-graph/src/engine.rs"
+fail_msg = "FlowHandle must have cancel, status, and await_completion methods"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn start' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must have a start() method returning FlowHandle"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T09: Add lifecycle Pulse emission from GraphEngine
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec requires every lifecycle event to be a Pulse on Bus. Currently
+# GraphEngine has no Bus reference. This task adds optional Bus integration
+# for lifecycle event emission.
+[[task]]
+id = "E22-T09"
+title = "Emit lifecycle Pulses from GraphEngine via Bus"
+description = """Add lifecycle Pulse emission to GraphEngine:
+
+1. Add an optional bus field to GraphEngine: bus: Option<Arc<dyn BusErased>>
+   (BusErased is the type-erased bus trait from roko-core/src/bus_backends.rs).
+2. Add a GraphEngine::with_bus(bus) builder method.
+3. In execute(), publish Pulses for these events:
+   - flow.started { graph_id, run_id, timestamp }
+   - node.started { graph_id, node_id, cell_type, timestamp }
+   - node.completed { graph_id, node_id, duration_ms, output_count, timestamp }
+   - node.failed { graph_id, node_id, error, duration_ms, timestamp }
+   - flow.completed { graph_id, success, total_duration_ms, node_count, timestamp }
+4. Each Pulse carries metadata as serde_json::Value in the Engram payload.
+5. Publishing is fire-and-forget -- do not block on publish.
+
+The Bus dependency is optional so test contexts that don't need Pulses
+continue to work without providing a Bus instance."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 65
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E22-T08"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "109-214", why = "GraphEngine and execute() -- add bus field and publish calls" },
+    { path = "crates/roko-core/src/bus_backends.rs", lines = "1-50", why = "BusErased trait for type-erased bus reference" },
+    { path = "crates/roko-core/src/pulse.rs", lines = "1-40", why = "Pulse struct definition for lifecycle events" },
+    { path = "crates/roko-core/src/pulse_bus.rs", lines = "60-80", why = "PulseBus::publish method for emitting Pulses" },
+    { path = "docs/v2/04-EXECUTION.md", lines = "1-50", why = "Spec: every lifecycle event is a Pulse on Bus" },
+]
+symbols = [
+    "GraphEngine (engine.rs:111) -- add bus: Option<Arc<dyn BusErased>> field",
+    "BusErased (roko-core bus_backends.rs) -- type-erased bus for dependency injection",
+    "Pulse (roko-core pulse.rs) -- lifecycle event carrier",
+    "Engram (roko-core) -- data payload for Pulses",
+]
+anti_patterns = [
+    "Do NOT make Bus mandatory -- keep it optional for test contexts.",
+    "Do NOT block on Pulse publishing -- fire-and-forget (spawn if needed).",
+    "Do NOT emit Pulses for T0 short-circuit ticks -- too noisy, would flood the bus.",
+    "Do NOT add roko-core as a new dependency to roko-graph if it's not already there -- check Cargo.toml first.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'bus.*BusErased\\|Option.*Bus\\|with_bus' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must have a Bus field and with_bus builder"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'flow.started\\|node.started\\|node.completed\\|flow.completed' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must emit lifecycle events"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E22-T10: Re-export execution runtime types from roko-graph lib.rs
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E22-T10"
+title = "Re-export execution runtime types from roko-graph lib.rs"
+description = """Update roko-graph/src/lib.rs to export all new types from T01-T09:
+
+Current exports (lib.rs:44-71) cover: cell, cells, engine, types, hot, budget,
+condition, convert, error, loader, registry, topo.
+
+Add exports for:
+- cells::cognitive::{SenseCell, AssessCell, ComposeCell, ActCell, VerifyCell, PersistCell, ReactCell}
+- error::{CellError, ErrorRecovery}
+- engine::FlowHandle
+- replay::{ActivityRecorder, ActivityReplayer} (add `pub mod replay` to lib.rs)
+
+Keep all existing exports unchanged."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-graph/src/lib.rs"]
+role = "implementer"
+depends_on = ["E22-T01", "E22-T04", "E22-T07", "E22-T08"]
+domain = "execution-runtime"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/lib.rs", lines = "1-72", why = "Current module declarations and re-exports" },
+]
+symbols = [
+    "FlowHandle (engine.rs) -- from T08",
+    "CellError, ErrorRecovery (error.rs) -- from T04",
+    "ActivityRecorder, ActivityReplayer (replay.rs) -- from T07",
+    "SenseCell, AssessCell, etc. (cells/cognitive.rs) -- from T01",
+]
+anti_patterns = [
+    "Do NOT remove any existing exports.",
+    "Do NOT reorder existing module declarations.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FlowHandle' crates/roko-graph/src/lib.rs && grep -q 'CellError' crates/roko-graph/src/lib.rs && grep -q 'cognitive' crates/roko-graph/src/lib.rs"
+fail_msg = "lib.rs must export FlowHandle, CellError, and cognitive cell types"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod replay' crates/roko-graph/src/lib.rs"
+fail_msg = "replay module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"

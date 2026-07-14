@@ -1156,7 +1156,7 @@ Before ending any coordinator context, update this section on the integration br
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
 - Next dependency-ready tasks: review/integrate `CTRL-01`; attribute and validate precursor commit `3041d095d`; then repair Wave 0 dependency/validation/ownership defects.
 - Last global gate results: not yet run on the isolated integration branch.
-- Dirty/untracked state: sealed original has 23 attributed control-plane paths and 15 preserved unrelated artifacts; integration is clean; `workers/CTRL-01` contains only the attributed import plus its evidence/checkpoint edits.
+- Dirty/untracked state: sealed original has 23 visible attributed control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts; integration is clean; `workers/CTRL-01` contains only the attributed import, `.gitignore` repair, and its evidence/checkpoint edits.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against

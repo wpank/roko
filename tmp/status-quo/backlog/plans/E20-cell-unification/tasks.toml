@@ -1,0 +1,739 @@
+[meta]
+plan = "E20-cell-unification"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T01: Add protocol conformance declaration to Cell trait
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (02-CELL.md §2) defines 9 protocols. The roko-core Cell trait
+# (cell.rs:91) has protocols() returning &[&str] but needs a typed ProtocolId
+# enum for compile-time protocol checking. The roko-graph Cell trait (roko-graph
+# cell.rs:74) also uses &[&str]. Both need updating.
+[[task]]
+id = "E20-T01"
+title = "Add ProtocolId enum for typed protocol conformance on Cell"
+description = """Add a `ProtocolId` enum to `roko-core/src/cell.rs` with variants matching the 9
+protocols defined in 02-CELL.md §2:
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ProtocolId {
+    Store, Score, Verify, Route, Compose, React, Observe, Connect, Trigger,
+}
+```
+
+Change Cell::protocols() (line 108) return type from `&[&str]` to `Vec<ProtocolId>` with a
+default implementation returning an empty Vec. Add a `has_protocol(id: ProtocolId) -> bool`
+convenience method that checks `self.protocols().contains(&id)`.
+
+Update existing `protocols()` implementations in roko-core:
+- `NoOpGate` in noop.rs (returns `&["Verify"]`) -> `vec![ProtocolId::Verify]`
+- Other Cell impls that override protocols()
+
+Also update roko-graph's Cell trait (roko-graph/src/cell.rs:74) to match, since graph cells
+also declare protocols. This may require making ProtocolId available via roko-core re-export."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 65
+files = [
+    "crates/roko-core/src/cell.rs",
+    "crates/roko-std/src/noop.rs",
+]
+role = "implementer"
+depends_on = []
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "59-121", why = "TypeSchema, Cell trait with protocols() at line 108 returning &[&str]" },
+    { path = "crates/roko-core/src/traits.rs", lines = "37-42", why = "Store trait (line 37) — one of the 9 protocols" },
+    { path = "crates/roko-core/src/traits.rs", lines = "167-175", why = "Score trait (line 167) — protocol without Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "214-245", why = "Verify (line 214) and Route (line 242) traits" },
+    { path = "crates/roko-core/src/traits.rs", lines = "285-345", why = "Compose (line 285) and React (line 339) traits" },
+    { path = "crates/roko-core/src/traits.rs", lines = "400-430", why = "Observe (400), Connect (408), Trigger (420) — already require Cell" },
+    { path = "crates/roko-std/src/noop.rs", lines = "30-53", why = "NoOpGate — implements Cell and Verify, returns [\"Verify\"] in protocols()" },
+    { path = "docs/v2/02-CELL.md", lines = "117-134", why = "ProtocolId enum spec with 9 variants" },
+]
+symbols = [
+    "Cell trait (cell.rs:91) — protocols() at line 108 to change return type",
+    "NoOpGate (noop.rs:30) — impl Cell with protocols() returning &[\"Verify\"]",
+    "NoOpScorer (noop.rs:18) — does not impl Cell yet, just ScoreFn",
+    "Store, Score, Verify, Route, Compose, React (traits.rs) — the 6 original protocol traits",
+    "Observe (traits.rs:400), Connect (traits.rs:408), Trigger (traits.rs:420) — 3 newer traits",
+]
+anti_patterns = [
+    "Do NOT remove the existing protocol trait definitions in traits.rs — ProtocolId is metadata alongside them.",
+    "Do NOT break existing Cell implementors — provide a default that returns empty Vec.",
+    "Do NOT change Cell::protocols() to return a slice — Vec allows runtime construction.",
+    "Do NOT add Display impl for ProtocolId right now — not needed for this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ProtocolId' crates/roko-core/src/cell.rs"
+fail_msg = "ProtocolId enum must exist in cell.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'has_protocol' crates/roko-core/src/cell.rs"
+fail_msg = "Cell must have a has_protocol convenience method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core 2>&1"
+fail_msg = "all roko-core tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T02: Add TypeSchema validation with JSON Schema support
+# ─────────────────────────────────────────────────────────────────────────────
+# TypeSchema (cell.rs:63) exists with Any, OfKind, and JsonSchema variants but
+# is_compatible_with (line 75) always returns false for JsonSchema-JsonSchema
+# comparisons. The v2 spec requires actual validation capability.
+[[task]]
+id = "E20-T02"
+title = "Implement TypeSchema validation for JSON Schema compatibility"
+description = """Enhance `TypeSchema::is_compatible_with` (cell.rs:75) to handle JsonSchema variant:
+two JsonSchema variants are compatible if their schema strings are equal (exact match).
+
+Add new methods:
+- `validate_signal(signal: &Engram) -> bool` — checks if a Signal's kind/body matches this schema:
+  - `Any` always returns true
+  - `OfKind(k)` returns true if signal.kind == k
+  - `JsonSchema(s)` returns true (schema validation is best-effort; full validation deferred)
+- `union(self, other: TypeSchema) -> TypeSchema` — combines two schemas for merge points:
+  - If either is Any, result is Any
+  - If both are OfKind with the same kind, result is OfKind
+  - Otherwise, result is Any (conservative)
+
+Add unit tests for all compatibility and validation cases."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-core/src/cell.rs"]
+role = "implementer"
+depends_on = []
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "59-90", why = "TypeSchema enum and is_compatible_with at line 75" },
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct — validation target, has kind and body" },
+    { path = "crates/roko-core/src/kind.rs", lines = "26-110", why = "Kind enum used by TypeSchema::OfKind" },
+]
+symbols = [
+    "TypeSchema (cell.rs:63) — enum with Any, OfKind(Kind), JsonSchema(String) variants",
+    "TypeSchema::is_compatible_with (cell.rs:75) — current compatibility check, fix JsonSchema case",
+    "Engram (engram.rs:63) — struct to validate against schema",
+    "Kind (kind.rs:26) — used by TypeSchema::OfKind variant",
+]
+anti_patterns = [
+    "Do NOT add a full JSON Schema validation library dependency — string equality for JsonSchema is sufficient for now.",
+    "Do NOT change the existing is_compatible_with behavior for Any and OfKind — only fix JsonSchema.",
+    "Do NOT make validate_signal fallible — return bool, not Result.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'validate_signal\\|fn union' crates/roko-core/src/cell.rs"
+fail_msg = "TypeSchema must have validate_signal and union methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core cell 2>&1"
+fail_msg = "cell tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T03: Add CellCapabilities for resource declaration
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (02-CELL.md §1) requires Cells to declare capabilities they need
+# (network, fs, subprocess, llm, chain). Currently Cell has no capability
+# declaration. Add a Capabilities struct.
+[[task]]
+id = "E20-T03"
+title = "Add Capabilities bitflag struct for Cell resource declaration"
+description = """Add a `Capabilities` struct to `cell.rs` using boolean fields (not bitflags crate):
+```rust
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    pub network: bool,
+    pub file_system: bool,
+    pub subprocess: bool,
+    pub llm_access: bool,
+    pub chain_access: bool,
+    pub bus_publish: bool,
+    pub store_write: bool,
+}
+```
+
+Add a `capabilities() -> Capabilities` method to the Cell trait (line 91) with a default
+returning `Capabilities::default()` (all false). Add helper methods:
+- `Capabilities::none() -> Self` — all false
+- `Capabilities::all() -> Self` — all true
+- `Capabilities::is_subset_of(&self, other: &Capabilities) -> bool` — for capability checking
+- `Capabilities::union(&self, other: &Capabilities) -> Capabilities` — for combining requirements
+
+This is declaration only — enforcement is the Graph/Engine's job (E21)."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-core/src/cell.rs"]
+role = "implementer"
+depends_on = []
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait — add capabilities() method alongside protocols()" },
+    { path = "crates/roko-core/src/cell.rs", lines = "16-58", why = "CellId, CellContext types — Capabilities sits alongside these" },
+    { path = "docs/v2/02-CELL.md", lines = "36-47", why = "Cell trait spec with capabilities() declaration" },
+]
+symbols = [
+    "Cell trait (cell.rs:91) — add capabilities() method",
+    "CellContext (cell.rs:19) — context struct, Capabilities is a sibling type",
+]
+anti_patterns = [
+    "Do NOT use the bitflags crate — simple bool fields are clearer for 7 flags.",
+    "Do NOT enforce capabilities at this layer — enforcement is the Graph/Engine's job.",
+    "Do NOT require Cell implementors to override capabilities() — default is all-false.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'struct Capabilities' crates/roko-core/src/cell.rs"
+fail_msg = "Capabilities struct must exist in cell.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn capabilities' crates/roko-core/src/cell.rs"
+fail_msg = "Cell trait must have capabilities() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core cell 2>&1"
+fail_msg = "cell tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T04: Add predict-publish-correct learning loop per Cell
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (02-CELL.md §8) says every Cell is a learner via predict-publish-
+# correct (Friston 2006). Add optional predict/correct methods to Cell.
+[[task]]
+id = "E20-T04"
+title = "Add predict-publish-correct learning interface to Cell trait"
+description = """Add optional `predict()` and `correct()` methods to the Cell trait (line 91):
+
+```rust
+/// Predict expected outcome before execution. Returns None if this Cell does not learn.
+fn predict(&self, input: &[Engram]) -> Option<PredictionRecord> { None }
+
+/// Correct internal state after execution with actual outcome.
+fn correct(&self, prediction: &PredictionRecord, actual: &[Engram]) { }
+```
+
+Add a `PredictionRecord` struct:
+```rust
+pub struct PredictionRecord {
+    pub cell_id: String,
+    pub predicted_outcome: serde_json::Value,
+    pub confidence: f64,
+    pub timestamp_ms: i64,
+}
+```
+
+Default implementations are no-ops — most Cells don't learn. The predict-publish-correct
+loop is driven by the Graph Engine: predict before execute, correct after.
+
+This is the trait-level contract. Actual learning implementations live in roko-learn and
+consume PredictionRecords."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-core/src/cell.rs"]
+role = "implementer"
+depends_on = ["E20-T01"]
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait — add predict() and correct() methods" },
+    { path = "crates/roko-core/src/prediction.rs", lines = "1-50", why = "Existing prediction types — check for overlap" },
+    { path = "docs/v2/02-CELL.md", lines = "117-140", why = "Spec for predict-publish-correct loop" },
+]
+symbols = [
+    "Cell trait (cell.rs:91) — add predict() and correct() methods",
+    "PredictionRecord — new struct for tracking Cell-level predictions",
+    "Engram (engram.rs:63) — input/output type for predict/correct",
+    "prediction.rs — existing prediction module, check for type name conflicts",
+]
+anti_patterns = [
+    "Do NOT make predict/correct required — they default to no-op for Cells that don't learn.",
+    "Do NOT import or couple to roko-learn — this is a trait-level contract, not the learning impl.",
+    "Do NOT name the struct Prediction — that name is already used in prediction.rs.",
+    "Do NOT make predict() async — it should be synchronous for fast inline predictions.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn predict\\|fn correct\\|PredictionRecord' crates/roko-core/src/cell.rs"
+fail_msg = "Cell must have predict, correct methods and PredictionRecord type"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core cell 2>&1"
+fail_msg = "cell tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T05: Add cost estimation struct per Cell
+# ─────────────────────────────────────────────────────────────────────────────
+# The Cell trait has estimated_cost() -> Option<f64> (line 118 in roko-core,
+# line 92 in roko-graph) and estimated_duration() -> Option<Duration>. The v2
+# spec wants a richer CostEstimate struct for budget-aware routing.
+[[task]]
+id = "E20-T05"
+title = "Add CostEstimate struct for rich Cell cost estimation"
+description = """Add a `CostEstimate` struct to `cell.rs`:
+```rust
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CostEstimate {
+    pub usd_cost: f64,
+    pub token_input: u64,
+    pub token_output: u64,
+    pub api_calls: u32,
+    pub wall_clock_ms: u64,
+    pub confidence: f64,  // 0.0-1.0, how reliable is this estimate
+}
+```
+
+Add `Cell::cost_estimate() -> Option<CostEstimate>` with a default impl that constructs
+from the existing estimated_cost() and estimated_duration():
+```rust
+fn cost_estimate(&self) -> Option<CostEstimate> {
+    Some(CostEstimate {
+        usd_cost: self.estimated_cost()?,
+        wall_clock_ms: self.estimated_duration()?.as_millis() as u64,
+        ..Default::default()
+    })
+}
+```
+
+Keep the existing estimated_cost() and estimated_duration() methods unchanged for backward
+compatibility. CostEstimate is the richer alternative that new code should use."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-core/src/cell.rs"]
+role = "implementer"
+depends_on = []
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait — estimated_cost() and estimated_duration() methods" },
+    { path = "crates/roko-graph/src/cell.rs", lines = "74-106", why = "roko-graph Cell trait — same methods, should match" },
+    { path = "crates/roko-graph/src/budget.rs", lines = "1-30", why = "BudgetTracker and NodeCost — downstream consumer of cost estimates" },
+]
+symbols = [
+    "Cell::estimated_cost (cell.rs:118) — returns Option<f64>, stays for backward compat",
+    "Cell::estimated_duration (cell.rs:121) — returns Option<Duration>, stays unchanged",
+    "BudgetTracker (roko-graph budget.rs) — consumes cost estimates for budget enforcement",
+]
+anti_patterns = [
+    "Do NOT remove estimated_cost() or estimated_duration() — they stay for backward compat.",
+    "Do NOT break Cell implementations that override these — CostEstimate is additive.",
+    "Do NOT make cost_estimate() required to override — default derives from existing methods.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CostEstimate' crates/roko-core/src/cell.rs"
+fail_msg = "CostEstimate struct must exist in cell.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn cost_estimate' crates/roko-core/src/cell.rs"
+fail_msg = "Cell must have cost_estimate() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T06: Enrich CellContext with budget and trace fields
+# ─────────────────────────────────────────────────────────────────────────────
+# CellContext (cell.rs:19 in roko-core, cell.rs:19 in roko-graph) exists but is
+# minimal. The v2 spec (02-CELL.md §1) requires it to carry budget tracking,
+# deadline awareness, cancellation, and parent graph context.
+[[task]]
+id = "E20-T06"
+title = "Enrich CellContext with budget tracking and deadline fields"
+description = """Add fields to `CellContext` (roko-core cell.rs:19):
+- `deadline_ms: Option<i64>` — Unix ms deadline for this execution scope
+- `parent_graph_id: Option<String>` — ID of the enclosing Graph (for nested execution)
+- `cell_id: Option<String>` — the Cell being executed (set by engine before execute)
+
+Add convenience methods:
+- `is_over_budget() -> bool` — true if budget_remaining is Some(x) where x <= 0.0
+- `time_remaining_ms() -> Option<i64>` — deadline_ms minus current time, None if no deadline
+- `with_deadline(ms: i64) -> Self` — builder method
+- `with_parent_graph(id: String) -> Self` — builder method
+- `with_cell_id(id: String) -> Self` — builder method
+
+Also update roko-graph's CellContext (roko-graph cell.rs:19) to match. The two CellContext
+structs should stay in sync since roko-graph depends on roko-core for Engram but has its
+own Cell trait."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = [
+    "crates/roko-core/src/cell.rs",
+    "crates/roko-graph/src/cell.rs",
+]
+role = "implementer"
+depends_on = []
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "16-58", why = "CellContext struct with trace_id, run_id, budget_remaining and builder methods" },
+    { path = "crates/roko-graph/src/cell.rs", lines = "16-66", why = "roko-graph CellContext — same shape, needs same new fields" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "132-135", why = "GraphEngine::execute creates CellContext — will need to set new fields" },
+]
+symbols = [
+    "CellContext (roko-core cell.rs:19) — runtime container passed to Cell::execute()",
+    "CellContext (roko-graph cell.rs:19) — roko-graph's copy, same interface",
+    "CellContext::new (roko-core cell.rs:32) — const constructor, keep backward compat",
+    "CellContext::with_budget (roko-core cell.rs:56) — existing builder pattern to follow",
+]
+anti_patterns = [
+    "Do NOT change the new() constructor signature — add builder methods instead.",
+    "Do NOT make CellContext non-Clone — it derives Clone and is passed to multiple cells.",
+    "Do NOT add Bus/Store handles here — those belong in a separate execution context.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'deadline_ms\\|is_over_budget\\|time_remaining' crates/roko-core/src/cell.rs"
+fail_msg = "CellContext must have deadline_ms, is_over_budget, and time_remaining methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-graph 2>&1"
+fail_msg = "roko-core and roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T07: Make existing protocol traits require Cell supertrait
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (02-CELL.md §2) says every protocol trait should have Cell as a
+# supertrait. Currently Score (traits.rs:167), Verify (214), Route (242),
+# Compose (285), React (339) are standalone. Observe (400), Connect (408),
+# Trigger (420) already require Cell. Wire the rest.
+[[task]]
+id = "E20-T07"
+title = "Add Cell supertrait requirement to Score, Verify, Route, Compose, React"
+description = """Change the trait definitions for Score, Verify, Route, Compose, and React
+in `traits.rs` to require `crate::cell::Cell` as a supertrait:
+```rust
+pub trait Score: crate::cell::Cell + Send + Sync { ... }
+pub trait Verify: crate::cell::Cell + Send + Sync { ... }
+pub trait Route: crate::cell::Cell + Send + Sync { ... }
+pub trait Compose: crate::cell::Cell + Send + Sync { ... }
+pub trait React: crate::cell::Cell + Send + Sync { ... }
+```
+
+Then fix all implementations that now need Cell:
+- `NoOpScorer` (noop.rs:18) — currently only impls ScoreFn, needs Cell impl
+- `NoOpRouter` (noop.rs:57) — needs Cell impl
+- `NoOpComposer` (noop.rs:74) — needs Cell impl
+- `NoOpGate` (noop.rs:30) — already has Cell impl, just verify Verify still works
+- `SumScorer`, `MulScorer` (scorer.rs) — needs Cell impl
+- `FirstRouter`, `HighestScoreRouter`, `RoundRobinRouter` (router.rs) — needs Cell impl
+
+This is a large change with ~200 LOC across files. Each Cell impl just needs cell_id(),
+cell_name(), and protocols() returning the appropriate ProtocolId."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 250
+files = [
+    "crates/roko-core/src/traits.rs",
+    "crates/roko-std/src/noop.rs",
+    "crates/roko-std/src/scorer.rs",
+    "crates/roko-std/src/router.rs",
+]
+role = "implementer"
+depends_on = ["E20-T01"]
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/traits.rs", lines = "167-175", why = "Score trait — add Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "214-220", why = "Verify trait — add Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "242-250", why = "Route trait — add Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "285-295", why = "Compose trait — add Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "339-350", why = "React trait — add Cell supertrait" },
+    { path = "crates/roko-core/src/traits.rs", lines = "400-430", why = "Observe, Connect, Trigger — already require Cell, verify pattern" },
+    { path = "crates/roko-std/src/noop.rs", lines = "17-80", why = "NoOp impls — NoOpGate has Cell, others need it" },
+    { path = "crates/roko-std/src/scorer.rs", lines = "15-55", why = "SumScorer, MulScorer — need Cell impl" },
+    { path = "crates/roko-std/src/router.rs", lines = "1-60", why = "FirstRouter, HighestScoreRouter — need Cell impl" },
+]
+symbols = [
+    "Score trait (traits.rs:167) — currently Send + Sync only",
+    "Verify trait (traits.rs:214) — currently Send + Sync only",
+    "Route trait (traits.rs:242) — currently Send + Sync only",
+    "Compose trait (traits.rs:285) — currently Send + Sync only",
+    "React trait (traits.rs:339) — currently Send + Sync only",
+    "NoOpGate (noop.rs:30) — already has Cell impl, pattern to follow",
+    "NoOpScorer (noop.rs:18) — needs Cell impl added",
+    "SumScorer (scorer.rs:19), MulScorer (scorer.rs:58) — need Cell impl",
+    "FirstRouter (router.rs:13), HighestScoreRouter (router.rs:29) — need Cell impl",
+]
+anti_patterns = [
+    "Do NOT add Cell supertrait to Store/Bus traits — Store is infrastructure, not computation.",
+    "Do NOT try to fix all downstream consumers in this task — focus on roko-core and roko-std.",
+    "Do NOT remove any existing methods from the protocol traits.",
+    "Do NOT change Score to be the same as ScoreFn — Score trait is the protocol, ScoreFn is the alias.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'impl.*Cell for' crates/roko-std/src/noop.rs crates/roko-std/src/scorer.rs crates/roko-std/src/router.rs | tail -1 | grep -qE ':[3-9]'"
+fail_msg = "roko-std must have Cell impls for protocol types across noop/scorer/router"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-std 2>&1"
+fail_msg = "roko-core and roko-std must compile with Cell supertrait"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std 2>&1"
+fail_msg = "roko-std tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T08: Add CellRegistry for runtime Cell lookup in roko-core
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec requires a CellRegistry for looking up Cell implementations at
+# runtime by ID. roko-graph already has CellRegistry (registry.rs:16) but it
+# uses factory functions. roko-core needs an instance-based registry for
+# runtime Cell management.
+[[task]]
+id = "E20-T08"
+title = "Add CellRegistry for runtime Cell instance management in roko-core"
+description = """Add a `CoreCellRegistry` struct to `roko-core/src/cell.rs` that stores
+`Arc<dyn Cell>` instances indexed by `CellId` (String):
+```rust
+pub struct CoreCellRegistry {
+    cells: HashMap<CellId, Arc<dyn Cell>>,
+}
+```
+
+Methods:
+- `new() -> Self`
+- `register(&mut self, cell: Arc<dyn Cell>)` — registers by cell.cell_id()
+- `get(&self, id: &str) -> Option<Arc<dyn Cell>>`
+- `list() -> Vec<(CellId, &str)>` — returns (id, name) pairs
+- `remove(&mut self, id: &str) -> Option<Arc<dyn Cell>>`
+- `len() -> usize`
+- `is_empty() -> bool`
+
+Note: roko-graph already has its own `CellRegistry` (registry.rs:16) that uses factory
+functions (`FnMut(config) -> Box<dyn Cell>`). This is a different pattern — factory-based
+for graph node instantiation vs. instance-based for runtime Cell management. Name it
+`CoreCellRegistry` to avoid conflict when both are in scope."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-core/src/cell.rs"]
+role = "implementer"
+depends_on = ["E20-T01"]
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait — registry stores Arc<dyn Cell>" },
+    { path = "crates/roko-graph/src/registry.rs", lines = "1-25", why = "roko-graph CellRegistry — different pattern (factory-based), avoid name conflict" },
+    { path = "crates/roko-core/src/tool.rs", lines = "1-30", why = "ToolRegistry pattern — similar approach for runtime management" },
+]
+symbols = [
+    "Cell trait (cell.rs:91) — registry holds Arc<dyn Cell>",
+    "CellId (cell.rs:16) — String type alias used as registry key",
+    "CellRegistry (roko-graph registry.rs:16) — existing factory-based registry, different pattern",
+]
+anti_patterns = [
+    "Do NOT use a global static registry — make it an instance that is passed around.",
+    "Do NOT couple to any specific Cell implementation — registry is generic over dyn Cell.",
+    "Do NOT name it CellRegistry — that conflicts with roko-graph's CellRegistry. Use CoreCellRegistry.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CoreCellRegistry' crates/roko-core/src/cell.rs"
+fail_msg = "CoreCellRegistry must exist in cell.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn register\\|fn get\\|fn list' crates/roko-core/src/cell.rs"
+fail_msg = "CoreCellRegistry must have register, get, and list methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core cell 2>&1"
+fail_msg = "cell tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T09: Implement Cell trait for existing protocol impls in roko-std
+# ─────────────────────────────────────────────────────────────────────────────
+# After T07 adds Cell supertrait to protocol traits, any remaining impls in
+# roko-std that weren't covered in T07 need Cell implementations. This covers
+# the catch-up pass for any stragglers.
+[[task]]
+id = "E20-T09"
+title = "Implement Cell trait for remaining protocol impls in roko-std"
+description = """Verify that all protocol trait implementations in roko-std have Cell trait impls
+after T07. Check:
+- `NoOpScorer` (noop.rs:18) — Cell impl added in T07
+- `NoOpGate` (noop.rs:30) — already has Cell impl
+- `NoOpRouter` (noop.rs:57) — Cell impl added in T07
+- `NoOpComposer` (noop.rs:74) — Cell impl added in T07
+- `SumScorer`, `MulScorer` (scorer.rs) — Cell impls added in T07
+- `FirstRouter`, `HighestScoreRouter`, `RoundRobinRouter` (router.rs) — Cell impls added in T07
+
+If any are missing, add them. Each needs: cell_id(), cell_name(), cell_version() (0,1,0),
+and protocols() returning vec![ProtocolId::Score] etc.
+
+Run full `cargo test -p roko-std` and fix any test failures from the Cell supertrait change.
+This task is the cleanup/verification pass after the breaking T07 change."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-std/src/noop.rs",
+    "crates/roko-std/src/scorer.rs",
+    "crates/roko-std/src/router.rs",
+]
+role = "implementer"
+depends_on = ["E20-T07"]
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/noop.rs", lines = "17-80", why = "NoOp impls — verify all have Cell impl after T07" },
+    { path = "crates/roko-std/src/scorer.rs", lines = "15-60", why = "SumScorer, MulScorer — verify Cell impls" },
+    { path = "crates/roko-std/src/router.rs", lines = "1-60", why = "FirstRouter, HighestScoreRouter, RoundRobinRouter — verify Cell impls" },
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait methods that need implementing" },
+]
+symbols = [
+    "NoOpScorer (noop.rs:18) — needs Cell impl with ProtocolId::Score",
+    "NoOpGate (noop.rs:30) — already has Cell impl with ProtocolId::Verify",
+    "NoOpRouter (noop.rs:57) — needs Cell impl with ProtocolId::Route",
+    "NoOpComposer (noop.rs:74) — needs Cell impl with ProtocolId::Compose",
+    "SumScorer (scorer.rs:19) — needs Cell impl with ProtocolId::Score",
+    "FirstRouter (router.rs:13) — needs Cell impl with ProtocolId::Route",
+]
+anti_patterns = [
+    "Do NOT change the existing protocol method implementations — only add Cell impls.",
+    "Do NOT add Cell impls for Store/Bus — those are infrastructure traits without Cell supertrait.",
+    "Do NOT duplicate work already done in T07 — this is verification and catch-up only.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std 2>&1"
+fail_msg = "roko-std tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E20-T10: Re-export Cell-related types from roko-core lib.rs
+# ─────────────────────────────────────────────────────────────────────────────
+# Wire the new Cell types into the public API of roko-core.
+[[task]]
+id = "E20-T10"
+title = "Re-export new Cell types from roko-core lib.rs"
+description = """Add `pub use` re-exports to `lib.rs` (current cell re-export at line 181: `pub use cell::*`).
+
+Since `lib.rs` already does `pub use cell::*`, all public types in cell.rs are automatically
+re-exported. Verify that these new types are accessible:
+- ProtocolId (from T01)
+- Capabilities (from T03)
+- CostEstimate (from T05)
+- PredictionRecord (from T04)
+- CoreCellRegistry (from T08)
+
+If `pub use cell::*` covers them (it should since they're `pub` in cell.rs), just verify
+with a compile test. If any are in sub-modules not covered by the glob, add explicit re-exports."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-core/src/lib.rs"]
+role = "implementer"
+depends_on = ["E20-T01", "E20-T03", "E20-T04", "E20-T05", "E20-T08"]
+domain = "cell-unification"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/lib.rs", lines = "181-185", why = "Current pub use cell::* glob re-export — should cover new types" },
+    { path = "crates/roko-core/src/cell.rs", lines = "91-121", why = "Cell trait and associated types — all pub" },
+]
+symbols = [
+    "pub use cell::* (lib.rs:181) — glob re-export covers all pub items in cell.rs",
+    "ProtocolId — from T01, should be covered by glob",
+    "Capabilities — from T03, should be covered by glob",
+    "CostEstimate — from T05, should be covered by glob",
+    "PredictionRecord — from T04, should be covered by glob",
+    "CoreCellRegistry — from T08, should be covered by glob",
+]
+anti_patterns = [
+    "Do NOT remove existing re-exports.",
+    "Do NOT change the glob to individual imports unless there is a conflict.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub use cell' crates/roko-core/src/lib.rs"
+fail_msg = "lib.rs must re-export cell module types"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"

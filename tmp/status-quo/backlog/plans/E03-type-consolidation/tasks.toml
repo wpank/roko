@@ -1,0 +1,417 @@
+[meta]
+plan = "E03-type-consolidation"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── E03-T01: Delete orphan roko-core::state_hub ──
+#
+# crates/roko-core/src/state_hub.rs is a byte-near clone of the live
+# roko-runtime::state_hub, but it is NOT declared as a module in
+# roko-core/src/lib.rs (no `mod state_hub;`) and no external crate imports
+# roko_core::state_hub. It is dead weight that will silently drift from the
+# runtime copy. Everyone uses roko-runtime's (re-exported by roko-serve and
+# roko-cli). Pure deletion — nothing compiles it today.
+
+[[task]]
+id = "E03-T01"
+title = "Delete orphan roko-core::state_hub dead file"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-core/src/state_hub.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/state_hub.rs", lines = "1-90", why = "The orphan file to delete — confirm it is StateHub/SharedStateHub/StateHubSender only" },
+    { path = "crates/roko-core/src/lib.rs", lines = "1-120", why = "Confirm there is NO `mod state_hub;` declaration — the file is not even compiled" },
+]
+symbols = [
+    "struct StateHub — roko-core/src/state_hub.rs (orphan; live one is roko-runtime/src/state_hub.rs:80)",
+]
+anti_patterns = [
+    "Do NOT touch roko-runtime/src/state_hub.rs — that is the live one everyone uses.",
+    "Do NOT add a re-export from core to runtime — that inverts the dependency graph. Delete the core copy.",
+    "Do NOT delete dashboard_snapshot.rs doc-comment references to StateHub — they point at the runtime type conceptually.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -f crates/roko-core/src/state_hub.rs"
+fail_msg = "orphan state_hub.rs must be deleted"
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'mod state_hub' crates/roko-core/src/"
+fail_msg = "no module declaration for state_hub may remain in roko-core"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile cleanly after deletion"
+
+
+# ── E03-T02: GateVerdict canonical + From adapters ──
+#
+# foundation::GateVerdict (gate_name, passed, skipped, skip_reason, output,
+# duration_ms) is the shape a gate actually produces and the one
+# GateReport { verdicts: Vec<GateVerdict> } binds to. Make it THE canonical
+# gate result and add From adapters that project it into the dashboard-ring
+# view (dashboard_snapshot.rs:290) and the hashed episode record
+# (episode_logger.rs:90). Do NOT rename yet (that is E03-T03) — this task only
+# establishes the canonical + the lossy conversions so downstream views stop
+# hand-re-mapping. Two From<&GateVerdict> adapters already exist into learning
+# outcome types; follow that pattern.
+
+[[task]]
+id = "E03-T02"
+title = "Establish foundation::GateVerdict as canonical + add From adapters into dashboard/episode views"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = [
+    "crates/roko-core/src/foundation.rs",
+    "crates/roko-core/src/dashboard_snapshot.rs",
+    "crates/roko-learn/src/episode_logger.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/foundation.rs", lines = "360-400", why = "Canonical GateVerdict {gate_name,passed,skipped,skip_reason,output,duration_ms}" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "285-310", why = "Ring view GateVerdict {plan_id,task_id,gate,passed,ts_millis} — target of a From adapter" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "85-110", why = "Episode record GateVerdict {gate,passed,signature} — hashed, target of a From adapter" },
+    { path = "crates/roko-gate/src/registry.rs", lines = "50-70", why = "Existing From<&GateVerdict> for GateStatus — the adapter pattern to mirror" },
+    { path = "crates/roko-learn/src/provider_model_outcome.rs", lines = "60-80", why = "Existing From<&GateVerdict> for ProviderModelGateOutcome — pattern reference" },
+]
+symbols = [
+    "struct GateVerdict — roko-core/src/foundation.rs:368 (canonical)",
+    "struct GateVerdict — roko-core/src/dashboard_snapshot.rs:290 (ring view)",
+    "struct GateVerdict — roko-learn/src/episode_logger.rs:90 (episode record)",
+]
+anti_patterns = [
+    "Do NOT change the field set of foundation::GateVerdict — it is the source of truth.",
+    "Do NOT delete the dashboard/episode structs in this task — renaming/collapsing is E03-T03.",
+    "Do NOT invent plan_id/task_id inside the From impl — those must be threaded in by the caller; if the ring view needs context the From should take a (verdict, context) tuple or a small builder, not fabricate ids.",
+    "Preserve the hashing of the episode `signature` field — never store raw gate output there.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'impl From<.*foundation::GateVerdict|impl From<&GateVerdict>' crates/roko-core/src/dashboard_snapshot.rs crates/roko-learn/src/episode_logger.rs"
+fail_msg = "From adapters from canonical GateVerdict into dashboard/episode views must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-learn 2>&1"
+fail_msg = "roko-core and roko-learn must compile with the new adapters"
+
+
+# ── E03-T03: Rename divergent GateVerdict copies ──
+#
+# After E03-T02 the conversions exist. Now disambiguate names so exactly ONE
+# `struct GateVerdict {` remains (the foundation canonical). Ring view ->
+# GateVerdictView, episode record -> GateVerdictRecord, chain stub ->
+# ChainGateVerdict. Update all call sites + retarget the T02 From impls to the
+# renamed types. This kills grep noise and makes the canonical unambiguous.
+
+[[task]]
+id = "E03-T03"
+title = "Rename divergent GateVerdict copies so exactly one bare struct GateVerdict remains"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-core/src/dashboard_snapshot.rs",
+    "crates/roko-learn/src/episode_logger.rs",
+    "crates/roko-chain/src/identity_economy_identity.rs",
+]
+role = "implementer"
+depends_on = ["E03-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "285-310", why = "Rename ring-view GateVerdict -> GateVerdictView + update all references in this file" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "85-110", why = "Rename episode-record GateVerdict -> GateVerdictRecord + update references" },
+    { path = "crates/roko-chain/src/identity_economy_identity.rs", lines = "1595-1620", why = "Rename chain stub GateVerdict -> ChainGateVerdict" },
+]
+symbols = [
+    "struct GateVerdict — foundation.rs:368 (KEEP this name — canonical)",
+    "struct GateVerdict — dashboard_snapshot.rs:290 (RENAME -> GateVerdictView)",
+    "struct GateVerdict — episode_logger.rs:90 (RENAME -> GateVerdictRecord)",
+    "struct GateVerdict — identity_economy_identity.rs:1600 (RENAME -> ChainGateVerdict)",
+]
+anti_patterns = [
+    "Do NOT rename foundation::GateVerdict — it must remain the single bare `struct GateVerdict`.",
+    "Do NOT break the From adapters added in E03-T02 — update their target types to the renamed structs.",
+    "Do NOT leave dangling `use ...::GateVerdict` imports that now resolve to the wrong type; update each import to the renamed symbol or the foundation canonical, whichever the call site means.",
+    "roko-core/src/forensic.rs:124 GateVerdictRecord already exists — pick a non-colliding name for the episode rename (e.g. EpisodeGateVerdict) if GateVerdictRecord collides after cross-crate import.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "[ \"$(rg -c 'struct GateVerdict \\{' crates/ | wc -l)\" -eq 1 ]"
+fail_msg = "exactly one file must define bare `struct GateVerdict {` after rename (the foundation canonical)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check --workspace 2>&1"
+fail_msg = "workspace must compile after GateVerdict rename + call-site updates"
+
+# ---------------------------------------------------------------------------
+# E03-T04: Rename thin DashboardSnapshot copies
+# ---------------------------------------------------------------------------
+# Current HEAD has four DashboardSnapshot definitions: the canonical core
+# snapshot, the runner projection buffer, the TUI file-scraper model, and a CLI
+# command summary model. Rename the three non-core copies so the bare name only
+# means roko-core::dashboard_snapshot::DashboardSnapshot.
+[[task]]
+id = "E03-T04"
+title = "Rename thin DashboardSnapshot copies to disambiguated models"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 70
+files = [
+    "crates/roko-cli/src/commands/dashboard.rs",
+    "crates/roko-cli/src/runner/projection.rs",
+    "crates/roko-cli/src/tui/dashboard.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "755-770", why = "canonical DashboardSnapshot to keep as the single bare name" },
+    { path = "crates/roko-cli/src/commands/dashboard.rs", lines = "150-170", why = "CLI command summary struct currently named DashboardSnapshot" },
+    { path = "crates/roko-cli/src/runner/projection.rs", lines = "116-145", why = "runner projection rolling buffer currently named DashboardSnapshot" },
+    { path = "crates/roko-cli/src/tui/dashboard.rs", lines = "3300-3335", why = "TUI best-effort learning snapshot currently named DashboardSnapshot" },
+]
+symbols = [
+    "roko_core::dashboard_snapshot::DashboardSnapshot",
+    "ProjectionSnapshot",
+    "TuiDashboardModel",
+    "CommandDashboardSnapshot",
+]
+anti_patterns = [
+    "Do not rename the canonical roko-core DashboardSnapshot.",
+    "Do not change behavior in this task; keep it to type renames and call-site updates.",
+    "Do not leave `struct DashboardSnapshot` in commands/dashboard.rs, runner/projection.rs, or tui/dashboard.rs.",
+    "Do not create aliases that preserve the bare DashboardSnapshot name for non-core types.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test \"$(rg -n 'struct DashboardSnapshot' crates/ | wc -l | tr -d ' ')\" = \"1\""
+fail_msg = "only the canonical core struct may retain the bare DashboardSnapshot name"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ProjectionSnapshot' crates/roko-cli/src/runner/projection.rs"
+fail_msg = "runner projection snapshot must be renamed to ProjectionSnapshot"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TuiDashboardModel' crates/roko-cli/src/tui/dashboard.rs"
+fail_msg = "TUI snapshot model must be renamed to TuiDashboardModel"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'CommandDashboardSnapshot|DashboardCommandSnapshot|CliDashboardSnapshot' crates/roko-cli/src/commands/dashboard.rs"
+fail_msg = "CLI dashboard command snapshot must have a non-core-specific name"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "roko-cli and roko-core must compile after DashboardSnapshot renames"
+
+acceptance = [
+    "Only roko-core::dashboard_snapshot::DashboardSnapshot keeps the bare DashboardSnapshot type name.",
+    "runner/projection.rs uses ProjectionSnapshot for its rolling event buffer.",
+    "tui/dashboard.rs uses TuiDashboardModel for the offline/render projection.",
+    "commands/dashboard.rs uses a command-specific snapshot name and all local call sites compile.",
+]
+
+# ---------------------------------------------------------------------------
+# E03-T05: Make the TUI model derive from the core snapshot
+# ---------------------------------------------------------------------------
+# Connected-mode plumbing already exists; keep the offline file-scraper as an
+# explicit fallback only. The normal TUI render model should be built from the
+# core DashboardSnapshot delivered through StateHub/watch-style connected mode.
+[[task]]
+id = "E03-T05"
+title = "Make TUI dashboard consume the core snapshot via connected mode"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 130
+files = [
+    "crates/roko-cli/src/tui/dashboard.rs",
+    "crates/roko-cli/src/commands/dashboard.rs",
+]
+role = "implementer"
+depends_on = ["E03-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/tui/dashboard.rs", lines = "100-145", why = "App state currently stores the local dashboard model and has connected setup hooks" },
+    { path = "crates/roko-cli/src/tui/dashboard.rs", lines = "576-605", why = "tick/load is deprecated and intended for standalone fallback only" },
+    { path = "crates/roko-cli/src/tui/dashboard.rs", lines = "3430-3475", why = "local model load/init implementation to convert into a render projection" },
+    { path = "crates/roko-cli/src/tui/dashboard.rs", lines = "4974-4986", why = "best-effort file scraper fallback to keep for offline mode only" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "755-770", why = "core snapshot is designed for watch::Receiver consumers" },
+    { path = "crates/roko-cli/src/commands/dashboard.rs", lines = "1-35", why = "connected dashboard command passes SharedStateHub into the TUI" },
+]
+symbols = [
+    "roko_core::dashboard_snapshot::DashboardSnapshot",
+    "TuiDashboardModel",
+    "watch::Receiver",
+    "App::new_connected_with_page",
+]
+anti_patterns = [
+    "Do not resurrect a second bare DashboardSnapshot name in the TUI.",
+    "Do not remove standalone/offline mode; keep file scraping only as fallback when no connected snapshot is available.",
+    "Do not have connected mode poll .roko/learn/*.json or .roko/engrams.jsonl.",
+    "Do not duplicate the core snapshot fields in the TUI; map into a render model with From or an explicit projection function.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko_core::dashboard_snapshot::DashboardSnapshot|roko_core::DashboardSnapshot|watch::Receiver<.*DashboardSnapshot' crates/roko-cli/src/tui/dashboard.rs"
+fail_msg = "TUI must consume the core DashboardSnapshot in connected mode"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'impl From<&.*DashboardSnapshot> for TuiDashboardModel|TuiDashboardModel::from|from_core_snapshot' crates/roko-cli/src/tui/dashboard.rs"
+fail_msg = "TuiDashboardModel must be derived from the core snapshot instead of independent scraping in connected mode"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "TUI/core snapshot integration must compile"
+
+acceptance = [
+    "In connected mode, TUI rendering uses the core DashboardSnapshot stream/state from StateHub.",
+    "TuiDashboardModel is a render projection from the core snapshot.",
+    "The legacy file-scraper load path is kept only for standalone/offline mode and clearly named as fallback.",
+    "TUI no longer has an independent connected-mode dashboard data contract that can drift from serve.",
+]
+
+# ---------------------------------------------------------------------------
+# E03-T06: Shared RetentionPolicy canonical type
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E03-T06"
+title = "Introduce shared RetentionPolicy and adapt the three retention engines"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 150
+files = [
+    "crates/roko-core/src/retention.rs",
+    "crates/roko-core/src/lib.rs",
+    "crates/roko-fs/src/gc.rs",
+    "crates/roko-serve/src/retention.rs",
+    "crates/roko-learn/src/episode_logger.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-fs/src/gc.rs", lines = "1-65", why = "filesystem GC RetentionPolicy fields" },
+    { path = "crates/roko-serve/src/retention.rs", lines = "1-45", why = "observability artifact RetentionPolicy fields" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "1220-1245", why = "episode compaction RetentionPolicy fields" },
+    { path = "crates/roko-core/src/lib.rs", lines = "1-120", why = "export location for the new shared retention module/type" },
+]
+symbols = [
+    "RetentionPolicy",
+    "CompactionStrategy",
+    "GcEngine",
+    "EpisodeLogger::compact",
+    "default_retention_policies",
+]
+anti_patterns = [
+    "Do not leave three bare structs named RetentionPolicy.",
+    "Do not force every engine to use only fields it does not understand; use a shared superset plus adapters/projections.",
+    "Do not silently change existing default retention values.",
+    "Do not make roko-core depend on roko-fs, roko-serve, or roko-learn.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test \"$(rg -n 'struct RetentionPolicy' crates/ | wc -l | tr -d ' ')\" = \"1\""
+fail_msg = "there must be exactly one bare RetentionPolicy struct after consolidation"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko_core::.*RetentionPolicy|crate::retention::RetentionPolicy' crates/roko-fs/src/gc.rs crates/roko-serve/src/retention.rs crates/roko-learn/src/episode_logger.rs"
+fail_msg = "fs, serve, and learn retention engines must import or project from the shared policy"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-fs -p roko-serve -p roko-learn 2>&1"
+fail_msg = "shared RetentionPolicy consolidation must compile across all consumers"
+
+acceptance = [
+    "A single shared RetentionPolicy type is exported from roko-core.",
+    "roko-fs GC, roko-serve observability retention, and roko-learn episode compaction consume the shared policy directly or through explicit From/TryFrom adapters.",
+    "Domain-specific strategy details are renamed or nested so there is no second bare RetentionPolicy struct.",
+    "Existing default behavior is preserved by tests or explicit adapter defaults.",
+]
+
+# ---------------------------------------------------------------------------
+# E03-T07: Delete dead roko-chain Engram stub
+# ---------------------------------------------------------------------------
+[[task]]
+id = "E03-T07"
+title = "Delete dead roko-chain Engram stub"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-chain/src/identity_economy_markets.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/identity_economy_markets.rs", lines = "640-705", why = "dead forensic-replay Engram plus local provenance/custody stubs" },
+    { path = "crates/roko-core/src/engram.rs", lines = "55-105", why = "canonical roko-core Engram to preserve as the only Engram" },
+    { path = "crates/roko-chain/src/gate/mev_gate.rs", lines = "34-45", why = "example live chain code imports roko_core::Engram, not the local stub" },
+]
+symbols = [
+    "roko_core::Engram",
+    "identity_economy_markets::Engram",
+    "Provenance",
+    "CustodyEntry",
+]
+anti_patterns = [
+    "Do not delete roko-core/src/engram.rs.",
+    "Do not rename the stub instead of deleting it; the goal is one Engram, not another duplicate name.",
+    "Do not remove live roko-chain gate code that imports roko_core::Engram.",
+    "If E11-T04 already removed the same stub, mark this task done-by-E11 instead of reintroducing code.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test \"$(rg -n 'struct Engram[[:space:]]' crates/ | wc -l | tr -d ' ')\" = \"1\""
+fail_msg = "only roko-core may define struct Engram after deleting the chain stub"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile after deleting the dead Engram stub"
+
+acceptance = [
+    "The local Engram stub in identity_economy_markets.rs is removed.",
+    "No roko-chain code depends on identity_economy_markets::Engram.",
+    "roko-core::Engram remains the only Engram definition in crates/.",
+    "Any adjacent dead provenance/custody stubs are removed only if they are exclusively tied to the deleted local Engram.",
+]

@@ -1,0 +1,744 @@
+[meta]
+plan = "E19-signal-protocol"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T01: Add graduation status field to Engram (Signal)
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (01-SIGNAL.md §2) defines a 4-tier lifecycle for durable Signals:
+# Transient → Working → Consolidated → Persistent. Engram currently has a
+# `balance` field (line 97) for demurrage but no explicit lifecycle state.
+# This task adds the status enum and field as the foundation for graduation.
+[[task]]
+id = "E19-T01"
+title = "Add SignalStatus graduation enum and status field to Engram"
+description = """Add a `SignalStatus` enum with variants `Transient`, `Working`, `Consolidated`,
+`Persistent` to `roko-core/src/engram.rs`. Add a `status: SignalStatus` field to the `Engram`
+struct (currently at line 63) with `#[serde(default)]` defaulting to `Transient`. Update
+`EngramBuilder` (line 310) to accept `.status(SignalStatus)`. The existing `balance` field
+(line 97) already supports demurrage decay; `status` tracks the *tier* independently.
+
+The spec maps these tiers to retention guarantees:
+- Transient: may be pruned aggressively (minutes)
+- Working: retained during active task scope
+- Consolidated: survives across sessions, feeds learning
+- Persistent: permanent archive, never auto-pruned
+
+Derive `Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize` on `SignalStatus`.
+Add `impl Default for SignalStatus` returning `Transient`. Add `SignalStatus::is_durable()` → bool
+(true for Consolidated and Persistent)."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-core/src/engram.rs"]
+role = "implementer"
+depends_on = []
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct definition with balance at line 97 — add status field here" },
+    { path = "crates/roko-core/src/engram.rs", lines = "310-345", why = "EngramBuilder struct + new() — add .status() builder method" },
+    { path = "crates/roko-core/src/engram.rs", lines = "418-450", why = "Builder balance/build methods — status should be set before build()" },
+    { path = "crates/roko-core/src/signal.rs", lines = "1-7", why = "Signal type alias re-exports — may need to re-export SignalStatus" },
+    { path = "docs/v2/01-SIGNAL.md", lines = "35-67", why = "Signal struct spec with tier field" },
+]
+symbols = [
+    "Engram (engram.rs:63) — main struct to extend with status field",
+    "EngramBuilder (engram.rs:310) — builder pattern, needs .status() method",
+    "Signal (signal.rs:6) — type alias for Engram, re-export SignalStatus alongside",
+    "default_balance (engram.rs:450) — pattern for default fn to follow for status",
+]
+anti_patterns = [
+    "Do NOT break existing Engram consumers — use #[serde(default)] on the new field so existing JSONL deserializes correctly.",
+    "Do NOT remove any existing fields from Engram — status is additive.",
+    "Do NOT add graduation transition logic here — that is E19-T02.",
+    "Do NOT couple status to balance — they track orthogonal properties (tier vs. decay).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SignalStatus' crates/roko-core/src/engram.rs"
+fail_msg = "SignalStatus enum must exist in engram.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'status.*SignalStatus' crates/roko-core/src/engram.rs"
+fail_msg = "Engram must have a status field of type SignalStatus"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core engram 2>&1"
+fail_msg = "engram tests must pass — existing serde roundtrip tests verify backward compat"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T02: Implement graduation transition logic
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (01-SIGNAL.md §2) defines preconditions for each graduation step:
+# Transient→Working requires non-zero score, Working→Consolidated requires gate
+# pass, Consolidated→Persistent requires min age + min access count. Transitions
+# are one-directional only (no demotions).
+[[task]]
+id = "E19-T02"
+title = "Implement Signal graduation state machine transitions"
+description = """Add graduation methods to `Engram` (impl block at line 100):
+
+- `promote_to_working(min_score: f32) → Result<(), GraduationError>` — requires score.effective() >= min_score
+- `promote_to_consolidated() → Result<(), GraduationError>` — requires current status is Working
+- `promote_to_persistent(min_age_secs: u64, min_accesses: u32) → Result<(), GraduationError>` — requires Consolidated + age + access checks
+
+Add a `GraduationError` enum with variants: `InvalidTransition { from, to }`, `ScoreTooLow { required, actual }`,
+`InsufficientAge { required_secs, actual_secs }`, `InsufficientAccesses { required, actual }`.
+
+The `access_count` field doesn't exist yet on Engram; add it as `#[serde(default)] pub access_count: u32`
+and increment it in `touch()` (line 150). Transitions mutate `self.status` in-place.
+
+Add unit tests for: valid promotions, skipped-tier rejection, backward transition rejection,
+score threshold enforcement."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = ["crates/roko-core/src/engram.rs"]
+role = "implementer"
+depends_on = ["E19-T01"]
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct — will have new status field from T01" },
+    { path = "crates/roko-core/src/engram.rs", lines = "100-160", why = "Existing Engram impl methods including touch() at line 150" },
+    { path = "crates/roko-core/src/score.rs", lines = "50-69", why = "Score struct with 7 axes" },
+    { path = "crates/roko-core/src/score.rs", lines = "179-195", why = "Score::effective() method — scalar used for threshold checks" },
+    { path = "docs/v2/01-SIGNAL.md", lines = "35-67", why = "Signal tier system and graduation preconditions" },
+]
+symbols = [
+    "SignalStatus (engram.rs) — graduation target enum from T01",
+    "Score::effective (score.rs:179) — scalar used for graduation threshold checks",
+    "Engram::touch (engram.rs:150) — resets balance; should also increment access_count",
+]
+anti_patterns = [
+    "Do NOT allow backward transitions (Persistent→Working etc) — graduation is monotonic.",
+    "Do NOT allow skipping tiers (Transient→Consolidated) — each step has its own preconditions.",
+    "Do NOT couple to any specific Store implementation — graduation is on the Signal itself.",
+    "Do NOT hardcode threshold values — accept them as method parameters.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'promote_to_working\\|promote_to_consolidated\\|promote_to_persistent' crates/roko-core/src/engram.rs"
+fail_msg = "graduation transition methods must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraduationError' crates/roko-core/src/engram.rs"
+fail_msg = "GraduationError enum must exist for transition validation"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core engram 2>&1"
+fail_msg = "engram tests must pass including new graduation tests"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T03: Implement Pulse graduation to Signal (Pulse::graduate)
+# ─────────────────────────────────────────────────────────────────────────────
+# The spec (01-SIGNAL.md §3) defines Pulse::graduate() as the ONLY path from
+# ephemeral transport (Bus) into the durable audit DAG (Store). Currently
+# Engram::from_pulse_synthetic (line 200) exists but produces a lossy synthetic
+# signal without proper provenance. This task adds the proper graduation path.
+[[task]]
+id = "E19-T03"
+title = "Add Pulse::graduate method for Pulse-to-Signal promotion"
+description = """Add a `graduate()` method to `Pulse` (impl block at line 90) with signature:
+
+```rust
+pub fn graduate(
+    &self,
+    provenance: Provenance,
+    initial_balance: f64,
+    score: Score,
+    tags: Vec<String>,
+) -> Engram
+```
+
+This creates a full Engram with:
+- `kind` from self.kind
+- `body` from self.body (clone)
+- `provenance` from the parameter (proper attribution, not synthetic)
+- `balance` set to initial_balance
+- `score` from the parameter
+- `tags` from the parameter + self.topic as an additional tag
+- `status` set to `SignalStatus::Working` (graduated signals start at Working, not Transient)
+- If `self.lineage_hint` is Some, set provenance.sources to include it
+
+The existing `from_pulse_synthetic` (engram.rs:200) stays for lossy scoring use cases.
+Graduation is the clean path; synthetic is the fast-and-dirty path."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-core/src/pulse.rs"]
+role = "implementer"
+depends_on = ["E19-T01"]
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/pulse.rs", lines = "75-90", why = "Pulse struct definition — fields available for graduation" },
+    { path = "crates/roko-core/src/pulse.rs", lines = "90-155", why = "Pulse impl methods — add graduate() here" },
+    { path = "crates/roko-core/src/engram.rs", lines = "200-230", why = "Engram::from_pulse_synthetic — reference for Pulse->Engram conversion" },
+    { path = "crates/roko-core/src/engram.rs", lines = "325-450", why = "EngramBuilder — use builder for proper construction" },
+    { path = "crates/roko-core/src/provenance.rs", lines = "264-320", why = "Provenance struct — required parameter for graduation" },
+    { path = "crates/roko-core/src/score.rs", lines = "50-69", why = "Score struct — required parameter" },
+]
+symbols = [
+    "Pulse (pulse.rs:75) — struct to add graduate() method to",
+    "Engram::from_pulse_synthetic (engram.rs:200) — existing lossy conversion, do NOT remove",
+    "EngramBuilder (engram.rs:310) — use for constructing graduated Signal",
+    "Provenance (provenance.rs:264) — required graduation parameter",
+    "Score (score.rs:50) — required graduation parameter",
+]
+anti_patterns = [
+    "Do NOT remove from_pulse_synthetic — it still serves quick scoring scenarios.",
+    "Do NOT skip converting lineage_hint -> provenance.sources when hint is present.",
+    "Do NOT set graduated Signal status to Transient — graduated signals enter at Working tier.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn graduate' crates/roko-core/src/pulse.rs"
+fail_msg = "Pulse::graduate method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core pulse 2>&1"
+fail_msg = "pulse tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T04: Implement Signal::to_pulse projection (Signal → Pulse bridge)
+# ─────────────────────────────────────────────────────────────────────────────
+# The spec (01-SIGNAL.md §1) defines Signal::to_pulse(topic, seq) → Pulse as
+# the lossy broadcast bridge from durable Signals back to ephemeral transport.
+# This is the inverse of graduation. The projection drops score, decay, lineage,
+# fingerprint, and attestation — only kind, body, and tags cross over.
+[[task]]
+id = "E19-T04"
+title = "Add Signal::to_pulse projection method"
+description = """Add a `to_pulse(topic: Topic, seq: u64) -> Pulse` method to `Engram` (impl block
+at line 100). The projection creates a Pulse with:
+- `topic` and `seq` from parameters
+- `kind` from self.kind.clone()
+- `body` from Body -> serde_json::Value conversion
+- `lineage_hint` set to `Some(self.id)` for back-reference
+- Source agent/system from provenance
+
+Drops: score, balance, decay, hdc_fingerprint, attestation, full lineage DAG.
+This is intentionally lossy — Pulses are ephemeral."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 25
+files = ["crates/roko-core/src/engram.rs"]
+role = "implementer"
+depends_on = ["E19-T09"]
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct — source of projection, has id, kind, body fields" },
+    { path = "crates/roko-core/src/engram.rs", lines = "100-160", why = "Engram impl block — add to_pulse() here" },
+    { path = "crates/roko-core/src/pulse.rs", lines = "75-90", why = "Pulse struct — target of projection" },
+    { path = "crates/roko-core/src/pulse.rs", lines = "159-200", why = "PulseBuilder — use for constructing the projected Pulse" },
+]
+symbols = [
+    "Engram (engram.rs:63) — add to_pulse method to impl block",
+    "Pulse (pulse.rs:75) — construction target",
+    "PulseBuilder (pulse.rs:159) — builder for ergonomic Pulse construction",
+    "Topic (pulse.rs) — required parameter for Bus routing",
+]
+anti_patterns = [
+    "Do NOT include score, decay, or fingerprint in the projected Pulse — those are Signal-only.",
+    "Do NOT forget to set lineage_hint — it enables tracing back from Pulse to originating Signal.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn to_pulse' crates/roko-core/src/engram.rs"
+fail_msg = "Engram::to_pulse projection method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core engram 2>&1"
+fail_msg = "engram tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T05: Implement novelty-weighted demurrage tick on Signal
+# ─────────────────────────────────────────────────────────────────────────────
+# The spec (01-SIGNAL.md §6) defines a 3-term demurrage rate law:
+#   d(balance)/dt = -flat_tax - beta*balance + reinforcement*novelty
+# The existing Demurrage trait (demurrage.rs:15) has tick/replenish but only
+# implements a simple exponential decay (line 52). This task adds the full
+# novelty-weighted formula and a DemurrageConfig for tunable parameters.
+[[task]]
+id = "E19-T05"
+title = "Implement novelty-weighted demurrage_tick on Engram"
+description = """Add a `DemurrageConfig` struct to `demurrage.rs` with:
+- `flat_tax_per_day: f64` (default 0.01)
+- `exp_decay_per_day: f64` (default 0.05, the beta term)
+- `novelty_bonus: f64` (default 0.1, reinforcement multiplier)
+
+Add `fn demurrage_tick(engram: &mut Engram, config: &DemurrageConfig, elapsed_hours: f64, novelty: f32)`
+as a standalone function (not trait method) that applies:
+  new_balance = balance - flat_tax*(elapsed/24) - beta*balance*(elapsed/24) + reinforcement*novelty*(elapsed/24)
+  balance = new_balance.clamp(0.0, 1.0)
+
+Also add `demurrage_paid: f64` field to Engram (with `#[serde(default)]`) tracking cumulative
+tax. Increment it by the amount lost each tick.
+
+The existing `Demurrage` trait (line 15) stays for backward compatibility — the new function
+is the spec-compliant path."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = [
+    "crates/roko-core/src/engram.rs",
+    "crates/roko-core/src/demurrage.rs",
+]
+role = "implementer"
+depends_on = ["E19-T01"]
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/demurrage.rs", lines = "1-80", why = "Existing Demurrage trait with tick()/replenish() at lines 23/26" },
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct — balance at line 97, add demurrage_paid field" },
+    { path = "crates/roko-core/src/engram.rs", lines = "150-155", why = "Engram::touch() resets balance — demurrage_tick is the decay path" },
+    { path = "crates/roko-core/src/engram.rs", lines = "449-452", why = "default_balance() helper — follow pattern for default_demurrage_paid" },
+    { path = "crates/roko-core/src/score.rs", lines = "50-69", why = "Score struct — novelty field at line 55 used in formula" },
+]
+symbols = [
+    "Demurrage trait (demurrage.rs:15) — existing interface, keep for backward compat",
+    "Demurrage::tick (demurrage.rs:23) — simple decay, new fn is the richer alternative",
+    "Engram::balance (engram.rs:97) — the field being decayed",
+    "Engram::touch (engram.rs:150) — resets balance to 1.0, inverse of decay",
+    "Score::novelty (score.rs:55) — [0..1] novelty axis used for reinforcement term",
+]
+anti_patterns = [
+    "Do NOT remove the existing Demurrage trait — it can still be used for simple cases.",
+    "Do NOT hardcode rate constants — use DemurrageConfig parameters.",
+    "Do NOT let balance go negative — clamp at 0.0.",
+    "Do NOT allow demurrage_paid to decrease — it is monotonically increasing.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DemurrageConfig' crates/roko-core/src/demurrage.rs"
+fail_msg = "DemurrageConfig struct must exist in demurrage.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'demurrage_tick' crates/roko-core/src/demurrage.rs"
+fail_msg = "demurrage_tick function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'demurrage_paid' crates/roko-core/src/engram.rs"
+fail_msg = "Engram must have a demurrage_paid tracking field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core demurrage 2>&1"
+fail_msg = "demurrage tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T06: Formalize Kind system with registry and validation
+# ─────────────────────────────────────────────────────────────────────────────
+# The Kind enum (kind.rs:26) is #[non_exhaustive] with a Custom(String) variant
+# but no runtime validation for custom kinds. The v2 spec requires a KindRegistry
+# for registering custom kinds with optional parent-child relationships and schema
+# constraints.
+[[task]]
+id = "E19-T06"
+title = "Add KindRegistry for runtime Kind validation and hierarchy"
+description = """Add a `KindRegistry` struct to `kind.rs` with:
+- `register_custom(name: String, parent: Option<Kind>)` — register a custom Kind with optional parent
+- `is_valid(kind: &Kind) -> bool` — built-in kinds always valid; Custom kinds require registration
+- `parent(kind: &Kind) -> Option<&Kind>` — returns registered parent, None for root/built-in kinds
+- `list_custom() -> Vec<&str>` — list registered custom kind names
+
+The existing Kind enum (line 26) stays unchanged. The registry is additive — it validates
+Custom kinds at runtime. Built-in variants are always valid without registration.
+
+Use `HashMap<String, KindEntry>` internally where KindEntry holds parent and optional
+schema/validation info for future use."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-core/src/kind.rs"]
+role = "implementer"
+depends_on = []
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/kind.rs", lines = "1-30", why = "Imports and Kind enum declaration at line 26" },
+    { path = "crates/roko-core/src/kind.rs", lines = "26-110", why = "Kind enum variants including Custom(String) — the variant registry validates" },
+    { path = "crates/roko-core/src/kind.rs", lines = "181-248", why = "Kind::matches() and other methods — registry complements these" },
+]
+symbols = [
+    "Kind (kind.rs:26) — the #[non_exhaustive] enum with Custom(String) at the end",
+    "Kind::matches (kind.rs:181) — existing matching logic, registry does not change this",
+    "Kind::Custom — the variant that requires registration for validation",
+]
+anti_patterns = [
+    "Do NOT modify the existing Kind enum variants — the registry is additive.",
+    "Do NOT require all Kinds to be registered — built-in variants are always valid.",
+    "Do NOT make registration mandatory for creating Signals with built-in Kinds.",
+    "Do NOT use a global static — KindRegistry is an instance that is passed around.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'KindRegistry' crates/roko-core/src/kind.rs"
+fail_msg = "KindRegistry must exist in kind.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'register_custom' crates/roko-core/src/kind.rs"
+fail_msg = "KindRegistry must have register_custom method"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn is_valid\\|fn parent' crates/roko-core/src/kind.rs"
+fail_msg = "KindRegistry must have is_valid and parent methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core kind 2>&1"
+fail_msg = "kind tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T07: Add IFC taint lattice classification on Signals
+# ─────────────────────────────────────────────────────────────────────────────
+# The spec (01-SIGNAL.md, 10-SAFETY.md) requires lattice-based Information Flow
+# Control. The existing Taint enum (provenance.rs:24) is a flat list of
+# contamination sources. TaintLevel adds a security classification lattice
+# with join/meet operations for enforcing no-write-down/no-read-up.
+[[task]]
+id = "E19-T07"
+title = "Add IFC taint lattice with join/meet operations"
+description = """Add a `TaintLevel` enum to `provenance.rs`:
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TaintLevel {
+    Public = 0,
+    Internal = 1,
+    Confidential = 2,
+    Secret = 3,
+}
+```
+
+Add methods:
+- `join(self, other: TaintLevel) -> TaintLevel` — least upper bound (max)
+- `meet(self, other: TaintLevel) -> TaintLevel` — greatest lower bound (min)
+- `can_flow_to(self, target: TaintLevel) -> bool` — true if self <= target (no-write-down)
+
+Add a `#[serde(default)] pub taint_level: TaintLevel` field to the `Provenance` struct (line 264)
+defaulting to `Public`. The existing `Taint` enum (line 24) tracks contamination *sources*
+(LlmHallucination, etc.); `TaintLevel` tracks *classification* — they are orthogonal.
+
+Add `TaintInfo.taint_level` (line 130) field as well so both provenance paths carry it."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-core/src/provenance.rs"]
+role = "implementer"
+depends_on = []
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/provenance.rs", lines = "24-50", why = "Existing Taint enum — contamination source tracking, keep unchanged" },
+    { path = "crates/roko-core/src/provenance.rs", lines = "130-165", why = "TaintInfo struct — add taint_level field" },
+    { path = "crates/roko-core/src/provenance.rs", lines = "264-320", why = "Provenance struct — add taint_level field" },
+    { path = "crates/roko-core/src/provenance.rs", lines = "231-263", why = "ProvenanceCoherenceCheck — may need taint_level coherence check" },
+]
+symbols = [
+    "Taint (provenance.rs:24) — existing enum with Clean, LlmHallucination, Unverified, UserInput, ExternalApi",
+    "TaintInfo (provenance.rs:130) — struct with taint field and verification status",
+    "Provenance (provenance.rs:264) — carries author, trust, taint — add taint_level here",
+    "ProvenanceCoherenceCheck (provenance.rs:231) — validates provenance consistency",
+]
+anti_patterns = [
+    "Do NOT replace the existing Taint enum — TaintLevel is an additional classification axis.",
+    "Do NOT break Provenance serialization — use #[serde(default)] for the new field.",
+    "Do NOT implement enforcement here — enforcement belongs in the safety layer (10-SAFETY).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TaintLevel' crates/roko-core/src/provenance.rs"
+fail_msg = "TaintLevel enum must exist in provenance.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn join' crates/roko-core/src/provenance.rs"
+fail_msg = "TaintLevel must have join lattice operation"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn meet\\|fn can_flow_to' crates/roko-core/src/provenance.rs"
+fail_msg = "TaintLevel must have meet and can_flow_to methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core provenance 2>&1"
+fail_msg = "provenance tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T08: Ensure HDC fingerprint allocation per Signal
+# ─────────────────────────────────────────────────────────────────────────────
+# HDC fingerprints exist on Engram (fingerprint: Option<HdcFingerprint>, see
+# HdcFingerprint at engram.rs:22) but are not automatically computed. The v2
+# spec requires every durable Signal to have a fingerprint for similarity search.
+# Add compute/ensure methods that generate fingerprints from body content.
+[[task]]
+id = "E19-T08"
+title = "Add automatic HDC fingerprint computation on Engram"
+description = """Add methods to the Engram impl block (line 100):
+
+- `compute_fingerprint(&mut self)` — generates an HdcFingerprint from the body content
+  using roko-primitives' HdcVector encoding. Extracts text from Body::Text/Body::Json/Body::Empty
+  and encodes via `HdcVector::from_text()` or similar. Sets `self.fingerprint = Some(fp)`.
+
+- `ensure_fingerprint(&mut self)` — calls compute_fingerprint() only if `self.fingerprint.is_none()`.
+  Idempotent — safe to call multiple times.
+
+The HdcFingerprint struct (line 22) already has `vector: HdcVector` and `encoder_version: String`
+fields. Set encoder_version to a constant like "text-v1".
+
+For Body::Bytes, skip fingerprinting (binary data needs specialized encoding).
+For Body::Empty, produce a zero vector (marker signals have no content to fingerprint)."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-core/src/engram.rs"]
+role = "implementer"
+depends_on = []
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/engram.rs", lines = "22-40", why = "HdcFingerprint struct with vector and encoder_version fields" },
+    { path = "crates/roko-core/src/engram.rs", lines = "63-98", why = "Engram struct — fingerprint: Option<HdcFingerprint> field" },
+    { path = "crates/roko-core/src/engram.rs", lines = "100-160", why = "Engram impl block — add compute/ensure methods here" },
+    { path = "crates/roko-core/src/body.rs", lines = "14-25", why = "Body enum variants: Empty, Text, Json, Bytes" },
+    { path = "crates/roko-core/src/body.rs", lines = "55-80", why = "Body accessor methods — as_text(), as_json() for content extraction" },
+]
+symbols = [
+    "HdcFingerprint (engram.rs:22) — struct with vector: HdcVector + encoder_version: String",
+    "HdcVector (re-exported from roko-primitives) — 10,240-bit binary vector type",
+    "Engram::fingerprint (engram.rs:~93) — Option<HdcFingerprint> field to populate",
+    "Body (body.rs:16) — enum with Empty/Text/Json/Bytes — source of content for fingerprinting",
+]
+anti_patterns = [
+    "Do NOT make fingerprint required — it stays Option for construction before encoding.",
+    "Do NOT compute fingerprint in the builder — callers decide when to fingerprint.",
+    "Do NOT panic on Body::Bytes — just skip (return without setting fingerprint).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'compute_fingerprint\\|ensure_fingerprint' crates/roko-core/src/engram.rs"
+fail_msg = "Engram must have compute_fingerprint and ensure_fingerprint methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core engram 2>&1"
+fail_msg = "engram tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T09: Add lineage_hint field to Pulse for optional back-reference
+# ─────────────────────────────────────────────────────────────────────────────
+# The spec (01-SIGNAL.md §3) defines Pulse as having an optional
+# lineage_hint: Option<ContentHash> for tracing back to the Signal that
+# projected it. Currently Pulse (pulse.rs:75) has no lineage field.
+[[task]]
+id = "E19-T09"
+title = "Add lineage_hint field to Pulse for Signal back-reference"
+description = """Add `#[serde(default, skip_serializing_if = "Option::is_none")] pub lineage_hint: Option<ContentHash>`
+field to the Pulse struct (line 75). This records which Signal projected this Pulse
+(via Engram::to_pulse in E19-T04) or which Signal context this Pulse relates to.
+
+Update PulseBuilder (line 159) to add `.lineage_hint(hash: ContentHash) -> Self` setter.
+Initialize as None in PulseBuilder::new().
+
+Most Pulses originate from Bus emission (no Signal context), so lineage_hint stays None
+for the common case. It is set when: (1) Signal::to_pulse projects, or (2) a Cell explicitly
+links a Pulse to a Signal it references."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-core/src/pulse.rs"]
+role = "implementer"
+depends_on = []
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/pulse.rs", lines = "75-90", why = "Pulse struct — add lineage_hint field after existing fields" },
+    { path = "crates/roko-core/src/pulse.rs", lines = "159-200", why = "PulseBuilder — add lineage_hint setter method" },
+    { path = "crates/roko-core/src/hash.rs", lines = "1-30", why = "ContentHash type — the type for lineage_hint" },
+]
+symbols = [
+    "Pulse (pulse.rs:75) — struct to extend with lineage_hint field",
+    "PulseBuilder (pulse.rs:159) — builder needs .lineage_hint() setter",
+    "ContentHash (hash.rs) — type for the Signal back-reference",
+]
+anti_patterns = [
+    "Do NOT make lineage_hint required — most Pulses originate from Bus, not from Signal projection.",
+    "Do NOT break Pulse serde — use #[serde(default, skip_serializing_if = \"Option::is_none\")].",
+    "Do NOT add lineage_hint to every PulseBuilder::new() call — it defaults to None.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'lineage_hint' crates/roko-core/src/pulse.rs"
+fail_msg = "Pulse must have a lineage_hint field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core pulse 2>&1"
+fail_msg = "pulse tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E19-T10: Re-export SignalStatus, TaintLevel, KindRegistry from lib.rs
+# ─────────────────────────────────────────────────────────────────────────────
+# Wire all new Signal protocol types into roko-core's public API so downstream
+# crates can import them ergonomically. Also re-export from signal.rs for the
+# Signal-oriented import path.
+[[task]]
+id = "E19-T10"
+title = "Re-export new Signal protocol types from roko-core lib.rs"
+description = """Add `pub use` re-exports to `lib.rs` (current exports around lines 181-273):
+
+From engram.rs: `SignalStatus`, `GraduationError`
+From demurrage.rs: `DemurrageConfig`, `demurrage_tick`
+From kind.rs: `KindRegistry`
+From provenance.rs: `TaintLevel`
+
+Also update `signal.rs` (line 6) to re-export `SignalStatus` alongside the existing Signal alias:
+```rust
+pub use crate::engram::{Engram as Signal, EngramBuilder as SignalBuilder, HdcFingerprint, SignalStatus};
+```
+
+This ensures downstream crates can use either `roko_core::SignalStatus` or
+`roko_core::signal::SignalStatus`."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = [
+    "crates/roko-core/src/lib.rs",
+    "crates/roko-core/src/signal.rs",
+]
+role = "implementer"
+depends_on = ["E19-T01", "E19-T05", "E19-T06", "E19-T07"]
+domain = "signal-protocol"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/signal.rs", lines = "1-7", why = "Current re-exports — add SignalStatus to the pub use line" },
+    { path = "crates/roko-core/src/lib.rs", lines = "203-212", why = "Existing demurrage and engram re-exports — add new types nearby" },
+    { path = "crates/roko-core/src/lib.rs", lines = "233-267", why = "Existing kind and provenance re-exports — add KindRegistry and TaintLevel" },
+]
+symbols = [
+    "Signal alias (signal.rs:6) — add SignalStatus to existing pub use line",
+    "Engram re-export (lib.rs:210) — add SignalStatus and GraduationError",
+    "Demurrage re-export (lib.rs:203) — add DemurrageConfig",
+    "Kind re-export (lib.rs:233) — add KindRegistry",
+    "Provenance re-export (lib.rs:264) — add TaintLevel",
+]
+anti_patterns = [
+    "Do NOT remove existing re-exports.",
+    "Do NOT change the Signal type alias name — it must remain `Engram as Signal`.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SignalStatus' crates/roko-core/src/signal.rs"
+fail_msg = "signal.rs must re-export SignalStatus"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TaintLevel' crates/roko-core/src/lib.rs"
+fail_msg = "lib.rs must re-export TaintLevel"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'KindRegistry' crates/roko-core/src/lib.rs"
+fail_msg = "lib.rs must re-export KindRegistry"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DemurrageConfig' crates/roko-core/src/lib.rs"
+fail_msg = "lib.rs must re-export DemurrageConfig"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile with new re-exports"

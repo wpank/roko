@@ -1,0 +1,574 @@
+[meta]
+plan = "E35-auth-protocol"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────
+# T01: Full API key lifecycle (create, list, revoke, rotate)
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T01"
+title = "Add API key rotation and expiry enforcement to auth routes"
+description = """
+Extend the existing API key management in crates/roko-serve/src/routes/auth.rs.
+
+The current auth.rs has CreateApiKeyRequest/Response, hash-based storage, and
+CRUD endpoints. The middleware.rs has extract_bearer_token() (line 28),
+is_structurally_valid_jwt() (line 49), and API key validation via SHA-256 hashing.
+The config uses ApiKeyEntry and ServeAuthConfig from roko-core. Add:
+
+  - POST /api/api-keys/{name}/rotate — generate new key, invalidate old,
+    return new plaintext once. Keep last 2 hashes for a 5-minute grace period
+    so in-flight requests with old key don't fail immediately.
+  - Expiry enforcement: in the auth middleware (middleware.rs), after matching a key
+    hash, check `expires_at` field. Reject expired keys with 401 + `X-Key-Expired: true`
+    header so clients can distinguish "wrong key" from "expired key".
+  - last_used_at tracking: on each successful key auth, update the key's last_used_at
+    timestamp. This enables stale-key detection (keys unused for >90 days).
+  - Scope validation: add a `scopes` field to ApiKeyEntry with values like
+    "admin", "agent:write", "read". Check scope against route requirements.
+  - Persist rotation history in .roko/api-keys.json (append previous hash with
+    expiry timestamp).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/auth.rs", lines = "1-80", why = "Existing API key CRUD routes" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-50", why = "extract_bearer_token(), is_structurally_valid_jwt(), auth header parsing" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "50-100", why = "require_api_key middleware, hash_api_key function" },
+  { path = "crates/roko-core/src/config.rs", lines = "1-50", why = "ApiKeyEntry and ServeAuthConfig types" },
+  { path = "docs/v2/17-AUTH.md", lines = "1-100", why = "Auth pipeline spec: 4 auth paths, fail-closed principle" },
+]
+symbols = [
+  "extract_bearer_token — middleware.rs:28, case-insensitive Bearer prefix extraction",
+  "is_structurally_valid_jwt — middleware.rs:49, checks 3 dot-separated base64url segments",
+  "ApiKeyEntry — roko-core config.rs, existing key metadata struct",
+  "ServeAuthConfig — roko-core config.rs, server auth configuration",
+  "ApiError — error.rs, existing error type for HTTP error responses",
+]
+anti_patterns = [
+  "Do NOT store plaintext keys — only SHA-256 hashes (existing pattern in middleware.rs)",
+  "Do NOT break existing POST /api/api-keys or DELETE endpoints",
+  "Do NOT return the old key on rotation — only the new plaintext, once",
+  "Do NOT remove the grace period hashes immediately — keep for 5 minutes",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'rotate' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "Key rotation endpoint must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'last_used_at\\|expires_at' crates/roko-serve/src/routes/auth.rs || grep -q 'last_used_at\\|expires_at' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "Key lifecycle tracking (last_used_at or expires_at) must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'X-Key-Expired\\|key_expired' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "Expired key header must be returned in middleware"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T02: Agent bearer token protocol
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T02"
+title = "Implement agent bearer token issuance, validation, and revocation"
+description = """
+Add agent-specific bearer token protocol from docs/v2/17-AUTH.md SS3.
+
+The existing middleware.rs already handles Bearer token extraction. Agent tokens
+need a distinct prefix to route to agent-specific validation. Add:
+
+  - AgentToken struct: { token_id: String, agent_id: String,
+    capabilities: Vec<AgentCapability>, issued_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>, revoked: bool }
+  - AgentCapability enum: Inference, Tools, BusPublish, StoreWrite, StoreRead
+  - POST /api/agent-tokens — issue a scoped token for a specific agent. Requires
+    admin-level auth. Returns { token_id, token_secret } where secret is shown once.
+  - DELETE /api/agent-tokens/{token_id} — revoke a token (sets revoked=true)
+  - GET /api/agent-tokens — list active tokens (metadata only, no secrets)
+  - Token format: 'roko_agent_' prefix + random 32 bytes base64url
+  - Storage: .roko/agent-tokens.json (hashed, same pattern as API keys)
+  - Wire into middleware: tokens with 'roko_agent_' prefix route to agent token
+    validation, checking capabilities against the requested operation.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
+depends_on = ["E35-T01"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/auth.rs", lines = "1-80", why = "Existing key management pattern to follow" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "24-43", why = "extract_bearer_token() — agent tokens use this with roko_agent_ prefix routing" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "50-100", why = "Auth validation flow and hash comparison" },
+  { path = "docs/v2/17-AUTH.md", lines = "100-200", why = "Agent bearer token spec: prefix, capabilities, issuance" },
+]
+symbols = [
+  "extract_bearer_token — middleware.rs:28, used for agent token extraction",
+  "is_structurally_valid_jwt — middleware.rs:49, distinguishes JWT from bearer for routing",
+]
+anti_patterns = [
+  "Do NOT allow agent tokens to bypass scope checks — every token has explicit capabilities",
+  "Do NOT store token secrets — only SHA-256 hashes, same as API keys",
+  "Do NOT return token secrets on list endpoint — metadata only",
+  "Do NOT allow agents to self-issue tokens — requires admin auth",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AgentToken\\|agent_token' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "AgentToken types must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko_agent_' crates/roko-serve/src/routes/auth.rs || grep -q 'roko_agent_' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "Agent token prefix routing must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AgentCapability\\|Inference\\|BusPublish' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "AgentCapability enum with operation variants must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T03: JWKS cache hardening and key rotation handling
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T03"
+title = "Harden JWKS cache with proactive refresh, key rotation, and staleness alerts"
+description = """
+Extend the existing JwksCache in crates/roko-serve/src/jwks.rs.
+
+The current implementation has a JwksCache with CACHE_TTL (1 hour), MAX_STALE
+(24 hours), and a validate() method that already handles rotation (refetch + retry
+on kid miss). Harden edge cases:
+
+  - Proactive background refresh: add start_refresh_task() that spawns a tokio task
+    refreshing every TTL/2 (30 minutes). Use tokio::sync::Notify to avoid concurrent
+    refresh storms.
+  - Staleness monitoring: in validate(), if keys are >24h stale, log tracing::warn!
+    with structured fields. If >48h stale, reject all tokens (fail closed).
+  - Multi-provider support: change JWKS URL from a single &str to Vec<JwksProvider>
+    where JwksProvider = { url, expected_issuer }. Validate iss claim per provider.
+  - Cache health API: add methods:
+    - is_fresh() -> bool (last refresh < CACHE_TTL)
+    - keys_count() -> usize
+    - last_refresh() -> Option<Instant>
+    - cache_health() -> CacheHealth { fresh, key_count, age_secs, stale }
+  - Error resilience: on network failure, continue using stale keys with
+    tracing::warn! rather than failing all auth.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/jwks.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/jwks.rs", lines = "1-160", why = "JwksCache: CACHE_TTL, MAX_STALE, validate(), key fetching logic" },
+  { path = "docs/v2/17-AUTH.md", lines = "200-300", why = "JWKS and JWT validation spec: rotation, staleness, multi-provider" },
+]
+symbols = [
+  "JwksCache — jwks.rs, main cache struct with inner state",
+  "CACHE_TTL — jwks.rs, 1 hour TTL constant",
+  "MAX_STALE — jwks.rs, 24 hour staleness threshold",
+  "validate() — jwks.rs, existing validation with rotation retry on kid miss",
+]
+anti_patterns = [
+  "Do NOT accept tokens when cache is completely empty — fail closed (no keys = reject all)",
+  "Do NOT refresh concurrently — use tokio::sync::Notify or OnceCell for serialization",
+  "Do NOT panic on network failure — degrade gracefully with stale keys + warning",
+  "Do NOT change the existing validate() return type — add health methods alongside",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn is_fresh\\|fn keys_count\\|fn last_refresh\\|fn cache_health' crates/roko-serve/src/jwks.rs"
+fail_msg = "Cache health methods must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'start_refresh\\|spawn.*refresh\\|refresh_task' crates/roko-serve/src/jwks.rs"
+fail_msg = "Proactive refresh mechanism must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T04: Team workspace RBAC roles and permissions
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T04"
+title = "Implement RBAC with typed roles, permissions, and grant enforcement"
+description = """
+Formalize the RBAC model from docs/v2/17-AUTH.md SS4.
+
+The existing team.rs has TeamMember with a string `role` field, Invitation,
+InviteRequest, and UpdateRoleRequest. Replace the string role with typed enums:
+
+  - Role enum: Owner, Admin, Member, Viewer (with strict ordering Owner > Admin > Member > Viewer)
+  - Permission enum: PlanExecute, PlanCreate, AgentSpawn, AgentStop, ConfigEdit,
+    SecretsRead, SecretsWrite, TeamManage, ApiKeyCreate, TokenIssue, ViewDashboard
+  - role_permissions(role) -> HashSet<Permission> — returns the permission set for a role
+    Owner: all permissions
+    Admin: all except TeamManage
+    Member: PlanExecute, PlanCreate, AgentSpawn, AgentStop, ViewDashboard
+    Viewer: ViewDashboard only
+  - enforce_permission(user_role: Role, required: Permission) -> Result<(), AuthError>
+  - Role escalation prevention: role changes require the changer's role >= target role
+
+Place in a new `crates/roko-serve/src/rbac.rs` module. Wire into the existing
+team.rs routes so that role changes are validated.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/rbac.rs", "crates/roko-serve/src/lib.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/team.rs", lines = "1-80", why = "TeamMember with string role, Invitation, UpdateRoleRequest" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-20", why = "Auth middleware imports and state" },
+  { path = "crates/roko-serve/src/error.rs", lines = "1-40", why = "ApiError type for 403 permission denied responses" },
+  { path = "docs/v2/17-AUTH.md", lines = "300-450", why = "RBAC spec: roles, permissions, enforcement rules, escalation prevention" },
+]
+symbols = [
+  "TeamMember — team.rs, struct with name, role (string), joined_at",
+  "UpdateRoleRequest — team.rs, payload for role changes",
+  "ApiError — error.rs, HTTP error type for 401/403/etc responses",
+]
+anti_patterns = [
+  "Do NOT allow Viewer to escalate to Admin — role changes require equal or higher authority",
+  "Do NOT hardcode permission checks in route handlers — use enforce_permission() abstraction",
+  "Do NOT add database dependencies — keep in-memory with file persistence pattern",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum Role' crates/roko-serve/src/rbac.rs && grep -q 'pub enum Permission' crates/roko-serve/src/rbac.rs"
+fail_msg = "Role and Permission enums must both be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn enforce_permission\\|fn role_permissions' crates/roko-serve/src/rbac.rs"
+fail_msg = "Permission enforcement and role mapping functions must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve rbac 2>&1"
+fail_msg = "RBAC tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────
+# T05: Wire RBAC enforcement into route middleware
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T05"
+title = "Add RBAC middleware layer that enforces permissions per route"
+description = """
+Wire the RBAC model (T04) into the serve middleware.
+
+The existing middleware.rs has require_api_key, CORS configuration, and response
+scrubbing. Add a permission enforcement layer:
+
+  1. Define a RoutePermission mapping: associate each mutating API route path with
+     its required Permission. Read-only routes require ViewDashboard or no auth.
+  2. Add a require_permission(Permission) middleware function that:
+     - Extracts the authenticated identity from request extensions (set by auth middleware)
+     - Resolves the user's Role from the identity
+     - Calls enforce_permission(role, required_permission)
+     - On failure: returns 403 with JSON body { "error": "forbidden", "permission": "...", "role": "..." }
+  3. Apply require_permission to all mutating routes (POST, PUT, DELETE, PATCH)
+  4. Log all permission denials as structured tracing::warn! events with
+     actor, permission, route fields.
+
+The middleware sits between the existing auth middleware (which extracts identity)
+and the route handler.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-serve/src/routes/middleware.rs", "crates/roko-serve/src/lib.rs"]
+depends_on = ["E35-T04"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-50", why = "Existing auth middleware: extract_bearer_token, imports, state" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "50-120", why = "require_api_key, CORS, response scrubbing patterns" },
+  { path = "crates/roko-serve/src/lib.rs", lines = "1-50", why = "Router composition — where middleware layers are applied" },
+  { path = "docs/v2/17-AUTH.md", lines = "450-550", why = "Auth pipeline composition: identity -> role -> permission -> route" },
+]
+symbols = [
+  "require_api_key — middleware.rs, existing middleware pattern to follow",
+  "AppState — state.rs, shared state for middleware (may need RBAC config)",
+  "ApiError — error.rs, HTTP error type for 403 responses",
+  "enforce_permission — rbac.rs (from T04), permission check function",
+]
+anti_patterns = [
+  "Do NOT duplicate auth logic — reuse existing extract_bearer_token and JWT validation",
+  "Do NOT make RBAC optional per mutating route — all mutating routes must have permission check",
+  "Do NOT panic on missing identity — return 401 if identity extraction fails",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'require_permission\\|permission_guard\\|enforce_permission' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "RBAC enforcement middleware must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'forbidden\\|403\\|Permission' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "403 forbidden response for permission denial must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T06: Relay token protocol for inter-agent auth
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T06"
+title = "Implement relay token protocol for delegated agent-to-agent auth"
+description = """
+Add relay token support from docs/v2/17-AUTH.md SS5.
+
+When agent A needs to delegate a subset of its capabilities to agent B, it issues
+a relay token. The relay token is strictly narrower than the parent:
+
+  - RelayToken struct: { token_id, parent_token_id, delegated_capabilities (Vec<AgentCapability>),
+    target_agent_id, max_depth: u8, depth: u8, issued_at, expires_at }
+  - POST /api/relay-tokens — issue a relay token. Requires a valid agent token.
+    Validates: delegated_capabilities is subset of parent, depth < max_depth.
+  - Capability narrowing: relay capabilities MUST be a subset of parent capabilities.
+    The endpoint returns 400 if any requested capability is not in the parent.
+  - Depth limiting: max_depth decrements on each delegation. When depth reaches 0,
+    no further relay tokens can be issued from this token.
+  - Validation: when a relay token is presented, verify the entire chain back to
+    the root agent token. If any token in the chain is revoked, reject.
+  - Revocation cascading: revoking a parent agent token invalidates all relay tokens
+    whose chain includes that parent.
+
+Place relay token logic alongside agent tokens in auth.rs.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/auth.rs"]
+depends_on = ["E35-T02"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/auth.rs", lines = "1-80", why = "Existing auth routes — agent tokens from T02 will be here" },
+  { path = "docs/v2/17-AUTH.md", lines = "550-650", why = "Relay token spec: delegation chains, depth limiting, narrowing" },
+]
+symbols = [
+  "AgentToken — from T02, parent token type that relay tokens derive from",
+  "AgentCapability — from T02, capability enum for narrowing validation",
+]
+anti_patterns = [
+  "Do NOT allow relay tokens to exceed parent capabilities — strictly narrowing only",
+  "Do NOT allow unlimited delegation depth — enforce max_depth decrement",
+  "Do NOT skip chain validation — every relay token must trace back to a valid root",
+  "Do NOT store relay token secrets — only hashes",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'RelayToken\\|relay_token' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "RelayToken must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_depth\\|delegation_depth' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "Delegation depth limiting must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'parent_token\\|chain_valid\\|validate_chain' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "Chain validation back to root token must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T07: Invitation flow for cross-user team joining
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T07"
+title = "Add invitation acceptance flow with token-based join and expiry"
+description = """
+Extend the existing invitation system in crates/roko-serve/src/routes/team.rs.
+
+The current team.rs has Invitation, InviteRequest, TeamMember, and
+UpdateRoleRequest. The invitation flow is partially wired but lacks token-based
+acceptance and expiry. Add:
+
+  - invite_token field on Invitation: random 32-byte base64url token generated
+    on POST /api/team/invite and returned to the inviter
+  - POST /api/team/join — accept an invitation by presenting the invite token
+    in the request body. Creates a TeamMember with the invitee's identity from
+    their JWT claims. The invitation is marked as accepted (single-use).
+  - Expiry: invitations expire after 7 days (configurable via
+    roko.toml [serve.auth.invite_expiry_days]). Expired invitations are
+    auto-cleaned on each list/join call.
+  - Rate limiting: max 10 pending (not accepted, not expired) invites per workspace
+  - On acceptance: record accepted_at timestamp, mark invite as consumed
+  - Cleanup: on GET /api/team/invites and POST /api/team/join, filter out expired
+    invitations and remove them from storage
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/team.rs"]
+depends_on = ["E35-T04"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/team.rs", lines = "1-80", why = "Invitation struct, InviteRequest, TeamMember, existing routes" },
+  { path = "docs/v2/17-AUTH.md", lines = "650-750", why = "Invitation flow spec: token-based, expiry, single-use" },
+]
+symbols = [
+  "Invitation — team.rs, existing struct to extend with invite_token, accepted_at, expired",
+  "InviteRequest — team.rs, existing invite creation payload",
+  "TeamMember — team.rs, member record created on acceptance",
+]
+anti_patterns = [
+  "Do NOT allow reuse of invite tokens — single-use only, mark consumed on acceptance",
+  "Do NOT allow joining without a valid invite token — fail closed",
+  "Do NOT store invite tokens in plaintext in responses after creation — return once only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'invite_token' crates/roko-serve/src/routes/team.rs"
+fail_msg = "invite_token field must exist on Invitation"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'join\\|accept_invite\\|accept' crates/roko-serve/src/routes/team.rs"
+fail_msg = "Join/accept endpoint must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'expired\\|expire\\|expiry' crates/roko-serve/src/routes/team.rs"
+fail_msg = "Invitation expiry must be implemented"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T08: Auth audit trail and token activity logging
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E35-T08"
+title = "Add structured auth audit trail for all token and permission events"
+description = """
+Add audit trail logging for auth events.
+
+The existing StateHub in roko-runtime/src/state_hub.rs (line 40) has an
+EventLogWriter pattern: append-only JSONL writer with BufWriter, best-effort
+flush. Follow this same pattern for auth audit:
+
+  - AuthAuditEvent enum with variants: TokenIssued, TokenRevoked, TokenRotated,
+    TokenUsed, PermissionGranted, PermissionDenied, InviteCreated, InviteAccepted,
+    InviteExpired, KeyExpired
+  - Each event includes: timestamp (ISO-8601), actor_id (who performed the action),
+    action (enum variant name), target (what was acted on), result (success/failure),
+    metadata (HashMap<String, String> for extra context)
+  - AuthAuditWriter: append-only JSONL writer to .roko/auth-audit.jsonl following
+    the EventLogWriter pattern from state_hub.rs
+  - Wire into all auth routes: key create/revoke/rotate, token issue/revoke,
+    team invite/join
+  - Wire into middleware: log every permission denial with actor, route, permission
+  - GET /api/auth/audit?from=...&to=...&actor=... — query the audit trail with
+    time range and actor filtering. Reads the JSONL file line by line.
+
+Do NOT include token secrets in audit logs — only token_id and 8-char hash prefix.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/auth.rs", "crates/roko-serve/src/routes/middleware.rs"]
+depends_on = ["E35-T01", "E35-T02", "E35-T05"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-runtime/src/state_hub.rs", lines = "40-66", why = "EventLogWriter pattern: append-only JSONL, BufWriter, best-effort flush" },
+  { path = "crates/roko-serve/src/routes/auth.rs", lines = "1-80", why = "Auth routes to add audit logging to" },
+  { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-50", why = "Middleware to add denial logging to" },
+  { path = "docs/v2/17-AUTH.md", lines = "750-850", why = "Audit trail spec: events, fields, query API" },
+]
+symbols = [
+  "EventLogWriter — state_hub.rs:41, struct { writer: BufWriter<File> } with open() and append()",
+  "AppState — state.rs, shared state that will hold the AuthAuditWriter",
+]
+anti_patterns = [
+  "Do NOT include token secrets in audit logs — only token_id and 8-char hash prefix",
+  "Do NOT make audit logging blocking — use best-effort append like EventLogWriter",
+  "Do NOT buffer without flushing — flush after each write for crash resilience",
+  "Do NOT add database dependency — keep JSONL file-based",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AuthAuditEvent\\|auth_audit\\|AuthAuditWriter' crates/roko-serve/src/routes/auth.rs"
+fail_msg = "Auth audit event type or writer must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'auth-audit\\|auth_audit' crates/roko-serve/src/routes/auth.rs || grep -q 'auth-audit\\|auth_audit' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "Audit logging must be wired into auth routes or middleware"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"

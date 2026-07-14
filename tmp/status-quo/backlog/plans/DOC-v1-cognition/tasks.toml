@@ -1,0 +1,472 @@
+[meta]
+plan = "DOC-v1-cognition"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+source_prd = "docs/v1/INDEX.md"
+
+# Source-covering authoring plan for the v1 cognition/learning docs.
+# These are docs-domain backlog-authoring tasks, not product implementation tasks.
+
+[[task]]
+id = "DOC-V1-COG-T01-learning"
+title = "Cover docs/v1/05-learning in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 learning corpus: episodes, playbooks, skills, bandits, cascade routing, metrics, cost/provider management, stability, calibration, cybernetic loops, heuristics, and research-to-runtime. This task owns source coverage only; do not implement roko-learn product changes in this authoring slice."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01", "E05", "E06", "E07"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "E07 and related prerequisite task ids that this docs slice must reference via depends_on_plan." },
+    { path = "tmp/status-quo/40-LEARNING-TELEMETRY.md", why = "Current status audit for the learning docs." },
+    { path = "docs/v1/05-learning/00-episode-logger.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/01-playbook-system.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/02-skill-library-voyager.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/03-bandits-ucb-thompson-linucb.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/04-cascade-router.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/05-pattern-discovery-trigram.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/06-task-metrics-and-baselines.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/07-regression-detection.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/08-cost-normalization.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/09-provider-health-circuit-breaker.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/10-pareto-frontier-pruning.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/11-thompson-sampling-drift.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/12-self-improvement-frameworks.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/13-8-missing-feedback-loops.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/14-stability-mechanisms.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/15-collective-calibration-31x.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/16-predictive-foraging.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/17-adas-and-autocatalytic.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/18-self-learning-cybernetic-loops.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/19-heuristics-worldviews-and-falsifiers.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/20-research-to-runtime.md", why = "Learning source doc to cover in this task context and ledger." },
+    { path = "docs/v1/05-learning/INDEX.md", why = "Learning source index to cover in this task context and ledger." },
+]
+symbols = [
+    "TasksFile { meta, task[] } - canonical roko plan shape",
+    "DOC-v1-cognition - source coverage plan id",
+    "DOC-V1-COG-T01-learning - local root task for foundational learning coverage",
+]
+anti_patterns = [
+    "Do NOT implement roko-learn product changes in this docs-domain authoring task.",
+    "Do NOT use depends_on for E01-E18 prerequisites; use depends_on_plan.",
+    "Do NOT remove any docs/v1/05-learning markdown path from both the ledger and task.context.read_files.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/05-learning/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/05-learning markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/05-learning markdown files are listed in the coverage ledger.",
+    "All docs/v1/05-learning markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T02-neuro"
+title = "Cover docs/v1/06-neuro in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Neuro corpus: knowledge types, tiers, HDC/VSA encoding and query, decay, anti-knowledge, distillation, somatic integration, backup/restore, and current gaps. This depends on the foundational learning coverage because Neuro consumes episode and learning outputs."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = ["DOC-V1-COG-T01-learning"]
+depends_on_plan = ["E02", "E03", "E07"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/39-NEURO-KNOWLEDGE.md", why = "Current status audit for the Neuro docs." },
+    { path = "docs/v1/06-neuro/00-vision-and-grimoire-rename.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/01-six-knowledge-types.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/02-four-validation-tiers.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/03-type-half-lives.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/04-hdc-vsa-foundations.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/05-hdc-operations.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/06-hdc-knowledge-encoding.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/07-ebbinghaus-decay-with-tier.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/08-cross-domain-hdc-transfer.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/09-false-positive-math.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/10-knowledge-query-api.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/11-antiknowledge-challenge.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/12-4-tier-distillation-pipeline.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/13-somatic-integration.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/14-library-of-babel.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/15-knowledge-backup-restore.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/16-current-status-and-gaps.md", why = "Neuro source doc to cover in this task context and ledger." },
+    { path = "docs/v1/06-neuro/INDEX.md", why = "Neuro source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T02-neuro - local task id for knowledge-store coverage",
+    "KnowledgeStore / NeuroStore - primary implementation surface audited by the status pack",
+]
+anti_patterns = [
+    "Do NOT implement roko-neuro product changes in this docs-domain authoring task.",
+    "Do NOT collapse Neuro coverage into Learning; keep every docs/v1/06-neuro file independently listed.",
+    "Do NOT introduce nonlocal depends_on ids; cross-epic prerequisites belong in depends_on_plan.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/06-neuro/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/06-neuro markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/06-neuro markdown files are listed in the coverage ledger.",
+    "All docs/v1/06-neuro markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T03-conductor"
+title = "Cover docs/v1/07-conductor in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Conductor corpus: watcher ensemble, circuit breaker, interventions, diagnosis, stuck detection, health monitors, cybernetic loops, adaptive timeouts, anomaly learning, pressure, process supervision, failure catalog, and learned/federated control. This depends on learning and Neuro coverage because conductor policy uses runtime signals, knowledge, and feedback."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro"]
+depends_on_plan = ["E01", "E05", "E08"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/36-ORCHESTRATION-RUNNERS.md", why = "Current orchestration and conductor-wiring status audit." },
+    { path = "docs/v1/07-conductor/00-conductor-architecture.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/01-watcher-ensemble.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/02-circuit-breaker.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/03-graduated-interventions.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/04-diagnosis-engine.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/05-stuck-detection.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/06-health-monitors.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/07-ooda-cybernetic-loop.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/08-good-regulator-self-model.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/09-cognitive-signals.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/10-adaptive-timeouts-state-machine.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/11-anomaly-detection-learning.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/12-yerkes-dodson-pressure.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/13-process-supervision-wiring.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/14-production-failure-catalog.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/15-conductor-learning-federation.md", why = "Conductor source doc to cover in this task context and ledger." },
+    { path = "docs/v1/07-conductor/INDEX.md", why = "Conductor source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T03-conductor - local task id for conductor supervision coverage",
+    "Conductor / watcher ensemble - status pack says runner-v2 wiring is partial and E08 owns live supervision closure",
+]
+anti_patterns = [
+    "Do NOT implement conductor product changes in this docs-domain authoring task.",
+    "Do NOT mark conductor docs covered unless every docs/v1/07-conductor markdown file is in both artifacts.",
+    "Do NOT depend directly on E08 task ids with depends_on; use depends_on_plan for epic-level prerequisites.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/07-conductor/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/07-conductor markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/07-conductor markdown files are listed in the coverage ledger.",
+    "All docs/v1/07-conductor markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T04-daimon"
+title = "Cover docs/v1/09-daimon in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Daimon corpus: PAD/ALMA affect state, appraisal, behavioral states, routing modulation, somatic markers, contrarian retrieval, strategy space, mood-congruent memory, coding-agent integration, collective contagion, and current gaps. This depends on learning, Neuro, and Conductor coverage because affect is a control signal over routing, retrieval, supervision, and dream urgency."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro", "DOC-V1-COG-T03-conductor"]
+depends_on_plan = ["E01", "E07", "E08"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/56-DAIMON.md", why = "Current status audit for the Daimon docs." },
+    { path = "docs/v1/09-daimon/00-vision-and-mortality-incompatibility.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/01-pad-vector.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/02-alma-three-layer-temporal.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/03-occ-scherer-appraisal.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/04-six-behavioral-states.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/05-behavioral-state-to-tier-routing.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/06-somatic-markers-damasio.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/07-15-percent-contrarian-retrieval.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/08-8-dimensional-strategy-space.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/09-mood-congruent-memory.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/10-integration-points.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/11-coding-agent-integration.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/12-collective-emotional-contagion.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/13-current-status-and-gaps.md", why = "Daimon source doc to cover in this task context and ledger." },
+    { path = "docs/v1/09-daimon/INDEX.md", why = "Daimon source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T04-daimon - local task id for affect-engine coverage",
+    "DaimonState / PAD / behavioral state - status pack says runner-v2 and serve are live but default graph integration is absent",
+]
+anti_patterns = [
+    "Do NOT implement Daimon product changes in this docs-domain authoring task.",
+    "Do NOT restore mortality framing; the v1 docs explicitly reframe it out.",
+    "Do NOT mark the default engine as covered by product code in this source coverage ledger.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/09-daimon/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/09-daimon markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/09-daimon markdown files are listed in the coverage ledger.",
+    "All docs/v1/09-daimon markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T05-dreams"
+title = "Cover docs/v1/10-dreams in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Dreams corpus: three-phase consolidation, replay, imagination, staging, evolution, HDC counterfactuals, hypnagogia, divergence, threat simulation, spectral recombination, rendering, sleep-time compute, triggers, oneirography, cross-system integration, implementation status, and advanced concepts. This depends on learning, Neuro, and Daimon because dreams consolidate episodes into knowledge with affect-aware triggers."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro", "DOC-V1-COG-T04-daimon"]
+depends_on_plan = ["E01", "E07", "E08"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/41-DREAMS.md", why = "Current status audit for the Dreams docs." },
+    { path = "docs/v1/10-dreams/00-vision-and-dream-as-death-reframe.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/01-three-phase-cycle.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/02-nrem-replay.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/03-rem-imagination.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/04-consolidation-and-staging.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/05-dream-evolution.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/06-hdc-counterfactual-synthesis.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/07-hypnagogia-engine.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/08-divergence-and-alpha.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/09-threat-simulation.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/10-hauntology-in-dreams.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/11-inner-worlds-and-rendering.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/12-sleep-time-compute.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/13-scheduling-and-triggers.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/14-oneirography.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/15-cross-system-integration.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/16-implementation-status.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/17-advanced-dream-concepts.md", why = "Dreams source doc to cover in this task context and ledger." },
+    { path = "docs/v1/10-dreams/INDEX.md", why = "Dreams source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T05-dreams - local task id for offline consolidation coverage",
+    "DreamRunner / staging buffer / dream routing advice - status pack says some triggers are live and others are not ported",
+]
+anti_patterns = [
+    "Do NOT implement roko-dreams product changes in this docs-domain authoring task.",
+    "Do NOT treat dream cron, BusPulse triggers, or phase2 shells as already implemented without status-pack evidence.",
+    "Do NOT remove the dream-as-death reframe doc from coverage; it is part of the corpus even though product work must not restore that framing.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/10-dreams/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/10-dreams markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/10-dreams markdown files are listed in the coverage ledger.",
+    "All docs/v1/10-dreams markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T06-heartbeat"
+title = "Cover docs/v1/16-heartbeat in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Heartbeat corpus: CoALA mapping, universal loop, chain variant, gamma/theta/delta speeds, adaptive clock, T0/T1/T2 dual process routing, probes, active inference, attention auction, context governor, and CorticalState. This depends on learning, Neuro, Conductor, Daimon, and Dreams because heartbeat is the scheduler that composes those cognitive cross-cuts."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = [
+    "DOC-V1-COG-T01-learning",
+    "DOC-V1-COG-T02-neuro",
+    "DOC-V1-COG-T03-conductor",
+    "DOC-V1-COG-T04-daimon",
+    "DOC-V1-COG-T05-dreams",
+]
+depends_on_plan = ["E01", "E05", "E07", "E08", "E09"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/53-OBSERVABILITY.md", why = "Current status audit for heartbeat-adjacent telemetry and snapshots." },
+    { path = "docs/v1/16-heartbeat/00-coala-9-step-pipeline.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/01-universal-loop-mapping.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/02-chain-heartbeat-variant.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/03-three-cognitive-speeds.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/04-gamma-reactive-loop.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/05-theta-reflective-loop.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/06-delta-consolidation-loop.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/07-adaptive-clock.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/08-dual-process-t0-t1-t2.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/09-16-t0-probes.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/10-active-inference-compute-allocation.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/11-active-inference-state-space.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/12-attention-auction-and-gating.md", why = "Heartbeat source doc to cover in this task context and ledger." },
+    { path = "docs/v1/16-heartbeat/INDEX.md", why = "Heartbeat source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T06-heartbeat - local task id for cognitive-clock coverage",
+    "Gamma/Theta/Delta - cadence vocabulary used by the source docs and existing task frequency enum",
+]
+anti_patterns = [
+    "Do NOT implement heartbeat product changes in this docs-domain authoring task.",
+    "Do NOT claim the v1 heartbeat loop is fully wired merely because observability data exists.",
+    "Do NOT weaken the dependency order from foundational learning/knowledge into the clock-level coverage.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/16-heartbeat/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/16-heartbeat markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/16-heartbeat markdown files are listed in the coverage ledger.",
+    "All docs/v1/16-heartbeat markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]
+
+[[task]]
+id = "DOC-V1-COG-T07-lifecycle"
+title = "Cover docs/v1/17-lifecycle in the cognition backlog ledger"
+description = "Maintain roko-compatible task coverage for the v1 Lifecycle corpus: creation, provisioning, configuration, funding, backup/export, deletion, recreation, selective restore, mesh transfer, Ebbinghaus knowledge freshness, demurrage, and academic foundations. This depends on Neuro, Daimon, Dreams, and Heartbeat coverage because lifecycle is the operator-facing persistence and continuity layer for the cognitive state."
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = [
+    "tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml",
+    "tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md",
+]
+role = "implementer"
+depends_on = [
+    "DOC-V1-COG-T02-neuro",
+    "DOC-V1-COG-T04-daimon",
+    "DOC-V1-COG-T05-dreams",
+    "DOC-V1-COG-T06-heartbeat",
+]
+depends_on_plan = ["E02", "E07", "E10", "E17", "E18"]
+domain = "docs"
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Canonical tasks.toml schema and validation rules." },
+    { path = "tmp/status-quo/60-STATE-PERSISTENCE-LEDGER.md", why = "Current state and persistence ledger for lifecycle-adjacent docs." },
+    { path = "docs/v1/17-lifecycle/00-vision-and-mortality-replaced.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/01-agent-creation.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/02-provisioning.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/03-configuration-and-operator-model.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/04-funding-and-budgets.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/05-knowledge-backup-export.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/06-agent-deletion.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/07-new-agent-creation.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/08-selective-restore.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/09-knowledge-transfer-via-mesh.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/10-ebbinghaus-for-knowledge-not-agents.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/11-knowledge-demurrage.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/12-academic-foundations.md", why = "Lifecycle source doc to cover in this task context and ledger." },
+    { path = "docs/v1/17-lifecycle/INDEX.md", why = "Lifecycle source index to cover in this task context and ledger." },
+]
+symbols = [
+    "DOC-V1-COG-T07-lifecycle - local task id for lifecycle coverage",
+    "backup -> delete -> create -> restore - lifecycle continuity pattern from the source docs",
+]
+anti_patterns = [
+    "Do NOT implement lifecycle product changes in this docs-domain authoring task.",
+    "Do NOT reintroduce agent mortality as a product concept; lifecycle docs preserve citations but replace that framing.",
+    "Do NOT merge lifecycle coverage into Neuro backup coverage; every docs/v1/17-lifecycle source file must stay listed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'for f in docs/v1/17-lifecycle/*.md; do grep -q "$f" tmp/status-quo/backlog/source-coverage/docs-v1-cognition.md && grep -q "path = \"$f\"" tmp/status-quo/backlog/plans/DOC-v1-cognition/tasks.toml || exit 1; done'
+fail_msg = "Every docs/v1/17-lifecycle markdown source must appear in the ledger and in task.context.read_files."
+
+[[task.verify]]
+phase = "test"
+command = 'cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v1-cognition 2>&1'
+fail_msg = "DOC-v1-cognition plan must validate."
+
+acceptance = [
+    "All docs/v1/17-lifecycle markdown files are listed in the coverage ledger.",
+    "All docs/v1/17-lifecycle markdown files appear in this task context read_files.",
+    "The plan validates with roko plan validate.",
+]

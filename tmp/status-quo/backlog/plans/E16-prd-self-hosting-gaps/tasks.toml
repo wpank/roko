@@ -1,0 +1,99 @@
+[meta]
+plan = "E16-prd-self-hosting-gaps"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ═══════════════════════════════════════════════════════════════════════
+# E16-T1: Reconcile Perplexity integration tests with the single-query API
+# ═══════════════════════════════════════════════════════════════════════
+# P08-T3 rewrites the UNIT tests inside search.rs but leaves the separate
+# integration test file untouched. After P08-T1 makes search_batch loop over
+# single-query POSTs, these integration tests break: they assert body["queries"]
+# arrays, one HTTP request for five queries, and nested per-query result objects.
+# Rewrite them to the flat single-query shape: N queries => N requests, each with
+# a top-level {"query": "..."} body, and a flat {"results": [...]} response.
+
+[[task]]
+id = "E16-T1"
+title = "Rewrite perplexity_integration.rs for the single-query search API"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = ["crates/roko-agent/tests/perplexity_integration.rs"]
+role = "implementer"
+depends_on_plan = ["P08-search-command-fix"]
+
+[task.context]
+read_files = [
+  { path = "crates/roko-agent/tests/perplexity_integration.rs", lines = "385-489", why = "The two batch-format tests: single-query test asserts body[\"queries\"][0] (416-418); five-query test expects 1 request + nested results (424-489)" },
+  { path = "crates/roko-agent/src/perplexity/search.rs", lines = "141-203", why = "Post-P08 search_batch loops self.search over single queries; wire body is flat {\"query\": ...}" },
+]
+symbols = [
+  "PerplexitySearchClient::search_batch — post-P08 loops single-query POSTs, N queries => N requests",
+  "spawn_scripted_server — test helper returning one scripted response per request",
+]
+anti_patterns = [
+  "Do NOT assert body[\"queries\"] anywhere — the flat body has a top-level \"query\" field.",
+  "Do NOT expect one request for five queries — the loop issues one request per query, so script five responses.",
+  "Do NOT return nested {\"results\":[{\"query\":..,\"results\":..}]} — the real API returns flat {\"results\":[{url,title,content}]}.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'queries\\[0\\]\\|body\\[\"queries\"\\]' crates/roko-agent/tests/perplexity_integration.rs"
+fail_msg = "No integration test may assert a queries array in the request body"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent --test perplexity_integration 2>&1"
+fail_msg = "Perplexity integration tests must pass against the single-query API"
+
+# ═══════════════════════════════════════════════════════════════════════
+# E16-T2: Front-half self-hosting smoke test (idea → draft → plan)
+# ═══════════════════════════════════════════════════════════════════════
+# No test guards the generative front-half after P08/P09/P23 land. Add a
+# structural (no live-API) smoke test that drives: prd idea -> prd draft new
+# -> prd plan <slug>, then asserts a parseable tasks.toml and that prd status
+# shows real (non-"—") columns for the linked PRD. Gate on offline stubs so
+# CI can run it without PERPLEXITY_API_KEY / Claude CLI.
+
+[[task]]
+id = "E16-T2"
+title = "Add offline front-half self-hosting smoke test"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = ["crates/roko-cli/tests/e2e_self_host.rs"]
+role = "implementer"
+depends_on = ["E16-T1"]
+depends_on_plan = ["P23-prd-pipeline-fix", "P09-tool-alias-fix"]
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/tests/e2e_self_host.rs", lines = "1-80", why = "Existing e2e harness + stub patterns to extend" },
+  { path = "crates/roko-cli/src/prd.rs", lines = "752-819", why = "cmd_status columns — assert non-dash output for the linked PRD (post-P23-T4)" },
+  { path = "crates/roko-cli/src/task_parser.rs", lines = "1-60", why = "TaskDef/TaskMeta parse target for the generated tasks.toml" },
+]
+symbols = [
+  "cmd_status — pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()>",
+  "TaskDef — native task schema parsed from tasks.toml",
+]
+anti_patterns = [
+  "Do NOT call the live Perplexity or Claude APIs — use the mock/stub dispatcher so CI runs offline.",
+  "Do NOT duplicate P23's cmd_status unit tests — this asserts the full CLI-driven pipeline end to end.",
+  "Do NOT hardcode a plan slug that skips the slug-linking path — the point is to prove prd status links the generated plan.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'tasks.toml' crates/roko-cli/tests/e2e_self_host.rs"
+fail_msg = "Smoke test must assert a tasks.toml is produced by prd plan"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test e2e_self_host 2>&1"
+fail_msg = "Front-half self-hosting smoke test must pass offline"

@@ -1,0 +1,568 @@
+[meta]
+plan = "E32-tool-plugin-ecosystem"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── T01: Formalize 5-tier Plugin SDK types in roko-plugin ───────────────
+[[task]]
+id = "E32-T01"
+title = "Add PluginSdkTier enum and PluginCapability declaration to roko-plugin"
+description = """
+The v2 spec (14-TOOLS.md §1, 12-EXTENSIONS.md §3-4) defines a 5-tier SPI:
+1. Prompts (markdown/TOML), 2. Config (profile bundles), 3. Declarative tools
+(subprocess/HTTP/MCP), 4. WASM (fuel-metered), 5. Native Rust (in-tree).
+
+The existing roko-plugin/src/manifest.rs has PluginManifestFile (line 62) with
+prompts, profiles, tools fields — but no explicit tier declaration. Meanwhile,
+roko-agent/src/safety/capabilities.rs:29 already has a PluginTier enum with
+5 tiers (Untrusted=1 through Kernel=5) plus allowed_capabilities() at line 56.
+
+Add an optional `tier` field to PluginManifestFile that deserializes to the
+existing PluginTier from capabilities.rs (re-export or type-alias — do NOT
+duplicate). When tier is absent, infer it from manifest content:
+  - has tools -> tier 3 (Standard)
+  - has only prompts -> tier 1 (Untrusted)
+  - has profiles but no tools -> tier 2 (Sandboxed)
+
+Also add a PluginCapability struct to declare what a plugin requires (fs access,
+network egress, secrets, exec), distinct from what the tier allows. This lets
+validate_manifest (line 234) verify that declared capabilities are a subset of
+what the tier permits.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-plugin/src/manifest.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "58-98", why = "PluginManifestFile (line 62) and PluginMeta (line 84) — the structs that need tier field" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "131-153", why = "DeclarativeTool struct (line 133) — tier 3 tool definition" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "234-282", why = "validate_manifest function — add tier vs capability validation here" },
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "9-47", why = "PluginTier enum (line 29, 5 variants) and Default impl (line 42)" },
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "49-85", why = "allowed_capabilities() method — tier -> capability mapping" },
+]
+symbols = [
+  "PluginManifestFile — top-level manifest struct at manifest.rs:62",
+  "PluginMeta — metadata section at manifest.rs:84, has name/version/description/author/license",
+  "DeclarativeTool — tier 3 tool at manifest.rs:133, has name/description/command/timeout_ms/working_dir/env",
+  "validate_manifest — validation fn at manifest.rs:234, checks names unique and commands non-empty",
+  "PluginTier — existing 5-tier enum at capabilities.rs:29 (Untrusted/Sandboxed/Standard/Trusted/Kernel)",
+  "allowed_capabilities — PluginTier method at capabilities.rs:56 returning Vec<Capability>",
+]
+anti_patterns = [
+  "Do NOT duplicate PluginTier from capabilities.rs — re-export from roko-agent or move to roko-core",
+  "Do NOT break existing manifest parsing — tier field must be Option<PluginTier> with inference fallback",
+  "Do NOT add roko-agent as a dependency of roko-plugin if avoidable — consider moving PluginTier to roko-core",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'tier|PluginSdkTier|PluginTier' crates/roko-plugin/src/manifest.rs"
+fail_msg = "Plugin tier declaration must be added to manifest"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-plugin 2>&1"
+fail_msg = "roko-plugin must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-plugin 2>&1"
+fail_msg = "Existing plugin tests must still pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-plugin -- manifest 2>&1 | grep -q 'test result: ok'"
+fail_msg = "Manifest parsing tests must pass including tier inference"
+
+# ── T02: Implement dynamic tool loading at runtime ──────────────────────
+[[task]]
+id = "E32-T02"
+title = "Add DynamicToolRegistry that merges static builtins with plugin-declared tools"
+description = """
+Currently StaticToolRegistry (registry.rs:21) is a zero-sized struct implementing
+ToolRegistry over the static ROKO_BUILTIN_TOOLS slice (37 tools: 16 std + 17 chain
++ 4 ISFR, defined in builtin/mod.rs:50). Plugins declare additional tools via
+DeclarativeTool (manifest.rs:133) but these never reach any ToolRegistry at runtime.
+
+Create a DynamicToolRegistry in roko-std/src/tool/registry.rs that:
+1. Wraps StaticToolRegistry as the base (delegate get/all for builtins)
+2. Holds a Vec<ToolDef> for plugin-declared tools added at runtime
+3. Implements ToolRegistry trait (roko-core/src/tool/registry.rs:24) so callers
+   see both builtin and plugin tools via get() and all()
+4. Deduplicates by name — plugin tools can override builtins with a tracing::warn
+
+The existing StaticToolRegistry must remain unchanged. The line 7 comment already
+anticipates this: "config-driven extensions layer on top through a separate
+compound registry (shipped in a later phase)."
+
+Also implement validate_args for DynamicToolRegistry by delegating to the inner
+StaticToolRegistry for builtins and doing basic type-check for plugin tools.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-std/src/tool/registry.rs"]
+depends_on = ["E32-T01"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-std/src/tool/registry.rs", lines = "1-58", why = "StaticToolRegistry (line 21), ToolRegistry impl (line 43), all() delegates to ROKO_BUILTIN_TOOLS" },
+  { path = "crates/roko-std/src/tool/registry.rs", lines = "60-108", why = "validate_against_schema helper and json_kind — reuse for plugin tools" },
+  { path = "crates/roko-core/src/tool/registry.rs", lines = "18-76", why = "ToolRegistry trait (line 24): get, all, validate_args, for_role, for_call methods" },
+  { path = "crates/roko-core/src/tool/def.rs", lines = "1-48", why = "ToolDef struct and ToolCategory enum (line 31, variants: Read/Write/Exec/Git/Network/Meta/Notebook/Mcp)" },
+  { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "43-72", why = "ROKO_BUILTIN_TOOLS LazyLock (line 50), TOOL_COUNT=37 (line 44)" },
+]
+symbols = [
+  "StaticToolRegistry — zero-sized struct at registry.rs:21, wraps ROKO_BUILTIN_TOOLS",
+  "ToolRegistry trait — at roko-core/tool/registry.rs:24, requires get(&str)->Option<&ToolDef> + all()->&[ToolDef]",
+  "ToolDef — tool definition at roko-core/tool/def.rs, has name/description/parameters/category/permission/timeout",
+  "ROKO_BUILTIN_TOOLS — LazyLock<Vec<ToolDef>> at builtin/mod.rs:50 (37 tools)",
+  "validate_against_schema — helper at registry.rs:67, checks type constraint from ToolSchema",
+]
+anti_patterns = [
+  "Do NOT modify StaticToolRegistry — wrap it as an inner field",
+  "Do NOT use a HashMap for <100 tools — Vec with linear scan matches StaticToolRegistry pattern",
+  "Do NOT change TOOL_COUNT or ROKO_BUILTIN_TOOLS — dynamic tools are additive",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'DynamicToolRegistry|CompoundToolRegistry' crates/roko-std/src/tool/registry.rs"
+fail_msg = "Dynamic/compound registry struct must be added"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'impl ToolRegistry for Dynamic' crates/roko-std/src/tool/registry.rs"
+fail_msg = "DynamicToolRegistry must implement ToolRegistry trait"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std -- registry 2>&1"
+fail_msg = "All registry tests must pass (existing + new dynamic)"
+
+# ── T03: Convert DeclarativeTool to ToolDef at plugin load time ─────────
+[[task]]
+id = "E32-T03"
+title = "Add DeclarativeTool-to-ToolDef conversion and wire into extension_loader"
+description = """
+When a plugin manifest declares [[tools]], those DeclarativeTool entries
+(manifest.rs:133) need to become ToolDef instances that can be registered in the
+DynamicToolRegistry (T02). Currently extension_loader.rs (line 117: load_extensions)
+discovers plugins and wraps them as PluginExtension (line 24) — but only for
+lifecycle hooks. It logs tool_count (line 172) but never converts or registers tools.
+
+Add a conversion function in roko-plugin or roko-cli:
+  declarative_to_tool_def(tool: &DeclarativeTool, plugin_name: &str) -> ToolDef
+
+Mapping:
+  - name: tool.name (prefixed with plugin_name to avoid collisions, e.g. "myplugin.lint")
+  - description: tool.description
+  - category: ToolCategory::Exec (shell commands)
+  - permission: ToolPermission { read: false, write: false, exec: true }
+  - timeout: Some(Duration::from_millis(tool.timeout_ms))
+  - parameters: ToolSchema::any_object() (generic for now)
+
+Wire this into load_extensions (line 117) so that after discovering each plugin,
+its DeclarativeTool entries are converted and added to a DynamicToolRegistry
+(either passed in or returned). The PluginExtension struct (line 24) should
+carry a Vec<ToolDef> of the converted tools for later registration.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/runner/extension_loader.rs"]
+depends_on = ["E32-T02"]
+max_loc = 55
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "1-30", why = "Module doc + PluginExtension struct (line 24) with meta/prompt_count/tool_count" },
+  { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "117-180", why = "load_extensions fn: scans dirs, discovers plugins, wraps as PluginExtension" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "131-153", why = "DeclarativeTool struct: name, description, command, timeout_ms, working_dir, env" },
+  { path = "crates/roko-core/src/tool/def.rs", lines = "14-48", why = "ToolDef fields and ToolCategory enum" },
+  { path = "crates/roko-std/src/tool/builtin/bash.rs", lines = "1-30", why = "Example tool_def() construction for exec-category tool" },
+]
+symbols = [
+  "DeclarativeTool — plugin tool struct at manifest.rs:133 (name/description/command/timeout_ms/working_dir/env)",
+  "ToolDef — core definition at roko-core/tool/def.rs (name/description/parameters/category/permission/timeout)",
+  "ToolCategory::Exec — variant for shell-executing tools at def.rs:37",
+  "load_extensions — loader fn at extension_loader.rs:117, scans .roko/extensions/ and plugins/",
+  "PluginExtension — Extension impl at extension_loader.rs:24, currently only logs lifecycle",
+]
+anti_patterns = [
+  "Do NOT execute plugin tools during loading — just register their definitions",
+  "Do NOT allow plugin tools to shadow safety-critical builtins (bash, read_file, write_file) without a loud warning",
+  "Do NOT add the plugin name prefix if tool.name already contains a dot separator",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'declarative_to_tool_def|DeclarativeTool.*ToolDef|to_tool_def' crates/roko-cli/src/runner/extension_loader.rs"
+fail_msg = "DeclarativeTool-to-ToolDef conversion must be implemented in extension_loader"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- extension 2>&1"
+fail_msg = "Extension loader tests must pass"
+
+# ── T04: Add capability binding (tool <-> PluginTier intersection) ──────
+[[task]]
+id = "E32-T04"
+title = "Enforce PluginTier capability checks on plugin-declared tool execution"
+description = """
+The existing PluginTier in capabilities.rs:29 defines what each tier can access,
+and check_plugin_tier (line 111) gates a single Capability against a tier. But
+plugin-declared tools bypass this entirely — when a DeclarativeTool executes,
+there is no tier check on the tool's required capabilities.
+
+Wire capability enforcement for plugin tools:
+1. Derive required capabilities from a DeclarativeTool:
+   - All tools need Capability::Exec since they run shell commands
+   - Tools with non-empty env need Capability::Network (if env contains proxy vars)
+   - Tools with working_dir outside worktree need full Capability::WritePath
+2. Add a function check_plugin_tool_capabilities(tier: PluginTier, tool: &DeclarativeTool)
+   -> Result<(), Vec<String>> that checks all required capabilities against the
+   tier's allowed_capabilities() (line 56). Return a list of violations.
+3. Call this check from load_extensions (T03) at discovery time — reject or warn
+   for tools that exceed their plugin's tier.
+
+The existing check_plugin_tier (line 111) handles individual Capability checks.
+The new function wraps it for the multi-capability case specific to tools.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-agent/src/safety/capabilities.rs"]
+depends_on = ["E32-T01"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "9-47", why = "PluginTier enum (line 29, 5 variants) with tier summary table in doc" },
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "49-85", why = "allowed_capabilities() — returns Vec<Capability> per tier" },
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "111-130", why = "check_plugin_tier — existing single-capability gate, returns Result<(), String>" },
+  { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "138-160", why = "Capability enum variants: Tool/Exec/ReadPath/WritePath/Network/Secrets/AgentSpawn" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "131-153", why = "DeclarativeTool struct with command/working_dir/env fields" },
+]
+symbols = [
+  "PluginTier — 5-tier enum at capabilities.rs:29 (Untrusted=1 through Kernel=5)",
+  "allowed_capabilities — method at capabilities.rs:56, returns tier-specific capability set",
+  "check_plugin_tier — single-capability gate at capabilities.rs:111, checks Network/WritePath/ReadPath/Exec",
+  "Capability — enum at capabilities.rs:138, variants: Tool/Exec/ReadPath/WritePath/Network/Secrets/AgentSpawn",
+  "DeclarativeTool — plugin tool at manifest.rs:133 (needs Exec capability at minimum)",
+]
+anti_patterns = [
+  "Do NOT silently allow excess capabilities — return explicit error listing each violation",
+  "Do NOT modify PluginTier enum variants or allowed_capabilities logic",
+  "Do NOT block plugin discovery on capability violations — warn at discovery, block at execution",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'check_plugin_tool_cap|tool_capabilities' crates/roko-agent/src/safety/capabilities.rs"
+fail_msg = "Plugin tool capability check function must be implemented"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent -- capabilities 2>&1"
+fail_msg = "Capability tests must pass"
+
+# ── T05: Add plugin sandboxing configuration ────────────────────────────
+[[task]]
+id = "E32-T05"
+title = "Add sandbox configuration fields to plugin manifest and tool execution"
+description = """
+Tier 3+ plugins execute shell commands and need sandboxing. The existing
+sandbox.rs in roko-std/src/tool/builtin/ provides require_within_worktree
+(line 33) for path sandboxing, but this is only used by filesystem tool handlers
+— plugin-declared tools have no equivalent.
+
+Add sandbox configuration to PluginManifestFile:
+1. Add a SandboxConfig struct with fields:
+   - allowed_paths: Vec<String> (globs, relative to worktree)
+   - env_allowlist: Vec<String> (environment variable names the tool may read)
+   - max_output_bytes: u64 (default 1MB — cap stdout/stderr)
+   - allow_shell_metacharacters: bool (default false)
+2. Add an optional sandbox field to DeclarativeTool (manifest.rs:133)
+3. Extend validate_manifest (manifest.rs:234) to reject:
+   - Absolute paths in working_dir (line 145)
+   - Shell metacharacters (|, ;, $(), backticks) in command (line 139) unless
+     allow_shell_metacharacters is true
+   - Empty allowed_paths when working_dir is set
+
+The runtime enforcement (actually sandboxing execution) is future work — this
+task adds the configuration model and validation only.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-plugin/src/manifest.rs"]
+depends_on = ["E32-T01"]
+max_loc = 55
+
+[task.context]
+read_files = [
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "131-153", why = "DeclarativeTool with working_dir (line 145) and env (line 148) fields" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "234-282", why = "validate_manifest — checks names unique, commands non-empty; extend with sandbox validation" },
+  { path = "crates/roko-std/src/tool/builtin/sandbox.rs", lines = "1-46", why = "require_within_worktree (line 33) — existing path sandbox pattern to align with" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "58-80", why = "PluginManifestFile struct — add optional sandbox: SandboxConfig field here" },
+]
+symbols = [
+  "DeclarativeTool — struct at manifest.rs:133, has working_dir: Option<String> and env: HashMap",
+  "validate_manifest — validation fn at manifest.rs:234, currently checks name uniqueness and command non-empty",
+  "require_within_worktree — path sandbox in sandbox.rs:33, normalizes and checks path stays under worktree",
+  "PluginManifestFile — top-level struct at manifest.rs:62, add sandbox config here",
+]
+anti_patterns = [
+  "Do NOT break existing manifest parsing — SandboxConfig and all its fields must be optional with defaults",
+  "Do NOT implement OS-level sandboxing (seccomp/landlock) — just validation and config model",
+  "Do NOT reject existing valid manifests — only validate sandbox fields when present",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'SandboxConfig|sandbox' crates/roko-plugin/src/manifest.rs"
+fail_msg = "SandboxConfig struct must be defined in manifest.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'shell_metacharacter|allow_shell|metachar' crates/roko-plugin/src/manifest.rs"
+fail_msg = "Shell metacharacter validation must be implemented"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-plugin 2>&1"
+fail_msg = "roko-plugin must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-plugin 2>&1"
+fail_msg = "Plugin tests must pass"
+
+# ── T06: Add plugin version resolution and duplicate detection ──────────
+[[task]]
+id = "E32-T06"
+title = "Add version-aware plugin resolution and duplicate detection to discovery"
+description = """
+The existing discover_plugins (manifest.rs:297) scans directories and returns
+Vec<LoadedPlugin> but does not handle version conflicts. When two directories
+contain plugins with the same name but different versions, both are returned
+with no deduplication. PluginDependency (line 196) has an optional version
+field but it is never validated.
+
+Add a resolve_plugins function as a post-processing step:
+  resolve_plugins(discovered: Vec<LoadedPlugin>) -> Result<Vec<LoadedPlugin>>
+
+The function should:
+1. Group plugins by name
+2. When multiple versions exist for one name, pick the highest semver version
+   and emit tracing::warn for the skipped versions
+3. When a PluginDependency (line 196) specifies a version constraint, validate
+   that the resolved plugin version satisfies it (simple >= comparison is fine
+   for initial implementation)
+4. Return error only for missing required dependencies — version mismatches are
+   warnings
+
+The semver crate is already in the workspace dependency tree (used by cargo).
+If adding a direct dependency is undesirable, use simple string comparison of
+major.minor.patch components.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-plugin/src/manifest.rs"]
+depends_on = ["E32-T05"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "284-340", why = "LoadedPlugin struct (line 286) and discover_plugins fn (line 297)" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "194-202", why = "PluginDependency struct: name + optional version constraint" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "82-98", why = "PluginMeta: name (line 86) and version (line 88) fields" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "62-80", why = "PluginManifestFile.dependencies: Vec<PluginDependency>" },
+]
+symbols = [
+  "LoadedPlugin — struct at manifest.rs:286, has manifest: PluginManifestFile + base_dir: PathBuf",
+  "discover_plugins — scan fn at manifest.rs:297, returns Vec<LoadedPlugin> without dedup",
+  "PluginDependency — struct at manifest.rs:196, has name: String + version: Option<String>",
+  "PluginMeta — at manifest.rs:84, has name: String + version: String",
+]
+anti_patterns = [
+  "Do NOT modify discover_plugins signature — add resolve_plugins as a separate post-processing step",
+  "Do NOT add semver crate dependency unless it is already in roko-plugin's Cargo.toml — use simple string split/compare",
+  "Do NOT error on missing optional dependencies — only error on missing required deps",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'resolve_plugins' crates/roko-plugin/src/manifest.rs"
+fail_msg = "resolve_plugins function must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-plugin 2>&1"
+fail_msg = "roko-plugin must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-plugin -- resolve 2>&1"
+fail_msg = "Plugin resolution tests must pass"
+
+# ── T07: Add tool catalog validation (advertised == executable) ─────────
+[[task]]
+id = "E32-T07"
+title = "Add validate_tool_catalog to assert all registered tools have handlers"
+description = """
+ROKO_BUILTIN_TOOLS (builtin/mod.rs:50) has 37 ToolDef entries: 16 std tools
+(read_file through run_tests, lines 51-68), 17 chain-domain tools (line 69 via
+CHAIN_DOMAIN_TOOLS), and 4 ISFR tools (line 70 via isfr::all_tool_defs()).
+handler_for (handlers.rs:26) only covers the 16 std tools (lines 28-44, returns
+None for chain and ISFR tools).
+
+This is the "advertised but not executable" gap that E14 also targets. Add a
+validate_tool_catalog() function in roko-std/src/tool/ that:
+1. Iterates all ToolDef entries from ROKO_BUILTIN_TOOLS
+2. For each, calls handler_for(name) from handlers.rs:26
+3. Collects any tools where handler_for returns None
+4. Returns Vec<String> of tool names without handlers
+
+Add a test that calls this and documents the expected gap (21 chain+ISFR tools
+with no handler yet). This creates an inventory checkpoint — as E14 implements
+handlers, the test assertion tightens.
+
+Do NOT add a test that asserts zero unhandled — that would fail today. Instead
+assert the count matches the known gap (21 = 17 chain + 4 ISFR).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-std/src/tool/handlers.rs"]
+depends_on = []
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-std/src/tool/handlers.rs", lines = "1-46", why = "handler_for fn (line 26): matches 16 std tool names, returns None for all others" },
+  { path = "crates/roko-std/src/tool/handlers.rs", lines = "48-80", why = "HandlerRegistry wrapper struct (line 50) with shipped_names() method" },
+  { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "43-72", why = "ROKO_BUILTIN_TOOLS (line 50): 16 std + 17 chain + 4 ISFR = 37 total" },
+  { path = "crates/roko-std/src/tool/registry.rs", lines = "110-122", why = "Existing tests: builtin_count_matches asserts TOOL_COUNT=37" },
+]
+symbols = [
+  "handler_for — canonical name -> Arc<dyn ToolHandler> at handlers.rs:26, covers 16 std tools only",
+  "HandlerRegistry — wrapper struct at handlers.rs:50, delegates to handler_for",
+  "ROKO_BUILTIN_TOOLS — LazyLock<Vec<ToolDef>> at builtin/mod.rs:50, 37 total tools",
+  "TOOL_COUNT — const 37 at builtin/mod.rs:44",
+  "CHAIN_DOMAIN_TOOLS — 17 chain tools from roko-chain at builtin/mod.rs:69",
+]
+anti_patterns = [
+  "Do NOT implement missing handlers — just detect and list them for inventory",
+  "Do NOT modify ROKO_BUILTIN_TOOLS or handler_for — this is read-only validation",
+  "Do NOT assert zero unhandled — the known gap is 21 tools (17 chain + 4 ISFR) until E14 lands",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'validate_tool_catalog' crates/roko-std/src/tool/handlers.rs"
+fail_msg = "validate_tool_catalog function must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std -- catalog 2>&1"
+fail_msg = "Tool catalog validation test must pass"
+
+# ── T08: Wire plugin listing into CLI commands with tier + audit ────────
+[[task]]
+id = "E32-T08"
+title = "Enhance roko plugin list with tier display and wire audit to catalog validation"
+description = """
+The CLI already has a working cmd_plugin function (config_cmd.rs:1055) with
+PluginCmd::List (line 1065) that discovers plugins and prints name/version/
+description/prompts/tools. However it is missing:
+1. Tier display — no tier is shown because PluginManifestFile has no tier field (T01 adds it)
+2. Tool catalog audit — PluginCmd::Audit (line 1060) exists in the enum but its
+   handler is likely a stub
+
+Enhance the list subcommand (line 1065):
+- After discovering plugins, display each plugin's tier (from T01's tier field or
+  inferred default)
+- Show tool count with tier indicator: "tools: 3 (tier: standard)"
+- Format as a table for readability
+
+Wire the audit subcommand:
+- Call validate_tool_catalog() (from T07) to list unhandled builtins
+- For each discovered plugin, run check_plugin_tool_capabilities (from T04) to
+  verify tier compliance
+- Print a summary: "X builtins without handlers, Y plugin tools exceeding tier"
+
+The discover_plugins call at line 1071 scans plugins/ and .roko/plugins/. The
+extension_loader scans .roko/extensions/ — audit should cover all three directories.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/commands/config_cmd.rs"]
+depends_on = ["E32-T02", "E32-T07"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "1055-1125", why = "cmd_plugin fn: workdir resolution, List handler with discover+print loop, tool/prompt output" },
+  { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "220-223", why = "ConfigCmd::Plugins dispatch (line 222) — intercepted in dispatch_subcommand" },
+  { path = "crates/roko-plugin/src/manifest.rs", lines = "284-340", why = "discover_plugins fn (line 297) and LoadedPlugin struct (line 286)" },
+  { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "117-145", why = "load_extensions scans .roko/extensions/ + plugins/ — audit should also scan here" },
+]
+symbols = [
+  "cmd_plugin — plugin command handler at config_cmd.rs:1055",
+  "PluginCmd::List — list subcommand variant, handler at config_cmd.rs:1065",
+  "PluginCmd::Audit — audit subcommand variant, handler at config_cmd.rs:1060 (stub)",
+  "discover_plugins — plugin scanner at manifest.rs:297",
+  "LoadedPlugin — discovered plugin struct at manifest.rs:286",
+  "validate_tool_catalog — from T07, lists unhandled builtin tools",
+]
+anti_patterns = [
+  "Do NOT duplicate discovery logic — call discover_plugins directly from roko_plugin",
+  "Do NOT implement install/remove — those are separate future work",
+  "Do NOT fail the audit command on violations — print warnings and return exit code 0 with summary",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'tier|validate_tool_catalog|audit' crates/roko-cli/src/commands/config_cmd.rs"
+fail_msg = "Plugin listing must show tier and audit must call catalog validation"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- plugin 2>&1"
+fail_msg = "Plugin command tests must pass"

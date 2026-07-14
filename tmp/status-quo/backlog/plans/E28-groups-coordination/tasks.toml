@@ -1,0 +1,530 @@
+[meta]
+plan = "E28-groups-coordination"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T01: Add core Group types to roko-core
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (10-GROUPS.md §2) defines Group, GroupMember, GroupConfig,
+# MemberRole, MemberPermissions, CoordinationMode, and KnowledgePolicy.
+# None of these exist yet. Add all core types in a new groups module.
+[[task]]
+id = "E28-T01"
+title = "Add Group, GroupMember, GroupConfig, CoordinationMode types"
+description = """Create crates/roko-core/src/groups.rs with the following types:
+
+- GroupId (newtype over String — matches existing ID patterns in this crate)
+- Group { id: GroupId, name: String, description: String, owner: String,
+  members: Vec<GroupMember>, coordination: CoordinationMode,
+  config: GroupConfig, created_at: DateTime<Utc>, updated_at: DateTime<Utc> }
+- GroupMember { agent_id: String, owner: String, role: MemberRole,
+  permissions: MemberPermissions, joined_at: DateTime<Utc> }
+- MemberRole { Leader, Member, Observer }
+- MemberPermissions { read: bool, write: bool, execute: bool }
+- GroupConfig { max_members: Option<usize>, auto_accept: bool, public: bool,
+  knowledge_policy: KnowledgePolicy, pheromone_decay_rate: f64 }
+- CoordinationMode { Stigmergic, Pipeline, Broadcast, LeaderFollower }
+- KnowledgePolicy { Open, WriteLeader, Curated }
+
+All types derive Serialize, Deserialize, Debug, Clone. Enums also derive
+PartialEq, Eq. Use #[serde(rename_all = "snake_case")] on enums.
+Register `pub mod groups;` in lib.rs and re-export key types."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 120
+files = ["crates/roko-core/src/groups.rs", "crates/roko-core/src/lib.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/lib.rs", lines = "62-96", why = "Module declarations — add `pub mod groups` in alphabetical position near `hash`" },
+    { path = "crates/roko-core/src/lib.rs", lines = "164-198", why = "Re-export block — add Group, GroupMember, CoordinationMode re-exports" },
+    { path = "crates/roko-core/src/agent.rs", lines = "1-30", why = "AgentRole enum — similar derive + serde pattern to follow" },
+    { path = "crates/roko-core/src/connector.rs", lines = "20-37", why = "ConnectorKind enum — serde(rename_all = snake_case) pattern" },
+    { path = "docs/v2/10-GROUPS.md", lines = "77-128", why = "V2 Group, GroupMember, MemberRole, MemberPermissions, GroupConfig type definitions" },
+    { path = "docs/v2/10-GROUPS.md", lines = "122-128", why = "KnowledgePolicy enum variants" },
+]
+symbols = [
+    "roko-core lib.rs module declarations — alphabetical order convention",
+    "ConnectorKind — serde rename pattern at connector.rs:21-37",
+    "Kind::Pheromone — existing signal kind at kind.rs:95 (groups reference this for stigmergic mode)",
+]
+anti_patterns = [
+    "Do NOT add Bus/relay logic — Groups are kernel types only here",
+    "Do NOT add API route logic — that is E28-T05",
+    "Do NOT depend on roko-serve or roko-runtime from roko-core",
+    "Do NOT use UUID — use String newtypes matching existing patterns in this crate",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod groups' crates/roko-core/src/lib.rs"
+fail_msg = "groups module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct Group ' crates/roko-core/src/groups.rs && grep -q 'pub enum CoordinationMode' crates/roko-core/src/groups.rs"
+fail_msg = "Group struct and CoordinationMode enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum KnowledgePolicy' crates/roko-core/src/groups.rs"
+fail_msg = "KnowledgePolicy enum must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T02: Add GroupInvitation and membership protocol types
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (10-GROUPS.md §4) defines cross-user invitation flow with
+# GroupInvitation, InvitationStatus, InviteRequest, and InviteResponse.
+[[task]]
+id = "E28-T02"
+title = "Add GroupInvitation type and invitation status enum"
+description = """Add to crates/roko-core/src/groups.rs:
+
+- InvitationId (newtype over String)
+- GroupInvitation { id: InvitationId, group_id: GroupId, agent_id: String,
+  invited_by: String, agent_owner: String, role: MemberRole,
+  permissions: MemberPermissions, status: InvitationStatus,
+  created_at: DateTime<Utc>, expires_at: DateTime<Utc> }
+- InvitationStatus { Pending, Accepted, Rejected, Expired }
+- InviteRequest { agent_id: String, role: MemberRole, permissions: MemberPermissions }
+- InviteResponse { status: InvitationStatus, invitation_id: Option<InvitationId>,
+  agent_id: String, group_id: GroupId }
+
+All types derive Serialize, Deserialize, Debug, Clone.
+InvitationStatus derives PartialEq, Eq with serde(rename_all = "snake_case")."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-core/src/groups.rs"]
+depends_on = ["E28-T01"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/10-GROUPS.md", lines = "357-471", why = "V2 membership protocol: invitation flow, GroupInvitation struct, InvitationStatus" },
+    { path = "docs/v2/10-GROUPS.md", lines = "393-427", why = "Cross-user invitation API request/response examples" },
+    { path = "crates/roko-core/src/groups.rs", lines = "1-40", why = "Existing imports and GroupId type from T01" },
+]
+symbols = [
+    "GroupId — newtype from T01, used in invitation types",
+    "MemberRole — from T01, used in invitation role assignment",
+    "MemberPermissions — from T01, used in invitation permission grants",
+]
+anti_patterns = [
+    "Do NOT add HTTP route handlers — that is E28-T05",
+    "Do NOT implement expiration logic — just define the data types",
+    "Do NOT add relay notification logic — that is runtime wiring",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct GroupInvitation' crates/roko-core/src/groups.rs && grep -q 'pub enum InvitationStatus' crates/roko-core/src/groups.rs"
+fail_msg = "GroupInvitation and InvitationStatus must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct InviteRequest' crates/roko-core/src/groups.rs"
+fail_msg = "InviteRequest must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T03: Add LeaderConfig and assignment strategy types
+# ─────────────────────────────────────────────────────────────────────────────
+# The leader-follower coordination mode (10-GROUPS.md §3.4) needs LeaderConfig
+# with assignment strategy and task assignment/completion types.
+[[task]]
+id = "E28-T03"
+title = "Add LeaderConfig and RuleStrategy for leader-follower coordination"
+description = """Add to crates/roko-core/src/groups.rs:
+
+- LeaderConfig { leader_agent: String, assignment_strategy: AssignmentStrategy,
+  max_concurrent_tasks: usize }
+- AssignmentStrategy { RoundRobin, CapabilityMatch, LoadBalanced, CascadeRouter }
+- TaskAssignment { task_id: String, assigned_to: String, assigned_by: String,
+  description: String, deadline: Option<DateTime<Utc>> }
+- TaskCompletion { task_id: String, completed_by: String,
+  result_id: Option<String>, duration_secs: u64 }
+
+These support the leader-follower coordination mode. The v2 spec uses
+CellRef-based assignment routing, but for this phase we use a simple enum.
+AssignmentStrategy derives PartialEq, Eq, serde(rename_all = "snake_case")."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-core/src/groups.rs"]
+depends_on = ["E28-T01"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/10-GROUPS.md", lines = "266-322", why = "V2 leader-follower spec: LeaderConfig, assignment_cell, RuleStrategy, task JSON examples" },
+    { path = "docs/v2/10-GROUPS.md", lines = "324-353", why = "Task assignment and completion JSON payload examples" },
+    { path = "crates/roko-core/src/groups.rs", lines = "1-20", why = "Existing imports and CoordinationMode from T01" },
+]
+symbols = [
+    "CoordinationMode::LeaderFollower — the mode these types support (from T01)",
+]
+anti_patterns = [
+    "Do NOT implement actual assignment logic — only define the types",
+    "Do NOT depend on roko-learn CascadeRouter — just reference it by name in the enum variant",
+    "Do NOT add CellRef — use String for assignment_strategy for now",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct LeaderConfig' crates/roko-core/src/groups.rs && grep -q 'pub enum AssignmentStrategy' crates/roko-core/src/groups.rs"
+fail_msg = "LeaderConfig and AssignmentStrategy must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct TaskAssignment' crates/roko-core/src/groups.rs"
+fail_msg = "TaskAssignment must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T04: Add GroupPheromone type and pheromone field operations
+# ─────────────────────────────────────────────────────────────────────────────
+# Pheromones are Signals of Kind::Pheromone in the group's Store partition.
+# Kind::Pheromone already exists at kind.rs:95. Add GroupPheromone struct
+# and deposit/query types.
+[[task]]
+id = "E28-T04"
+title = "Add GroupPheromone struct and pheromone deposit/query types"
+description = """Add to crates/roko-core/src/groups.rs:
+
+- GroupPheromone { group_id: GroupId, depositor: String, signal_type: String,
+  position_hint: Option<String>, metadata: serde_json::Value,
+  deposited_at: DateTime<Utc> }
+- PheromoneDeposit { group_id: GroupId, signal_type: String,
+  metadata: serde_json::Value } (request to deposit)
+- PheromoneQuery { group_id: GroupId, signal_type: Option<String>,
+  min_balance: Option<f64> } (query filter)
+- PheromoneFieldSummary { group_id: GroupId, count: usize,
+  types: Vec<String> } (field overview)
+
+The v2 spec (10-GROUPS.md §3.1) defines pheromones as Kind::Pheromone
+Signals subject to demurrage. position_hint is Option<String> (placeholder
+for HDC vector). Reference Kind::Pheromone at kind.rs:95 in doc comments."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-core/src/groups.rs"]
+depends_on = ["E28-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/kind.rs", lines = "93-96", why = "Kind::Pheromone variant — already exists, pheromones reference this signal kind" },
+    { path = "docs/v2/10-GROUPS.md", lines = "186-224", why = "V2 pheromone spec: GroupPheromone struct, Signal-based demurrage, field operations" },
+    { path = "docs/v2/10-GROUPS.md", lines = "521-554", why = "V2 pheromone API response format with balance and metadata" },
+    { path = "crates/roko-core/src/groups.rs", lines = "1-10", why = "Existing GroupId type from T01" },
+]
+symbols = [
+    "Kind::Pheromone — existing signal kind at kind.rs:95",
+    "GroupId — newtype from T01",
+]
+anti_patterns = [
+    "Do NOT implement demurrage logic — that uses standard Signal mechanics defined in 01-SIGNAL.md",
+    "Do NOT add HdcVector dependency — use Option<String> for position_hint as placeholder",
+    "Do NOT add API route handlers — those are in E28-T05",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct GroupPheromone' crates/roko-core/src/groups.rs && grep -q 'pub struct PheromoneDeposit' crates/roko-core/src/groups.rs"
+fail_msg = "GroupPheromone and PheromoneDeposit must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct PheromoneQuery' crates/roko-core/src/groups.rs"
+fail_msg = "PheromoneQuery must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T05: Add Group CRUD and membership routes to roko-serve
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (10-GROUPS.md §7) defines 16 API routes for group management.
+# Add the core CRUD and membership routes as a new groups.rs route module.
+[[task]]
+id = "E28-T05"
+title = "Add Group API routes: CRUD, invite, members, knowledge, pheromones"
+description = """Create crates/roko-serve/src/routes/groups.rs with routes:
+
+- POST   /api/groups                          — create group
+- GET    /api/groups                          — list groups
+- GET    /api/groups/{id}                     — group detail
+- PATCH  /api/groups/{id}                     — update group
+- DELETE /api/groups/{id}                     — delete group
+- POST   /api/groups/{id}/invite              — invite agent
+- GET    /api/groups/{id}/members             — list members
+- DELETE /api/groups/{id}/members/{agent_id}  — remove member
+- GET    /api/groups/{id}/knowledge           — group knowledge
+- GET    /api/groups/{id}/pheromones          — group pheromone field
+- POST   /api/groups/{id}/pheromones          — deposit pheromone
+
+Follow the route module pattern from feeds.rs: pub fn routes() -> Router<Arc<AppState>>.
+Register `mod groups;` in routes/mod.rs and merge into the router.
+Use in-memory Vec<Group> guarded by RwLock in AppState for initial storage.
+Import Group types from roko_core::groups."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 200
+files = ["crates/roko-serve/src/routes/groups.rs", "crates/roko-serve/src/routes/mod.rs"]
+depends_on = ["E28-T01", "E28-T02", "E28-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-51", why = "Route module registration pattern — add `mod groups;` and merge groups::routes()" },
+    { path = "crates/roko-serve/src/routes/feeds.rs", lines = "1-37", why = "Route module pattern: pub fn routes() -> Router<Arc<AppState>> with .route() chains" },
+    { path = "crates/roko-serve/src/routes/feeds.rs", lines = "27-37", why = "Router construction with get/post/delete handlers" },
+    { path = "docs/v2/10-GROUPS.md", lines = "629-665", why = "V2 API surface: CRUD, membership, coordination, knowledge, pheromone routes" },
+    { path = "docs/v2/10-GROUPS.md", lines = "362-377", why = "Create group JSON request/response example" },
+]
+symbols = [
+    "AppState — shared server state in crates/roko-serve/src/state.rs (needs groups Vec<Group>)",
+    "feeds::routes() — pattern for route registration at feeds.rs:27",
+    "ApiError — error type at crates/roko-serve/src/error.rs",
+]
+anti_patterns = [
+    "Do NOT add WebSocket subscription logic — that is E29",
+    "Do NOT implement cross-user invitation approval flow — just same-owner auto-join for now",
+    "Do NOT add on-chain group registration — that is deferred to chain epic",
+    "Do NOT add cluster creation routes — those depend on orchestrator work",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mod groups' crates/roko-serve/src/routes/mod.rs"
+fail_msg = "Groups route module must be declared in routes/mod.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/groups' crates/roko-serve/src/routes/groups.rs"
+fail_msg = "Group API routes must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'fn ' crates/roko-serve/src/routes/groups.rs | grep -q -E '^[5-9]|^[1-9][0-9]'"
+fail_msg = "At least 5 handler functions must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T06: Add [[groups]] config section to roko.toml
+# ─────────────────────────────────────────────────────────────────────────────
+# Groups can be predefined in roko.toml. Add the config schema so groups
+# are reconciled on serve startup.
+[[task]]
+id = "E28-T06"
+title = "Add [[groups]] config section to RokoConfig"
+description = """Add a `groups: Vec<GroupDefinition>` field to RokoConfig:
+
+GroupDefinition { name: String, description: String, coordination: String,
+  members: Vec<String>, leader: Option<String>,
+  assignment_strategy: Option<String>, public: bool, max_members: Option<usize>,
+  knowledge_policy: Option<String>, pheromone_decay_rate: Option<f64> }
+
+Add `#[serde(default, skip_serializing_if = "Vec::is_empty")]` on the
+groups field so existing configs without [[groups]] still parse correctly.
+Add GroupDefinition to the Default impl (empty Vec). Pattern follows the
+existing `agents: Vec<AgentDefinition>` field at schema.rs:157."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 40
+files = ["crates/roko-core/src/config/schema.rs"]
+depends_on = ["E28-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/schema.rs", lines = "88-163", why = "RokoConfig struct — add groups field near agents (line 157)" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "186-223", why = "RokoConfig Default impl — add groups: Vec::new()" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1456-1472", why = "AgentDefinition — similar [[agents]] config pattern to follow" },
+    { path = "docs/v2/10-GROUPS.md", lines = "704-738", why = "V2 TOML config spec: [[groups]] with all fields" },
+]
+symbols = [
+    "RokoConfig — top-level config struct at schema.rs:90",
+    "RokoConfig::default() — Default impl at schema.rs:186",
+    "AgentDefinition — similar Vec config pattern at schema.rs:1458",
+]
+anti_patterns = [
+    "Do NOT break existing config parsing — new fields must have serde defaults",
+    "Do NOT add complex validation — just parse the TOML, validation happens at runtime",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'groups' crates/roko-core/src/config/schema.rs && grep -q 'GroupDefinition' crates/roko-core/src/config/schema.rs"
+fail_msg = "RokoConfig must have a groups field with GroupDefinition type"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-core --lib config 2>&1"
+fail_msg = "Config tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T07: Add GroupContextBidder for context injection
+# ─────────────────────────────────────────────────────────────────────────────
+# When an agent belongs to groups, the system prompt builder should inject
+# group context (pheromones, knowledge, membership). The roko-compose
+# enrichment module is NOT a context bidder system — it is a 13-step LLM
+# enrichment pipeline. Add GroupContextBidder as a standalone struct that
+# can be used by orchestrate.rs Layer 7 enrichment alongside the existing
+# NeuroContextBidder/TaskContextBidder/ResearchContextBidder in the
+# AttentionBidder system.
+[[task]]
+id = "E28-T07"
+title = "Add GroupContextBidder for VCG auction context injection"
+description = """Add GroupContextBidder struct to crates/roko-core/src/groups.rs
+(not in roko-compose — the enrichment module there is a plan-enrichment
+pipeline, not a context-bidder system).
+
+GroupContextBidder { group_id: GroupId, pheromone_weight: f64,
+  knowledge_weight: f64, coordination_weight: f64 }
+
+This struct holds configuration for how much weight group context should
+receive in the VCG auction for Layer 7 enrichment. It competes for context
+space alongside NeuroContextBidder, TaskContextBidder, and
+ResearchContextBidder via the AttentionBidder variants in orchestrate.rs.
+
+Bid value is proportional to: pheromone intensity, knowledge recency, and
+coordination urgency (pending task assignments in leader-follower mode)."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 30
+files = ["crates/roko-core/src/groups.rs"]
+depends_on = ["E28-T01", "E28-T04"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/10-GROUPS.md", lines = "556-582", why = "V2 GroupContextBidder spec with weight fields and bid value formula" },
+    { path = "crates/roko-core/src/groups.rs", lines = "1-10", why = "GroupId type from T01" },
+]
+symbols = [
+    "GroupId — newtype from T01",
+]
+anti_patterns = [
+    "Do NOT modify roko-compose/src/enrichment/ — that is a plan-enrichment pipeline, not context bidders",
+    "Do NOT implement VCG auction logic — just define the bidder config struct",
+    "Do NOT add AttentionBidder trait impl here — that is done in orchestrate.rs",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct GroupContextBidder' crates/roko-core/src/groups.rs"
+fail_msg = "GroupContextBidder must be defined in groups.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E28-T08: Add group event types for Bus partition
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (10-GROUPS.md §8) defines 16 group event types that publish
+# to the group's Bus partition. Add these as an enum following the existing
+# ExecutionEvent pattern in roko-serve/src/events.rs.
+[[task]]
+id = "E28-T08"
+title = "Add GroupEvent enum with 16 event types for Bus partition"
+description = """Add GroupEvent enum to crates/roko-core/src/groups.rs:
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GroupEvent {
+    Created { group_id: GroupId, name: String, owner: String },
+    Updated { group_id: GroupId, changes: serde_json::Value },
+    Deleted { group_id: GroupId, owner: String },
+    MemberInvited { agent_id: String, invited_by: String, role: MemberRole },
+    MemberJoined { agent_id: String, owner: String, role: MemberRole },
+    MemberLeft { agent_id: String, reason: String },
+    MemberUpdated { agent_id: String, changes: serde_json::Value },
+    Message { from: String, content: String, tags: Vec<String> },
+    ClusterStarted { cluster_id: String, pipeline: serde_json::Value, agents: Vec<String> },
+    ClusterCompleted { cluster_id: String, outcome: String, duration_secs: u64 },
+    KnowledgePublished { entry_id: String, author: String, topic: String },
+    KnowledgeValidated { entry_id: String, validator: String },
+    PheromoneDeposited { depositor: String, signal_type: String, intensity: f64 },
+    PheromoneDecayed { count_removed: usize, threshold: f64 },
+    TaskAssigned { task_id: String, assigned_to: String, assigned_by: String },
+    TaskCompleted { task_id: String, completed_by: String, result: serde_json::Value },
+}
+
+Add a pub fn room(&self, group_id: &GroupId) -> String method that returns
+the Bus room string:
+- Created/Deleted -> "system"
+- Knowledge* -> "group:{id}:knowledge"
+- Pheromone* -> "group:{id}:pheromones"
+- Task* -> "group:{id}:coordination"
+- All others -> "group:{id}" """
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 80
+files = ["crates/roko-core/src/groups.rs"]
+depends_on = ["E28-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/events.rs", lines = "1-80", why = "ExecutionEvent pattern — similar tagged serde enum with variant payloads" },
+    { path = "docs/v2/10-GROUPS.md", lines = "675-700", why = "V2 event types table: 16 events with room mapping and payload fields" },
+    { path = "docs/v2/10-GROUPS.md", lines = "130-157", why = "V2 relay room naming: group:{id}, group:{id}:knowledge, etc." },
+]
+symbols = [
+    "ExecutionEvent — tagged serde enum pattern at events.rs:13 (#[serde(tag = 'type', rename_all = 'snake_case')])",
+    "GroupId — newtype from T01",
+    "MemberRole — enum from T01 (used in MemberJoined payload)",
+]
+anti_patterns = [
+    "Do NOT depend on roko-serve types — keep GroupEvent in roko-core",
+    "Do NOT add serialization logic for Bus transport — just define the enum and room mapping",
+    "Do NOT add Pulse construction — that is runtime wiring",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum GroupEvent' crates/roko-core/src/groups.rs && grep -q 'MemberJoined' crates/roko-core/src/groups.rs"
+fail_msg = "GroupEvent enum with MemberJoined variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn room' crates/roko-core/src/groups.rs"
+fail_msg = "GroupEvent must have a room() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"

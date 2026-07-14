@@ -1,0 +1,474 @@
+[meta]
+plan = "E12-DEAD-CODE-CLEANUP"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T01: Delete orphan files not present in any mod tree
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T01"
+title = "Delete orphan roko-core files pulse_bus.rs and state_hub.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = [
+    "crates/roko-core/src/pulse_bus.rs",
+    "crates/roko-core/src/state_hub.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["Both orphan files are deleted; no module or use statement anywhere references pulse_bus or state_hub; the workspace still builds."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/lib.rs", lines = "1-160", why = "Confirm no `mod pulse_bus` / `mod state_hub` declaration exists — both files are orphans." },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT delete any file that IS declared with `mod` — only these two orphans.",
+    "Do NOT add a `mod` declaration to 'fix' them; they are dead and must be removed.",
+    "If `rg` finds ANY reference to pulse_bus or state_hub outside these files, STOP and report instead of deleting.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -e crates/roko-core/src/pulse_bus.rs && test ! -e crates/roko-core/src/state_hub.rs"
+fail_msg = "Both orphan files must be deleted."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'pulse_bus|state_hub' crates/roko-core/src"
+fail_msg = "No reference to pulse_bus or state_hub may remain in roko-core/src."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-core"
+fail_msg = "roko-core must still compile after deleting the orphan files."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T02: Invert the roko-runtime -> roko-gate layering violation
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T02"
+title = "Program runtime against GateRunner trait; drop roko-gate from runtime deps"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-runtime/Cargo.toml",
+    "crates/roko-runtime/src/effect_driver.rs",
+    "crates/roko-runtime/src/workflow_engine.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["roko-runtime (layer 1) no longer has a normal-dependency edge to roko-gate (layer 3); effect_driver programs against roko_core::foundation::{GateRunner,GateRegistry-equivalent}; the concrete GateService is injected, not constructed inside layer 1; scripts/layer_check.rs reports zero layer violations; workspace builds and roko-runtime tests pass."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-runtime/Cargo.toml", lines = "20-45", why = "roko-gate is at line 27 in [dependencies]; must move to [dev-dependencies] (workflow_engine test needs GateService)." },
+    { path = "crates/roko-runtime/src/effect_driver.rs", lines = "1-60", why = "Line 21 `use roko_gate::GateRegistry` is the only non-test src use — replace with a roko_core contract / injected handle." },
+    { path = "crates/roko-runtime/src/workflow_engine.rs", lines = "1-20", why = "Lines 14 and 1141 already import GateRunner/GateConfig/GateReport from roko_core::foundation — the trait to program against." },
+    { path = "scripts/layer_check.rs", lines = "1-100", why = "Layer checker: from_layer < to_layer is a violation; runtime=1, gate=3." },
+]
+symbols = [
+    "roko_core::foundation::GateRunner",
+    "roko_gate::GateRegistry",
+    "roko_gate::GateService",
+]
+anti_patterns = [
+    "Do NOT lower roko-gate's layer or raise roko-runtime's layer to silence the checker — fix the dependency direction.",
+    "Do NOT construct a concrete GateService/GateRegistry inside roko-runtime src; inject an Arc<dyn GateRunner> (or equivalent trait handle) from the caller.",
+    "Do NOT delete the workflow_engine test that uses GateService — keep roko-gate as a [dev-dependencies] entry so tests still build.",
+    "Do NOT introduce a new roko-runtime->roko-gate edge anywhere else in the crate.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q '^roko-gate' crates/roko-runtime/Cargo.toml || rg -q 'dev-dependencies' crates/roko-runtime/Cargo.toml"
+fail_msg = "roko-gate must not be a normal dependency of roko-runtime (dev-dependencies only)."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'use roko_gate::' crates/roko-runtime/src/effect_driver.rs"
+fail_msg = "effect_driver.rs must program against the roko_core gate contract, not roko_gate directly."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-runtime && cargo test -p roko-runtime --no-run"
+fail_msg = "roko-runtime must build and its tests must compile after the dependency inversion."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T03: Resolve the legacy-runner-v2 feature facade (gates only tests)
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T03"
+title = "Remove legacy-runner-v2 feature facade; unconditionally compile the tests it gated"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = [
+    "crates/roko-cli/Cargo.toml",
+    "crates/roko-cli/tests/cost_dedup.rs",
+    "crates/roko-cli/tests/smoke.rs",
+    "crates/roko-cli/tests/phase0_wiring.rs",
+    "crates/roko-cli/tests/common/mod.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["The legacy-runner-v2 feature is removed from Cargo.toml (definition and default list); every `#![cfg(feature = \"legacy-runner-v2\")]` / `#[cfg(feature = \"legacy-runner-v2\")]` guard in tests is removed so those tests compile unconditionally under `cargo test`; no `src` file referenced the feature (verified) so no src change is needed; workspace builds and the previously-gated tests now run."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/Cargo.toml", lines = "13-25", why = "Line 15 default=[\"legacy-runner-v2\"], line 20 defines it; feature gates only tests." },
+    { path = "crates/roko-cli/tests/phase0_wiring.rs", lines = "1-20", why = "File-level `#![cfg(feature = \"legacy-runner-v2\")]` guard to remove." },
+    { path = "crates/roko-cli/tests/smoke.rs", lines = "195-315", why = "Two `#[cfg(feature = \"legacy-runner-v2\")]` item guards to remove." },
+    { path = "crates/roko-cli/tests/common/mod.rs", lines = "255-265", why = "One `#[cfg(feature = \"legacy-runner-v2\")]` guard to remove." },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT touch the legacy-orchestrate feature — that is a separate, still-live gate handled by E12-T08.",
+    "Do NOT delete the tests themselves; only remove their feature guards so they always compile.",
+    "Do NOT leave the feature in `default` while deleting its definition — remove both.",
+    "If `rg 'legacy-runner-v2' crates/roko-cli/src` returns ANY match, STOP and report — the census expects zero src sites.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'legacy-runner-v2' crates/roko-cli/Cargo.toml"
+fail_msg = "The legacy-runner-v2 feature must be fully removed from Cargo.toml."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'legacy-runner-v2' crates/roko-cli/tests"
+fail_msg = "No test may still reference the removed legacy-runner-v2 feature."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-cli --no-run"
+fail_msg = "roko-cli tests must compile unconditionally after removing the feature guards."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T04: Prune dead-code allow sites incrementally
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T04"
+title = "Prune #[allow(dead_code)] members with a net reduction"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 180
+files = [
+    "crates/roko-cli/src/chat.rs",
+    "crates/roko-cli/src/commands/util.rs",
+    "crates/roko-cli/src/demo_seed.rs",
+    "crates/roko-agent/src/provider/openai_compat.rs",
+    "crates/roko-acp/src/bridge_events.rs",
+    "crates/roko-std/src/memory.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["The workspace has fewer than the baseline 71 `#[allow(dead_code)]` attributes under crates/; every removed allow is paired with either a deleted unreachable item or a live caller/test; allows that protect future epic work are left in place with no broad zero-dead-code sweep."]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "55-86", why = "Dead-code cleanup sequencing and the instruction that E12-T04 is a net-reduction task, not require-zero." },
+    { path = "crates/roko-cli/src/demo_seed.rs", lines = "110-165", why = "Cluster of narrow allow sites that can often be removed by deleting unused demo seed helpers." },
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "100-165", why = "Several adjacent allow sites; inspect for truly unused compatibility structs before deleting." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "70-155", why = "ACP compatibility types with many allow sites; keep only those still needed for wire compatibility." },
+]
+symbols = [
+    "#[allow(dead_code)]",
+    "cargo check -p roko-cli -p roko-agent -p roko-acp",
+]
+anti_patterns = [
+    "Do NOT try to reach zero `#[allow(dead_code)]`; many sites are gated behind later epics or compatibility contracts.",
+    "Do NOT remove an allow by adding a fake caller or dummy test just to satisfy the compiler.",
+    "Do NOT touch generated or phase-2 stub modules unless the item is clearly unreachable in the current crate.",
+    "Prefer small local deletions over broad refactors across unrelated crates.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test \"$(rg -n '#\\[allow\\(dead_code\\)\\]' crates | wc -l | tr -d ' ')\" -lt 71"
+fail_msg = "E12-T04 must reduce the current baseline of 71 dead_code allow sites; it is not enough to leave the count unchanged."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-agent -p roko-acp 2>&1"
+fail_msg = "The primary crates touched by the dead-code pruning must still compile."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T05: De-duplicate roko-index HDC onto roko-primitives
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T05"
+title = "De-dup roko-index HDC onto roko-primitives"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 180
+files = [
+    "crates/roko-index/Cargo.toml",
+    "crates/roko-index/src/hdc.rs",
+    "crates/roko-index/src/workspace.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E03-type-consolidation"]
+acceptance = ["roko-index depends on roko-primitives for the 10,240-bit vector implementation; local splitmix/vector/bind/bundle primitives are removed from roko-index; the public roko-index HdcFingerprint/search API remains source-compatible for existing callers; roko-index HDC tests still pass."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-index/Cargo.toml", lines = "10-35", why = "Current dependencies have no roko-primitives entry; add the canonical primitive crate here." },
+    { path = "crates/roko-index/src/hdc.rs", lines = "1-125", why = "Local HDC implementation to replace with roko_primitives::HdcVector while preserving roko-index APIs." },
+    { path = "crates/roko-primitives/src/hdc.rs", lines = "1-155", why = "Canonical HdcVector constants and operations: HDC_BITS/HDC_BYTES, from_seed, bind, bundle, similarity." },
+    { path = "crates/roko-index/src/workspace.rs", lines = "130-185", why = "HdcQuery and HDC search types that must remain compatible after the internal representation changes." },
+]
+symbols = [
+    "roko_primitives::HdcVector",
+    "roko_index::hdc::HdcFingerprint",
+    "fingerprint_symbol",
+    "fingerprint_file",
+]
+anti_patterns = [
+    "Do NOT duplicate splitmix64, vector_from_seed, bind, or bundle under new names in roko-index.",
+    "Do NOT change roko-index's public HdcQuery/search API unless every call site is migrated in the same task.",
+    "Do NOT add a dependency from roko-primitives back to roko-index or roko-core.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko-primitives' crates/roko-index/Cargo.toml && rg -q 'roko_primitives::.*HdcVector|roko_primitives::hdc' crates/roko-index/src/hdc.rs"
+fail_msg = "roko-index must depend on roko-primitives and use its HdcVector implementation."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'fn splitmix64|fn vector_from_seed|fn bind\\(|fn bundle\\(' crates/roko-index/src/hdc.rs"
+fail_msg = "The local HDC primitive implementation must be removed from roko-index/src/hdc.rs."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-index hdc 2>&1"
+fail_msg = "roko-index HDC tests must pass with roko-primitives as the backing implementation."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T06: Remove roko-orchestrator only after live exports are replaced
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T06"
+title = "Migrate live roko-orchestrator exports, then delete the crate and duplicate safety"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-5"
+max_loc = 520
+files = [
+    "Cargo.toml",
+    "crates/roko-orchestrator",
+    "crates/roko-cli/Cargo.toml",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/merge.rs",
+    "crates/roko-cli/src/runner/persist.rs",
+    "crates/roko-cli/src/task_parser.rs",
+    "crates/roko-cli/src/plan_validate.rs",
+    "crates/roko-serve/Cargo.toml",
+    "crates/roko-acp/Cargo.toml",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine", "E04-security-perimeter", "E08-conductor-supervision"]
+acceptance = ["The duplicate roko-orchestrator safety module is deleted after E04 makes roko-agent safety canonical; every live roko-orchestrator type still used by cli/serve/acp is either moved to the owning live crate or replaced with an existing local equivalent; the roko-orchestrator workspace member and Cargo edges are removed only after no non-orchestrator crate imports it."]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "37-86", why = "Deletion-candidate table and the warning that full crate removal is gated behind E01/E04/E08." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-45", why = "Current live runner imports roko_orchestrator types; migrate these before deleting the crate." },
+    { path = "crates/roko-cli/src/runner/merge.rs", lines = "1-80", why = "MergeQueue/MergeRequest are live imports that need a new home or local replacement." },
+    { path = "crates/roko-cli/src/task_parser.rs", lines = "1-30", why = "ReplanStrategy/detect_cycle_nodes import site; do not strand parser validation." },
+    { path = "crates/roko-orchestrator/src/safety/capability_tokens.rs", lines = "1-80", why = "Duplicate safety island to remove only after live roko-agent safety is canonical." },
+]
+symbols = [
+    "MergeQueue",
+    "MergeRequest",
+    "ExecutorSnapshot",
+    "OrchestratorSnapshot",
+    "ReplanStrategy",
+    "detect_cycle_nodes",
+]
+anti_patterns = [
+    "Do NOT delete crates/roko-orchestrator while non-orchestrator crates still import roko_orchestrator symbols.",
+    "Do NOT keep duplicate safety code under a new module name; E04 makes roko-agent safety canonical.",
+    "Do NOT replace live exported types with untyped serde_json::Value just to break the dependency edge.",
+    "Do NOT edit legacy orchestrate.rs as the migration source for live runner behavior; E12-T07 owns that later deletion.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -d crates/roko-orchestrator && ! rg -q 'roko-orchestrator|roko_orchestrator' Cargo.toml crates --glob '!crates/roko-orchestrator/**'"
+fail_msg = "roko-orchestrator must be removed from the workspace and no remaining crate may import it."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-serve -p roko-acp 2>&1"
+fail_msg = "cli, serve, and acp must compile after roko-orchestrator exports are migrated or replaced."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T07: Delete legacy orchestrate.rs after its live value is mined
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T07"
+title = "Delete legacy orchestrate.rs and remove its public exports"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-5"
+max_loc = 260
+files = [
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/lib.rs",
+    "crates/roko-cli/Cargo.toml",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E05-gate-adaptivity-live", "E06-COMPOSE-UNIFY", "E08-conductor-supervision"]
+acceptance = ["After E05/E06/E08 have ported gate adaptivity, compose enrichment, and conductor supervision into the live runner, crates/roko-cli/src/orchestrate.rs is deleted; lib.rs no longer declares or re-exports orchestrate/PlanRunner; the legacy bin entry that points at src/orchestrate.rs is removed so default roko-cli builds do not reference a missing file."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/lib.rs", lines = "85-160", why = "Current cfg-gated `pub mod orchestrate` and PlanRunner re-export to remove with the file." },
+    { path = "crates/roko-cli/Cargo.toml", lines = "100-112", why = "Legacy bin entry points at src/orchestrate.rs and must not survive the file deletion." },
+    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "72-86", why = "E12-T07 is gated behind E05/E06/E08 so the live value is mined before deletion." },
+]
+symbols = [
+    "orchestrate.rs",
+    "PlanRunner",
+    "legacy-orchestrate",
+]
+anti_patterns = [
+    "Do NOT delete orchestrate.rs before E05, E06, and E08 have landed; it is still a reference source until then.",
+    "Do NOT leave a `pub mod orchestrate` or `pub use orchestrate::PlanRunner` behind in lib.rs.",
+    "Do NOT leave a Cargo bin path pointing at the deleted file; remove the bin entry here, feature cfg cleanup follows in E12-T08.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -e crates/roko-cli/src/orchestrate.rs"
+fail_msg = "crates/roko-cli/src/orchestrate.rs must be deleted after its live behavior has been ported."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'src/orchestrate.rs|pub mod orchestrate|pub use orchestrate::' crates/roko-cli/Cargo.toml crates/roko-cli/src/lib.rs"
+fail_msg = "roko-cli must not expose or point Cargo at the deleted orchestrate module."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile on the default feature set after orchestrate.rs is removed."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T08: Remove legacy-orchestrate feature and run.rs cfg path
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T08"
+title = "Remove legacy-orchestrate feature and run.rs legacy path"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 220
+files = [
+    "crates/roko-cli/Cargo.toml",
+    "crates/roko-cli/src/run.rs",
+    "crates/roko-cli/src/lib.rs",
+    "crates/roko-cli/tests/e2e.rs",
+]
+role = "implementer"
+depends_on = ["E12-T07"]
+acceptance = ["The `legacy-orchestrate` feature definition is removed; all `#[cfg(feature = \"legacy-orchestrate\")]` and `#[cfg(not(feature = \"legacy-orchestrate\"))]` branches in roko-cli source/tests are collapsed onto the current runner path; roko-cli tests compile without a legacy feature knob."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/Cargo.toml", lines = "13-20", why = "Feature definition to delete after orchestrate.rs is gone." },
+    { path = "crates/roko-cli/src/run.rs", lines = "1-160", why = "Early legacy cfg imports and branch structure; use rg to find all remaining cfg sites in this file." },
+    { path = "crates/roko-cli/src/run.rs", lines = "1470-1525", why = "Non-legacy vs legacy run_once split; collapse to the current path." },
+    { path = "crates/roko-cli/tests/e2e.rs", lines = "400-425", why = "Test cfg site that must compile without the removed feature." },
+]
+symbols = [
+    "legacy-orchestrate",
+    "run_once",
+    "WorkflowEngine",
+]
+anti_patterns = [
+    "Do NOT resurrect orchestrate.rs or a legacy bin to satisfy a cfg branch.",
+    "Do NOT leave a feature flag with no implementation; remove cfg sites and the feature together.",
+    "Do NOT change runner-v2 behavior beyond deleting the legacy alternate path.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'legacy-orchestrate' crates/roko-cli/Cargo.toml crates/roko-cli/src crates/roko-cli/tests"
+fail_msg = "No roko-cli Cargo, source, or test file may still reference legacy-orchestrate."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-cli --no-run 2>&1"
+fail_msg = "roko-cli tests must compile after the legacy-orchestrate cfg path is removed."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E12-T09: Retire roko-plugin facade after consumer migration
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E12-T09"
+title = "Audit consumers, migrate live plugin APIs, and retire roko-plugin facade"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 320
+files = [
+    "Cargo.toml",
+    "crates/roko-plugin",
+    "crates/roko-cli/Cargo.toml",
+    "crates/roko-cli/src/event_sources.rs",
+    "crates/roko-cli/src/runner/extension_loader.rs",
+    "crates/roko-cli/src/commands/config_cmd.rs",
+    "crates/roko-serve/Cargo.toml",
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-serve/src/fswatcher.rs",
+    "crates/roko-serve/src/scheduler.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["Every live roko_plugin consumer in cli and serve is audited and either migrated to an owning crate/module or deleted with its call site; the roko-plugin workspace member and Cargo dependencies are removed only after the audit proves no live imports remain; the facade crate directory is deleted as the final step."]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/epics/E12-DEAD-CODE-CLEANUP.md", lines = "78-86", why = "E12-T09 cannot be a straight deletion; it must audit/migrate/delete because roko-plugin has live consumers." },
+    { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "100-145", why = "Live plugin manifest discovery consumer to migrate or delete deliberately." },
+    { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "1060-1160", why = "CLI plugin config/listing code imports roko_plugin manifest APIs." },
+    { path = "crates/roko-serve/src/fswatcher.rs", lines = "1-80", why = "Serve file-watch event source consumer." },
+    { path = "crates/roko-serve/src/scheduler.rs", lines = "1-80", why = "Serve cron event source consumer." },
+]
+symbols = [
+    "roko_plugin::manifest",
+    "CronEventSource",
+    "FileWatchEventSource",
+    "EventSource",
+]
+anti_patterns = [
+    "Do NOT delete crates/roko-plugin before migrating or intentionally deleting every live roko_plugin import.",
+    "Do NOT replace plugin loading with silent no-ops; if a feature is retired, surface a clear command/runtime error or remove the UI path.",
+    "Do NOT leave roko-plugin in the workspace or package Cargo.toml files after the crate directory is deleted.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -d crates/roko-plugin && ! rg -q 'roko_plugin|roko-plugin' Cargo.toml crates --glob '!crates/roko-plugin/**'"
+fail_msg = "roko-plugin must be removed only after all non-plugin imports and Cargo edges are gone."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-serve 2>&1"
+fail_msg = "cli and serve must compile after roko-plugin consumers are migrated or retired."

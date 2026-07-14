@@ -1,0 +1,563 @@
+[meta]
+plan = "E42-config-evolution"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─── T01: Add ConfigSource priority enum with Evolved/Composed variants ──────
+
+[[task]]
+id = "E42-T01"
+title = "Add ConfigSource::Evolved and ConfigSource::Composed variants with priority ordering"
+description = """
+Per spec 19-CONFIG.md section 2.1, the config resolution has a priority hierarchy.
+The current ConfigSource enum (provenance.rs) has File/Migration/Default/Env/LocalOverride/CliOverride
+but lacks the spec-required Evolved and Composed variants.
+
+Implement:
+1. Add ConfigSource::Evolved variant — for values learned/adapted at runtime by the
+   learning subsystem (e.g., cascade router adjusted gate thresholds).
+2. Add ConfigSource::Composed variant — for the final merged output (not a source itself,
+   marks the result of multi-source resolution).
+3. Add ConfigSource::ApiOverride variant — for runtime-only changes via the HTTP API
+   (e.g., POST /api/config with runtime overrides).
+4. Implement ConfigSource::priority(&self) -> u8 method:
+   * ApiOverride -> 5 (highest)
+   * CliOverride -> 4
+   * Env -> 3
+   * File -> 2
+   * LocalOverride -> 2 (same as File, resolved by source-specificity)
+   * Evolved -> 1
+   * Migration -> 1 (same as Evolved)
+   * Default -> 0
+   * Composed -> 0 (not prioritized — it's the output)
+5. Implement Ord/PartialOrd for ConfigSource based on priority().
+6. Add ConfigProvenance::evolved(key, reason) and ::api_override(key, reason) constructors.
+7. At least 2 tests: priority ordering, evolved constructor.
+
+Do NOT rename existing variants — add new ones alongside.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/provenance.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/provenance.rs", lines = "1-98", why = "Current ConfigSource enum (6 variants) and ConfigProvenance struct with constructors" },
+  { path = "crates/roko-core/src/config/provenance.rs", lines = "100-185", why = "ValidatedConfig and ResolvedRuntimeConfig using ConfigProvenance" },
+  { path = "docs/v2/19-CONFIG.md", lines = "47-82", why = "Spec for ConfigSource priority ordering: API > CLI > Env > TOML > Evolved > Default" },
+]
+symbols = [
+  "ConfigSource (provenance.rs:14) — enum with File, Migration, Default, Env, LocalOverride, CliOverride",
+  "ConfigProvenance (provenance.rs:24) — struct with source, path, key, reason fields",
+  "ValidatedConfig (provenance.rs:116) — uses ConfigProvenance vec for audit trail",
+]
+anti_patterns = [
+  "Do NOT rename existing variants — add new ones alongside",
+  "Do NOT change serde rename_all — existing JSON consumers depend on snake_case",
+  "Do NOT make priority() return Option — every variant has a defined priority",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Evolved' crates/roko-core/src/config/provenance.rs && grep -q 'Composed' crates/roko-core/src/config/provenance.rs && grep -q 'fn priority' crates/roko-core/src/config/provenance.rs"
+fail_msg = "ConfigSource must have Evolved, Composed variants and priority() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- config_provenance 2>&1"
+fail_msg = "config provenance tests must pass"
+
+# ─── T02: Implement 7 config invariant validators ────────────────────────────
+
+[[task]]
+id = "E42-T02"
+title = "Implement the 7 config invariants as validation functions"
+description = """
+Per spec 19-CONFIG.md section 5.1, 7 invariants must hold for every loaded config.
+The current validation.rs only checks runner.dangerously_skip_permissions.
+
+Add a pub fn validate_invariants(config: &RokoConfig) -> Vec<InvariantResult> function
+that checks all 7 and returns structured results.
+
+Invariants to implement:
+1. Budget ordering: max_turn_usd <= max_plan_usd
+   — error if violated (prevents individual turns from exceeding plan budget)
+2. Gate iterations hierarchy: rung N max_iterations >= rung N+1 max_iterations
+   — warning if violated (higher rungs should not retry more than lower)
+3. Provider existence: every model's provider field references an existing provider
+   — error if violated (already partially checked in loader.rs collect_diagnostics)
+4. Agent capacity vs budget: max_agents * estimated_cost_per_agent <= max_plan_usd
+   — warning if likely to exceed (estimated_cost_per_agent = max_turn_usd * 10 heuristic)
+5. Context limit bounds: agent.context_limit_k is within [4, 1000]
+   — warning if outside range (too small is useless, too large wastes budget)
+6. Conductor parallelism: conductor.max_agents >= 1
+   — error if 0 (must allow at least one agent)
+7. Learning consistency: if learning.replan_on_gate_failure is true,
+   then gates must not be completely disabled
+   — warning if gates.skip_tests && gates.clippy_enabled == false with replan enabled
+
+Also implement:
+- InvariantResult struct: invariant_id (u8), severity (InvariantSeverity),
+  message (String), config_path (String).
+- InvariantSeverity enum: Error, Warning.
+- At least 4 tests covering budget ordering, provider existence,
+  capacity warning, and passing config.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/validation.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/validation.rs", lines = "1-85", why = "Current validation — StrictConfigValidationError and DangerousPermissionOverride" },
+  { path = "crates/roko-core/src/config/validation.rs", lines = "157-291", why = "Existing tests — pattern for new invariant tests" },
+  { path = "crates/roko-core/src/config/loader.rs", lines = "483-560", why = "collect_diagnostics() — existing model->provider check to avoid duplicating" },
+  { path = "docs/v2/19-CONFIG.md", lines = "215-238", why = "The 7 invariant definitions and error handling table" },
+]
+symbols = [
+  "validate_strict_config_toml (validation.rs:62) — existing validation entry point, do NOT replace",
+  "StrictConfigValidationError (validation.rs:50) — existing error type",
+  "ConfigDiagnostic (provenance.rs:101) — existing diagnostic type used by loader",
+  "RokoConfig (schema.rs:90) — main config struct with budget, gates, agent, conductor, learning fields",
+]
+anti_patterns = [
+  "Do NOT replace existing validate_strict_config_toml — add validate_invariants alongside it",
+  "Do NOT make invariant checks panic — return structured results",
+  "Do NOT duplicate the model->provider check from loader.rs collect_diagnostics — reference it but add the invariant check independently",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn validate_invariants' crates/roko-core/src/config/validation.rs && grep -q 'InvariantResult\\|InvariantSeverity' crates/roko-core/src/config/validation.rs"
+fail_msg = "validate_invariants function and InvariantResult/InvariantSeverity must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- validate_invariants 2>&1"
+fail_msg = "validate_invariants tests must pass"
+
+# ─── T03: Extend hot_reload with config-watch callback trait ─────────────────
+
+[[task]]
+id = "E42-T03"
+title = "Add config-watch callback trait to hot_reload module"
+description = """
+Per spec 19-CONFIG.md section 6.2, the config system needs a file-watch trigger
+for hot reload. The hot_reload module has config_diff and apply_hot_reload but no
+file-watching trigger.
+
+Implement:
+1. ConfigWatchCallback trait:
+   * on_config_changed(&self, result: HotReloadResult) — called after diff + apply
+   * on_config_error(&self, error: String) — called on parse/validation failure
+2. ConfigReloadRequest struct: old_config (RokoConfig), new_config (RokoConfig),
+   changes (Vec<ConfigChange>), requested_at (chrono::DateTime<Utc>).
+3. pub fn try_reload(current: &mut RokoConfig, workdir: &Path)
+   -> Result<HotReloadResult, String>
+   — load config from disk, diff against current, apply hot-reloadable sections,
+   return result. This is a synchronous pull-based reload.
+4. ReloadPolicy struct: debounce_ms (u64, default 500), auto_reload (bool, default false),
+   reject_on_invariant_error (bool, default true).
+5. At least 2 tests: successful reload, reload rejected due to invariant error.
+
+NOTE: Do NOT add `notify` as a dependency to roko-core. The actual filesystem watcher
+lives in roko-cli (which already has notify for TUI). This module defines the callback
+trait and reload logic; roko-cli provides the watcher implementation.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/hot_reload.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/hot_reload.rs", lines = "1-112", why = "Existing ConfigSection, ConfigChange, HotReloadResult, config_diff, apply_hot_reload" },
+  { path = "crates/roko-core/src/config/hot_reload.rs", lines = "248-452", why = "StrategyDocument, parse_strategy_md, and existing tests" },
+  { path = "crates/roko-core/src/config/loader.rs", lines = "112-128", why = "load_config_unified and load_config_with_options — reload entry points" },
+  { path = "docs/v2/19-CONFIG.md", lines = "242-292", why = "Config watch trigger spec with debounce and reload policy" },
+]
+symbols = [
+  "ConfigSection (hot_reload.rs:39) — enum of all config sections with is_hot_reloadable()",
+  "ConfigChange (hot_reload.rs:84) — detected difference between configs",
+  "HotReloadResult (hot_reload.rs:93) — result with applied/needs_restart lists",
+  "apply_hot_reload (hot_reload.rs:208) — applies changed sections to running config",
+  "config_diff (hot_reload.rs:114) — computes which sections changed",
+  "load_config_unified (loader.rs:117) — loads config from disk for reload comparison",
+]
+anti_patterns = [
+  "Do NOT add notify as a dependency to roko-core — define the trait, let roko-cli provide the watcher",
+  "Do NOT make try_reload async — keep it synchronous for simplicity",
+  "Do NOT modify existing config_diff or apply_hot_reload signatures — extend alongside",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ConfigWatchCallback\\|ConfigReloadRequest\\|try_reload\\|ReloadPolicy' crates/roko-core/src/config/hot_reload.rs"
+fail_msg = "Config watch callback trait and reload types must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─── T04: Implement config migration chain v1 -> v2 ──────────────────────────
+
+[[task]]
+id = "E42-T04"
+title = "Implement config migration chain with versioned migration functions"
+description = """
+Per spec 19-CONFIG.md section 7.1, configs need forward migration as the schema evolves.
+The schema.rs has CURRENT_SCHEMA_VERSION=2 and CURRENT_CONFIG_VERSION=2 but no migration
+chain infrastructure. The compat.rs handles legacy Mori format conversion.
+
+Implement:
+1. MigrationFn type alias: fn(&mut toml::Value) -> Result<(), String>
+   — takes a mutable TOML value tree and transforms it in-place.
+2. ConfigMigrator struct: migrations (BTreeMap<u32, MigrationFn>),
+   target_version (u32).
+3. ConfigMigrator::new() -> Self — creates with default migration chain,
+   target_version = CURRENT_SCHEMA_VERSION.
+4. ConfigMigrator::register(from_version: u32, migration: MigrationFn)
+   — register a migration from version N to N+1.
+5. ConfigMigrator::migrate(toml_value: &mut toml::Value) -> MigrationReport
+   — read schema_version from value, chain-apply all migrations from current
+   to target, update schema_version field, return report.
+6. MigrationReport struct: from_version (u32), to_version (u32),
+   steps_applied (Vec<MigrationStep>), warnings (Vec<String>).
+7. MigrationStep struct: from (u32), to (u32), description (String).
+8. Register built-in migration v1->v2: rename legacy fields if present,
+   set schema_version = 2, set config_version = 2.
+9. At least 3 tests: v1->v2 migration, already-current skips migration,
+   missing version defaults to 1.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/loader.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/loader.rs", lines = "1-60", why = "Unified config loader with LoadOptions, find_config_path" },
+  { path = "crates/roko-core/src/config/loader.rs", lines = "211-304", why = "parse_from_resolved_path and load_from_resolved_path — where migration should run" },
+  { path = "crates/roko-core/src/config/schema.rs", lines = "36-84", why = "CURRENT_SCHEMA_VERSION=2, CURRENT_CONFIG_VERSION=2, extract_config_version_from_text" },
+  { path = "crates/roko-core/src/config/compat.rs", lines = "1-50", why = "Existing MoriConfig struct and from_mori_toml converter — v1 source" },
+  { path = "docs/v2/19-CONFIG.md", lines = "334-390", why = "Schema versioning and migration spec" },
+]
+symbols = [
+  "CURRENT_SCHEMA_VERSION (schema.rs:37) — const u32 = 2, migration target",
+  "extract_config_version_from_text (schema.rs:72) — parses version from raw TOML",
+  "text_has_config_version (schema.rs:60) — detects explicit version key",
+  "parse_from_resolved_path (loader.rs:215) — where migration should be inserted before deserialization",
+  "MoriConfig (compat.rs) — legacy format struct for v1 migration reference",
+]
+anti_patterns = [
+  "Do NOT remove existing from_mori_toml — it handles a different migration (Mori format, not schema version)",
+  "Do NOT run migrations after deserialization — run on toml::Value before deserializing to RokoConfig",
+  "Do NOT modify CURRENT_SCHEMA_VERSION — this is just the migration infrastructure",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'struct ConfigMigrator\\|ConfigMigrat' crates/roko-core/src/config/loader.rs && grep -q 'MigrationReport\\|MigrationStep' crates/roko-core/src/config/loader.rs"
+fail_msg = "ConfigMigrator and MigrationReport/MigrationStep must exist in loader.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- migrat 2>&1"
+fail_msg = "migration tests must pass"
+
+# ─── T05: Implement per-field priority merge with provenance ─────────────────
+
+[[task]]
+id = "E42-T05"
+title = "Implement per-field priority merge in config loading with provenance tracking"
+description = """
+Per spec 19-CONFIG.md section 2.3, the loader should resolve each field independently
+using source priority. The loader.rs already handles TOML + global + env overrides,
+but does not track per-field provenance or respect the Evolved source.
+
+Implement:
+1. FieldProvenance struct: key (String), value_source (ConfigSource),
+   priority (u8), reason (Option<String>).
+2. MergeContext struct: field_provenance (Vec<FieldProvenance>).
+3. Extend load_config_validated_with_options to populate per-field provenance:
+   — for each field changed by global merge: record as ConfigSource::File
+   — for each field changed by env override: record as ConfigSource::Env
+   — for each field changed by hierarchical env: record as ConfigSource::Env
+   — for each field using default: record as ConfigSource::Default
+4. Add load_config_validated_with_options to return MergeContext alongside ValidatedConfig
+   (add merge_context field to ValidatedConfig, or return a tuple).
+5. When conflicting sources set the same field, highest priority wins (use ConfigSource::priority()).
+6. At least 2 tests: env override recorded in provenance, default values recorded.
+
+Keep backward compatibility: load_config_unified callers don't need to change.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = [
+  "crates/roko-core/src/config/loader.rs",
+  "crates/roko-core/src/config/provenance.rs",
+]
+depends_on = ["E42-T01", "E42-T04"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/loader.rs", lines = "140-209", why = "load_config_validated_with_options — where per-field provenance should be populated" },
+  { path = "crates/roko-core/src/config/loader.rs", lines = "336-417", why = "apply_hierarchical_env_overrides_from — env override application to track" },
+  { path = "crates/roko-core/src/config/provenance.rs", lines = "107-173", why = "ValidatedConfig struct with provenance vec — extend with per-field tracking" },
+  { path = "docs/v2/19-CONFIG.md", lines = "44-96", why = "Priority ordering spec and env var convention" },
+]
+symbols = [
+  "load_config_validated_with_options (loader.rs:151) — main entry point to extend",
+  "ValidatedConfig (provenance.rs:116) — struct with provenance Vec to enhance",
+  "ConfigProvenance (provenance.rs:24) — per-entry provenance struct",
+  "ConfigSource (provenance.rs:14) — source enum with priority() from T01",
+  "apply_hierarchical_env_overrides_from (loader.rs:378) — env override application to track",
+]
+anti_patterns = [
+  "Do NOT break existing callers of load_config_unified — extend, don't replace",
+  "Do NOT serialize per-field provenance into roko.toml — it's runtime-only metadata",
+  "Do NOT track provenance for every default field — only track non-default sources and explicitly set defaults",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FieldProvenance\\|MergeContext\\|field_provenance\\|per_field' crates/roko-core/src/config/loader.rs || grep -q 'FieldProvenance\\|MergeContext' crates/roko-core/src/config/provenance.rs"
+fail_msg = "FieldProvenance or MergeContext must exist in loader.rs or provenance.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─── T06: Wire config validation into config load path ───────────────────────
+
+[[task]]
+id = "E42-T06"
+title = "Wire validate_invariants into the config load path"
+description = """
+Per spec 19-CONFIG.md section 5.2, invariant validation runs post-merge, pre-return.
+
+Call validate_invariants() from the unified config loader after merge and before
+returning the loaded config. Implementation:
+
+1. In load_from_resolved_path (loader.rs), after all mutations (global merge,
+   env overrides, secrets), call validate_invariants(&config).
+2. For invariants with severity Error: return Err(LoadConfigError::InvariantViolation {...}).
+3. For invariants with severity Warning: log via tracing::warn and continue.
+4. Add LoadConfigError::InvariantViolation variant with invariant_id and message.
+5. In load_config_validated_with_options, add invariant results to diagnostics vec.
+6. Unknown fields in TOML should warn but not fail (forward compatibility).
+7. At least 2 tests: budget ordering violation prevents load, warning allows load.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/loader.rs"]
+depends_on = ["E42-T02"]
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/loader.rs", lines = "257-304", why = "load_from_resolved_path — where validation should be wired after line 282 (post-mutations)" },
+  { path = "crates/roko-core/src/config/validation.rs", lines = "1-30", why = "validate_invariants signature from T02" },
+  { path = "docs/v2/19-CONFIG.md", lines = "226-238", why = "Error handling table: error = reject, warning = log + continue" },
+]
+symbols = [
+  "load_from_resolved_path (loader.rs:257) — internal loader function to extend",
+  "LoadConfigError — error enum in super::LoadConfigError to add InvariantViolation variant",
+  "validate_invariants (validation.rs) — the 7-invariant validator from T02",
+  "collect_diagnostics (loader.rs:483) — existing diagnostic collector, wire invariants alongside",
+]
+anti_patterns = [
+  "Do NOT add validation to individual section deserializers — centralize in loader",
+  "Do NOT make warnings prevent config loading — only Error severity blocks",
+  "Do NOT validate before global merge — invariants must check the fully-resolved config",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'validate_invariants' crates/roko-core/src/config/loader.rs && grep -q 'InvariantViolation' crates/roko-core/src/config/loader.rs"
+fail_msg = "validate_invariants call and InvariantViolation error must be in loader.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- invariant 2>&1"
+fail_msg = "invariant wiring tests must pass"
+
+# ─── T07: Add DomainProfile struct with profile inheritance ──────────────────
+
+[[task]]
+id = "E42-T07"
+title = "Add DomainProfile struct with base-profile inheritance"
+description = """
+Per spec 19-CONFIG.md section 8.1, domain profiles are cognitive postures configuring
+agent behavior per task domain. Each profile can inherit from a base profile.
+
+Implement:
+1. DomainProfile struct (all fields Optional for inheritance overlay):
+   * name (String) — profile identifier
+   * base (Option<String>) — parent profile name for inheritance
+   * model (Option<String>) — model override
+   * effort (Option<String>) — effort level override
+   * context_limit_k (Option<u32>) — context window override
+   * max_iterations (Option<u32>) — gate retry override
+   * tool_profile (Option<String>) — tool allowlist override
+   * gate_config (Option<GateProfileConfig>) — gate threshold overrides
+   * extra (HashMap<String, toml::Value>) — extensible fields
+2. GateProfileConfig struct: skip_tests (Option<bool>),
+   clippy_enabled (Option<bool>), max_rung (Option<u32>).
+3. resolve_profile(name: &str, profiles: &HashMap<String, DomainProfile>)
+   -> Result<DomainProfile, String>
+   — recursively resolve base profile inheritance (max depth 5 to prevent cycles).
+   — merge rule: child overrides parent (Option::or_else pattern).
+4. Add `profiles` field to RokoConfig: HashMap<String, DomainProfile>, #[serde(default)].
+5. Built-in profiles (returned by builtin_profiles() -> HashMap):
+   * "coding" — effort="high", tool_profile="full", max_iterations=3
+   * "research" — effort="medium", context_limit_k=200, skip_tests=true
+   * "review" — effort="low", max_iterations=1
+6. At least 3 tests: profile resolution with inheritance, cycle detection,
+   builtin profile defaults.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/schema.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/schema.rs", lines = "86-100", why = "RokoConfig struct — add profiles: HashMap<String, DomainProfile> field" },
+  { path = "crates/roko-core/src/config/schema.rs", lines = "1-35", why = "Schema module imports and re-exports" },
+  { path = "docs/v2/19-CONFIG.md", lines = "663-731", why = "DomainProfile schema, profile comparison, profile inheritance chain" },
+]
+symbols = [
+  "RokoConfig (schema.rs:90) — main config struct where profiles field is added",
+  "AgentConfig — per-agent config that profiles can override (model, effort, context_limit_k)",
+  "GatesConfig — gate config that GateProfileConfig mirrors (skip_tests, clippy_enabled)",
+]
+anti_patterns = [
+  "Do NOT create a separate crate for profiles — keep in config/schema.rs",
+  "Do NOT allow infinite inheritance depth — cap at 5 with cycle detection",
+  "Do NOT make profiles required — HashMap<String, DomainProfile> with #[serde(default)]",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct DomainProfile' crates/roko-core/src/config/schema.rs && grep -q 'fn resolve_profile\\|profiles' crates/roko-core/src/config/schema.rs"
+fail_msg = "DomainProfile struct and resolve_profile/profiles must exist in schema.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- domain_profile 2>&1"
+fail_msg = "domain profile tests must pass"
+
+# ─── T08: Add config demurrage staleness check ───────────────────────────────
+
+[[task]]
+id = "E42-T08"
+title = "Add config staleness check with demurrage-based warnings"
+description = """
+Per spec 19-CONFIG.md section 9.3, config sections have a freshness property.
+Sections that haven't been explicitly reviewed or updated decay in confidence,
+similar to how knowledge entries have demurrage.
+
+Implement:
+1. ConfigFreshness struct: section_timestamps (HashMap<String, DateTime<Utc>>).
+2. ConfigFreshness::load(path: &Path) -> Self
+   — load from .roko/state/config-freshness.json, return empty if missing.
+3. ConfigFreshness::save(&self, path: &Path) -> io::Result<()>
+   — save to .roko/state/config-freshness.json.
+4. ConfigFreshness::touch(&mut self, section: &str)
+   — update timestamp to Utc::now() for the given section.
+5. ConfigFreshness::touch_changed(&mut self, changes: &[ConfigChange])
+   — touch all sections that appear in the change list.
+6. pub fn config_freshness_diagnostics(freshness: &ConfigFreshness,
+   staleness_threshold_days: u32) -> Vec<ConfigDiagnostic>
+   — for each section not touched within threshold (default 30 days),
+   emit a warning diagnostic: "config section '{section}' has not been
+   reviewed in {days} days".
+7. At least 2 tests: stale section detected, fresh section passes.
+
+Wire into `roko doctor` by calling config_freshness_diagnostics and
+displaying stale sections.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/config/hot_reload.rs"]
+depends_on = []
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/config/hot_reload.rs", lines = "36-111", why = "ConfigSection enum and ConfigChange — freshness tracks these sections" },
+  { path = "crates/roko-core/src/config/hot_reload.rs", lines = "113-202", why = "config_diff and apply_hot_reload — freshness.touch_changed uses ConfigChange list" },
+  { path = "crates/roko-core/src/config/provenance.rs", lines = "100-106", why = "ConfigDiagnostic struct — return type for freshness warnings" },
+  { path = "docs/v2/19-CONFIG.md", lines = "756-790", why = "Config demurrage check spec: 30-day threshold, warning severity" },
+]
+symbols = [
+  "ConfigSection (hot_reload.rs:39) — enum of section identifiers for freshness tracking",
+  "ConfigChange (hot_reload.rs:84) — detected change, used by touch_changed",
+  "ConfigDiagnostic (provenance.rs:101) — return type for freshness warnings",
+]
+anti_patterns = [
+  "Do NOT make staleness a hard error — only warnings via ConfigDiagnostic",
+  "Do NOT track freshness per-field — per-section granularity is sufficient",
+  "Do NOT create the .roko/state/ directory — assume it exists (created by roko init)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ConfigFreshness\\|config_freshness_diagnostics\\|staleness' crates/roko-core/src/config/hot_reload.rs"
+fail_msg = "ConfigFreshness and config_freshness_diagnostics must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- freshness 2>&1"
+fail_msg = "config freshness tests must pass"

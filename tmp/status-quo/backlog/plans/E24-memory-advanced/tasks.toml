@@ -1,0 +1,825 @@
+[meta]
+plan = "E24-memory-advanced"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T01: Knowledge as Signal -- add Kind field and demurrage mechanics
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec mandates that knowledge entries are Signals with Kind-specific
+# half-lives and demurrage. The existing KnowledgeEntry (lib.rs:337-420) already
+# has kind, half_life_days, confidence, tier, and balance fields. This task
+# adds the balance-centric demurrage mechanics from the spec alongside the
+# existing confidence decay.
+[[task]]
+id = "E24-T01"
+title = "Add balance-based demurrage lifecycle to KnowledgeEntry"
+description = """The existing KnowledgeEntry (lib.rs:337-420) has a `balance` field
+(NEURO-10, lib.rs:411) defaulting to 1.0. The existing decay() method in
+KnowledgeStore (knowledge_store.rs:992-1010) uses confidence-based exponential
+decay. The spec calls for balance-based demurrage to run alongside
+confidence decay as a complementary lifecycle mechanism.
+
+Add to KnowledgeStore (knowledge_store.rs):
+1. A `demurrage(&self, tax_rate: f64) -> Result<usize>` method that reduces
+   every entry's balance by `tax_rate` per call (spec: 0.5% per day). Entries
+   whose balance drops below 0.0 have their half_life_days halved (accelerating
+   confidence decay). Returns count of affected entries.
+2. A `reinforce(&self, entry_id: &str, signal: ReinforcementSignal) -> Result<()>`
+   method that increases an entry's balance based on the signal type:
+   - Retrieved: +0.05
+   - Cited: +0.10
+   - Gated: +0.15
+   - Surprised: +0.08
+   - AgentQuoted: +0.12
+3. Entries with balance <= 0.0 for > 7 days are marked frozen (set frozen=true,
+   frozen_at=Some(now)).
+
+The existing ReinforcementSignal enum (lib.rs:480+) already defines these
+variants. Wire the new methods into the existing lifecycle flow.
+
+Do NOT replace the existing confidence decay -- demurrage is a complementary
+mechanism that modulates the effective half-life of entries based on usage."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = ["crates/roko-neuro/src/knowledge_store.rs"]
+role = "implementer"
+depends_on = []
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/lib.rs", lines = "335-420", why = "KnowledgeEntry struct with balance, frozen, half_life_days, confidence fields" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "111-127", why = "KnowledgeStore struct with path, confirmations_path, write_gate" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "987-1010", why = "Existing decay() method -- confidence-based Ebbinghaus decay" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "2010-2022", why = "recency_factor: age/half_life exponential decay with confirmation adjustment" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1039-1070", why = "gc_with_freeze: freeze-before-delete semantics already implemented" },
+    { path = "docs/v2-depth/11-memory/01-knowledge-as-signal.md", lines = "1-60", why = "Spec: Knowledge as Signal with Kind-specific half-lives and demurrage" },
+    { path = "docs/v2/06-MEMORY.md", lines = "1-50", why = "Memory overview: Signals decay unless actively used" },
+]
+symbols = [
+    "KnowledgeEntry (lib.rs:337) -- core knowledge struct with balance, frozen, half_life_days",
+    "KnowledgeStore (knowledge_store.rs:122) -- append-only JSONL store, add demurrage and reinforce methods",
+    "ReinforcementSignal (lib.rs) -- Retrieved/Cited/Gated/Surprised/AgentQuoted variants",
+    "decay (knowledge_store.rs:992) -- existing confidence decay, do NOT replace",
+    "gc_with_freeze (knowledge_store.rs:1052) -- freeze-before-delete, coordinate with demurrage freeze",
+    "recency_factor (knowledge_store.rs:2012) -- age/halfLife exponential decay function",
+]
+anti_patterns = [
+    "Do NOT replace confidence-based decay with demurrage -- they are complementary mechanisms.",
+    "Do NOT call demurrage from within decay() -- they have different cadences (daily vs per-task).",
+    "Do NOT freeze entries that are already frozen -- check the frozen flag first.",
+    "Do NOT make demurrage mandatory -- default tax_rate=0.0 means disabled.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn demurrage' crates/roko-neuro/src/knowledge_store.rs && grep -q 'fn reinforce' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "demurrage() and reinforce() methods must exist in KnowledgeStore"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'tax_rate\\|balance' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "demurrage must reference tax_rate and balance"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- knowledge_store 2>&1 | tail -5"
+fail_msg = "existing knowledge store tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T02: HDC retrieval improvements -- role-filler queries
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing HDC encoder (hdc.rs:1-80) has RoleFillerEncoder for structured
+# encoding and ResonanceDetector for cross-domain analogy detection. KnowledgeStore
+# query (knowledge_store.rs:~800) uses tag/keyword similarity by default and
+# optional HDC Hamming distance (feature-gated). This task enhances HDC retrieval.
+[[task]]
+id = "E24-T02"
+title = "Add HDC role-filler query support to KnowledgeStore"
+description = """Add a `query_hdc` method to KnowledgeStore that uses the existing
+RoleFillerEncoder (hdc.rs:17-40) for structured retrieval.
+
+New method: KnowledgeStore::query_hdc(&self, query_vector: &HdcVector, top_k: usize)
+-> Result<Vec<KnowledgeQueryHit>>
+
+Implementation:
+1. Read all entries with hdc_vector set (filter out entries where hdc_vector is None)
+2. Compute Hamming similarity between query_vector and each entry's hdc_vector
+   using HdcVector::hamming_similarity (roko-primitives)
+3. Sort by similarity descending, take top_k
+4. Return as KnowledgeQueryHit with total_score = similarity (reuse existing type)
+5. Apply the existing QUERY_SCORE_FLOOR (knowledge_store.rs:26) filter
+
+Also add a convenience method: query_by_role_filler(roles_and_fillers: &[(String, String)], top_k: usize)
+that encodes the query using RoleFillerEncoder::encode_structured (hdc.rs:24)
+then calls query_hdc.
+
+Gate both methods behind #[cfg(feature = "hdc")] like existing HDC code.
+
+Wire ResonanceDetector (hdc.rs:64-78) into a new method:
+find_resonances(&self, min_similarity: f64) -> Result<Vec<ResonancePair>>
+that scans all entries for cross-domain resonance patterns."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = ["crates/roko-neuro/src/knowledge_store.rs"]
+role = "implementer"
+depends_on = []
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/hdc.rs", lines = "1-80", why = "KnowledgeHdcEncoder, RoleFillerEncoder, ResonanceDetector, ResonancePair" },
+    { path = "crates/roko-neuro/src/hdc.rs", lines = "17-40", why = "RoleFillerEncoder::encode_structured and query_role methods" },
+    { path = "crates/roko-neuro/src/hdc.rs", lines = "58-78", why = "ResonanceDetector with min_similarity and max_results" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "24-27", why = "QUERY_SCORE_FLOOR constant for minimum hit score" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "56-67", why = "HDC constants: similarity thresholds, feature gating" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "106-127", why = "KnowledgeStore struct definition and existing hdc feature gate" },
+    { path = "docs/v2-depth/11-memory/02-hdc-algebra-and-retrieval.md", lines = "1-60", why = "HDC retrieval spec: role-filler binding, bundle queries, similarity" },
+]
+symbols = [
+    "RoleFillerEncoder (hdc.rs:17) -- structured encoding via XOR binding and majority vote bundling",
+    "ResonanceDetector (hdc.rs:64) -- cross-domain analogy detection via HDC similarity",
+    "ResonancePair (hdc.rs:44) -- result struct for resonance detection",
+    "KnowledgeStore (knowledge_store.rs:122) -- add query_hdc and query_by_role_filler methods",
+    "KnowledgeQueryHit -- existing query result type to reuse",
+    "HdcVector (roko-primitives) -- HDC vector type with hamming_similarity",
+    "QUERY_SCORE_FLOOR (knowledge_store.rs:26) -- minimum score for query results",
+]
+anti_patterns = [
+    "Do NOT remove existing tag/keyword query -- HDC query is an alternative, not a replacement.",
+    "Do NOT load all HDC vectors into memory eagerly -- stream from JSONL file.",
+    "Do NOT make query_hdc mandatory for all queries -- keep existing query() unchanged.",
+    "Do NOT forget the #[cfg(feature = \"hdc\")] gate -- HDC is optional.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn query_hdc\\|fn query_by_role_filler' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "query_hdc and query_by_role_filler methods must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn find_resonances' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "find_resonances method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T03: AntiKnowledge immunity with falsifier lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
+# Existing AntiKnowledge support: KnowledgeKind::AntiKnowledge (lib.rs:128),
+# refuted_insight_id/refutation_evidence fields (lib.rs:358-361),
+# ANTI_KNOWLEDGE_CONFIDENCE_FLOOR (knowledge_store.rs:28), and HDC conflict
+# detection thresholds (knowledge_store.rs:56-71). This task adds the falsifier
+# lifecycle from the spec.
+[[task]]
+id = "E24-T03"
+title = "Add falsifier lifecycle to AntiKnowledge for predictive immunity"
+description = """Extend AntiKnowledge entries with a Falsifier lifecycle:
+
+1. Add Falsifier struct to lib.rs (next to KnowledgeEntry):
+   - predicate: String (the falsifiable claim this monitors)
+   - observations: u32 (number of times checked)
+   - violations: u32 (number of times falsified)
+   - last_checked: DateTime<Utc>
+   - active: bool (false once falsified)
+
+2. Add Optional `falsifier` field to KnowledgeEntry (lib.rs:337):
+   #[serde(default, skip_serializing_if = "Option::is_none")]
+   pub falsifier: Option<Falsifier>
+
+3. Add to KnowledgeStore:
+   - check_falsifier(&self, entry_id: &str, violated: bool) -> Result<FalsifierOutcome>
+     Increments observations, optionally increments violations. When
+     violations >= min_violations_for_immunity (default 3), the entry
+     is "immunized" -- its confidence is boosted to 0.9 and tier is
+     promoted to Consolidated, because it has survived repeated falsification
+     attempts. When violated=true AND the entry had no prior violations,
+     the anti-knowledge entry is itself discredited (confidence *= 0.5).
+
+4. Add FalsifierOutcome enum: { Survived, Immunized, Discredited }
+
+This completes the v2 spec's "heuristics carry mandatory falsifiers" concept:
+an AntiKnowledge entry that repeatedly survives falsification attempts becomes
+more reliable, while one that is immediately violated loses credibility."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 65
+files = ["crates/roko-neuro/src/lib.rs", "crates/roko-neuro/src/knowledge_store.rs"]
+role = "implementer"
+depends_on = []
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/lib.rs", lines = "118-137", why = "KnowledgeKind enum with AntiKnowledge variant" },
+    { path = "crates/roko-neuro/src/lib.rs", lines = "335-420", why = "KnowledgeEntry struct -- add optional falsifier field" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "24-71", why = "AntiKnowledge constants: confidence floor, HDC thresholds" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "92-104", why = "AntiKnowledgeConflict struct for observability" },
+    { path = "docs/v2-depth/11-memory/04-antiknowledge-and-immunity.md", lines = "1-60", why = "Spec: falsifier lifecycle, immunity through survived falsification" },
+    { path = "docs/v2/06-MEMORY.md", lines = "1-50", why = "Memory overview: heuristics carry mandatory falsifiers" },
+]
+symbols = [
+    "KnowledgeKind::AntiKnowledge (lib.rs:128) -- the knowledge kind for negative knowledge",
+    "KnowledgeEntry (lib.rs:337) -- add optional falsifier field",
+    "ANTI_KNOWLEDGE_CONFIDENCE_FLOOR (knowledge_store.rs:28) -- minimum confidence for anti-knowledge",
+    "AntiKnowledgeConflict (knowledge_store.rs:94) -- existing conflict detection struct",
+    "KnowledgeTier::Consolidated (lib.rs:183) -- promotion target for immunized entries",
+]
+anti_patterns = [
+    "Do NOT make falsifier mandatory on all KnowledgeEntry -- it's Optional and only meaningful for AntiKnowledge and Heuristic kinds",
+    "Do NOT immunize after a single observation -- require min_violations_for_immunity (default 3) survived checks",
+    "Do NOT use the falsifier on Insight or CausalLink entries -- it's specific to AntiKnowledge and Heuristic kinds",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct Falsifier' crates/roko-neuro/src/lib.rs && grep -q 'falsifier' crates/roko-neuro/src/lib.rs"
+fail_msg = "Falsifier struct and falsifier field must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FalsifierOutcome\\|Immunized\\|Discredited' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "FalsifierOutcome enum with Immunized and Discredited must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn check_falsifier' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "check_falsifier method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T04: Temporal knowledge topology with Allen intervals
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing temporal.rs has KnowledgeEpoch, TemporalInterval, AllenRelation,
+# TemporalRelation, and TemporalIndex -- all built and tested. This task wires
+# the temporal index into KnowledgeStore for epoch-aware queries.
+[[task]]
+id = "E24-T04"
+title = "Wire TemporalIndex into KnowledgeStore for epoch-aware queries"
+description = """The temporal module (temporal.rs) has a fully implemented TemporalIndex
+with epochs, entry registration, Allen relation computation, and temporal
+queries. Wire it into KnowledgeStore as an optional index.
+
+1. Add optional TemporalIndex field to KnowledgeStore (knowledge_store.rs:122):
+   temporal_index: Option<parking_lot::Mutex<TemporalIndex>>
+
+2. Add KnowledgeStore::enable_temporal_index(&mut self) that creates a
+   TemporalIndex and populates it from existing entries (read_all() -> register
+   each entry's created_at as interval start, open-ended by default).
+
+3. Add query_temporal(&self, epoch_seq: u64) -> Result<Vec<KnowledgeEntry>>
+   that returns all entries whose temporal interval falls within the given epoch.
+
+4. Add query_temporal_relation(&self, source_id: &str, target_id: &str)
+   -> Result<Option<AllenRelation>> that returns the Allen relation between
+   two knowledge entries.
+
+5. On add() and ingest(), register new entries with the temporal index if enabled.
+
+6. On gc() and gc_with_freeze(), remove pruned entries from the temporal index.
+
+Extend TemporalIndex with two utility methods needed by T04:
+- query_related(&self, entry_id: &str, relation: AllenRelation) -> Vec<String>
+  -- find all entries with a specific Allen relation to the given entry
+- find_superseded(&self, entry_id: &str) -> Vec<String>
+  -- find entries that the given entry supersedes via Before/Meets/Overlaps
+
+Keep the TemporalIndex behind Option so it's opt-in -- callers that don't
+need temporal queries don't pay the memory cost."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = ["crates/roko-neuro/src/knowledge_store.rs", "crates/roko-neuro/src/temporal.rs"]
+role = "implementer"
+depends_on = []
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/temporal.rs", lines = "22-67", why = "KnowledgeEpoch: seq, label, start, end, open/close lifecycle" },
+    { path = "crates/roko-neuro/src/temporal.rs", lines = "90-152", why = "TemporalInterval with contains, overlaps, intersection, allen_relation" },
+    { path = "crates/roko-neuro/src/temporal.rs", lines = "154-188", why = "AllenRelation: 13 interval relations with compute, inverse" },
+    { path = "crates/roko-neuro/src/temporal.rs", lines = "292-302", why = "TemporalRelation: source, target, relation, annotation" },
+    { path = "crates/roko-neuro/src/temporal.rs", lines = "339-380", why = "TemporalIndex: epochs BTreeMap, entries HashMap, relations, add_epoch, add_entry, relate" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "111-127", why = "KnowledgeStore struct -- add temporal_index field" },
+    { path = "docs/v2-depth/11-memory/03-knowledge-lifecycle-loop.md", lines = "1-60", why = "Knowledge lifecycle spec: temporal validity windows" },
+]
+symbols = [
+    "TemporalIndex (temporal.rs:343) -- epochs, entries, relations, add_epoch/add_entry/relate",
+    "KnowledgeEpoch (temporal.rs:28) -- seq, label, start, end",
+    "AllenRelation (temporal.rs:161) -- 13 interval relations",
+    "TemporalInterval (temporal.rs:94) -- start, end, contains, overlaps, allen_relation",
+    "KnowledgeStore (knowledge_store.rs:122) -- add temporal_index field",
+]
+anti_patterns = [
+    "Do NOT make TemporalIndex mandatory -- it's opt-in behind Option",
+    "Do NOT reimplement Allen relation computation -- use TemporalInterval::allen_relation",
+    "Do NOT modify TemporalIndex internals -- use its public API only",
+    "Do NOT load the temporal index eagerly on KnowledgeStore::new -- only on enable_temporal_index",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'temporal_index.*TemporalIndex' crates/roko-neuro/src/knowledge_store.rs && grep -q 'fn enable_temporal_index' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "temporal_index field and enable_temporal_index method must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn query_temporal' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "query_temporal method must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn query_related\\|fn find_superseded' crates/roko-neuro/src/temporal.rs"
+fail_msg = "query_related and find_superseded methods must exist in TemporalIndex"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T05: Knowledge lifecycle facade improvements
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing lifecycle.rs has KnowledgeLifecycleManager (lifecycle.rs:~200),
+# RuntimeEpisodeObservation (lifecycle.rs:60-80), and LightAdmissionGate
+# integration. This task adds episode-to-knowledge distillation.
+[[task]]
+id = "E24-T05"
+title = "Add episode-to-knowledge distillation to lifecycle facade"
+description = """Enhance KnowledgeLifecycleManager (lifecycle.rs) with automatic knowledge
+distillation from completed episodes.
+
+1. Add distill_from_episode(&self, observation: &RuntimeEpisodeObservation,
+   reflection: &str) -> Result<DistillationResult> method that:
+   - Creates a KnowledgeCandidateRecord from the observation
+   - Uses LightAdmissionGate (admission.rs:38-55) to pre-filter
+   - If gate passes: create KnowledgeEntry with:
+     - kind = Heuristic (for successful patterns) or AntiKnowledge (for failures)
+     - content = reflection text (agent-provided)
+     - confidence = 0.6 (starting confidence, proven by gate pass)
+     - source_episodes = [observation.episode_id]
+     - tags derived from observation.task_type and observation.model
+   - If gate defers: submit to full KnowledgeAdmissionStore as candidate
+
+2. Add DistillationResult enum: { Admitted(String), Deferred, Rejected(String) }
+
+3. Add batch_distill(&self, observations: &[RuntimeEpisodeObservation],
+   reflections: &[String]) -> Result<BatchDistillationReport> for processing
+   multiple episodes at once.
+
+4. In the distillation, check for similarity against existing entries
+   (via KnowledgeStore::query or query_hdc if available). If a highly similar
+   entry exists (similarity > 0.8), reinforce it instead of creating a duplicate.
+
+This connects the episode-to-knowledge loop: agent completes task -> gate
+verifies -> episode recorded -> distillation extracts knowledge -> knowledge
+store persists."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = ["crates/roko-neuro/src/lifecycle.rs"]
+role = "implementer"
+depends_on = ["E24-T01"]
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "1-57", why = "KnowledgeLifecycleConfig, LightAdmissionGate import, lifecycle receipt" },
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "59-80", why = "RuntimeEpisodeObservation: episode_id, task_id, gate_passed, model" },
+    { path = "crates/roko-neuro/src/admission.rs", lines = "30-71", why = "LightAdmissionGate: min_confidence, min_novelty, min_source_trust, evaluate()" },
+    { path = "crates/roko-neuro/src/admission.rs", lines = "73-80", why = "KnowledgeEvidenceSource: UserInput, GateOutcome" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "111-127", why = "KnowledgeStore for checking similarity and adding entries" },
+    { path = "docs/v2-depth/11-memory/03-knowledge-lifecycle-loop.md", lines = "1-60", why = "Spec: episode -> distillation -> knowledge creation loop" },
+]
+symbols = [
+    "RuntimeEpisodeObservation (lifecycle.rs:61) -- episode observation with gate verdict",
+    "LightAdmissionGate (admission.rs:38) -- pre-filter for fast-path admission",
+    "KnowledgeCandidateRecord (admission.rs) -- candidate record for full admission pipeline",
+    "KnowledgeStore (knowledge_store.rs:122) -- ingest new entries, check similarity",
+    "KnowledgeEntry (lib.rs:337) -- target knowledge record",
+]
+anti_patterns = [
+    "Do NOT bypass the admission gate -- all entries must pass either light or full admission",
+    "Do NOT create duplicate entries -- check similarity before admitting",
+    "Do NOT hardcode confidence to 1.0 for new entries -- use 0.6 starting confidence",
+    "Do NOT admit from failed gates as Heuristic -- only as AntiKnowledge",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn distill_from_episode' crates/roko-neuro/src/lifecycle.rs && grep -q 'DistillationResult' crates/roko-neuro/src/lifecycle.rs"
+fail_msg = "distill_from_episode method and DistillationResult must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T06: Dream consolidation as knowledge compressor
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing DreamRunner (runner.rs:720-769) handles dream cycles. The v2
+# spec defines dream consolidation as a knowledge compression process that
+# merges overlapping entries, promotes surviving entries, and runs counterfactual
+# replay.
+[[task]]
+id = "E24-T06"
+title = "Add knowledge consolidation phase to DreamRunner"
+description = """Add a consolidation phase to DreamRunner that operates on the
+KnowledgeStore during dream cycles.
+
+1. Add DreamRunner::consolidate(&self, store: &KnowledgeStore) -> Result<ConsolidationReport>:
+   a. Read all entries from store
+   b. Group entries by overlapping tags (entries sharing >= 2 tags)
+   c. For each group with 3+ entries: merge into a single consolidated entry
+      with combined tags, averaged confidence, merged source_episodes, and
+      content = concatenation of unique insights
+   d. Promote merged entries: Transient->Working, Working->Consolidated
+   e. Apply decay sweep (call store.decay())
+   f. Apply demurrage sweep (call store.demurrage() from T01)
+   g. GC dead entries (call store.gc_with_freeze())
+   h. Return ConsolidationReport with merge_count, promoted, decayed, gc_removed
+
+2. Add ConsolidationReport struct:
+   - merge_count: usize
+   - promoted: usize
+   - decayed: usize
+   - gc_removed: usize
+   - elapsed: Duration
+
+3. Wire consolidate() into the existing dream cycle flow in
+   DreamRunner::run_cycle() (runner.rs:~800), called after the replay phase
+   but before the report generation.
+
+Follow the existing DreamReport pattern (runner.rs:~350) for report structure."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = ["crates/roko-dreams/src/runner.rs"]
+role = "implementer"
+depends_on = ["E24-T01"]
+depends_on_plan = ["E22-execution-runtime"]
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-dreams/src/runner.rs", lines = "718-769", why = "DreamRunner struct with workdir, config, controls, model_caller" },
+    { path = "crates/roko-dreams/src/runner.rs", lines = "460-510", why = "DreamLoopConfig with trigger settings and heartbeat policy" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "992-1070", why = "decay() and gc_with_freeze() methods to call during consolidation" },
+    { path = "docs/v2-depth/11-memory/09-consolidation-and-staging.md", lines = "1-60", why = "Consolidation spec: merge overlapping entries, promote, compress" },
+    { path = "docs/v2-depth/11-memory/06-dream-cycle-as-loop.md", lines = "1-50", why = "Dream cycle spec: replay -> consolidation -> reporting" },
+]
+symbols = [
+    "DreamRunner (runner.rs:720) -- add consolidate() method",
+    "KnowledgeStore (roko-neuro knowledge_store.rs:122) -- store operations during consolidation",
+    "decay (knowledge_store.rs:992) -- confidence decay sweep",
+    "gc_with_freeze (knowledge_store.rs:1052) -- GC with freeze-before-delete",
+]
+anti_patterns = [
+    "Do NOT merge entries from different KnowledgeKinds -- only merge within the same kind",
+    "Do NOT delete original entries immediately after merging -- freeze them first",
+    "Do NOT run consolidation during active plan execution -- only during dream idle periods",
+    "Do NOT require a model_caller for consolidation -- it's a pure data operation, not LLM-based",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn consolidate' crates/roko-dreams/src/runner.rs && grep -q 'ConsolidationReport' crates/roko-dreams/src/runner.rs"
+fail_msg = "consolidate method and ConsolidationReport must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-dreams 2>&1"
+fail_msg = "roko-dreams must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T07: Cross-domain knowledge transfer via ResonanceDetector
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing ResonanceDetector (hdc.rs:64-78) finds structurally similar
+# entries across domains. This task wires it into the knowledge lifecycle to
+# enable automatic cross-domain transfer.
+[[task]]
+id = "E24-T07"
+title = "Wire ResonanceDetector for automatic cross-domain knowledge transfer"
+description = """Wire the existing ResonanceDetector (hdc.rs:64-78) into
+KnowledgeLifecycleManager so that cross-domain analogies are automatically
+discovered and promoted during the lifecycle flow.
+
+1. Add KnowledgeLifecycleManager::detect_cross_domain_transfers(
+     &self, store: &KnowledgeStore
+   ) -> Result<Vec<CrossDomainTransfer>>
+   that:
+   a. Calls store.find_resonances(0.526) (from T02) to get ResonancePairs
+   b. For each resonance pair where domains differ: create a CrossDomainTransfer
+      record containing source entry, target domain, similarity score
+   c. Optionally create a new KnowledgeEntry in the target domain with
+      source_model set to "cross_domain_transfer" and confidence discounted
+      by 0.7 (cross-domain transfers are less reliable)
+
+2. Add CrossDomainTransfer struct:
+   - source_entry_id: String
+   - source_domain: String
+   - target_domain: String
+   - similarity: f64
+   - transferred_entry_id: Option<String> (if a new entry was created)
+
+3. Gate behind #[cfg(feature = "hdc")] since it depends on HDC vectors.
+
+4. Add a config option to KnowledgeLifecycleConfig:
+   auto_cross_domain_transfer: bool (default false -- opt-in only)"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-neuro/src/lifecycle.rs"]
+role = "implementer"
+depends_on = ["E24-T02"]
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/hdc.rs", lines = "42-78", why = "ResonancePair and ResonanceDetector: min_similarity, max_results, detect" },
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "34-57", why = "KnowledgeLifecycleConfig -- add auto_cross_domain_transfer flag" },
+    { path = "docs/v2-depth/11-memory/05-cross-domain-transfer.md", lines = "1-60", why = "Spec: cross-domain transfer via HDC structural analogy" },
+]
+symbols = [
+    "ResonanceDetector (hdc.rs:64) -- detects cross-domain analogies via HDC similarity",
+    "ResonancePair (hdc.rs:44) -- result with entry_a, entry_b, similarity, domain_a, domain_b",
+    "KnowledgeLifecycleConfig (lifecycle.rs:35) -- add auto_cross_domain_transfer option",
+    "find_resonances (knowledge_store.rs, from T02) -- KnowledgeStore method for resonance detection",
+]
+anti_patterns = [
+    "Do NOT transfer entries with low confidence (< 0.5) -- only transfer reasonably reliable knowledge",
+    "Do NOT create infinite loops of cross-domain transfers -- skip entries with source_model = 'cross_domain_transfer'",
+    "Do NOT make cross-domain transfer enabled by default -- it's opt-in",
+    "Do NOT forget the confidence discount (0.7x) on transferred entries",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CrossDomainTransfer' crates/roko-neuro/src/lifecycle.rs && grep -q 'detect_cross_domain' crates/roko-neuro/src/lifecycle.rs"
+fail_msg = "CrossDomainTransfer struct and detect_cross_domain method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T08: Tier progression improvements with configurable thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing tier_progression module (tier_progression.rs) handles
+# Transient->Working->Consolidated->Persistent progression. This task adds
+# configurable thresholds and automatic demotion.
+[[task]]
+id = "E24-T08"
+title = "Add configurable tier thresholds and automatic demotion to tier progression"
+description = """Enhance the existing tier_progression module with configurable
+thresholds and automatic demotion rules per the v2 spec.
+
+1. Add TierProgressionConfig struct:
+   - transient_to_working: TierThreshold { min_confirmations: u32, min_confidence: f64 }
+   - working_to_consolidated: TierThreshold { min_distinct_contexts: u32, min_confidence: f64 }
+   - consolidated_to_persistent: TierThreshold { min_age_days: f64, min_confidence: f64 }
+   - demotion_enabled: bool (default true)
+
+2. Add automatic demotion rules to TierProgression:
+   - Persistent entries with deprecated=true -> Consolidated
+   - Consolidated entries with confidence < 0.3 -> Working
+   - Working entries with confidence < 0.15 -> Transient
+   - Transient entries with confidence < GC_MIN_CONFIDENCE -> eligible for GC
+
+3. Add TierProgression::evaluate_all(&self, entries: &mut [KnowledgeEntry],
+   config: &TierProgressionConfig) -> TierProgressionReport that processes
+   all entries in a single pass: promote eligible entries, demote failing entries.
+
+4. Add TierProgressionReport: promoted: Vec<(String, KnowledgeTier)>,
+   demoted: Vec<(String, KnowledgeTier)>, unchanged: usize
+
+Wire into KnowledgeStore with a new method:
+   apply_tier_progression(&self, config: &TierProgressionConfig) -> Result<TierProgressionReport>"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = [
+    "crates/roko-neuro/src/tier_progression.rs",
+    "crates/roko-neuro/src/knowledge_store.rs",
+]
+role = "implementer"
+depends_on = []
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/lib.rs", lines = "173-199", why = "KnowledgeTier: Transient, Working, Consolidated, Persistent with multipliers" },
+    { path = "crates/roko-neuro/src/lib.rs", lines = "393-405", why = "KnowledgeEntry fields: confirmation_count, distinct_contexts, deprecated" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "24-28", why = "DEFAULT_GC_MIN_CONFIDENCE constant for GC threshold" },
+    { path = "docs/v2-depth/11-memory/03-knowledge-lifecycle-loop.md", lines = "1-60", why = "Tier progression spec: thresholds and demotion rules" },
+    { path = "docs/v2/06-MEMORY.md", lines = "1-50", why = "Tier system overview: Transient->Working->Consolidated->Persistent" },
+]
+symbols = [
+    "KnowledgeTier (lib.rs:176) -- 4-tier enum with multipliers",
+    "KnowledgeEntry (lib.rs:337) -- confirmation_count, distinct_contexts, deprecated, tier",
+    "TierProgression (tier_progression.rs) -- existing tier progression logic",
+    "DEFAULT_GC_MIN_CONFIDENCE (knowledge_store.rs:24) -- GC threshold for Transient entries",
+]
+anti_patterns = [
+    "Do NOT hardcode thresholds -- make them configurable via TierProgressionConfig",
+    "Do NOT demote entries that were just promoted in the same pass -- process promotions before demotions",
+    "Do NOT skip AntiKnowledge entries during tier progression -- they follow the same lifecycle",
+    "Do NOT modify existing tier_progression tests -- add new tests for the new functionality",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TierProgressionConfig' crates/roko-neuro/src/tier_progression.rs && grep -q 'demotion_enabled\\|evaluate_all' crates/roko-neuro/src/tier_progression.rs"
+fail_msg = "TierProgressionConfig and evaluate_all must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn apply_tier_progression' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "apply_tier_progression method must exist in KnowledgeStore"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-neuro 2>&1"
+fail_msg = "roko-neuro must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T09: Wire memory subsystem into orchestrate.rs runtime
+# ─────────────────────────────────────────────────────────────────────────────
+# The orchestrate.rs runtime already queries the playbook store at dispatch time.
+# This task adds the full knowledge lifecycle integration: distillation after
+# each task, demurrage on schedule, and consolidation during dream periods.
+[[task]]
+id = "E24-T09"
+title = "Wire knowledge lifecycle and distillation into orchestrate.rs"
+description = """Wire the enhanced knowledge lifecycle from T01-T08 into orchestrate.rs:
+
+1. After each successful gate-pass in dispatch_agent_with (orchestrate.rs:15184):
+   - Create RuntimeEpisodeObservation from the task outcome
+   - Call lifecycle_manager.distill_from_episode() (from T05)
+   - Log the distillation result (Admitted/Deferred/Rejected)
+
+2. After each gate-fail in dispatch_agent_with:
+   - Create RuntimeEpisodeObservation with gate_passed=false
+   - Call lifecycle_manager.distill_from_episode() with failure reflection
+   - The lifecycle will create AntiKnowledge entries for failure patterns
+
+3. At plan completion (all tasks done):
+   - Call store.apply_tier_progression() (from T08)
+   - Call store.demurrage(0.005) (from T01, 0.5% daily rate)
+   - Log the tier progression and demurrage reports
+
+4. Before dispatch: query KnowledgeStore for relevant entries matching the
+   task tags, and inject top 3 results into the system prompt as context.
+   This extends the existing playbook query at dispatch time.
+
+All changes must be backward-compatible: if KnowledgeStore is not configured
+in roko.toml, skip all knowledge lifecycle steps."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = ["E24-T01", "E24-T05", "E24-T08"]
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15182-15220", why = "dispatch_agent_with: budget check, task loading -- add knowledge lifecycle after gate" },
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "59-80", why = "RuntimeEpisodeObservation fields for observation construction" },
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "34-57", why = "KnowledgeLifecycleConfig for initialization" },
+    { path = "docs/v2/06-MEMORY.md", lines = "1-50", why = "Memory integration spec: distillation, demurrage, tier progression" },
+]
+symbols = [
+    "dispatch_agent_with (orchestrate.rs:15184) -- main dispatch, add knowledge lifecycle hooks",
+    "RuntimeEpisodeObservation (lifecycle.rs:61) -- construct from task outcomes",
+    "distill_from_episode (lifecycle.rs, from T05) -- episode-to-knowledge distillation",
+    "apply_tier_progression (knowledge_store.rs, from T08) -- tier promotion/demotion sweep",
+    "demurrage (knowledge_store.rs, from T01) -- balance-based demurrage sweep",
+]
+anti_patterns = [
+    "Do NOT make knowledge lifecycle mandatory -- skip if KnowledgeStore is not configured",
+    "Do NOT block dispatch on knowledge operations -- they should be async or post-dispatch",
+    "Do NOT duplicate existing playbook query logic -- extend it with KnowledgeStore results",
+    "Do NOT inject more than 3 knowledge entries into system prompt -- avoid prompt bloat",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'distill_from_episode\\|knowledge_lifecycle\\|demurrage' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "Knowledge lifecycle hooks must exist in orchestrate.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E24-T10: Unit tests for memory subsystem
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E24-T10"
+title = "Add unit tests for demurrage, falsifiers, distillation, and tier progression"
+description = """Add tests covering the memory subsystem enhancements from T01-T08.
+Place tests in the same files as implementations using #[cfg(test)] mod tests.
+
+Tests for knowledge_store.rs:
+1. demurrage reduces balance by tax_rate
+2. demurrage halves half_life when balance <= 0
+3. reinforce increases balance by correct amount per signal type
+4. Entry frozen after balance <= 0 for > 7 days
+5. query_hdc returns entries sorted by HDC similarity (cfg(feature = "hdc"))
+6. apply_tier_progression promotes entries meeting thresholds
+7. apply_tier_progression demotes entries below confidence thresholds
+
+Tests for lib.rs:
+8. Falsifier survives observation (no violation)
+9. Falsifier immunizes after 3 survived checks
+10. Falsifier discredits on first violation
+
+Tests for lifecycle.rs:
+11. distill_from_episode creates Heuristic for gate-passed episodes
+12. distill_from_episode creates AntiKnowledge for gate-failed episodes
+13. distill_from_episode deduplicates against existing entries (reinforces instead)
+
+Tests for runner.rs (roko-dreams):
+14. consolidate merges entries with overlapping tags
+15. consolidate promotes merged entries by one tier level"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-neuro/src/knowledge_store.rs",
+    "crates/roko-neuro/src/lib.rs",
+    "crates/roko-neuro/src/lifecycle.rs",
+    "crates/roko-dreams/src/runner.rs",
+]
+role = "implementer"
+depends_on = ["E24-T01", "E24-T02", "E24-T03", "E24-T05", "E24-T06", "E24-T08"]
+domain = "memory"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "2830-2900", why = "Existing test patterns: entry() helper, TempDir usage, assertion style" },
+    { path = "crates/roko-neuro/src/lib.rs", lines = "335-420", why = "KnowledgeEntry struct for test construction" },
+]
+symbols = [
+    "entry() helper (knowledge_store.rs:~2700) -- existing test helper for creating entries",
+    "TempDir (tempfile) -- tempdir for test isolation",
+    "KnowledgeStore::new (knowledge_store.rs) -- constructor for tests",
+]
+anti_patterns = [
+    "Do NOT depend on real filesystem state -- use tempdir for isolation",
+    "Do NOT break existing tests -- add new test functions, don't modify existing ones",
+    "Do NOT use hardcoded timestamps -- use Utc::now() or fixed test timestamps",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- demurrage 2>&1 | tail -5"
+fail_msg = "Demurrage tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- falsifier 2>&1 | tail -5"
+fail_msg = "Falsifier tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- distill 2>&1 | tail -5"
+fail_msg = "Distillation tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro -- tier_progression 2>&1 | tail -5"
+fail_msg = "Tier progression tests must pass"

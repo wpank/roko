@@ -1,0 +1,692 @@
+[meta]
+plan = "E30-extension-system"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T01: Add CaMeL IFC types (CamelTag, ProvenanceEntry, TaintLevel)
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §2) requires capability provenance tracking
+# via CaMeL information flow control. Every data flow through an Extension
+# must be tagged with its capability provenance.
+[[task]]
+id = "E30-T01"
+title = "Add CamelTag, ProvenanceEntry, TaintLevel for IFC tracking"
+description = """Add to crates/roko-core/src/extension.rs:
+
+- TaintLevel enum { Trusted, Local, External, Untrusted }
+  with PartialEq, Eq, PartialOrd, Ord (Trusted < Local < External < Untrusted)
+  and serde(rename_all = "snake_case")
+- TagOperation enum { Passthrough, Transform, Merge }
+  with PartialEq, Eq, serde(rename_all = "snake_case")
+- ProvenanceEntry { handler: String, timestamp: DateTime<Utc>, operation: TagOperation }
+- CapabilitySet { capabilities: HashSet<String> } (wrapper with intersection/union helpers)
+- CamelTag { capabilities: CapabilitySet, provenance: Vec<ProvenanceEntry>,
+  taint_level: TaintLevel }
+
+Add methods on CamelTag:
+  - propagate(&self, handler: &str, operation: TagOperation) -> CamelTag
+    (appends handler to provenance, returns new tag — taint level never decreases)
+  - merge(tags: &[&CamelTag]) -> CamelTag
+    (intersects capabilities, takes worst taint, concatenates provenance)
+
+These types are foundational — used by extension hook return types and
+the CaMeL monitor. Add chrono, HashSet imports if not already present."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 100
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "1-21", why = "Extension module header and imports — add chrono, HashSet" },
+    { path = "crates/roko-core/src/extension.rs", lines = "163-186", why = "Existing ExtensionLayer enum — CaMeL types go alongside" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "47-67", why = "V2 CamelTag/ProvenanceEntry/TaintLevel struct definitions" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "69-99", why = "V2 tag propagation rules: no elevation, intersection semantics" },
+    { path = "crates/roko-core/src/provenance.rs", lines = "1-30", why = "Existing Provenance/Taint types — CamelTag extends with capability tracking" },
+]
+symbols = [
+    "Taint — existing enum in provenance.rs (similar concept but simpler — CamelTag is the v2 evolution)",
+    "ExtensionLayer — enum at extension.rs:166",
+]
+anti_patterns = [
+    "Do NOT use the existing Taint type — CamelTag has different semantics (capability provenance, not just trust)",
+    "Do NOT add runtime dispatch logic — define data types and propagation methods only",
+    "Do NOT import roko-gate types — CaMeL is roko-core level",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CamelTag' crates/roko-core/src/extension.rs && grep -q 'pub enum TaintLevel' crates/roko-core/src/extension.rs"
+fail_msg = "CamelTag and TaintLevel must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ProvenanceEntry' crates/roko-core/src/extension.rs && grep -q 'pub enum TagOperation' crates/roko-core/src/extension.rs"
+fail_msg = "ProvenanceEntry and TagOperation must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn propagate' crates/roko-core/src/extension.rs && grep -q 'fn merge' crates/roko-core/src/extension.rs"
+fail_msg = "CamelTag must have propagate() and merge() methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T02: Add FilterDecision, BudgetAction, and update decision enums
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing extension.rs has ActionDecision, ToolDecision, RecoveryAction.
+# The v2 spec adds FilterDecision (L1), BudgetAction (L7), and modifies
+# existing enums to carry CamelTag-aware variants.
+[[task]]
+id = "E30-T02"
+title = "Add FilterDecision and BudgetAction enums"
+description = """Add to crates/roko-core/src/extension.rs:
+
+- FilterDecision enum:
+  - Pass — message passes unchanged
+  - Drop — message silently discarded
+  - Transform(AgentMessage) — replaced (inherits CaMeL tags)
+  Derive Debug, Clone (AgentMessage already derives Clone at line 129)
+
+- BudgetAction enum:
+  - Sleepwalk — observe+reflect only, no LLM calls
+  - Stop — graceful shutdown
+  - RequestMore(u64) — request additional budget in microdollars
+  Derive Debug, Clone, PartialEq, Eq
+
+Add a default on_budget_exceeded hook to the Extension trait (Recovery layer):
+  async fn on_budget_exceeded(&self, _cost: &CostUpdate)
+    -> Result<BudgetAction, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(BudgetAction::Sleepwalk)
+  }
+
+Also add filter_input to the Extension trait (Perception layer):
+  async fn filter_input(&self, _message: &mut AgentMessage)
+    -> Result<FilterDecision, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(FilterDecision::Pass)
+  }
+
+Add run_filter_input and run_on_budget_exceeded to ExtensionChain."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 80
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "186-220", why = "Existing ActionDecision, ToolDecision, RecoveryAction enums — add alongside" },
+    { path = "crates/roko-core/src/extension.rs", lines = "128-136", why = "AgentMessage struct — used in FilterDecision::Transform variant" },
+    { path = "crates/roko-core/src/extension.rs", lines = "114-125", why = "CostUpdate struct — used in on_budget_exceeded hook parameter" },
+    { path = "crates/roko-core/src/extension.rs", lines = "268-432", why = "Extension trait with all hooks — add filter_input and on_budget_exceeded" },
+    { path = "crates/roko-core/src/extension.rs", lines = "436-596", why = "ExtensionChain with run_* methods — add run_filter_input, run_on_budget_exceeded" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "275-291", why = "V2 FilterDecision enum: Pass/Drop/Transform with CaMeL IFC note" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "347-359", why = "V2 BudgetAction enum: Sleepwalk/Stop/RequestMore" },
+]
+symbols = [
+    "ActionDecision — existing decision enum at extension.rs:188",
+    "ToolDecision — existing decision enum at extension.rs:199",
+    "RecoveryAction — existing decision enum at extension.rs:210",
+    "AgentMessage — struct at extension.rs:129 used in FilterDecision::Transform",
+    "CostUpdate — struct at extension.rs:115 used in on_budget_exceeded param",
+    "ExtensionChain::run_pre_action — pattern for chain execution at extension.rs:539",
+]
+anti_patterns = [
+    "Do NOT change existing enum variant names (Block/Deny/Rewrite) — add new enums alongside",
+    "Do NOT break existing Extension trait implementations (PluginExtension, TestExtension in tests)",
+    "Do NOT add CamelTag to FilterDecision::Transform yet — just pass AgentMessage",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum FilterDecision' crates/roko-core/src/extension.rs && grep -q 'pub enum BudgetAction' crates/roko-core/src/extension.rs"
+fail_msg = "FilterDecision and BudgetAction must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'filter_input' crates/roko-core/src/extension.rs && grep -q 'on_budget_exceeded' crates/roko-core/src/extension.rs"
+fail_msg = "Extension trait must have filter_input and on_budget_exceeded hooks"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'run_filter_input' crates/roko-core/src/extension.rs && grep -q 'run_on_budget_exceeded' crates/roko-core/src/extension.rs"
+fail_msg = "ExtensionChain must have run_filter_input and run_on_budget_exceeded methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T03: Add ExtensionManifest with 5-tier SPI
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §3) defines an ExtensionManifest with a
+# PackageTier that determines sandboxing and distribution. The existing
+# ExtensionMeta at line 233 is simpler. Add the full manifest type.
+[[task]]
+id = "E30-T03"
+title = "Add ExtensionManifest with PackageTier (5-tier SPI)"
+description = """Add to crates/roko-core/src/extension.rs:
+
+- PackageTier enum:
+  - Prompts — markdown/TOML front-matter declaring hook behavior (no execution)
+  - Config — TOML profile bundles that configure built-in extensions
+  - Declarative — TOML manifests for subprocess/HTTP/MCP hooks (OS process isolation)
+  - Wasm — compiled WASM implementing extension hooks (fuel-metered sandbox)
+  - NativeRust — impl Extension compiled in-tree (process-level trust)
+  Derive Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde(rename_all = "snake_case")
+
+- ExtensionManifest { name: String, version: String, description: String,
+  layer: ExtensionLayer, depends_on: Vec<String>,
+  optional: bool, tags: Vec<String>, tier: PackageTier,
+  timeout_ms: Option<u64>, config: serde_json::Value }
+  (Extends existing ExtensionMeta with tier, tags, timeout, config)
+
+The existing PluginTier at safety/capabilities.rs:29 is for plugin
+capability checks. PackageTier here is for extension sandboxing tiers
+per the v2 spec. They align conceptually but serve different purposes."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "233-249", why = "Existing ExtensionMeta struct — ExtensionManifest is its expanded form" },
+    { path = "crates/roko-agent/src/safety/capabilities.rs", lines = "20-47", why = "Existing PluginTier enum — similar concept but different purpose (capability checks vs packaging)" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "107-132", why = "V2 ExtensionManifest struct with all fields" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "122-132", why = "V2 5-tier SPI table: Prompts/Config/Declarative/WASM/NativeRust" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "136-147", why = "V2 TOML authoring example for extension manifest" },
+]
+symbols = [
+    "ExtensionMeta — existing struct at extension.rs:234 (name, layer, optional, depends_on, version)",
+    "PluginTier — existing safety enum at capabilities.rs:29 (Untrusted/Sandboxed/Standard/Trusted/Kernel)",
+    "ExtensionLayer — enum at extension.rs:166",
+]
+anti_patterns = [
+    "Do NOT remove or rename ExtensionMeta — it is used by Extension::meta() and callers",
+    "Do NOT merge PackageTier with PluginTier — they have different variant names and semantics",
+    "Do NOT add WASM runtime logic — just define the tier enum",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum PackageTier' crates/roko-core/src/extension.rs && grep -q 'pub struct ExtensionManifest' crates/roko-core/src/extension.rs"
+fail_msg = "PackageTier and ExtensionManifest must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'NativeRust' crates/roko-core/src/extension.rs && grep -q 'Wasm' crates/roko-core/src/extension.rs"
+fail_msg = "PackageTier must have NativeRust and Wasm variants"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T04: Add cross-cutting tick hooks to Extension trait
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §5) defines 4 cross-cutting hooks that fire
+# independently of any specific layer: on_tick_start, on_tick_end,
+# on_slot_assigned, on_slot_completed.
+[[task]]
+id = "E30-T04"
+title = "Add on_tick_start, on_tick_end, on_slot_assigned, on_slot_completed hooks"
+description = """Add 4 cross-cutting hooks to the Extension trait in extension.rs:
+
+  async fn on_tick_start(&self, _tick: u64)
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+
+  async fn on_tick_end(&self, _tick: u64)
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+
+  async fn on_slot_assigned(&self, _slot: &str, _task: &serde_json::Value)
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+
+  async fn on_slot_completed(&self, _slot: &str, _result: &serde_json::Value)
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Ok(()) }
+
+Add corresponding run_on_tick_start, run_on_tick_end, run_on_slot_assigned,
+run_on_slot_completed methods to ExtensionChain (iterate all extensions
+regardless of layer — these are cross-cutting)."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "268-432", why = "Extension trait — add cross-cutting hooks after recovery section (after on_error)" },
+    { path = "crates/roko-core/src/extension.rs", lines = "436-596", why = "ExtensionChain — add run_on_tick_* and run_on_slot_* methods" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "242-251", why = "V2 cross-cutting hooks: on_tick_start, on_tick_end, on_slot_assigned, on_slot_completed" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "258-268", why = "V2 hook count table — 22 total with 4 cross-cutting" },
+]
+symbols = [
+    "Extension::on_error — last hook before cross-cutting section at extension.rs:426",
+    "ExtensionChain::run_on_error — last run method at extension.rs:575",
+]
+anti_patterns = [
+    "Do NOT filter by layer for cross-cutting hooks — iterate ALL extensions",
+    "Do NOT use Regime type from roko-core::operating_frequency — use u64 tick number only",
+    "Do NOT add SlotName type — use &str placeholder for slot names",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'on_tick_start' crates/roko-core/src/extension.rs && grep -q 'on_tick_end' crates/roko-core/src/extension.rs"
+fail_msg = "on_tick_start and on_tick_end hooks must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'on_slot_assigned' crates/roko-core/src/extension.rs && grep -q 'on_slot_completed' crates/roko-core/src/extension.rs"
+fail_msg = "on_slot_assigned and on_slot_completed hooks must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'run_on_tick_start' crates/roko-core/src/extension.rs && grep -q 'run_on_tick_end' crates/roko-core/src/extension.rs"
+fail_msg = "ExtensionChain must have run_on_tick_* methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T05: Add circuit-breaker tracking to ExtensionChain
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §8) says after 5 consecutive hook failures
+# an extension is disabled for the session. Add failure tracking.
+[[task]]
+id = "E30-T05"
+title = "Add ExtensionHealthTracker with circuit-breaker disable logic"
+description = """Add to crates/roko-core/src/extension.rs:
+
+- ExtensionHealthTracker { consecutive_failures: HashMap<String, u32>,
+  disabled: HashSet<String>, failure_threshold: u32 }
+  with methods:
+  - new(threshold: u32) -> Self (default threshold: 5)
+  - record_success(&mut self, name: &str) — resets consecutive count to 0
+  - record_failure(&mut self, name: &str) -> bool
+    — increments count, returns true if extension should be disabled
+  - is_disabled(&self, name: &str) -> bool
+
+Add health_tracker: ExtensionHealthTracker field to ExtensionChain.
+Modify existing run_* methods (run_pre_inference, run_on_gate, etc.) to:
+1. Skip extensions where health_tracker.is_disabled(name)
+2. On hook Err: call record_failure, log warning, continue
+3. On hook Ok: call record_success
+
+The existing methods already propagate errors with `?`. Change them to
+log-and-continue instead (matching v2 fault isolation spec §8)."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 90
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "436-596", why = "ExtensionChain struct and all run_* methods — need health_tracker field and skip/record logic" },
+    { path = "crates/roko-core/src/extension.rs", lines = "441-447", why = "ExtensionChain::new() — add health_tracker initialization" },
+    { path = "crates/roko-core/src/extension.rs", lines = "493-536", why = "run_pre_inference, run_post_inference, run_on_gate — current error propagation with ?" },
+    { path = "crates/roko-core/src/extension.rs", lines = "538-590", why = "run_pre_action, run_on_tool_call, run_on_error — decision methods with ? propagation" },
+    { path = "crates/roko-core/src/extension.rs", lines = "598-602", why = "Default impl for ExtensionChain — update with health_tracker" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "411-431", why = "V2 fault isolation: hook errors are not agent errors, decision defaults on error, 5 consecutive = disable" },
+]
+symbols = [
+    "ExtensionChain — struct at extension.rs:437 (needs health_tracker field)",
+    "ExtensionChain::new() — constructor at extension.rs:443",
+    "run_pre_inference — method at extension.rs:494",
+    "run_on_gate — method at extension.rs:524",
+    "run_pre_action — method at extension.rs:539",
+]
+anti_patterns = [
+    "Do NOT break existing tests — TestExtension never fails, so health tracking has no effect on tests",
+    "Do NOT add async locking — ExtensionChain takes &self for run_* but &mut for health tracking; use RefCell or accept &mut self",
+    "Do NOT log via println — use tracing::warn",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ExtensionHealthTracker' crates/roko-core/src/extension.rs"
+fail_msg = "ExtensionHealthTracker must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'health_tracker' crates/roko-core/src/extension.rs"
+fail_msg = "ExtensionChain must have health_tracker field"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn record_failure' crates/roko-core/src/extension.rs && grep -q 'fn is_disabled' crates/roko-core/src/extension.rs"
+fail_msg = "ExtensionHealthTracker must have record_failure and is_disabled methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T06: Add hook timeout to ExtensionChain
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §9) says all hooks timeout at 5 seconds
+# (configurable per extension). Add timeout wrapping to run_* methods.
+[[task]]
+id = "E30-T06"
+title = "Add configurable hook timeout with 5s default"
+description = """Add timeout wrapping to ExtensionChain run_* methods:
+
+1. Add `timeout_overrides: HashMap<String, Duration>` to ExtensionChain
+   (extension name -> custom timeout)
+2. Add `default_timeout: Duration` (5 seconds) to ExtensionChain
+3. Add helper method:
+   fn hook_timeout(&self, ext_name: &str) -> Duration {
+     self.timeout_overrides.get(ext_name).copied()
+       .unwrap_or(self.default_timeout)
+   }
+
+4. In each run_* method, wrap the individual hook call with tokio::time::timeout:
+   let deadline = self.hook_timeout(ext.name());
+   match tokio::time::timeout(deadline, ext.pre_inference(request)).await {
+     Ok(Ok(())) => { /* success */ }
+     Ok(Err(e)) => { /* hook error — record_failure */ }
+     Err(_) => { /* timeout — treat as hook error, record_failure */ }
+   }
+
+The existing methods iterate extensions and call hooks directly. Wrap each
+call with timeout. On timeout, log warning and continue to next extension."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = ["E30-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "436-447", why = "ExtensionChain struct and new() — add timeout fields" },
+    { path = "crates/roko-core/src/extension.rs", lines = "493-536", why = "run_pre_inference, run_post_inference, run_on_gate — wrap with timeout" },
+    { path = "crates/roko-core/src/extension.rs", lines = "538-590", why = "run_pre_action, run_on_tool_call, run_on_error — wrap with timeout" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "435-445", why = "V2 hook timeout spec: 5s default, configurable per extension, treat as hook error" },
+]
+symbols = [
+    "ExtensionChain — struct at extension.rs:437",
+    "ExtensionChain::new() — constructor at extension.rs:443",
+    "run_pre_inference — first cognition-layer runner at extension.rs:494",
+]
+anti_patterns = [
+    "Do NOT add timeout to on_init/on_shutdown — those have different lifecycle requirements",
+    "Do NOT use std::time::timeout — use tokio::time::timeout (async runtime)",
+    "Do NOT abort tasks on timeout — just cancel via the timeout future",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'default_timeout' crates/roko-core/src/extension.rs && grep -q 'timeout_overrides' crates/roko-core/src/extension.rs"
+fail_msg = "default_timeout and timeout_overrides must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'hook_timeout' crates/roko-core/src/extension.rs"
+fail_msg = "hook_timeout helper method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T07: Add dependency resolution with cycle detection
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §11) requires within-layer topological sort
+# with cycle detection. The existing sort_by_layer at line 455 sorts by
+# layer only, ignoring depends_on.
+[[task]]
+id = "E30-T07"
+title = "Add topological sort with cycle detection to ExtensionChain"
+description = """Replace the simple sort_by_layer in ExtensionChain with a
+dependency-aware sort:
+
+1. Rename existing sort_by_layer to sort_by_layer_simple (keep as fallback)
+2. Add sort_by_dependency(&mut self) -> Result<(), DependencyCycleError>
+   - Group extensions by layer (already a Vec per layer value 0-7)
+   - Within each layer, topological sort by depends_on
+   - If cycle detected, return DependencyCycleError { cycle: Vec<String> }
+   - Then merge all layers back in order
+
+3. Add DependencyCycleError { cycle: Vec<String> } struct that implements
+   std::error::Error and Display with message like:
+   "Cyclic extension dependency detected: a -> b -> a"
+
+4. Add validate_dependencies(&self) -> Result<(), DependencyCycleError>
+   for checking without sorting
+
+Use a simple Kahn's algorithm (indegree counting) for the topological sort.
+Do not add petgraph or other graph library dependencies."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 80
+files = ["crates/roko-core/src/extension.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/extension.rs", lines = "454-457", why = "Existing sort_by_layer — simple sort_by_key(layer), ignores depends_on" },
+    { path = "crates/roko-core/src/extension.rs", lines = "233-249", why = "ExtensionMeta with depends_on: Vec<String> field" },
+    { path = "crates/roko-core/src/extension.rs", lines = "276-285", why = "Extension::meta() default impl — provides depends_on" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "495-513", why = "V2 dependency resolution: within-layer topo sort, cyclic = startup error, cross-layer not supported" },
+]
+symbols = [
+    "sort_by_layer — method at extension.rs:455 (sort_by_key on layer())",
+    "ExtensionMeta.depends_on — Vec<String> at extension.rs:244",
+    "Extension::meta() — default impl at extension.rs:277",
+]
+anti_patterns = [
+    "Do NOT add petgraph dependency — use Kahn's algorithm (simple BFS with indegree counting)",
+    "Do NOT sort cross-layer — layers already have fixed order (L0 before L1, etc.)",
+    "Do NOT remove the existing sort_by_layer — rename it and keep as fallback",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'sort_by_dependency' crates/roko-core/src/extension.rs && grep -q 'DependencyCycleError' crates/roko-core/src/extension.rs"
+fail_msg = "sort_by_dependency and DependencyCycleError must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'validate_dependencies' crates/roko-core/src/extension.rs"
+fail_msg = "validate_dependencies must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib extension 2>&1"
+fail_msg = "Existing extension tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T08: Add extension loading and TOML authoring config
+# ─────────────────────────────────────────────────────────────────────────────
+# The existing extension_loader.rs scans for plugin manifests and creates
+# PluginExtension instances. Enhance it to support ExtensionManifest TOML
+# files alongside PluginManifestFile.
+[[task]]
+id = "E30-T08"
+title = "Add ExtensionManifest TOML loading alongside plugin discovery"
+description = """Enhance crates/roko-cli/src/runner/extension_loader.rs:
+
+1. Add fn load_extension_manifest(path: &Path) -> Result<ExtensionManifest>
+   that reads a manifest.toml with [extension] section:
+   [extension]
+   name = "my-ext"
+   version = "1.0.0"
+   layer = "action"
+   tier = "declarative"
+   optional = true
+   timeout_ms = 10000
+
+2. In load_extensions(), after scanning for plugin.toml files, also scan
+   for extension.toml / manifest.toml files in .roko/extensions/{name}/
+   directories
+
+3. Map ExtensionManifest -> ExtensionMeta:
+   - ExtensionManifest.timeout_ms -> stored in ExtensionMeta (add timeout_ms: Option<u64> field)
+   - ExtensionManifest.tier -> logged but not enforced yet (WASM runtime is future work)
+
+4. Add agent-level extension config parsing for roko.toml:
+   [[agents]]
+   extensions = ["custom-linter", "report-writer"]
+   disable_extensions = ["test-runner"]
+
+   These fields are already on AgentConfig/AgentDefinition — just wire
+   extension_names parameter from config."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 80
+files = ["crates/roko-cli/src/runner/extension_loader.rs"]
+depends_on = ["E30-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "1-16", why = "Extension loader module header and imports" },
+    { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "24-59", why = "PluginExtension struct and Extension impl — pattern to follow" },
+    { path = "crates/roko-cli/src/runner/extension_loader.rs", lines = "110-200", why = "load_extensions() function — enhance with manifest.toml scanning" },
+    { path = "crates/roko-plugin/src/manifest.rs", lines = "55-80", why = "PluginManifestFile — existing TOML schema for plugins" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "136-148", why = "V2 TOML authoring example for extension manifest" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "449-489", why = "V2 extension loading order: built-in first, local second, registry third" },
+]
+symbols = [
+    "load_extensions() — public function at extension_loader.rs:117",
+    "PluginExtension — struct at extension_loader.rs:24",
+    "discover_plugins() — roko_plugin::manifest function called at extension_loader.rs:130",
+    "RokoLayout::extensions_dir() — directory path helper",
+]
+anti_patterns = [
+    "Do NOT implement registry fetch — that is future work",
+    "Do NOT implement WASM loading — just parse the tier and log it",
+    "Do NOT remove existing plugin discovery logic — add manifest loading alongside it",
+    "Do NOT add SHA-256 verification — that is for registry extensions only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'load_extension_manifest\\|ExtensionManifest' crates/roko-cli/src/runner/extension_loader.rs"
+fail_msg = "ExtensionManifest loading must be added"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'extension.toml\\|manifest.toml' crates/roko-cli/src/runner/extension_loader.rs"
+fail_msg = "Extension TOML file scanning must be added"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E30-T09: Add extension status routes to roko-serve
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (12-EXTENSIONS.md §18) maps extension status to roko-serve.
+# Add GET /api/extensions routes.
+[[task]]
+id = "E30-T09"
+title = "Add GET /api/extensions status routes to roko-serve"
+description = """Create crates/roko-serve/src/routes/extensions.rs:
+
+- GET /api/extensions — list all loaded extensions with:
+  { name, layer, tier, version, optional, health: { disabled, consecutive_failures } }
+- GET /api/extensions/{name} — detail for a single extension
+
+Follow the route module pattern from feeds.rs.
+Register `mod extensions;` in routes/mod.rs and merge into the router.
+Use ExtensionMeta from roko_core::extension for serialization.
+Add extension_chain metadata query capability to AppState (or query
+extension metadata from existing plan state)."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-serve/src/routes/extensions.rs", "crates/roko-serve/src/routes/mod.rs"]
+depends_on = ["E30-T03", "E30-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-51", why = "Route module registration — add mod extensions; and merge" },
+    { path = "crates/roko-serve/src/routes/feeds.rs", lines = "1-37", why = "Route module pattern: pub fn routes() -> Router<Arc<AppState>>" },
+    { path = "crates/roko-core/src/extension.rs", lines = "233-249", why = "ExtensionMeta struct — serializable for API response" },
+    { path = "docs/v2/12-EXTENSIONS.md", lines = "704-712", why = "V2 crate mapping: roko-serve provides GET /api/extensions" },
+]
+symbols = [
+    "AppState — shared server state at crates/roko-serve/src/state.rs",
+    "feeds::routes() — pattern at feeds.rs:27",
+    "ExtensionMeta — serializable metadata at extension.rs:234",
+]
+anti_patterns = [
+    "Do NOT add extension management (install/remove) routes — those are future work",
+    "Do NOT add WebSocket subscription for extension events — existing WS is sufficient",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mod extensions' crates/roko-serve/src/routes/mod.rs"
+fail_msg = "Extensions route module must be declared"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/extensions' crates/roko-serve/src/routes/extensions.rs"
+fail_msg = "Extension API routes must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"

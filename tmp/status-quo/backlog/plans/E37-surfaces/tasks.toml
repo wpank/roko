@@ -1,0 +1,542 @@
+[meta]
+plan = "E37-surfaces"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── E37-T01: Define surface projection contracts as typed structs ──
+#
+# The spec (20-SURFACES §3) defines 5 named surfaces each consuming typed
+# StateHub projections. projection_contract.rs has ProjectionEnvelope<T>
+# (line 42) and DataQuality (line 65) but not the per-surface projection
+# structs (FlowSummary, InboxItem, AgentPosition, AutonomyConfig, etc.).
+# Define the core projection contracts so all rendering targets can share them.
+#
+# The existing RuntimeProjectionSet (used by routes/projections.rs:39)
+# computes projections from AppState but returns untyped Value. Add typed
+# structs so downstream consumers can deserialize into concrete types.
+
+[[task]]
+id = "E37-T01"
+title = "Define typed projection contracts for the 5 named surfaces"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = ["crates/roko-serve/src/projection_contract.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/projection_contract.rs", lines = "1-96", why = "ProjectionEnvelope<T> at line 42, DataQuality at line 65 — add surface-specific projection types after these" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-100", why = "DashboardEvent enum (line 25) and DashboardSnapshot — projections derive from this data" },
+    { path = "docs/v2/20-SURFACES.md", lines = "86-140", why = "Workbench projections: FlowSummary struct, FlowStatus enum, SlotState" },
+    { path = "docs/v2/20-SURFACES.md", lines = "204-222", why = "InboxItem struct definition with urgency, category, deadline fields" },
+    { path = "docs/v2/20-SURFACES.md", lines = "288-306", why = "AgentPosition and CFactorSummary struct definitions" },
+    { path = "docs/v2/20-SURFACES.md", lines = "350-370", why = "AutonomyConfig struct with per_capability HashMap and AutonomyLevel enum" },
+]
+symbols = [
+    "ProjectionEnvelope<T> — projection_contract.rs:42, generic wrapper for projections",
+    "DataQuality — projection_contract.rs:65, quality metadata attached to projections",
+    "DashboardSnapshot — dashboard_snapshot.rs, materialized state from which projections are derived",
+    "RuntimeProjectionSet — projection_contract.rs, computes projections from AppState (returns Value today)",
+]
+anti_patterns = [
+    "Do NOT duplicate DashboardSnapshot fields — projections are computed views, not copies",
+    "Do NOT add runtime logic — these are pure data contract structs (Serialize/Deserialize)",
+    "Do NOT modify ProjectionEnvelope or DataQuality — add new types alongside them",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FlowSummary' crates/roko-serve/src/projection_contract.rs"
+fail_msg = "FlowSummary struct must exist for Workbench surface"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'InboxItem' crates/roko-serve/src/projection_contract.rs"
+fail_msg = "InboxItem struct must exist for Agent Inbox surface"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AgentPosition' crates/roko-serve/src/projection_contract.rs"
+fail_msg = "AgentPosition struct must exist for Stigmergy Minimap surface"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AutonomyConfig' crates/roko-serve/src/projection_contract.rs"
+fail_msg = "AutonomyConfig struct must exist for Autonomy Slider surface"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["FlowSummary (run_id, graph_name, progress_pct, cost_usd, elapsed, status, active_nodes, pending_human), FlowStatus (Running, Paused, WaitingHuman, Completed, Failed, Cancelled), InboxItem (id, urgency, category, summary, source_agent, timestamp, deadline, blocking_run), AgentPosition (id, x, y, status, vitality, profile, current_task), CFactorSummary (overall, turn_taking_entropy, peer_prediction_accuracy, citation_reciprocity, hdc_diversity), AutonomyConfig (agent_id, per_capability, default_level) all defined with Serialize/Deserialize"]
+
+
+# ── E37-T02: Add InboxCategory enum and urgency routing table ──
+#
+# The spec (20-SURFACES §3.2) defines 8 InboxCategory variants with routing
+# rules per urgency level. DashboardEvent (dashboard_snapshot.rs:25) has no
+# inbox types. Add InboxCategory, UrgencyLevel, and the routing logic to
+# roko-core so both TUI and serve can use them.
+
+[[task]]
+id = "E37-T02"
+title = "Add InboxCategory enum with urgency routing table to roko-core"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/dashboard_snapshot.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-100", why = "DashboardEvent enum starts at line 25 with serde tag=type, rename_all=snake_case — inbox events will be new variants" },
+    { path = "docs/v2/20-SURFACES.md", lines = "153-237", why = "InboxCategory enum (8 variants), UrgencyLevel enum (3 levels), routing table mapping category to transport strip visibility" },
+]
+symbols = [
+    "DashboardEvent — dashboard_snapshot.rs:25, event enum that drives DashboardSnapshot.apply()",
+    "DashboardSnapshot — dashboard_snapshot.rs, materialized state with apply() method",
+]
+anti_patterns = [
+    "Do NOT add rendering logic — this is the data model only",
+    "Do NOT change existing DashboardEvent variants — add new ones alongside",
+    "Do NOT break the serde(tag = 'type', rename_all = 'snake_case') format",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'InboxCategory' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "InboxCategory enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'UrgencyLevel' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "UrgencyLevel enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GateVerdict' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "GateVerdict variant must exist in InboxCategory"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -cE 'AgentQuestion|BudgetAlert|TaskCompletion|StructuralChange|SecurityEvent|KnowledgeEvent|SystemEvent' crates/roko-core/src/dashboard_snapshot.rs | grep -q '[7]'"
+fail_msg = "All 7 remaining InboxCategory variants must be present"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["InboxCategory has 8 variants (GateVerdict, AgentQuestion, BudgetAlert, TaskCompletion, StructuralChange, SecurityEvent, KnowledgeEvent, SystemEvent); UrgencyLevel has 3 (Notify, Question, Review); routing function maps category to default urgency and transport-strip visibility per the spec table; all derive Serialize, Deserialize, Clone, Debug"]
+
+
+# ── E37-T03: Add autonomy level types and per-capability config ──
+#
+# The spec (20-SURFACES §3.5) defines 5 autonomy levels (0-4) with
+# per-capability granularity. No autonomy types exist in the codebase.
+# agent.rs has 28 AgentRole variants (line 5) and ProviderKind (line 34)
+# but no autonomy concept. Add AutonomyLevel enum and AutonomyConfig
+# struct to roko-core.
+
+[[task]]
+id = "E37-T03"
+title = "Add AutonomyLevel enum and per-capability AutonomyConfig to roko-core"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/agent.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/agent.rs", lines = "1-80", why = "ProviderKind enum (line 34), AgentRole and ToolPermissions — autonomy config belongs alongside agent definitions" },
+    { path = "docs/v2/20-SURFACES.md", lines = "326-388", why = "Autonomy Slider: 5 levels (Observe=0 through Full=4), per-capability granularity, invariants (no Level 5 in slider)" },
+    { path = "docs/v2/20-SURFACES.md", lines = "350-370", why = "AutonomyConfig struct definition with per_capability HashMap<Capability, AutonomyLevel>" },
+]
+symbols = [
+    "ProviderKind — agent.rs:34, existing provider enum that autonomy types sit alongside",
+    "AgentRole — agent.rs, 28 role variants for agent dispatch",
+    "ToolPermissions — agent.rs, per-role tool access; autonomy level controls execution scope",
+]
+anti_patterns = [
+    "Do NOT define Level 5 (structural evolution) — spec explicitly excludes it from the slider (it follows the L4 approval flow in 16-SECURITY §11)",
+    "Do NOT add runtime enforcement logic — just the data model for now",
+    "Do NOT duplicate ToolPermissions — AutonomyLevel and ToolPermissions are orthogonal concepts",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AutonomyLevel' crates/roko-core/src/agent.rs"
+fail_msg = "AutonomyLevel enum must exist in agent.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -cE 'Observe|Suggest|ActReview|Guardrails|Full' crates/roko-core/src/agent.rs | grep -q '[45]'"
+fail_msg = "All 5 autonomy levels must be defined (Observe through Full)"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AutonomyConfig' crates/roko-core/src/agent.rs"
+fail_msg = "AutonomyConfig struct must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["AutonomyLevel enum with Observe=0, Suggest=1, ActReview=2, Guardrails=3, Full=4 as repr(u8); AutonomyConfig struct with agent_id (String), per_capability (HashMap<String, AutonomyLevel>), default_level (AutonomyLevel); Level 5 not representable; all derive Serialize, Deserialize, Clone, Debug"]
+
+
+# ── E37-T04: Map TUI tabs to v2 surface contracts ──
+#
+# tabs.rs defines 10 TUI tabs (F1-F10) following the Mori pattern. The
+# Tab enum (line 10) has Dashboard, Plans, Agents, Git, Logs, Config,
+# Inspect, Marketplace, Atelier, Learning. The v2 spec maps tabs to 7
+# named surfaces differently (F1=Workbench, F2=Canvas, F3=Flows,
+# F4=Inbox, F5=Knowledge, F6=System, F7=Agents).
+#
+# Add a V2Surface enum and mapping function alongside the existing Tab
+# enum so we can incrementally migrate without breaking the current TUI.
+
+[[task]]
+id = "E37-T04"
+title = "Add v2 surface-to-tab mapping alongside existing Tab enum"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-cli/src/tui/tabs.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/tui/tabs.rs", lines = "1-80", why = "Current Tab enum (line 10): Dashboard, Plans, Agents, Git, Logs, Config, Inspect, Marketplace, Atelier, Learning. Tab::ALL at line 35, fkey() at line 50, from_key() at line 67" },
+    { path = "docs/v2/20-SURFACES.md", lines = "25-52", why = "v2 TUI tab mapping: F1 Workbench, F2 Canvas, F3 Flows, F4 Inbox, F5 Knowledge, F6 System, F7 Agents with projections consumed per tab" },
+    { path = "crates/roko-cli/src/surface_inventory.rs", lines = "1-56", why = "SurfaceEntry (line 45), SurfaceKind (line 32), SurfaceStatus (line 18) — existing surface tracking" },
+]
+symbols = [
+    "Tab — tabs.rs:10, current 10-tab enum (Dashboard through Learning)",
+    "Tab::ALL — tabs.rs:35, display-order constant array of 10 tabs",
+    "Tab::fkey() — tabs.rs:50, maps Tab to KeyCode::F(n)",
+    "Tab::from_key() — tabs.rs:67, matches KeyCode to Tab",
+    "SurfaceEntry — surface_inventory.rs:45, per-surface metadata with status tracking",
+]
+anti_patterns = [
+    "Do NOT remove or rename existing Tab variants — add a V2Surface or mapping function alongside",
+    "Do NOT break Tab::ALL, fkey(), or from_key() — existing TUI depends on them",
+    "Do NOT change the F-key mappings — add the surface mapping as a separate concern",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'V2Surface|Workbench|surface_name' crates/roko-cli/src/tui/tabs.rs"
+fail_msg = "v2 surface mapping must exist in tabs.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'Canvas|Flows|Inbox|Knowledge|System' crates/roko-cli/src/tui/tabs.rs"
+fail_msg = "All 7 v2 surface names must be represented"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["A V2Surface enum with Workbench, Canvas, Flows, Inbox, Knowledge, System, Agents variants; a mapping from Tab to Vec<V2Surface> (some tabs map to multiple surfaces, e.g. F1 -> Workbench + Inbox badge); the 7 named surfaces from the spec are all represented; existing Tab enum, Tab::ALL, fkey(), from_key() all unchanged"]
+
+
+# ── E37-T05: Add surface event types for Workbench interactions ──
+#
+# The spec (20-SURFACES §3.1) defines typed events emitted by each
+# surface (TaskAssign, FlowCancel, SlotFill, etc.). These are the
+# interaction contract decoupling surfaces from backends.
+#
+# runtime_event.rs has RuntimeEvent (line 64) with serde tag=kind. Add
+# a separate SurfaceEvent enum for surface-emitted user actions so they
+# don't mix with engine-emitted RuntimeEvent variants.
+
+[[task]]
+id = "E37-T05"
+title = "Define Workbench surface event types (TaskAssign, FlowCancel, etc.)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/runtime_event.rs"]
+role = "implementer"
+depends_on = ["E37-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/runtime_event.rs", lines = "1-100", why = "RuntimeEventEnvelope (line 12), RuntimeEvent enum (line 64) with serde(tag=kind, content=data) — add SurfaceEvent as a separate enum, not mixed into RuntimeEvent" },
+    { path = "docs/v2/20-SURFACES.md", lines = "100-140", why = "Workbench events: TaskAssign, SlotFill, MacroAdjust, FlowCancel, FlowPause, FlowResume, HumanRespond with payload definitions" },
+    { path = "docs/v2/20-SURFACES.md", lines = "255-267", why = "Canvas events: NodeAdd, NodeRemove, EdgeCreate, EdgeRemove, MacroPromote, SlotDeclare, GraphSave, GraphPublish" },
+]
+symbols = [
+    "RuntimeEventEnvelope — runtime_event.rs:12, carries run_id + seq + ts + payload",
+    "RuntimeEvent — runtime_event.rs:64, engine-emitted events (WorkflowStarted, AgentSpawned, etc.)",
+    "WorkflowOutcome — runtime_event.rs:41, existing outcome enum (Success/Halted/Cancelled)",
+]
+anti_patterns = [
+    "Do NOT mix surface events into RuntimeEvent — define a separate SurfaceEvent enum",
+    "Do NOT add event handling logic — these are pure data types",
+    "Do NOT change existing RuntimeEvent variants or their serde format",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SurfaceEvent' crates/roko-core/src/runtime_event.rs"
+fail_msg = "SurfaceEvent enum must exist in runtime_event.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TaskAssign' crates/roko-core/src/runtime_event.rs"
+fail_msg = "TaskAssign variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FlowCancel' crates/roko-core/src/runtime_event.rs"
+fail_msg = "FlowCancel variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'HumanRespond' crates/roko-core/src/runtime_event.rs"
+fail_msg = "HumanRespond variant must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["SurfaceEvent enum with serde(tag=kind, content=data, rename_all=snake_case); Workbench variants: TaskAssign{graph, inputs, budget, deadline}, SlotFill{agent_id, slot_index, cell_ref}, MacroAdjust{run_id, macro_name, new_value}, FlowCancel{run_id}, FlowPause{run_id}, FlowResume{run_id}, HumanRespond{run_id, cell_id, response}; each carries appropriate payload fields"]
+
+
+# ── E37-T06: Add Inbox surface event types and DashboardEvent integration ──
+#
+# Agent Inbox emits Approve, Reject, Defer, Dismiss events (spec §3.2).
+# These need to be wired into DashboardEvent so StateHub can track inbox
+# item lifecycle. DashboardSnapshot needs an inbox_pending_count field.
+
+[[task]]
+id = "E37-T06"
+title = "Add Inbox surface events (Approve, Reject, Defer, Dismiss) to DashboardEvent"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["crates/roko-core/src/dashboard_snapshot.rs"]
+role = "implementer"
+depends_on = ["E37-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-100", why = "DashboardEvent enum at line 25 (serde tag=type, rename_all=snake_case) — add inbox action variants here" },
+    { path = "docs/v2/20-SURFACES.md", lines = "224-237", why = "Inbox events: Approve{pulse_id}, Reject{pulse_id, reason}, Defer{pulse_id, defer_until}, Dismiss{pulse_id}" },
+    { path = "docs/v2/20-SURFACES.md", lines = "204-222", why = "InboxItem struct definition — events reference items by pulse_id" },
+]
+symbols = [
+    "DashboardEvent — dashboard_snapshot.rs:25, event enum (serde tag=type) to extend with inbox variants",
+    "DashboardSnapshot — dashboard_snapshot.rs, has apply() method that processes events into materialized state",
+]
+anti_patterns = [
+    "Do NOT add runtime logic — just the event variants and their payload types",
+    "Do NOT break existing serde format — keep tag=type, rename_all=snake_case",
+    "Do NOT remove or modify existing DashboardEvent variants",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'InboxApprove|InboxReject' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "Inbox action event variants must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'InboxItemReceived' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "InboxItemReceived variant must exist for incoming inbox items"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-runtime 2>&1"
+fail_msg = "roko-runtime must compile (StateHub applies events)"
+
+acceptance = ["DashboardEvent has InboxItemReceived{item_id, category, urgency, summary}, InboxApprove{item_id}, InboxReject{item_id, reason}, InboxDefer{item_id, defer_until}, InboxDismiss{item_id} variants; DashboardSnapshot gains inbox_pending_count: usize field updated by apply()"]
+
+
+# ── E37-T07: Add Autonomy Slider surface events ──
+#
+# The Autonomy Slider emits AutonomyLevelChange, CapabilityGrant,
+# CapabilityRevoke, BulkAutonomySet events (spec §3.5). Wire these into
+# the SurfaceEvent enum added by E37-T05.
+
+[[task]]
+id = "E37-T07"
+title = "Add Autonomy Slider surface events to SurfaceEvent enum"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-core/src/runtime_event.rs"]
+role = "implementer"
+depends_on = ["E37-T03", "E37-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/runtime_event.rs", lines = "1-100", why = "SurfaceEvent enum (added by E37-T05) — extend with autonomy slider variants" },
+    { path = "docs/v2/20-SURFACES.md", lines = "374-388", why = "Autonomy Slider events: AutonomyLevelChange{agent_id, capability, new_level}, CapabilityGrant{agent_id, capability, constraints}, CapabilityRevoke{agent_id, capability}, BulkAutonomySet{agent_id, level}" },
+]
+symbols = [
+    "SurfaceEvent — runtime_event.rs (after E37-T05), surface event enum to extend with autonomy variants",
+    "AutonomyLevel — agent.rs (after E37-T03), autonomy level enum (0-4 only)",
+]
+anti_patterns = [
+    "Do NOT allow Level 5 in AutonomyLevelChange — validate 0-4 range only via AutonomyLevel type",
+    "Do NOT duplicate AutonomyLevel — reference the type from agent.rs",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AutonomyLevelChange' crates/roko-core/src/runtime_event.rs"
+fail_msg = "AutonomyLevelChange variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CapabilityGrant' crates/roko-core/src/runtime_event.rs"
+fail_msg = "CapabilityGrant variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'BulkAutonomySet' crates/roko-core/src/runtime_event.rs"
+fail_msg = "BulkAutonomySet variant must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["SurfaceEvent has AutonomyLevelChange{agent_id, capability, new_level: AutonomyLevel}, CapabilityGrant{agent_id, capability, constraints: Value}, CapabilityRevoke{agent_id, capability}, BulkAutonomySet{agent_id, level: AutonomyLevel}; AutonomyLevelChange.new_level uses the AutonomyLevel type (enforcing 0-4 only)"]
+
+
+# ── E37-T08: Add projection routes to roko-serve for surface data ──
+#
+# routes/projections.rs (line 21) exposes /projections/catalog,
+# /projections/{name}, /projections/{name}/stream. These return
+# untyped Value from RuntimeProjectionSet::project(). Add named
+# endpoints for the 5 surface projections that return typed data.
+
+[[task]]
+id = "E37-T08"
+title = "Add surface projection endpoints to roko-serve routes"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-serve/src/routes/projections.rs"]
+role = "implementer"
+depends_on = ["E37-T01", "E37-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/projections.rs", lines = "1-60", why = "Existing routes() at line 21: /projections/catalog, /projections/{name}, /projections/{name}/stream — add named surface endpoints" },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-52", why = "Router assembly — verify projections module is already mounted; add any new route modules if needed" },
+    { path = "crates/roko-serve/src/projection_contract.rs", lines = "36-59", why = "ProjectionEnvelope<T> definition at line 42 — response wrapper for new endpoints" },
+]
+symbols = [
+    "routes() -> Router<Arc<AppState>> — projections.rs:21, projection endpoint router to extend",
+    "ProjectionEnvelope<T> — projection_contract.rs:42, typed response wrapper",
+    "RuntimeProjectionSet — projection_contract.rs, loads and computes projections from AppState",
+    "AppState — state.rs, shared server state with state_hub field",
+]
+anti_patterns = [
+    "Do NOT return raw DashboardSnapshot — projections are computed views specific to each surface",
+    "Do NOT add WebSocket subscriptions here — those exist in ws.rs and sse.rs",
+    "Do NOT duplicate the generic /projections/{name} pattern — add dedicated typed endpoints for discoverability",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'workbench|inbox|autonomy' crates/roko-serve/src/routes/projections.rs"
+fail_msg = "Surface projection endpoints must exist for workbench, inbox, and autonomy"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'canvas|minimap' crates/roko-serve/src/routes/projections.rs"
+fail_msg = "Surface projection endpoints must exist for canvas and minimap"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["GET /projections/workbench, /projections/inbox, /projections/canvas, /projections/minimap, /projections/autonomy routes exist in routes() builder; each returns ProjectionEnvelope<T> wrapping the appropriate typed projection struct from E37-T01; handlers extract data from AppState.state_hub"]
+
+
+# ── E37-T09: Add 12 primitive object types enum ──
+#
+# The spec (20-SURFACES §2) defines 12 primitive object types (Agent,
+# Extension, Connector, Gate, Feed, Recipe, Plan, Scorer, Arena, Group,
+# Knowledge, Config). These are the authoring primitives for the
+# Generative Canvas.
+#
+# foundation.rs has ModelCallRequest (line 23), CachePolicy (line 86),
+# TokenBudget (line 98) — add the ObjectType enum here as a foundational
+# type alongside them.
+
+[[task]]
+id = "E37-T09"
+title = "Define the 12 primitive object types enum for authoring system"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-core/src/foundation.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/foundation.rs", lines = "1-100", why = "Foundation traits and types — ModelCallRequest (line 23), CachePolicy (line 86), TokenBudget (line 98). ObjectType enum belongs here as a foundational authoring concept" },
+    { path = "docs/v2/20-SURFACES.md", lines = "57-75", why = "12 primitive object types table: Agent, Extension, Connector, Gate, Feed, Recipe, Plan, Scorer, Arena, Group, Knowledge, Config with descriptions" },
+]
+symbols = [
+    "ModelCallRequest — foundation.rs:23, request type (shows the pattern of types in this file)",
+    "CachePolicy — foundation.rs:86, enum with derives (pattern to follow)",
+    "TokenBudget — foundation.rs:98, struct with derives",
+]
+anti_patterns = [
+    "Do NOT add authoring logic — just the enum definition with Serialize/Deserialize",
+    "Do NOT name it PrimitiveType — use ObjectType to match spec terminology",
+    "Do NOT add Display impl beyond Debug — keep it simple for a mechanical task",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ObjectType' crates/roko-core/src/foundation.rs"
+fail_msg = "ObjectType enum must exist in foundation.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -cE 'Extension|Connector|Feed|Recipe|Scorer|Arena|Group' crates/roko-core/src/foundation.rs | grep -q '[7]'"
+fail_msg = "All 12 primitive object types should be present (checking 7 unique ones not conflicting with common words)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["ObjectType enum with all 12 variants (Agent, Extension, Connector, Gate, Feed, Recipe, Plan, Scorer, Arena, Group, Knowledge, Config); derives Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash"]

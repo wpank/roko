@@ -9,7 +9,12 @@
 > `dry-run-flag`, `live-demo-phase1`, and `live-demo-phase2` were deleted in
 > `7899494d`; none is a runnable current root, none appears in the index, and
 > `e2e-smoke` is not an equivalent replacement for the synthetic live-demo
-> tasks. Use [`plans/INDEX.md`](../../plans/INDEX.md) for generated counts,
+> tasks. Partial ancestor residue is not completion: only dry-run preview data
+> structs and an unexported/untested greeting function survive; runtime dry-run
+> wiring, greeting export/test, and all farewell work are absent. The old demo
+> script's `--live` mode now fails closed rather than dispatching either absent
+> root; its default mode is a deterministic no-network simulation. Use
+> [`plans/INDEX.md`](../../plans/INDEX.md) for generated counts,
 > [`plans/_meta/IMPLEMENTATION_ORDER.md`](../../plans/_meta/IMPLEMENTATION_ORDER.md)
 > for current queue disposition, and the master checklist for dependency order.
 >

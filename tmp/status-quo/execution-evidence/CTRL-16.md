@@ -3,13 +3,17 @@
 ## Assignment
 
 - Plan: `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`, Wave 0 `CTRL-16`.
-- Base SHA: `3a4e57f02efa47f3106f54969799c34486b3ed7b`.
-- Branch/worktree: `agent/CTRL-16` / `workers/CTRL-16`.
+- Original r1 base: `3a4e57f02efa47f3106f54969799c34486b3ed7b`.
+- Corrected-candidate base: `7f5221e9da762f51d2ab4056f0989b49de76bdea`;
+  content-equivalent r1 replay: `bc11d75a84d1d4d90ad1cf988f41d97346c45c1e`.
+- Branch/worktree: `agent/CTRL-16-r2` / `workers/CTRL-16-r2`.
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`.
 - Reserved scope: `plans/_meta/IMPLEMENTATION_ORDER.md`,
   `tmp/status-quo/73-EXAMPLES-PLANS-GRAPHS.md`,
-  `tmp/status-quo/backlog/02-PLANS-RECONCILIATION.md`, and this evidence.
-- Candidate commit: `CANDIDATE_SHA_REPORTED_AFTER_COMMIT`.
+  `tmp/status-quo/backlog/02-PLANS-RECONCILIATION.md`,
+  `scripts/demo-knowledge-feedback.sh`, and this evidence.
+- Candidate identity: the exact immutable cumulative candidate SHA is supplied
+  by the fresh independent review record (a commit cannot contain its own SHA).
 
 ## Requirement
 
@@ -22,6 +26,13 @@ record that CTRL-01/CTRL-05 had recovered and verified the real 24-task
 baseline plan counts and side-queue language without an exact current
 disposition for the removed roots.
 
+The r1 independent review (`CTRL-16-REVIEW.md`, rejected in integration commit
+`b59e497e7`) found three remaining defects: the tracked demo script still
+dispatched both absent live-demo roots, the disposition omitted partial source
+residue from `236686c7`, and this evidence retained literal candidate-SHA
+template tokens. The corrected candidate must close all three without reviving
+or marking any deleted task complete.
+
 Expected behavior:
 
 - every root presented as runnable has a tracked, non-empty, parseable
@@ -30,16 +41,19 @@ Expected behavior:
   and the three architecture-DeFi parity rows continue to resolve to its Q14;
 - the deleted dry-run and live-demo roots are explicitly historical,
   non-runnable, absent from the index, and not recreated;
+- every active script path refuses the deleted live-demo roots; the retained
+  simulation is deterministic, no-network, and can write to isolated state;
 - history and semantic boundaries remain clear: related execution-honesty work
   is not mislabeled as a task-for-task dry-run replacement, and `e2e-smoke` is
   not mislabeled as equivalent to greeting/farewell demo tasks;
-- no task/status/count, manifest, generated index, ownership ledger, source, or
-  lockfile changes.
+- no task/status/count, manifest, generated index, ownership ledger, production
+  Rust source, or lockfile changes.
 
 Dependencies: CTRL-01's canonical import (`699df4e0e`), accepted review
 (`c19bd3016`), and merge (`01c00546b`); CTRL-05's architecture reconciliation
-and accepted proof; and CTRL-15's corrected ownership/index integration through
-base `3a4e57f02`.
+and accepted proof; CTRL-15's corrected ownership/index integration; and the r1
+rejection integrated at `b59e497e7`. The r2 base also contains the separately
+accepted workspace-lock precursor and does not change CTRL-16 semantics.
 
 Explicit non-goals: implementing a dry-run feature; executing or changing any
 task; manufacturing absent directories; changing manifests, the master,
@@ -74,6 +88,24 @@ CTRL-05 then verified Q14 and its three DeFi consumers. The current architecture
 manifest is tracked, non-empty, and has SHA-256
 `3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5`.
 
+R1's documentation-only boundary was incomplete. The tracked executable
+`scripts/demo-knowledge-feedback.sh --live` still called
+`roko plan run plans/live-demo-phase1/` and then `live-demo-phase2/`, even
+though neither manifest exists. Commit `236686c7` also introduced source bytes
+from the deleted proposals:
+
+- `crates/roko-cli/src/dry_run.rs`, exported by `roko-cli`, defines only
+  `DryRunGate` and `DryRunPreview`. Its module prose claims `roko run
+  --dry-run`, but the current `Command::Run` has no flag, `WorkflowRunConfig`
+  has no field, and no `build_dry_run_preview`, workflow early exit,
+  `dry_run_no_model_call_invoked`, or `dry_run_phase_list_*` test exists.
+- `crates/roko-std/src/greeting.rs` defines only `format_greeting`.
+  `roko-std/src/lib.rs` does not export `greeting`, no greeting test exists,
+  and neither `format_farewell` nor its test exists.
+
+These are partial inherited artifacts, not task completion, cancellation, an
+accepted replacement, or a task-level supersession.
+
 ## Implementation
 
 - Made current count and authority boundaries explicit in the implementation
@@ -85,15 +117,26 @@ manifest is tracked, non-empty, and has SHA-256
 - Moved the three absent names into a historical-removal table keyed to
   `7899494d`, with explicit non-equivalence/supersession boundaries and a rule
   against execution or placeholder recreation.
+- Recorded the exact surviving structs/function and every missing wiring/test
+  boundary from the rejected review, so future work reuses rather than
+  duplicates residue without treating it as accepted completion.
+- Replaced the script's advertised live dispatcher with an immediate fail-closed
+  `--live` result before state creation. Default mode now writes fixed simulated
+  episodes to `ROKO_DEMO_STATE_DIR` (or `.roko` by explicit default), performs
+  no Cargo build/network/model/plan call, uses no deleted-root task IDs, and
+  points to the current `EpisodeSink` and prompt-builder production anchors.
+  It also rejects either removed plan root (or a descendant) as a configured
+  state directory, so no script mode can recreate or mutate those roots.
 - Clarified that the already-complete W01/P06/P07 names are historical labels,
   not current runnable roots.
 - Added narrowly scoped current-control notices to the two baseline inventory
   documents; their dated bodies remain preserved for provenance.
 
-No plan or task semantics changed. Failure/recovery/security behavior is
-unaffected because this candidate changes documentation only. The safety
-property is operational: absent plan names can no longer be mistaken for valid
-execution inputs.
+No plan or task semantics changed. The only executable behavior change is the
+demo script's safe removal of an impossible live path; it neither implements
+nor claims the old demo tasks. The operational safety property is now complete:
+absent plan names cannot be mistaken for valid inputs through either the
+implementation-order document or this active script.
 
 ## Verification
 
@@ -115,20 +158,21 @@ The candidate verification contract is:
 7. A disposable `plans` generator run reproduces tracked plans/INDEX.md exactly:
    SHA-256 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8.
 8. Source plans/INDEX.md is byte-unchanged and `git diff --check` passes.
+9. `bash -n` passes; `--help` is truthful; `--live` exits 2 before any state or
+   plan mutation; default simulation succeeds against isolated state without
+   network/build/plan execution and emits exactly two valid JSON records.
+10. No active script command passes either absent root to `roko plan run`; the
+    cumulative corrected scope is exactly the five reserved paths.
 ```
 
 Exact command output is recorded below after running those checks on the final
 candidate tree.
 
 ```text
-TOML_OK tracked=193 parse_errors=0
-PLAN_CENSUS_OK manifests=32 executable=30/144 superseded=2/66
-RUNNABLE_ROOTS_OK architecture-core-queue=24 architecture-defi-critical-path=3 e2e-smoke=2
-HISTORICAL_ROOTS_OK dry-run-flag/live-demo-phase1/live-demo-phase2 absent_and_unindexed
-Q14_RESOLUTION_OK anchor=1 consumers=3
-HISTORY_BLOBS_OK dry-run-flag=10 live-demo-phase1=2 live-demo-phase2=2 architecture-core-queue=24
-IMPLEMENTATION_ORDER_ROOT_SET_OK current_ready_roots=30
-CTRL16_LINK_TARGETS_OK targets=8
+TOML_ROOT_Q14_OK tracked=193 manifests=32 executable=30/144 superseded=2/66 runnable=24/3/2 absent=3 anchor=1 consumers=3
+HISTORY_BLOBS_OK dry_run=10 live1=2 live2=2 architecture=24
+RESIDUE_BOUNDARY_OK dry_run_types=2 export=1 run_flag=0 runtime_field=0 builder=0 named_tests=0 greeting=1 std_export=0 greeting_test=0 farewell=0
+MARKDOWN_LINKS_OK checked=16
 
 backlog strict:  exit 0; 0 diagnostics in 55 plans
 self-heal strict: exit 0; 0 diagnostics in 6 plans
@@ -136,6 +180,13 @@ top-level strict generator run: exit 1; 94 diagnostics in 32 plans
 top-level diagnostic census: 94 PLAN_031 and no other PLAN code
 generated index SHA-256: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8
 source index before/after: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8
+SCRIPT_SYNTAX_HELP_OK bash_n=0 help=0 no_state
+SCRIPT_LIVE_FAIL_CLOSED_OK exit=2 no_state no_absent_roots
+SCRIPT_STATE_GUARD_OK phase1=exit2 phase2_descendant=exit2 no_created_roots
+SCRIPT_SIMULATION_OK exit=0 deterministic_sha=ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e no_network_or_plan records=2
+SCRIPT_PLAN_TREE_UNCHANGED sha=9fcfc2de50ff6e9cf72145613b96ed9daf4a98a3975a8290c47996bd2242a247
+active absent-root plan-run scan: zero matches
+cumulative replay/correction scope: exactly five reserved paths
 git diff --check: exit 0
 ```
 
@@ -150,19 +201,23 @@ reviewed behavior used for the current 30/144 index.
 
 ## Review readiness
 
-- Candidate implementation commit: `CANDIDATE_SHA_REPORTED_AFTER_COMMIT`.
-- Diff scope: exactly the four reserved documentation/evidence paths.
+- Candidate implementation identity: exact immutable cumulative SHA supplied
+  by the fresh independent review record.
+- Diff scope: exactly the five reserved documentation/script/evidence paths.
 - Known limitations: the historical dry-run proposal has no equivalent current
   task-level owner. This change records that gap truthfully; it does not invent
   a supersession or authorize feature work.
 - Required reviewer focus: reconstruct the three deleted blobs from Git,
   challenge every current/historical mapping, verify all named runnable roots,
-  reproduce Q14 resolution, TOML/strict/index gates, and confirm no status,
-  count, manifest, ownership, or generated-index change.
+  reproduce Q14 resolution and residue absence/presence checks, exercise all
+  script modes in isolated state, reproduce TOML/strict/index gates, and confirm
+  no status, count, manifest, ownership, or generated-index change.
 
 ## Integration
 
-- Review evidence: pending independent review.
+- R1 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW.md`, verdict
+  `REJECTED`, integrated as `b59e497e7`; all three findings are addressed above.
+- Fresh r2 review evidence: pending independent review.
 - Integration commit: pending.
 - Post-merge commands/results: pending integration-owner verification.
 - Final status: `IMPLEMENTED_UNREVIEWED`.

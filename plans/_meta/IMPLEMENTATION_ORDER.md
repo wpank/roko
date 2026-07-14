@@ -81,13 +81,15 @@ pass for this queue.
 These names appeared in the pre-removal plan corpus but are not current plan
 roots. Commit `7899494d336d83a7bf3dc95b6592f1b90de02c8f` deleted all three manifests.
 They are absent from the generated index and must not be passed to `roko plan
-run` or recreated as empty directories.
+run` or recreated as empty directories. Ancestor commit `236686c7` left partial
+source artifacts for two proposals; those bytes are recorded below so they are
+neither duplicated nor mistaken for completed or superseded tasks.
 
 | Historical root | Last tracked contents | Current disposition and mapping |
 |---|---|---|
-| `dry-run-flag` | 10 ready tasks for a proposed workflow-engine preview flag | Removed in `7899494d`; no current manifest or task-for-task supersession exists. P11/E01/self-heal own related execution-honesty outcomes, but they are not an equivalent dry-run feature replacement. Any revival requires a newly reviewed canonical plan against current engines. |
-| `live-demo-phase1` | 2 ready synthetic `roko-std` greeting tasks | Removed in `7899494d`; no current replacement. Not mapped to `e2e-smoke`, whose share-token acceptance is different. |
-| `live-demo-phase2` | 2 ready synthetic `roko-std` farewell tasks, historically ordered after phase 1 | Removed in `7899494d`; no current replacement. Its former dependency is historical and non-runnable. |
+| `dry-run-flag` | 10 ready tasks for a proposed workflow-engine preview flag | Removed in `7899494d`; no current manifest or task-for-task supersession. `crates/roko-cli/src/dry_run.rs` survives from `236686c7` and is exported by `roko-cli`, but it contains only `DryRunGate`/`DryRunPreview` data types (plus stale module prose). `roko run` has no `--dry-run`, `WorkflowRunConfig` has no `dry_run`, and no builder, workflow early exit, or named plan tests survive. P11/E01/self-heal execution-honesty work is related but not equivalent. Any revival must reuse/audit the structs in a newly reviewed plan. |
+| `live-demo-phase1` | 2 ready synthetic `roko-std` greeting tasks | Removed in `7899494d`; no complete current replacement or supersession. `crates/roko-std/src/greeting.rs` survives from `236686c7` with `format_greeting` only, but `roko-std/src/lib.rs` does not export the module and the required greeting test is absent. `e2e-smoke` has different share-token acceptance. |
+| `live-demo-phase2` | 2 ready synthetic `roko-std` farewell tasks, historically ordered after phase 1 | Removed in `7899494d`; `format_farewell` and its test are absent, so no current replacement or supersession exists. Its former dependency is historical and non-runnable. `scripts/demo-knowledge-feedback.sh --live` now fails closed; its default mode is a no-network simulation and does not run a plan. |
 
 ## Superseded
 

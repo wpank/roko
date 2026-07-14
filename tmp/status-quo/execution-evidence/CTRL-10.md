@@ -154,5 +154,12 @@ Observed before commit:
   verify every introduction/review-chain commit, inspect every new normative rule
   against the master, run link/path and scope checks, and confirm no historical
   record was modified.
-- Integration/post-merge status: pending independent review and integration-owner
-  action.
+- Candidate: `57d0786779773c875a4f2df70f79f53bc2cba95a`.
+- Independent review: `ACCEPTED` in `CTRL-10-REVIEW.md`; review commit
+  `1c912aa77788d76007743a0a0f42d65fbcd63c89`.
+- Integration merge: `18aad5c107c3490c595b634ef88d405cdaf1a612`.
+- Post-merge proof: all 31 pre-convention records remain byte-identical to base,
+  all 12 local links resolve, both reviewed commits are ancestors, `git diff
+  --check` passes, and integration is clean.
+- Final status: `DONE`. The convention applies prospectively and preserves every
+  historical verdict and bounded accuracy-only review.

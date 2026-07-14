@@ -54,7 +54,7 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 command -v python3 >/dev/null
-if ! STATE_ROOT="$(python3 - "${ROKO_DEMO_STATE_DIR:-$REPO_ROOT/.roko}" "$REPO_ROOT" <<'PYEOF'
+if ! STATE_ROOT="$(python3 -c '
 import os
 import sys
 
@@ -62,8 +62,8 @@ configured, repo_root = sys.argv[1:]
 repo_root = os.path.realpath(repo_root)
 
 # Normalize `.` and `..` without following symlinks. Relative state paths are
-# intentionally rooted at the repository, matching the simulation's working
-# directory. This lexical form catches a removed root that is itself an outward
+# intentionally rooted at the repository, matching the working directory used
+# by the simulation. This lexical form catches a removed root that is itself an outward
 # symlink; canonicalization alone would erase that forbidden prefix.
 if os.path.isabs(configured):
     lexical = os.path.normpath(configured)
@@ -77,9 +77,19 @@ removed_roots = (
 )
 
 
+def path_key(path: str) -> str:
+    # macOS path identity is commonly case-insensitive even though normcase does
+    # not fold case there. Be conservative for these two removed ASCII names so
+    # a differently cased, not-yet-existing leaf cannot become the same physical
+    # plan directory after mkdir.
+    return os.path.normpath(path).casefold()
+
+
 def is_within(path: str, root: str) -> bool:
     try:
-        return os.path.commonpath((path, root)) == root
+        keyed_path = path_key(path)
+        keyed_root = path_key(root)
+        return os.path.commonpath((keyed_path, keyed_root)) == keyed_root
     except ValueError:
         return False
 
@@ -102,7 +112,7 @@ for index, part in enumerate(parts):
     prefixes.append((prefix, parts[index + 1 :]))
 
 for prefix, suffix in prefixes:
-    if os.path.realpath(prefix) == repo_root:
+    if path_key(os.path.realpath(prefix)) == path_key(repo_root):
         checks.append(
             (
                 "repository-alias lexical path",
@@ -120,8 +130,7 @@ for label, path in checks:
             raise SystemExit(2)
 
 print(canonical)
-PYEOF
-)"; then
+' "${ROKO_DEMO_STATE_DIR:-$REPO_ROOT/.roko}" "$REPO_ROOT")"; then
     exit 2
 fi
 

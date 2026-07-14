@@ -540,7 +540,7 @@ sealed.
 - [ ] CTRL-11 Rebuild target/debug/roko from integrated current source.
 - [ ] CTRL-12 Confirm self-heal and backlog strict validation both exit zero.
 - [ ] CTRL-13 Confirm zero unresolved internal/external plan IDs for the chosen execution root.
-- [ ] CTRL-14 Verify status-quo-authoring-gaps remains explicitly superseded (96/96
+- [x] CTRL-14 Verify status-quo-authoring-gaps remains explicitly superseded (96/96
       skipped), with per-epic plan coverage proving why it must never execute.
 - [ ] CTRL-15 Reconcile all 120 executable tasks represented by plans/INDEX.md into
       canonical epic/self-heal ownership or an explicitly retained plan task.
@@ -1145,18 +1145,18 @@ Before ending any coordinator context, update this section on the integration br
 
 - Run ID: `status-quo-20260714T073140Z`
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
-- Integration HEAD before this checkpoint commit: `06e1d4404785b7d5c1fadcdd40740b89a8fe04b4`
+- Integration HEAD before this checkpoint commit: `9b3822b727441ba925ccbb0e92427aa4c17ba9e6`
 - Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
 - Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
 - Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
 - Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
-- Last completed wave/task: `CTRL-04` is DONE after accepted evidence-only review, integrated union-ID proof, and post-merge validation. Wave 0 is active (`CTRL-01`, `CTRL-03`–`CTRL-07` DONE; two bounded CTRL-02 precursor clusters DONE).
-- Active assignments and worktrees: the deadline/config/activity reconstruction is being rebuilt from current integration after preflight correctly found a semantic merge conflict with newer `event_loop.rs` work; the terminal `CTRL-14` supersession proof is being reconstructed against current integration; the next event-loop ownership cluster remains analysis-only until the deadline writer completes.
+- Last completed wave/task: `CTRL-14` is DONE after terminal independent review, integration, and post-merge nonexecution proof. Wave 0 is active (`CTRL-01`, `CTRL-03`–`CTRL-07`, and `CTRL-14` DONE; two bounded CTRL-02 precursor clusters DONE).
+- Active assignments and worktrees: the rebuilt deadline/config/activity candidate is in renewed independent review; `CTRL-08` operational ownership deduplication has one manifest writer; the next event-loop ownership cluster remains analysis-only until the deadline writer/reviewer complete.
 - Accepted but unmerged commits: the historical deadline candidate `c2f3f18fb945` and review `739750232d54` passed their original review, but current-integration merge preflight found a content conflict, so they are retained as reviewed history and are not mergeable acceptance evidence; a fresh candidate and renewed review are required.
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
-- Next dependency-ready tasks: rebuild and rereview the deadline candidate, independently review and integrate the terminal `CTRL-14` proof, then continue serial CTRL-02 reconstruction and the CTRL-08/09/15/16 ownership lane.
+- Next dependency-ready tasks: integrate the renewed deadline candidate if accepted, continue serial CTRL-02 reconstruction, review `CTRL-08`, and advance the CTRL-09/15/16 ownership lane.
 - Last global gate results: the current integrated validator binary reports self-heal strict `0 diagnostics in 6 plans` and backlog strict `0 diagnostics in 55 plans` from a disposable full archive at integration `f0cf7e769`; all 193 tracked TOML files parse and the sealed `plans/INDEX.md` SHA-256 remains `7ac5679f9ff7a32571ad0ed70e9914b579f12a5f22e4285f4804c20a19077b44`. Earlier `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, and six-crate baseline testing passed, including 1,324 roko-cli library tests; the two parallel 120-second smoke timeouts passed isolated serial reruns (33.91s and 33.65s). Parallel cold targets exhausted disk space, so programme-created completed-lane artifacts were cleaned and active builds remain serialized.
-- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The later-discovered top-level P08-P34/side queue, `.roko/GAPS.md`, and five architecture source copies are preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`); 34 sealed files plus one canonical recovered architecture queue are reviewed and merged, with the historical count caveat assigned to `CTRL-15`. Integration was clean at `06e1d4404` before this coordinator-only status edit; every active worker remains confined to its recorded scope.
+- Dirty/untracked state: the sealed original remains unchanged. Its standard inventory contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The later-discovered top-level P08-P34/side queue, `.roko/GAPS.md`, and five architecture source copies are preserved in external `ignored-canonical-control-plane.tar.gz` (SHA-256 `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`); 34 sealed files plus one canonical recovered architecture queue are reviewed and merged, with the historical count caveat assigned to `CTRL-15`. Integration was clean at `9b3822b72` before this coordinator-only status edit; every active worker remains confined to its recorded scope.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against

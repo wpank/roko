@@ -2,14 +2,19 @@
 
 ## Review state
 
-`TERMINAL_CANDIDATE` — all 96 retired authoring records remain skipped and resolve
+`DONE` — all 96 retired authoring records remain skipped and resolve
 exactly to stronger live task definitions; both defects that made the first proof
 nonterminal are now independently reviewed, merged, and cleanly rerun on current
 integration base `fb5a47f6bf024a30bce4c6b345896e390b5684b8`.
 
-This worker does not mark CTRL-14 `DONE`. Terminal status still requires independent
-review of the immutable candidate, integration of that accepted review, a post-merge
-rerun, and coordinator-only master reconciliation.
+Terminal candidate `2f3845b6a81a904e899264e392e06273ee3944cd` was independently
+accepted by `64273a9c43a167b012822df244192e370d4fd073` and integrated by
+`9b3822b727441ba925ccbb0e92427aa4c17ba9e6`. Post-merge reruns report retired
+strict `0 diagnostics in 1 plan`, dry-run `0` plans/`0` tasks, backlog strict
+`0 diagnostics in 55 plans`, and self-heal strict `0 diagnostics in 6 plans`.
+The sealed source index hash remains unchanged. `DONE` is limited to proving this
+retired compatibility plan must not execute; it does not complete the 440 ready
+implementation tasks or 71 ready DOC tasks mapped by the proof.
 
 ## Terminal rerun and current integrated proof
 

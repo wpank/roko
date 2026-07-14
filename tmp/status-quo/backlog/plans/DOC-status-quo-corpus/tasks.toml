@@ -36,6 +36,7 @@ read_files = [
     { path = "tmp/status-quo/28-DEFINITION-OF-DONE.md", why = "Done criteria for downstream migration tasks." },
     { path = "tmp/status-quo/29-RISK-REGISTER.md", why = "Operational risks that may require explicit backlog coverage." },
     { path = "tmp/status-quo/DOC-MANIFEST.md", why = "Taxonomy and consolidation map for the whole status-quo corpus." },
+    { path = "tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md", why = "Durable programme control plane whose execution, review, integration, and release contracts must remain represented." },
 ]
 anti_patterns = [
     "Do not edit product implementation files.",
@@ -45,7 +46,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "for p in tmp/status-quo/00-INDEX.md tmp/status-quo/01-EXECUTIVE-SUMMARY.md tmp/status-quo/12-ROADMAP.md tmp/status-quo/13-CURRENT-STATE-MATRIX.md tmp/status-quo/24-OPEN-ISSUE-LEDGER.md tmp/status-quo/25-PROOF-GATES.md tmp/status-quo/26-CANONICAL-DECISIONS.md tmp/status-quo/27-IMPLEMENTATION-BACKLOG.md tmp/status-quo/28-DEFINITION-OF-DONE.md tmp/status-quo/29-RISK-REGISTER.md tmp/status-quo/DOC-MANIFEST.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+command = "for p in tmp/status-quo/00-INDEX.md tmp/status-quo/01-EXECUTIVE-SUMMARY.md tmp/status-quo/12-ROADMAP.md tmp/status-quo/13-CURRENT-STATE-MATRIX.md tmp/status-quo/24-OPEN-ISSUE-LEDGER.md tmp/status-quo/25-PROOF-GATES.md tmp/status-quo/26-CANONICAL-DECISIONS.md tmp/status-quo/27-IMPLEMENTATION-BACKLOG.md tmp/status-quo/28-DEFINITION-OF-DONE.md tmp/status-quo/29-RISK-REGISTER.md tmp/status-quo/DOC-MANIFEST.md tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
 fail_msg = "Coverage ledger must mention every navigation and roadmap source path."
 
 [[task.verify]]

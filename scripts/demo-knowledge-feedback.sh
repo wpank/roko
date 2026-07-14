@@ -51,17 +51,81 @@ EOF
         ;;
 esac
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 command -v python3 >/dev/null
-STATE_ROOT="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${ROKO_DEMO_STATE_DIR:-$REPO_ROOT/.roko}")"
-case "$STATE_ROOT/" in
-    "$REPO_ROOT/plans/live-demo-phase1/"*|"$REPO_ROOT/plans/live-demo-phase2/"*)
-        echo "ERROR: refusing to use a removed live-demo plan root as simulation state" >&2
-        exit 2
-        ;;
-esac
+if ! STATE_ROOT="$(python3 - "${ROKO_DEMO_STATE_DIR:-$REPO_ROOT/.roko}" "$REPO_ROOT" <<'PYEOF'
+import os
+import sys
+
+configured, repo_root = sys.argv[1:]
+repo_root = os.path.realpath(repo_root)
+
+# Normalize `.` and `..` without following symlinks. Relative state paths are
+# intentionally rooted at the repository, matching the simulation's working
+# directory. This lexical form catches a removed root that is itself an outward
+# symlink; canonicalization alone would erase that forbidden prefix.
+if os.path.isabs(configured):
+    lexical = os.path.normpath(configured)
+else:
+    lexical = os.path.normpath(os.path.join(repo_root, configured))
+canonical = os.path.realpath(lexical)
+
+removed_roots = (
+    os.path.join(repo_root, "plans", "live-demo-phase1"),
+    os.path.join(repo_root, "plans", "live-demo-phase2"),
+)
+
+
+def is_within(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath((path, root)) == root
+    except ValueError:
+        return False
+
+
+checks = [
+    ("normalized lexical path", lexical),
+    ("canonical path", canonical),
+]
+
+# An absolute path may name this repository through a symlink alias. Project
+# the suffix after every prefix that resolves to the repository back onto the
+# physical repository root, but do not resolve symlinks in that suffix. This
+# retains the outward-root check even for `<repo-alias>/plans/live-demo-*`.
+drive, tail = os.path.splitdrive(lexical)
+parts = [part for part in tail.split(os.sep) if part]
+prefix = drive + os.sep
+prefixes = [(prefix, parts)]
+for index, part in enumerate(parts):
+    prefix = os.path.join(prefix, part)
+    prefixes.append((prefix, parts[index + 1 :]))
+
+for prefix, suffix in prefixes:
+    if os.path.realpath(prefix) == repo_root:
+        checks.append(
+            (
+                "repository-alias lexical path",
+                os.path.normpath(os.path.join(repo_root, *suffix)),
+            )
+        )
+
+for label, path in checks:
+    for removed_root in removed_roots:
+        if is_within(path, removed_root):
+            print(
+                f"ERROR: refusing removed live-demo plan state via {label}: {path}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+print(canonical)
+PYEOF
+)"; then
+    exit 2
+fi
+
+cd "$REPO_ROOT"
 EPISODES_FILE="$STATE_ROOT/learn/episodes.jsonl"
 
 echo "=== Knowledge-Feedback Simulation ==="

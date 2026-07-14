@@ -48,7 +48,15 @@ Review readiness:
 - Required reviewer focus: actual cross-process locking, loser non-mutation, cleanup strictly before unlock, safe successor acquisition/PID persistence, bounded helper cleanup, and strict non-claim of full recovery.
 
 Integration:
-- Independent review: pending.
-- Integration commit: pending.
-- Post-merge verification: pending.
-- Final status: pending coordinator integration. This candidate closes only the bounded CTRL-02 workspace-lock precursor attribution.
+- Independent review: `tmp/status-quo/execution-evidence/CTRL-02-WORKSPACE-LOCK-REVIEW.md`,
+  ACCEPTED at review commit `acd2675e474f72ccccd4cbb1dfa9f7d4db1b93ef`
+  for exact candidate `2e4296e4e4f5f87eead09430b9652bc80e3342fc`.
+- Integration commits: candidate `4454af335`; review `cd185001b`.
+- Post-merge verification on `cd185001b`: the focused suite again passed four
+  parent tests plus both controlled child-helper executions, with zero failures;
+  `cargo check -p roko-cli --all-targets`, formatting, diff hygiene, and clean
+  integration status passed. The only check warning remains the pre-existing
+  missing-doc warning in `tests/plan_validation.rs`.
+- Final status: `DONE` only for the bounded CTRL-02 workspace-lock precursor
+  attribution. Full `SH02-T06`, issue 53 dirty-work recovery, and manifest
+  source-list reconciliation remain open.

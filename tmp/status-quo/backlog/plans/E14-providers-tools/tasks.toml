@@ -22,7 +22,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01-EXECUTION-ENGINE"]
+depends_on_plan = ["E01-execution-engine"]
 
 [task.context]
 read_files = [

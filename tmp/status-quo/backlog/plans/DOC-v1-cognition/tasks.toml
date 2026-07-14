@@ -23,7 +23,7 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01", "E05", "E06", "E07"]
+depends_on_plan = ["E01-execution-engine", "E05-gate-adaptivity-live", "E06-COMPOSE-UNIFY", "E07-learning-knowledge"]
 domain = "docs"
 
 [task.context]
@@ -94,7 +94,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["DOC-V1-COG-T01-learning"]
-depends_on_plan = ["E02", "E03", "E07"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE", "E03-type-consolidation", "E07-learning-knowledge"]
 domain = "docs"
 
 [task.context]
@@ -159,7 +159,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro"]
-depends_on_plan = ["E01", "E05", "E08"]
+depends_on_plan = ["E01-execution-engine", "E05-gate-adaptivity-live", "E08-conductor-supervision"]
 domain = "docs"
 
 [task.context]
@@ -223,7 +223,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro", "DOC-V1-COG-T03-conductor"]
-depends_on_plan = ["E01", "E07", "E08"]
+depends_on_plan = ["E01-execution-engine", "E07-learning-knowledge", "E08-conductor-supervision"]
 domain = "docs"
 
 [task.context]
@@ -285,7 +285,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["DOC-V1-COG-T01-learning", "DOC-V1-COG-T02-neuro", "DOC-V1-COG-T04-daimon"]
-depends_on_plan = ["E01", "E07", "E08"]
+depends_on_plan = ["E01-execution-engine", "E07-learning-knowledge", "E08-conductor-supervision"]
 domain = "docs"
 
 [task.context]
@@ -357,7 +357,7 @@ depends_on = [
     "DOC-V1-COG-T04-daimon",
     "DOC-V1-COG-T05-dreams",
 ]
-depends_on_plan = ["E01", "E05", "E07", "E08", "E09"]
+depends_on_plan = ["E01-execution-engine", "E05-gate-adaptivity-live", "E07-learning-knowledge", "E08-conductor-supervision", "E09-OBSERVABILITY"]
 domain = "docs"
 
 [task.context]
@@ -423,7 +423,7 @@ depends_on = [
     "DOC-V1-COG-T05-dreams",
     "DOC-V1-COG-T06-heartbeat",
 ]
-depends_on_plan = ["E02", "E07", "E10", "E17", "E18"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE", "E07-learning-knowledge", "E10-FRONTEND-CONTRACT", "E17-acp-completion", "E18-DOCS-CONFIG-OPS"]
 domain = "docs"
 
 [task.context]

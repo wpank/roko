@@ -6,6 +6,7 @@
 - Original r1 base: `3a4e57f02efa47f3106f54969799c34486b3ed7b`.
 - Corrected-candidate base: `7f5221e9da762f51d2ab4056f0989b49de76bdea`;
   content-equivalent r1 replay: `bc11d75a84d1d4d90ad1cf988f41d97346c45c1e`.
+- R3 correction parent: `a9ac1f25e99ad80805b5dc266d3b626632291afe`.
 - Branch/worktree: `agent/CTRL-16-r2` / `workers/CTRL-16-r2`.
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`.
 - Reserved scope: `plans/_meta/IMPLEMENTATION_ORDER.md`,
@@ -33,6 +34,15 @@ residue from `236686c7`, and this evidence retained literal candidate-SHA
 template tokens. The corrected candidate must close all three without reviving
 or marking any deleted task complete.
 
+The r2 independent review (`CTRL-16-REVIEW-r2.md`, rejected in integration
+commit `da5e899b6`) accepted those three corrections but reproduced one remaining
+fail-closed defect: if a deleted root was an outward symlink to an external
+directory, canonicalizing the configured state path erased the forbidden
+lexical prefix and allowed the simulation to write through that symlink. R3
+must reject both lexical and canonical routes before any source check, directory
+creation, or write while continuing to allow an independently configured
+external state directory.
+
 Expected behavior:
 
 - every root presented as runnable has a tracked, non-empty, parseable
@@ -43,6 +53,8 @@ Expected behavior:
   non-runnable, absent from the index, and not recreated;
 - every active script path refuses the deleted live-demo roots; the retained
   simulation is deterministic, no-network, and can write to isolated state;
+  normalized relative/absolute paths, non-existing descendants, repository
+  aliases, and inward/outward symlinks cannot bypass that refusal;
 - history and semantic boundaries remain clear: related execution-honesty work
   is not mislabeled as a task-for-task dry-run replacement, and `e2e-smoke` is
   not mislabeled as equivalent to greeting/farewell demo tasks;
@@ -127,6 +139,15 @@ accepted replacement, or a task-level supersession.
   points to the current `EpisodeSink` and prompt-builder production anchors.
   It also rejects either removed plan root (or a descendant) as a configured
   state directory, so no script mode can recreate or mutate those roots.
+- Closed the r2 outward-symlink bypass before any repository `cd`, source-anchor
+  check, `mkdir`, or state write. The guard now compares both a normalized
+  lexical configured path and its fully canonical path with the two physical
+  removed-root names. It additionally projects suffixes that name the repository
+  through a symlink alias back onto the physical repository without resolving
+  the suffix, preserving the outward-root check for repo aliases. It deliberately
+  does not canonicalize the forbidden roots themselves, so an ordinary external
+  state directory is not rejected merely because a removed-root symlink happens
+  to target the same external tree.
 - Clarified that the already-complete W01/P06/P07 names are historical labels,
   not current runnable roots.
 - Added narrowly scoped current-control notices to the two baseline inventory
@@ -158,10 +179,16 @@ The candidate verification contract is:
 7. A disposable `plans` generator run reproduces tracked plans/INDEX.md exactly:
    SHA-256 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8.
 8. Source plans/INDEX.md is byte-unchanged and `git diff --check` passes.
-9. `bash -n` passes; `--help` is truthful; `--live` exits 2 before any state or
-   plan mutation; default simulation succeeds against isolated state without
-   network/build/plan execution and emits exactly two valid JSON records.
-10. No active script command passes either absent root to `roko plan run`; the
+9. `bash -n` passes; `--help` is truthful; `--live` and an unknown option exit 2
+   before any state or plan mutation; default simulation succeeds against
+   isolated state without network/build/model/plan execution and emits exactly
+   two valid JSON records.
+10. A disposable adversarial matrix checks exact and descendant deleted roots,
+    lexical `..`, an external symlink into a removed root, a removed-root outward
+    symlink, the same outward route through a repository alias, absent roots in
+    `--live` mode, and a normal external state directory. Every rejected case
+    exits 2 with no target/repository mutation; the normal external case exits 0.
+11. No active script command passes either absent root to `roko plan run`; the
     cumulative corrected scope is exactly the five reserved paths.
 ```
 
@@ -182,9 +209,10 @@ generated index SHA-256: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195
 source index before/after: 27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8
 SCRIPT_SYNTAX_HELP_OK bash_n=0 help=0 no_state
 SCRIPT_LIVE_FAIL_CLOSED_OK exit=2 no_state no_absent_roots
-SCRIPT_STATE_GUARD_OK phase1=exit2 phase2_descendant=exit2 no_created_roots
-SCRIPT_SIMULATION_OK exit=0 deterministic_sha=ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e no_network_or_plan records=2
-SCRIPT_PLAN_TREE_UNCHANGED sha=9fcfc2de50ff6e9cf72145613b96ed9daf4a98a3975a8290c47996bd2242a247
+SCRIPT_UNKNOWN_OK exit=2 no_state
+SCRIPT_STATE_GUARD_MATRIX_OK absolute_exact=2 relative_descendant=2 lexical_dotdot=2 external_symlink_into_removed=2 outward_removed_root=2 repo_alias_outward=2 absent_roots_live=2 normal_external=0 rejected_mutation=0 records=2
+SCRIPT_SIMULATION_OK exits=0/0 deterministic_sha=ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e no_network_build_model_or_plan records=2
+SCRIPT_PLAN_TREE_UNCHANGED sha=f370c9003b47faa597a2a4c24cf26f926c20891d2d3e6f1481755db85179bba8
 active absent-root plan-run scan: zero matches
 cumulative replay/correction scope: exactly five reserved paths
 git diff --check: exit 0
@@ -199,6 +227,13 @@ validator binary was the integrated binary reporting Git `7303d2f87`; CTRL-15
 changed only control-plane documents, so its parser/generator behavior is the
 reviewed behavior used for the current 30/144 index.
 
+The r3 path matrix likewise ran only in fresh disposable archive copies. It
+pre-created symlinks as fixture state, compared rejected targets/repositories
+before and after each invocation, and removed every archive, external target,
+symlink, log, and simulated state directory afterward. The plan-tree digest is
+the SHA-256 aggregate of sorted relative path, NUL, file bytes, NUL tuples; it
+was identical before and after simulation.
+
 ## Review readiness
 
 - Candidate implementation identity: exact immutable cumulative SHA supplied
@@ -210,14 +245,19 @@ reviewed behavior used for the current 30/144 index.
 - Required reviewer focus: reconstruct the three deleted blobs from Git,
   challenge every current/historical mapping, verify all named runnable roots,
   reproduce Q14 resolution and residue absence/presence checks, exercise all
-  script modes in isolated state, reproduce TOML/strict/index gates, and confirm
-  no status, count, manifest, ownership, or generated-index change.
+  script modes in isolated state, adversarially repeat the lexical/canonical,
+  repo-alias, inward-symlink, and outward-symlink matrix, reproduce TOML/strict/
+  index gates, and confirm no status, count, manifest, ownership, or generated-
+  index change.
 
 ## Integration
 
 - R1 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW.md`, verdict
   `REJECTED`, integrated as `b59e497e7`; all three findings are addressed above.
-- Fresh r2 review evidence: pending independent review.
+- R2 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW-r2.md`, verdict
+  `REJECTED`, integrated as `da5e899b6`; the outward-symlink finding is addressed
+  above without weakening ordinary external-state support.
+- Fresh r3 review evidence: pending independent review.
 - Integration commit: pending.
 - Post-merge commands/results: pending integration-owner verification.
 - Final status: `IMPLEMENTED_UNREVIEWED`.

@@ -38,7 +38,7 @@ Review readiness:
 - Prior review disposition: candidate `e13ec0a86680028f9d333962eb5d81193b5c4772` was rejected for omitting the 56 ignored manifests and recording the wrong first-import SHA; both findings are corrected in the replacement candidate.
 
 Integration:
-- Review evidence: pending.
-- Integration commit: pending.
-- Post-merge commands/results: pending.
-- Final status: `IMPLEMENTED_UNREVIEWED` after commit.
+- Review evidence: `tmp/status-quo/execution-evidence/CTRL-01-REVIEW.md`, accepted in `2671605cc0654794c5eff4ceebfa066df32fbe1b` after rejection/correction of candidate `e13ec0a86680028f9d333962eb5d81193b5c4772`.
+- Integration commit: `1a385eb52c405e9471f0ad7e23cae9650c570290`.
+- Post-merge commands/results: archive SHA-256 verification, all 78 byte-identity comparisons, script syntax, diff check, candidate-ancestor check, clean integration status, and self-heal strict validation all exited 0. Backlog strict validation reaches all 55 plans and reports the 25 diagnostics assigned to the remaining Wave 0 control tasks.
+- Final status: `DONE`.

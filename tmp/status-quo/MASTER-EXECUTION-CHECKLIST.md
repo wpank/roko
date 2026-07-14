@@ -527,7 +527,7 @@ Only coordinator/integration agents check these boxes after merged verification.
 These may use parallel analysis/implementation agents after the baseline is safely
 sealed.
 
-- [ ] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
+- [x] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
 - [ ] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
 - [ ] CTRL-03 Canonicalize 36 invalid depends_on_plan names to exact meta.plan IDs.
 - [ ] CTRL-04 Resolve 11 external dependencies on P08/P09/P16/P19/P22/P23/P25/P28.
@@ -1145,18 +1145,18 @@ Before ending any coordinator context, update this section on the integration br
 
 - Run ID: `status-quo-20260714T073140Z`
 - Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
-- Integration HEAD: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
+- Integration HEAD: `1a385eb52c405e9471f0ad7e23cae9650c570290`
 - Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
 - Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
 - Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
 - Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
-- Last completed wave/task: none; Wave 0 is active.
-- Active assignments and worktrees: `CTRL-01` control-plane preservation in `workers/CTRL-01`; read-only `CTRL-02-AUDIT` against the integration worktree.
+- Last completed wave/task: `CTRL-01`; Wave 0 is active.
+- Active assignments and worktrees: read-only `CTRL-02-AUDIT` and `CTRL-03-TO-16-AUDIT`; corrected `CTRL-01` candidate/review worktrees are retained pending final release cleanup.
 - Accepted but unmerged commits: none.
 - Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
-- Next dependency-ready tasks: review/integrate `CTRL-01`; attribute and validate precursor commit `3041d095d`; then repair Wave 0 dependency/validation/ownership defects.
-- Last global gate results: not yet run on the isolated integration branch.
-- Dirty/untracked state: sealed original has 23 visible attributed control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts; integration is clean; `workers/CTRL-01` contains only the attributed import, `.gitignore` repair, and its evidence/checkpoint edits.
+- Next dependency-ready tasks: attribute and validate precursor commit `3041d095d`; repair validator output/prerequisite classification; then canonicalize dependencies and ownership mappings.
+- Last global gate results: post-merge `cargo fmt --all -- --check` and self-heal strict validation pass; backlog strict validation reaches all 55 plans and reports the expected 25 Wave 0 diagnostics; workspace all-target check is still running from a clean target.
+- Dirty/untracked state: sealed original remains unchanged with 23 visible attributed control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts; integration is clean before this coordinator reconciliation commit.
 - Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against

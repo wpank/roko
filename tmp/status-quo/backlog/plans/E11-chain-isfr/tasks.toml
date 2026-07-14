@@ -5,20 +5,22 @@ done = 0
 status = "ready"
 max_parallel = 1
 
-# ── E11-T01: Recover architecture-core-queue into committed plans/ ──
+# ── E11-T01: Confirm the reviewed architecture-core-queue recovery ──
 #
-# The committed DeFi plan (plans/architecture-defi-critical-path/tasks.toml)
-# declares parity rows whose source_ref is
-#   plans/architecture-core-queue/tasks.toml#Q14-chain-registries-defi-foundation
-# but plans/architecture-core-queue/ DOES NOT EXIST. It survives only as five
-# byte-identical copies under .claude/worktrees/agent-*/ (md5
-# d05464260a54ef6d1e5618b55c5c3eb4, 24 tasks Q01-Q24). Copy one canonical copy
-# into plans/ so the DeFi critical path can resolve its parent + validate.
-# Pure recovery — no content changes; all 5 worktree copies are identical.
+# CTRL-01 recovered the canonical 24-task Q01-Q24 queue byte-for-byte at
+# plans/architecture-core-queue/tasks.toml. Recovery implementation
+# 699df4e0ea34bddabc4516695d28d1bf41328774 was independently accepted by
+# c19bd30160443759f96d8fef6149cc9b146a5bde and merged by
+# 01c00546bc57a485ff53553d0fe53006afa8ed42. Coordinator closure
+# f576dedaaf7b45478b136802785bf2a9dfc11371 records the integrated proof.
+# The canonical file's SHA-256 is
+# 3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5.
+# E11-T01 now verifies that recovery and the DeFi parity-link resolution; it
+# does not copy from ignored worktrees or change the recovered queue.
 
 [[task]]
 id = "E11-T01"
-title = "Recover architecture-core-queue tasks.toml into committed plans/"
+title = "Confirm reviewed architecture-core-queue recovery and DeFi source links"
 status = "ready"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
@@ -26,35 +28,49 @@ max_loc = 5
 files = ["plans/architecture-core-queue/tasks.toml"]
 role = "implementer"
 depends_on = []
+acceptance = [
+    "The tracked, non-empty canonical plans/architecture-core-queue/tasks.toml has SHA-256 3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5 and contains task Q14-chain-registries-defi-foundation.",
+    "Every architecture-defi-critical-path parity source_ref resolves to the canonical Q14-chain-registries-defi-foundation task.",
+    "CTRL-01 implementation 699df4e0e, accepted review c19bd3016, and merge 01c00546b are ancestors of the integrated recovery closure f576dedaa.",
+    "Focused strict validation passes without an ignored-worktree prerequisite, placeholder file, or empty architecture-core-queue directory.",
+]
 
 [task.context]
 read_files = [
-    { path = ".claude/worktrees/agent-aefd7c48/plans/architecture-core-queue/tasks.toml", lines = "1-30", why = "Canonical source copy (md5 d05464…, 24 tasks) — copy verbatim into plans/" },
-    { path = "plans/architecture-defi-critical-path/tasks.toml", lines = "64-71", why = "The dangling source_ref #Q14-chain-registries-defi-foundation this recovery satisfies" },
+    { path = "plans/architecture-core-queue/tasks.toml", lines = "1-1697", why = "Reviewed canonical recovery (SHA-256 3f90263a…); Q14 is the source anchor consumed by the DeFi queue" },
+    { path = "plans/architecture-defi-critical-path/tasks.toml", lines = "1-187", why = "All three parity rows must resolve to the canonical Q14 task" },
+    { path = "tmp/status-quo/execution-evidence/CTRL-01-IGNORED-CANONICAL-IMPORT.md", lines = "1-163", why = "Merged recovery implementation, integration SHA, and post-merge proof" },
+    { path = "tmp/status-quo/execution-evidence/CTRL-01-IGNORED-CANONICAL-IMPORT-REVIEW.md", lines = "1-156", why = "Independent acceptance of the exact recovered bytes and source identity" },
 ]
 symbols = [
-    "Q14-chain-registries-defi-foundation — the DeFi-foundation task the committed plan references",
+    "Q14-chain-registries-defi-foundation — canonical source anchor for all architecture-defi parity rows",
 ]
 anti_patterns = [
-    "Do NOT edit the task content — copy verbatim; all 5 worktree copies are byte-identical (md5 d05464260a54ef6d1e5618b55c5c3eb4).",
-    "Do NOT pull from .roko/worktrees/ if it differs — prefer a .claude/worktrees/agent-* copy and verify md5 before committing.",
-    "Do NOT invent a new Q14 — recover the existing 24-task queue so downstream parity anchors resolve.",
+    "Do NOT copy from an ignored worktree; the reviewed canonical file is already committed under plans/.",
+    "Do NOT edit or regenerate the recovered queue as part of this reconciliation.",
+    "Do NOT manufacture a placeholder file or empty architecture-core-queue directory; verify the exact canonical bytes and Q14 anchor.",
+    "Do NOT mark E11-T01 done before independent review, integration, and coordinator status reconciliation.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "test -f plans/architecture-core-queue/tasks.toml"
-fail_msg = "architecture-core-queue must be recovered into committed plans/"
+command = "git ls-files --error-unmatch plans/architecture-core-queue/tasks.toml >/dev/null && test -s plans/architecture-core-queue/tasks.toml && test \"$(shasum -a 256 plans/architecture-core-queue/tasks.toml | awk '{print $1}')\" = \"3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5\""
+fail_msg = "architecture-core-queue must be the tracked, non-empty, byte-exact reviewed recovery"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'Q14-chain-registries-defi-foundation' plans/architecture-core-queue/tasks.toml"
-fail_msg = "recovered plan must contain the Q14 chain-registries-defi-foundation task the DeFi plan references"
+command = "python3 -c 'import tomllib; q=tomllib.load(open(\"plans/architecture-core-queue/tasks.toml\",\"rb\")); d=tomllib.load(open(\"plans/architecture-defi-critical-path/tasks.toml\",\"rb\")); anchor=\"Q14-chain-registries-defi-foundation\"; target=f\"plans/architecture-core-queue/tasks.toml#{anchor}\"; assert anchor in {t[\"id\"] for t in q[\"task\"]}; refs=[r[\"source_ref\"] for t in d[\"task\"] for r in t[\"acceptance_contract\"][\"parity_ledger\"][\"rows\"]]; assert refs == [target, target, target]'"
+fail_msg = "the canonical Q14 anchor and all three architecture-defi source_ref consumers must resolve exactly"
+
+[[task.verify]]
+phase = "structural"
+command = "git merge-base --is-ancestor 699df4e0ea34bddabc4516695d28d1bf41328774 HEAD && git merge-base --is-ancestor c19bd30160443759f96d8fef6149cc9b146a5bde HEAD && git merge-base --is-ancestor 01c00546bc57a485ff53553d0fe53006afa8ed42 HEAD"
+fail_msg = "the exact CTRL-01 implementation, accepted review, and recovery merge must be integrated ancestors"
 
 [[task.verify]]
 phase = "custom"
-command = "cargo run -p roko-cli --bin roko -- plan validate plans/architecture-core-queue 2>&1 | tail -5"
-fail_msg = "recovered architecture-core-queue must pass plan validate"
+command = "repo=$(pwd) && tmp_dir=$(mktemp -d) && trap 'rm -rf \"$tmp_dir\"' EXIT && mkdir -p \"$tmp_dir/e11\" \"$tmp_dir/plans\" \"$tmp_dir/.roko\" && cp tmp/status-quo/backlog/plans/E11-chain-isfr/tasks.toml \"$tmp_dir/e11/tasks.toml\" && ln -s \"$repo/crates\" \"$tmp_dir/crates\" && ln -s \"$repo/contracts\" \"$tmp_dir/contracts\" && ln -s \"$repo/docs\" \"$tmp_dir/docs\" && ln -s \"$repo/tmp\" \"$tmp_dir/tmp\" && ln -s \"$repo/CLAUDE.md\" \"$tmp_dir/CLAUDE.md\" && ln -s \"$repo/.roko/GAPS.md\" \"$tmp_dir/.roko/GAPS.md\" && ln -s \"$repo/plans/architecture-core-queue\" \"$tmp_dir/plans/architecture-core-queue\" && ln -s \"$repo/plans/architecture-defi-critical-path\" \"$tmp_dir/plans/architecture-defi-critical-path\" && (cd \"$tmp_dir\" && \"$repo/target/debug/roko\" plan validate --strict e11 --color never)"
+fail_msg = "E11 must pass focused strict validation with the corrected prerequisite-aware validator"
 
 
 # ── E11-T02: Implement AlloyChainClient::get_logs ──

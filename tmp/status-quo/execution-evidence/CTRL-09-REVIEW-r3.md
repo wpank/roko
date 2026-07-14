@@ -1,5 +1,13 @@
 # CTRL-09 r3 independent review
 
+> [!CAUTION]
+> **SUPERSEDED FULL-GRAPH CLAIM.** This historical acceptance correctly proved
+> 160 unique task-level runtime edges, but repeated the r2 parser omission of
+> the two `meta.depends_on_plan` edges and mislabeled 160 as the complete graph.
+> The complete declared graph has 162 unique edges. Preserve the review for its
+> manifest and source findings, but use `CTRL-09-POSTMERGE-CORRECTION.md` and its
+> fresh review as the corrected graph authority.
+
 - **Verdict:** `ACCEPTED`
 - **Candidate:** `3ac488dde191ae9f0dbf32f861cd160153bf263a`
 - **Rejected parent:** `abfa50fb8ff50226e6ade3e00e1e13aa3de9c338`

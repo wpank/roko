@@ -1,5 +1,13 @@
 # CTRL-09 r2 independent review
 
+> [!CAUTION]
+> **SUPERSEDED COUNTING FINDING.** This historical review parsed
+> `meta.depends_on`, not the manifests' actual `meta.depends_on_plan` key, and
+> therefore omitted two distinct meta-level edges. Its statement that 162 was
+> false is itself false: the integrated graph has 160 unique task-level runtime
+> edges and 162 unique all-declared edges. Preserve this record for lineage, but
+> use `CTRL-09-POSTMERGE-CORRECTION.md` and its fresh review as the authority.
+
 - **Verdict:** `REJECTED`
 - **Candidate:** `abfa50fb8ff50226e6ade3e00e1e13aa3de9c338`
 - **Base:** `bb5048f4c1d0e3f34155e89d39ccef46109c3b59`

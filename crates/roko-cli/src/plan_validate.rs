@@ -124,6 +124,7 @@ fn validate_plans_dir_impl(
     workdir: Option<&Path>,
 ) -> Result<ValidationReport> {
     let tasks_files = collect_tasks_files(dir)?;
+    let plan_output_paths = collect_plan_output_paths(&tasks_files);
     let mut plans = Vec::with_capacity(tasks_files.len());
     let mut totals = Totals {
         plans_checked: tasks_files.len(),
@@ -134,7 +135,12 @@ fn validate_plans_dir_impl(
         let mut plan = validate_tasks_file(&tasks_path, models)
             .with_context(|| format!("validate {}", tasks_path.display()))?;
         if let Some(workdir) = workdir {
-            if let Ok(ref_diagnostics) = validate_file_references(&tasks_path, workdir) {
+            let ref_diagnostics = if plan_output_paths.len() <= 1 {
+                validate_file_references(&tasks_path, workdir)
+            } else {
+                validate_file_references_with_plan_outputs(&tasks_path, workdir, &plan_output_paths)
+            };
+            if let Ok(ref_diagnostics) = ref_diagnostics {
                 plan.diagnostics.extend(ref_diagnostics);
             }
 
@@ -970,12 +976,40 @@ fn extract_crate_from_path(path: &str) -> Option<&str> {
     }
 }
 
-/// Collect declared task file paths from a parsed `tasks.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TaskPathReferences {
+    task_id: String,
+    outputs: BTreeSet<String>,
+    prerequisites: BTreeSet<String>,
+    depends_on: Vec<String>,
+    depends_on_plan: Vec<String>,
+}
+
+fn string_array(table: &toml::map::Map<String, Value>, field: &str) -> Vec<String> {
+    table
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Classify task paths according to the executable task schema.
 ///
-/// Returns `(task_id, file_path)` pairs for both `files` and `write_files`.
-fn collect_task_file_paths(parsed: &Value) -> Vec<(String, String)> {
+/// `files` and `write_files` are mutation outputs and may be created by the
+/// task. `context.read_files` are inputs that must exist before dispatch,
+/// unless a declared dependency produces the exact path first.
+fn collect_task_path_references(parsed: &Value) -> Vec<TaskPathReferences> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
     let tasks = parsed
         .get("task")
         .and_then(Value::as_array)
@@ -996,27 +1030,184 @@ fn collect_task_file_paths(parsed: &Value) -> Vec<(String, String)> {
             .unwrap_or("unknown")
             .to_string();
 
+        let mut outputs = BTreeSet::new();
         for field in ["files", "write_files"] {
-            if let Some(files) = table.get(field).and_then(Value::as_array) {
-                for file in files {
-                    let Some(path) = file
-                        .as_str()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                    else {
-                        continue;
-                    };
-
-                    let key = (task_id.clone(), path.to_string());
-                    if seen.insert(key.clone()) {
-                        out.push(key);
-                    }
-                }
-            }
+            outputs.extend(string_array(table, field));
         }
+
+        let prerequisites = table
+            .get("context")
+            .and_then(Value::as_table)
+            .and_then(|context| context.get("read_files"))
+            .and_then(Value::as_array)
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|file| {
+                        file.as_table()
+                            .and_then(|table| table.get("path"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToOwned::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        out.push(TaskPathReferences {
+            task_id,
+            outputs,
+            prerequisites,
+            depends_on: string_array(table, "depends_on"),
+            depends_on_plan: string_array(table, "depends_on_plan"),
+        });
     }
 
     out
+}
+
+fn parsed_plan_id(parsed: &Value) -> String {
+    parsed
+        .get("meta")
+        .and_then(Value::as_table)
+        .and_then(|meta| meta.get("plan"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown-plan")
+        .to_string()
+}
+
+fn collect_plan_output_paths(tasks_files: &[PathBuf]) -> HashMap<String, BTreeSet<String>> {
+    let mut outputs = HashMap::<String, BTreeSet<String>>::new();
+
+    for tasks_path in tasks_files {
+        let Ok(content) = std::fs::read_to_string(tasks_path) else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<Value>(&content) else {
+            continue;
+        };
+        let plan_outputs = outputs.entry(parsed_plan_id(&parsed)).or_default();
+        for task in collect_task_path_references(&parsed) {
+            plan_outputs.extend(task.outputs);
+        }
+    }
+
+    outputs
+}
+
+fn dependency_created_paths(
+    task: &TaskPathReferences,
+    tasks_by_id: &HashMap<String, TaskPathReferences>,
+    plan_output_paths: &HashMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut created = BTreeSet::new();
+    let mut visited = HashSet::new();
+    let mut pending = task.depends_on.clone();
+
+    while let Some(dependency_id) = pending.pop() {
+        if !visited.insert(dependency_id.clone()) {
+            continue;
+        }
+        if let Some(dependency) = tasks_by_id.get(&dependency_id) {
+            created.extend(dependency.outputs.iter().cloned());
+            pending.extend(dependency.depends_on.iter().cloned());
+        }
+    }
+
+    for plan_id in &task.depends_on_plan {
+        if let Some(outputs) = plan_output_paths.get(plan_id) {
+            created.extend(outputs.iter().cloned());
+        }
+    }
+
+    created
+}
+
+fn missing_prerequisite_diagnostic(
+    plan_id: &str,
+    task_id: &str,
+    file_path: &str,
+    existing_crates: &HashSet<String>,
+    existing_packages: &HashSet<String>,
+) -> Diagnostic {
+    let missing_workspace_root = match file_path.split_once('/') {
+        Some(("crates", _)) => extract_crate_from_path(file_path)
+            .filter(|crate_name| !existing_crates.contains(*crate_name))
+            .map(|crate_name| ("crate", crate_name, "crates/")),
+        Some(("packages", _)) => extract_crate_from_path(file_path)
+            .filter(|package_name| !existing_packages.contains(*package_name))
+            .map(|package_name| ("package", package_name, "packages/")),
+        _ => None,
+    };
+
+    if let Some((kind, name, root)) = missing_workspace_root {
+        Diagnostic {
+            severity: Severity::Warning,
+            rule_id: "PLAN_030".to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task_id.to_string()),
+            message: format!(
+                "task '{}' requires prerequisite '{}' in {} '{}' which does not exist in {}",
+                task_id, file_path, kind, name, root
+            ),
+        }
+    } else {
+        Diagnostic {
+            severity: Severity::Warning,
+            rule_id: "PLAN_031".to_string(),
+            plan_id: Some(plan_id.to_string()),
+            task_id: Some(task_id.to_string()),
+            message: format!(
+                "task '{}' requires prerequisite '{}' which does not exist on disk and is not created by a declared dependency",
+                task_id, file_path
+            ),
+        }
+    }
+}
+
+fn validate_file_references_with_plan_outputs(
+    tasks_path: &Path,
+    workdir: &Path,
+    plan_output_paths: &HashMap<String, BTreeSet<String>>,
+) -> Result<Vec<Diagnostic>> {
+    let content = std::fs::read_to_string(tasks_path)
+        .with_context(|| format!("read {}", tasks_path.display()))?;
+    let parsed: Value =
+        toml::from_str(&content).with_context(|| format!("parse TOML {}", tasks_path.display()))?;
+    let plan_id = parsed_plan_id(&parsed);
+    let existing_crates = collect_workspace_package_names(workdir, "crates");
+    let existing_packages = collect_workspace_package_names(workdir, "packages");
+    let tasks = collect_task_path_references(&parsed);
+    let tasks_by_id = tasks
+        .iter()
+        .cloned()
+        .map(|task| (task.task_id.clone(), task))
+        .collect::<HashMap<_, _>>();
+    let mut diagnostics = Vec::new();
+
+    for task in &tasks {
+        let created_by_dependencies =
+            dependency_created_paths(task, &tasks_by_id, plan_output_paths);
+        for prerequisite in &task.prerequisites {
+            if workdir.join(prerequisite).exists() || created_by_dependencies.contains(prerequisite)
+            {
+                continue;
+            }
+
+            diagnostics.push(missing_prerequisite_diagnostic(
+                &plan_id,
+                &task.task_id,
+                prerequisite,
+                &existing_crates,
+                &existing_packages,
+            ));
+        }
+    }
+
+    Ok(diagnostics)
 }
 
 fn collect_workspace_package_names(workdir: &Path, root_dir_name: &str) -> HashSet<String> {
@@ -1040,82 +1231,13 @@ fn collect_workspace_package_names(workdir: &Path, root_dir_name: &str) -> HashS
     names
 }
 
-/// Validate that declared file references exist in the workspace.
+/// Validate that task prerequisites exist in the workspace.
 ///
-/// Paths under `crates/<name>/` and `packages/<name>/` are checked against the
-/// corresponding workspace directories. Other paths must exist on disk.
+/// Task `files`/`write_files` are outputs and may be created by the task.
+/// `context.read_files` are prerequisites and must already exist, unless an
+/// explicitly declared task dependency produces the exact path.
 pub fn validate_file_references(tasks_path: &Path, workdir: &Path) -> Result<Vec<Diagnostic>> {
-    let content = std::fs::read_to_string(tasks_path)
-        .with_context(|| format!("read {}", tasks_path.display()))?;
-    let parsed: Value =
-        toml::from_str(&content).with_context(|| format!("parse TOML {}", tasks_path.display()))?;
-    let plan_id = parsed
-        .get("meta")
-        .and_then(Value::as_table)
-        .and_then(|meta| meta.get("plan"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("unknown-plan")
-        .to_string();
-    let existing_crates = collect_workspace_package_names(workdir, "crates");
-    let existing_packages = collect_workspace_package_names(workdir, "packages");
-    let file_refs = collect_task_file_paths(&parsed);
-    let mut diagnostics = Vec::new();
-
-    for (task_id, file_path) in &file_refs {
-        let full_path = workdir.join(file_path);
-        match file_path.split_once('/') {
-            Some(("crates", _)) => {
-                if let Some(crate_name) = extract_crate_from_path(file_path)
-                    && !existing_crates.contains(crate_name)
-                {
-                    diagnostics.push(Diagnostic {
-                        severity: Severity::Warning,
-                        rule_id: "PLAN_030".to_string(),
-                        plan_id: Some(plan_id.clone()),
-                        task_id: Some(task_id.clone()),
-                        message: format!(
-                            "task '{}' references file in crate '{}' which does not exist in crates/",
-                            task_id, crate_name
-                        ),
-                    });
-                }
-            }
-            Some(("packages", _)) => {
-                if let Some(package_name) = extract_crate_from_path(file_path)
-                    && !existing_packages.contains(package_name)
-                {
-                    diagnostics.push(Diagnostic {
-                        severity: Severity::Warning,
-                        rule_id: "PLAN_030".to_string(),
-                        plan_id: Some(plan_id.clone()),
-                        task_id: Some(task_id.clone()),
-                        message: format!(
-                            "task '{}' references file in package '{}' which does not exist in packages/",
-                            task_id, package_name
-                        ),
-                    });
-                }
-            }
-            _ => {
-                if !full_path.exists() {
-                    diagnostics.push(Diagnostic {
-                        severity: Severity::Warning,
-                        rule_id: "PLAN_031".to_string(),
-                        plan_id: Some(plan_id.clone()),
-                        task_id: Some(task_id.clone()),
-                        message: format!(
-                            "task '{}' references '{}' which does not exist on disk",
-                            task_id, file_path
-                        ),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(diagnostics)
+    validate_file_references_with_plan_outputs(tasks_path, workdir, &HashMap::new())
 }
 
 /// Phrases that indicate ungrounded generation in an existing workspace.
@@ -1256,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_task_file_paths_reads_files_and_write_files() {
+    fn collect_task_path_references_classifies_outputs_and_prerequisites() {
         let parsed: Value = toml::from_str(
             r#"
 [meta]
@@ -1266,31 +1388,39 @@ plan = "demo"
 id = "T1"
 files = ["src/lib.rs", "docs/guide.md"]
 write_files = ["crates/roko-cli/src/plan_validate.rs", " "]
+depends_on = []
+
+[task.context]
+read_files = [
+  { path = "Cargo.toml", why = "workspace manifest" },
+  { path = " ", why = "ignored empty path" },
+]
 
 [[task]]
 id = "T2"
 write_files = ["docs/guide.md", "packages/app-one/package.json"]
+depends_on = ["T1"]
+depends_on_plan = ["foundation"]
 "#,
         )
         .unwrap();
 
-        let refs = collect_task_file_paths(&parsed);
+        let refs = collect_task_path_references(&parsed);
+        assert_eq!(refs.len(), 2);
         assert_eq!(
-            refs,
-            vec![
-                ("T1".to_string(), "src/lib.rs".to_string()),
-                ("T1".to_string(), "docs/guide.md".to_string()),
-                (
-                    "T1".to_string(),
-                    "crates/roko-cli/src/plan_validate.rs".to_string()
-                ),
-                ("T2".to_string(), "docs/guide.md".to_string()),
-                (
-                    "T2".to_string(),
-                    "packages/app-one/package.json".to_string()
-                ),
-            ]
+            refs[0].outputs,
+            BTreeSet::from([
+                "crates/roko-cli/src/plan_validate.rs".to_string(),
+                "docs/guide.md".to_string(),
+                "src/lib.rs".to_string(),
+            ])
         );
+        assert_eq!(
+            refs[0].prerequisites,
+            BTreeSet::from(["Cargo.toml".to_string()])
+        );
+        assert_eq!(refs[1].depends_on, vec!["T1"]);
+        assert_eq!(refs[1].depends_on_plan, vec!["foundation"]);
     }
 
     #[test]
@@ -1299,12 +1429,13 @@ write_files = ["docs/guide.md", "packages/app-one/package.json"]
         let root = temp.path();
 
         fs::create_dir_all(root.join("plans/demo")).unwrap();
-        fs::create_dir_all(root.join("crates/existing-crate")).unwrap();
+        fs::create_dir_all(root.join("crates/existing-crate/src")).unwrap();
         fs::write(
             root.join("crates/existing-crate/Cargo.toml"),
             "[package]\nname = \"existing-crate\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
+        fs::write(root.join("crates/existing-crate/src/lib.rs"), "// exists\n").unwrap();
         fs::create_dir_all(root.join("docs")).unwrap();
         fs::write(root.join("docs/existing.md"), "# exists\n").unwrap();
         fs::create_dir_all(root.join("packages/existing-app")).unwrap();
@@ -1326,15 +1457,22 @@ id = "T1"
 title = "Validate file refs"
 role = "implementer"
 files = [
-  "crates/existing-crate/src/lib.rs",
-  "crates/missing-crate/src/lib.rs",
-  "docs/existing.md",
-  "docs/missing.md",
-  "packages/existing-app/package.json",
-  "packages/missing-app/package.json",
+  "crates/output-crate/src/lib.rs",
+  "docs/generated.md",
 ]
 depends_on = []
 verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+
+[task.context]
+read_files = [
+  { path = "crates/existing-crate/src/lib.rs", why = "existing input" },
+  { path = "crates/existing-crate/src/missing.rs", why = "missing file in existing crate" },
+  { path = "crates/missing-crate/src/lib.rs", why = "missing crate input" },
+  { path = "docs/existing.md", why = "existing input" },
+  { path = "docs/missing.md", why = "missing input" },
+  { path = "packages/existing-app/package.json", why = "existing package input" },
+  { path = "packages/missing-app/package.json", why = "missing package input" },
+]
 "#,
         )
         .unwrap();
@@ -1346,7 +1484,7 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
         assert_eq!(no_workdir.totals.warnings, 0);
 
         let diagnostics = validate_file_references(&tasks_path, root).unwrap();
-        assert_eq!(diagnostics.len(), 3);
+        assert_eq!(diagnostics.len(), 4);
         assert!(
             diagnostics
                 .iter()
@@ -1362,6 +1500,9 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .any(|diag| diag.rule_id == "PLAN_031" && diag.message.contains("docs/missing.md"))
         );
+        assert!(diagnostics.iter().any(|diag| {
+            diag.rule_id == "PLAN_031" && diag.message.contains("existing-crate/src/missing.rs")
+        }));
         assert!(
             !diagnostics
                 .iter()
@@ -1372,11 +1513,17 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .any(|diag| diag.message.contains("existing-app/package.json"))
         );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("output-crate")
+                    || diag.message.contains("generated.md"))
+        );
 
         let with_workdir =
             validate_plans_dir_with_workdir(plans_dir.as_path(), None, Some(root)).unwrap();
         assert_eq!(with_workdir.totals.errors, 0);
-        assert_eq!(with_workdir.totals.warnings, 3);
+        assert_eq!(with_workdir.totals.warnings, 4);
         assert_eq!(with_workdir.plans.len(), 1);
         assert!(
             with_workdir.plans[0]
@@ -1390,6 +1537,61 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .any(|diag| diag.rule_id == "PLAN_031")
         );
+    }
+
+    #[test]
+    fn validate_file_references_allows_only_declared_dependency_outputs() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        let tasks_path = root.join("plans/demo/tasks.toml");
+        fs::write(
+            &tasks_path,
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Create generated input"
+role = "implementer"
+files = ["generated/input.md"]
+depends_on = []
+verify = [{ phase = "structural", command = "test -f generated/input.md" }]
+
+[[task]]
+id = "T2"
+title = "Read generated input after its producer"
+role = "implementer"
+files = ["src/consumer.rs"]
+depends_on = ["T1"]
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/input.md", why = "created by T1" }]
+
+[[task]]
+id = "T3"
+title = "Read generated input without declaring its producer"
+role = "implementer"
+files = ["src/other.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "echo ok" }]
+
+[task.context]
+read_files = [{ path = "generated/input.md", why = "undeclared producer" }]
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = validate_file_references(&tasks_path, root).unwrap();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].task_id.as_deref(), Some("T3"));
+        assert_eq!(diagnostics[0].rule_id, "PLAN_031");
     }
 
     #[test]

@@ -153,6 +153,7 @@ Each task: id · title · tier · files · depends_on · acceptance · verify.
 ## Critical path (within epic)
 
 ```
+
 E01-T01 ──▶ E01-T02 ──▶ E01-T09  (make default honest → fix resume → lock it with a test)
    │
    ├─▶ E01-T03  (graph-path defense in depth)
@@ -336,3 +337,14 @@ acceptance = [
     "the run report marks itself dry-run, not SUCCESS",
 ]
 ```
+
+## CTRL-08 ownership reconciliation
+
+The manifest is authoritative over this historical ten-task prose. E01-T07 is an
+acceptance roll-up over both SH02-T02 task-attempt isolation/immutable gates and
+E01-T14's distinct accepted-task aggregation branch; T11/T12 roll up SH05-T04/T02;
+T13 rolls up E15-T7; and T15/T16 roll up E47-T04/T03. The SH-backed tasks use
+runtime-enforced cross-plan dependencies, not ownership metadata alone. See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md). None is a second
+implementation lane. E01-T14 retains the plan aggregation branch naming consumed by
+E46; it does not own worktree isolation.

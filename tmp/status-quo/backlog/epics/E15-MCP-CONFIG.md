@@ -276,3 +276,12 @@ fail_msg = "Add a unit test asserting a tool named 'github.get_pr' groups under 
 - A Claude-CLI-backed ACP session in Zed receives its `session/new` MCP tools. (E15-T4)
 - `search_code` and the other 9 code-intel tools resolve to `Read` permission, not `Write`. (E15-T5)
 - No writer other than `resolve_mcp_config_path` targets `.roko/mcp-config.json`. (E15-T6)
+
+## CTRL-08 ownership reconciliation
+
+E15-T7 is the sole GitHub MCP discovery/configuration owner; E01-T13 is its
+acceptance roll-up. E14 owns catalog permissions, E46 owns remote GitHub operations,
+and E18-T15 documents the integrated behavior. T1/T2/T3/T7 are serialized in manifest
+order because they share `orchestrate.rs`; no parallel writer may rewrite the MCP
+config path. See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

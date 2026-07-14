@@ -80,7 +80,7 @@ model_hint = "claude-sonnet-4-20250514"
 max_loc = 20
 files = ["crates/roko-cli/src/orchestrate.rs"]
 role = "implementer"
-depends_on = []
+depends_on = ["E15-T1"]
 
 [task.context]
 read_files = [
@@ -129,7 +129,7 @@ model_hint = "claude-haiku-4-5-20250514"
 max_loc = 15
 files = ["crates/roko-cli/src/orchestrate.rs"]
 role = "implementer"
-depends_on = []
+depends_on = ["E15-T2"]
 
 [task.context]
 read_files = [
@@ -363,6 +363,7 @@ acceptance = [
 [[task]]
 id = "E15-T7"
 title = "Auto-discover roko-mcp-github binary and configure it"
+ownership = "canonical-owner"
 status = "ready"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
@@ -372,7 +373,7 @@ files = [
     "crates/roko-agent/src/mcp/config.rs",
 ]
 role = "implementer"
-depends_on = ["E15-T1", "E15-T6"]
+depends_on = ["E15-T3", "E15-T6"]
 
 [task.context]
 read_files = [

@@ -375,3 +375,13 @@ fail_msg = "Cold-substrate tests must pass; add a case asserting a second archiv
 - Dead second-implementations removed (T10); `.roko/VERSION` → `2` with a real migration and `roko doctor` state audit (T11).
 - Cold-substrate archival **moves** engrams (prunes the hot store + dedups the cold append) so the hourly timer stops re-appending the same rows (T12).
 - Verify per task via the grep/`cargo`/`curl` commands above; the load-bearing check is that **writer path == reader path** for verdicts, executor state, thresholds, and episodes.
+
+## CTRL-08 ownership reconciliation
+
+E02 retains canonical path, migration, archival, and retention ownership. E02-T08 is
+an acceptance roll-up for the broader E09-T04 ephemeral-heartbeat policy at the
+canonical StateHub persistence boundary; it preserves live dashboard broadcast and
+durable critical events and must not add a second serve-side filter. E47 owns
+disk-pressure mechanics, cleanup, and episodes/signals/efficiency rotation; those do
+not supersede E02's state/ledger/backup retention. See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

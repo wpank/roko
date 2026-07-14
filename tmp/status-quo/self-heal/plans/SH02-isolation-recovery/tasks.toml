@@ -30,6 +30,7 @@ acceptance = ["max_parallel=1 never overlaps task attempts.", "Capacity covers p
 [[task]]
 id = "SH02-T02"
 title = "Create task-owned worktrees and immutable gate inputs"
+ownership = "canonical-owner"
 description = "Allocate isolation per task attempt, gate base plus owned diff, and prevent sibling edits or Cargo work from contaminating verification."
 status = "ready"
 tier = "architectural"

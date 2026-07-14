@@ -276,3 +276,16 @@ acceptance = [
     "No path leaves a chain tool advertised-but-unimplemented.",
 ]
 ```
+
+## CTRL-08 ownership reconciliation
+
+E48-T02 owns the configured RPM/TPM limiter and E48-T03 owns its pooled acquisition
+on the actual legacy and runner-v2 model-call paths; E14-T08 accepts only their
+combined live enforcement. E48-T05 owns one runtime-scoped
+`Arc<ProviderHealthRegistry>` shared by actual ModelCallService/runner outcomes and
+all-stage CascadeRouter health selection; E14-T10 rolls that result up after E48
+completes. ToolDispatcher is not an LLM provider boundary. This single direction
+removes the rejected E14/E48 plan cycle. E48's queue, budget-action, and projection
+work remains distinct. T09
+owns `Retry-After` parsing and T12 owns GitHub-specific response quota observation.
+See [`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

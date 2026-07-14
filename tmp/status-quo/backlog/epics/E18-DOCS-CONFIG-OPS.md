@@ -326,3 +326,12 @@ exercise it. E18 closes when: (a) a release tag runs clippy+test+`cargo deny che
 (b) `cargo metadata` MSRV == `msrv.yml` == Docker image; (c) a clean `git archive` checkout `docker build`
 succeeds; (d) `config show --effective` leaks zero secret bytes; (e) `README`/`CLAUDE.md` pass the docs-lint
 grep-guard with the corrected counts/nouns/engine.
+
+## CTRL-08 ownership reconciliation
+
+E18-T14 owns CI plan-validation policy and T15 owns documentation only. Runtime
+GitHub API/PR/issue behavior remains E46, while MCP discovery remains E15-T7. T15
+therefore waits for both and describes their integrated result without implementing
+either mechanism. T07 is serialized after T06 because both own the config loader.
+See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

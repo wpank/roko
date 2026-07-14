@@ -33,10 +33,10 @@ audit and this backlog share the **same HEAD** (`5852c93c05`).
 | Doc | What it gives you |
 |---|---|
 | [`03-WORK-BREAKDOWN-EPICS.md`](03-WORK-BREAKDOWN-EPICS.md) | Roadmap, epic DAG, milestone sequencing (M0→M3+), critical path, parallel tracks |
-| [`05-MASTER-CHECKLIST.md`](05-MASTER-CHECKLIST.md) | The flat, tickable checklist across all epics (149 tasks by milestone) |
-| [`06-EXECUTABLE-TASK-FILE-COVERAGE.md`](06-EXECUTABLE-TASK-FILE-COVERAGE.md) | Coverage ledger for generated executable task files: 149 materialized implementation tasks, 0 remaining gaps |
+| [`05-MASTER-CHECKLIST.md`](05-MASTER-CHECKLIST.md) | Historical 149-task E01-E18 seed checklist; the expanded executable layer contains 169 E01-E18 tasks |
+| [`06-EXECUTABLE-TASK-FILE-COVERAGE.md`](06-EXECUTABLE-TASK-FILE-COVERAGE.md) | Canonical coverage ledger for all 48 epic manifests: 447 implementation tasks (169 in E01-E18), 0 definition gaps |
 | [`07-SUBAGENT-TASK-AUTHORING-NOTES.md`](07-SUBAGENT-TASK-AUTHORING-NOTES.md) | Subagent-derived corrections for missing task blocks: stale paths, deps, scopes, and verify hints |
-| [`08-SOURCE-CORPUS-PLAN-COVERAGE.md`](08-SOURCE-CORPUS-PLAN-COVERAGE.md) | Source-corpus coverage ledger: all 744 docs from `tmp/status-quo`, `docs/v1`, `docs/v2`, and `docs/v2-depth` mapped into DOC plans |
+| [`08-SOURCE-CORPUS-PLAN-COVERAGE.md`](08-SOURCE-CORPUS-PLAN-COVERAGE.md) | Source-corpus coverage ledger: all 745 docs from `tmp/status-quo`, `docs/v1`, `docs/v2`, and `docs/v2-depth` mapped into DOC plans |
 | [`plans/00-INDEX.md`](plans/00-INDEX.md) | Runnable per-epic `tasks.toml` layer plus the `status-quo-authoring-gaps` plan |
 | [`04-EXECUTION-READINESS.md`](04-EXECUTION-READINESS.md) | **M0 bootstrap** — the gate before every epic; the one fix that unblocks self-execution |
 | [`01-TASK-EXECUTION-SCHEMA.md`](01-TASK-EXECUTION-SCHEMA.md) | Canonical `tasks.toml` schema — how to author a roko-executable task |
@@ -165,7 +165,7 @@ See [`06-EXECUTABLE-TASK-FILE-COVERAGE.md`](06-EXECUTABLE-TASK-FILE-COVERAGE.md)
 coverage and validation notes.
 
 **Source-corpus reconciliation layer** — generated under `plans/DOC-*` with six DOC plan
-directories and 71 grouped reconciliation tasks. This layer covers all **744** source documents
+directories and 71 grouped reconciliation tasks. This layer covers all **745** source documents
 from `tmp/status-quo/*.md`, `docs/v1/**`, `docs/v2/**`, and `docs/v2-depth/**`. The per-corpus
 ledgers live in [`source-coverage/`](source-coverage/) and the aggregate proof lives in
 [`08-SOURCE-CORPUS-PLAN-COVERAGE.md`](08-SOURCE-CORPUS-PLAN-COVERAGE.md).

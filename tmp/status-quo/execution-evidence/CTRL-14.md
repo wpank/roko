@@ -2,16 +2,184 @@
 
 ## Review state
 
-`REVIEW_NOT_READY` — the 96/96 retirement and replacement proof passes, but CTRL-14
-must not be marked `DONE` until the two control-plane inventory defects under
-[Required reconciliation](#required-reconciliation) are repaired, merged, and this
-evidence is rerun against that integrated commit.
+`TERMINAL_CANDIDATE` — all 96 retired authoring records remain skipped and resolve
+exactly to stronger live task definitions; both defects that made the first proof
+nonterminal are now independently reviewed, merged, and cleanly rerun on current
+integration base `fb5a47f6bf024a30bce4c6b345896e390b5684b8`.
 
-This is a nonterminal review rejection, not a programme blocker: both defects are
-correctable in-repository and are outside this evidence-only worker's reserved write
-scope.
+This worker does not mark CTRL-14 `DONE`. Terminal status still requires independent
+review of the immutable candidate, integration of that accepted review, a post-merge
+rerun, and coordinator-only master reconciliation.
 
-## Contract and snapshot
+## Terminal rerun and current integrated proof
+
+### Assignment and prerequisite ancestry
+
+- Worker base: `fb5a47f6bf024a30bce4c6b345896e390b5684b8`.
+- Worker branch/worktree: `agent/CTRL-14-terminal-supersession` at
+  `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z/workers/CTRL-14-TERMINAL`.
+- Reserved write scope: this evidence file only. No master, manifest, index, ledger,
+  audit, production file, lockfile, or integration worktree is changed.
+- Original accurate nonterminal proof: `ed5ab0fed4a820b814d59b398c5c989b5003cfdf`;
+  review `fb632f521d8e59dbb110ea45f947f11aa00210e1` accepted its evidence accuracy while
+  explicitly refusing terminal status.
+- Source/index repair: corrected candidate
+  `d808803069ecb9f74d63cb7baa6e41ddd69368ad`; final review
+  `1be9dc64392b6556e2044f18eab922bf3f6f8eb3` (`ACCEPTED`); integration merge
+  `c379370672ae3119a5d5aa660be2ef63f5a73adb`.
+- Strict-validation repair and terminal ledger proof: candidate
+  `9458a6920d72e457553e31cd51b9ac89d70d2483`, review
+  `81d1af92b142ce512964b078ccb5bc1a417b8e2d`, prerequisite merge
+  `206e9079812b27f738d95f91d1135d0f663c836f`, ledger candidate
+  `950fa8bc95a2b92f90dc970d6038547a28feb9e4`, ledger review
+  `91da0fea5604e7639928824c3ab8ab07c21832af`, ledger merge
+  `f0cf7e769306b3217b30de797e2698b1a673326e`, and terminal integration evidence at
+  this base. Git ancestry confirms every named prerequisite is present.
+
+### Immutable manifest and exact-mapping traversal
+
+The exact base commit was exported with `git archive` to a new disposable directory.
+Python 3 `tomllib` read the complete 6,349-line retired manifest, all 48 live E manifests,
+all six live DOC manifests, all six source-coverage ledgers, both live backlog indexes,
+and the generated top-level `plans/INDEX.md`. The traversal asserted every manifest's
+metadata and every task ID/status. For all 96 replacement targets it additionally asserted
+the complete nested context/verify/acceptance contract, every stable-ID mapping, the declared
+target-plan and source-epic paths, and both live index tables.
+
+For every retired task it removed only `GAP-`, required the resulting stable ID to
+occur exactly once in the 447-task canonical corpus, required its canonical path to
+equal the retired record's declared target plan, required the declared epic to exist
+and name that stable ID, and required the replacement to contain nonempty role/files,
+surgical read-file/symbol/anti-pattern context, non-placeholder verify commands with
+failure messages, and acceptance coverage.
+
+Observed result:
+
+```text
+epic_manifests=48 canonical_tasks=447 statuses=done:7,ready:440
+epic_subtotals=E01-E18:169,E19-E45:243,E46-E48:35
+doc_manifests=6 doc_tasks=71 statuses=ready:71
+retired_tasks=96 skipped=96 executable=0 dependency_edges=79
+mapped_targets=96 orphan_targets=0 orphan_acceptance=0 epic_groups=17
+titles=exact:4,refined_under_07_notes:92
+verify=retired:480,canonical_targets:290
+acceptance=retired:384,canonical_targets:227
+groups=E01:7,E02:8,E03:4,E04:16,E05:5,E06:6,E07:7,E08:4,E09:6,E10:4,E11:2,E12:6,E13:1,E14:4,E15:3,E17:3,E18:10
+index_rows=48 index_tasks=447 index_gaps=0
+```
+
+The four literal title matches remain `E01-T07`, `E06-T05`, `E10-T04`, and
+`E12-T05`. The other 92 use exact stable identity and the exact declared plan/epic
+paths; `07-SUBAGENT-TASK-AUTHORING-NOTES.md` preserves why their implementation titles
+and task contracts were refined. There is no fuzzy or title-only match.
+
+For additional immutability, the SHA-256 of the 96 sorted records in the form
+`"GAP-ID -> TARGET-ID | PLAN-PATH | EPIC-PATH\n"` is:
+
+```text
+9bc9bf4e015ce7a71dcb30a866a39a103c89e5b0e7c8e64652b640b9805825f9
+```
+
+Current corpus seals are:
+
+```text
+retired_manifest_sha256=4705f6f7d00403f8aa33fb14db89bb5a8353a67468fe3a3d3af613245f7a9d03
+epic_manifest_files=48
+epic_manifest_bytes=1505701
+epic_manifest_set_sha256=8f43355496a43b35f84ec56467452d7f2f21fbcc2243fc1ba45c934ceac59f11
+```
+
+The retired hash is unchanged from the original proof. The live E-manifest seal and
+byte count changed because reviewed CTRL-07 metadata corrections are now integrated;
+the fresh traversal proves their task identities, statuses, replacement ownership,
+and acceptance completeness remain intact. The original snapshot-specific status
+assertion was updated from 6/441 to the integrated 7/440 census because reviewed
+CTRL-05 completed `E11-T01`; that task is not one of the retired plan's E11-T04/T05
+replacement targets. All supersession invariants were rerun unchanged.
+
+### Source, DOC, and index coverage
+
+The exact source enumeration published in
+`tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md` was run inside the immutable
+snapshot:
+
+```text
+sources=745
+missing_from_ledgers=0
+missing_from_doc_tasks=0
+```
+
+The source set includes 109 direct `tmp/status-quo/*.md` documents. The canonical
+master occurs in the status-quo source ledger and is owned by exactly one DOC task,
+`DOC-SQ-01`. That task's structural coverage command passes, and focused strict
+validation reports `0 diagnostics in 1 plan`.
+
+Structured index comparison proves all 48 E01-E48 rows in
+`tmp/status-quo/backlog/plans/00-INDEX.md` have the exact directory and task count from
+their manifests, total 447, and report zero definition gaps. The live navigation and
+coverage ledgers agree on 169 E01-E18 tasks, 447 implementation tasks, 71 DOC tasks,
+and 745 covered sources. The external generated index was also read completely and
+still reports its separate 29-plan/120-task executable queue plus two superseded
+plans/66 excluded tasks; this proof does not conflate that queue with the backlog.
+
+### Strict validation and nonexecution
+
+The integration-owned validator was used, not a worker artifact:
+
+```text
+roko 0.1.0 (rustc 1.96.1 (31fca3adb 2026-06-26), aarch64-apple-darwin, git d4749f9c7)
+```
+
+From one disposable full archive:
+
+```text
+backlog strict:   exit 0; 0 diagnostics in 55 plans
+self-heal strict: exit 0; 0 diagnostics in 6 plans
+```
+
+From a separate disposable full archive, the retired plan alone produced:
+
+```text
+retired strict: exit 0; 0 diagnostics in 1 plan
+retired dry-run: exit 0
+{
+  "dry_run": true,
+  "plans": [],
+  "total_plans": 0,
+  "total_tasks": 0
+}
+```
+
+The runtime path still agrees: `TaskDef::is_ready` requires literal `ready`,
+`task_status_is_terminal` includes `skipped`, and `TaskTracker::new` pre-collects all
+manifest-skipped IDs. Resetting or executing this retired plan would therefore undo
+an explicit, proved supersession boundary.
+
+The source `plans/INDEX.md` SHA-256 before and after every isolated command remained:
+
+```text
+7ac5679f9ff7a32571ad0ed70e9914b579f12a5f22e4285f4804c20a19077b44
+```
+
+The validator regenerated only the disposable fixture's index and runtime state;
+the worker and integration worktrees remained unchanged.
+
+### Disposition of the original nonterminal findings
+
+1. **Missing master source/DOC assignment — resolved.** The accepted coverage repair
+   assigns the master to the 109-document status-quo ledger and `DOC-SQ-01`; the
+   integrated published check is now 745/0/0.
+2. **Stale plan/index/validation inventory — resolved.** The accepted correction
+   reconciles both live backlog indexes to 169/447/745 while preserving historical
+   149/744 statements as history. CTRL-07 separately replaced the stale warning
+   paragraph with reviewed integrated strict results of backlog 0/55 and self-heal
+   0/6.
+
+The remainder of this file deliberately preserves the original snapshot, mapping
+table, reproduction program, rejection findings, and requested rerun. Its counts and
+hashes are historical facts at base `5719b51c0`, not current integrated claims.
+
+## Original nonterminal snapshot (preserved history)
 
 - Worker branch: `agent/CTRL-14-authoring-supersession`
 - Reviewed base: `5719b51c03dfde9e2709233d51e422c826ee97a2`
@@ -278,9 +446,9 @@ The authoritative statements about this retired plan agree:
 The supersession statements agree, but their surrounding aggregate inventories do
 not yet all agree. Those defects prevent final acceptance.
 
-## Required reconciliation
+## Original required reconciliation (resolved above)
 
-### 1. Missing canonical master in source coverage (review rejection)
+### 1. Missing canonical master in source coverage (historical review finding)
 
 The exact coverage command published in
 `tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md` currently produces:
@@ -316,7 +484,7 @@ Three materially different checks ruled out an alternate existing assignment:
 3. Git history plus the `status-quo-corpus` ledger metadata showed that its declared
    108-file snapshot predates inclusion of the current canonical master.
 
-### 2. Stale plan index and validation inventory (review rejection)
+### 2. Stale plan index and validation inventory (historical review finding)
 
 `tmp/status-quo/backlog/plans/00-INDEX.md` claims all `E*` manifests contain 149
 implementation tasks, lists only E01–E18, totals those plans as 149, and claims 744
@@ -336,7 +504,7 @@ epic manifests, reconcile 169/447 and 745 source counts, and either update or cl
 baseline/supersede the stale validation-warning statement using reproducible current
 output.
 
-## Acceptance rerun
+## Original requested acceptance rerun (completed above)
 
 After both correction commits are integrated:
 
@@ -349,4 +517,3 @@ After both correction commits are integrated:
 4. compare all plan/index/ledger/audit counts against parsed manifests;
 5. amend this evidence with the integrated correction SHA and change
    `REVIEW_NOT_READY` only after independent review accepts the combined proof.
-

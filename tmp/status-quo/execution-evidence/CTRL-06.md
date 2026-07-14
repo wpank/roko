@@ -54,7 +54,7 @@ Review readiness:
 - Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.
 
 Integration:
-- Review evidence: pending.
-- Integration commit: pending.
-- Post-merge commands/results: pending.
-- Final status: `IMPLEMENTED_UNREVIEWED` after commit.
+- Review evidence: F1 rejection `CTRL-06-REVIEW-F1-REJECTED.md` (`35fd8b912b2d…`), F2 rejection `CTRL-06-REVIEW.md` (`d5671d1e9994…`), and final independent acceptance `CTRL-06-REVIEW-FINAL.md` (`595eac759a2f…`). Both rejection findings are explicitly dispositioned.
+- Integration commit: final accepted merge `d4749f9c708eac02f01d0a4d9ee5a3dd84cdcf84`; both rejected-review commits, final candidate `7f62204e50bf…`, and final review are ancestors.
+- Post-merge commands/results: `cargo test -p roko-cli --test plan_validation` passed 24/24; `cargo test -p roko-cli --test plan_validate` passed 18/18; integrated `target/debug/roko` rebuilt at git `d4749f9c7`; strict self-heal passed with 0 diagnostics/6 plans; strict backlog reported 13 prerequisite-only diagnostics/55 plans after the separately merged canonical queue/GAPS import removed three real missing inputs. The validator's documented `plans/INDEX.md` side effect was restored byte-for-byte to the independently reviewed sealed SHA-256 `7ac5679f…`; integration is clean.
+- Final status: `DONE` for CTRL-06. The remaining 13 prerequisite diagnostics are owned by CTRL-05/CTRL-07 and are not validator false positives.

@@ -624,7 +624,7 @@ max_loc = 120
 files = [
     "crates/roko-cli/src/runner/event_loop.rs",
     "crates/roko-cli/src/runner/types.rs",
-    "crates/roko-core/src/config.rs",
+    "crates/roko-core/src/config/budget.rs",
 ]
 role = "implementer"
 depends_on = ["E01-T01"]
@@ -634,7 +634,7 @@ read_files = [
     { path = "crates/roko-cli/src/runner/types.rs", lines = "1260-1310", why = "RunConfig fields — check for existing cost_budget or add one" },
     { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "470-510", why = "runner setup — insert budget validation before first dispatch" },
     { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3908-3960", why = "SpawnAgent path — check accumulated cost against ceiling before dispatching" },
-    { path = "crates/roko-core/src/config.rs", lines = "1-80", why = "roko.toml runner config section where cost_budget_usd may already exist or needs adding" },
+    { path = "crates/roko-core/src/config/budget.rs", lines = "1-48", why = "BudgetConfig owns the live roko.toml [budget] spend ceilings (max_plan_usd and max_turn_usd); extend this canonical module if the runner needs another cost-budget field" },
 ]
 symbols = [
     "RunConfig — runner configuration struct",

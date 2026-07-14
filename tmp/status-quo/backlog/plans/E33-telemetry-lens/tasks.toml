@@ -292,7 +292,7 @@ max_loc = 120
 read_files = [
   { path = "docs/v2/15-TELEMETRY.md", lines = "249-373", why = "Error, Drift, Budget, Trend, Anomaly payload specs with exact field names and enums" },
   { path = "crates/roko-core/src/telemetry_observe.rs", lines = "1-30", why = "Module header from T01 -- add alongside T02 payload structs" },
-  { path = "crates/roko-core/src/error.rs", lines = "1-50", why = "Check existing error types -- ErrorCategory is telemetry classification, not error handling" },
+  { path = "crates/roko-core/src/error/mod.rs", lines = "1-100", why = "Canonical RokoError taxonomy after the error module split; ErrorCategory remains a distinct telemetry classification" },
 ]
 symbols = [
   "ErrorPayload -- error classification and aggregation per interval (spec SS4.5)",
@@ -307,7 +307,7 @@ symbols = [
   "AnomalyLevel -- Moderate/Severe/Critical for anomaly severity",
 ]
 anti_patterns = [
-  "Do NOT duplicate existing error enums from error.rs -- ErrorCategory is a telemetry classification, not error handling",
+  "Do NOT duplicate existing error enums from error/mod.rs -- ErrorCategory is a telemetry classification, not error handling",
   "Do NOT use Duration types -- use u64 _ms fields for serde compatibility",
   "Do NOT use chrono::DateTime -- use Option<i64> millis for projected_exhaustion",
   "Do NOT import from roko-primitives -- keep payloads self-contained in roko-core",

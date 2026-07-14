@@ -147,7 +147,7 @@ model_hint = "claude-sonnet-4-5"
 max_loc = 80
 files = [
     "crates/roko-serve/src/routes/workspaces.rs",
-    "crates/roko-serve/src/dashboard_snapshot.rs",
+    "crates/roko-core/src/dashboard_snapshot.rs",
     "crates/roko-fs/src/layout.rs",
 ]
 role = "implementer"
@@ -157,7 +157,7 @@ depends_on = []
 read_files = [
     { path = "crates/roko-serve/src/routes/workspaces.rs", lines = "318-335", why = "Reads state/executor.json and pushes 'executor.json: <error>' — repoint at state-snapshot.json.executor_json" },
     { path = "crates/roko-cli/src/runner/persist.rs", lines = "40-90", why = "state_snapshot_json path + StateSnapshot with executor_json field — the real source" },
-    { path = "crates/roko-serve/src/dashboard_snapshot.rs", lines = "1270-1300", why = "StateHub bootstrap also reads executor snapshot — same repoint" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1260-1305", why = "DashboardSnapshot::load_from_workdir is the current StateHub bootstrap source and still reads state/executor.json — repoint it with the other readers" },
     { path = "crates/roko-fs/src/layout.rs", lines = "375-385", why = "executor_snapshot() helper (:382) — remove once no reader references executor.json" },
 ]
 symbols = [

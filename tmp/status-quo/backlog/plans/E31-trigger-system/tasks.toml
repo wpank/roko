@@ -177,7 +177,7 @@ Add to `crates/roko-core/src/trigger.rs`:
 These ensure secrets never appear in TOML -- only references.
 
 Check if roko-core already has a SecretRef-like type in the secrets module
-(crates/roko-core/src/secrets.rs) before defining a new one. If one exists,
+(crates/roko-core/src/secrets/mod.rs) before defining a new one. If one exists,
 import and use it. If not, define here.
 """
 role = "implementer"
@@ -190,12 +190,12 @@ max_loc = 30
 [task.context]
 read_files = [
   { path = "crates/roko-core/src/trigger.rs", lines = "1-30", why = "Existing trigger types from T01 for alignment" },
-  { path = "crates/roko-core/src/secrets.rs", lines = "1-50", why = "Check for existing SecretRef-like type to avoid duplication" },
+  { path = "crates/roko-core/src/secrets/mod.rs", lines = "1-55", why = "Canonical secrets module exports and SecretStore trait; check here and its listed submodules for an existing SecretRef-like type before adding one" },
   { path = "docs/v2/13-TRIGGERS.md", lines = "649-699", why = "TriggerAuth and SecretRef enum specs, TOML examples" },
 ]
 symbols = [
   "TriggerBinding.auth — Optional<TriggerAuth> field from T01",
-  "secrets module — check for existing SecretRef type at crates/roko-core/src/secrets.rs",
+  "secrets module — check the canonical crates/roko-core/src/secrets/mod.rs exports and submodules for an existing SecretRef type",
 ]
 anti_patterns = [
   "Do NOT store actual secret values -- only references (env var names, store keys, file paths)",

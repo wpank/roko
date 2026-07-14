@@ -28,7 +28,7 @@ depends_on = []
 read_files = [
     { path = "crates/roko-cli/src/orchestrate.rs", lines = "4254-4302", why = "resolve_mcp_config_path — builds McpConfig { servers } and serde_json::to_string_pretty at 4277; replace with Claude-shape serialization" },
     { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig fields: name, command, args, env (HashMap), transport, endpoint, auth_token, tier — source for the mcpServers map entries" },
-    { path = "crates/roko-agent/src/provider/claude_cli_agent.rs", lines = "336-344", why = "consumer: --mcp-config <path> --strict-mcp-config — the file MUST be Claude shape" },
+    { path = "crates/roko-agent/src/claude_cli_agent.rs", lines = "325-350", why = "ClaudeCliAgent command construction consumes the generated file via --mcp-config and --strict-mcp-config, so it must use Claude's mcpServers shape" },
 ]
 symbols = [
     "PlanRunner::resolve_mcp_config_path — async fn at orchestrate.rs:4254, returns Option<PathBuf>",

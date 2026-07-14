@@ -45,14 +45,14 @@ read_files = [
   { path = "crates/roko-serve/src/routes/auth.rs", lines = "1-80", why = "Existing API key CRUD routes" },
   { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-50", why = "extract_bearer_token(), is_structurally_valid_jwt(), auth header parsing" },
   { path = "crates/roko-serve/src/routes/middleware.rs", lines = "50-100", why = "require_api_key middleware, hash_api_key function" },
-  { path = "crates/roko-core/src/config.rs", lines = "1-50", why = "ApiKeyEntry and ServeAuthConfig types" },
+  { path = "crates/roko-core/src/config/serve.rs", lines = "79-125", why = "Live ServeAuthConfig and ApiKeyEntry definitions, including scope and expires_at fields used by auth routes" },
   { path = "docs/v2/17-AUTH.md", lines = "1-100", why = "Auth pipeline spec: 4 auth paths, fail-closed principle" },
 ]
 symbols = [
   "extract_bearer_token — middleware.rs:28, case-insensitive Bearer prefix extraction",
   "is_structurally_valid_jwt — middleware.rs:49, checks 3 dot-separated base64url segments",
-  "ApiKeyEntry — roko-core config.rs, existing key metadata struct",
-  "ServeAuthConfig — roko-core config.rs, server auth configuration",
+  "ApiKeyEntry — roko-core config/serve.rs, existing key metadata struct",
+  "ServeAuthConfig — roko-core config/serve.rs, server auth configuration",
   "ApiError — error.rs, existing error type for HTTP error responses",
 ]
 anti_patterns = [

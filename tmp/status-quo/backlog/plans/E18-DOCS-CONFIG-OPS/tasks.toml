@@ -728,7 +728,7 @@ model_hint = "claude-sonnet-4-5"
 max_loc = 60
 files = [".github/workflows/plan-validate.yml"]
 role = "implementer"
-depends_on = ["E18-T02"]
+depends_on = ["E18-T02", "E18-T03"]
 
 [task.context]
 read_files = [

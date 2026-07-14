@@ -41,8 +41,9 @@ Verification:
 
 Review readiness:
 - Implementation commit: `ea018feedcbccca3a3d922d293721134e6c7e829`.
+- Review-correction commit: `25da49fc9b9b33aac003649b0d17b9c791727fc5`.
 - Rejected candidate: `5e837e25e78bfd702f432dffb2d3cd1c022db080`; independent review accepted the algorithm/tests but rejected stale public rustdoc, canonical schema text, and three output-stub test rationales as F1.
-- F1 correction: public rustdoc now states the exact output/prerequisite/dependency exception; schema rows for `files`, `read_files`, and `PLAN_030/031` match it; obsolete output-stub setup was removed while the real architecture prerequisite fixture remains explicitly identified. Correction commit is pending this evidence-backed commit.
+- F1 correction: public rustdoc now states the exact output/prerequisite/dependency exception; schema rows for `files`, `read_files`, and `PLAN_030/031` match it; obsolete output-stub setup was removed while the real architecture prerequisite fixture remains explicitly identified.
 - Diff scope reviewed: the three reserved validator source/test files, canonical schema, and this evidence record are the complete task scope; no task manifest or lockfile changed.
 - Known limitations: cross-plan dependency outputs are available only when the producer plan is loaded in the same validation run. Path matching is deliberately exact and lexical, matching the authored schema; aliases or undeclared producers are not inferred.
 - Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.

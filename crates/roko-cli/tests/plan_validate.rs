@@ -67,9 +67,6 @@ fn plan_validate_help_shows_new_flags() {
 #[test]
 fn plan_validate_succeeds_for_well_formed_plan() {
     let temp = TempDir::new().unwrap();
-    // Create stub file so PLAN_031 file-reference check passes
-    std::fs::create_dir_all(temp.path().join("src")).unwrap();
-    std::fs::write(temp.path().join("src/lib.rs"), "").unwrap();
     write_plan(
         temp.path(),
         "good",
@@ -413,8 +410,6 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
 #[test]
 fn plan_validate_accepts_typed_acceptance_contract() {
     let temp = TempDir::new().unwrap();
-    // Create stub crate dir so PLAN_030 file-reference check passes
-    std::fs::create_dir_all(temp.path().join("crates/roko-gate/src")).unwrap();
     write_plan(
         temp.path(),
         "contract",
@@ -509,8 +504,7 @@ kind = "compile"
 #[test]
 fn plan_validate_accepts_architecture_queue_packets() {
     let temp = TempDir::new().unwrap();
-    // Create stub crate dir so PLAN_030 file-reference check passes
-    std::fs::create_dir_all(temp.path().join("crates/roko-core/src/config")).unwrap();
+    // The architecture source is a declared context.read_files prerequisite.
     std::fs::create_dir_all(temp.path().join("tmp/architecture-plans")).unwrap();
     std::fs::write(
         temp.path()

@@ -7442,13 +7442,13 @@ fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Res
         let timeout = entry.timeout();
         let attempt = runner_timeout_attempt(&timeout.attempt);
         let attempt_key = attempt.key();
-        match state
+        let lifecycle_already_timed_out = match state
             .lifecycle
             .task_attempts
             .get(&attempt_key)
             .map(|attempt| attempt.status)
         {
-            Some(TaskAttemptStatus::TimedOut) => continue,
+            Some(TaskAttemptStatus::TimedOut) => true,
             Some(status) if status.is_terminal() => {
                 anyhow::bail!(
                     "durable timeout terminal conflicts with {:?} for {}",
@@ -7456,29 +7456,39 @@ fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Res
                     attempt_key
                 );
             }
-            _ => {}
-        }
-        let timestamp = timeout_audit_timestamp(timeout.observed_at_ms);
-        state.apply_runner_event(&RunnerEvent::TaskAttemptCancellationRequested {
-            timestamp,
-            timestamp_ms: timeout.observed_at_ms,
-            run_id: entry.run_id().to_string(),
-            attempt: attempt.clone(),
-        });
-        state.apply_runner_event(&event);
-        if !state
+            _ => false,
+        };
+        let failed_identity_missing = !state
             .plan_failed_tasks(&attempt.plan_id)
-            .contains(&attempt.task_id)
-        {
-            state.task_failed();
+            .contains(&attempt.task_id);
+        let failure_key = format!("{}:{}", attempt.plan_id, attempt.task_id);
+        let failure_reason_missing = !state.failure_reasons.contains_key(&failure_key);
+        if !lifecycle_already_timed_out {
+            let timestamp = timeout_audit_timestamp(timeout.observed_at_ms);
+            state.apply_runner_event(&RunnerEvent::TaskAttemptCancellationRequested {
+                timestamp,
+                timestamp_ms: timeout.observed_at_ms,
+                run_id: entry.run_id().to_string(),
+                attempt: attempt.clone(),
+            });
+            state.apply_runner_event(&event);
+        }
+        if failed_identity_missing {
+            if !lifecycle_already_timed_out {
+                state.task_failed();
+            }
             state.mark_task_failed(&attempt.plan_id, &attempt.task_id);
+        }
+        if failure_reason_missing {
             state.record_task_failure(
                 &attempt.plan_id,
                 &attempt.task_id,
                 &format!("task timed out: {:?}", runner_timeout_kind(timeout.kind)),
             );
         }
-        applied += 1;
+        if !lifecycle_already_timed_out || failed_identity_missing || failure_reason_missing {
+            applied += 1;
+        }
     }
     Ok(applied)
 }
@@ -11278,6 +11288,140 @@ mod tests_post_gate_reflection_lessons {
             projection.normalize_runner_event(live_timeout),
             projection.normalize_runner_event(replay_timeout),
             "typed ledger replay and live timeout must project identically"
+        );
+    }
+
+    #[test]
+    fn already_timed_out_snapshot_replay_rebuilds_failed_dag_without_recounting() {
+        let tasks = crate::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "resume-timeout"
+total = 2
+status = "ready"
+
+[[task]]
+id = "T1"
+title = "timed out task"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "T2"
+title = "blocked downstream"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["T1"]
+"#,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: "resume-timeout".to_string(),
+            dir: std::path::PathBuf::from("plans/resume-timeout"),
+            tasks,
+            prd_excerpt: String::new(),
+        };
+        let task_index = HashMap::from([(
+            plan.id.clone(),
+            plan.tasks
+                .tasks
+                .iter()
+                .map(|task| (task.id.clone(), task.clone()))
+                .collect::<HashMap<_, _>>(),
+        )]);
+        let attempt = TaskAttemptRef::new(&plan.id, "T1", 1);
+        let mut persisted_state = RunState::new(2);
+        let run_id = persisted_state.run_id().to_string();
+        persisted_state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "timed out task",
+        ));
+        let timeout = TimeoutEvent {
+            kind: TimeoutKind::LostEffect,
+            attempt: Some(attempt.clone()),
+            effect: None,
+            owner_effect: Some(OwnerEffectRef(111)),
+            limit_ms: 1_000,
+            monotonic_elapsed_ms: 1_250,
+            observed_at_ms: 123,
+        };
+        let entry = timeout_ledger_entry(&run_id, &timeout).unwrap();
+        persisted_state.apply_runner_event(&RunnerEvent::task_attempt_cancellation_requested(
+            &run_id,
+            attempt.clone(),
+        ));
+        persisted_state.apply_runner_event(&timeout_runner_event(&entry).unwrap());
+        persisted_state.tasks_failed = 1;
+        persisted_state.mark_task_failed(&plan.id, "T1");
+        persisted_state.record_task_failure(&plan.id, "T1", "task timed out: LostEffect");
+
+        let snapshot = persist::RunStateSnapshot {
+            schema_version: persist::RUN_STATE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            started_at_ms: persisted_state.start_epoch_ms,
+            timestamp_ms: 124,
+            tasks_total: 2,
+            tasks_completed: 0,
+            tasks_failed: persisted_state.tasks_failed,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            total_cost_usd: 0.0,
+            total_agent_calls: 0,
+            plan_costs: HashMap::new(),
+            completed_tasks: HashMap::new(),
+            lifecycle: Some(persisted_state.lifecycle.clone()),
+            snapshot_fail_streak: 0,
+            fingerprints: Vec::new(),
+            replan_ledger: persist::ReplanLedgerSnapshot::default(),
+            revised_tasks: Vec::new(),
+            cascade_router_json: None,
+        };
+        let mut resumed = RunState::new(2);
+        restore_state_from_resume_snapshot(&mut resumed, &snapshot, &task_index, &[]);
+        assert_eq!(
+            resumed.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::TimedOut
+        );
+        assert_eq!(resumed.tasks_failed, 1);
+        assert!(resumed.plan_failed_tasks(&plan.id).is_empty());
+        assert!(resumed.failure_reasons.is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        assert!(persist_timeout_terminal(&paths.run_ledger_jsonl, &entry).unwrap());
+        assert_eq!(
+            replay_timeout_terminals(&paths.run_ledger_jsonl, &mut resumed).unwrap(),
+            1
+        );
+        assert_eq!(
+            replay_timeout_terminals(&paths.run_ledger_jsonl, &mut resumed).unwrap(),
+            0,
+            "fully reconciled duplicate replay must be a no-op"
+        );
+        assert_eq!(resumed.tasks_failed, 1, "restored aggregate must be stable");
+        assert!(resumed.plan_failed_tasks(&plan.id).contains("T1"));
+        assert!(
+            resumed.failure_reasons["resume-timeout:T1"].contains("LostEffect"),
+            "failure reason must be rebuilt from the durable terminal"
+        );
+
+        let mut task_dag = TaskDag::new(DagConfig::default());
+        seed_task_dag_from_run_state(&mut task_dag, std::slice::from_ref(&plan), &resumed);
+        let plan_dag = task_dag.plan(&plan.id).unwrap();
+        assert!(plan_dag.failed.contains("T1"));
+        assert!(
+            plan_dag.skipped.contains_key("T2"),
+            "downstream task must remain blocked by the reconstructed failure"
+        );
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new(&plan.id));
+        assert!(
+            ready_tasks_for_plan(&task_dag, &executor, &task_index, &resumed, &plan.id).is_empty(),
+            "timed-out task and its downstream must not be redispatched"
         );
     }
 

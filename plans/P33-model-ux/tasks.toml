@@ -1,0 +1,111 @@
+[meta]
+plan = "P33-model-ux"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+estimated_total_minutes = 30
+skip_enrichment = true
+
+# =============================================================================
+# P33 — Model UX: max_tokens auto-recovery
+#
+# Remaining unique tasks from self-dev-ux / self-dev-extras after filtering
+# out items that have already been implemented.
+#
+# Already implemented (not included):
+#   M05  (fuzzy model suggestions)  -> model_selection.rs jaro_winkler + suggest_models (wired)
+#   M11  (setup wizard)             -> commands/setup.rs (143 lines, wired)
+#   M13  (/models ACP slash cmd)    -> bridge_events.rs line 3393 + session.rs line 1506 (wired)
+#   D09  (config reload notif)      -> handler.rs lines 166-219 (full config_watcher wired)
+#   M14  (/do slash command)        -> bridge_events.rs line 3493 (wired)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# T1 — Add max_tokens -> max_completion_tokens recovery in CodexAgent
+#
+# should_use_max_completion_tokens() covers known prefixes, but new models
+# from OpenAI (or custom deployments) may also require max_completion_tokens.
+# When the API rejects with HTTP 400 + "max_tokens", auto-retry with the
+# corrected field to handle edge cases transparently.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T1"
+title = "Add max_tokens auto-recovery retry in CodexAgent::run"
+description = """
+In crates/roko-agent/src/codex_agent.rs, in the `run` method, add retry logic
+when the API rejects max_tokens. The current error path is at lines 360-374:
+
+    match self.poster.post_json(&url, &headers, &body, self.timeout_ms).await {
+        Ok(text) => text,
+        Err(e) => {
+            let reason = match e.status {
+                Some(code) => format!("http {code}: {}", e.message),
+                None => format!("transport error: {}", e.message),
+            };
+            return self.fail(input, &reason, started);
+        }
+    }
+
+Change this to:
+
+1. If the error has status Some(400) AND e.message contains "max_tokens":
+   a. Log: tracing::warn!("auto-fix: switching to max_completion_tokens for {}", self.model)
+   b. Clone the extra body params
+   c. Remove "max_tokens", insert "max_completion_tokens" with the same value
+   d. Rebuild the request body with the fixed params
+   e. Retry the POST once with the new body
+   f. If the retry also fails, propagate the retry error (not the original)
+
+2. For all other errors, propagate normally (no change).
+
+This handles edge cases where should_use_max_completion_tokens() misses a model
+slug pattern (e.g. custom-deployed models with non-standard slugs).
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 40
+files = ["crates/roko-agent/src/codex_agent.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/codex_agent.rs", lines = "310-398", why = "run() method: request construction (line 326-347) and HTTP post + error path (line 360-374)" },
+    { path = "crates/roko-agent/src/codex_agent.rs", lines = "140-175", why = "use_max_completion_tokens field and constructor" },
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "238-243", why = "should_use_max_completion_tokens function for reference" },
+]
+symbols = [
+    "CodexAgent::run — async fn run(&self, input: AgentInput) -> AgentOutput at codex_agent.rs",
+    "self.poster.post_json — async POST that returns Result<String, PostError>",
+    "PostError — has status: Option<u16> and message: String",
+    "use_max_completion_tokens — bool field, determines max_tokens vs max_completion_tokens key",
+    "ChatRequest — struct with model, messages, extra_body_params fields",
+]
+anti_patterns = [
+    "Do NOT retry on non-400 errors — only catch the specific max_tokens rejection (status 400 + message contains max_tokens)",
+    "Do NOT retry more than once — if the fixed request also fails, propagate the error",
+    "Do NOT modify self.use_max_completion_tokens — only fix the local request body",
+    "Do NOT change the existing should_use_max_completion_tokens logic — this is a fallback",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'auto-fix.*max_completion_tokens\\|switching.*max_completion_tokens' crates/roko-agent/src/codex_agent.rs"
+fail_msg = "Must log auto-fix message when switching to max_completion_tokens"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_tokens.*400\\|400.*max_tokens\\|e\\.message.*max_tokens\\|message.*contains.*max_tokens' crates/roko-agent/src/codex_agent.rs"
+fail_msg = "Must check for HTTP 400 + max_tokens in error message"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1 | tail -5"
+fail_msg = "roko-agent must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent 2>&1 | tail -10"
+fail_msg = "roko-agent tests must pass"

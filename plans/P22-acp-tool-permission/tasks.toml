@@ -1,0 +1,388 @@
+[meta]
+plan = "P22-acp-tool-permission"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Replace ToolContext::testing() with ToolContext::new() in ACP paths ───
+#
+# Three production ACP code paths use ToolContext::testing() which bypasses
+# safety checks and sets network: false.  Replace them with explicit
+# ToolContext construction using full capabilities and the real cancel token.
+
+[[task]]
+id = "T1"
+title = "Replace ToolContext::testing() with proper ToolContext in ACP dispatch"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1826-1835", why = "First ToolContext::testing() usage in run_anthropic_builtin_tool_loop. Creates testing context then overwrites capabilities on next line." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2357-2366", why = "Second ToolContext::testing() usage in run_openai_compat_mcp_tool_loop. Same pattern." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2511-2520", why = "Third ToolContext::testing() usage in run_openai_compat_builtin_tool_loop. Same pattern." },
+    { path = "crates/roko-core/src/tool/handler.rs", lines = "253-301", why = "ToolContext::new() constructor and ToolContext::testing() — testing() creates NoopAuditSink, NoopTraceSink, NoopMetricsSink, NeverCancel, network: false." },
+]
+symbols = [
+    "ToolContext::new(worktree_path, timeout, capabilities, audit_sink, trace_sink, metrics_sink, cancel_token) -> Self",
+    "ToolContext::testing(worktree_path) -> Self — sets timeout: 60s, capabilities with network: false, noop sinks, NeverCancel",
+    "ToolPermission { read: bool, write: bool, exec: bool, git: bool, network: bool }",
+    "AcpToolCancelToken(CancelToken) — already used, wraps ACP cancel token for the ToolContext trait",
+]
+anti_patterns = [
+    "Do NOT add new dependencies — NoopAuditSink, NoopTraceSink, NoopMetricsSink are already imported via roko_core::tool::handler.",
+    "Do NOT change the capabilities — keep read/write/exec/git/network all true as currently set by the override.",
+    "Do NOT change the cancel token wiring — AcpToolCancelToken wrapping is already correct.",
+]
+
+# For each of the three locations, replace:
+#
+#   let tool_context = ToolContext::testing(workdir)
+#       .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
+#   let mut tool_context = tool_context;
+#   tool_context.capabilities = ToolPermission {
+#       read: true, write: true, exec: true, git: true, network: true,
+#   };
+#
+# With:
+#
+#   let tool_context = ToolContext::new(
+#       workdir,
+#       std::time::Duration::from_secs(120),
+#       ToolPermission { read: true, write: true, exec: true, git: true, network: true },
+#       Arc::new(NoopAuditSink),
+#       Arc::new(NoopTraceSink),
+#       Arc::new(NoopMetricsSink),
+#       Arc::new(AcpToolCancelToken(cancel_token.clone())),
+#   );
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'ToolContext::testing' crates/roko-acp/src/bridge_events.rs | grep -q ."
+fail_msg = "Must not have any ToolContext::testing() in bridge_events.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'ToolContext::new(' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "Must use ToolContext::new() constructor"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T2: Add permission gate to AcpBuiltinToolHandler execute path ─────────────
+#
+# AcpBuiltinToolHandler (bridge_events.rs:2920) calls execute_acp_builtin_tool
+# without any permission check.  For destructive tools (write_file, edit_file,
+# bash), the handler should check ToolContext.denied_tools or a permission flag
+# and return an error if not permitted.
+#
+# The full request_permission() flow requires a transport reference that the
+# handler does not have.  The minimal viable fix: add an `approved_tools` set
+# to AcpBuiltinToolHandler that is populated by the caller from the session's
+# always_allowed set or a per-command allowlist.
+
+[[task]]
+id = "T2"
+title = "Add denied_tools check to AcpBuiltinToolHandler"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 25
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2910-2945", why = "AcpBuiltinToolHandler struct and ToolHandler impl. The execute method calls execute_acp_builtin_tool without checking ToolContext.denied_tools." },
+    { path = "crates/roko-core/src/tool/handler.rs", lines = "223-251", why = "ToolContext struct — has allowed_tools: Option<Vec<String>> and denied_tools: Option<Vec<String>> fields." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "172-175", why = "needs_permission() — returns true for write_file, edit_file, bash." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "324-328", why = "tool_needs_permission() — public wrapper." },
+]
+symbols = [
+    "AcpBuiltinToolHandler — struct { tool_name: String, workdir: PathBuf, event_sender: mpsc::Sender<CognitiveEvent> }",
+    "ToolHandler::execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult",
+    "ToolContext.denied_tools: Option<Vec<String>> — if set, deny tools in this list",
+    "ToolContext.allowed_tools: Option<Vec<String>> — if set, only allow tools in this list",
+    "ToolResult::err(ToolError::Other(String)) — error constructor",
+    "crate::builtin_tools::tool_needs_permission(name: &str) -> bool",
+]
+anti_patterns = [
+    "Do NOT try to call request_permission() here — the handler has no transport reference and runs inside the ToolLoop which expects sync results.",
+    "Do NOT block all destructive tools unconditionally — respect ToolContext.allowed_tools / denied_tools.",
+]
+
+# In AcpBuiltinToolHandler::execute (line 2925), add a check before calling
+# execute_acp_builtin_tool:
+#
+#   async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
+#       // Check denied_tools list
+#       if let Some(ref denied) = ctx.denied_tools {
+#           if denied.contains(&self.tool_name) {
+#               return ToolResult::err(ToolError::Other(
+#                   format!("tool '{}' is denied for this command", self.tool_name)
+#               ));
+#           }
+#       }
+#       // Check allowed_tools list
+#       if let Some(ref allowed) = ctx.allowed_tools {
+#           if !allowed.contains(&self.tool_name) {
+#               return ToolResult::err(ToolError::Other(
+#                   format!("tool '{}' is not in the allowed set for this command", self.tool_name)
+#               ));
+#           }
+#       }
+#       let output = crate::builtin_tools::execute_acp_builtin_tool(...).await;
+#       ToolResult::text(output)
+#   }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A15 'impl ToolHandler for AcpBuiltinToolHandler' crates/roko-acp/src/bridge_events.rs | grep -c 'denied_tools'"
+fail_msg = "Must check denied_tools in AcpBuiltinToolHandler::execute"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A15 'impl ToolHandler for AcpBuiltinToolHandler' crates/roko-acp/src/bridge_events.rs | grep -c 'allowed_tools'"
+fail_msg = "Must check allowed_tools in AcpBuiltinToolHandler::execute"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T3: Define per-slash-command tool allowlists ──────────────────────────────
+#
+# Add a function that returns the allowed tool set for each slash command
+# category.  Read-only commands (research, search) get only read tools.
+# Implementation commands (do, run) get all tools.
+
+[[task]]
+id = "T3"
+title = "Add slash_command_allowed_tools function"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-acp/src/builtin_tools.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "1-30", why = "Module header and acp_builtin_tools() — returns all 8 tools. The new function returns a subset per command." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "172-175", why = "needs_permission() — the classification of destructive vs safe tools." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3388-3510", why = "The slash command match block — shows which commands exist and their categories." },
+]
+symbols = [
+    "acp_builtin_tools() -> Vec<ToolDef> — returns all 8 tools",
+    "needs_permission(name: &str) -> bool — true for write_file, edit_file, bash",
+]
+anti_patterns = [
+    "Do NOT return ToolDef objects — return Vec<String> tool name strings for use in ToolContext.allowed_tools.",
+    "Do NOT restrict /do, /run, /express, /full — these need all tools.",
+    "Do NOT add tool restrictions to /build, /test, /clippy — those use run_shell_command, not the tool loop.",
+]
+
+# Add to builtin_tools.rs:
+#
+# /// Returns the set of tool names allowed for a given slash command.
+# /// Returns None for commands that should have all tools (do, run, express, full).
+# /// Returns Some(vec) for commands with restricted tools.
+# pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
+#     let read_only = || vec![
+#         "read_file".into(), "glob".into(), "grep".into(),
+#         "ls".into(), "web_fetch".into(),
+#     ];
+#     let read_write = || {
+#         let mut v = read_only();
+#         v.extend(["write_file".into(), "edit_file".into()]);
+#         v
+#     };
+#     match command {
+#         // Read-only: research commands don't need file writes or bash
+#         "research" | "search" | "knowledge" | "explain" | "replay"
+#             | "status" | "doctor" | "config" | "models" | "learn"
+#             | "prd-list" | "prd-status" | "plan-list" | "plan-show"
+#             | "agents" | "learn-router" | "learn-episodes" | "knowledge-stats"
+#             | "index" | "analyze" => Some(read_only()),
+#         // Read + write: PRD/plan editing but no bash
+#         "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate"
+#             | "plan-generate" | "plan-regenerate" => Some(read_write()),
+#         // Full access: implementation commands need bash for verification
+#         "do" | "run" | "express" | "full" | "agent-chat" => None,
+#         // Default: all tools (safe fallback for unknown commands)
+#         _ => None,
+#     }
+# }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'pub fn slash_command_allowed_tools' crates/roko-acp/src/builtin_tools.rs"
+fail_msg = "Must define slash_command_allowed_tools function"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A3 'research.*search' crates/roko-acp/src/builtin_tools.rs | grep -c 'read_only\\|read_file'"
+fail_msg = "Research commands must be restricted to read-only tools"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T4: Wire allowed_tools into ToolContext at tool loop dispatch sites ────────
+#
+# The three tool loop dispatch sites create ToolContext but never set
+# allowed_tools or denied_tools.  Wire the session-level or per-command
+# tool restrictions into the ToolContext.
+
+[[task]]
+id = "T4"
+title = "Wire slash_command_allowed_tools into ToolContext at dispatch sites"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1", "T2", "T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1430-1476", why = "The dispatch switch in handle_session_prompt_inner — shows where run_anthropic/run_openai_compat are called. This is the single-agent chat path, not slash commands." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1671-1682", why = "run_anthropic_cognitive_task signature — has tools_enabled but no tool restriction parameter." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2157-2170", why = "run_openai_compat_cognitive_task signature — same." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1826-1835", why = "First ToolContext creation site (after T1 fix) — add .allowed_tools." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2357-2366", why = "Second ToolContext creation site." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2511-2520", why = "Third ToolContext creation site." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1265-1271", why = "Session config extraction before dispatch — session_tools_enabled is already captured here." },
+]
+symbols = [
+    "ToolContext.allowed_tools: Option<Vec<String>> — set this from slash_command_allowed_tools()",
+    "crate::builtin_tools::slash_command_allowed_tools(command: &str) -> Option<Vec<String>>",
+    "run_anthropic_cognitive_task — needs an allowed_tools param threaded through",
+    "run_openai_compat_cognitive_task — same",
+]
+anti_patterns = [
+    "Do NOT add tool restrictions for the single-agent chat path (non-slash-command) — the chat model needs all tools.",
+    "Do NOT create a new struct for this — just add an allowed_tools: Option<Vec<String>> parameter to the cognitive task functions.",
+    "Keep the parameter as Option<Vec<String>> not &[String] — None means all tools allowed.",
+]
+
+# Implementation approach:
+#
+# 1. Add `allowed_tools: Option<Vec<String>>` parameter to:
+#    - run_anthropic_cognitive_task
+#    - run_openai_compat_cognitive_task
+#    - run_anthropic_builtin_tool_loop
+#    - run_openai_compat_builtin_tool_loop
+#
+# 2. At each ToolContext creation site, set:
+#    tool_context.allowed_tools = allowed_tools;
+#
+# 3. In handle_session_prompt_inner, pass None for non-slash-command dispatches.
+#    For the slash command path, this is not needed because slash commands
+#    use run_slash_command which spawns a subprocess — the tool loop path
+#    is only used for the single-agent chat mode.
+#
+# 4. Thread the parameter through the call chain.  The single-agent path
+#    always passes None (all tools).
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'allowed_tools' crates/roko-acp/src/bridge_events.rs | head -1"
+fail_msg = "Must wire allowed_tools into ToolContext at dispatch sites"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T5: Add unit test for tool restriction in AcpBuiltinToolHandler ───────────
+#
+# Add a test that verifies AcpBuiltinToolHandler rejects denied tools and
+# respects allowed_tools lists.
+
+[[task]]
+id = "T5"
+title = "Add test for tool permission enforcement in AcpBuiltinToolHandler"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 50
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2910-2945", why = "AcpBuiltinToolHandler struct and execute method (after T2 modifications)." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "5110-5130", why = "Existing test module location — add tests here." },
+    { path = "crates/roko-core/src/tool/handler.rs", lines = "282-301", why = "ToolContext::testing() constructor — fine for test use." },
+]
+symbols = [
+    "AcpBuiltinToolHandler { tool_name, workdir, event_sender } — struct to test",
+    "ToolHandler::execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult",
+    "ToolContext::testing(worktree_path) -> Self — creates test context with defaults",
+    "ToolResult::Err(ToolError) — returned when tool is denied",
+]
+anti_patterns = [
+    "Do NOT use ToolContext::testing() in production paths — but it is fine for actual tests.",
+    "Do NOT test actual file I/O — only test the permission gate logic by using denied/allowed tools.",
+]
+
+# Add to the existing #[cfg(test)] mod tests block:
+#
+# #[tokio::test]
+# async fn acp_builtin_tool_handler_respects_denied_tools() {
+#     let (tx, _rx) = mpsc::channel(16);
+#     let handler = AcpBuiltinToolHandler {
+#         tool_name: "bash".into(),
+#         workdir: std::env::temp_dir(),
+#         event_sender: tx,
+#     };
+#     let call = ToolCall { id: "t1".into(), name: "bash".into(), arguments: serde_json::json!({"command": "echo hi"}) };
+#     let mut ctx = ToolContext::testing(std::env::temp_dir());
+#     ctx.denied_tools = Some(vec!["bash".into()]);
+#     let result = handler.execute(call, &ctx).await;
+#     assert!(matches!(result, ToolResult::Err(_)));
+# }
+#
+# #[tokio::test]
+# async fn acp_builtin_tool_handler_respects_allowed_tools() {
+#     let (tx, _rx) = mpsc::channel(16);
+#     let handler = AcpBuiltinToolHandler {
+#         tool_name: "bash".into(),
+#         workdir: std::env::temp_dir(),
+#         event_sender: tx,
+#     };
+#     let call = ToolCall { id: "t1".into(), name: "bash".into(), arguments: serde_json::json!({"command": "echo hi"}) };
+#     let mut ctx = ToolContext::testing(std::env::temp_dir());
+#     ctx.allowed_tools = Some(vec!["read_file".into(), "glob".into()]);
+#     let result = handler.execute(call, &ctx).await;
+#     assert!(matches!(result, ToolResult::Err(_)));
+# }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'acp_builtin_tool_handler_respects' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "Must have permission enforcement tests"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_builtin_tool_handler_respects 2>&1"
+fail_msg = "Permission enforcement tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"

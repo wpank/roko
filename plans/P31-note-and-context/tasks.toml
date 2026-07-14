@@ -1,0 +1,259 @@
+[meta]
+plan = "P31-note-and-context"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+estimated_total_minutes = 90
+skip_enrichment = true
+
+# =============================================================================
+# P31 — Note workflow and context enhancements
+#
+# Remaining unique tasks from self-dev-ux / self-dev-extras that add
+# plan-from-prompt shorthand and plan-from-notes clustering.
+#
+# Already implemented (not included):
+#   H10 (roko note)        -> crates/roko-cli/src/commands/note.rs (49 lines, wired)
+#   M08 (--context flag)   -> crates/roko-cli/src/context_loader.rs (wired in do_cmd + plan)
+#   M12 (/note ACP)        -> bridge_events.rs line 3640 (wired)
+#   M15 (pinned_context)   -> session.rs PinnedFile struct + pin_file/unpin_file (wired)
+#   H12 (do slug lookup)   -> do_cmd.rs lines 42-57 (wired)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# T1 — Add plan prompt shorthand: `roko plan "add cursor support"`
+#
+# When `roko plan` is invoked with positional text that does not match any
+# known subcommand (list, show, run, validate, generate, regenerate), treat
+# it as a plan generation prompt and delegate to PlanCmd::Generate.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T1"
+title = "Route unrecognized `roko plan` args to plan generate"
+description = """
+In crates/roko-cli/src/main.rs, add a clap `external_subcommand` (or a
+fallback `String` variant) to PlanCmd so that unrecognized positional args
+like `roko plan "add cursor support"` route to the Generate branch.
+
+Implementation:
+1. Add `#[command(external_subcommand)]` variant `Shorthand(Vec<String>)` to
+   PlanCmd at line ~1398 (after Regenerate).
+2. In crates/roko-cli/src/commands/plan.rs cmd_plan(), add a match arm:
+     PlanCmd::Shorthand(words) => {
+         // Delegate to Generate with the words as `source`, no from_file, no context
+         cmd_plan(cli, PlanCmd::Generate {
+             source: words, from_file: None, context: vec![],
+         }).await
+     }
+3. After generation, print: "Next: roko plan run .roko/plans/<slug>/"
+
+This enables the shorthand without breaking any existing subcommands.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 30
+files = ["crates/roko-cli/src/main.rs", "crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1308-1400", why = "PlanCmd enum — add external_subcommand variant after Regenerate" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "24-30", why = "cmd_plan match dispatch — add Shorthand arm" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "806-830", why = "PlanCmd::Generate handler to delegate to" },
+]
+symbols = [
+    "PlanCmd — enum of plan subcommands at main.rs:1308",
+    "cmd_plan — async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> at plan.rs:24",
+    "PlanCmd::Generate — existing variant with source, from_file, context fields",
+]
+anti_patterns = [
+    "Do NOT break existing subcommands — only catch truly unrecognized args",
+    "Do NOT duplicate the Generate handler logic — delegate to the existing arm",
+    "Do NOT add a new file — modify main.rs and plan.rs only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Shorthand\\|external_subcommand' crates/roko-cli/src/main.rs"
+fail_msg = "Must add external_subcommand or Shorthand variant to PlanCmd"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Shorthand' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "Must handle Shorthand variant in cmd_plan match"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1 | tail -5"
+fail_msg = "roko-cli must compile"
+
+# ---------------------------------------------------------------------------
+# T2 — Create note_cluster.rs with simple word-overlap clustering
+#
+# Implements the clustering engine for plan --from-notes.
+# Groups notes by shared significant words (excluding stop words).
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T2"
+title = "Create note_cluster module with word-overlap clustering"
+description = """
+Create crates/roko-cli/src/note_cluster.rs implementing note clustering:
+
+1. Define NoteEntry { path: PathBuf, text: String, tags: Vec<String> }.
+2. Define NoteCluster { notes: Vec<NoteEntry>, theme: String }.
+3. Implement `pub fn load_notes(notes_dir: &Path, tag_filter: Option<&str>) -> Vec<NoteEntry>`:
+   - Read all .md files from notes_dir
+   - Parse tags from the `**Tags:** ...` line (if present)
+   - If tag_filter is Some, only include notes with matching tag
+   - Return sorted by filename (chronological)
+
+4. Implement `pub fn cluster_notes(notes: Vec<NoteEntry>) -> Vec<NoteCluster>`:
+   - Extract significant words from each note (split on whitespace, lowercase,
+     exclude STOP_WORDS: the, a, an, is, are, was, were, to, for, in, on, of,
+     and, or, it, this, that, with, from, but, not, be, as, at, by, has, have,
+     had, do, does, did, will, would, could, should)
+   - Two notes belong together if they share >2 significant words
+   - Use union-find or iterative merging to build clusters
+   - Generate a theme string from the top 3 most frequent words in each cluster
+   - Notes with no cluster partners become singleton clusters
+
+5. Register the module in lib.rs.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 150
+files = ["crates/roko-cli/src/note_cluster.rs", "crates/roko-cli/src/lib.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/note.rs", lines = "1-49", why = "Note file format — timestamp, tags, text layout" },
+    { path = "crates/roko-cli/src/lib.rs", lines = "55-85", why = "Module declarations — add pub mod note_cluster" },
+]
+symbols = [
+    "cmd_note — writes notes to .roko/notes/ as YYYY-MM-DD-HHMMSS.md",
+    "NoteEntry — struct to parse: path, text, tags",
+    "NoteCluster — struct: notes vec + theme string",
+]
+anti_patterns = [
+    "Do NOT add external NLP crate dependencies — use simple word-frequency overlap",
+    "Do NOT fail if notes dir is empty — return empty vec",
+    "Do NOT panic on parse errors — skip malformed notes with a warning",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn cluster_notes' crates/roko-cli/src/note_cluster.rs"
+fail_msg = "cluster_notes function not found"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn load_notes' crates/roko-cli/src/note_cluster.rs"
+fail_msg = "load_notes function not found"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod note_cluster' crates/roko-cli/src/lib.rs"
+fail_msg = "note_cluster module not registered in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1 | tail -5"
+fail_msg = "roko-cli must compile"
+
+# ---------------------------------------------------------------------------
+# T3 — Wire --from-notes flag into `roko plan generate`
+#
+# Adds the --from-notes flag that reads .roko/notes/, clusters them,
+# and generates plans from each cluster.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T3"
+title = "Add --from-notes flag to plan generate command"
+description = """
+Wire the note_cluster module into the plan generate flow:
+
+1. In main.rs PlanCmd::Generate, add a new flag:
+     #[arg(long)]
+     from_notes: bool,
+     #[arg(long)]
+     tag: Option<String>,
+
+2. In plan.rs PlanCmd::Generate handler (~line 806), add early branch:
+   if from_notes {
+       let workdir = std::env::current_dir()?;
+       let notes_dir = workdir.join(".roko").join("notes");
+       let notes = roko_cli::note_cluster::load_notes(&notes_dir, tag.as_deref());
+       if notes.is_empty() {
+           eprintln!("No notes found in {}", notes_dir.display());
+           return Ok(1);
+       }
+       let clusters = roko_cli::note_cluster::cluster_notes(notes);
+       eprintln!("Found {} note cluster(s):", clusters.len());
+       for (i, cluster) in clusters.iter().enumerate() {
+           eprintln!("  [{}] {} ({} note(s), theme: {})",
+               i + 1, cluster.notes[0].path.file_stem().unwrap_or_default().to_string_lossy(),
+               cluster.notes.len(), cluster.theme);
+       }
+       // Generate plan for each cluster using concatenated note text as source
+       for cluster in &clusters {
+           let combined: String = cluster.notes.iter()
+               .map(|n| n.text.as_str())
+               .collect::<Vec<_>>()
+               .join("\n\n---\n\n");
+           let slug = cluster.theme.replace(' ', "-");
+           eprintln!("Generating plan for cluster: {}", slug);
+           // Delegate to the existing generate path
+           // (call the same agent with combined as source_text)
+           ...
+       }
+       return Ok(0);
+   }
+
+3. Print summary after each plan: "Generated: .roko/plans/<slug>/tasks.toml"
+"""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-cli/src/main.rs", "crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1389-1400", why = "PlanCmd::Generate variant — add from_notes and tag fields" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "806-896", why = "Generate handler — add from_notes early branch" },
+    { path = "crates/roko-cli/src/note_cluster.rs", lines = "1-20", why = "Public API: load_notes, cluster_notes" },
+]
+symbols = [
+    "PlanCmd::Generate — variant with source, from_file, context fields; add from_notes, tag",
+    "cmd_plan — match dispatch; Generate arm starts at plan.rs:806",
+    "load_notes — pub fn in note_cluster.rs",
+    "cluster_notes — pub fn in note_cluster.rs",
+]
+anti_patterns = [
+    "Do NOT generate plans without showing the cluster list first — always preview",
+    "Do NOT block on all clusters if one fails — continue with next cluster",
+    "Do NOT add heavy deps — reuse existing agent dispatch from Generate handler",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'from_notes' crates/roko-cli/src/main.rs"
+fail_msg = "Must add from_notes flag to PlanCmd::Generate"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'from_notes\\|cluster_notes' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "Must wire from_notes into plan generate handler"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1 | tail -5"
+fail_msg = "roko-cli must compile"

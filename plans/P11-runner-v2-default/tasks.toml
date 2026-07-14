@@ -1,0 +1,357 @@
+[meta]
+plan = "P11-runner-v2-default"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Add legacy-runner-v2 to default features in Cargo.toml
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The `legacy-runner-v2` feature is defined but NOT in `default = []`.
+# This means `roko plan run` routes to the Graph Engine (a stub that does
+# nothing). We need to add `legacy-runner-v2` to the default feature list
+# so that `cargo build` without explicit `--features` gets the working runner.
+#
+# In crates/roko-cli/Cargo.toml line 15, change:
+#   default = []
+# To:
+#   default = ["legacy-runner-v2"]
+#
+# That is the ONLY change. Do NOT modify any other line in Cargo.toml.
+#
+[[task]]
+id = "T1"
+title = "Add legacy-runner-v2 to default features"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-cli/Cargo.toml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/Cargo.toml", lines = "13-25", why = "Feature definitions — need to change default = [] to include legacy-runner-v2" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT remove the legacy-runner-v2 feature definition on line 24. Only modify the default = [] line.",
+    "Do NOT add any other features to the default list. Only add legacy-runner-v2.",
+    "Do NOT modify the legacy-orchestrate or legacy-direct-dispatch features.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'default = \\[\"legacy-runner-v2\"\\]' crates/roko-cli/Cargo.toml"
+fail_msg = "default features must include legacy-runner-v2"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile with default features"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Make RunnerV2 the default PlanEngine variant
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# In crates/roko-cli/src/main.rs the PlanEngine enum has:
+#   #[default]
+#   #[value(name = "graph")]
+#   Graph,
+#   #[cfg(feature = "legacy-runner-v2")]
+#   #[value(name = "runner-v2")]
+#   RunnerV2,
+#
+# Now that the feature is always on, we need to:
+# 1. Move #[default] from Graph to RunnerV2
+# 2. Remove the #[cfg(feature = "legacy-runner-v2")] gate from RunnerV2
+# 3. Keep Graph as a non-default variant (do NOT delete it)
+#
+# The result should be:
+#   #[value(name = "graph")]
+#   Graph,
+#   /// Runner v2. Uses the streaming event-loop plan executor.
+#   #[default]
+#   #[value(name = "runner-v2")]
+#   RunnerV2,
+#
+[[task]]
+id = "T2"
+title = "Make RunnerV2 the default PlanEngine enum variant"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1294-1306", why = "PlanEngine enum definition — move #[default] to RunnerV2, remove cfg gate" },
+]
+symbols = [
+    "PlanEngine — #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)] pub enum PlanEngine",
+]
+anti_patterns = [
+    "Do NOT delete the Graph variant. It must remain as a non-default option.",
+    "Do NOT remove the doc comments on the variants.",
+    "Do NOT change the #[value(name = ...)] strings.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A2 'RunnerV2' crates/roko-cli/src/main.rs | grep -q '#\\[default\\]'"
+fail_msg = "RunnerV2 variant must have the #[default] attribute"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -B1 'RunnerV2' crates/roko-cli/src/main.rs | grep -q 'cfg(feature'"
+fail_msg = "RunnerV2 must NOT have a cfg(feature) gate"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Remove cfg gates from plan.rs runner v2 blocks
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# In crates/roko-cli/src/commands/plan.rs there are three cfg-gated blocks:
+#
+# 1. Line 7:  #[cfg(feature = "legacy-runner-v2")] on join_approval_tui_thread
+#    → Remove the cfg attribute (keep the function)
+#
+# 2. Lines 280-296: #[cfg(not(feature = "legacy-runner-v2"))] block that bails
+#    with "Runner v2 is not available"
+#    → Delete the entire block (lines 280-296 inclusive, the let _ = (...) and bail!)
+#
+# 3. Line 298: #[cfg(feature = "legacy-runner-v2")] opening the main runner block
+#    → Remove the cfg attribute (keep the block and its opening brace)
+#
+# 4. Line 804: closing comment `// end #[cfg(feature = "legacy-runner-v2")]`
+#    → Update comment to `// end runner-v2 path`
+#
+# Also remove the cfg gate from preflight_gate_deps in util.rs:
+# Line 1941: #[cfg(feature = "legacy-runner-v2")] → remove this line
+#
+[[task]]
+id = "T3"
+title = "Remove cfg(feature = legacy-runner-v2) gates from plan.rs and util.rs"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/commands/util.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "7-8", why = "cfg gate on join_approval_tui_thread — remove the #[cfg] line" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "275-300", why = "cfg(not) bail block (280-296) to delete + cfg(feature) gate (298) to remove" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "803-805", why = "Closing comment referencing the cfg feature — update text" },
+    { path = "crates/roko-cli/src/commands/util.rs", lines = "1938-1942", why = "cfg gate on preflight_gate_deps — remove the #[cfg] line" },
+]
+symbols = [
+    "fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>)",
+    "pub(crate) fn preflight_gate_deps() -> Vec<String>",
+]
+anti_patterns = [
+    "Do NOT delete the join_approval_tui_thread function body — only remove its #[cfg] attribute.",
+    "Do NOT delete the runner v2 block (lines 298-804). Only remove the #[cfg(feature)] line and its opening brace indentation.",
+    "Do NOT touch the Graph Engine path (lines 264-273). It must remain functional as a non-default option.",
+    "Do NOT delete the preflight_gate_deps function body — only remove its #[cfg] attribute.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'cfg(feature = \"legacy-runner-v2\")' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "No cfg(feature = legacy-runner-v2) should remain in plan.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'cfg(not(feature = \"legacy-runner-v2\"))' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "No cfg(not(feature = legacy-runner-v2)) should remain in plan.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'cfg(feature = \"legacy-runner-v2\")' crates/roko-cli/src/commands/util.rs"
+fail_msg = "No cfg(feature = legacy-runner-v2) should remain in util.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn join_approval_tui_thread' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "join_approval_tui_thread function must still exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Remove cfg gates from test files
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Three test files have cfg(feature = "legacy-runner-v2") guards that need to
+# be removed now that the feature is always enabled:
+#
+# 1. crates/roko-cli/tests/phase0_wiring.rs line 12:
+#    #![cfg(feature = "legacy-runner-v2")]
+#    → Remove this line
+#
+# 2. crates/roko-cli/tests/smoke.rs lines 199 and 311:
+#    #[cfg(feature = "legacy-runner-v2")]
+#    → Remove both lines (before item_04 and item_06 tests)
+#
+# 3. crates/roko-cli/tests/cost_dedup.rs line 8:
+#    #![cfg(feature = "legacy-runner-v2")]
+#    → Remove this line
+#
+# 4. crates/roko-cli/tests/common/mod.rs lines 261-264:
+#    #[cfg(feature = "legacy-runner-v2")]
+#    {
+#        command.arg("--engine").arg("runner-v2");
+#    }
+#    → Remove the cfg gate. The --engine runner-v2 args should be added
+#      unconditionally, OR removed entirely since runner-v2 is now the default.
+#      Since runner-v2 is the default, the explicit --engine arg is redundant.
+#      Remove the entire block (cfg + braces + command.arg lines).
+#
+[[task]]
+id = "T4"
+title = "Remove cfg gates from test files"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = [
+    "crates/roko-cli/tests/phase0_wiring.rs",
+    "crates/roko-cli/tests/smoke.rs",
+    "crates/roko-cli/tests/cost_dedup.rs",
+    "crates/roko-cli/tests/common/mod.rs",
+]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/tests/phase0_wiring.rs", lines = "9-15", why = "Module-level cfg gate to remove" },
+    { path = "crates/roko-cli/tests/smoke.rs", lines = "196-215", why = "Per-test cfg gates on item_04 and item_06" },
+    { path = "crates/roko-cli/tests/smoke.rs", lines = "308-315", why = "Per-test cfg gate on item_06" },
+    { path = "crates/roko-cli/tests/cost_dedup.rs", lines = "5-12", why = "Module-level cfg gate to remove" },
+    { path = "crates/roko-cli/tests/common/mod.rs", lines = "258-265", why = "Conditional --engine runner-v2 arg — remove since it is now the default" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT delete the test functions themselves — only remove the cfg attribute lines.",
+    "Do NOT add #[cfg(feature = ...)] with a different feature name.",
+    "For common/mod.rs: remove the entire cfg block including the command.arg lines since runner-v2 is now default and does not need --engine.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -rn 'cfg.*legacy-runner-v2' crates/roko-cli/tests/"
+fail_msg = "No cfg references to legacy-runner-v2 should remain in test files"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn item_04_plan_runner' crates/roko-cli/tests/smoke.rs"
+fail_msg = "item_04 test function must still exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli --tests 2>&1"
+fail_msg = "roko-cli tests must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5: Add TOML validation on plan generate output
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The `plan generate` and `plan regenerate` commands call an agent to produce
+# tasks.toml content. The agent writes files directly to disk via tool use,
+# but there is no post-generation validation step. If the agent produces
+# invalid TOML, the user won't discover it until `plan run` fails.
+#
+# After the agent exits successfully in the Generate handler (plan.rs around
+# line 895), add a validation step:
+#
+# 1. After `run_agent_logged` returns Ok in the Generate handler, scan the
+#    workdir for any newly-created tasks.toml files in .roko/plans/
+# 2. For each found tasks.toml, attempt to parse it with TasksFile::parse()
+# 3. If parsing fails, print a warning with the parse error and the file path
+# 4. Return EXIT_FAILURE if any tasks.toml failed to parse
+#
+# The regenerate handler (line 1004) already validates via TasksFile::parse.
+# Only the generate handler needs this addition.
+#
+# Implementation:
+# After the run_agent_logged call in PlanCmd::Generate (around line 895):
+#   let exit_code = run_agent_logged(...).await?;
+#   if exit_code == 0 {
+#       // Validate any tasks.toml files created by the agent
+#       let plans_dir = workdir.join(".roko").join("plans");
+#       if plans_dir.is_dir() {
+#           let mut validation_failed = false;
+#           for entry in std::fs::read_dir(&plans_dir)? {
+#               let entry = entry?;
+#               let tasks_path = entry.path().join("tasks.toml");
+#               if tasks_path.is_file() {
+#                   if let Err(e) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+#                       eprintln!("warning: invalid tasks.toml at {}: {e}", tasks_path.display());
+#                       validation_failed = true;
+#                   }
+#               }
+#           }
+#           if validation_failed {
+#               eprintln!("error: agent generated invalid task definitions — run `roko plan validate` to see details");
+#               return Ok(EXIT_FAILURE);
+#           }
+#       }
+#   }
+#   Ok(exit_code)
+#
+[[task]]
+id = "T5"
+title = "Add TOML validation after plan generate agent completes"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 35
+files = ["crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "878-896", why = "Generate handler — run_agent_logged call. Validation goes after this returns Ok." },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1003-1010", why = "Regenerate handler already validates — use as reference for TasksFile::parse pattern" },
+]
+symbols = [
+    "roko_cli::task_parser::TasksFile::parse — pub fn parse(path: &Path) -> Result<TasksFile>",
+    "run_agent_logged — async fn run_agent_logged(opts: AgentExecOpts, episode: AgentExecEpisode) -> Result<i32>",
+]
+anti_patterns = [
+    "Do NOT modify the regenerate handler — it already validates.",
+    "Do NOT validate before the agent runs — validate after it completes.",
+    "Do NOT abort on the first invalid file — check all files and report all errors.",
+    "Do NOT import TasksFile at the top of the file — use the full path roko_cli::task_parser::TasksFile.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TasksFile::parse' crates/roko-cli/src/commands/plan.rs | head -1 && grep -A5 'PlanCmd::Generate' crates/roko-cli/src/commands/plan.rs | grep -q 'validation\\|validate\\|invalid' || grep -c 'validation_failed\\|invalid tasks' crates/roko-cli/src/commands/plan.rs | grep -qv '^0$'"
+fail_msg = "Generate handler must validate tasks.toml after agent completion"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"

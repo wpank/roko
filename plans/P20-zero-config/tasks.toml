@@ -1,0 +1,329 @@
+[meta]
+plan = "P20-zero-config"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Consult builtin model registry in preflight_provider_for_model
+#
+# preflight_provider_for_model() in commands/util.rs only checks
+# config.models (explicit TOML entries). When a model is in the builtin
+# registry but not in roko.toml, preflight fails with "model not found in
+# config". Fix: after the config lookup misses, try builtin_model() and
+# check if the provider API key is available.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T1"
+title = "Consult builtin registry in preflight_provider_for_model"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 35
+files = ["crates/roko-cli/src/commands/util.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/util.rs", lines = "1883-1936", why = "preflight_provider_for_model — the function to modify" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "203-215", why = "builtin_model(slug) -> Option<&BuiltinModel> — the registry lookup" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "9-30", why = "BuiltinModel struct — fields including api_key_env" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "351-384", why = "effective_providers() — synthesized + config providers" },
+    { path = "crates/roko-core/src/agent.rs", lines = "329-358", why = "resolve_model builtin path — already wired, preflight must match" },
+]
+symbols = [
+    "pub(crate) fn preflight_provider_for_model(config: &RokoConfig, model_key: &str) -> anyhow::Result<()>",
+    "pub fn builtin_model(slug: &str) -> Option<&'static BuiltinModel>",
+    "BuiltinModel { slug, provider_kind, api_key_env, .. }",
+    "pub fn effective_providers(&self) -> IndexMap<String, ProviderConfig>",
+]
+anti_patterns = [
+    "Do NOT remove the existing config.models check — it must remain the first path.",
+    "Do NOT import roko_core::config::model_registry if it is already imported via roko_core — check the existing use statements.",
+    "Do NOT require the API key to exist for the builtin fallback to succeed — the provider may be locally available (Ollama, ClaudeCli).",
+]
+
+# After the existing `config.models.get(model_key)` check fails (line 1890),
+# add a fallback:
+#
+#   // Builtin registry fallback: the model isn't in roko.toml but may be a
+#   // well-known model that works with an available API key.
+#   if let Some(builtin) = roko_core::config::model_registry::builtin_model(model_key) {
+#       // Check if the required env var is set.
+#       if std::env::var(builtin.api_key_env).is_ok() {
+#           return Ok(());  // API key available, dispatch will succeed
+#       }
+#       anyhow::bail!(
+#           "model '{}' requires {} but it is not set.\n  hint: export {}=<your-key>",
+#           model_key, builtin.api_key_env, builtin.api_key_env
+#       );
+#   }
+#
+# Keep the existing error path after this for truly unknown models.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'builtin_model' crates/roko-cli/src/commands/util.rs"
+fail_msg = "builtin_model not called in preflight_provider_for_model"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'api_key_env' crates/roko-cli/src/commands/util.rs"
+fail_msg = "api_key_env check not present for builtin models"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Auto-detect API keys in SessionConfigState::from_roko_config
+#
+# SessionConfigState::from_roko_config_with_warnings in session.rs iterates
+# config.models looking for one with a ready provider. When models is empty
+# (zero-config), it falls through to an empty default. Fix: after the
+# config.models search, try effective_providers() to find any available
+# provider and pick a builtin default model for it.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T2"
+title = "Auto-detect builtin models in ACP session config initialization"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/session.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/session.rs", lines = "190-265", why = "from_roko_config_with_warnings — the model selection logic" },
+    { path = "crates/roko-acp/src/session.rs", lines = "230-248", why = "selected_model fallback chain — where to add builtin fallback" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "33-181", why = "BUILTIN_MODELS static — the models to consider" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "351-384", why = "effective_providers — already synthesizes from env vars" },
+]
+symbols = [
+    "fn from_roko_config_with_warnings(config: &RokoConfig) -> (Self, Vec<String>)",
+    "pub static BUILTIN_MODELS: &[BuiltinModel]",
+    "pub fn effective_providers(&self) -> IndexMap<String, ProviderConfig>",
+]
+anti_patterns = [
+    "Do NOT change the existing config.models iteration — it should remain the primary path.",
+    "Do NOT add all builtin models — only pick one as a default when config.models is empty.",
+    "Do NOT import ProviderKind if it is already imported — check existing use statements.",
+]
+
+# After the existing `selected_model` chain (line 230-246), add a final
+# fallback before the unwrap_or_default:
+#
+#   .or_else(|| {
+#       // Zero-config: no models in config. Pick the first builtin model
+#       // whose provider API key is available.
+#       let providers = config.effective_providers();
+#       roko_core::config::model_registry::BUILTIN_MODELS.iter().find_map(|builtin| {
+#           providers.values().any(|p| p.kind == builtin.provider_kind)
+#               .then(|| {
+#                   warnings.push(format!(
+#                       "no [models] configured; using builtin '{}'", builtin.slug
+#                   ));
+#                   // Return a synthetic (key, profile) tuple
+#                   // ... construct minimal profile
+#               })
+#       })
+#   })
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'BUILTIN_MODELS' crates/roko-acp/src/session.rs"
+fail_msg = "BUILTIN_MODELS not consulted in session.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Suppress duplicate model slug warnings for same-provider duplicates
+#
+# The config loader's collect_diagnostics() emits a warning for every
+# duplicate model slug (loader.rs:531-541). Many of these are intentional
+# (e.g., two config keys pointing to the same model with different parameters).
+# Suppress warnings when duplicates are within the same provider, and
+# downgrade to debug level for cross-provider duplicates.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T3"
+title = "Suppress false-positive duplicate slug warnings in config loader"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-core/src/config/loader.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/loader.rs", lines = "480-542", why = "collect_diagnostics — the duplicate slug check" },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "522-541", why = "The duplicate slug loop — the specific code to modify" },
+]
+symbols = [
+    "fn collect_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic>",
+    "ConfigDiagnostic { key: String, message: String }",
+]
+anti_patterns = [
+    "Do NOT remove the duplicate detection entirely — it catches real misconfigurations.",
+    "Do NOT change the ConfigDiagnostic struct — modify only which diagnostics are emitted.",
+    "Do NOT break the existing test load_validated_detects_duplicate_slugs — it should still pass.",
+]
+
+# Modify the duplicate slug loop at lines 531-541:
+# Before pushing the diagnostic, check if all keys share the same provider.
+# If they do, skip the diagnostic (it's an intentional alias).
+# If providers differ, keep the diagnostic but make the message informational:
+#
+#   for (slug, keys) in &slug_to_keys {
+#       if keys.len() > 1 {
+#           let providers: HashSet<_> = keys.iter()
+#               .filter_map(|k| config.models.get(*k).map(|p| &p.provider))
+#               .collect();
+#           if providers.len() > 1 {
+#               diagnostics.push(ConfigDiagnostic { ... });
+#           }
+#           // Same-provider duplicates are intentional aliases — skip.
+#       }
+#   }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'providers.*len.*>.*1\\|providers\\.len()' crates/roko-core/src/config/loader.rs"
+fail_msg = "Provider dedup check not found in loader.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- collect_diagnostics 2>&1; cargo test -p roko-core -- load_validated_detects_duplicate_slugs 2>&1"
+fail_msg = "Existing diagnostic tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Auto-infer use_max_completion_tokens from builtin registry
+#
+# When a model is resolved through the builtin registry (agent.rs:329-358),
+# the synthesized ModelProfile does not set use_max_completion_tokens.
+# This causes OpenAI models to fail with HTTP 400. Fix: propagate the
+# builtin's use_max_completion_tokens field into the synthesized profile.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T4"
+title = "Propagate use_max_completion_tokens from builtin registry"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-core/src/agent.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/agent.rs", lines = "329-358", why = "Builtin model path in resolve_model — profile synthesis" },
+    { path = "crates/roko-core/src/agent.rs", lines = "338-347", why = "ModelProfile construction — where use_max_completion_tokens must be set" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "9-30", why = "BuiltinModel struct — has use_max_completion_tokens field" },
+]
+symbols = [
+    "pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel",
+    "BuiltinModel { use_max_completion_tokens: bool, .. }",
+    "ModelProfile { use_max_completion_tokens: bool, .. }",
+]
+anti_patterns = [
+    "Do NOT add a separate function for this — it is a one-line fix in the existing profile construction.",
+    "Do NOT change the default for ModelProfile::use_max_completion_tokens — only set it explicitly for builtins.",
+]
+
+# At line 338-347, the ModelProfile is constructed with ..ModelProfile::default().
+# This means use_max_completion_tokens defaults to false. Add it explicitly:
+#
+#   let profile = ModelProfile {
+#       provider: provider_key.to_owned(),
+#       slug: builtin.slug.to_owned(),
+#       context_window: builtin.context_window,
+#       max_output: Some(builtin.max_output),
+#       supports_tools: builtin.supports_tools,
+#       supports_thinking: builtin.supports_thinking,
+#       supports_vision: builtin.supports_vision,
+#       use_max_completion_tokens: builtin.use_max_completion_tokens,  // <-- ADD THIS
+#       ..ModelProfile::default()
+#   };
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A12 'let profile = ModelProfile' crates/roko-core/src/agent.rs | grep -q 'use_max_completion_tokens.*builtin'"
+fail_msg = "use_max_completion_tokens not propagated from builtin in resolve_model"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5: Add unit test for zero-config model resolution
+#
+# Verify that:
+# 1. resolve_model returns a valid ResolvedModel for builtin models by alias
+# 2. The synthesized profile has use_max_completion_tokens set correctly
+# 3. preflight_provider_for_model succeeds for builtin models when API key set
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "T5"
+title = "Add tests for zero-config builtin model resolution"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 50
+files = ["crates/roko-core/src/agent.rs"]
+role = "implementer"
+depends_on = ["T4"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/agent.rs", lines = "301-372", why = "resolve_model — the function under test" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "184-201", why = "ALIASES — alias names to test with" },
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "217-230", why = "Existing tests — follow same pattern" },
+]
+symbols = [
+    "pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel",
+    "ResolvedModel { model_key, slug, provider_kind, provider_config, profile, backend }",
+]
+anti_patterns = [
+    "Do NOT test against live API calls — only test model resolution logic.",
+    "Do NOT modify existing tests — add new ones.",
+]
+
+# Add tests in agent.rs's test module:
+#
+# 1. resolve_model_by_builtin_alias — pass "sonnet" to resolve_model with
+#    an empty config. Verify slug is "claude-sonnet-4-6", profile is Some,
+#    and provider_kind is AnthropicApi.
+#
+# 2. resolve_model_builtin_sets_use_max_completion_tokens — pass "o3" to
+#    resolve_model. Verify profile.use_max_completion_tokens is true.
+#
+# 3. resolve_model_config_overrides_builtin — add a config entry for "sonnet"
+#    with a custom slug. Verify the config entry wins over the builtin.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'resolve_model_by_builtin_alias\\|resolve_model_builtin_sets' crates/roko-core/src/agent.rs"
+fail_msg = "New zero-config tests not found in agent.rs"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- resolve_model_by_builtin 2>&1; cargo test -p roko-core -- resolve_model_builtin_sets 2>&1"
+fail_msg = "Zero-config resolution tests must pass"

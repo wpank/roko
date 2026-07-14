@@ -1,0 +1,217 @@
+[meta]
+plan = "P27-provider-error-ux"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Make doctor check_anthropic_api_key conditional on configured providers
+#
+# `check_anthropic_api_key()` always warns when ANTHROPIC_API_KEY is missing,
+# even if the user only uses OpenAI or other providers. Replace the
+# unconditional check with a provider-aware check that only warns about
+# API keys for providers actually configured in roko.toml.
+
+[[task]]
+id = "T1"
+title = "Make doctor API key check conditional on configured providers"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "1-16", why = "Imports — may need to add RokoConfig or provider types" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "175-193", why = "run_checks — line 186 calls check_anthropic_api_key() unconditionally, line 187 has check_provider_usable" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "720-747", why = "check_anthropic_api_key — the function to replace" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "463-485", why = "check_provider_usable — reference for config-aware checking pattern" },
+]
+symbols = [
+    "check_anthropic_api_key() -> DoctorCheck — at doctor.rs:720, unconditionally checks ANTHROPIC_API_KEY",
+    "check_provider_usable(workdir: &Path) -> DoctorCheck — at doctor.rs:463, uses detect_auth_from_config",
+    "DoctorCheck { id, status, message, detail, path, url, fix } — the return type",
+    "DoctorStatus::Warn — used for non-fatal warnings",
+    "DoctorStatus::Ok — used for passing checks",
+]
+anti_patterns = [
+    "Do NOT remove the check entirely — replace it with a provider-aware version that checks configured provider API keys.",
+    "Do NOT break existing tests — the function signature can change but it must still return DoctorCheck.",
+    "Do NOT hardcode provider names — iterate over configured providers from loaded_config.",
+]
+
+# Replace `check_anthropic_api_key()` with `check_configured_provider_keys(config: &LoadedConfig) -> Vec<DoctorCheck>`.
+# 1. Load provider configs from the loaded_config (or its roko_config if accessible)
+# 2. For each configured provider that has an api_key_env:
+#    - Check if the env var is set
+#    - If not set, emit a Warn for that provider specifically
+# 3. If no providers are configured, emit a single Ok check saying "no API providers configured (using CLI)"
+# 4. Update the run_checks call site (line 186) to push all returned checks
+# Since loaded_config is already available at the call site, pass it to the new function.
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'fn check_anthropic_api_key()' crates/roko-cli/src/doctor.rs"
+fail_msg = "The unconditional check_anthropic_api_key function must be replaced"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'check_configured_provider_keys\\|check_provider_api_keys' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must have a provider-aware API key check function"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after replacing the doctor check"
+
+# ── T2: Fix provider-agnostic error message in unified.rs ────────────────────
+#
+# `build_oneshot_session` returns an error message that specifically names
+# ANTHROPIC_API_KEY when auth fails, even if the user uses OpenAI. Change
+# the message to be provider-agnostic and list multiple options.
+
+[[task]]
+id = "T2"
+title = "Make auth failure error message provider-agnostic in unified.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-cli/src/unified.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/unified.rs", lines = "272-284", why = "build_oneshot_session — line 279 has the Anthropic-biased error message" },
+]
+symbols = [
+    "build_oneshot_session(config, auth, workdir) -> Result<ChatAgentSession> — at unified.rs:272",
+    "AuthMethod::NeedsSetup — the variant matched at line 277",
+]
+anti_patterns = [
+    "Do NOT change any logic — only change the error message string.",
+    "Do NOT add new imports or dependencies — this is a string change only.",
+]
+
+# Change line 279 from:
+#   "no authentication configured — run `roko config init` or set ANTHROPIC_API_KEY"
+# to:
+#   "no authentication configured — run `roko config init` or set a provider API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'or set ANTHROPIC_API_KEY\"' crates/roko-cli/src/unified.rs"
+fail_msg = "Error message must not specifically name only ANTHROPIC_API_KEY"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'provider API key' crates/roko-cli/src/unified.rs"
+fail_msg = "Error message must mention provider API key generically"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after changing the error message"
+
+# ── T3: Suppress Anthropic-specific noise in auth_detect setup instructions ──
+#
+# `print_setup_instructions()` lists `ANTHROPIC_API_KEY` as the first
+# example, biasing toward Anthropic. Make it list all supported providers
+# equally and mention the config-based provider setup first.
+
+[[task]]
+id = "T3"
+title = "Make auth_detect setup instructions provider-agnostic"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/auth_detect.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/auth_detect.rs", lines = "165-174", why = "print_setup_instructions — biased toward ANTHROPIC_API_KEY in examples" },
+]
+symbols = [
+    "print_setup_instructions() — at auth_detect.rs:166, prints setup help to stderr",
+]
+anti_patterns = [
+    "Do NOT change the detection logic (detect_auth_from_env) — only change the display text.",
+    "Do NOT remove any supported providers from the list — just reorder to be neutral.",
+]
+
+# Replace the body of print_setup_instructions to:
+# 1. Lead with `roko config init` (config-based setup)
+# 2. List env var options equally: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY
+# 3. Mention `roko config providers add <name>` for interactive setup
+# 4. Reference `roko.toml [providers.*]` for manual configuration
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'API_KEY' crates/roko-cli/src/auth_detect.rs | grep -v '^1$'"
+fail_msg = "Setup instructions must mention multiple provider API keys, not just ANTHROPIC_API_KEY"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after updating setup instructions"
+
+# ── T4: Add detected-providers summary check to doctor ───────────────────────
+#
+# After the individual API key checks, add a summary check that reports
+# all detected providers. This gives the user a clear picture of what's
+# available without needing to check env vars manually.
+
+[[task]]
+id = "T4"
+title = "Add detected-providers summary check to doctor output"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 35
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "175-193", why = "run_checks — where to add the new summary check" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "463-485", why = "check_provider_usable — existing provider detection, shows pattern for config-aware checks" },
+    { path = "crates/roko-cli/src/auth_detect.rs", lines = "121-163", why = "detect_auth_from_env — probes claude CLI, ANTHROPIC_API_KEY, ZAI_API_KEY, OPENAI_API_KEY" },
+]
+symbols = [
+    "check_provider_usable(workdir: &Path) -> DoctorCheck — at doctor.rs:463",
+    "detect_auth_from_env() -> AuthMethod — at auth_detect.rs:121",
+    "detect_auth_from_config(workdir: &Path) -> AuthMethod — config-aware version",
+    "DoctorCheck { id, status, message, detail, path, url, fix }",
+]
+anti_patterns = [
+    "Do NOT duplicate the detection logic — reuse detect_auth_from_env or iterate config providers.",
+    "Do NOT make this check a failure — it is informational (Ok or Info status).",
+]
+
+# Add `fn check_available_providers(config: &LoadedConfig) -> DoctorCheck` that:
+# 1. Collects all providers that have working credentials:
+#    - Check each configured provider's api_key_env
+#    - Check for `claude` CLI on PATH
+#    - Check common env vars (OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY)
+# 2. Returns an Ok check with message like:
+#    "N providers available (openai, claude-cli, ...)" if any are found
+# 3. Returns a Warn check with setup guidance if none are found
+# Add the call in run_checks after the individual provider key checks.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'check_available_providers\\|providers available\\|providers_detected' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must have a provider summary check in doctor output"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding provider summary check"

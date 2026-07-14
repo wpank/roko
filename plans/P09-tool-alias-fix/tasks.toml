@@ -1,0 +1,236 @@
+[meta]
+plan = "P09-tool-alias-fix"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T1: Resolve Claude aliases in parse_allowed_tools_csv
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The core bug: parse_allowed_tools_csv (line 252) collects tool names as-is
+# from the CSV. Callers pass Claude CLI PascalCase names ("Read,Write,Edit")
+# but the tool registry uses canonical snake_case names ("read_file","write_file",
+# "edit_file"). When the filter runs (line 348), zero tools match.
+#
+# This breaks ALL research/analyze commands on non-Claude providers (OpenAI,
+# Gemini, Ollama) — the agent gets zero tools and becomes text-only.
+#
+# Steps:
+# 1. Add `use roko_core::tool::aliases::canonical_of_claude;` to the imports
+#    at the top of openai_compat.rs.
+#
+# 2. Rewrite parse_allowed_tools_csv (lines 252-260) to resolve each name:
+#    ```rust
+#    fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<String>> {
+#        let allowed: HashSet<String> = csv
+#            .unwrap_or_default()
+#            .split(',')
+#            .map(str::trim)
+#            .filter(|name| !name.is_empty())
+#            .map(|name| {
+#                // Resolve Claude CLI aliases ("Read" -> "read_file") to canonical names.
+#                // If already canonical or unknown (MCP/plugin tool), pass through as-is.
+#                canonical_of_claude(name)
+#                    .unwrap_or(name)
+#                    .to_string()
+#            })
+#            .collect();
+#        (!allowed.is_empty()).then_some(allowed)
+#    }
+#    ```
+#
+# 3. The return type changes from Option<HashSet<&str>> to Option<HashSet<String>>
+#    because canonical_of_claude returns &'static str which we .to_string().
+#
+# 4. Update the filter on lines 341-349 to work with HashSet<String>:
+#    ```rust
+#    .filter(|tool| {
+#        allowed.as_ref().is_none_or(|allowed| allowed.contains(tool.name.as_str()))
+#    })
+#    ```
+#    This should already work since HashSet<String>.contains(&str) works via Borrow.
+
+[[task]]
+id = "T1"
+title = "Resolve Claude aliases to canonical names in parse_allowed_tools_csv"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 25
+files = ["crates/roko-agent/src/provider/openai_compat.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "252-260", why = "parse_allowed_tools_csv function — the bug site. Currently returns HashSet<&str> with raw names." },
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "313-356", why = "tool_registry_for_options — calls parse_allowed_tools_csv (line 341) and filters tools (lines 342-349). Must verify the filter still works with HashSet<String>." },
+    { path = "crates/roko-core/src/tool/aliases.rs", lines = "107-118", why = "canonical_of_claude function signature and behavior — returns Option<&'static str>" },
+    { path = "crates/roko-core/src/tool/aliases.rs", lines = "38-103", why = "ALIASES table — the full mapping from Claude PascalCase to canonical snake_case" },
+]
+symbols = [
+    "parse_allowed_tools_csv — fn(csv: Option<&str>) -> Option<HashSet<&str>> (line 252) — CHANGE return to Option<HashSet<String>>",
+    "tool_registry_for_options — pub(crate) fn(model: &ModelProfile, options: &AgentOptions) -> Result<(Arc<dyn ToolRegistry>, Vec<ToolDef>), AgentCreationError> (line 313)",
+    "canonical_of_claude — pub fn(claude: &str) -> Option<&'static str> (aliases.rs line 113)",
+    "ALIASES — const &[ToolAlias] with 16 entries (aliases.rs line 38)",
+]
+anti_patterns = [
+    "Do NOT change the callers to use canonical names — fix it in the parser so any naming convention works.",
+    "Do NOT add roko_core as a new dependency — it is already a dependency of roko-agent (check Cargo.toml).",
+    "Do NOT change the tool_registry_for_options function signature.",
+    "Do NOT modify the aliases.rs file — it already has the correct mapping.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'canonical_of_claude' crates/roko-agent/src/provider/openai_compat.rs"
+fail_msg = "parse_allowed_tools_csv must call canonical_of_claude to resolve aliases"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'HashSet<String>' crates/roko-agent/src/provider/openai_compat.rs"
+fail_msg = "Return type must be HashSet<String> to hold owned resolved names"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T2: Add unit tests for alias resolution in parse_allowed_tools_csv
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Verify that Claude CLI names are correctly resolved to canonical names,
+# and that already-canonical names pass through unchanged.
+#
+# Steps:
+# 1. Find the existing test module in openai_compat.rs (or create one if needed).
+#
+# 2. Add tests:
+#    a) Claude names resolve:
+#       parse_allowed_tools_csv(Some("Read,Write,Edit")) should return
+#       HashSet containing "read_file", "write_file", "edit_file"
+#
+#    b) Canonical names pass through:
+#       parse_allowed_tools_csv(Some("read_file,bash")) should return
+#       HashSet containing "read_file", "bash"
+#
+#    c) Mixed names work:
+#       parse_allowed_tools_csv(Some("Read,bash,Glob")) should return
+#       HashSet containing "read_file", "bash", "glob"
+#
+#    d) Unknown names pass through:
+#       parse_allowed_tools_csv(Some("Read,my_mcp_tool")) should return
+#       HashSet containing "read_file", "my_mcp_tool"
+#
+#    e) None returns None:
+#       parse_allowed_tools_csv(None) should return None
+#
+#    f) Empty string returns None:
+#       parse_allowed_tools_csv(Some("")) should return None
+
+[[task]]
+id = "T2"
+title = "Add unit tests for alias resolution in tool CSV parser"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 50
+files = ["crates/roko-agent/src/provider/openai_compat.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "252-260", why = "The rewritten parse_allowed_tools_csv function from T1" },
+    { path = "crates/roko-core/src/tool/aliases.rs", lines = "38-103", why = "ALIASES table — verify expected canonical names: Read->read_file, Write->write_file, Edit->edit_file, Bash->bash, Glob->glob" },
+]
+symbols = [
+    "parse_allowed_tools_csv — fn(csv: Option<&str>) -> Option<HashSet<String>> (line 252)",
+]
+anti_patterns = [
+    "Do NOT put tests in a separate file — add them in the existing #[cfg(test)] mod tests block.",
+    "Do NOT test the tool_registry_for_options function — just test parse_allowed_tools_csv directly.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'parse_allowed_tools_csv.*Read.*Write.*Edit' crates/roko-agent/src/provider/openai_compat.rs"
+fail_msg = "Must have a test for Claude name resolution"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'read_file.*write_file.*edit_file\\|edit_file.*write_file.*read_file\\|contains.*read_file' crates/roko-agent/src/provider/openai_compat.rs"
+fail_msg = "Test must assert canonical names are in the result set"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-agent -- parse_allowed_tools 2>&1"
+fail_msg = "parse_allowed_tools_csv tests must pass"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T3: Verify the same alias resolution works in other provider backends
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Check whether other provider backends (Gemini, Ollama, Anthropic API) have
+# their own parse_allowed_tools_csv or tool filtering that also needs alias
+# resolution. If they delegate to tool_registry_for_options in openai_compat.rs,
+# the T1 fix covers them automatically.
+#
+# Steps:
+# 1. Search for parse_allowed_tools_csv usage across all provider backends:
+#    grep -rn 'parse_allowed_tools_csv\|allowed.*tools.*csv\|options.tools' crates/roko-agent/src/provider/
+#
+# 2. For each provider that has its own tool filtering logic:
+#    - If it calls tool_registry_for_options: no change needed (T1 fix covers it)
+#    - If it has its own CSV parsing: apply the same canonical_of_claude fix
+#
+# 3. Verify by running a compile + test check on the full workspace.
+#
+# NOTE: Based on feedback doc 15, the openai_compat backend is the primary
+# one used for non-Claude models. The Gemini native backend likely uses the
+# same tool_registry_for_options path. But verify to be sure.
+
+[[task]]
+id = "T3"
+title = "Audit other provider backends for same alias resolution gap"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 20
+files = [
+    "crates/roko-agent/src/provider/openai_compat.rs",
+    "crates/roko-agent/src/provider/gemini.rs",
+    "crates/roko-agent/src/provider/anthropic_api.rs",
+]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "313-356", why = "tool_registry_for_options — the canonical path. Check if other providers call this." },
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "252-260", why = "parse_allowed_tools_csv with alias fix from T1" },
+]
+symbols = [
+    "tool_registry_for_options — pub(crate) fn(model: &ModelProfile, options: &AgentOptions) -> Result<(Arc<dyn ToolRegistry>, Vec<ToolDef>), AgentCreationError>",
+    "parse_allowed_tools_csv — fn(csv: Option<&str>) -> Option<HashSet<String>>",
+]
+anti_patterns = [
+    "Do NOT refactor the provider architecture — just fix any missing alias resolution.",
+    "Do NOT add alias resolution if the provider already delegates to tool_registry_for_options.",
+    "If no other backends have the issue, just add a brief code comment confirming the audit.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -rn 'parse_allowed_tools_csv\\|canonical_of_claude' crates/roko-agent/src/provider/ | head -10"
+fail_msg = "Audit must be complete — either fix or confirm no other backends have the issue"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check --workspace 2>&1"
+fail_msg = "Full workspace must compile after all alias fixes"

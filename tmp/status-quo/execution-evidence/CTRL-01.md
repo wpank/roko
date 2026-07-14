@@ -31,8 +31,8 @@ Verification:
 - Exit/result: exit 0 for all 78 unchanged imported files; the only intended source deltas are the populated master checkpoint and the anchored `.gitignore` rule. The backlog strict validator now reaches all 55 plans and truthfully reports the 25 Wave 0 diagnostics instead of failing because the directory is absent.
 
 Review readiness:
-- Implementation commit: `e888da882db27d2dcd3fa03de968174cedb51ec4` is the incomplete first import; corrected implementation commit pending.
-- Diff scope reviewed: pending corrected candidate; 79 attributed control-plane paths plus `.gitignore` and this evidence record.
+- Implementation commits: incomplete first import `e888da882db27d2dcd3fa03de968174cedb51ec4`; corrected manifest/import commit `5a0abcfaa252bf58d6b2480e935a99054eebe2a1`.
+- Diff scope reviewed: replacement candidate spans 81 files, 48,095 insertions, and 2 deletions: 79 attributed control-plane paths plus `.gitignore` and this evidence record.
 - Known limitations: the existing root `.git` is write-protected by the execution environment; a writable bare coordinator clone owns the integration branch/worktrees. Final import/merge into original `main` requires that local filesystem permission to be lifted.
 - Required reviewer focus: exact path attribution, byte identity, archive completeness/checksums, absence of logs/secrets, and correctness of the root seal.
 - Prior review disposition: candidate `e13ec0a86680028f9d333962eb5d81193b5c4772` was rejected for omitting the 56 ignored manifests and recording the wrong first-import SHA; both findings are corrected in the replacement candidate.

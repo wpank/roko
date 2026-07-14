@@ -32,8 +32,10 @@ demo/.runtime/
 .roko/
 **/.roko/
 
-# Plans (generated per-workspace, not committed) ----------------------------
-plans/
+# Root workspace plans (generated per-workspace when untracked) ------------
+# Anchor this rule: canonical manifests under tmp/status-quo/**/plans belong
+# to the repository and must remain visible to validation and status checks.
+/plans/
 
 # LLM / sccache / misc caches ------------------------------------------------
 .fastembed_cache/

@@ -136,6 +136,19 @@ pub fn load_config_file(path: &Path, opts: &LoadOptions) -> Result<RokoConfig, L
     load_from_resolved_path(&Some(path.to_path_buf()), opts)
 }
 
+/// Resolve an already-parsed source config with the same runtime layers as a file load.
+///
+/// Transactional config editors use this to validate a prospective effective
+/// value before committing source bytes. Runtime-only layers are applied to
+/// the owned value returned here; the source representation remains separate.
+pub fn resolve_config_source(
+    source: RokoConfig,
+    source_path: &Path,
+    opts: &LoadOptions,
+) -> Result<RokoConfig, LoadConfigError> {
+    resolve_runtime_layers(source, &Some(source_path.to_path_buf()), opts)
+}
+
 /// Load config with full provenance tracking (for CLI `load_resolved_config` compatibility).
 ///
 /// Returns a [`ValidatedConfig`] with diagnostics and provenance info.
@@ -157,24 +170,9 @@ pub fn load_config_validated_with_options(
     // Parse + validate (no env overrides or secret resolution yet).
     let raw = parse_from_resolved_path(&path, opts)?;
 
-    // Apply runtime mutations (global merge, env overrides, secrets).
-    let mut migrated = raw.clone();
-    if opts.merge_global {
-        merge_global_into(&mut migrated);
-    }
-    if opts.apply_env_overrides {
-        migrated.apply_process_env();
-    }
-    if opts.apply_hierarchical_env {
-        apply_hierarchical_env_overrides(&mut migrated);
-    }
-    migrated.interpolate_env_vars();
-    migrated.resolve_file_secrets();
-
-    // Post-merge provider reference validation (same as load_from_resolved_path).
-    if !migrated.models.is_empty() {
-        validate_provider_references(&migrated, &path)?;
-    }
+    // Apply the same runtime layers as ordinary loading while retaining the
+    // parsed source value independently for provenance and safe editing.
+    let migrated = resolve_runtime_layers(raw.clone(), &path, opts)?;
 
     let diagnostics = collect_diagnostics(&migrated);
 
@@ -258,27 +256,8 @@ fn load_from_resolved_path(
     path: &Option<PathBuf>,
     opts: &LoadOptions,
 ) -> Result<RokoConfig, LoadConfigError> {
-    let mut config = parse_from_resolved_path(path, opts)?;
-
-    // Apply runtime mutations.
-    if opts.merge_global {
-        merge_global_into(&mut config);
-    }
-    if opts.apply_env_overrides {
-        config.apply_process_env();
-    }
-    if opts.apply_hierarchical_env {
-        apply_hierarchical_env_overrides(&mut config);
-    }
-    config.interpolate_env_vars();
-    config.resolve_file_secrets();
-
-    // Post-merge provider reference validation.
-    // When strict_validation is enabled in config, dangling model->provider
-    // references become hard errors instead of warnings.
-    if !config.models.is_empty() {
-        validate_provider_references(&config, path)?;
-    }
+    let source = parse_from_resolved_path(path, opts)?;
+    let config = resolve_runtime_layers(source, path, opts)?;
 
     // Emit diagnostics as warnings so callers don't need to opt into
     // load_config_validated() to see slug duplicates and orphaned models.
@@ -298,6 +277,37 @@ fn load_from_resolved_path(
                 );
             }
         }
+    }
+
+    Ok(config)
+}
+
+/// Apply runtime-only config layers to a parsed source value.
+///
+/// File loading, provenance loading, and pre-commit validation all delegate
+/// here so their precedence and validation semantics cannot drift.
+fn resolve_runtime_layers(
+    mut config: RokoConfig,
+    path: &Option<PathBuf>,
+    opts: &LoadOptions,
+) -> Result<RokoConfig, LoadConfigError> {
+    if opts.merge_global {
+        merge_global_into(&mut config);
+    }
+    if opts.apply_env_overrides {
+        config.apply_process_env();
+    }
+    if opts.apply_hierarchical_env {
+        apply_hierarchical_env_overrides(&mut config);
+    }
+    config.interpolate_env_vars();
+    config.resolve_file_secrets();
+
+    // Post-merge provider reference validation.
+    // When strict_validation is enabled in config, dangling model->provider
+    // references become hard errors instead of warnings.
+    if !config.models.is_empty() {
+        validate_provider_references(&config, path)?;
     }
 
     Ok(config)
@@ -883,6 +893,56 @@ base_url = "https://example.com/v1"
 
         let config = load_config_unified(dir.path()).unwrap();
         assert!(config.providers.contains_key("test-prov"));
+    }
+
+    #[test]
+    fn in_memory_source_resolution_matches_explicit_file_loading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret_path = dir.path().join("authorization.secret");
+        std::fs::write(&secret_path, "resolved-secret\n").expect("write secret");
+        let config_path = dir.path().join("roko.toml");
+        let source_text = format!(
+            r#"config_version = 2
+
+[providers.test]
+kind = "openai_compat"
+base_url = "https://source.invalid/v1"
+
+[providers.test.extra_headers]
+authorization_file = "{}"
+"#,
+            secret_path.display()
+        );
+        std::fs::write(&config_path, &source_text).expect("write config");
+        let source: RokoConfig = toml::from_str(&source_text).expect("parse source");
+        let retained_source = source.clone();
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let from_file = load_config_file(&config_path, &opts).expect("load file");
+        let from_memory =
+            resolve_config_source(source, &config_path, &opts).expect("resolve source");
+
+        assert_eq!(from_memory, from_file);
+        assert_eq!(
+            from_memory.providers["test"]
+                .extra_headers
+                .as_ref()
+                .and_then(|headers| headers.get("authorization"))
+                .map(String::as_str),
+            Some("resolved-secret")
+        );
+        assert!(
+            retained_source.providers["test"]
+                .extra_headers
+                .as_ref()
+                .is_some_and(|headers| headers.contains_key("authorization_file")),
+            "resolving an owned clone must not mutate the retained source"
+        );
     }
 
     #[test]

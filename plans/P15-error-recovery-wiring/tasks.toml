@@ -1,0 +1,344 @@
+[meta]
+plan = "P15-error-recovery-wiring"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Wire classify_agent_crash into runner-v2 handle_agent_failure ──
+#
+# The runner's handle_agent_failure() at event_loop.rs:2045 already has
+# RunnerFailureKind classification but never calls the richer
+# classify_agent_crash() / recovery_hint() from agent_exec.rs.  When the
+# agent exits non-zero, the user sees a generic "agent process exited
+# unsuccessfully: exit_code=N" message with no recovery guidance.
+#
+# Wire: import classify_agent_crash + AgentCrashClass from agent_exec,
+# call classify_agent_crash on the combined stderr+output text, and
+# append the recovery_hint to the failure reason shown to the user and
+# recorded in the run ledger.
+
+[[task]]
+id = "T1"
+title = "Wire classify_agent_crash into runner-v2 agent failure handler"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 25
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2045-2170", why = "handle_agent_failure fn: where failure_text is built and RunnerFailureKind::from_output is called" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "929-992", why = "Agent Exited branch: builds the generic 'agent process exited unsuccessfully' message" },
+    { path = "crates/roko-cli/src/agent_exec.rs", lines = "323-390", why = "AgentCrashClass enum, recovery_hint(), classify_agent_crash() — the functions to wire" },
+]
+symbols = [
+    "handle_agent_failure(executor, task_index, state, paths, tui, sink, config, message) — event_loop.rs:2045",
+    "classify_agent_crash(stderr: &str) -> AgentCrashClass — agent_exec.rs:366",
+    "AgentCrashClass::recovery_hint(&self) -> &str — agent_exec.rs:341",
+    "RunnerFailureKind::from_output(output: &str) -> Self — types.rs:83",
+]
+anti_patterns = [
+    "Do NOT remove the existing RunnerFailureKind classification — it drives retry logic. Add crash classification alongside it.",
+    "Do NOT change the function signature of handle_agent_failure.",
+    "Do NOT import from roko_agent — the functions live in roko_cli::agent_exec.",
+]
+
+# Steps:
+# 1. Add `use crate::agent_exec::{classify_agent_crash, AgentCrashClass};` to the imports
+#    near the top of event_loop.rs (around line 54).
+# 2. In handle_agent_failure (line ~2062), after building `failure_text`:
+#    ```
+#    let crash_class = classify_agent_crash(&failure_text);
+#    let recovery = crash_class.recovery_hint();
+#    ```
+# 3. Append recovery hint to the `reason` strings (lines ~2129-2132):
+#    ```
+#    let reason = if failure_kind.is_retryable() {
+#        format!("agent turn failed and retries exhausted: {message}\nRecovery: {recovery}")
+#    } else {
+#        format!("agent turn failed with non-retryable {failure_kind:?} failure: {message}\nRecovery: {recovery}")
+#    };
+#    ```
+# 4. Also enrich the non-retry message in the exit handler (lines ~959-961):
+#    ```
+#    let crash_class = crate::agent_exec::classify_agent_crash(&state.agent_output);
+#    let message = format!(
+#        "agent process exited unsuccessfully: exit_code={}\nDiagnosis: {}\nRecovery: {}",
+#        exit_code.map_or_else(|| "unknown".into(), |code| code.to_string()),
+#        crash_class.recovery_hint()
+#    );
+#    ```
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'classify_agent_crash' crates/roko-cli/src/runner/event_loop.rs | grep -qv '^0$'"
+fail_msg = "classify_agent_crash must be called in event_loop.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'recovery_hint' crates/roko-cli/src/runner/event_loop.rs | grep -qv '^0$'"
+fail_msg = "recovery_hint must appear in event_loop.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T2: Wire classify_agent_crash into do_cmd.rs standard/complex paths ──
+#
+# do_cmd.rs handles agent failures in run_standard_path (line 234) and
+# run_complex_path (line 350-361) with generic "Plan generation failed
+# (exit N)" messages.  Wire crash classification so the user gets
+# actionable recovery hints when plan generation fails.
+
+[[task]]
+id = "T2"
+title = "Wire classify_agent_crash into do_cmd.rs agent failure paths"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "221-240", why = "run_standard_path: exit_code != 0 branch prints generic failure" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "721-740", why = "run_standard_path_inner: same pattern, fallback path" },
+    { path = "crates/roko-cli/src/agent_exec.rs", lines = "323-390", why = "classify_agent_crash + recovery_hint definitions" },
+]
+symbols = [
+    "run_standard_path(cli, workdir, prompt, no_cascade, provider) -> Result<i32> — do_cmd.rs:159",
+    "run_standard_path_inner(cli, workdir, prompt, no_cascade, provider) -> Result<i32> — do_cmd.rs:690",
+    "classify_agent_crash(stderr: &str) -> AgentCrashClass — agent_exec.rs:366",
+]
+anti_patterns = [
+    "Do NOT change the exit code logic — only enrich the eprintln messages.",
+    "Do NOT add retry logic here — that belongs in T1.",
+]
+
+# Steps:
+# 1. Add import: `use roko_cli::agent_exec::{classify_agent_crash, AgentCrashClass};`
+#    (or `use crate::agent_exec::...` if that's the convention in this file).
+# 2. In run_standard_path (line ~234-239), after `if exit_code != 0`:
+#    ```
+#    let crash_class = classify_agent_crash(&output);
+#    eprintln!("\u{25b8} Plan generation failed (exit {exit_code}): {}", crash_class.recovery_hint());
+#    ```
+# 3. Same change in run_standard_path_inner (line ~734-739).
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'classify_agent_crash' crates/roko-cli/src/commands/do_cmd.rs | grep -qv '^0$'"
+fail_msg = "classify_agent_crash must be called in do_cmd.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep 'recovery_hint' crates/roko-cli/src/commands/do_cmd.rs | grep -qv '^$'"
+fail_msg = "recovery_hint must appear in do_cmd.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T3: Add config parse warning to unified loader ──
+#
+# The feedback doc describes silent fallback to Config::default() on
+# parse failure, but the actual code in loader.rs already returns
+# LoadConfigError::Parse.  However, many callsites (e.g., do_cmd.rs:185,
+# do_cmd.rs:314) use `unwrap_or_default()` after `RokoConfig::from_toml()`,
+# which silently discards parse errors.
+#
+# Fix: Add a tracing::warn in those callsites before falling back to
+# default, so the user knows their config had errors.
+
+[[task]]
+id = "T3"
+title = "Warn on silent roko.toml parse fallback in do_cmd.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "184-190", why = "First silent unwrap_or_default on RokoConfig::from_toml" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "313-319", why = "Second silent unwrap_or_default on RokoConfig::from_toml" },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "117-128", why = "load_config_unified returns LoadConfigError on parse failure — but callers bypass it" },
+]
+symbols = [
+    "RokoConfig::from_toml(&str) -> Result<RokoConfig, toml::de::Error> — schema.rs",
+    "load_config_unified(workdir: &Path) -> Result<RokoConfig, LoadConfigError> — loader.rs:117",
+]
+anti_patterns = [
+    "Do NOT change the fallback-to-default behavior — that is intentional for resilience. Just add a warning before falling back.",
+    "Do NOT use eprintln for warnings — use tracing::warn so it goes through the logging system.",
+    "Do NOT replace from_toml+unwrap_or_default with load_config_unified — that would change error semantics.",
+]
+
+# Steps:
+# 1. At line ~185, replace:
+#    ```
+#    .and_then(|s| RokoConfig::from_toml(&s).ok())
+#    .unwrap_or_default();
+#    ```
+#    with:
+#    ```
+#    .and_then(|s| match RokoConfig::from_toml(&s) {
+#        Ok(cfg) => Some(cfg),
+#        Err(e) => {
+#            tracing::warn!(
+#                path = %workdir.join("roko.toml").display(),
+#                error = %e,
+#                "roko.toml parse error; using default config. Run `roko config validate` to fix."
+#            );
+#            None
+#        }
+#    })
+#    .unwrap_or_default();
+#    ```
+# 2. Same change at line ~314.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'parse error.*default config' crates/roko-cli/src/commands/do_cmd.rs | grep -qv '^0$'"
+fail_msg = "Parse warning must appear in do_cmd.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T4: Enrich runner-v2 agent failure with crash class in run ledger ──
+#
+# The run ledger entry for task failures (event_loop.rs:2139-2149) records
+# only the raw reason string.  Add a `crash_class` field so the learning
+# system can aggregate failures by class (auth, rate_limit, context, etc.).
+
+[[task]]
+id = "T4"
+title = "Add crash_class field to runner-v2 task failure ledger entries"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2128-2165", why = "Task failure recording block: builds reason, records in ledger and emits retry_decision event" },
+    { path = "crates/roko-cli/src/agent_exec.rs", lines = "323-332", why = "AgentCrashClass enum variants" },
+]
+symbols = [
+    "append_ledger_entry(path, event_type, json) — event_loop.rs helper",
+    "AgentCrashClass — agent_exec.rs:325 (Debug-derived, can use format!(\"{:?}\", ...))",
+]
+anti_patterns = [
+    "Do NOT change the existing ledger JSON shape — only ADD the new field.",
+    "Do NOT duplicate the classify_agent_crash call — reuse the one from T1.",
+]
+
+# Steps:
+# After T1 adds `crash_class` in handle_agent_failure, pass it down to the
+# ledger entry at line ~2139:
+# ```
+# &serde_json::json!({
+#     "plan_id": &plan_id,
+#     "task_id": &task_id,
+#     "passed": false,
+#     "reason": &reason,
+#     "crash_class": format!("{:?}", crash_class),
+#     "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+# }),
+# ```
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'crash_class' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "crash_class field must appear in event_loop.rs ledger entry"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T5: Add crash class to do_cmd exit handler (Exited branch) ──
+#
+# In the agent Exited branch (event_loop.rs ~929-992), when the agent
+# exits non-zero, the current code builds a generic message and calls
+# handle_agent_failure.  The message sent to handle_agent_failure should
+# already include crash diagnosis (from T1), but the initial TUI error
+# message at line ~960 is still generic.  Improve it.
+#
+# Also: the output_sink.task_failed() call at line 2136 should include
+# the crash class so inline output mode shows the diagnosis.
+
+[[task]]
+id = "T5"
+title = "Enrich agent exit handler and output sink messages with crash diagnosis"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "958-992", why = "Agent non-zero exit branch: builds generic message then calls handle_agent_failure" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2128-2137", why = "Task failure: sink.task_failed and tui.task_completed calls" },
+    { path = "crates/roko-cli/src/agent_exec.rs", lines = "366-390", why = "classify_agent_crash function" },
+]
+symbols = [
+    "classify_agent_crash(stderr: &str) -> AgentCrashClass — agent_exec.rs:366",
+    "AgentCrashClass::recovery_hint(&self) -> &str — agent_exec.rs:341",
+]
+anti_patterns = [
+    "Do NOT add a new classify_agent_crash call if T1 already added one in handle_agent_failure. Only enrich the initial message in the Exited branch.",
+]
+
+# Steps:
+# At line ~959-961, replace:
+#   let message = format!(
+#       "agent process exited unsuccessfully: exit_code={}",
+#       exit_code.map_or_else(|| "unknown".into(), |code| code.to_string())
+#   );
+# With:
+#   let crash_class = crate::agent_exec::classify_agent_crash(&state.agent_output);
+#   let message = format!(
+#       "agent exited (code {}): {}\n  Recovery: {}",
+#       exit_code.map_or_else(|| "unknown".into(), |code| code.to_string()),
+#       format!("{crash_class:?}"),
+#       crash_class.recovery_hint(),
+#   );
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'Recovery:' crates/roko-cli/src/runner/event_loop.rs | grep -qv '^0$'"
+fail_msg = "Recovery hint must appear in exit handler message"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- agent_exec 2>&1"
+fail_msg = "agent_exec tests must still pass"

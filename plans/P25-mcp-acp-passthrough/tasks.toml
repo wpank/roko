@@ -1,0 +1,201 @@
+[meta]
+plan = "P25-mcp-acp-passthrough"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Add mcp_config field to roko-core AgentConfig ────────────────────────
+#
+# The per-agent AgentConfig struct in roko-core has no mcp_config field.
+# The CLI config layer (roko-cli/src/config.rs AgentLayer) already supports
+# it, but the canonical agent struct in roko-core does not. Add an
+# Optional<PathBuf> field so downstream consumers (ACP, orchestrate) can
+# read MCP config from a single source of truth.
+
+[[task]]
+id = "T1"
+title = "Add mcp_config field to roko-core AgentConfig"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-core/src/config/agent.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/agent.rs", lines = "26-87", why = "AgentConfig struct definition — add mcp_config after extensions field" },
+    { path = "crates/roko-core/src/config/agent.rs", lines = "120-141", why = "Default impl — add mcp_config: None to defaults" },
+]
+symbols = [
+    "AgentConfig — struct at line 28, add `pub mcp_config: Option<std::path::PathBuf>` field",
+    "Default for AgentConfig — impl at line 120, add `mcp_config: None` to initializer",
+]
+anti_patterns = [
+    "Do NOT use String for the path — use Option<std::path::PathBuf> for consistency with the CLI config layer (config.rs:174).",
+    "Do NOT add serde(flatten) — this is a new explicit field, not a bag.",
+]
+
+# Add `pub mcp_config: Option<std::path::PathBuf>` after the `extensions` field
+# (line 86) with `#[serde(default, skip_serializing_if = \"Option::is_none\")]`.
+# Add `mcp_config: None` to the Default impl initializer (after extensions line 139).
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mcp_config: Option<.*PathBuf>' crates/roko-core/src/config/agent.rs"
+fail_msg = "AgentConfig must have a pub mcp_config: Option<PathBuf> field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile after adding mcp_config field"
+
+# ── T2: Pass MCP config from roko.toml into ACP workflow runner ──────────────
+#
+# The ACP workflow runner (runner.rs:458-463) hardcodes `mcp_config: None`
+# when building ServiceConfig. It should read the workspace config's
+# agent.mcp_config (from T1) or auto-discover via find_mcp_config, and
+# pass the resolved path to ServiceConfig.
+
+[[task]]
+id = "T2"
+title = "Wire MCP config into ACP workflow runner ServiceConfig"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 25
+files = ["crates/roko-acp/src/runner.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/runner.rs", lines = "444-472", why = "run_with_workflow_engine builds ServiceConfig with mcp_config: None — fix here" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "529-546", why = "Reference: how plan.rs resolves MCP config via layout.mcp_config_path() then find_mcp_config" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "81-100", why = "find_mcp_config signature and behavior — walks up from start_dir looking for .mcp.json" },
+]
+symbols = [
+    "run_with_workflow_engine — async fn at runner.rs:444, builds ServiceConfig at line 458",
+    "roko_agent::mcp::find_mcp_config(start_dir: &Path) -> Option<Result<(PathBuf, McpConfig), ConfigError>> — at mcp/config.rs:84",
+]
+anti_patterns = [
+    "Do NOT import McpConfig — only need find_mcp_config for path resolution, the ServiceConfig takes Option<PathBuf>.",
+    "Do NOT panic or unwrap — if MCP discovery fails, log a debug message and leave mcp_config as None.",
+]
+
+# After loading roko_config (line 457), resolve MCP config path:
+# 1. Check roko_config.agent.mcp_config (the new T1 field)
+# 2. Fallback: check workdir.join(\".roko\").join(\"mcp.json\")
+# 3. Fallback: roko_agent::mcp::find_mcp_config(workdir)
+# Pass the resolved Option<PathBuf> into ServiceConfig { mcp_config: resolved, ... }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'find_mcp_config\\|mcp_config_path\\|mcp_config:' crates/roko-acp/src/runner.rs && ! grep -q 'mcp_config: None' crates/roko-acp/src/runner.rs"
+fail_msg = "runner.rs must resolve MCP config instead of hardcoding None"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after wiring MCP config into runner"
+
+# ── T3: Run MCP auto-discovery in ACP session init ───────────────────────────
+#
+# The ACP session (session.rs) does not run MCP auto-discovery. When a
+# session is created, it should check the workspace for .mcp.json and
+# store the discovered path so bridge_events.rs can use it for tool-loop
+# dispatch.
+
+[[task]]
+id = "T3"
+title = "Run MCP auto-discovery during ACP session creation"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/session.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/session.rs", lines = "271-319", why = "AcpSession struct — add mcp_config_path: Option<PathBuf> field" },
+    { path = "crates/roko-acp/src/session.rs", lines = "325-340", why = "AcpSession::new — where to resolve MCP config during creation" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "81-100", why = "find_mcp_config walks parent directories for .mcp.json" },
+]
+symbols = [
+    "AcpSession — struct at session.rs:271, add `pub mcp_config_path: Option<PathBuf>`",
+    "AcpSession::new(params: SessionNewParams) -> Self — at session.rs:328",
+    "roko_agent::mcp::find_mcp_config(&Path) -> Option<Result<(PathBuf, McpConfig), ConfigError>>",
+]
+anti_patterns = [
+    "Do NOT make MCP discovery blocking on session creation — if it fails, log and proceed with None.",
+    "Do NOT load/parse the MCP config here — only resolve the path. The bridge_events tool loop handles loading.",
+]
+
+# 1. Add `pub mcp_config_path: Option<PathBuf>` to AcpSession struct (after mcp_servers field line 289).
+# 2. In AcpSession::new, after constructing config_state, try to resolve MCP path:
+#    - First check a config path if available (could be passed in SessionNewParams)
+#    - Then try find_mcp_config from the workdir
+# 3. Set mcp_config_path in the Self { ... } initializer.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mcp_config_path: Option<PathBuf>' crates/roko-acp/src/session.rs"
+fail_msg = "AcpSession must have an mcp_config_path field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after adding MCP discovery to session init"
+
+# ── T4: Pass session MCP config to tool-loop dispatch in bridge_events ───────
+#
+# bridge_events.rs dispatches model calls through the tool loop but does not
+# pass the session's MCP config path. The tool loop (via ModelCallService and
+# ToolLoop) needs the MCP config to discover and invoke MCP tools. Wire the
+# session.mcp_config_path (from T3) into the tool-loop dispatch path.
+
+[[task]]
+id = "T4"
+title = "Wire session MCP config into bridge_events tool-loop dispatch"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 25
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T2", "T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1-76", why = "Imports — may need to add mcp-related imports" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1177-1185", why = "Dispatch knowledge query — nearby is where session context is assembled before dispatch" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1908-1916", why = "Tool-loop provider config setup — where MCP config should be wired in" },
+    { path = "crates/roko-acp/src/runner.rs", lines = "458-472", why = "Reference: ServiceConfig with mcp_config field (fixed in T2)" },
+]
+symbols = [
+    "run_openai_compat_cognitive_task — dispatches non-Anthropic models, needs mcp_config for tool discovery",
+    "AcpSession::mcp_config_path — Option<PathBuf> added in T3, read here to pass to tool loop",
+]
+anti_patterns = [
+    "Do NOT duplicate the MCP discovery logic — the session already holds the resolved path from T3.",
+    "Do NOT break the Anthropic dispatch path — only the tool-loop (openai_compat/generic) paths need MCP config.",
+]
+
+# In the tool-loop dispatch functions, read session.mcp_config_path and, if Some,
+# pass it as the mcp_config option to the ToolLoop or backend builder. The exact
+# injection point depends on how the ToolLoop accepts config — likely via an options
+# struct or builder method that takes an MCP config path.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mcp_config_path\\|mcp_config' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "bridge_events.rs must reference session MCP config path for tool-loop dispatch"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after wiring MCP config into bridge_events tool loop"

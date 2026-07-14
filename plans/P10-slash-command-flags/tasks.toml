@@ -1,0 +1,337 @@
+[meta]
+plan = "P10-slash-command-flags"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T1: Fix /plan-resume flag from --resume to --resume-plan
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# /plan-resume builds CLI args with "--resume" but the CLI parser uses
+# "--resume-plan" (with visible_alias "resume-state"). The wrong flag is
+# silently ignored and the plan restarts from scratch instead of resuming.
+#
+# Steps:
+# 1. In bridge_events.rs, find the "plan-resume" match arm (line 3606-3618).
+# 2. Change "--resume".into() to "--resume-plan".into() on line 3616.
+#
+# That's the entire fix. One string change.
+
+[[task]]
+id = "T1"
+title = "Fix /plan-resume to use --resume-plan flag"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 5
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3606-3619", why = "plan-resume handler: builds vec![plan, run, plans/, --resume, path] — the --resume on line 3616 must become --resume-plan" },
+    { path = "crates/roko-cli/src/main.rs", lines = "1357-1369", why = "CLI parser: #[arg(long = \"resume-plan\", visible_alias = \"resume-state\")] — confirms the correct flag name" },
+]
+symbols = [
+    "run_slash_command — async fn at line 3351, contains the match command block",
+    "PlanCmd::Run — CLI subcommand with resume_plan: Option<PathBuf> field (main.rs line 1369)",
+]
+anti_patterns = [
+    "Do NOT change the CLI parser — the flag name --resume-plan is correct.",
+    "Do NOT change the /plan-resume command name — only change the flag passed to the CLI.",
+    "Do NOT change the default path '.roko/state/executor.json' — it's correct.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A5 '\"plan-resume\"' crates/roko-acp/src/bridge_events.rs | grep -q '\"--resume-plan\"'"
+fail_msg = "/plan-resume must pass --resume-plan flag to CLI"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -A5 '\"plan-resume\"' crates/roko-acp/src/bridge_events.rs | grep -q '\"--resume\"[^-]'"
+fail_msg = "Old --resume flag must be replaced (not --resume-plan)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T2: Add --model passthrough to /plan-run
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# /plan-run builds CLI args but doesn't include the session's model. Other
+# commands like /run, /do, /research all pass --model. This means /plan-run
+# ignores the user's model selection and uses the default.
+#
+# Steps:
+# 1. In bridge_events.rs, find the "plan-run" match arm (line 3478-3481).
+# 2. The current code is:
+#    ```rust
+#    "plan-run" => {
+#        let dir = if args.is_empty() { "plans/" } else { args };
+#        vec!["plan".into(), "run".into(), dir.into()]
+#    }
+#    ```
+# 3. Add --model passthrough using model_key (already available in scope):
+#    ```rust
+#    "plan-run" => {
+#        let dir = if args.is_empty() { "plans/" } else { args };
+#        vec![
+#            "plan".into(),
+#            "run".into(),
+#            dir.into(),
+#            "--model".into(),
+#            model_key.clone(),
+#        ]
+#    }
+#    ```
+
+[[task]]
+id = "T2"
+title = "Add --model flag passthrough to /plan-run command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 10
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3478-3481", why = "plan-run handler: currently vec![plan, run, dir] — must add --model model_key" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3484-3501", why = "Examples of other commands that pass --model: /run (line 3488-3489) and /do (line 3497-3498) — follow same pattern" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3351-3358", why = "run_slash_command signature: model_key: String is already a parameter" },
+]
+symbols = [
+    "run_slash_command — async fn(session_id, raw_input, workdir, model_key: String, cancel_token, event_sender, shared_run) (line 3351)",
+]
+anti_patterns = [
+    "Do NOT change the default dir 'plans/' — it's correct.",
+    "Do NOT add --model to /plan-resume — that's a separate fix if needed.",
+    "Do NOT change the model_key parameter — just use model_key.clone() like other commands do.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A8 '\"plan-run\"' crates/roko-acp/src/bridge_events.rs | grep -q '\"--model\"'"
+fail_msg = "/plan-run must pass --model flag"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A8 '\"plan-run\"' crates/roko-acp/src/bridge_events.rs | grep -q 'model_key'"
+fail_msg = "/plan-run must use model_key for the --model value"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T3: Add /develop slash command definition to session.rs
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The /develop command exists in the CLI (crates/roko-cli/src/commands/develop.rs)
+# but is not registered as an ACP slash command. Users must use /do instead.
+#
+# Steps:
+# 1. In session.rs, find the build_slash_commands function (line 1490).
+# 2. Add a new slash_command entry in the "implementation" category, after the
+#    /do entry (around line 1619):
+#    ```rust
+#    slash_command(
+#        "develop",
+#        "Full development pipeline: scope -> plan -> execute -> gate",
+#        "implementation",
+#        Some("describe what to build..."),
+#    ),
+#    ```
+# 3. Add "develop" to the slash_commands_include_new_commands test (line 2372).
+
+[[task]]
+id = "T3"
+title = "Register /develop as ACP slash command in session.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 15
+files = ["crates/roko-acp/src/session.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/session.rs", lines = "1490-1784", why = "build_slash_commands function — full list of slash command definitions. Add /develop near /do (line 1614-1619)." },
+    { path = "crates/roko-acp/src/session.rs", lines = "1431-1445", why = "slash_command helper function signature: fn(name, description, category, hint) -> SlashCommand" },
+    { path = "crates/roko-acp/src/session.rs", lines = "2368-2388", why = "slash_commands_include_new_commands test — add 'develop' to the expected list" },
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "1-22", why = "cmd_develop signature — confirms the develop command exists and takes prompt + --yes" },
+]
+symbols = [
+    "build_slash_commands — pub fn(bare_mode: bool) -> Vec<SlashCommand> (line 1490)",
+    "slash_command — fn(name, description, category, hint) -> SlashCommand (line 1431)",
+    "cmd_develop — pub(crate) async fn(cli, workdir, prompt_args, dry_run, yes, continue_work, provider) -> Result<i32> (develop.rs line 14)",
+]
+anti_patterns = [
+    "Do NOT add /develop to BARE_MODE_COMMANDS — it requires workspace state.",
+    "Do NOT change the slash_command helper function.",
+    "Do NOT add parameters beyond the hint — SlashCommand uses CommandInput with a single hint string.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"develop\"' crates/roko-acp/src/session.rs"
+fail_msg = "/develop must be registered in build_slash_commands"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'develop.*pipeline\\|pipeline.*develop\\|Full.*develop\\|develop.*scope' crates/roko-acp/src/session.rs"
+fail_msg = "/develop description must mention pipeline or development workflow"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4: Add /develop dispatch handler to bridge_events.rs
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Wire the /develop slash command to the CLI: `roko develop "<prompt>" --yes`.
+# The --yes flag is essential for ACP mode (no TTY for interactive approval).
+#
+# Steps:
+# 1. In bridge_events.rs, find the "Implementation & Execution" section (line 3483).
+# 2. Add a "develop" match arm after the "do" arm (after line 3501):
+#    ```rust
+#    "develop" => {
+#        require_args!("develop", "<prompt>");
+#        vec![
+#            "develop".into(),
+#            "--model".into(),
+#            model_key.clone(),
+#            "--yes".into(),
+#            args.into(),
+#        ]
+#    }
+#    ```
+#
+# 3. Add /develop to the help text (line 3843-3848, "Implementation & Execution"):
+#    ```
+#    /develop <prompt>  Full pipeline: scope → plan → execute → gate
+#    ```
+
+[[task]]
+id = "T4"
+title = "Add /develop dispatch handler to bridge_events.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 20
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3483-3513", why = "Implementation section: /run handler (3484-3491) and /do handler (3493-3501) — add /develop after /do" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3842-3849", why = "Help text 'Implementation & Execution' section — add /develop line" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3351-3358", why = "run_slash_command signature — model_key is available in scope" },
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "1-22", why = "cmd_develop: requires prompt args, supports --yes for auto-approve" },
+]
+symbols = [
+    "run_slash_command — async fn(session_id, raw_input, workdir, model_key: String, ...) (line 3351)",
+    "require_args! — macro at line 3367 for argument validation",
+    "cmd_develop — async fn(cli, workdir, prompt_args, dry_run, yes, continue_work, provider) (develop.rs line 14)",
+]
+anti_patterns = [
+    "Do NOT use run_shell_command for /develop — it's a roko CLI command, not a shell command.",
+    "Do NOT forget --yes — ACP has no TTY for interactive approval prompts.",
+    "Do NOT forget --model — must pass model_key like /do and /run do.",
+    "Do NOT add /develop to the match arm for 'do' — it must be its own separate arm.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"develop\"' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "/develop dispatch handler must exist in bridge_events.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A8 '\"develop\"' crates/roko-acp/src/bridge_events.rs | grep -q '\"--yes\"'"
+fail_msg = "/develop must pass --yes flag for ACP mode"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'develop.*pipeline\\|develop.*scope\\|/develop' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "/develop must appear in the help text"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T5: Add test for /plan-resume and /plan-run flag correctness
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Add a test that verifies the slash command args are built correctly for
+# /plan-resume and /plan-run to prevent regressions.
+#
+# Steps:
+# 1. Find or create a test module for slash command dispatch in bridge_events.rs
+#    or a nearby test file.
+#
+# 2. Add a test that calls the slash command arg builder directly (or simulates
+#    the match arm logic) and asserts:
+#    a) /plan-resume produces args containing "--resume-plan" (not "--resume")
+#    b) /plan-run produces args containing "--model"
+#    c) /develop produces args containing "--yes" and "--model"
+#
+# If direct unit testing isn't possible (the match is in an async fn), add the
+# assertions to the existing slash_commands_include_new_commands test in
+# session.rs by adding "develop" to the expected command list.
+
+[[task]]
+id = "T5"
+title = "Add test asserting /plan-resume uses --resume-plan flag"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 30
+files = ["crates/roko-acp/src/session.rs"]
+role = "implementer"
+depends_on = ["T1", "T2", "T3", "T4"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/session.rs", lines = "2368-2389", why = "Existing slash_commands_include_new_commands test — extend to include 'develop'" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3606-3619", why = "plan-resume handler with corrected --resume-plan flag from T1" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3478-3481", why = "plan-run handler with --model from T2" },
+]
+symbols = [
+    "slash_commands_include_new_commands — #[test] fn at session.rs line 2369",
+    "build_slash_commands — pub fn(bare_mode: bool) -> Vec<SlashCommand> (session.rs line 1490)",
+]
+anti_patterns = [
+    "Do NOT duplicate the slash command dispatch logic in tests — just verify the command is registered.",
+    "Do NOT create a new test file — use the existing tests module in session.rs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"develop\"' crates/roko-acp/src/session.rs"
+fail_msg = "Test must verify /develop is in the slash command list"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-acp -- slash_commands 2>&1"
+fail_msg = "Slash command tests must pass"

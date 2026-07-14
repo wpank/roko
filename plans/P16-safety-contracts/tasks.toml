@@ -1,0 +1,422 @@
+[meta]
+plan = "P16-safety-contracts"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Add disallowed_tools field to CliDispatchRequest ──
+#
+# CliDispatchRequest (dispatch_v2.rs:453) has no way to pass tool
+# restrictions to the CLI subprocess.  Add a `disallowed_tools` field
+# and wire it into build_claude_invocation as --disallowed-tools args.
+# The codex path does not support tool restrictions (no equivalent flag),
+# so skip it there.
+
+[[task]]
+id = "T1"
+title = "Add disallowed_tools to CliDispatchRequest and wire into CLI args"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 25
+files = ["crates/roko-cli/src/dispatch_v2.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch_v2.rs", lines = "451-476", why = "CliDispatchRequest struct — where disallowed_tools needs to be added" },
+    { path = "crates/roko-cli/src/dispatch_v2.rs", lines = "359-409", why = "build_claude_invocation — where --disallowed-tools args need to be pushed" },
+    { path = "crates/roko-cli/src/dispatch_v2.rs", lines = "411-448", why = "build_codex_invocation — codex has no tool restriction flag, skip" },
+]
+symbols = [
+    "struct CliDispatchRequest — dispatch_v2.rs:453",
+    "CliProviderConfig::build_claude_invocation(&self, request: &CliDispatchRequest) -> Result<CliInvocation, DispatchV2Error> — dispatch_v2.rs:360",
+]
+anti_patterns = [
+    "Do NOT add allowed_tools — the CLI already handles that via the settings.json mechanism. We need DISALLOWED (denied) tools only.",
+    "Do NOT pass --disallowed-tools to the codex CLI path — it does not support that flag.",
+    "Do NOT make disallowed_tools a required field — use Option<Vec<String>> with serde(default).",
+]
+
+# Steps:
+# 1. Add to CliDispatchRequest struct:
+#    ```
+#    /// Tool names the agent must not invoke (passed as --disallowed-tools).
+#    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+#    pub disallowed_tools: Vec<String>,
+#    ```
+#
+# 2. In build_claude_invocation, after the resume_session block (~line 401):
+#    ```
+#    for tool in &request.disallowed_tools {
+#        args.push("--disallowed-tools".to_string());
+#        args.push(tool.clone());
+#    }
+#    ```
+#
+# 3. Fix all existing CliDispatchRequest constructions (grep for
+#    CliDispatchRequest { to find them) — add `disallowed_tools: Vec::new()`.
+#    The agent_stream.rs construction is at line ~136.
+#    The test construction is at line ~1365.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'disallowed_tools' crates/roko-cli/src/dispatch_v2.rs"
+fail_msg = "disallowed_tools field must exist in dispatch_v2.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'disallowed-tools' crates/roko-cli/src/dispatch_v2.rs"
+fail_msg = "--disallowed-tools must be passed in build_claude_invocation"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T2: Add disallowed_tools to AgentSpawnConfig and propagate ──
+#
+# AgentSpawnConfig (agent_stream.rs:26) is the runner's config struct for
+# spawning CLI agents.  It builds a CliDispatchRequest in spawn_agent().
+# Add a disallowed_tools field and propagate it to the CliDispatchRequest.
+
+[[task]]
+id = "T2"
+title = "Add disallowed_tools to AgentSpawnConfig and propagate to CliDispatchRequest"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/runner/agent_stream.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/agent_stream.rs", lines = "26-84", why = "AgentSpawnConfig struct and from_run_config constructor" },
+    { path = "crates/roko-cli/src/runner/agent_stream.rs", lines = "127-148", why = "spawn_agent fn — where CliDispatchRequest is constructed from AgentSpawnConfig" },
+]
+symbols = [
+    "struct AgentSpawnConfig — agent_stream.rs:26",
+    "AgentSpawnConfig::from_run_config(config, prompt, system_prompt, model, agent_id) -> Self — agent_stream.rs:55",
+    "spawn_agent(config: &AgentSpawnConfig, event_tx) -> Result<AgentHandle> — agent_stream.rs:128",
+]
+anti_patterns = [
+    "Do NOT set disallowed_tools in from_run_config — it will be set by the caller in the event_loop. Default to Vec::new() in from_run_config.",
+]
+
+# Steps:
+# 1. Add to AgentSpawnConfig:
+#    ```
+#    /// Tool names the agent must not invoke, derived from safety contracts.
+#    pub disallowed_tools: Vec<String>,
+#    ```
+#
+# 2. In from_run_config, add `disallowed_tools: Vec::new()` to the Self { } initializer.
+#
+# 3. In spawn_agent at line ~136-148, add the field to the CliDispatchRequest:
+#    ```
+#    disallowed_tools: config.disallowed_tools.clone(),
+#    ```
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'disallowed_tools' crates/roko-cli/src/runner/agent_stream.rs"
+fail_msg = "disallowed_tools must exist in AgentSpawnConfig"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T3: Extract forbidden tools helper on AgentContract ──
+#
+# AgentContract has governance rules including ForbiddenTools, but no
+# convenience method to collect all forbidden tool names as a flat Vec.
+# Add a `forbidden_tool_names()` method so callers don't need to iterate
+# governance rules manually.
+
+[[task]]
+id = "T3"
+title = "Add forbidden_tool_names() helper to AgentContract"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-agent/src/safety/contract.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/safety/contract.rs", lines = "108-131", why = "AgentContract struct definition with governance: Vec<GovernanceRule>" },
+    { path = "crates/roko-agent/src/safety/contract.rs", lines = "133-318", why = "impl AgentContract — existing methods (permissive, restricted, permits_tool, check_pre_execution)" },
+    { path = "crates/roko-agent/src/safety/contract.rs", lines = "379-392", why = "GovernanceRule enum with ForbiddenTools(Vec<String>) variant" },
+]
+symbols = [
+    "struct AgentContract — contract.rs:110",
+    "enum GovernanceRule — contract.rs:380",
+    "GovernanceRule::ForbiddenTools(Vec<String>) — contract.rs:385",
+    "AgentContract::permits_tool(&self, tool_name: &str) -> bool — contract.rs:261",
+]
+anti_patterns = [
+    "Do NOT duplicate the logic from permits_tool — forbidden_tool_names is complementary (it returns the denied list, permits_tool checks a single name).",
+    "Do NOT include allowed_tools inversion — only collect explicit ForbiddenTools entries.",
+]
+
+# Steps:
+# 1. Add method to impl AgentContract (after permits_tool, around line ~277):
+#    ```
+#    /// Collect all explicitly forbidden tool names from governance rules.
+#    ///
+#    /// Returns a deduplicated list of tool names from all `ForbiddenTools`
+#    /// governance rules. Does NOT invert `allowed_tools` — callers that
+#    /// need deny-by-default behavior should use `permits_tool` directly.
+#    #[must_use]
+#    pub fn forbidden_tool_names(&self) -> Vec<String> {
+#        let mut names = Vec::new();
+#        for rule in &self.governance {
+#            if let GovernanceRule::ForbiddenTools(tools) = rule {
+#                names.extend(tools.iter().cloned());
+#            }
+#        }
+#        names.sort();
+#        names.dedup();
+#        names
+#    }
+#    ```
+#
+# 2. Add a test:
+#    ```
+#    #[test]
+#    fn forbidden_tool_names_collects_from_governance() {
+#        let contract = AgentContract {
+#            governance: vec![
+#                GovernanceRule::ForbiddenTools(vec!["rm".into(), "git_push".into()]),
+#                GovernanceRule::MaxToolCallsPerTurn(5),
+#                GovernanceRule::ForbiddenTools(vec!["curl".into(), "rm".into()]),
+#            ],
+#            ..AgentContract::default()
+#        };
+#        let names = contract.forbidden_tool_names();
+#        assert_eq!(names, vec!["curl", "git_push", "rm"]);
+#    }
+#    ```
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn forbidden_tool_names' crates/roko-agent/src/safety/contract.rs"
+fail_msg = "forbidden_tool_names method must exist in contract.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile cleanly"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent -- forbidden_tool_names 2>&1"
+fail_msg = "forbidden_tool_names test must pass"
+
+
+# ── T4: Load contract in runner dispatch and set disallowed_tools ──
+#
+# The runner-v2 event_loop dispatches agents at line ~4520 via
+# AgentSpawnConfig::from_run_config.  The task's role is available as
+# `task_def.role` (line ~4423).  Load the contract for that role using
+# AgentContract::load_for_role_with_mode(role, RestrictedFallback) and
+# extract forbidden_tool_names() into spawn_config.disallowed_tools.
+
+[[task]]
+id = "T4"
+title = "Load AgentContract for task role and set disallowed_tools on spawn config"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 25
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T2", "T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4420-4530", why = "Dispatch path: task_role resolved at 4423, AgentSpawnConfig constructed at 4520-4527" },
+    { path = "crates/roko-agent/src/safety/contract.rs", lines = "86-106", why = "ContractLoadMode enum — RestrictedFallback is the safe default" },
+    { path = "crates/roko-agent/src/safety/contract.rs", lines = "164-240", why = "load_for_role and load_for_role_with_mode methods" },
+    { path = "crates/roko-cli/src/runner/agent_stream.rs", lines = "26-51", why = "AgentSpawnConfig struct with new disallowed_tools field (from T2)" },
+]
+symbols = [
+    "AgentContract::load_for_role_with_mode(role, mode) -> Result<Self, ContractLoadError> — contract.rs:221",
+    "AgentContract::forbidden_tool_names(&self) -> Vec<String> — contract.rs (from T3)",
+    "ContractLoadMode::RestrictedFallback — contract.rs:104",
+    "AgentSpawnConfig::from_run_config(config, prompt, system_prompt, model, agent_id) -> Self — agent_stream.rs:55",
+]
+anti_patterns = [
+    "Do NOT use ContractLoadMode::Strict — that would fail on unknown roles. Use RestrictedFallback so unknown roles get deny-all safely.",
+    "Do NOT call load_for_role_with_mode in the hot retry loop — call it once per dispatch, before the spawn.",
+    "Do NOT let contract loading failures abort the dispatch — log warn and continue with empty disallowed list.",
+    "Do NOT override task-level allowed_tools/denied_tools from the plan if they exist — merge contract forbidden tools with existing denied_tools from the task def.",
+]
+
+# Steps:
+# 1. Add import near line 54:
+#    ```
+#    use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+#    ```
+#
+# 2. After spawn_config is constructed (line ~4527), before the match on dispatch:
+#    ```
+#    // Load safety contract for the task role and apply tool restrictions.
+#    {
+#        let contract = AgentContract::load_for_role_with_mode(
+#            task_role,
+#            ContractLoadMode::RestrictedFallback,
+#        );
+#        match contract {
+#            Ok(c) => {
+#                let mut denied = c.forbidden_tool_names();
+#                // Merge with task-level denied_tools if present.
+#                if let Some(task_denied) = &task_def.denied_tools {
+#                    denied.extend(task_denied.iter().cloned());
+#                    denied.sort();
+#                    denied.dedup();
+#                }
+#                if !denied.is_empty() {
+#                    debug!(
+#                        role = %task_role,
+#                        denied_tools = ?denied,
+#                        "safety contract: applying tool restrictions"
+#                    );
+#                    spawn_config.disallowed_tools = denied;
+#                }
+#            }
+#            Err(e) => {
+#                warn!(role = %task_role, err = %e, "failed to load safety contract; no tool restrictions applied");
+#            }
+#        }
+#    }
+#    ```
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'load_for_role_with_mode' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "AgentContract::load_for_role_with_mode must be called in event_loop.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'forbidden_tool_names' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "forbidden_tool_names must be called in event_loop.rs to extract denied tools"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'disallowed_tools' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "disallowed_tools must be set on spawn_config in event_loop.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+
+# ── T5: Wire contract into bridge dispatch path ──
+#
+# The runner dispatch has two paths: CLI (event_loop.rs ~4514) and Bridge
+# (event_loop.rs ~4628).  The bridge path builds an AgentDispatchRequest
+# and doesn't go through AgentSpawnConfig.  Wire the contract's forbidden
+# tools into the bridge request's `tools` field as well.
+
+[[task]]
+id = "T5"
+title = "Wire contract forbidden tools into bridge dispatch path"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T4"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4628-4683", why = "Bridge dispatch path: builds AgentDispatchRequest with tools: None" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4633-4653", why = "AgentDispatchRequest construction — tools field is None" },
+]
+symbols = [
+    "AgentDispatchRequest — roko_agent::dispatcher (struct with tools: Option<String> field)",
+]
+anti_patterns = [
+    "Do NOT duplicate the contract loading code — the contract should already be loaded in T4's block. Restructure T4's block to produce a `denied_tools: Vec<String>` before the `match dispatch` block, then use it in both CLI and bridge paths.",
+    "Do NOT set tools on the bridge request if the denied list is empty — keep it as None for default behavior.",
+]
+
+# Steps:
+# The contract loading block from T4 should be moved BEFORE the
+# `match dispatch {` (line ~4514), so the `denied_tools` variable is
+# accessible in both CLI and Bridge arms.
+#
+# T4 already does this by placing the block after spawn_config construction
+# but before the match. However, spawn_config is only used in the CLI path.
+# Adjust so the denied_tools Vec is a standalone `let`:
+#
+# ```
+# let contract_denied_tools: Vec<String> = {
+#     match AgentContract::load_for_role_with_mode(task_role, ContractLoadMode::RestrictedFallback) {
+#         Ok(c) => {
+#             let mut denied = c.forbidden_tool_names();
+#             if let Some(task_denied) = &task_def.denied_tools {
+#                 denied.extend(task_denied.iter().cloned());
+#                 denied.sort();
+#                 denied.dedup();
+#             }
+#             denied
+#         }
+#         Err(e) => {
+#             warn!(role = %task_role, err = %e, "contract load failed");
+#             task_def.denied_tools.clone().unwrap_or_default()
+#         }
+#     }
+# };
+# ```
+#
+# Then in the CLI arm:
+#   `spawn_config.disallowed_tools = contract_denied_tools.clone();`
+#
+# And in the Bridge arm, log the denied tools:
+#   ```
+#   if !contract_denied_tools.is_empty() {
+#       debug!(
+#           role = %task_role,
+#           denied_tools = ?contract_denied_tools,
+#           "safety contract: bridge dispatch has tool restrictions (note: not enforceable via bridge)"
+#       );
+#   }
+#   ```
+#
+# Note: The bridge AgentDispatchRequest.tools field is an Option<String>
+# for allowed tools, not denied tools. We log the denied tools as a
+# diagnostic but cannot enforce them on the bridge path. This is a known
+# gap documented in feedback doc 24.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'contract_denied_tools' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "contract_denied_tools variable must be extracted before dispatch match"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'load_for_role_with_mode' crates/roko-cli/src/runner/event_loop.rs | grep -q '^1$'"
+fail_msg = "Contract should be loaded exactly once per dispatch, not duplicated"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent -- contract 2>&1"
+fail_msg = "roko-agent contract tests must pass"

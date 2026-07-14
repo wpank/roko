@@ -1,0 +1,486 @@
+[meta]
+plan = "P12-runner-parallelism"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Read max_parallel from plan meta and clamp RunConfig.max_concurrent_tasks
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Currently plan.rs (line 371) sets max_concurrent_tasks from CLI --max-tasks,
+# roko.toml runner.max_concurrent_tasks, or executor config — but NEVER reads
+# meta.max_parallel from the loaded plans' tasks.toml.
+#
+# After plans are loaded (line 440: load_plans), iterate over plans and take
+# the maximum max_parallel value. If any plan declares max_parallel > 1, use
+# that as a floor for max_concurrent_tasks (unless --max-tasks was explicit).
+#
+# In plan.rs, between the load_plans call (line 440) and the RunConfig
+# construction (line 520), add:
+#
+#   // Honor tasks.toml max_parallel as a floor for concurrency
+#   let plan_max_parallel = plans
+#       .iter()
+#       .map(|p| p.tasks.meta.max_parallel as usize)
+#       .max()
+#       .unwrap_or(1);
+#   if plan_max_parallel > max_concurrent_tasks && max_tasks == 0 {
+#       eprintln!(
+#           "▸ Increasing max_concurrent_tasks from {max_concurrent_tasks} to \
+#            {plan_max_parallel} (from plan meta.max_parallel)"
+#       );
+#       max_concurrent_tasks = plan_max_parallel;
+#   }
+#
+# This requires making max_concurrent_tasks mutable (add `let mut` at line 371).
+#
+[[task]]
+id = "T1"
+title = "Read max_parallel from plan meta into max_concurrent_tasks"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "371-386", why = "Where max_concurrent_tasks is computed — needs to become mutable" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "440-455", why = "After plans are loaded — insert max_parallel floor here" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "520-530", why = "RunConfig construction uses max_concurrent_tasks — must use updated value" },
+    { path = "crates/roko-cli/src/task_parser.rs", lines = "20-45", why = "TaskMeta struct — max_parallel field is u32, default 1" },
+]
+symbols = [
+    "TaskMeta::max_parallel — pub max_parallel: u32 (default 1)",
+    "Plan::tasks — pub tasks: TasksFile (has meta: TaskMeta)",
+    "RunConfig::max_concurrent_tasks — pub max_concurrent_tasks: usize",
+]
+anti_patterns = [
+    "Do NOT override max_concurrent_tasks if --max-tasks was explicitly set (max_tasks > 0).",
+    "Do NOT change the default value of max_parallel — it stays 1.",
+    "Do NOT modify task_parser.rs — the field already exists and is parsed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_parallel' crates/roko-cli/src/commands/plan.rs | head -1 && grep -q 'plan_max_parallel\\|meta.max_parallel' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "plan.rs must read max_parallel from loaded plans"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Change active_agent_tasks from HashMap<String, String> to
+#     HashMap<String, HashSet<String>>
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Currently `active_agent_tasks: HashMap<String, String>` maps plan_id to a
+# single task_id. This enforces exactly 1 agent per plan. To support
+# max_parallel > 1, we need to track multiple active tasks per plan.
+#
+# Change the type to HashMap<String, HashSet<String>> (plan_id -> set of
+# active task_ids). Update all 4 usage sites:
+#
+# 1. Declaration (line 617):
+#    BEFORE: let mut active_agent_tasks: HashMap<String, String> = HashMap::new();
+#    AFTER:  let mut active_agent_tasks: HashMap<String, HashSet<String>> = HashMap::new();
+#
+# 2. Remove on agent exit (line 800):
+#    BEFORE: active_agent_tasks.remove(&state.plan_id);
+#    AFTER:  if let Some(tasks) = active_agent_tasks.get_mut(&state.plan_id) {
+#                tasks.remove(&state.current_task);
+#                if tasks.is_empty() {
+#                    active_agent_tasks.remove(&state.plan_id);
+#                }
+#            }
+#
+# 3. Duplicate spawn guard (line 4002):
+#    BEFORE: if let Some(active_task) = ctx.active_agent_tasks.get(plan_id.as_str()) {
+#    AFTER:  if let Some(active_tasks) = ctx.active_agent_tasks.get(plan_id.as_str()) {
+#                if active_tasks.contains(&task_id) {
+#                    debug!("task already active — suppressing");
+#                    return ActionDispatchOutcome::Noop;
+#                }
+#                // Check concurrency limit: active_tasks.len() < max_concurrent_tasks
+#                if active_tasks.len() >= ctx.config.max_concurrent_tasks {
+#                    debug!("plan at max concurrency — suppressing");
+#                    return ActionDispatchOutcome::Noop;
+#                }
+#            }
+#
+# 4. Insert on agent spawn (lines 4565-4566 and 4675-4676):
+#    BEFORE: ctx.active_agent_tasks.insert(plan_id.to_string(), task_id.clone());
+#    AFTER:  ctx.active_agent_tasks
+#                .entry(plan_id.to_string())
+#                .or_default()
+#                .insert(task_id.clone());
+#
+# 5. The RunContext struct field (line 205):
+#    BEFORE: active_agent_tasks: &'a mut HashMap<String, String>,
+#    AFTER:  active_agent_tasks: &'a mut HashMap<String, HashSet<String>>,
+#
+[[task]]
+id = "T2"
+title = "Change active_agent_tasks to track multiple tasks per plan"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 40
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "200-210", why = "RunContext struct — active_agent_tasks field type to change" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "614-620", why = "Declaration of active_agent_tasks HashMap — change type" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "797-802", why = "Agent exit — remove task from set instead of removing plan key" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4000-4020", why = "Duplicate spawn guard — check task in set + check count vs max_concurrent" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4560-4570", why = "First agent spawn insert site — use entry().or_default().insert()" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4670-4680", why = "Second agent spawn insert site — use entry().or_default().insert()" },
+]
+symbols = [
+    "RunContext — struct RunContext<'a> (field active_agent_tasks)",
+    "dispatch_action — async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) -> ActionDispatchOutcome",
+]
+anti_patterns = [
+    "Do NOT change the agent_handles HashMap — that is addressed in T3.",
+    "Do NOT remove the duplicate spawn guard entirely — just change it to check per-task instead of per-plan.",
+    "Do NOT forget to add `use std::collections::HashSet;` if not already imported at the top of the file.",
+    "Do NOT change any logic outside the 5 specific sites listed above.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'HashMap<String, HashSet<String>>' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "active_agent_tasks must be HashMap<String, HashSet<String>>"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'or_default.*insert' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Agent spawn must use entry().or_default().insert() pattern"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Change agent_handles from HashMap<String, AgentHandle> to
+#     HashMap<String, HashMap<String, AgentHandle>>
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# agent_handles is keyed by plan_id (like active_agent_tasks), which also
+# limits to 1 agent per plan. Change to plan_id -> task_id -> AgentHandle.
+#
+# Usage sites in event_loop.rs:
+#
+# 1. Declaration (line 616):
+#    BEFORE: let mut agent_handles: HashMap<String, AgentHandle> = HashMap::new();
+#    AFTER:  let mut agent_handles: HashMap<String, HashMap<String, AgentHandle>> = HashMap::new();
+#
+# 2. RunContext struct field (line 206):
+#    BEFORE: agent_handles: &'a mut HashMap<String, AgentHandle>,
+#    AFTER:  agent_handles: &'a mut HashMap<String, HashMap<String, AgentHandle>>,
+#
+# 3. Agent exit — wait for handle (line 924):
+#    BEFORE: if let Some(handle) = agent_handles.remove(&state.plan_id) {
+#    AFTER:  let handle = agent_handles
+#                .get_mut(&state.plan_id)
+#                .and_then(|m| m.remove(&state.current_task));
+#            if let Some(handle) = handle {
+#
+# 4. Duplicate spawn guard (line 4012):
+#    BEFORE: if ctx.agent_handles.contains_key(plan_id.as_str()) {
+#    AFTER:  if ctx.agent_handles
+#                .get(plan_id.as_str())
+#                .is_some_and(|m| m.contains_key(&task_id)) {
+#
+# 5. Insert handle on spawn (line 4564):
+#    BEFORE: ctx.agent_handles.insert(plan_id.to_string(), handle);
+#    AFTER:  ctx.agent_handles
+#                .entry(plan_id.to_string())
+#                .or_default()
+#                .insert(task_id.clone(), handle);
+#
+# 6. PID collection for persistence (line 1828):
+#    BEFORE: let pids: Vec<u32> = agent_handles.values().map(|h| h.pid).collect();
+#    AFTER:  let pids: Vec<u32> = agent_handles.values()
+#                .flat_map(|m| m.values())
+#                .map(|h| h.pid)
+#                .collect();
+#
+# 7. Graceful shutdown drain (line 5460):
+#    BEFORE: for (_plan_id, handle) in agent_handles.drain() {
+#    AFTER:  for (_plan_id, task_handles) in agent_handles.drain() {
+#                for (_task_id, handle) in task_handles {
+#                    ... (keep existing kill logic)
+#                }
+#            }
+#
+[[task]]
+id = "T3"
+title = "Change agent_handles to track multiple handles per plan"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "200-210", why = "RunContext struct — agent_handles field type to change" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "614-620", why = "Declaration of agent_handles — change type" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "920-930", why = "Agent exit — remove handle for specific task, not entire plan" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4010-4020", why = "Duplicate spawn guard — check per task_id" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4560-4568", why = "Insert handle on spawn — nested map" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1826-1832", why = "PID collection — flat_map over nested map" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "5455-5465", why = "Graceful shutdown — drain nested maps" },
+]
+symbols = [
+    "AgentHandle — pub struct AgentHandle { pub pid: u32, ... }",
+    "RunContext — struct RunContext<'a> (field agent_handles)",
+]
+anti_patterns = [
+    "Do NOT change the AgentHandle struct itself — only the container type.",
+    "Do NOT remove the graceful shutdown logic — just adjust the iteration.",
+    "Do NOT forget to handle the second agent spawn path around line 4670 (there are two spawn sites).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'HashMap<String, HashMap<String, AgentHandle>>' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "agent_handles must be HashMap<String, HashMap<String, AgentHandle>>"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'flat_map' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "PID collection must flat_map over nested agent_handles"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Update RunState to track multiple concurrent agents
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# RunState stores single-agent state: plan_id, current_task, agent_output,
+# tokens_in/out, cost_usd, etc. With multiple agents running concurrently,
+# the event loop currently routes ALL agent events through the same RunState
+# fields — which means events from agent A overwrite agent B's state.
+#
+# The minimal fix: when an agent event arrives in Branch 1 (line ~720), use
+# the event's plan_id and task_id to update the correct agent's state. Since
+# agent events already carry plan_id/task_id, the key change is in how
+# RunState accumulates output. We do NOT need to track per-agent state in
+# RunState — instead, the event loop should use the agent event's own
+# plan/task identifiers rather than relying on state.plan_id/current_task.
+#
+# This task specifically ensures:
+# 1. agent_output accumulation is keyed by (plan_id, task_id), not just
+#    overwriting a single string.
+# 2. When a gate completion or task completion is processed, the correct
+#    agent's output is retrieved by (plan_id, task_id).
+#
+# Add to RunState (state.rs):
+#   /// Per-task agent output accumulation for parallel dispatch.
+#   pub task_outputs: HashMap<String, String>,  // key = "plan_id:task_id"
+#
+# Helper methods:
+#   pub fn task_output_key(plan_id: &str, task_id: &str) -> String {
+#       format!("{plan_id}:{task_id}")
+#   }
+#   pub fn append_task_output(&mut self, plan_id: &str, task_id: &str, text: &str) {
+#       let key = Self::task_output_key(plan_id, task_id);
+#       self.task_outputs.entry(key).or_default().push_str(text);
+#   }
+#   pub fn take_task_output(&mut self, plan_id: &str, task_id: &str) -> String {
+#       let key = Self::task_output_key(plan_id, task_id);
+#       self.task_outputs.remove(&key).unwrap_or_default()
+#   }
+#
+# For now, keep the existing agent_output field as a fallback — existing code
+# that reads state.agent_output continues to work for the sequential case.
+# The parallel paths will use task_outputs.
+#
+[[task]]
+id = "T4"
+title = "Add per-task output tracking to RunState"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/runner/state.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/state.rs", lines = "1-60", why = "RunState struct definition — add task_outputs field and helper methods" },
+]
+symbols = [
+    "RunState — pub struct RunState { pub agent_output: String, pub plan_id: String, pub current_task: String, ... }",
+]
+anti_patterns = [
+    "Do NOT remove the existing agent_output field — it stays as a fallback for sequential dispatch.",
+    "Do NOT change any existing methods on RunState — only add the new field and helpers.",
+    "Do NOT import types not already in scope — HashMap is already imported.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'task_outputs' crates/roko-cli/src/runner/state.rs"
+fail_msg = "RunState must have a task_outputs field"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn append_task_output' crates/roko-cli/src/runner/state.rs"
+fail_msg = "RunState must have append_task_output helper"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn take_task_output' crates/roko-cli/src/runner/state.rs"
+fail_msg = "RunState must have take_task_output helper"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5: Update executor tick to emit multiple SpawnAgent actions per plan
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The ParallelExecutor.tick() method (roko-orchestrator/src/executor/mod.rs
+# line 464) currently emits at most ONE action per plan per tick. The event
+# loop in event_loop.rs iterates these actions sequentially (line 1749-1821).
+#
+# With the per-task tracking from T2/T3, the executor can now emit multiple
+# SpawnAgent actions for the same plan in a single tick. The event loop
+# already processes them in a for loop (line 1750), and the concurrency
+# guard from T2 enforces the max_concurrent_tasks limit.
+#
+# However, the PlanStateMachine::next_action (used at line 495) returns a
+# single ExecutorAction, not a list. The fix: after the state machine emits
+# a SpawnAgent action, check if more ready tasks exist and emit additional
+# SpawnAgent actions up to max_concurrent_tasks.
+#
+# In roko-orchestrator/src/executor/mod.rs, after line 496:
+#   if let Some(action) = PlanStateMachine::next_action(state) {
+#       actions.push(action);
+#       // For implementing phase, emit additional spawn actions for
+#       // parallel-ready tasks, up to max_concurrent_tasks.
+#       if matches!(state.current_phase, PlanPhase::Implementing) {
+#           let running = state.running_tasks.len();
+#           let remaining_slots = self.config.max_concurrent_tasks
+#               .saturating_sub(running + 1); // +1 for the action just pushed
+#           for _ in 0..remaining_slots {
+#               // Emit another SpawnAgent for the same plan — the event
+#               // loop's task_dag will resolve which task to dispatch.
+#               actions.push(ExecutorAction::SpawnAgent {
+#                   plan_id: plan_id.clone(),
+#                   task: "next".to_string(),
+#               });
+#           }
+#       }
+#   }
+#
+# NOTE: PlanState needs a `running_tasks: HashSet<String>` field to track
+# how many tasks are in flight. If it doesn't already have one, add it.
+# The event loop must call executor.mark_task_running(plan_id, task_id) on
+# successful dispatch and mark_task_done(plan_id, task_id) on completion.
+#
+# ALTERNATIVE simpler approach: Since the event loop already has the
+# task_dag and knows running count, just have the event loop emit extra
+# SpawnAgent actions locally after processing each tick. This avoids
+# modifying the orchestrator crate.
+#
+# The simplest version: in event_loop.rs after line 1749, when processing
+# tick actions, check if the plan has available concurrency slots and ready
+# tasks. If so, emit additional SpawnAgent actions into the actions list.
+#
+# Actually simplest: after the for-loop over actions (line 1821), add:
+#   // Dispatch additional ready tasks for plans with concurrency slots
+#   for plan in &plans {
+#       let running = active_agent_tasks
+#           .get(&plan.id)
+#           .map(|s| s.len())
+#           .unwrap_or(0);
+#       if running >= config.max_concurrent_tasks { continue; }
+#       let slots = config.max_concurrent_tasks - running;
+#       // task_dag ready_tasks resolves DAG deps
+#       let completed = state.plan_completed_tasks(&plan.id);
+#       let completed_plans = ...;
+#       let all_tasks: Vec<&TaskDef> = task_index.get(&plan.id)...;
+#       let ready = task_dag.ready_tasks(&plan.id, &all_tasks, &completed, &completed_plans);
+#       for task in ready.into_iter().take(slots) {
+#           // Dispatch directly (bypassing executor tick)
+#           // ... replicate the SpawnAgent dispatch path
+#       }
+#   }
+#
+# This is too large for one task. The MINIMAL viable approach for T5:
+# After the dispatch_action call for a SpawnAgent in the tick loop, check if
+# the plan still has concurrency slots available AND there are more ready
+# tasks. If so, synthesize additional SpawnAgent actions and dispatch them
+# in the same tick iteration.
+#
+[[task]]
+id = "T5"
+title = "Dispatch multiple ready tasks per plan within a single tick"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 40
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["T2", "T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1742-1822", why = "The tick processing loop — after dispatch_action for SpawnAgent, add logic to dispatch more ready tasks" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3917-3950", why = "SpawnAgent dispatch — how sentinel task 'next' is resolved to a real task via DAG" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4000-4010", why = "Concurrency guard — now checks per-task (from T2)" },
+    { path = "crates/roko-cli/src/runner/task_dag.rs", lines = "209-239", why = "TaskDag::ready_tasks — returns all ready tasks considering deps" },
+]
+symbols = [
+    "TaskDag::ready_tasks — pub fn ready_tasks(&self, plan_id: &str, tasks: &[&TaskDef], completed_in_plan: &[String], completed_plans: &[String]) -> Vec<&TaskDef>",
+    "dispatch_action — async fn dispatch_action(action: &ExecutorAction, ctx: &mut RunContext<'_>) -> ActionDispatchOutcome",
+    "ExecutorAction::SpawnAgent — { plan_id: String, task: String }",
+]
+anti_patterns = [
+    "Do NOT modify roko-orchestrator crate — keep changes in the CLI event_loop.",
+    "Do NOT remove the existing tick processing loop — extend it.",
+    "Do NOT dispatch more agents than max_concurrent_tasks per plan.",
+    "Do NOT dispatch a task that is already in active_agent_tasks.",
+    "Do NOT bypass the existing SpawnAgent dispatch path — synthesize new SpawnAgent actions and dispatch them through the existing dispatch_action function.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ready_tasks\\|additional.*spawn\\|concurrency.*slot\\|parallel.*dispatch' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Event loop must have logic to dispatch multiple ready tasks per tick"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_concurrent_tasks' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Event loop must reference max_concurrent_tasks for concurrency limiting"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"

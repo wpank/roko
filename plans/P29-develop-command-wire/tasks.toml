@@ -1,0 +1,175 @@
+[meta]
+plan = "P29-develop-command-wire"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Register /develop as ACP slash command definition
+# ─────────────────────────────────────────────────────────────────────────────
+# The `roko develop` CLI command exists and works (develop.rs is fully wired),
+# but it is NOT registered as an ACP slash command. This means users in Zed
+# cannot type `/develop "implement X"` — they must use `/do` instead, which
+# lacks the plan-approval workflow.
+#
+# Add a `slash_command("develop", ...)` entry to `build_slash_commands()` in
+# session.rs. Place it right after the "do" slash command (line 1614-1619)
+# since they are in the same category.
+#
+# Also add "develop" to the test at line 2368 `slash_commands_include_new_commands`.
+
+[[task]]
+id = "T1"
+title = "Register /develop slash command in session.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/session.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/session.rs", lines = "1614-1625", why = "The /do slash command definition — /develop goes right after it" },
+    { path = "crates/roko-acp/src/session.rs", lines = "1431-1444", why = "slash_command() helper function signature" },
+    { path = "crates/roko-acp/src/session.rs", lines = "2368-2388", why = "Test that asserts slash command names — must add 'develop'" },
+]
+symbols = [
+    "fn slash_command(name: &str, description: &str, category: &str, hint: Option<&str>) -> SlashCommand",
+    "pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand>",
+]
+anti_patterns = [
+    "Do NOT add /develop to the BARE_MODE_COMMANDS list — it needs a roko workspace.",
+    "Do NOT duplicate the /do description — /develop has its own purpose: plan-first with approval.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"develop\"' crates/roko-acp/src/session.rs"
+fail_msg = "session.rs must contain a 'develop' slash command definition"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A5 'slash_commands_include_new_commands' crates/roko-acp/src/session.rs | grep -q 'develop' || grep -B2 -A20 'slash_commands_include_new_commands' crates/roko-acp/src/session.rs | grep -q 'develop'"
+fail_msg = "The slash_commands_include_new_commands test must assert 'develop' is present"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-acp --lib -- slash_commands_include_new_commands 2>&1"
+fail_msg = "The slash command assertion test must pass"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Wire /develop dispatch in bridge_events.rs
+# ─────────────────────────────────────────────────────────────────────────────
+# In bridge_events.rs, the slash command dispatch table (starting at line 3388)
+# maps slash command names to CLI arg vectors. Add a "develop" entry that maps
+# to `["develop", "--yes", "--model", model_key, args]`.
+#
+# Use `--yes` because ACP runs non-interactively (no TTY for the approval
+# screen). The plan will be generated and executed directly. The `--model`
+# flag passes through the ACP session's current model.
+#
+# Place it right after the "do" entry (line 3493-3501).
+
+[[task]]
+id = "T2"
+title = "Add /develop dispatch mapping in bridge_events.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3387-3501", why = "Slash command dispatch table — 'do' entry at lines 3493-3501" },
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "14-49", why = "cmd_develop signature and args — needs prompt, yes, provider" },
+]
+symbols = [
+    "pub(crate) async fn cmd_develop(cli, workdir, prompt_args, dry_run, yes, continue_work, provider) -> Result<i32>",
+]
+anti_patterns = [
+    "Do NOT use --dry-run in the ACP dispatch — the user wants execution, not preview.",
+    "Do NOT forget require_args! — /develop needs a prompt argument.",
+    "Do NOT forget --yes — ACP is non-interactive, so skip the approval screen.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"develop\"' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "bridge_events.rs must contain a 'develop' dispatch entry"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A8 '\"develop\"' crates/roko-acp/src/bridge_events.rs | grep -q '\\-\\-yes'"
+fail_msg = "The /develop dispatch must include --yes for non-interactive ACP execution"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Prevent double plan generation when /develop wraps /do
+# ─────────────────────────────────────────────────────────────────────────────
+# The feedback doc (16-PRD-DRAFT-BROKEN-AND-REDUNDANT.md) notes that `roko
+# develop` runs `cmd_do` with `--plan` forced, and then in interactive mode
+# (non-ACP) it calls `cmd_do` TWICE: once as dry-run to preview the plan, and
+# then again to execute. This generates the plan twice, wasting an LLM call.
+#
+# In develop.rs lines 99-115, the interactive mode calls cmd_do with
+# `dry_run: true` to show the preview. Then at lines 130-144, it calls cmd_do
+# again with `dry_run: false` to execute. The second call regenerates the plan
+# from scratch instead of reusing the already-generated one.
+#
+# Fix: After the preview dry-run, check if the plans directory already has
+# valid plans. If so, the second cmd_do call should use `--resume` or skip
+# plan generation. The simplest fix is to pass `--skip-generate` (if
+# available) or to set the `continue` flag so cmd_do reuses existing plans.
+#
+# Alternatively, check if `plans_dir` already contains a valid `tasks.toml`
+# after the preview run, and if so, call `run_plan_execution` directly
+# instead of going through `cmd_do` a second time.
+
+[[task]]
+id = "T3"
+title = "Skip re-generation in develop interactive mode when plan exists"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 25
+files = ["crates/roko-cli/src/commands/develop.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "95-151", why = "Interactive mode: preview dry-run then re-execute — double generation" },
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "117-126", why = "Plans dir check + approval screen" },
+]
+symbols = [
+    "pub(crate) async fn cmd_develop(cli, workdir, prompt_args, dry_run, yes, continue_work, provider) -> Result<i32>",
+    "fn show_plan_approval(plans: &[plan_loader::Plan]) -> bool",
+    "plan_loader::load_plans(plans_dir: &Path) -> Result<Vec<Plan>>",
+]
+anti_patterns = [
+    "Do NOT remove the dry-run preview call — the user still needs to see the plan before approving.",
+    "Do NOT break the --yes path — that path already works correctly (single cmd_do call).",
+    "Do NOT change cmd_do itself — the fix should be in develop.rs only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'cmd_do' crates/roko-cli/src/commands/develop.rs | xargs -I{} test {} -le 4"
+fail_msg = "develop.rs should have at most 4 cmd_do calls (continue, dry-run, yes, fallback) — not 5+"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"

@@ -1,0 +1,272 @@
+[meta]
+plan = "P28-image-support"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Set image capability dynamically based on model vision support
+# ─────────────────────────────────────────────────────────────────────────────
+# handler.rs currently hardcodes `image: false` in PromptCapabilities during
+# the ACP `initialize` response. This blocks Zed from showing the image upload
+# button. Fix: look up the default model's `supports_vision` flag from the
+# resolved model profile and set the capability accordingly.
+#
+# The resolved model is available via `resolve_model(roko_config, &model_key)`
+# which returns `ResolvedModel` with `profile: Option<ModelProfile>` where
+# `ModelProfile.supports_vision: bool`. The `roko_config` is already available
+# in the handler via `sessions.roko_config`.
+#
+# Steps:
+# 1. In handler.rs around line 282, get the default model key from
+#    `sessions.roko_config.agent.default_model` (it's an Option<String>).
+# 2. If a model key exists, call `resolve_model(&sessions.roko_config, &key)`.
+# 3. Check `resolved.profile.map_or(false, |p| p.supports_vision)`.
+# 4. Set `image:` to that boolean value in the PromptCapabilities struct.
+# 5. Keep `audio: false` (no audio support yet).
+
+[[task]]
+id = "T1"
+title = "Set ACP image capability from model vision support"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/handler.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/handler.rs", lines = "276-304", why = "initialize handler with hardcoded image: false at line 287" },
+    { path = "crates/roko-core/src/agent.rs", lines = "282-358", why = "ResolvedModel struct and resolve_model() for vision lookup" },
+    { path = "crates/roko-acp/src/types.rs", lines = "216-229", why = "PromptCapabilities struct definition" },
+]
+symbols = [
+    "resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel",
+    "ResolvedModel { profile: Option<ModelProfile> }",
+    "ModelProfile { supports_vision: bool }",
+    "PromptCapabilities { image: bool, audio: bool, embedded_context: bool }",
+]
+anti_patterns = [
+    "Do NOT hardcode `image: true` — it must be dynamic based on model profile.",
+    "Do NOT add a new import for roko_core::agent unless it's not already imported — check existing use statements first.",
+    "Do NOT change the audio field — leave it as false.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'supports_vision' crates/roko-acp/src/handler.rs"
+fail_msg = "handler.rs must reference supports_vision to set the image capability dynamically"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'image: false' crates/roko-acp/src/handler.rs | grep -q 'PromptCapabilities'"
+fail_msg = "The hardcoded `image: false` in PromptCapabilities must be replaced with dynamic lookup"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T2: Wire image blocks through extract_prompt_text for logging
+# ─────────────────────────────────────────────────────────────────────────────
+# `extract_prompt_text` in bridge_events.rs:4330-4347 currently returns an
+# empty string for `ContentBlock::Image { .. }`. This means image prompts log
+# as blank. Add a descriptive placeholder like `[image: {mime_type}]` so that
+# prompt logs and the episode logger capture that an image was present.
+
+[[task]]
+id = "T2"
+title = "Add image placeholder text in extract_prompt_text"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4330-4347", why = "extract_prompt_text function — Image arm returns empty string" },
+]
+symbols = [
+    "fn extract_prompt_text(prompt: &[ContentBlock]) -> String",
+    "ContentBlock::Image { data: String, mime_type: String }",
+]
+anti_patterns = [
+    "Do NOT include the base64 data in the placeholder — only the mime_type.",
+    "Do NOT change the behavior for Text, Resource, Diff, or Unknown arms.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A2 'ContentBlock::Image' crates/roko-acp/src/bridge_events.rs | grep -q 'mime_type'"
+fail_msg = "The Image arm in extract_prompt_text must produce a placeholder containing the mime_type"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T3: Ensure build_openai_content_parts is called during message assembly
+# ─────────────────────────────────────────────────────────────────────────────
+# The message assembly at bridge_events.rs:1220-1233 already calls
+# `build_openai_content_parts` and `build_anthropic_content_parts` and replaces
+# the last user message content with multi-part when images are present. BUT
+# this only runs inside the `if should_resolve_context` branch (line 1215).
+# For the pipeline path (when a workflow pipeline handles the prompt), images
+# are silently dropped because the `else` branch at line 1235 returns
+# `Vec::new()`.
+#
+# Fix: extract the image-replacement logic into a helper function and also
+# apply it in the pipeline dispatch path. The pipeline dispatch path builds
+# its own messages at bridge_events.rs around line 1280+, so we need to
+# ensure image blocks propagate there too.
+#
+# Specifically:
+# 1. Create a small helper `fn inject_image_parts(msgs: &mut Vec<Value>, prompt: &[ContentBlock], provider_kind: ProviderKind)`.
+# 2. Move the image_parts logic from lines 1222-1233 into it.
+# 3. Call it from both the `should_resolve_context` path and the pipeline path.
+
+[[task]]
+id = "T3"
+title = "Extract image injection helper and apply in both dispatch paths"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 30
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1215-1240", why = "Current image replacement in should_resolve_context branch" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4349-4406", why = "build_openai_content_parts and build_anthropic_content_parts" },
+]
+symbols = [
+    "fn build_openai_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>>",
+    "fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>>",
+    "ProviderKind::AnthropicApi",
+]
+anti_patterns = [
+    "Do NOT duplicate the image_parts logic — extract it into a shared helper.",
+    "Do NOT remove the existing image handling from the should_resolve_context path — refactor it to use the new helper.",
+    "Do NOT change how build_openai_content_parts or build_anthropic_content_parts work internally.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'inject_image_parts\\|apply_image_parts\\|replace_image_parts' crates/roko-acp/src/bridge_events.rs | grep -qv '^0$'"
+fail_msg = "A shared image injection helper function must exist in bridge_events.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T4: Forward image content blocks through the anthropic_api provider
+# ─────────────────────────────────────────────────────────────────────────────
+# The Anthropic API provider at crates/roko-agent/src/provider/anthropic_api.rs
+# builds the messages array for the Anthropic messages API. Currently it does
+# not handle image content blocks — if multi-part content (text + image) is
+# passed through from bridge_events, the anthropic_api provider must preserve
+# it. The bridge_events already converts ACP Image blocks to the Anthropic
+# format (`{"type":"image","source":{"type":"base64",...}}`), so the
+# anthropic_api provider just needs to pass the content array through rather
+# than converting it back to a string.
+#
+# Verify that the anthropic_api provider correctly passes through multi-part
+# content arrays (where content is an array of objects instead of a string).
+# The provider builds request bodies as serde_json::Value — check that when
+# `content` is already a JSON array (from bridge_events image injection),
+# it is preserved as-is rather than stringified.
+
+[[task]]
+id = "T4"
+title = "Verify and fix anthropic_api provider image passthrough"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 25
+files = ["crates/roko-agent/src/provider/anthropic_api.rs"]
+role = "implementer"
+depends_on = ["T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/provider/anthropic_api.rs", lines = "1-50", why = "Top of file — struct definitions and imports" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4377-4406", why = "build_anthropic_content_parts output format" },
+    { path = "crates/roko-agent/src/provider/openai_compat.rs", lines = "125-153", why = "Reference — openai_compat already handles ImageUrl blocks" },
+]
+symbols = [
+    "fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>>",
+    "ContentBlock::ImageUrl { image_url: ImageUrlBlock }",
+]
+anti_patterns = [
+    "Do NOT add image handling to the openai_compat provider — it already handles ImageUrl blocks natively.",
+    "Do NOT change the Anthropic API image format — bridge_events already produces the correct `{type: image, source: {type: base64, ...}}` format.",
+    "Do NOT modify bridge_events.rs in this task — only touch anthropic_api.rs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'content' crates/roko-agent/src/provider/anthropic_api.rs"
+fail_msg = "anthropic_api.rs must handle content blocks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile cleanly"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5: Fix Gemini supports_vision in builtin model registry
+# ─────────────────────────────────────────────────────────────────────────────
+# The feedback doc notes Gemini models had `supports_vision: false` but the
+# actual registry at model_registry.rs already has `supports_vision: true` for
+# both gemini-2.5-pro (line 142) and gemini-2.5-flash (line 153). This was
+# apparently already fixed. Verify and add a compile-time assertion test.
+
+[[task]]
+id = "T5"
+title = "Add test asserting all vision-capable builtins have supports_vision"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-core/src/config/model_registry.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/model_registry.rs", lines = "33-180", why = "BUILTIN_MODELS array — verify Gemini entries have supports_vision: true" },
+]
+symbols = [
+    "pub static BUILTIN_MODELS: &[BuiltinModel]",
+    "BuiltinModel { supports_vision: bool }",
+]
+anti_patterns = [
+    "Do NOT change existing vision values for models that correctly have false (codex-mini, sonar, sonar-pro).",
+    "Do NOT modify the BuiltinModel struct — only add a test.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'vision_capable_models' crates/roko-core/src/config/model_registry.rs || grep -q 'supports_vision.*true' crates/roko-core/src/config/model_registry.rs"
+fail_msg = "model_registry.rs must contain a test or assertion about vision-capable models"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-core --lib -- model_registry 2>&1"
+fail_msg = "model_registry tests must pass"

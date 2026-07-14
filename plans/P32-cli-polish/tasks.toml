@@ -1,0 +1,170 @@
+[meta]
+plan = "P32-cli-polish"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 2
+estimated_total_minutes = 20
+skip_enrichment = true
+
+# =============================================================================
+# P32 — CLI polish: config noise reduction and symbol consistency
+#
+# Remaining unique tasks from self-dev-ux / self-dev-extras after filtering
+# out items that have already been implemented.
+#
+# Already implemented (not included):
+#   L02 (verbose debug line)     -> model_selection.rs line 84 (ROKO_VERBOSE guard)
+#   L03 (bare mode auto-detect)  -> session.rs resolve_bare_mode at line 1465
+#   L04 (ContentBlock Unknown)   -> types.rs Unknown variant at line 490
+#   L05 (deprecation hints)      -> hints.rs fully wired (49 lines)
+#   L06 (CLICOLOR env var)       -> terminal.rs lines 234-243 (NO_COLOR + CLICOLOR)
+#   L09 (pop user turn)          -> bridge_events.rs line 1658 (already pops on failure)
+#   L10 (self-heal verify)       -> prd.rs lines 2426-2461 (auto_verify for implementer)
+#   M09 (TTY detection sink)     -> do_cmd.rs lines 591-595 (should_use_inline wired)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# T1 — Add skip_serializing_if to default-false bool fields in ModelProfile
+#
+# 14 bool fields in ModelProfile use `#[serde(default)]` but have no
+# `skip_serializing_if` — every serialized ModelProfile includes all of them
+# even when they are at their default value, making roko.toml noisy.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T1"
+title = "Add skip_serializing_if to ModelProfile bool fields"
+description = """
+In crates/roko-core/src/config/provider.rs, the ModelProfile struct (line 362)
+has 14 boolean fields that need skip_serializing_if annotations to reduce
+config noise.
+
+For fields that default to FALSE (lines 377-399, 446-455, 472), add:
+    #[serde(default, skip_serializing_if = "crate::is_false")]
+
+Affected fields (all default false):
+  - supports_thinking (line 378)
+  - supports_vision (line 381)
+  - supports_web_search (line 384)
+  - supports_mcp_tools (line 387)
+  - supports_partial (line 390)
+  - supports_grounding (line 393)
+  - supports_code_execution (line 396)
+  - supports_caching (line 399)
+  - supports_search (line 446)
+  - supports_citations (line 449)
+  - supports_async (line 452)
+  - is_embedding_model (line 455)
+  - use_max_completion_tokens (line 472)
+
+For the field that defaults to TRUE:
+  - supports_tools (line 375): use `skip_serializing_if = "crate::is_true"`
+
+Add two helper functions (at crate root or in a serde_helpers module):
+    pub(crate) fn is_false(b: &bool) -> bool { !*b }
+    pub(crate) fn is_true(b: &bool) -> bool { *b }
+
+If these helpers already exist elsewhere in roko-core, reuse them.
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 40
+files = ["crates/roko-core/src/config/provider.rs", "crates/roko-core/src/lib.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/provider.rs", lines = "360-473", why = "ModelProfile struct — all bool fields that need annotation" },
+    { path = "crates/roko-core/src/lib.rs", lines = "1-30", why = "Check if is_false/is_true helpers already exist" },
+]
+symbols = [
+    "ModelProfile — pub struct at provider.rs:362 with 14+ bool fields",
+    "default_true — fn default_true() -> bool { true } used by supports_tools",
+    "is_false — helper fn for skip_serializing_if (may need to be added)",
+    "is_true — helper fn for skip_serializing_if (may need to be added)",
+]
+anti_patterns = [
+    "Do NOT change default values — only change serialization behavior",
+    "Do NOT add skip_serializing_if to non-bool fields (max_output, context_window, etc.) — those are already handled",
+    "Do NOT change the tool_format field — it uses a default_tool_format function, not a bool",
+    "Do NOT touch fields that already have skip_serializing_if = Option::is_none",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'skip_serializing_if' crates/roko-core/src/config/provider.rs | awk '{if ($1 >= 25) exit 0; else exit 1}'"
+fail_msg = "Must have at least 25 skip_serializing_if annotations (existing + 14 new)"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn is_false' crates/roko-core/src/config/provider.rs || grep -q 'fn is_false' crates/roko-core/src/lib.rs"
+fail_msg = "is_false helper function must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1 | tail -5"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core 2>&1 | tail -10"
+fail_msg = "roko-core tests must pass (serialization round-trip)"
+
+# ---------------------------------------------------------------------------
+# T2 — Replace hourglass emoji with geometric circle in PENDING constant
+#
+# The hourglass emoji (U+23F3) renders inconsistently across terminals.
+# All other constants use geometric Unicode symbols; PENDING should match.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T2"
+title = "Replace PENDING hourglass emoji with circle in symbols.rs"
+description = """
+In crates/roko-cli/src/inline/symbols.rs line 44, change:
+
+    pub const PENDING: &str = "\\u{23f3}";   // hourglass emoji
+
+To:
+
+    pub const PENDING: &str = "\\u{25cb}";   // white circle
+
+This is a one-character change. The white circle (U+25CB) matches the
+geometric symbol set used by all other constants (diamond, triangle,
+bar, branch, checkmark, cross, etc.).
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 1
+files = ["crates/roko-cli/src/inline/symbols.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/inline/symbols.rs", lines = "1-57", why = "Full symbol constants — see PENDING at line 44" },
+]
+symbols = [
+    "PENDING — pub const PENDING: &str at symbols.rs:44, currently hourglass emoji",
+]
+anti_patterns = [
+    "Do NOT change any other constant — only PENDING",
+    "Do NOT change the doc comment unless it mentions 'hourglass'",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '○' crates/roko-cli/src/inline/symbols.rs"
+fail_msg = "Must use white circle symbol for PENDING"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q '⏳' crates/roko-cli/src/inline/symbols.rs"
+fail_msg = "Must remove hourglass emoji"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1 | tail -5"
+fail_msg = "roko-cli must compile"

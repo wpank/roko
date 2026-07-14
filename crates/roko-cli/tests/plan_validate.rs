@@ -706,13 +706,10 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
 #[test]
 fn plan_validate_accepts_complete_architecture_deferral_metadata() {
     let temp = TempDir::new().unwrap();
-    // The task references plans/architecture-core-queue/tasks.toml. We must create
-    // it as a valid plan because the validator discovers all plans/*/tasks.toml.
-    // The stub plan's files entry points at a file we also create.
+    // Add a second valid plan to exercise recursive multi-plan validation. Its
+    // declared stub/lib.rs output is intentionally absent before execution.
     std::fs::create_dir_all(temp.path().join("plans/architecture-core-queue")).unwrap();
-    std::fs::create_dir_all(temp.path().join("stub")).unwrap();
     std::fs::create_dir_all(temp.path().join("docs/08-chain")).unwrap();
-    std::fs::write(temp.path().join("stub/lib.rs"), "").unwrap();
     std::fs::write(temp.path().join("docs/08-chain/INDEX.md"), "# chain docs\n").unwrap();
     std::fs::write(
         temp.path().join("plans/architecture-core-queue/tasks.toml"),
@@ -777,7 +774,7 @@ evidence_ref = "plans/architecture-core-queue/tasks.toml"
 
     let assert = run_validate(&temp, &["plans"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    // Two plans are discovered (the main one + the stub referenced by files).
+    // Both discovered plans validate, including the intentionally absent output.
     assert!(
         stdout.contains("0 diagnostics in 2 plans"),
         "unexpected stdout: {stdout}"

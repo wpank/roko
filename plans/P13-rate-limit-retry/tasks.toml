@@ -1,0 +1,299 @@
+[meta]
+plan = "P13-rate-limit-retry"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────
+# T1: Classify HTTP errors in the non-streaming send_turn path
+# ─────────────────────────────────────────────────────────────────────
+#
+# The `send_turn` method in `OpenAiCompatLlmBackend` (line 442) uses
+# `HttpPoster::post_json` which returns `Err(HttpPostError { status, message })`
+# on non-2xx responses.  The current `.map_err(|e| LlmError::Network(...))`
+# at line 460 throws away the status code.  The retry loop in `ToolLoop`
+# (line 1272-1293 of tool_loop/mod.rs) only retries on
+# `LlmError::Provider(ref error)` — so 429/5xx errors are never retried.
+#
+# Fix: Before calling `.map_err`, inspect `HttpPostError.status`.
+# - 429 → LlmError::Provider(ProviderError::RateLimit { retry_after_ms: None })
+# - 500..=599 → LlmError::Provider(ProviderError::ServerError(status))
+# - everything else → LlmError::Network (existing behavior)
+#
+# The `HttpPostError.status` field is `Option<u16>` — `None` means
+# transport-level failure (no HTTP response), `Some(code)` means an HTTP
+# error.  Parse the response body as JSON to extract `retry_after` when
+# present.
+
+[[task]]
+id = "T1"
+title = "Classify HTTP errors in send_turn (non-streaming path)"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 25
+files = ["crates/roko-agent/src/openai_compat_backend.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "440-466", why = "send_turn method with the buggy .map_err at line 460" },
+    { path = "crates/roko-agent/src/http.rs", lines = "26-51", why = "HttpPostError struct — status: Option<u16>, message: String" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "689-699", why = "ProviderError enum — RateLimit, ServerError variants" },
+    { path = "crates/roko-agent/src/tool_loop/mod.rs", lines = "178-196", why = "LlmError enum — Provider(ProviderError) is the retryable variant" },
+]
+symbols = [
+    "OpenAiCompatLlmBackend::send_turn — async fn(&self, messages: &[Value], tools: &RenderedTools, session: &SessionState) -> Result<BackendResponse, LlmError>",
+    "HttpPostError { status: Option<u16>, message: String }",
+    "ProviderError::RateLimit { retry_after_ms: Option<u64> }",
+    "ProviderError::ServerError(u16)",
+    "LlmError::Provider(ProviderError)",
+    "LlmError::Network(String)",
+]
+anti_patterns = [
+    "Do NOT use the classify_error method on OpenAiCompatAdapter — it lives on the ProviderAdapter trait, not the LlmBackend. Build the ProviderError directly from the HttpPostError.status field.",
+    "Do NOT change the HttpPoster trait or ReqwestPoster — the fix is in the .map_err call site only.",
+    "Do NOT map all non-2xx to Provider — only 429 and 5xx. 4xx client errors (401, 404, etc.) should remain as Network errors for now.",
+]
+
+# Replace line 460:
+#     .map_err(|e| LlmError::Network(self.decorate_error(&e)))?;
+#
+# With a helper closure or match:
+#     .map_err(|e| classify_http_error(e, &self.provider_id, self.provider_kind, self.api_key_env.as_deref(), &self.base_url))?;
+#
+# Add a module-level helper function:
+#
+#   fn classify_http_error(e: HttpPostError) -> LlmError {
+#       match e.status {
+#           Some(429) => {
+#               let retry_after = serde_json::from_str::<Value>(&e.message)
+#                   .ok()
+#                   .and_then(|v| v.pointer("/retry_after").and_then(Value::as_u64))
+#                   .map(|s| s * 1000);
+#               LlmError::Provider(ProviderError::RateLimit { retry_after_ms: retry_after })
+#           }
+#           Some(s) if (500..=599).contains(&s) => {
+#               LlmError::Provider(ProviderError::ServerError(s))
+#           }
+#           _ => LlmError::Network(e.to_string()),
+#       }
+#   }
+#
+# Keep the decorate_error call in the Network fallback for user-friendly messages.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'ProviderError::RateLimit' crates/roko-agent/src/openai_compat_backend.rs | grep -v '//' | grep -v test"
+fail_msg = "send_turn must map 429 to ProviderError::RateLimit"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'ProviderError::ServerError' crates/roko-agent/src/openai_compat_backend.rs | grep -v '//' | grep -v test"
+fail_msg = "send_turn must map 5xx to ProviderError::ServerError"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# T2: Classify HTTP errors in the stream_turn path
+# ─────────────────────────────────────────────────────────────────────
+#
+# The `stream_turn` method at line 468 has the same bug at line 524:
+#     return Err(LlmError::Network(self.decorate_error(&raw_err)));
+#
+# It constructs `raw_err = HttpPostError::http(status.as_u16(), text)` at
+# line 523, then wraps it as Network.  Here we have direct access to the
+# reqwest `status` variable (line 501) — use it directly.
+
+[[task]]
+id = "T2"
+title = "Classify HTTP errors in stream_turn (streaming path)"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 25
+files = ["crates/roko-agent/src/openai_compat_backend.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "468-526", why = "stream_turn method — line 501 has `status`, line 523 builds HttpPostError, line 524 maps to LlmError::Network" },
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "440-466", why = "Reference T1's fix pattern for send_turn" },
+]
+symbols = [
+    "OpenAiCompatLlmBackend::stream_turn — async fn(&self, ...) -> Result<BoxStream<Result<StreamEvent, LlmError>>, LlmError>",
+]
+anti_patterns = [
+    "Do NOT change any streaming chunk error handling (lines 593+) — only the initial HTTP status check at lines 501-524.",
+    "Do NOT duplicate the classify helper — reuse the one added in T1.",
+]
+
+# At line 519-524, replace:
+#     let text = response.text().await.unwrap_or_else(|e| format!("read error body failed: {e}"));
+#     let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+#     return Err(LlmError::Network(self.decorate_error(&raw_err)));
+#
+# With:
+#     let text = response.text().await.unwrap_or_else(|e| format!("read error body failed: {e}"));
+#     let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+#     return Err(classify_http_error(raw_err));
+#
+# Reuse the classify_http_error helper from T1. For the Network fallback,
+# call self.decorate_error inside the helper or pass context.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'LlmError::Network' crates/roko-agent/src/openai_compat_backend.rs | awk '{ if ($1 > 8) exit 1; else exit 0 }'"
+fail_msg = "stream_turn HTTP error path should no longer map 429/5xx to LlmError::Network — expected fewer Network occurrences"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# T3: Classify HTTP errors in send_turn_streaming path
+# ─────────────────────────────────────────────────────────────────────
+#
+# The `send_turn_streaming` method at line 706 has the same bug at line 745:
+#     return Err(LlmError::Network(message));
+#
+# It already has `status` (line 732) and `text` (lines 734-741). Apply
+# the same classify pattern.
+
+[[task]]
+id = "T3"
+title = "Classify HTTP errors in send_turn_streaming path"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-agent/src/openai_compat_backend.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "706-746", why = "send_turn_streaming — line 732 has status, line 742 builds HttpPostError, lines 743-745 map to Network" },
+]
+symbols = [
+    "OpenAiCompatLlmBackend::send_turn_streaming — async fn(&self, ..., event_tx: mpsc::Sender<StreamChunk>) -> Result<BackendResponse, LlmError>",
+]
+anti_patterns = [
+    "Do NOT change the streaming chunk error handling later in the method (lines 756+) — only the initial HTTP status check at lines 732-745.",
+    "Do NOT forget to send the StreamChunk::Error before returning — keep the existing event_tx.send pattern.",
+]
+
+# At lines 742-745, replace:
+#     let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+#     let message = self.decorate_error(&raw_err);
+#     let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
+#     return Err(LlmError::Network(message));
+#
+# With:
+#     let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+#     let err = classify_http_error(raw_err);
+#     let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
+#     return Err(err);
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'classify_http_error' crates/roko-agent/src/openai_compat_backend.rs | wc -l | awk '{ if ($1 >= 3) exit 0; else exit 1 }'"
+fail_msg = "classify_http_error should be called in all three HTTP error paths (send_turn, stream_turn, send_turn_streaming)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# T4: Add unit test for HTTP 429 → Provider retry
+# ─────────────────────────────────────────────────────────────────────
+#
+# Add a test that exercises the classify_http_error helper:
+# - 429 → LlmError::Provider(ProviderError::RateLimit { .. })
+# - 500 → LlmError::Provider(ProviderError::ServerError(500))
+# - 401 → LlmError::Network(_)
+# - None status → LlmError::Network(_)
+
+[[task]]
+id = "T4"
+title = "Add unit test for classify_http_error helper"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-agent/src/openai_compat_backend.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "1620-1640", why = "Existing test location near end of #[cfg(test)] mod tests block" },
+    { path = "crates/roko-agent/src/http.rs", lines = "34-51", why = "HttpPostError constructors: ::transport() and ::http()" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "689-699", why = "ProviderError variants to match against" },
+    { path = "crates/roko-agent/src/tool_loop/mod.rs", lines = "178-196", why = "LlmError variants to match against" },
+]
+symbols = [
+    "classify_http_error — fn(HttpPostError) -> LlmError (added in T1)",
+    "HttpPostError::http(status: u16, message: impl Into<String>) -> Self",
+    "HttpPostError::transport(message: impl Into<String>) -> Self",
+    "LlmError::Provider(ProviderError)",
+    "LlmError::Network(String)",
+    "ProviderError::RateLimit { retry_after_ms: Option<u64> }",
+    "ProviderError::ServerError(u16)",
+]
+anti_patterns = [
+    "Do NOT spin up an HTTP server for this test — test the classify_http_error function directly.",
+    "Do NOT use assert_eq! on LlmError — it does not derive PartialEq. Use matches!() instead.",
+]
+
+# Add inside #[cfg(test)] mod tests { ... }:
+#
+# #[test]
+# fn classify_http_error_429_maps_to_rate_limit() {
+#     let err = classify_http_error(HttpPostError::http(429, r#"{"retry_after":5}"#));
+#     assert!(matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })));
+# }
+#
+# #[test]
+# fn classify_http_error_500_maps_to_server_error() {
+#     let err = classify_http_error(HttpPostError::http(500, "internal server error"));
+#     assert!(matches!(err, LlmError::Provider(ProviderError::ServerError(500))));
+# }
+#
+# #[test]
+# fn classify_http_error_401_maps_to_network() {
+#     let err = classify_http_error(HttpPostError::http(401, "unauthorized"));
+#     assert!(matches!(err, LlmError::Network(_)));
+# }
+#
+# #[test]
+# fn classify_http_error_transport_maps_to_network() {
+#     let err = classify_http_error(HttpPostError::transport("dns failed"));
+#     assert!(matches!(err, LlmError::Network(_)));
+# }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'classify_http_error' crates/roko-agent/src/openai_compat_backend.rs | awk '{ if ($1 >= 6) exit 0; else exit 1 }'"
+fail_msg = "Expected at least 6 occurrences of classify_http_error (3 call sites + 3+ test assertions)"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent classify_http_error 2>&1"
+fail_msg = "classify_http_error tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"

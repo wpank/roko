@@ -29,13 +29,12 @@ demo/.runtime/
 
 # roko-cli workspace state ---------------------------------------------------
 # Every `roko init` creates one of these; they belong per-workspace, not in git.
-.roko/
 **/.roko/
+!/.roko/
+/.roko/*
+!/.roko/GAPS.md
 
-# Root workspace plans (generated per-workspace when untracked) ------------
-# Anchor this rule: canonical manifests under tmp/status-quo/**/plans belong
-# to the repository and must remain visible to validation and status checks.
-/plans/
+# Root plans are canonical repository control-plane inputs and stay tracked.
 
 # LLM / sccache / misc caches ------------------------------------------------
 .fastembed_cache/

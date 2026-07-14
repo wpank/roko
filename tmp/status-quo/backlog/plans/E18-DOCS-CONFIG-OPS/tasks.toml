@@ -322,7 +322,7 @@ files = [
     "crates/roko-core/src/config/loader.rs",
 ]
 role = "implementer"
-depends_on = []
+depends_on = ["E18-T06"]
 
 [task.context]
 read_files = [
@@ -786,7 +786,9 @@ max_loc = 200
 files = ["docs/v2/GITHUB-INTEGRATION.md"]
 role = "implementer"
 depends_on = ["E18-T14"]
-depends_on_plan = ["E01-execution-engine", "E15-mcp-config"]
+ownership = "distinct-documentation-consumer"
+uses_owner = "E46; E15-T7; E18-T14"
+depends_on_plan = ["E01-execution-engine", "E15-mcp-config", "E46-github-workflow-integration"]
 
 [task.context]
 read_files = [

@@ -409,58 +409,60 @@ acceptance = [
 # dispatches and gate new requests when approaching provider limits.
 [[task]]
 id = "E14-T08"
-title = "Implement per-provider rate limit tracking (RPM/TPM counters)"
+title = "Acceptance roll-up: E48 configured and live per-provider RPM/TPM enforcement"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E48-T02 + E48-T03"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 200
-files = [
-    "crates/roko-agent/src/dispatcher/mod.rs",
-    "crates/roko-agent/src/provider/mod.rs",
-    "crates/roko-core/src/config/provider.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["E48-rate-limit-budgeting"]
+acceptance = [
+    "E48-T02 defines one configurable per-provider RPM/TPM limiter from the live ProviderConfig schema, and E48-T03 shares that exact limiter across concurrent legacy and runner-v2 model calls.",
+    "Every live LLM request awaits the shared limiter before provider I/O; no tool-dispatch counter, process-global fallback limiter, or per-agent limiter can satisfy this roll-up.",
+    "Focused tests prove configured RPM and TPM limits gate the live ModelCallService/provider request boundary across concurrent calls while different providers retain independent budgets.",
+    "Limit exhaustion produces the typed retriable provider outcome consumed by canonical retry and health handling.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-agent/src/dispatcher/mod.rs", lines = "1-80", why = "dispatcher dispatch path — insert rate limit check before sending request" },
-    { path = "crates/roko-agent/src/provider/mod.rs", lines = "80-150", why = "provider registry — associate rate limit counters per ProviderKind" },
-    { path = "crates/roko-core/src/config/provider.rs", lines = "255-325", why = "ProviderConfig is the live [providers.<name>] schema; add the per-provider rate_limit fields beside the existing timeout and max_concurrent limits" },
+    { path = "crates/roko-agent/src/rate_limit.rs", why = "E48-T02 canonical per-provider RPM/TPM limiter and typed limit outcome" },
+    { path = "crates/roko-core/src/config/provider.rs", lines = "255-325", why = "E48-T02 live [providers.<name>] schema for configured limits" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "E48-T03 live model/provider request boundary; acquire must occur before agent.run" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "175-260", why = "Config-driven provider construction must receive the runtime-scoped shared limiter" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "1735-1965", why = "Legacy prepared-agent execution and concurrent dispatch path must share one limiter" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1200-1400", why = "Runner-v2 runtime construction and concurrent request path must use the same pooled limiter" },
 ]
 symbols = [
-    "ProviderKind — enum for each LLM backend",
-    "AgentDispatcher — dispatch entry point",
-    "RokoConfig — top-level config struct",
+    "ProviderRateLimiter::acquire — awaited immediately before live provider I/O",
+    "ProviderConfig — canonical RPM/TPM configuration",
+    "ModelCallService / create_agent_for_model — provider-call boundary, not ToolDispatcher",
+    "Arc<ProviderRateLimiter> — one runtime-scoped pool shared by concurrent agents",
 ]
 anti_patterns = [
-    "Do NOT use a single global counter — each provider has independent limits.",
-    "Do NOT block indefinitely when rate limited — return a retriable error that E01-T12 can backoff on.",
-    "Do NOT hardcode provider limits — read from config with sensible defaults (e.g., Anthropic 60 RPM, OpenAI 500 RPM).",
-    "Do NOT use Mutex for counters in async code — use AtomicU64 or tokio-aware primitives.",
+    "Do NOT inspect or modify ToolDispatcher; tool calls are not LLM provider requests.",
+    "Do NOT accept E48-T02 alone; configured counters without E48-T03 live acquire wiring are dormant.",
+    "Do NOT use one process-global default in place of runtime configuration or create one limiter per agent.",
+    "Do NOT block indefinitely; limit exhaustion must remain a typed retriable outcome for E01-T12/E48-T01.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'RateLimiter\\|RateLimit\\|rpm_counter\\|tpm_counter\\|rate_limit' crates/roko-agent/src/dispatcher/mod.rs crates/roko-agent/src/provider/mod.rs"
-fail_msg = "dispatcher or provider must implement per-provider rate limit tracking"
+command = "rg -q 'ProviderLimits\\|tpm\\|rpm\\|rate_limit' crates/roko-agent/src/rate_limit.rs crates/roko-core/src/config/provider.rs && rg -q 'ProviderRateLimiter|acquire' crates/roko-agent/src/model_call_service.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "canonical E48 limiter must be configured and acquired on both live runner paths"
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-agent -p roko-core 2>&1"
-fail_msg = "roko-agent and roko-core must compile after rate limit tracking addition"
+command = "cargo check -p roko-agent -p roko-core -p roko-cli 2>&1"
+fail_msg = "limiter configuration and both live runner integrations must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-agent rate_limit 2>&1"
-fail_msg = "a test must assert that RPM/TPM counters increment and gate requests at the configured limit"
-
-acceptance = [
-    "Each ProviderKind has an associated RPM and TPM counter that increments on every dispatched request.",
-    "When RPM or TPM exceeds the configured limit, the dispatcher returns a retriable rate-limit error instead of sending the request.",
-    "Counters reset on a sliding window (per-minute).",
-    "Limits are configurable per provider in roko.toml with sensible defaults.",
-]
+command = "cargo test -p roko-agent rate_limit 2>&1 && cargo test -p roko-cli provider_rate_limit 2>&1"
+fail_msg = "focused tests must prove configured pooled RPM/TPM enforcement at the live model-call boundary"
 
 # ─────────────────────────────────────────────────────────────────────
 # E14-T09: Add Retry-After header parsing for all LLM backends
@@ -536,56 +538,65 @@ acceptance = [
 # they recover.
 [[task]]
 id = "E14-T10"
-title = "Add provider health degradation tracking in CascadeRouter"
+title = "Acceptance roll-up: E48 canonical provider-health routing"
+ownership = "acceptance-roll-up"
+superseded_by = "E48-T05"
 status = "ready"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160
-files = [
-    "crates/roko-learn/src/cascade_router.rs",
-    "crates/roko-agent/src/dispatcher/mod.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E14-T08"]
+depends_on_plan = ["E48-rate-limit-budgeting"]
+acceptance = [
+    "CascadeRouter and both runner entry paths consume the same runtime-scoped ProviderHealthRegistry; roko-agent outcomes reach it through a trait-typed callback without a roko-agent -> roko-learn production dependency.",
+    "Closed providers are eligible, Open providers are filtered at every automatic routing stage, and HalfOpen permits the registry's single probe semantics.",
+    "A healthy fallback is selected when the preferred provider is unavailable, and all-unavailable failure is explicit.",
+    "Real LLM dispatch success and typed 429, 529/server-error, and timeout outcomes call ProviderHealthRegistry::record_success/record_failure before later gate evaluation.",
+    "Explicit force_backend remains selectable for user intent but cannot bypass canonical outcome recording.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1-80", why = "CascadeRouter model selection and scoring logic — add health factor to scoring" },
-    { path = "crates/roko-agent/src/dispatcher/mod.rs", lines = "1-80", why = "dispatch error path — feed error observations into CascadeRouter health tracking" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "700-810", why = "Canonical E48 routing stages consume ProviderHealthRegistry availability" },
+    { path = "crates/roko-learn/src/provider_health.rs", lines = "196-285", why = "Canonical Closed/Open/HalfOpen registry and typed record_success/record_failure behavior" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "80-215", why = "Dependency-safe trait callback pattern for real model/provider outcomes" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "Real model/provider call outcomes, including fallback attempts" },
+    { path = "crates/roko-learn/src/event_subscriber.rs", lines = "130-230", why = "Typed runner outcome events must update the same registry used by routing" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15184-17535", why = "Legacy model selection and dispatch outcomes must share one registry instance" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1220-1400", why = "Runner-v2 constructs routing, subscriber, and shared health state" },
 ]
 symbols = [
-    "CascadeRouter — model routing with scoring",
-    "CascadeRouter::observe — existing observation API for outcomes",
-    "CascadeRouter::select_model — scoring path to add health degradation factor",
+    "CascadeRouter::set_provider_health",
+    "ProviderHealthRegistry::is_available",
+    "ProviderHealthRegistry::record_success/record_failure",
+    "ProviderOutcomeRecorder trait callback backed by the same registry Arc",
+    "ProviderHealth::is_available — Closed/Open/HalfOpen transition oracle",
 ]
 anti_patterns = [
-    "Do NOT permanently blacklist a provider on a single error — use an EMA or sliding window for health score.",
-    "Do NOT make health degradation override explicit force_backend config — user overrides must still be honored.",
-    "Do NOT couple CascadeRouter directly to rate limit internals — consume a health score or error rate, not raw counters.",
-    "Do NOT degrade health on non-retriable errors (400, auth) — only 429, 529, and timeout errors indicate provider load.",
+    "Do NOT implement an E14-local EMA, score, or circuit breaker beside ProviderHealthRegistry.",
+    "Do NOT use ToolDispatcher outcomes; tool handler execution cannot observe LLM provider 429/529/timeout responses.",
+    "Do NOT introduce a roko-agent -> roko-learn production dependency; use a trait-typed outcome adapter.",
+    "Do NOT approve routing that checks health only in one stage; every automatic selection stage must filter Open providers.",
+    "Do NOT treat HalfOpen as unavailable; the canonical registry permits its probe semantics.",
+    "Do NOT approve fallback routing unless success and retriable failure outcomes update the same registry.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'provider_health\\|health_score\\|health_degradation\\|observe_error\\|ProviderHealth' crates/roko-learn/src/cascade_router.rs"
-fail_msg = "CascadeRouter must track provider health and use it in model selection scoring"
+command = "rg -q 'ProviderHealthRegistry|provider_health' crates/roko-learn/src/cascade_router.rs crates/roko-learn/src/event_subscriber.rs && rg -q 'ProviderOutcomeRecorder|provider_outcome' crates/roko-agent/src/model_call_service.rs && rg -q 'record_success|record_failure' crates/roko-learn/src/event_subscriber.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "canonical E48 routing and real model-call paths must share ProviderHealthRegistry outcome recording"
 
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-learn -p roko-agent 2>&1"
-fail_msg = "roko-learn and roko-agent must compile after health degradation wiring"
+fail_msg = "canonical provider-health routing must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-learn cascade_router 2>&1"
-fail_msg = "CascadeRouter tests must cover health degradation scoring and recovery"
-
-acceptance = [
-    "A provider returning repeated 429/529 errors sees its selection score reduced in CascadeRouter.",
-    "Health scores recover over time (EMA decay or window expiry) so a recovered provider is re-selected.",
-    "force_backend overrides are not affected by health degradation — explicit user routing is honored.",
-    "A test proves that a degraded provider is deprioritized and a healthy alternative is preferred.",
-]
+command = "cargo test -p roko-learn cascade_router 2>&1 && cargo test -p roko-learn provider_health 2>&1 && cargo test -p roko-agent model_call_service 2>&1 && cargo test -p roko-cli provider_health 2>&1"
+fail_msg = "focused tests must cover registry identity, all-stage filtering, fallback, HalfOpen, and real dispatch outcome recording"
 
 # ─────────────────────────────────────────────────────────────────────
 # E14-T11: Register GitHub MCP tools in the builtin tool catalog

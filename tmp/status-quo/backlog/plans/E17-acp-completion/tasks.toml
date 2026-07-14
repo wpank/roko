@@ -3,7 +3,7 @@ plan = "E17-acp-completion"
 total = 8
 done = 0
 status = "ready"
-max_parallel = 2
+max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E17-T01: Reply-channel permission gate (Fa)
@@ -379,7 +379,9 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E01-execution-engine"]
+ownership = "distinct-acp-consumer"
+uses_owner = "SH05-T04; E48-T04"
+depends_on_plan = ["E01-execution-engine", "E48-rate-limit-budgeting"]
 
 [task.context]
 read_files = [
@@ -443,7 +445,9 @@ files = [
 ]
 role = "implementer"
 depends_on = []
-depends_on_plan = ["E14-providers-tools"]
+ownership = "distinct-acp-consumer"
+uses_owner = "E14-T10; E48-T05"
+depends_on_plan = ["E14-providers-tools", "E48-rate-limit-budgeting"]
 
 [task.context]
 read_files = [

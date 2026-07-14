@@ -506,59 +506,58 @@ acceptance = [
 # ---------------------------------------------------------------------------
 [[task]]
 id = "E02-T08"
-title = "Stop feed_tick heartbeats from polluting events.jsonl"
+title = "Acceptance roll-up: E09 ephemeral feed and chain heartbeats"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E09-T04"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 100
-files = [
-    "crates/roko-serve/src/feed_agents/mod.rs",
-    "crates/roko-serve/src/state.rs",
-    "crates/roko-serve/src/lib.rs",
-    "crates/roko-core/src/dashboard_snapshot.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["E09-OBSERVABILITY"]
+acceptance = [
+    "Feed and routine chain heartbeats do not append one durable row per tick to .roko/events.jsonl.",
+    "Stateful orchestration, chain transaction/reorg, gate failure, and other critical events still persist through EventLogWriter.",
+    "StateHub still broadcasts ephemeral feed and chain health to live dashboard consumers.",
+    "Focused tests prove a heartbeat does not grow events.jsonl, the same heartbeat reaches the live projection, and a critical non-heartbeat event remains durable.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-serve/src/feed_agents/mod.rs", lines = "80-96", why = "feed agents publish ServerEvent::FeedTick heartbeats" },
-    { path = "crates/roko-serve/src/state.rs", lines = "836-846", why = "StateHub event log writes to .roko/events.jsonl" },
-    { path = "crates/roko-serve/src/lib.rs", lines = "1596-1612", why = "ServerEvent::FeedTick is converted into DashboardEvent::FeedTick" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1218-1226", why = "DashboardSnapshot treats FeedTick as non-state-changing noise" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "1-220", why = "Canonical E09-T04 persistence boundary: classify ephemeral heartbeats before EventLogWriter append while preserving live broadcast" },
+    { path = "crates/roko-serve/src/state.rs", lines = "820-870", why = "Read-only durable event-log consumer; classification must already be complete in StateHub rather than duplicated here" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1218-1226", why = "FeedTick remains live dashboard health even though it is not durable state" },
+    { path = "crates/roko-chain/src/heartbeat_ext.rs", lines = "1-160", why = "Chain heartbeat source covered by the same canonical ephemeral/durable classification" },
 ]
 symbols = [
-    "ServerEvent::FeedTick",
-    "DashboardEvent::FeedTick",
-    "StateHub::with_event_log",
+    "StateHub event classification and broadcast path",
+    "EventLogWriter durable append boundary",
+    "DashboardEvent::FeedTick live projection",
+    "critical chain/reorg/transaction events",
 ]
 anti_patterns = [
     "Do not drop operational events such as ChainBlock, ChainTx, or gate failures.",
     "Do not keep serializing every heartbeat to .roko/events.jsonl.",
-    "Do not solve this only by increasing retention; the feed_tick writes should be filtered or moved to an ephemeral sink.",
+    "Do not add a second serve-side persistence filter; E09-T04 owns classification at StateHub's canonical durable append boundary.",
+    "Do not suppress live dashboard broadcast merely because a heartbeat is excluded from durable JSONL.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'FeedTick.*(skip|drop|coalesce|ephemeral|non_persistent)|should_persist.*FeedTick|persist.*FeedTick' crates/roko-serve/src/state.rs crates/roko-serve/src/lib.rs crates/roko-serve/src/feed_agents/mod.rs"
-fail_msg = "serve must explicitly filter, coalesce, or route FeedTick away from durable events.jsonl"
+command = "rg -q 'FeedTick|heartbeat' crates/roko-runtime/src/state_hub.rs && rg -q 'persist|durable|ephemeral|should_.*persist' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "canonical StateHub boundary must classify feed/chain heartbeats away from durable events.jsonl"
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-serve -p roko-core 2>&1"
-fail_msg = "feed_tick filtering must compile"
+command = "cargo check -p roko-runtime -p roko-core 2>&1"
+fail_msg = "canonical StateHub persistence and live-broadcast paths must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve feed_tick 2>&1"
-fail_msg = "feed_tick persistence behavior must have a focused test"
-
-acceptance = [
-    "FeedTick no longer appends one durable event row per heartbeat to .roko/events.jsonl.",
-    "Stateful orchestration and chain events still persist to the event log.",
-    "The dashboard can still show live feed health through an ephemeral or coalesced path.",
-    "A test proves FeedTick does not grow events.jsonl while another non-heartbeat event still does.",
-]
+command = "cargo test -p roko-runtime state_hub 2>&1"
+fail_msg = "StateHub tests must prove ephemeral heartbeat, live broadcast, and durable critical-event behavior"
 
 # ---------------------------------------------------------------------------
 # E02-T09: Runtime-events route contract

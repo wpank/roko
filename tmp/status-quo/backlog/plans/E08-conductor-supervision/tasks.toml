@@ -456,78 +456,80 @@ fail_msg = "conductor routing-bias smoke tests must pass"
 
 [[task]]
 id = "E08-T08"
-title = "Add DiskSpaceWatcher to conductor watchers"
+title = "Acceptance roll-up: E47 runtime disk-pressure watcher"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E47-T08"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160
-files = [
-    "crates/roko-conductor/src/watchers/disk_space.rs",
-    "crates/roko-conductor/src/watchers/mod.rs",
-    "crates/roko-conductor/src/conductor.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E08-T03"]
+depends_on_plan = ["E47-resource-disk-management"]
 acceptance = [
-    "A DiskSpaceWatcher implements the Watcher trait and inspects the Engram stream for disk-space metric signals.",
-    "When disk space drops below a configurable threshold (default 1 GB), the watcher emits a Critical severity WatcherOutput.",
-    "The conductor from_config path honors [conductor.watchers.disk_space] with threshold_mb and check_interval_secs fields.",
-    "A unit test proves a stream containing a below-threshold disk metric signal drives evaluate() to a non-Continue decision.",
+    "DiskPressureWatcher implements roko_core::React and consumes Metric Engrams tagged name=disk_free_mb without performing disk I/O itself.",
+    "Thresholds come from canonical [resources] ResourcesConfig: below warn_disk_mb emits warning, below min_free_disk_mb emits critical/pause, and below half the minimum emits emergency/abort.",
+    "The conductor registration/from_config path constructs the watcher from ResourcesConfig; no parallel [conductor.watchers.disk_space] schema is introduced.",
+    "Focused tests prove healthy, warning, critical, emergency, and recovery behavior through React::decide and intervention Engrams.",
 ]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-conductor/src/watchers/ghost_turn.rs", lines = "1-80", why = "Reference watcher implementation: Watcher trait shape, WatcherOutput construction, severity levels" },
-    { path = "crates/roko-conductor/src/watchers/mod.rs", lines = "1-40", why = "Watcher module re-exports; add DiskSpaceWatcher here" },
-    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-145", why = "default_watchers and from_config watcher construction — register DiskSpaceWatcher in both paths" },
-    { path = "crates/roko-core/src/config/schema.rs", lines = "1-80", why = "ConductorConfig and watcher config structs; add DiskSpaceWatcherConfig" },
+    { path = "crates/roko-conductor/src/watchers/cost_overrun.rs", lines = "1-100", why = "Canonical React/Metric/intervention pattern used by E47 DiskPressureWatcher" },
+    { path = "crates/roko-conductor/src/watchers/disk_pressure.rs", lines = "1-180", why = "Canonical E47 watcher implementation under review" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-170", why = "Watcher registration/from_config path consuming ResourcesConfig" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "140-225", why = "Canonical ResourcesConfig disk thresholds; no second conductor watcher schema" },
 ]
 symbols = [
-    "Watcher trait — watchers/mod.rs (fn name, fn evaluate(&[Engram]) -> Vec<WatcherOutput>)",
-    "WatcherOutput { watcher, severity, message, tags } — roko-conductor interventions.rs",
-    "Severity::{Critical, Warning, Info}",
-    "ConductorConfig.watchers — config schema for per-watcher settings",
+    "DiskPressureWatcher",
+    "React::decide(&[Engram], &ReactContext) -> Vec<Engram>",
+    "Metric Engram tag name=disk_free_mb",
+    "ResourcesConfig::{warn_disk_mb,min_free_disk_mb}",
+    "intervention recommendation tags warning/pause/abort",
 ]
 anti_patterns = [
-    "Do NOT perform actual disk space queries inside the watcher; it reads Engram signals only. The disk-space metric signal must be emitted by the adapter (E08-T01) or a separate metric publisher.",
-    "Do NOT make the watcher mandatory; it must be opt-in via config or included in default_watchers with a safe default threshold.",
-    "Do NOT emit Critical on every tick; debounce by only alerting on state transitions (healthy->critical).",
-    "Do NOT hardcode the threshold; accept it from [conductor.watchers.disk_space.threshold_mb] config.",
+    "Do NOT use the nonexistent Watcher/WatcherOutput/evaluate API; the canonical conductor contract is React returning intervention Engrams.",
+    "Do NOT perform disk I/O inside the watcher; it consumes disk_free_mb Metric signals emitted by the monitor/adapter path.",
+    "Do NOT introduce [conductor.watchers.disk_space]; consume [resources] thresholds owned by E47-T01.",
+    "Do NOT hardcode thresholds or emit repeated critical interventions without transition/recovery handling.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "test -f crates/roko-conductor/src/watchers/disk_space.rs"
-fail_msg = "disk_space.rs watcher module must exist"
+command = "test -f crates/roko-conductor/src/watchers/disk_pressure.rs"
+fail_msg = "canonical E47 disk_pressure.rs watcher module must exist"
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'DiskSpaceWatcher' crates/roko-conductor/src/watchers/mod.rs crates/roko-conductor/src/conductor.rs"
-fail_msg = "DiskSpaceWatcher must be registered in the watcher module and conductor"
+command = "rg -q 'DiskPressureWatcher' crates/roko-conductor/src/watchers/mod.rs crates/roko-conductor/src/conductor.rs"
+fail_msg = "canonical E47 DiskPressureWatcher must be registered"
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-conductor 2>&1"
-fail_msg = "roko-conductor must compile with the new DiskSpaceWatcher"
+command = "cargo check -p roko-conductor -p roko-core 2>&1"
+fail_msg = "canonical React watcher and ResourcesConfig integration must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-conductor disk_space 2>&1"
-fail_msg = "DiskSpaceWatcher unit tests must pass"
+command = "cargo test -p roko-conductor disk_pressure 2>&1"
+fail_msg = "canonical E47 DiskPressureWatcher tests must pass"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # E08-T09: Worktree-count watcher for conductor
 # ═══════════════════════════════════════════════════════════════════════════════
 # Add a WorktreeCountWatcher that alerts when too many git worktrees are live.
-# Each concurrent plan creates a worktree (E01-T07), and orphaned worktrees
-# from crashed runs accumulate. The watcher reads worktree-count metric
-# signals from the Engram stream and fires a Warning when the count exceeds a
-# configurable budget (default from WorktreeConfig.max_live_worktrees).
+# E47-T09 is the sole producer of tagged `worktree_count` Metric Engrams from
+# WorktreeManager::active_count on both runner paths. This task is only the
+# React consumer: it reads that stream and emits a warning intervention when
+# the latest count exceeds its configurable threshold.
 
 [[task]]
 id = "E08-T09"
 title = "Add WorktreeCountWatcher to conductor watchers"
 status = "ready"
+ownership = "distinct-consumer"
+uses_owner = "E47-T09"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 140
@@ -535,34 +537,40 @@ files = [
     "crates/roko-conductor/src/watchers/worktree_count.rs",
     "crates/roko-conductor/src/watchers/mod.rs",
     "crates/roko-conductor/src/conductor.rs",
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-core/src/config/mod.rs",
 ]
 role = "implementer"
 depends_on = ["E08-T03"]
+depends_on_plan = ["E47-resource-disk-management"]
 acceptance = [
-    "A WorktreeCountWatcher implements the Watcher trait and inspects the Engram stream for worktree-count metric signals.",
-    "When live worktree count exceeds a configurable max (default 8), the watcher emits a Warning severity WatcherOutput.",
-    "The conductor from_config path honors [conductor.watchers.worktree_count] with max_live field.",
-    "A unit test proves a stream reporting 10 worktrees drives a non-Continue or Warning-level output.",
+    "WorktreeCountWatcher implements React::decide and reads the latest Kind::Metric Engram tagged name=worktree_count and value=<active count>.",
+    "When the live count exceeds the configured maximum, decide emits a conductor.intervention Engram tagged severity=warning, watcher=worktree-count, count, and max_live; otherwise it returns no Engrams.",
+    "Conductor::from_config registers the watcher and honors [conductor.watchers.worktree_count].max_live through WatcherThresholds; absent configuration uses the documented default of 8.",
+    "Unit tests prove a metric value of 10 with max_live=8 emits exactly one warning intervention and a value at or below 8 emits none.",
 ]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-conductor/src/watchers/ghost_turn.rs", lines = "1-80", why = "Reference watcher implementation pattern to follow" },
-    { path = "crates/roko-conductor/src/watchers/mod.rs", lines = "1-40", why = "Watcher module re-exports; add WorktreeCountWatcher here" },
-    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-145", why = "default_watchers and from_config; register WorktreeCountWatcher" },
-    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "36-60", why = "WorktreeConfig.max_live_worktrees — the budget default to mirror" },
+    { path = "crates/roko-conductor/src/watchers/cost_overrun.rs", lines = "1-110", why = "Live React pattern for consuming tagged Metric Engrams and emitting warning intervention Engrams" },
+    { path = "crates/roko-conductor/src/watchers/mod.rs", lines = "1-40", why = "React watcher module re-exports; add WorktreeCountWatcher here" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-210", why = "default_watchers and configured_watchers; register WorktreeCountWatcher in both paths" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1250-1420", why = "ConductorConfig and WatcherThresholds; add WorktreeCountConfig with max_live default 8" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "7100-7185", why = "E47-T09 canonical tagged Metric emission into the conductor ring" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", why = "E47-T09 runner-v2 worktree_count Metric producer" },
 ]
 symbols = [
-    "Watcher trait — watchers/mod.rs",
-    "WatcherOutput { watcher, severity, message, tags }",
-    "WorktreeConfig.max_live_worktrees — roko-orchestrator/worktree.rs:51",
-    "ConductorConfig.watchers — config schema for per-watcher settings",
+    "React::decide(&[Engram], &Context) -> Vec<Engram>",
+    "Kind::Metric tags name=worktree_count and value=<usize> — canonical E47-T09 input",
+    "Kind::Custom(conductor.intervention) — warning output Engram",
+    "WatcherThresholds.worktree_count / WorktreeCountConfig.max_live — configurable threshold with default 8",
 ]
 anti_patterns = [
-    "Do NOT query git worktrees directly from the watcher; it reads Engram signals only. The worktree count must be emitted as a metric signal by the runner or adapter.",
-    "Do NOT use a hardcoded max; read from [conductor.watchers.worktree_count.max_live] config.",
-    "Do NOT make the watcher Critical by default; worktree count exceeding the budget is a Warning, not a run-aborting event.",
-    "Do NOT add roko-orchestrator as a dependency of roko-conductor; mirror the default value inline.",
+    "Do NOT query git or WorktreeManager from the watcher; E47-T09 alone emits the count and this React stays pure.",
+    "Do NOT interpret disk_budget_remaining as a worktree count; consume only name=worktree_count metrics.",
+    "Do NOT introduce a Watcher trait, WatcherOutput, or evaluate API; the live interface is React::decide returning intervention Engrams.",
+    "Do NOT hardcode the runtime threshold in decide; use WorktreeCountConfig.max_live, whose missing-config default is 8.",
+    "Do NOT emit Critical/abort by default; count pressure is a severity=warning intervention.",
 ]
 
 [[task.verify]]
@@ -576,9 +584,19 @@ command = "rg -q 'WorktreeCountWatcher' crates/roko-conductor/src/watchers/mod.r
 fail_msg = "WorktreeCountWatcher must be registered in the watcher module and conductor"
 
 [[task.verify]]
+phase = "structural"
+command = "rg -q 'impl React for WorktreeCountWatcher' crates/roko-conductor/src/watchers/worktree_count.rs && rg -q 'worktree_count|WORKTREE_COUNT_METRIC' crates/roko-conductor/src/watchers/worktree_count.rs && rg -q 'conductor.intervention' crates/roko-conductor/src/watchers/worktree_count.rs"
+fail_msg = "WorktreeCountWatcher must consume the exact Metric and emit intervention Engrams through React::decide"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'WorktreeCountConfig|worktree_count' crates/roko-core/src/config/schema.rs crates/roko-core/src/config/mod.rs crates/roko-conductor/src/conductor.rs"
+fail_msg = "watcher threshold config and Conductor::from_config registration must be present"
+
+[[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-conductor 2>&1"
-fail_msg = "roko-conductor must compile with the new WorktreeCountWatcher"
+command = "cargo check -p roko-core -p roko-conductor 2>&1"
+fail_msg = "roko-core config and roko-conductor must compile with WorktreeCountWatcher"
 
 [[task.verify]]
 phase = "test"

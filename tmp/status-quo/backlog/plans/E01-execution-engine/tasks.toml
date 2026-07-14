@@ -368,43 +368,48 @@ acceptance = [
 # generated branch instead of validating a shared dirty tree.
 [[task]]
 id = "E01-T07"
-title = "Wire per-plan worktree isolation into the runner"
+title = "Acceptance roll-up: SH02 task isolation plus E01 plan aggregation"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH02-T02 + E01-T14"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 160
-files = [
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-cli/src/runner/merge.rs",
-    "crates/roko-orchestrator/src/worktree.rs",
+files = []
+role = "quick-reviewer"
+depends_on = ["E01-T04", "E01-T05", "E01-T14"]
+depends_on_plan = ["SH02-isolation-recovery"]
+acceptance = [
+    "Each task attempt executes in a task-owned worktree and gates exactly its immutable base plus owned diff, so sibling edits cannot contaminate verification.",
+    "Accepted task commits aggregate onto the deterministic E01-T14 roko/plan/<plan_id> branch; the plan branch is not used as a shared task worktree.",
+    "MergeBranch merges the completed aggregation branch through GitMergeBackend and still runs the regression gate.",
+    "Parallel tasks and plans do not observe each other's uncommitted edits, and every merged diff is attributable to one accepted attempt.",
 ]
-role = "implementer"
-depends_on = ["E01-T04", "E01-T05"]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "216-340", why = "WorktreeManager create/ensure APIs and canonical branch naming" },
-    { path = "crates/roko-cli/src/runner/merge.rs", lines = "140-210", why = "GitMergeBackend currently accepts in-place mode when the branch is absent" },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4240-4395", why = "agent dispatch setup; pass the isolated worktree path to each spawned agent" },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4950-4975", why = "MergeBranch action builds the branch name and merger config" },
+    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "216-380", why = "SH02 task-attempt worktree ownership plus E01-T14 canonical plan aggregation branch naming" },
+    { path = "crates/roko-cli/src/runner/merge.rs", lines = "140-240", why = "SH02 immutable task diff integration and plan aggregation merge path" },
+    { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "1-180", why = "SH02 gate base-plus-owned-diff isolation contract" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4240-4975", why = "Task workdir dispatch and later E01-T14 aggregation branch merge orchestration" },
 ]
 symbols = [
-    "WorktreeManager::ensure_for_plan",
-    "WorktreeManager::create_for_plan",
+    "Task-attempt WorktreeManager ownership — SH02-T02",
+    "format_branch_name and plan aggregation branch — E01-T14",
     "MergeRequest::new",
     "GitMergeBackend",
 ]
 anti_patterns = [
-    "Do not let two concurrent plans edit the same checkout.",
-    "Do not keep in-place merge fallback for isolated runner-v2 execution.",
-    "Do not create worktrees before the DAG/task cap can prevent runaway parallel branches.",
+    "Do not replace SH02 task-attempt isolation with the former per-plan shared worktree model.",
+    "Do not confuse the E01-T14 plan aggregation branch with a task worktree; the aggregation branch receives only accepted task commits.",
+    "Do not keep an in-place merge fallback that can validate a shared dirty tree.",
     "Do not merge without running the existing post-merge regression gate.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'WorktreeManager|ensure_for_plan|create_for_plan' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/merge.rs"
-fail_msg = "runner must call WorktreeManager for isolated plan execution"
+command = "rg -q 'WorktreeManager|task.*worktree|attempt.*worktree' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/merge.rs && rg -q 'owned.*diff|immutable|baseline' crates/roko-cli/src/runner/gate_dispatch.rs crates/roko-cli/src/runner/merge.rs"
+fail_msg = "SH02 task-owned worktrees and immutable gate inputs must be integrated"
 
 [[task.verify]]
 phase = "structural"
@@ -412,21 +417,19 @@ command = "! grep -n 'in-place runner mode' crates/roko-cli/src/runner/merge.rs"
 fail_msg = "merge backend must no longer pass absent-branch in-place mode as success"
 
 [[task.verify]]
+phase = "structural"
+command = "rg -q 'format_branch_name|roko/plan/' crates/roko-cli/src/runner/event_loop.rs && rg -q 'MergeBranch|GitMergeBackend' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/merge.rs"
+fail_msg = "E01-T14 plan aggregation branch creation and merge-back must be integrated"
+
+[[task.verify]]
 phase = "test"
-command = "cargo test -p roko-orchestrator worktree 2>&1"
-fail_msg = "worktree manager tests must pass"
+command = "cargo test -p roko-orchestrator worktree 2>&1 && cargo test -p roko-cli runner::merge 2>&1 && cargo test -p roko-cli runner::gate_dispatch 2>&1"
+fail_msg = "task isolation, immutable gate, and merge tests must pass"
 
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-cli -p roko-orchestrator 2>&1"
 fail_msg = "runner and worktree crates must compile together"
-
-acceptance = [
-    "Each concurrently executing plan gets a deterministic worktree and branch.",
-    "Agent dispatch uses the worktree path as the task workdir instead of the shared root checkout.",
-    "MergeBranch merges the plan branch back through GitMergeBackend and still runs the regression gate.",
-    "Parallel plans do not observe each other's uncommitted edits.",
-]
 
 # -----------------------------------------------------------------------------
 # E01-T08: Enrich live gate dispatch
@@ -616,18 +619,23 @@ acceptance = [
 # when the running total exceeds the ceiling.
 [[task]]
 id = "E01-T11"
-title = "Enforce cost budget from config before plan execution starts"
+title = "Acceptance roll-up: SH05 resumable cost-budget enforcement"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH05-T04"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 120
-files = [
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-cli/src/runner/types.rs",
-    "crates/roko-core/src/config/budget.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E01-T01"]
+depends_on_plan = ["SH05-config-dispatch"]
+acceptance = [
+    "A configured cost_budget_usd = 0.0 aborts plan execution with a clear error before any agent spawns.",
+    "During execution, accumulated cost from efficiency events is checked before each agent dispatch.",
+    "When accumulated cost exceeds the budget, the runner halts with a budget-exceeded error and saves state for resume.",
+    "No budget configured (None) means unlimited — no enforcement overhead.",
+]
 
 [task.context]
 read_files = [
@@ -663,13 +671,6 @@ phase = "test"
 command = "cargo test -p roko-cli budget 2>&1"
 fail_msg = "a test must assert that a zero or exhausted budget prevents agent dispatch"
 
-acceptance = [
-    "A configured cost_budget_usd = 0.0 aborts plan execution with a clear error before any agent spawns.",
-    "During execution, accumulated cost from efficiency events is checked before each agent dispatch.",
-    "When accumulated cost exceeds the budget, the runner halts with a budget-exceeded error and saves state for resume.",
-    "No budget configured (None) means unlimited — no enforcement overhead.",
-]
-
 # -----------------------------------------------------------------------------
 # E01-T12: Add retry-with-backoff wrapper for agent dispatch failures (429/529)
 # -----------------------------------------------------------------------------
@@ -679,17 +680,24 @@ acceptance = [
 # status codes and re-dispatches with jitter before marking a task as failed.
 [[task]]
 id = "E01-T12"
-title = "Add retry-with-backoff wrapper for agent dispatch failures (429/529)"
+title = "Acceptance roll-up: SH05 symmetric transient-dispatch retry"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH05-T02"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 130
-files = [
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-agent/src/dispatcher/mod.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E01-T01"]
+depends_on_plan = ["SH05-config-dispatch"]
+acceptance = [
+    "A 429 or 529 response from agent dispatch triggers exponential backoff retry (base 1s, max 60s, jitter).",
+    "Retries are capped at 5 by default, configurable via runner.dispatch_max_retries in roko.toml.",
+    "Non-retriable errors (400, 401, 403) immediately fail the task without retry.",
+    "Each retry attempt is logged with the status code, attempt number, and backoff duration.",
+    "The event loop is not blocked during backoff — async sleep yields control.",
+]
 
 [task.context]
 read_files = [
@@ -730,14 +738,6 @@ phase = "test"
 command = "cargo test -p roko-cli retry_backoff 2>&1"
 fail_msg = "a test must assert that a 429 error triggers retry with backoff and a 400 does not"
 
-acceptance = [
-    "A 429 or 529 response from agent dispatch triggers exponential backoff retry (base 1s, max 60s, jitter).",
-    "Retries are capped at 5 by default, configurable via runner.dispatch_max_retries in roko.toml.",
-    "Non-retriable errors (400, 401, 403) immediately fail the task without retry.",
-    "Each retry attempt is logged with the status code, attempt number, and backoff duration.",
-    "The event loop is not blocked during backoff — async sleep yields control.",
-]
-
 # -----------------------------------------------------------------------------
 # E01-T13: Wire roko-mcp-github as a default MCP server for plan execution
 # -----------------------------------------------------------------------------
@@ -748,18 +748,23 @@ acceptance = [
 # without manual .mcp.json configuration.
 [[task]]
 id = "E01-T13"
-title = "Wire roko-mcp-github as a default MCP server for plan execution"
+title = "Acceptance roll-up: E15 GitHub MCP discovery and runner config"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E15-T7"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
-files = [
-    "crates/roko-cli/src/orchestrate.rs",
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-mcp-github/src/main.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E01-T01"]
+depends_on_plan = ["E15-mcp-config"]
+acceptance = [
+    "roko-mcp-github is auto-included in the MCP config passed to plan-executing agents when the binary is discoverable.",
+    "User-configured MCP servers are not overridden; the default is additive.",
+    "If the roko-mcp-github binary is absent, the runner proceeds without it and logs a debug-level note.",
+    "GITHUB_TOKEN from the environment or per-server env config is passed through to the MCP server process.",
+]
 
 [task.context]
 read_files = [
@@ -796,13 +801,6 @@ phase = "test"
 command = "cargo test -p roko-cli -- mcp_github_default 2>&1"
 fail_msg = "a test must verify roko-mcp-github is included in the default MCP config when the binary exists"
 
-acceptance = [
-    "roko-mcp-github is auto-included in the MCP config passed to plan-executing agents when the binary is discoverable.",
-    "User-configured MCP servers are not overridden; the default is additive.",
-    "If the roko-mcp-github binary is absent, the runner proceeds without it and logs a debug-level note.",
-    "GITHUB_TOKEN from the environment or per-server env config is passed through to the MCP server process.",
-]
-
 # -----------------------------------------------------------------------------
 # E01-T14: Auto-create branches per plan run using worktree branch naming
 # -----------------------------------------------------------------------------
@@ -815,6 +813,7 @@ acceptance = [
 [[task]]
 id = "E01-T14"
 title = "Auto-create git branches per plan run using worktree.rs branch naming"
+ownership = "canonical-owner"
 status = "ready"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
@@ -825,6 +824,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["E01-T04"]
+depends_on_plan = ["SH02-isolation-recovery"]
 
 [task.context]
 read_files = [
@@ -837,7 +837,7 @@ symbols = [
     "WorktreeManager::create_for_plan — worktree.rs:316",
 ]
 anti_patterns = [
-    "Do NOT create a worktree here; this task is branch-only. E01-T07 owns worktree isolation.",
+    "Do NOT create task worktrees here; SH02-T02 owns task-attempt isolation. This task owns only the plan aggregation branch lifecycle.",
     "Do NOT fail the plan run if branch creation fails (e.g., branch already exists from a previous run); log a warning and proceed.",
     "Do NOT invent a new branch naming convention; reuse format_branch_name from worktree.rs.",
     "Do NOT create branches when --dry-run or --engine graph is active.",
@@ -874,18 +874,24 @@ acceptance = [
 # check avoids partial runs that fail mid-execution and leave orphaned state.
 [[task]]
 id = "E01-T15"
-title = "Add pre-run disk space check (refuse to start if <2GB free)"
+title = "Acceptance roll-up: E47 configurable pre-run disk refusal"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E47-T04"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
-files = [
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-cli/src/commands/plan.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E01-T01"]
+depends_on_plan = ["E47-resource-disk-management"]
 domain = "execution-engine"
+acceptance = [
+    "roko plan run refuses to start with a clear error when available disk space is below 2 GB (or configured threshold).",
+    "The threshold is configurable via RunConfig or roko.toml runner section.",
+    "The check runs before agent spawn, not after partial execution.",
+    "On platforms where disk space cannot be queried, a warning is logged and execution proceeds.",
+]
 
 [task.context]
 read_files = [
@@ -915,13 +921,6 @@ phase = "compile"
 command = "cargo check -p roko-cli 2>&1"
 fail_msg = "roko-cli must compile after adding disk space check"
 
-acceptance = [
-    "roko plan run refuses to start with a clear error when available disk space is below 2 GB (or configured threshold).",
-    "The threshold is configurable via RunConfig or roko.toml runner section.",
-    "The check runs before agent spawn, not after partial execution.",
-    "On platforms where disk space cannot be queried, a warning is logged and execution proceeds.",
-]
-
 # -----------------------------------------------------------------------------
 # E01-T16: Auto-trigger GC at plan start
 # -----------------------------------------------------------------------------
@@ -932,18 +931,24 @@ acceptance = [
 # self-hosting sessions.
 [[task]]
 id = "E01-T16"
-title = "Auto-trigger GcEngine at plan start"
+title = "Acceptance roll-up: E47 policy-driven plan lifecycle GC"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E47-T03"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
-files = [
-    "crates/roko-cli/src/runner/event_loop.rs",
-    "crates/roko-cli/src/commands/plan.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["E01-T01"]
+depends_on_plan = ["E47-resource-disk-management"]
 domain = "execution-engine"
+acceptance = [
+    "Plan start calls GcEngine::should_auto_gc and, if true, runs GcEngine::collect with default or configured policy.",
+    "GC results are logged (items removed, bytes freed) at info level.",
+    "GC failure does not prevent plan execution — errors are logged and swallowed.",
+    "The GC trigger respects the existing RetentionPolicy from config or defaults.",
+]
 
 [task.context]
 read_files = [
@@ -974,10 +979,3 @@ fail_msg = "runner must call GcEngine at plan start"
 phase = "compile"
 command = "cargo check -p roko-cli 2>&1"
 fail_msg = "roko-cli must compile after adding auto-GC trigger"
-
-acceptance = [
-    "Plan start calls GcEngine::should_auto_gc and, if true, runs GcEngine::collect with default or configured policy.",
-    "GC results are logged (items removed, bytes freed) at info level.",
-    "GC failure does not prevent plan execution — errors are logged and swallowed.",
-    "The GC trigger respects the existing RetentionPolicy from config or defaults.",
-]

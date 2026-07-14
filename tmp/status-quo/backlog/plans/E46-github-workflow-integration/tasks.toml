@@ -332,6 +332,8 @@ acceptance = [
 [[task]]
 id = "E46-T06"
 title = "Wire GitHubOps into RunContext and event loop"
+ownership = "distinct-github-extension"
+uses_owner = "E01-T14; SH02-T02"
 description = """Modify crates/roko-cli/src/runner/event_loop.rs:
 1. Add `github_ops: Arc<dyn GitHubOps>` to RunContext.
 2. In run() function, construct LiveGitHubOps from config if github.owner+repo
@@ -469,7 +471,7 @@ tier = "focused"
 max_loc = 50
 files = ["crates/roko-cli/src/runner/event_loop.rs"]
 role = "implementer"
-depends_on = ["E46-T06"]
+depends_on = ["E46-T06", "E46-T07"]
 domain = "runner"
 
 [task.context]
@@ -527,7 +529,7 @@ tier = "focused"
 max_loc = 45
 files = ["crates/roko-cli/src/runner/event_loop.rs"]
 role = "implementer"
-depends_on = ["E46-T06"]
+depends_on = ["E46-T06", "E46-T08"]
 domain = "runner"
 
 [task.context]
@@ -704,7 +706,7 @@ tier = "integrative"
 max_loc = 60
 files = ["crates/roko-cli/src/runner/event_loop.rs"]
 role = "implementer"
-depends_on = ["E46-T06", "E46-T07", "E46-T08"]
+depends_on = ["E46-T06", "E46-T07", "E46-T08", "E46-T09"]
 domain = "testing"
 
 [task.context]

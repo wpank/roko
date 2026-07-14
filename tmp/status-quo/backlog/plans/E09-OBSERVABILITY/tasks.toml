@@ -174,6 +174,7 @@ acceptance = ["With `roko serve` running, launching a plan and then `curl -s loc
 [[task]]
 id = "E09-T04"
 title = "Stop persisting feed_tick and chain_block to events.jsonl"
+ownership = "canonical-owner"
 status = "ready"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
@@ -509,29 +510,38 @@ acceptance = [
 #
 [[task]]
 id = "E09-T10"
-title = "Add log rotation for episodes.jsonl and signals.jsonl (>100MB)"
+title = "Acceptance roll-up: E47 configurable JSONL rotation"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E47-T07"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 100
-files = [
-    "crates/roko-fs/src/layout.rs",
-    "crates/roko-fs/src/file_substrate.rs",
-]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["E47-resource-disk-management"]
+acceptance = [
+    "When episodes.jsonl, signals.jsonl, or efficiency.jsonl exceeds ResourcesConfig.log_rotation_max_mb, it is atomically archived as a complete timestamped .jsonl generation and a fresh live file is created.",
+    "The threshold has one canonical configurable default of 100 MB.",
+    "Rotation is serialized with append and happens only at JSONL line boundaries, never splitting or losing a record.",
+    "RokoLayout readers and the GC engine discover timestamped JSONL generations while treating the unsuffixed file as the live writer target.",
+]
 
 [task.context]
 read_files = [
     { path = "crates/roko-fs/src/layout.rs", lines = "225-260", why = "RokoLayout::episodes_log and signals_log — canonical paths for both files" },
-    { path = "crates/roko-fs/src/file_substrate.rs", lines = "1-80", why = "FileSubstrate open/log-writer implementation in the current module; use its serialized append path as the rotation integration pattern" },
-    { path = "crates/roko-fs/src/gc.rs", lines = "30-55", why = "RetentionPolicy pattern — mirror the configurable threshold approach" },
+    { path = "crates/roko-fs/src/log_rotation.rs", lines = "1-220", why = "Canonical E47 rotation implementation and timestamped JSONL archive contract" },
+    { path = "crates/roko-fs/src/file_substrate.rs", lines = "1-100", why = "Serialized append boundary prevents split or lost JSONL records" },
+    { path = "crates/roko-fs/src/gc.rs", lines = "220-285", why = "Readers and GC must discover timestamped prior generations" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "140-225", why = "ResourcesConfig.log_rotation_max_mb is the sole configurable threshold with 100 MB default" },
 ]
 symbols = [
     "RokoLayout::episodes_log — roko-fs/layout.rs",
     "RokoLayout::signals_log — roko-fs/layout.rs",
     "FileSubstrate — roko-fs/file_substrate.rs (append-only JSONL writer)",
-    "RetentionPolicy — roko-fs/gc.rs (configurable threshold pattern to follow)",
+    "ResourcesConfig::log_rotation_max_mb — sole threshold, default 100 MB",
+    "GcEngine archive discovery — timestamped .jsonl generations",
 ]
 anti_patterns = [
     "Do NOT truncate mid-line; rotation must happen at JSONL line boundaries.",
@@ -539,17 +549,24 @@ anti_patterns = [
     "Do NOT make rotation blocking on the hot path; check file size periodically (e.g., every N appends), not on every write.",
     "Do NOT change the canonical file paths in RokoLayout; rotated files get a timestamp suffix.",
     "Do NOT break existing readers of episodes.jsonl or signals.jsonl; the current-name file always exists after rotation (empty or with new data).",
+    "Do NOT preserve the rejected 50 MB default or define an observability-local threshold; use ResourcesConfig's single 100 MB default.",
+    "Do NOT approve rotation if timestamped JSONL archives are invisible to readers and GC.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "rg -q 'rotate|ROTATION_THRESHOLD|MAX_LOG_SIZE|log_rotation' crates/roko-fs/src/layout.rs crates/roko-fs/src/file_substrate.rs"
-fail_msg = "roko-fs must contain log rotation logic for JSONL files"
+command = "rg -q 'rotate|log_rotation' crates/roko-fs/src/log_rotation.rs crates/roko-fs/src/layout.rs crates/roko-fs/src/file_substrate.rs && rg -q 'log_rotation_max_mb' crates/roko-core/src/config/schema.rs"
+fail_msg = "canonical E47 rotation must use serialized JSONL paths and the ResourcesConfig threshold"
 
 [[task.verify]]
 phase = "structural"
 command = "rg -q 'episodes.jsonl|signals.jsonl' crates/roko-fs/src/layout.rs crates/roko-fs/src/file_substrate.rs"
 fail_msg = "rotation must target episodes.jsonl and signals.jsonl"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'jsonl|archive|rotat' crates/roko-fs/src/layout.rs crates/roko-fs/src/gc.rs"
+fail_msg = "RokoLayout readers and GC must discover timestamped JSONL archives"
 
 [[task.verify]]
 phase = "compile"
@@ -560,14 +577,6 @@ fail_msg = "roko-fs must compile after adding log rotation"
 phase = "test"
 command = "cargo test -p roko-fs rotation 2>&1"
 fail_msg = "log rotation tests must pass"
-
-acceptance = [
-    "When episodes.jsonl or signals.jsonl exceeds 100 MB, the file is renamed to <name>.<timestamp>.jsonl and a fresh file is created.",
-    "The threshold is configurable (default 100 MB).",
-    "Rotation happens at JSONL line boundaries, never mid-record.",
-    "Existing readers and the GC engine can discover rotated files via the timestamp suffix pattern.",
-]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E09-T11: Track target/ directory size in metrics
@@ -583,6 +592,8 @@ acceptance = [
 id = "E09-T11"
 title = "Add target/ directory size tracking to MetricRegistry"
 status = "ready"
+ownership = "distinct-consumer"
+uses_owner = "E47-T05"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -592,6 +603,7 @@ files = [
 ]
 role = "implementer"
 depends_on = ["E09-T01"]
+depends_on_plan = ["E47-resource-disk-management"]
 
 [task.context]
 read_files = [

@@ -228,3 +228,12 @@ Authored in the same schema when scheduled; key parameters:
 - **E09-T07** (small, `roko-fs` layout + StateHub): size-cap/GC `events.jsonl` or split `run-events.jsonl`. Verify: file size tracks run volume, not uptime.
 - **E09-T08** (medium, runner-v2 tool loop): attach `FsObservabilitySinks` or delete the dir bootstrap. Verify: after `roko run "…"`, `ls .roko/traces/$(date +%F)/` is non-empty (or dirs no longer created).
 - **E09-T09** (design, longer-horizon): Lens-pipeline design doc reconciling `MetricRegistry` with `docs/v2-depth/09-telemetry`; deliverable is trait sketch + migration plan, no runtime code. `grep '\bLens\b' crates/` is the 0% baseline.
+
+## CTRL-08 ownership reconciliation
+
+E09 owns metrics, event persistence policy, and observability exports. T10 is an
+acceptance roll-up for E47-T07 JSONL rotation: the sole threshold is
+`ResourcesConfig.log_rotation_max_mb` (default 100 MB), appends are serialized, and
+readers/GC discover complete timestamped JSONL generations. T11 remains a distinct Prometheus
+consumer, but must use the E47-T05 target scanner rather than add another filesystem
+walk. See [`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

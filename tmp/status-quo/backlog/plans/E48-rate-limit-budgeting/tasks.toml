@@ -124,6 +124,7 @@ fail_msg = "model_call_service.rs must reference RetryPolicy for dispatch retrie
 [[task]]
 id = "E48-T02"
 title = "Add per-provider RPM and TPM limits to ProviderRateLimiter"
+ownership = "canonical-owner"
 description = """
 The existing ProviderRateLimiter in rate_limit.rs uses governor with a
 single default_rpm quota for all provider keys. Real providers have very
@@ -150,6 +151,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
     "crates/roko-agent/src/rate_limit.rs",
+    "crates/roko-core/src/config/provider.rs",
     "crates/roko-core/src/config/schema.rs",
 ]
 role = "implementer"
@@ -159,7 +161,8 @@ domain = "rate-limiting"
 [task.context]
 read_files = [
     { path = "crates/roko-agent/src/rate_limit.rs", why = "Existing ProviderRateLimiter — governor-based keyed RPM limiter" },
-    { path = "crates/roko-core/src/config/schema.rs", lines = "1-60", why = "Config schema — ProviderConfig struct for adding rpm/tpm fields" },
+    { path = "crates/roko-core/src/config/provider.rs", lines = "255-325", why = "Live ProviderConfig type for [providers.<name>]; add RPM/TPM beside max_concurrent" },
+    { path = "crates/roko-core/src/config/schema.rs", why = "RokoConfig owns the provider map and config round-trip tests" },
 ]
 symbols = [
     "ProviderRateLimiter — governor keyed rate limiter, currently uniform RPM",
@@ -191,23 +194,23 @@ fail_msg = "rate_limit.rs must define per-provider token limits"
 # ─────────────────────────────────────────────────────────────────────────────
 # When multiple agents run in parallel (max_parallel > 1), they share API keys
 # but each has its own rate limiter. Create a shared Arc<ProviderRateLimiter>
-# that the orchestrator passes to all agents in a plan.
+# that each runtime passes to every model call on both runner entry paths.
 [[task]]
 id = "E48-T03"
 title = "Pool ProviderRateLimiter across parallel agents in orchestrator"
 description = """
-The orchestrator in orchestrate.rs dispatches agents via dispatch_agent_with().
-Each agent currently constructs its own provider adapter with no shared
-rate limit state. When max_parallel=4 agents share the same Anthropic key,
-they can collectively exceed the provider RPM within a single minute window.
+Legacy dispatch in orchestrate.rs and runner-v2 both construct provider-backed
+agents, while ModelCallService is the reusable in-process model-call boundary.
+The current OpenAI-compatible backend also has a process-global default limiter;
+that cannot represent per-runtime configuration or prove pooling for all providers.
 
-Wire a single Arc<ProviderRateLimiter> into OrchestrationRuntime and
-thread it through dispatch_agent_with() -> create_agent_for_model() ->
-provider adapter construction. The limiter must be:
-1. Created once at OrchestrationRuntime construction
+Wire one Arc<ProviderRateLimiter> per runtime through each runner's model/provider
+construction and ModelCallService into the provider request boundary. The limiter must be:
+1. Created once from live ProviderConfig at runtime construction
 2. Populated with per-provider limits from config (E48-T02)
-3. Shared via Arc across all concurrent agent dispatches
-4. Called via limiter.acquire(provider_id).await before each LLM request
+3. Shared via Arc across all concurrent agent dispatches on legacy and runner-v2
+4. Called via limiter.acquire(provider_id, estimated_tokens).await before each LLM request
+5. Return a typed retriable limit outcome on hard TPM/RPM exhaustion
 
 The existing ProviderRateLimiter is already thread-safe (governor is
 Send + Sync) and already keyed by provider_id. The only missing piece is
@@ -218,28 +221,34 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
     "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
     "crates/roko-agent/src/provider/mod.rs",
     "crates/roko-agent/src/model_call_service.rs",
+    "crates/roko-agent/src/openai_compat_backend.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T02"]
+depends_on = ["E48-T01", "E48-T02"]
 domain = "orchestration"
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15184-15240", why = "dispatch_agent_with — where agents are constructed and dispatched" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "1735-1965", why = "run_prepared_agent and parallel legacy dispatch construction" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1200-1400", why = "Runner-v2 runtime construction and concurrent dispatch loop" },
     { path = "crates/roko-agent/src/rate_limit.rs", why = "ProviderRateLimiter — already thread-safe, keyed by provider_id" },
-    { path = "crates/roko-agent/src/provider/mod.rs", lines = "1-100", why = "create_agent_for_model — needs a rate limiter parameter" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "175-260", why = "create_agent_for_model — needs a runtime-scoped shared limiter parameter" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "Reusable provider-call boundary must acquire before each attempt" },
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "25-180", why = "Replace the process-global default as the canonical enforcement path" },
 ]
 symbols = [
-    "OrchestrationRuntime — the struct that holds plan state; add Arc<ProviderRateLimiter> field",
-    "dispatch_agent_with — where the shared limiter must be threaded to the agent",
+    "PlanRunner and runner-v2 runtime state — each owns one Arc<ProviderRateLimiter>",
+    "run_prepared_agent / event loop — concurrent calls share the runtime limiter",
     "create_agent_for_model — factory that constructs provider adapters",
     "ProviderRateLimiter::acquire(provider_id) — async wait before dispatch",
 ]
 anti_patterns = [
     "Do NOT create a new limiter per agent — that defeats pooling.",
-    "Do NOT use a global static — the limiter must be scoped to the runtime instance.",
+    "Do NOT use the existing process-global OpenAI-compatible fallback as canonical enforcement — the limiter must be scoped and configured per runtime.",
+    "Do NOT wire only legacy orchestrate.rs; runner-v2 and ModelCallService must enforce the same boundary.",
     "Do NOT block on acquire — it must be async.",
 ]
 
@@ -250,8 +259,13 @@ fail_msg = "roko-cli and roko-agent must compile"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -n 'ProviderRateLimiter' crates/roko-cli/src/orchestrate.rs | head -5"
-fail_msg = "orchestrate.rs must reference the shared rate limiter"
+command = "rg -q 'ProviderRateLimiter' crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs crates/roko-agent/src/model_call_service.rs && rg -q 'acquire' crates/roko-agent/src/model_call_service.rs crates/roko-agent/src/provider crates/roko-agent/src/openai_compat_backend.rs"
+fail_msg = "both runners and the live model/provider request boundary must share and acquire the configured limiter"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent rate_limit 2>&1 && cargo test -p roko-cli provider_rate_limit 2>&1"
+fail_msg = "tests must prove pooled configured RPM/TPM gating on both runner entry paths"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E48-T04: Wire budget enforcement to actually halt plan execution
@@ -262,30 +276,18 @@ fail_msg = "orchestrate.rs must reference the shared rate limiter"
 # Wire actual halt semantics: when budget is exceeded, pause the plan.
 [[task]]
 id = "E48-T04"
-title = "Enforce budget halt — pause plan execution when budget exceeded"
+title = "Extend SH05 budget halt with explicit override and legacy adapters"
 description = """
-Three budget systems exist but none enforces a hard halt:
-
-1. CostOverrunWatcher (conductor): Fires a conductor.intervention signal
-   with severity=warning. Nobody acts on the signal.
-2. BudgetGuardrail (roko-learn): Returns BudgetAction::Block when
-   budget is exhausted. The orchestrator checks but only logs.
-3. dispatch_agent_with (orchestrate.rs:15200-15208): Checks plan_spent
-   >= max_plan_usd and returns an error, but this only prevents the NEXT
-   dispatch — it doesn't pause the running agent.
-
-Wire these together:
-1. When BudgetGuardrail returns BudgetAction::Block, set a
-   budget_exhausted flag on OrchestrationRuntime.
-2. Before each dispatch in the plan executor loop, check this flag and
-   skip pending tasks with a BudgetExhausted error.
-3. When CostOverrunWatcher fires, update the BudgetGuardrail state.
-4. Add a --budget-override flag to `roko plan run` that lets the user
-   continue execution past the budget limit (requires explicit opt-in).
-5. Persist budget_exhausted state in the executor snapshot so resume
-   respects the halt.
+Consume the integrated SH05-T04 resumable budget state and exact cost attribution.
+This task owns only the explicit --budget-override CLI policy plus compatibility
+adapters from the legacy orchestration BudgetGuardrail and CostOverrunWatcher into
+that canonical state. It must not define another budget_exhausted flag, persistence
+schema, cost accumulator, or pre-dispatch halt path. Tests must prove the override is
+explicit and that both runner entry points observe the same SH05 state.
 """
 status = "ready"
+ownership = "distinct-extension"
+uses_owner = "SH05-T04"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -295,7 +297,7 @@ files = [
     "crates/roko-cli/src/main.rs",
 ]
 role = "implementer"
-depends_on = []
+depends_on = ["E48-T03"]
 domain = "budget-enforcement"
 
 [task.context]
@@ -340,74 +342,98 @@ fail_msg = "main.rs must support --budget-override flag"
 # CascadeRouter still routes to claude-sonnet. Wire health into routing.
 [[task]]
 id = "E48-T05"
-title = "Integrate ProviderHealthRegistry into CascadeRouter model selection"
+title = "Use one ProviderHealthRegistry for live model outcomes and CascadeRouter routing"
 description = """
-ProviderHealthRegistry in roko-learn/src/provider_health.rs tracks a
-three-state circuit breaker (Closed/Open/HalfOpen) per provider with
-error-class-specific cooldowns. CascadeRouter in cascade_router.rs
-selects models but does not check provider health before selection.
+ProviderHealthRegistry already implements the canonical Closed/Open/HalfOpen
+circuit and CascadeRouter already has registry-aware filtering helpers. The
+missing invariant is identity and outcome coverage: legacy LearningRuntime uses
+a different ProviderHealthTracker, runner-v2 constructs a subscriber registry
+separately from routing, and ModelCallService does not feed its real provider
+attempt outcomes into the registry that selection reads.
 
-The fix:
-1. CascadeRouter already has access to model slugs and knows which
-   provider each slug maps to (via tier_map / the config model profiles).
-2. Add a method CascadeRouter::set_provider_health(Arc<ProviderHealthRegistry>)
-   to inject the health registry.
-3. In the routing hot path (route_for_task or equivalent), filter out
-   candidates whose provider is currently Open in the health registry.
-4. When all preferred candidates are unhealthy, fall back to the next
-   available model in the fallback chain (already exists via
-   fallback_chain_for_model).
-5. When a dispatch succeeds, call health_registry.record_success().
-   When it fails with a rate limit, call health_registry.record_failure()
-   with ErrorClass::RateLimit.
-
-The ProviderHealthRegistry is already thread-safe (Arc<Mutex<...>>).
+Create one runtime-scoped Arc<ProviderHealthRegistry> for each runner/service.
+Pass that exact Arc to every CascadeRouter selection/filter and wrap the same Arc
+in a trait-typed provider-outcome adapter for roko-agent, preserving the existing
+no-production-dependency direction from roko-agent to roko-learn. Record success
+immediately after provider
+success and classify typed 429 as ErrorClass::RateLimit, 529/server errors as
+ErrorClass::ServerError, and connection/request timeouts as ErrorClass::Timeout.
+Do this before later gate verdicts so a successful provider call followed by a
+failed code gate remains provider success. Preserve explicit force_backend
+selection while still recording its outcome. Tests must assert Arc identity and
+drive Closed, Open, and HalfOpen transitions through real outcome adapters on
+ModelCallService, legacy dispatch_agent_with/run_prepared_agent, and runner-v2.
 """
 status = "ready"
+ownership = "canonical-owner"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 files = [
     "crates/roko-learn/src/cascade_router.rs",
     "crates/roko-learn/src/provider_health.rs",
+    "crates/roko-learn/src/runtime_feedback.rs",
+    "crates/roko-learn/src/event_subscriber.rs",
+    "crates/roko-agent/src/model_call_service.rs",
     "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T01"]
+depends_on = ["E48-T04", "E48-T07"]
 domain = "model-routing"
+acceptance = [
+    "CascadeRouter and the live provider outcome adapters share the same runtime-scoped Arc<ProviderHealthRegistry>; roko-agent reaches it through a trait-typed callback rather than a new roko-agent -> roko-learn production dependency.",
+    "Closed providers are eligible, Open providers are filtered at every automatic routing stage, and HalfOpen uses the canonical single-probe transition.",
+    "A healthy fallback is selected when the preferred provider is unavailable, and all-unavailable failure is explicit.",
+    "Each real provider attempt records success or typed RateLimit, ServerError, or Timeout on the same registry before any code/test gate verdict is applied.",
+    "ModelCallService, legacy dispatch_agent_with/run_prepared_agent, and runner-v2 tests feed success, 429, 529, and timeout outcomes and prove the next CascadeRouter decision observes the resulting circuit state.",
+    "ToolDispatcher is untouched because tool handler execution is not an LLM/provider outcome boundary; explicit force_backend still records outcomes.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1-150", why = "CascadeRouter struct — needs a provider_health field" },
-    { path = "crates/roko-learn/src/provider_health.rs", lines = "1-250", why = "ProviderHealthRegistry — circuit breaker with is_available()" },
-    { path = "crates/roko-learn/src/cascade/helpers.rs", lines = "1-30", why = "Helper functions used in routing decisions" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "700-810", why = "Existing route_with_health/filter_unhealthy behavior must receive the shared registry" },
+    { path = "crates/roko-learn/src/provider_health.rs", lines = "196-285", why = "Canonical typed record_success/record_failure and Closed/Open/HalfOpen transitions" },
+    { path = "crates/roko-learn/src/runtime_feedback.rs", lines = "1250-1395", why = "Replace or adapt the shadow ProviderHealthTracker to the canonical registry" },
+    { path = "crates/roko-learn/src/event_subscriber.rs", lines = "130-230", why = "Runner outcome events already expose success and ProviderError; preserve typed error classes and shared Arc identity" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "80-215", why = "Existing trait-typed CascadeRouter callback pattern; add a provider-outcome callback without a roko-learn dependency" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "Actual in-process model/provider attempts invoke the trait-typed outcome callback" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15184-17535", why = "Legacy selection, prepared-agent execution, and immediate outcome feedback" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1220-1400", why = "Runner-v2 registry/router/subscriber construction must share one Arc" },
 ]
 symbols = [
-    "CascadeRouter — add Optional<Arc<ProviderHealthRegistry>> field",
+    "Arc<ProviderHealthRegistry> — identical instance behind selection and outcome adapters",
+    "ProviderOutcomeRecorder trait — roko-agent callback implemented by a roko-learn/runner adapter",
+    "CascadeRouter::route_with_health / filter_unhealthy",
     "ProviderHealthRegistry::is_available(provider_id) -> bool",
     "ProviderHealthRegistry::record_success/record_failure",
-    "fallback_chain_for_model — existing fallback model list",
-    "ProviderHealth::is_available() — advances HalfOpen on cooldown expiry",
+    "ErrorClass::{RateLimit,ServerError,Timeout}",
+    "ModelCallService and dispatch_agent_with/run_prepared_agent — actual provider outcome boundaries",
 ]
 anti_patterns = [
-    "Do NOT make health registry required — it must be Optional for backwards compat.",
-    "Do NOT skip health check in stage-1 static routing — check it everywhere.",
+    "Do NOT update ToolDispatcher; ToolCall/ToolHandler outcomes are unrelated to LLM provider health.",
+    "Do NOT add a roko-agent -> roko-learn production dependency; use a trait-typed callback like ForceBackendOverrideRecorder.",
+    "Do NOT keep separate registry/tracker instances for routing and outcomes.",
+    "Do NOT classify a later code/test gate failure as a provider failure.",
+    "Do NOT skip health checks in static, confidence, UCB, fallback, or runner-specific routing stages.",
     "Do NOT treat HalfOpen as unavailable — it allows one probe request.",
+    "Do NOT create an EMA or second health registry beside ProviderHealthRegistry.",
+    "Do NOT let explicit force_backend bypass health recording; it may select the requested provider, but the outcome must still update canonical circuit state.",
 ]
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-learn 2>&1"
-fail_msg = "roko-learn must compile"
+command = "cargo check -p roko-learn -p roko-agent -p roko-cli 2>&1"
+fail_msg = "shared provider-health routing and outcome adapters must compile"
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-learn -- cascade_router 2>&1"
-fail_msg = "cascade router tests must pass"
+command = "cargo test -p roko-learn cascade_router 2>&1 && cargo test -p roko-learn provider_health 2>&1 && cargo test -p roko-agent model_call_service 2>&1 && cargo test -p roko-cli provider_health 2>&1"
+fail_msg = "focused tests must prove registry identity, real success/429/529/timeout recording, filtering, fallback, and HalfOpen recovery"
 
 [[task.verify]]
 phase = "structural"
-command = "grep -n 'provider_health\\|ProviderHealthRegistry' crates/roko-learn/src/cascade_router.rs | head -5"
-fail_msg = "cascade_router.rs must reference ProviderHealthRegistry"
+command = "rg -q 'ProviderHealthRegistry' crates/roko-learn/src/cascade_router.rs crates/roko-learn/src/event_subscriber.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs && rg -q 'ProviderOutcomeRecorder|provider_outcome' crates/roko-agent/src/model_call_service.rs && rg -q 'ErrorClass::(RateLimit|ServerError|Timeout)' crates/roko-learn/src crates/roko-cli/src"
+fail_msg = "CascadeRouter and actual model-call paths must share the canonical registry through a dependency-safe typed outcome adapter"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E48-T06: Graceful degradation — queue and retry on rate limit
@@ -449,7 +475,7 @@ files = [
     "crates/roko-learn/src/cascade_router.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T01", "E48-T05"]
+depends_on = ["E48-T01", "E48-T04", "E48-T05"]
 domain = "orchestration"
 
 [task.context]
@@ -516,7 +542,7 @@ files = [
     "crates/roko-learn/src/cascade/helpers.rs",
 ]
 role = "implementer"
-depends_on = []
+depends_on = ["E48-T03"]
 domain = "agent-dispatch"
 
 [task.context]
@@ -583,7 +609,7 @@ files = [
     "crates/roko-cli/src/orchestrate.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T04"]
+depends_on = ["E48-T06"]
 domain = "budget-enforcement"
 
 [task.context]
@@ -648,7 +674,7 @@ files = [
     "crates/roko-cli/src/inline/primitives/cost_meter.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T04"]
+depends_on = ["E48-T08"]
 domain = "cost-tracking"
 
 [task.context]
@@ -714,7 +740,7 @@ files = [
     "crates/roko-learn/src/model_router.rs",
 ]
 role = "implementer"
-depends_on = ["E48-T04", "E48-T05"]
+depends_on = ["E48-T05", "E48-T09"]
 domain = "model-routing"
 
 [task.context]
@@ -746,68 +772,65 @@ command = "grep -n 'budget_pressure' crates/roko-learn/src/model_router.rs | hea
 fail_msg = "RoutingContext must have a dedicated budget_pressure field"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# E48-T11: Record rate limit events in ProviderHealthRegistry from dispatch
+# E48-T11: Accept canonical provider-health outcomes and durable recovery
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider errors bubble up but are not recorded in the health registry
-# from the orchestrator dispatch path.
+# E48-T05 now owns actual model/provider outcome recording and registry identity.
 [[task]]
 id = "E48-T11"
-title = "Record dispatch outcomes in ProviderHealthRegistry"
+title = "Acceptance roll-up: canonical provider-health outcomes and durable recovery"
 description = """
-The ProviderHealthRegistry exists and has record_success/record_failure
-methods. But the orchestrator dispatch path does not call them — errors
-just propagate as anyhow::Error without updating provider health state.
-
-Wire health recording into the dispatch outcome path:
-1. In dispatch_agent_with(), after an agent dispatch completes
-   (success or failure), extract the provider_id from the model slug.
-2. On success, call health_registry.record_success(provider_id).
-3. On failure, classify the error into ErrorClass and call
-   health_registry.record_failure(provider_id, error_class).
-4. Use the existing retry_error_pattern() to map anyhow errors to
-   ErrorClass: RateLimit, Timeout, ServerError, etc.
-5. Thread the ProviderHealthRegistry into OrchestrationRuntime via
-   Arc (it's already thread-safe).
-
-The ProviderHealthRegistry already persists state to disk via its
-background save worker. No additional persistence logic needed.
+Review the E48-T05 implementation after its routing and budget consumers are
+integrated. Prove actual provider successes and typed 429/529/timeout failures
+updated the exact registry used by CascadeRouter, and that the registry's existing
+background save/flush path restores the same Open/HalfOpen/Closed state after
+restart. This task writes no second outcome adapter, tracker, classifier, or
+persistence schema.
 """
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E48-T05"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
-files = [
-    "crates/roko-cli/src/orchestrate.rs",
-    "crates/roko-learn/src/provider_health.rs",
-]
-role = "implementer"
-depends_on = ["E48-T05"]
+files = []
+role = "quick-reviewer"
+depends_on = ["E48-T10"]
 domain = "observability"
+acceptance = [
+    "ModelCallService, legacy dispatch, and runner-v2 success/429/529/timeout tests update the same ProviderHealthRegistry instance consumed by CascadeRouter.",
+    "Provider-health state is durably flushed and reload restores Closed/Open/HalfOpen state without a parallel schema or tracker.",
+    "A later code/test gate failure does not rewrite a successful provider call as provider failure.",
+    "ToolDispatcher outcomes are absent from provider-health recording.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-learn/src/provider_health.rs", lines = "196-250", why = "ProviderHealthRegistry — record_success/record_failure/is_available" },
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "10910-10960", why = "retry_error_pattern — already classifies errors" },
+    { path = "crates/roko-learn/src/provider_health.rs", lines = "196-340", why = "E48-T05 canonical registry transitions, background persistence, and reload" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "700-810", why = "Routing consumer of the exact canonical registry" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "Real provider-call outcomes owned by E48-T05" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15184-17535", why = "Legacy E48-T05 outcome adapter" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1220-1400", why = "Runner-v2 E48-T05 shared registry and typed event adapter" },
 ]
 symbols = [
     "ProviderHealthRegistry::record_success(provider_id)",
     "ProviderHealthRegistry::record_failure(provider_id, ErrorClass)",
-    "retry_error_pattern -> RetryErrorPattern — maps to ErrorClass",
     "ErrorClass::{RateLimit, Timeout, ServerError, AuthFailure} in provider_health.rs",
+    "ProviderHealthRegistry background save worker and load_or_new",
 ]
 anti_patterns = [
-    "Do NOT duplicate error classification — map RetryErrorPattern to ErrorClass.",
-    "Do NOT create a new ProviderHealthRegistry — reuse the one from CascadeRouter setup.",
+    "Do NOT add record_success/record_failure call sites; E48-T05 is their sole owner.",
+    "Do NOT create a new ProviderHealthRegistry, tracker, or persistence format.",
+    "Do NOT use gate verdicts or ToolDispatcher results as provider outcomes.",
 ]
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
+command = "cargo check -p roko-learn -p roko-agent -p roko-cli 2>&1"
+fail_msg = "canonical provider-health routing, outcomes, and persistence must compile"
 
 [[task.verify]]
-phase = "structural"
-command = "grep -n 'record_success\\|record_failure' crates/roko-cli/src/orchestrate.rs | head -5"
-fail_msg = "orchestrate.rs must call ProviderHealthRegistry record methods"
+phase = "test"
+command = "cargo test -p roko-learn provider_health 2>&1 && cargo test -p roko-agent model_call_service 2>&1 && cargo test -p roko-cli provider_health 2>&1"
+fail_msg = "focused tests must prove exact registry identity, typed outcomes, durable reload, and gate/provider separation"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E48-T12: Cost dashboard route and TUI tab integration

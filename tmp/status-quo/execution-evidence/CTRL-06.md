@@ -38,12 +38,17 @@ Verification:
 - `git diff --check` — exit 0.
 - F1 correction rerun with clean `CARGO_TARGET_DIR=/private/tmp/roko-ctrl06-review-target`: `plan_validation` 24/24 and `plan_validate` 18/18 passed; `cargo check -p roko-cli` and `cargo build -p roko-cli --bin roko` passed; rebuilt strict self-heal remained 0 diagnostics in 6 plans and strict backlog remained the expected 16 prerequisite diagnostics in 55 plans; final formatting and diff checks passed.
 - An initial correction rerun against the worker-local target failed while compiling unchanged `roko-serve` because that target had been reused by an isolated parent-commit review and contained mismatched path-dependency artifacts. Switching to the reviewer's clean CTRL-06 target was the materially different remedy; the complete rerun passed without source changes.
+- F2 correction rerun with the serialized CTRL-06 review target: `plan_validation` 24/24 and `plan_validate` 18/18 passed; `cargo fmt --all -- --check` and `git diff --check` passed; strict self-heal remained 0 diagnostics in 6 plans and strict backlog remained the expected 16 prerequisite diagnostics in 55 plans. The strict binary reports candidate `5014afa2c`; F2 changes only test setup/comments and evidence, so the reviewed production binary is unchanged.
+- The first F2 test attempt against the coordinator-wide integration target failed while compiling unchanged `roko-serve` against incompatible path-dependency artifacts from another active worktree. The target was preserved; switching to the already serialized CTRL-06 target isolated this branch and completed the focused suite successfully.
 
 Review readiness:
 - Implementation commit: `ea018feedcbccca3a3d922d293721134e6c7e829`.
 - Review-correction commit: `25da49fc9b9b33aac003649b0d17b9c791727fc5`.
+- Second review-correction commit: `e9df2b2b064c5967354157306dbfa33c6282d60e`.
 - Rejected candidate: `5e837e25e78bfd702f432dffb2d3cd1c022db080`; independent review accepted the algorithm/tests but rejected stale public rustdoc, canonical schema text, and three output-stub test rationales as F1.
 - F1 correction: public rustdoc now states the exact output/prerequisite/dependency exception; schema rows for `files`, `read_files`, and `PLAN_030/031` match it; obsolete output-stub setup was removed while the real architecture prerequisite fixture remains explicitly identified.
+- Renewed rejected candidate: `5014afa2cd2c7f00f7dd40c5e17f08d8f8646acc`; review commit `d5671d1e9994bb002563879e4f049004f470b31e` accepted the production behavior and F1 disposition but identified one remaining obsolete output-stub setup/rationale in the complete architecture-deferral fixture as F2.
+- F2 correction: the supporting plan remains to exercise recursive multi-plan validation, but its declared `stub/lib.rs` output is now intentionally absent; the obsolete directory/file creation is removed and both fixture comments state the multi-plan and absent-output purpose.
 - Diff scope reviewed: the three reserved validator source/test files, canonical schema, and this evidence record are the complete task scope; no task manifest or lockfile changed.
 - Known limitations: cross-plan dependency outputs are available only when the producer plan is loaded in the same validation run. Path matching is deliberately exact and lexical, matching the authored schema; aliases or undeclared producers are not inferred.
 - Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.

@@ -105,11 +105,12 @@ pub fn validate_plans_dir(
     validate_plans_dir_impl(dir, models, None)
 }
 
-/// Validate plans in `dir` with optional file-reference checking against `workdir`.
+/// Validate plans in `dir` with optional prerequisite checking against `workdir`.
 ///
-/// When `workdir` is provided, each `tasks.toml` file is scanned for declared
-/// `files` and `write_files` entries and those paths are checked against the
-/// workspace filesystem.
+/// Task `files` and `write_files` entries are creation or mutation outputs and
+/// need not exist before execution. When `workdir` is provided, declared
+/// `context.read_files` prerequisites must exist in the workspace unless a
+/// declared task or loaded plan dependency produces the exact path first.
 pub fn validate_plans_dir_with_workdir(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,

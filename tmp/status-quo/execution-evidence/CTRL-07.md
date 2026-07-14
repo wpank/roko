@@ -41,3 +41,20 @@ Independent review `18d16f225` rejected the first candidate only because its sin
 3. Ran the current integrated validator against `tmp/status-quo/backlog/plans` from a comprehensive disposable root: exit 0, `0 diagnostics in 55 plans` (down from 12).
 4. Ran the same integrated validator with `--strict` against `tmp/status-quo/self-heal/plans` from a disposable root: exit 0, `0 diagnostics in 6 plans`.
 5. `git diff --check`: exit 0. The source `plans/INDEX.md` hash remained byte-identical throughout isolated validation.
+
+## Integration and terminal status
+
+- Corrected candidate: `9458a6920d72e457553e31cd51b9ac89d70d2483`.
+- Final prerequisite review: `81d1af92b142ce512964b078ccb5bc1a417b8e2d` (`ACCEPTED`).
+- Prerequisite integration merge: `206e9079812b27f738d95f91d1135d0f663c836f`.
+- Canonical-ledger reconciliation: `950fa8bc95a2b92f90dc970d6038547a28feb9e4`.
+- Ledger review: `91da0fea5604e7639928824c3ab8ab07c21832af` (`ACCEPTED`).
+- Ledger integration merge: `f0cf7e769306b3217b30de797e2698b1a673326e`.
+- Post-merge proof at `f0cf7e769`: strict backlog validation exits zero with
+  `0 diagnostics in 55 plans`; strict self-heal validation exits zero with
+  `0 diagnostics in 6 plans`; `git diff --check` passes; the source
+  `plans/INDEX.md` SHA-256 remains
+  `7ac5679f9ff7a32571ad0ed70e9914b579f12a5f22e4285f4804c20a19077b44`.
+- Final status: `DONE`. The historical six-warning claim is explicitly superseded in
+  the canonical coverage ledger; no placeholder, weakened prerequisite, status
+  change, or generated-index delta was used to make the gate green.

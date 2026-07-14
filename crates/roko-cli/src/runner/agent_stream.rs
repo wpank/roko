@@ -126,6 +126,11 @@ pub enum AgentWait {
 }
 
 impl AgentHandle {
+    /// Probe whether the child has exited without consuming this owned handle.
+    pub fn is_finished(&mut self) -> std::io::Result<bool> {
+        self.child.try_wait().map(|status| status.is_some())
+    }
+
     /// Kill the agent and all descendants. Sends SIGTERM to the process group,
     /// waits for `grace`, then SIGKILL.
     pub async fn kill(mut self, grace: Duration) -> AgentTermination {
@@ -304,6 +309,11 @@ pub async fn spawn_agent(
         .id()
         .context("agent process exited before PID could be read")?;
 
+    // Register PID for orphan cleanup immediately, before spawning reader
+    // tasks. If a panic occurs between here and the end of this function,
+    // the cleanup handler will still find the PID.
+    roko_agent::process::register_spawned_pid(pid);
+
     let _ = event_tx
         .send(AgentEvent::Started {
             agent_id: config.agent_id.clone(),
@@ -335,7 +345,7 @@ pub async fn spawn_agent(
             for event in parse_stream_line(&line) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
-                    break;
+                    return;
                 }
             }
         }
@@ -365,9 +375,6 @@ pub async fn spawn_agent(
     } else {
         None
     };
-
-    // Register PID for orphan cleanup.
-    roko_agent::process::register_spawned_pid(pid);
 
     Ok(AgentHandle {
         pid,

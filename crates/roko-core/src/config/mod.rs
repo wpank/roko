@@ -111,6 +111,22 @@ pub enum LoadConfigError {
         /// Human-readable message.
         message: String,
     },
+    /// Multiple model keys own one provider-facing slug.
+    #[error("ambiguous model slug '{slug}' is defined by keys: {model_keys}")]
+    AmbiguousModelSlug {
+        /// Duplicate provider-facing slug.
+        slug: String,
+        /// Sorted, comma-separated config keys that own the slug.
+        model_keys: String,
+    },
+    /// An agent dispatch model matches neither a key nor a unique slug.
+    #[error("{field} references unresolved model '{model}'")]
+    UnresolvedModel {
+        /// Configuration field containing the bad reference.
+        field: String,
+        /// Unresolved model key or slug.
+        model: String,
+    },
 }
 
 /// Load the workspace configuration from `workdir/roko.toml`.

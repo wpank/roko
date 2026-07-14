@@ -7,6 +7,17 @@ use roko_core::config::TimeoutConfig;
 use super::attempt_ownership::{AttemptOwner, AttemptPhase, EffectRef};
 use super::types::{GateEffectRef, TaskAttemptRef};
 
+/// Saturating conversion from `Duration` to milliseconds as `u64`.
+///
+/// Replaces the repeated `u64::try_from(d.as_millis()).unwrap_or(u64::MAX)` pattern.
+fn duration_millis_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A monotonic timestamp expressed in milliseconds.
+///
+/// All deadline arithmetic uses this type to avoid coupling to wall-clock time.
+/// Values are derived from a process-wide `Instant` origin (see [`monotonic_now`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonotonicTime(u64);
 
@@ -29,9 +40,13 @@ impl MonotonicTime {
 pub(crate) fn monotonic_now() -> MonotonicTime {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let origin = ORIGIN.get_or_init(std::time::Instant::now);
-    MonotonicTime::from_millis(u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX))
+    MonotonicTime::from_millis(duration_millis_u64(origin.elapsed()))
 }
 
+/// Monotonic timestamps tracking an owned attempt's lifecycle.
+///
+/// Records when the attempt started, when the current phase began, and
+/// when the agent last produced observable output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnershipTiming {
     pub attempt_started_at: MonotonicTime,
@@ -57,6 +72,10 @@ impl OwnershipTiming {
     }
 }
 
+/// Duration limits for every deadline the runner enforces.
+///
+/// Constructed from [`TimeoutConfig`] via [`DeadlinePolicy::from_config`].
+/// Individual tasks may override `task_attempt` with an authored timeout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeadlinePolicy {
     pub hard_run: Duration,
@@ -88,6 +107,10 @@ impl DeadlinePolicy {
     }
 }
 
+/// A deadline that has been reached or exceeded.
+///
+/// Carries the timeout kind, the owning attempt/phase/effect (if per-owner),
+/// the configured limit, and the absolute monotonic instant at which it fired.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadlineExpiry {
     pub kind: super::types::TimeoutKind,
@@ -99,6 +122,9 @@ pub struct DeadlineExpiry {
     pub deadline_at: MonotonicTime,
 }
 
+/// Tracks global (run-wide) deadlines: hard-run wall time and scheduler progress.
+///
+/// Per-owner deadlines are handled by the free function [`owner_expiry`].
 #[derive(Debug, Clone, Copy)]
 pub struct DeadlineTracker {
     hard_run_started_at: MonotonicTime,
@@ -117,6 +143,9 @@ impl DeadlineTracker {
         self.scheduler_progress_at = self.scheduler_progress_at.max(now);
     }
 
+    // NB: check order encodes priority — HardRun is checked before
+    // SchedulerNoProgress so that a hard-run breach always wins when both
+    // deadlines expire in the same tick.
     pub fn global_expiry(
         self,
         now: MonotonicTime,
@@ -138,61 +167,80 @@ impl DeadlineTracker {
         }
         None
     }
+}
 
-    pub fn owner_expiry(
-        now: MonotonicTime,
-        attempt: &TaskAttemptRef,
-        owner: &AttemptOwner,
-        policy: DeadlinePolicy,
-        authored_task_secs: Option<u64>,
-        gate_effect: Option<GateEffectRef>,
-    ) -> Option<DeadlineExpiry> {
-        let timing = owner.timing;
-        let task_limit = policy.task_timeout(authored_task_secs);
-        let mut expired = Vec::new();
-        if now.elapsed_since(timing.attempt_started_at) >= task_limit {
-            expired.push((
-                timing
-                    .attempt_started_at
-                    .as_millis()
-                    .saturating_add(u64::try_from(task_limit.as_millis()).unwrap_or(u64::MAX)),
-                super::types::TimeoutKind::TaskAttempt,
-                task_limit,
-            ));
+/// Returns the earliest per-owner deadline that has been reached, if any.
+///
+/// This is a free function rather than a method on [`DeadlineTracker`] because
+/// it operates purely on the owner's timing — it has no relationship to the
+/// global run clocks that `DeadlineTracker` manages.
+pub(crate) fn owner_expiry(
+    now: MonotonicTime,
+    attempt: &TaskAttemptRef,
+    owner: &AttemptOwner,
+    policy: DeadlinePolicy,
+    authored_task_secs: Option<u64>,
+    gate_effect: Option<GateEffectRef>,
+) -> Option<DeadlineExpiry> {
+    let timing = owner.timing;
+    let task_limit = policy.task_timeout(authored_task_secs);
+
+    let mut earliest: Option<(u64, super::types::TimeoutKind, Duration)> = None;
+
+    if now.elapsed_since(timing.attempt_started_at) >= task_limit {
+        let candidate = (
+            timing
+                .attempt_started_at
+                .as_millis()
+                .saturating_add(duration_millis_u64(task_limit)),
+            super::types::TimeoutKind::TaskAttempt,
+            task_limit,
+        );
+        if earliest.map_or(true, |e| candidate.0 < e.0) {
+            earliest = Some(candidate);
         }
-        if owner.phase == AttemptPhase::Gate
-            && now.elapsed_since(timing.phase_started_at) >= policy.gate_effect
-        {
-            expired.push((
-                timing.phase_started_at.as_millis().saturating_add(
-                    u64::try_from(policy.gate_effect.as_millis()).unwrap_or(u64::MAX),
-                ),
-                super::types::TimeoutKind::GateEffect,
-                policy.gate_effect,
-            ));
-        }
-        if owner.phase == AttemptPhase::Agent
-            && now.elapsed_since(timing.last_agent_activity_at) >= policy.agent_silence
-        {
-            expired.push((
-                timing.last_agent_activity_at.as_millis().saturating_add(
-                    u64::try_from(policy.agent_silence.as_millis()).unwrap_or(u64::MAX),
-                ),
-                super::types::TimeoutKind::AgentSilence,
-                policy.agent_silence,
-            ));
-        }
-        let (deadline_ms, kind, limit) = expired.into_iter().min_by_key(|entry| entry.0)?;
-        Some(DeadlineExpiry {
-            kind,
-            attempt: Some(attempt.clone()),
-            phase: Some(owner.phase),
-            effect: Some(owner.effect),
-            gate_effect,
-            limit,
-            deadline_at: MonotonicTime::from_millis(deadline_ms),
-        })
     }
+    if owner.phase == AttemptPhase::Gate
+        && now.elapsed_since(timing.phase_started_at) >= policy.gate_effect
+    {
+        let candidate = (
+            timing
+                .phase_started_at
+                .as_millis()
+                .saturating_add(duration_millis_u64(policy.gate_effect)),
+            super::types::TimeoutKind::GateEffect,
+            policy.gate_effect,
+        );
+        if earliest.map_or(true, |e| candidate.0 < e.0) {
+            earliest = Some(candidate);
+        }
+    }
+    if owner.phase == AttemptPhase::Agent
+        && now.elapsed_since(timing.last_agent_activity_at) >= policy.agent_silence
+    {
+        let candidate = (
+            timing
+                .last_agent_activity_at
+                .as_millis()
+                .saturating_add(duration_millis_u64(policy.agent_silence)),
+            super::types::TimeoutKind::AgentSilence,
+            policy.agent_silence,
+        );
+        if earliest.map_or(true, |e| candidate.0 < e.0) {
+            earliest = Some(candidate);
+        }
+    }
+
+    let (deadline_ms, kind, limit) = earliest?;
+    Some(DeadlineExpiry {
+        kind,
+        attempt: Some(attempt.clone()),
+        phase: Some(owner.phase),
+        effect: Some(owner.effect),
+        gate_effect,
+        limit,
+        deadline_at: MonotonicTime::from_millis(deadline_ms),
+    })
 }
 
 fn global_expiry(
@@ -210,7 +258,7 @@ fn global_expiry(
         deadline_at: MonotonicTime::from_millis(
             started_at
                 .as_millis()
-                .saturating_add(u64::try_from(limit.as_millis()).unwrap_or(u64::MAX)),
+                .saturating_add(duration_millis_u64(limit)),
         ),
     }
 }
@@ -335,7 +383,7 @@ mod tests {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
         let agent = AttemptOwner::new_at(AttemptPhase::Agent, EffectRef(7), MonotonicTime::ZERO);
         assert!(
-            DeadlineTracker::owner_expiry(
+            owner_expiry(
                 MonotonicTime::from_millis(9),
                 &attempt,
                 &agent,
@@ -345,7 +393,7 @@ mod tests {
             )
             .is_none()
         );
-        let silence = DeadlineTracker::owner_expiry(
+        let silence = owner_expiry(
             MonotonicTime::from_millis(10),
             &attempt,
             &agent,
@@ -361,7 +409,7 @@ mod tests {
 
         let gate = AttemptOwner::new_at(AttemptPhase::Gate, EffectRef(8), MonotonicTime::ZERO);
         assert_eq!(
-            DeadlineTracker::owner_expiry(
+            owner_expiry(
                 MonotonicTime::from_millis(20),
                 &attempt,
                 &gate,
@@ -378,7 +426,7 @@ mod tests {
             ..policy()
         };
         assert_eq!(
-            DeadlineTracker::owner_expiry(
+            owner_expiry(
                 MonotonicTime::from_millis(20),
                 &attempt,
                 &gate,

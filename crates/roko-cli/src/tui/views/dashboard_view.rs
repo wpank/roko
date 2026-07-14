@@ -435,9 +435,11 @@ fn render_agent_routes_table(
         return;
     }
 
+    // `inner` has already excluded the border. The table adds one header row,
+    // so every remaining row is available for data.
     let rows = rows
         .into_iter()
-        .take(inner.height.saturating_sub(2) as usize)
+        .take(route_data_row_capacity(inner.height))
         .collect::<Vec<_>>();
 
     frame.render_widget(
@@ -455,6 +457,10 @@ fn render_agent_routes_table(
         .column_spacing(1),
         inner,
     );
+}
+
+fn route_data_row_capacity(inner_height: u16) -> usize {
+    inner_height.saturating_sub(1) as usize
 }
 
 // ---------------------------------------------------------------------------
@@ -2290,5 +2296,45 @@ mod tests {
         assert!(rendered.contains("Recent Failures"));
         assert!(rendered.contains("compile"));
         assert!(rendered.contains("assertion failed"));
+    }
+
+    #[test]
+    fn route_panel_keeps_first_data_row_after_header() {
+        assert_eq!(route_data_row_capacity(0), 0);
+        assert_eq!(route_data_row_capacity(1), 0);
+        assert_eq!(route_data_row_capacity(2), 1);
+        assert_eq!(route_data_row_capacity(4), 3);
+    }
+
+    #[test]
+    fn one_route_is_visible_in_the_agents_buffer() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let data = DashboardData::default();
+        let mut tui_state = TuiState::default();
+        tui_state.agents.push(crate::tui::state::AgentRow {
+            id: "agent-canary".into(),
+            active: true,
+            model: "model-canary".into(),
+            ..Default::default()
+        });
+        tui_state.route_metrics.insert(
+            "agent-canary".into(),
+            RouteMetrics {
+                model: "model-canary".into(),
+                tier: "fast".into(),
+                ..Default::default()
+            },
+        );
+        let view_state = ViewState::default();
+        let theme = Theme::dark();
+
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &data, &tui_state, &view_state, &theme);
+            })
+            .unwrap();
+
+        assert!(rendered_text(&terminal).contains("model-canary"));
     }
 }

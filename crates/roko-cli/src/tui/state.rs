@@ -292,6 +292,12 @@ pub struct AgentRow {
 }
 
 const MAX_AGENT_STREAM_CHUNKS: usize = 200;
+const MAX_AGENT_OUTPUT_LINES: usize = 50;
+
+fn bounded_output_lines(lines: &VecDeque<String>) -> Vec<String> {
+    let first = lines.len().saturating_sub(MAX_AGENT_OUTPUT_LINES);
+    lines.iter().skip(first).cloned().collect()
+}
 
 /// Live websocket-backed tail for one agent.
 #[derive(Debug, Clone, Default)]
@@ -2182,17 +2188,18 @@ impl TuiState {
                     agent.current_task.clone()
                 };
 
-                // Merge task output lines from the snapshot ring buffer.
-                let mut output_lines = prev_row
-                    .map(|row| row.output_lines.clone())
-                    .unwrap_or_default();
-                if let Some(task_lines) = snap
+                // `task_outputs` is an authoritative ring, not an event delta.
+                // Re-appending it on every snapshot duplicates the same lines
+                // forever. Replace the cached ring when the snapshot has one,
+                // otherwise retain the previous row for sources that do not
+                // publish task output.
+                let output_lines = snap
                     .task_outputs
                     .get(&snap_current_task)
                     .filter(|lines| !lines.is_empty())
-                {
-                    output_lines.extend(task_lines.iter().cloned());
-                }
+                    .map(bounded_output_lines)
+                    .or_else(|| prev_row.map(|row| row.output_lines.clone()))
+                    .unwrap_or_default();
                 let last_output_line = output_lines
                     .last()
                     .cloned()
@@ -2386,11 +2393,13 @@ impl TuiState {
         self.selected_wave_idx =
             clamp_selected_wave_idx(self.selected_wave_idx, self.execution_waves.len());
 
-        // Task outputs from push path
-        for (task_id, lines) in &snap.task_outputs {
-            self.task_output_tails
-                .insert(task_id.clone(), lines.iter().cloned().collect());
-        }
+        // The connected snapshot is authoritative. Rebuild instead of only
+        // inserting so completed/removed tasks do not leak entries forever.
+        self.task_output_tails = snap
+            .task_outputs
+            .iter()
+            .map(|(task_id, lines)| (task_id.clone(), bounded_output_lines(lines)))
+            .collect();
 
         // --- Marketplace / Atelier from snapshot ---
         if !snap.marketplace_jobs.is_empty() {
@@ -5009,6 +5018,74 @@ tier = "focused"
         assert_eq!(state.selected_agent_tab, 4);
         assert!(state.plans[1].expanded);
         assert_eq!(state.current_task_checklist[0].elapsed_secs, 15.0);
+    }
+
+    #[test]
+    fn connected_snapshots_replace_output_rings_without_duplication() {
+        let mut state = TuiState::default();
+        state.task_output_tails.insert(
+            "stale-task".into(),
+            vec!["this task is absent from the new snapshot".into()],
+        );
+
+        let mut snap = roko_core::DashboardSnapshot::default();
+        snap.agents.insert(
+            "agent-1".into(),
+            roko_core::dashboard_snapshot::AgentState {
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                active: true,
+                output_bytes: 12,
+                model: "test-model".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+                current_task: "task-1".into(),
+                current_plan: "plan-1".into(),
+            },
+        );
+        snap.task_outputs.insert(
+            "task-1".into(),
+            VecDeque::from(vec!["first".into(), "second".into()]),
+        );
+
+        state.update_from_dashboard_snapshot(&snap);
+        state.update_from_dashboard_snapshot(&snap);
+
+        assert_eq!(state.agents[0].output_lines, ["first", "second"]);
+        assert_eq!(state.task_output_tails["task-1"], ["first", "second"]);
+        assert!(!state.task_output_tails.contains_key("stale-task"));
+    }
+
+    #[test]
+    fn connected_snapshot_output_is_bounded_to_source_ring_limit() {
+        let mut snap = roko_core::DashboardSnapshot::default();
+        snap.agents.insert(
+            "agent-1".into(),
+            roko_core::dashboard_snapshot::AgentState {
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                active: true,
+                output_bytes: 100,
+                model: "test-model".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+                current_task: "task-1".into(),
+                current_plan: "plan-1".into(),
+            },
+        );
+        snap.task_outputs.insert(
+            "task-1".into(),
+            (0..100).map(|line| format!("line-{line}")).collect(),
+        );
+
+        let mut state = TuiState::default();
+        state.update_from_dashboard_snapshot(&snap);
+
+        assert_eq!(state.agents[0].output_lines.len(), MAX_AGENT_OUTPUT_LINES);
+        assert_eq!(state.agents[0].output_lines[0], "line-50");
+        assert_eq!(state.agents[0].output_lines[49], "line-99");
     }
 
     #[test]

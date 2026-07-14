@@ -286,9 +286,6 @@ impl GateThresholds {
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
         let json =
             serde_json::to_string_pretty(self).context("serializing adaptive gate thresholds")?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
         atomic_write(path, json.as_bytes())
     }
 }
@@ -300,18 +297,8 @@ pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
 
 /// Atomically write `content` to `path` via a `.tmp` sibling.
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut file =
-            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        file.write_all(content)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        file.sync_data()
-            .with_context(|| format!("syncing {}", tmp.display()))?;
-    }
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} → {}", tmp.display(), path.display()))?;
-    Ok(())
+    roko_fs::atomic_write_bytes(path, content)
+        .with_context(|| format!("atomically writing {}", path.display()))
 }
 
 /// Append a JSON line to a JSONL file.
@@ -383,7 +370,7 @@ pub fn load_run_state(paths: &PersistPaths) -> Result<Option<RunStateSnapshot>> 
 
 /// Serialize and atomically write a [`StateSnapshot`] to disk.
 pub fn save_state_snapshot(paths: &PersistPaths, snapshot: &StateSnapshot) -> Result<()> {
-    let json = serde_json::to_vec_pretty(snapshot)?;
+    let json = serde_json::to_vec_pretty(snapshot).context("serializing state snapshot")?;
     atomic_write(&paths.state_snapshot_json, &json)
 }
 
@@ -493,15 +480,18 @@ where
         return Ok(JsonlRecovery::Clean { lines: valid_lines });
     }
 
-    // Truncate to the last validated line.
+    // Truncate to the last validated line. An entirely-invalid file must also
+    // be replaced: leaving it in place means every later valid append remains
+    // hidden behind corruption and every startup repeats the same diagnosis.
     if last_good_byte == 0 {
-        // Nothing valid — leave file alone, surface as dropped.
         if dropped_lines > 0 {
+            atomic_write(path, b"")?;
             return Ok(JsonlRecovery::DroppedInvalid {
                 valid_lines: 0,
                 dropped_lines,
             });
         }
+        atomic_write(path, b"")?;
         return Ok(JsonlRecovery::TruncatedTrailing {
             valid_lines: 0,
             truncated_bytes,
@@ -509,10 +499,7 @@ where
     }
 
     let kept = &original[..last_good_byte as usize];
-    let tmp = path.with_extension("recover.tmp");
-    fs::write(&tmp, kept).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} → {}", tmp.display(), path.display()))?;
+    atomic_write(path, kept)?;
 
     if dropped_lines > 0 {
         Ok(JsonlRecovery::DroppedInvalid {
@@ -730,6 +717,51 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn recover_jsonl_replaces_entirely_invalid_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("log.jsonl");
+        fs::write(&path, b"not-json\n").unwrap();
+
+        let outcome =
+            recover_jsonl::<serde_json::Value, _>(&path, |line| serde_json::from_str(line))
+                .unwrap();
+
+        assert_eq!(
+            outcome,
+            JsonlRecovery::DroppedInvalid {
+                valid_lines: 0,
+                dropped_lines: 1,
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"");
+
+        append_jsonl(&path, &serde_json::json!({"recovered": true})).unwrap();
+        let recovered: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(path).unwrap().trim()).unwrap();
+        assert_eq!(recovered, serde_json::json!({"recovered": true}));
+    }
+
+    #[test]
+    fn recover_jsonl_removes_trailing_partial_without_valid_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("log.jsonl");
+        fs::write(&path, b"{\"incomplete\"").unwrap();
+
+        let outcome =
+            recover_jsonl::<serde_json::Value, _>(&path, |line| serde_json::from_str(line))
+                .unwrap();
+
+        assert_eq!(
+            outcome,
+            JsonlRecovery::TruncatedTrailing {
+                valid_lines: 0,
+                truncated_bytes: 13,
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"");
     }
 
     #[test]

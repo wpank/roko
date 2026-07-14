@@ -222,12 +222,12 @@ impl<R> AttemptOwnership<R> {
         self.owners.contains_key(attempt)
     }
 
-    pub(crate) fn resource(&self, attempt: &TaskAttemptRef) -> Option<&R> {
-        self.owners.get(attempt).and_then(|slot| {
+    pub(crate) fn resource_mut(&mut self, attempt: &TaskAttemptRef) -> Option<&mut R> {
+        self.owners.get_mut(attempt).and_then(|slot| {
             if slot.claimed {
                 None
             } else {
-                slot.resource.as_ref()
+                slot.resource.as_mut()
             }
         })
     }
@@ -361,6 +361,7 @@ impl<R> AttemptOwnership<R> {
             return Err(OwnershipError::Missing);
         };
         if slot.claimed
+            || slot.resource.is_none()
             || slot.owner.cancellation == CancellationState::Cancelling
             || expected.is_some_and(|(phase, effect)| {
                 slot.owner.phase != phase || slot.owner.effect != effect
@@ -368,13 +369,11 @@ impl<R> AttemptOwnership<R> {
         {
             return Err(OwnershipError::Ineligible);
         }
-        slot.claimed = true;
-        let nonce = self.next_nonce;
-        self.next_nonce = self.next_nonce.wrapping_add(1).max(1);
-        slot.claim_nonce = Some(nonce);
+        let nonce = Self::advance_claim_nonce(&mut self.next_nonce, slot);
         slot.owner.cancellation = CancellationState::Cancelling;
         let owner = slot.owner.clone();
-        let resource = slot.resource.take().ok_or(OwnershipError::Ineligible)?;
+        // Safety: resource.is_none() was checked above before any mutation.
+        let resource = slot.resource.take().unwrap();
         Ok(AttemptClaim {
             attempt: attempt.clone(),
             owner,
@@ -534,6 +533,21 @@ impl<R> AttemptOwnership<R> {
         }
     }
 
+    /// Mark a slot as claimed and return a fresh nonce.
+    ///
+    /// Callers must verify `slot.resource.is_some()` **before** calling this
+    /// function; it unconditionally sets `claimed = true`.
+    ///
+    /// Accepts `next_nonce` by mutable reference to avoid double-borrowing
+    /// `self` when the slot is already borrowed from `self.owners`.
+    fn advance_claim_nonce(next_nonce: &mut u64, slot: &mut OwnershipSlot<R>) -> u64 {
+        slot.claimed = true;
+        let nonce = *next_nonce;
+        *next_nonce = next_nonce.wrapping_add(1).max(1);
+        slot.claim_nonce = Some(nonce);
+        nonce
+    }
+
     fn take_resource(
         &mut self,
         attempt: &TaskAttemptRef,
@@ -542,11 +556,12 @@ impl<R> AttemptOwnership<R> {
             .owners
             .get_mut(attempt)
             .ok_or(OwnershipError::Missing)?;
-        slot.claimed = true;
-        let nonce = self.next_nonce;
-        self.next_nonce = self.next_nonce.wrapping_add(1).max(1);
-        slot.claim_nonce = Some(nonce);
-        let resource = slot.resource.take().ok_or(OwnershipError::Ineligible)?;
+        if slot.resource.is_none() {
+            return Err(OwnershipError::Ineligible);
+        }
+        let nonce = Self::advance_claim_nonce(&mut self.next_nonce, slot);
+        // Safety: resource.is_none() was checked above before any mutation.
+        let resource = slot.resource.take().unwrap();
         Ok(AttemptClaim {
             attempt: attempt.clone(),
             owner: slot.owner.clone(),

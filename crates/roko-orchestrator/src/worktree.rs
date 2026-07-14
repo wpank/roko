@@ -27,6 +27,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
+use tracing::debug;
 
 /// Locks older than this are considered stale (§15.7).
 ///
@@ -161,7 +162,7 @@ pub fn format_branch_name(plan_id: &str) -> String {
 ///
 /// Clones of [`WorktreeManager`] share the same internal registry — the
 /// handle is cheap to clone and safe to move across tasks.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WorktreeManager {
     config: Arc<WorktreeConfig>,
     active: Arc<Mutex<HashMap<String, WorktreeHandle>>>,
@@ -327,7 +328,8 @@ impl WorktreeManager {
     /// Ensure a plan worktree exists and return its handle.
     ///
     /// If the worktree is already tracked, this touches and returns it.
-    /// Otherwise a new canonical plan worktree is created.
+    /// If it exists on disk but isn't tracked (e.g. after resume), it is
+    /// re-registered. Otherwise a new canonical plan worktree is created.
     ///
     /// # Errors
     ///
@@ -336,13 +338,41 @@ impl WorktreeManager {
     /// [`WorktreeError`] that can be produced by
     /// [`WorktreeManager::create_for_plan`].
     pub async fn ensure_for_plan(&self, plan_id: &str) -> Result<WorktreeHandle, WorktreeError> {
-        if let Some(existing) = self.get(plan_id) {
-            self.touch(plan_id);
-            return self
-                .get(plan_id)
-                .ok_or(WorktreeError::NotFound(existing.id));
+        {
+            let mut guard = self.active.lock();
+            if let Some(handle) = guard.get_mut(plan_id) {
+                handle.last_active_ms = chrono::Utc::now().timestamp_millis();
+                return Ok(handle.clone());
+            }
         }
+
+        // Safety net: if the worktree exists on disk but wasn't tracked
+        // (e.g. resume without discover_existing), re-register it instead
+        // of trying `git worktree add` which would fail.
+        if let Some(handle) = self.try_reattach(plan_id).await {
+            return Ok(handle);
+        }
+
         self.create_for_plan(plan_id).await
+    }
+
+    /// Scan the worktrees root for directories matching `plan_ids` that
+    /// exist on disk but are not yet tracked. Valid worktrees are
+    /// re-registered in the in-memory map.
+    ///
+    /// Returns the list of plan IDs that were successfully re-discovered.
+    pub async fn discover_existing(&self, plan_ids: &[&str]) -> Vec<String> {
+        let mut discovered = Vec::new();
+        for &plan_id in plan_ids {
+            // Already tracked — nothing to do.
+            if self.get(plan_id).is_some() {
+                continue;
+            }
+            if let Some(_handle) = self.try_reattach(plan_id).await {
+                discovered.push(plan_id.to_string());
+            }
+        }
+        discovered
     }
 
     /// Return the active worktree path for `plan_id` if tracked.
@@ -647,6 +677,70 @@ impl WorktreeManager {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Try to re-register a worktree that exists on disk but is not
+    /// tracked. Returns `Some(handle)` only when the candidate belongs to
+    /// this manager's repository and has the exact canonical plan branch at
+    /// its current tip. Mismatched or detached worktrees fail closed.
+    async fn try_reattach(&self, plan_id: &str) -> Option<WorktreeHandle> {
+        if let Err(e) = validate_id(plan_id) {
+            debug!(plan_id, error = %e, "skipping reattach for invalid plan id");
+            return None;
+        }
+
+        let path = self.path_for(plan_id);
+        // A git worktree has a `.git` *file* (not directory) pointing
+        // back to the main repo's worktree metadata.
+        if !path.join(".git").exists() {
+            return None;
+        }
+
+        let candidate_common_dir = git_common_dir(&path).await?;
+        let configured_common_dir = git_common_dir(&self.config.repo_root).await?;
+        if candidate_common_dir != configured_common_dir {
+            return None;
+        }
+
+        let branch = git_stdout(&path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await?;
+        let expected_branch = format_branch_name(plan_id);
+        if branch != expected_branch {
+            return None;
+        }
+
+        let head = git_stdout(&path, &["rev-parse", "HEAD"]).await?;
+        let branch_head = git_stdout(&path, &["rev-parse", &expected_branch]).await?;
+        if head != branch_head {
+            return None;
+        }
+
+        // Use directory mtime as a proxy for creation/activity timestamps.
+        let mtime_ms = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            })
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let handle = WorktreeHandle {
+            id: plan_id.to_string(),
+            path,
+            branch,
+            created_at_ms: mtime_ms,
+            last_active_ms: now_ms,
+        };
+
+        let mut guard = self.active.lock();
+        // Double-check: another caller may have inserted concurrently.
+        if guard.contains_key(plan_id) {
+            return guard.get(plan_id).cloned();
+        }
+        guard.insert(plan_id.to_string(), handle.clone());
+        Some(handle)
+    }
+
     async fn git_remove(&self, path: &Path) -> Result<(), WorktreeError> {
         let path_str = path.to_string_lossy().into_owned();
         let output = Command::new("git")
@@ -681,6 +775,31 @@ impl WorktreeManager {
             path_exists,
         }
     }
+}
+
+async fn git_stdout(current_dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(current_dir)
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+async fn git_common_dir(worktree: &Path) -> Option<PathBuf> {
+    let common_dir = git_stdout(worktree, &["rev-parse", "--git-common-dir"]).await?;
+    let path = PathBuf::from(common_dir);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        worktree.join(path)
+    };
+    std::fs::canonicalize(absolute).ok()
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
@@ -1041,6 +1160,119 @@ mod tests {
         assert_eq!(ensured.id, first.id);
         assert_eq!(ensured.path, first.path);
         assert_eq!(ensured.branch, first.branch);
+    }
+
+    #[tokio::test]
+    async fn discover_existing_reattaches_on_disk_worktrees() {
+        let Some((_tmp, mgr)) = make_manager() else {
+            return;
+        };
+        // Create a worktree the normal way.
+        let original = mgr.create_for_plan("09-resume").await.unwrap();
+        let original_path = original.path.clone();
+        let original_branch = original.branch.clone();
+        assert!(original_path.exists());
+
+        // Build a *fresh* manager that doesn't know about the worktree.
+        let mgr2 = WorktreeManager::new(WorktreeConfig {
+            repo_root: mgr.config.repo_root.clone(),
+            base_branch: "main".to_string(),
+            worktrees_root: original_path.parent().unwrap().to_path_buf(),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        });
+        assert_eq!(mgr2.active_count(), 0);
+
+        // discover_existing should find the on-disk worktree.
+        let discovered = mgr2.discover_existing(&["09-resume", "nonexistent"]).await;
+        assert_eq!(discovered, vec!["09-resume".to_string()]);
+        assert_eq!(mgr2.active_count(), 1);
+
+        let handle = mgr2.get("09-resume").unwrap();
+        assert_eq!(handle.path, original_path);
+        assert_eq!(handle.branch, original_branch);
+    }
+
+    #[tokio::test]
+    async fn ensure_for_plan_reattaches_untracked_on_disk_worktree() {
+        let Some((_tmp, mgr)) = make_manager() else {
+            return;
+        };
+        // Create a worktree, then simulate a fresh manager (resume scenario).
+        let original = mgr.create_for_plan("09-ensure").await.unwrap();
+        let original_path = original.path.clone();
+
+        let mgr2 = WorktreeManager::new(WorktreeConfig {
+            repo_root: mgr.config.repo_root.clone(),
+            base_branch: "main".to_string(),
+            worktrees_root: original_path.parent().unwrap().to_path_buf(),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        });
+        assert!(mgr2.get("09-ensure").is_none());
+
+        // ensure_for_plan should reattach instead of trying git worktree add.
+        let ensured = mgr2.ensure_for_plan("09-ensure").await.unwrap();
+        assert_eq!(ensured.path, original_path);
+        assert_eq!(ensured.branch, original.branch);
+    }
+
+    #[tokio::test]
+    async fn discover_existing_rejects_wrong_branch() {
+        let Some((_tmp, mgr)) = make_manager() else {
+            return;
+        };
+        let original = mgr
+            .create("09-wrong-branch", "feature/not-the-plan-branch")
+            .await
+            .unwrap();
+        let fresh = WorktreeManager::new(WorktreeConfig {
+            repo_root: mgr.config.repo_root.clone(),
+            base_branch: "main".to_string(),
+            worktrees_root: original.path.parent().unwrap().to_path_buf(),
+            max_live: None,
+            idle_ttl: Duration::from_secs(3600),
+        });
+
+        assert!(
+            fresh
+                .discover_existing(&["09-wrong-branch"])
+                .await
+                .is_empty()
+        );
+        assert!(fresh.get("09-wrong-branch").is_none());
+    }
+
+    #[tokio::test]
+    async fn discover_existing_rejects_foreign_repository_worktree() {
+        let Some((tmp, mgr)) = make_manager() else {
+            return;
+        };
+        let foreign_repo = tmp.path().join("foreign-repo");
+        std::fs::create_dir_all(&foreign_repo).unwrap();
+        init_repo(&foreign_repo);
+        let candidate = mgr.path_for("09-foreign");
+        std::fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+        let expected_branch = format_branch_name("09-foreign");
+        let status = StdCommand::new("git")
+            .current_dir(&foreign_repo)
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                &expected_branch,
+                candidate.to_str().unwrap(),
+                "main",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert!(
+            mgr.discover_existing(&["09-foreign"]).await.is_empty(),
+            "a canonical-looking worktree from another repository must fail closed"
+        );
+        assert!(mgr.get("09-foreign").is_none());
     }
 
     #[tokio::test]

@@ -55,3 +55,16 @@ The temporary RustEmbed symlink and isolated 2.1 GiB Cargo target were removed a
 `git merge-tree --write-tree d0942fc63ef734017736294843e9112b78e8a656 37d411ce2` exited `0` and produced tree `81e3a995064fa9a7b79590308867d597e4f8d48f`. The merge base is exactly `d0942fc63ef734017736294843e9112b78e8a656`; there is no content or evidence conflict.
 
 This integration-native correction is ready for fresh independent review. Canonical status must remain unchanged until that review and post-merge verification are complete.
+
+## Integrated result
+
+- Corrected candidate: `bfe7b281abda9bb18b84364b6dcbf5f9b3e6693b`.
+- Independent review: `ACCEPTED` in
+  `SH01-T06B2C1-B2C3A-INTEGRATION-CORRECTION-REVIEW.md`; review commit
+  `81b92cd20d4f8301fd03b1e97bf91b895d261205`.
+- Integration merge: `915d3c246c93f0227de4f32790b491ecb9aa2029`.
+- Post-merge proof: focused canonical timeout 1/1, event-loop 47/47,
+  gate-dispatch 9/9, and runner facades 3/3 pass; diff check and integration
+  status are clean.
+- Final status: `DONE` for this bounded CTRL-02 precursor attribution. No
+  enclosing SH plan task is marked complete by this reconstruction.

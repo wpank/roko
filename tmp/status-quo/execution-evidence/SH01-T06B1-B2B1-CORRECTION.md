@@ -40,7 +40,7 @@ Review readiness:
 - Required reviewer focus: verify registration precedes every fallible/awaiting post-spawn operation, closed-channel termination exits the task rather than only an inner loop, and no `is_finished` hunk entered this commit.
 
 Integration:
-- Review evidence: pending independent review.
-- Integration commit: pending.
-- Post-merge commands/results: pending integration owner.
-- Final status: `IMPLEMENTED_UNREVIEWED` only after candidate commit; not DONE before accepted merge and post-merge proof.
+- Review evidence: `SH01-T06B1-B2B1-CORRECTION-REVIEW.md`; independent verdict `ACCEPTED` in review commit `feb5753f15155ff64365e8e0116c1ef3d2fb318a`.
+- Integration commit: merge commit `05927deda1c68cb704c9854cfd0635feb94677f5` on `status-quo/integration-status-quo-20260714T073140Z`; both candidate and review commits are ancestors.
+- Post-merge commands/results: `CARGO_TARGET_DIR=/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z/target cargo test -p roko-cli agent_stream --lib` passed all 17 focused tests with 0 failures; `git diff --check`, ancestry checks, and integration cleanliness passed.
+- Final status: `DONE` for this bounded precursor reconstruction cluster. This does not close the broader SH01 lifecycle plan or CTRL-02 reconstruction.

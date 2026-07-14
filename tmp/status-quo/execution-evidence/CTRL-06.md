@@ -44,10 +44,11 @@ Verification:
 Review readiness:
 - Implementation commit: `ea018feedcbccca3a3d922d293721134e6c7e829`.
 - Review-correction commit: `25da49fc9b9b33aac003649b0d17b9c791727fc5`.
+- Second review-correction commit: `e9df2b2b064c5967354157306dbfa33c6282d60e`.
 - Rejected candidate: `5e837e25e78bfd702f432dffb2d3cd1c022db080`; independent review accepted the algorithm/tests but rejected stale public rustdoc, canonical schema text, and three output-stub test rationales as F1.
 - F1 correction: public rustdoc now states the exact output/prerequisite/dependency exception; schema rows for `files`, `read_files`, and `PLAN_030/031` match it; obsolete output-stub setup was removed while the real architecture prerequisite fixture remains explicitly identified.
 - Renewed rejected candidate: `5014afa2cd2c7f00f7dd40c5e17f08d8f8646acc`; review commit `d5671d1e9994bb002563879e4f049004f470b31e` accepted the production behavior and F1 disposition but identified one remaining obsolete output-stub setup/rationale in the complete architecture-deferral fixture as F2.
-- F2 correction: the supporting plan remains to exercise recursive multi-plan validation, but its declared `stub/lib.rs` output is now intentionally absent; the obsolete directory/file creation is removed and both fixture comments state the multi-plan and absent-output purpose. Correction commit pending this evidence-backed commit.
+- F2 correction: the supporting plan remains to exercise recursive multi-plan validation, but its declared `stub/lib.rs` output is now intentionally absent; the obsolete directory/file creation is removed and both fixture comments state the multi-plan and absent-output purpose.
 - Diff scope reviewed: the three reserved validator source/test files, canonical schema, and this evidence record are the complete task scope; no task manifest or lockfile changed.
 - Known limitations: cross-plan dependency outputs are available only when the producer plan is loaded in the same validation run. Path matching is deliberately exact and lexical, matching the authored schema; aliases or undeclared producers are not inferred.
 - Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.

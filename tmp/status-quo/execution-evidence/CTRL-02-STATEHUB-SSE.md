@@ -55,7 +55,14 @@ Review readiness:
 - Known limitations: StateHub sequence state and replay ring are process-local. Snapshot-only mutations still do not emit dashboard events. The JSONL writer ignores append/flush errors and does not fsync. Other event transports retain their own recovery semantics and must be handled by their canonical tasks.
 
 Integration:
-- Independent review: pending.
-- Integration commit: pending.
-- Post-merge verification: pending integration-owner rerun.
-- Final status: `IMPLEMENTED_UNREVIEWED`; this bounded CTRL-02 precursor does not mark `SH03-T06`, SH03, issue 37, Wave 3, or the programme done.
+- Independent review: `tmp/status-quo/execution-evidence/CTRL-02-STATEHUB-SSE-REVIEW.md`,
+  ACCEPTED for exact candidate `0d9b43781966f6488ccf385d6aa8f62825d8b855`;
+  actual review commit `8b33f6e7751beef4acf2caae40ff37457873bc5f`.
+- Integration commits: candidate `27bd7df55`; review `8ccac6d73`.
+- Post-merge verification on `acac82c6e`: StateHub `11/11`, focused SSE
+  `4/4`, connected TUI `8/8`, and the combined runtime/serve/CLI all-target
+  check all passed; formatting, diff hygiene, and integration cleanliness passed.
+  Only the three pre-existing runtime test warnings and the pre-existing CLI
+  plan-validation missing-doc warning were emitted.
+- Final status: `DONE` only for this bounded CTRL-02 StateHub/SSE precursor.
+  This does not mark `SH03-T06`, SH03, issue 37, Wave 3, or the programme done.

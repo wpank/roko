@@ -4,718 +4,529 @@ total = 10
 done = 0
 status = "ready"
 max_parallel = 2
-estimated_total_minutes = 4200
+estimated_total_minutes = 1800
 skip_enrichment = true
 
-# DOC-v2-core encapsulates the docs/v2 specification corpus as executable
-# implementation work. Source coverage is tracked in:
+# CTRL-09 converts the former product-implementation umbrella into ten
+# documentation acceptance roll-ups. Product behavior is owned by E01-E45.
+# These tasks run only after their named owner plans are complete and may write
+# only their disjoint docs/v2 files. Source coverage and ownership are tracked in:
 # tmp/status-quo/backlog/source-coverage/docs-v2-core.md
 
 [[task]]
 id = "DOCV2-T01"
-title = "Implement v2 Signal, Pulse, Cell, Store, Bus, and protocol kernel parity"
-description = "Close the kernel-level parity gap between the v2 spec and roko-core: Signal/Pulse semantics, Kind/scoring/demurrage/provenance rules, Cell protocol conformance, and Store-Bus graduation/projection behavior. Keep compatibility shims for current Engram terminology where needed, but make the v2 vocabulary the canonical public surface."
+title = "Reconcile Signal, Pulse, Cell, Store, Bus, and protocol kernel documentation"
+description = "After the canonical kernel and protocol owners are merged, reconcile the Signal/Pulse and Cell documents to the integrated code, tests, and owner evidence. Preserve the specification as a normative target where implementation remains deferred, but label that boundary explicitly; this task must not implement product behavior."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 650
+tier = "integrative"
+max_loc = 1800
 files = [
-    "crates/roko-core/src/signal.rs",
-    "crates/roko-core/src/pulse.rs",
-    "crates/roko-core/src/kind.rs",
-    "crates/roko-core/src/cell.rs",
-    "crates/roko-core/src/traits.rs",
-    "crates/roko-core/src/bus_backends.rs",
-    "crates/roko-core/src/demurrage.rs",
-    "crates/roko-core/src/score.rs",
-    "crates/roko-core/src/verdict.rs",
-    "crates/roko-core/src/provenance.rs",
-    "crates/roko-core/src/config/graduation.rs",
+    "docs/v2/01-SIGNAL.md",
+    "docs/v2/02-CELL.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = []
 depends_on_plan = [
-    "E02-STORAGE-CONVERGENCE",
     "E03-type-consolidation",
-    "E05-gate-adaptivity-live",
     "E13-SPEC-DEBT-V2",
+    "E19-signal-protocol",
+    "E20-cell-unification",
+    "E29-connectivity-relay",
+    "E31-trigger-system",
+    "E33-telemetry-lens",
+    "E34-security-ifc",
 ]
 acceptance = [
-    "roko-core exposes the v2 Signal/Pulse/Cell vocabulary without breaking existing Engram call sites.",
-    "Graduation and projection between Bus/Pulse and Store/Signal are represented by tested code paths, not only documentation.",
-    "Score, Verify, demurrage, provenance, taint, and Kind behavior are covered by focused kernel tests.",
+    "Every present-tense behavior claim is traceable to merged code, tests, or accepted owner evidence; unimplemented normative requirements are explicitly marked deferred.",
+    "Signal/Pulse, Store/Bus, Cell, and nine-protocol vocabulary agrees across both documents without inventing a second implementation contract.",
+    "An independent documentation review confirms source citations, local links, examples, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/00-INDEX.md", why = "Global vocabulary, one-rule framing, document map, and naming decisions for the v2 spec." },
-    { path = "docs/v2/01-SIGNAL.md", why = "Signal/Pulse, Store/Bus, Kind, scoring, demurrage, HDC, taint, lineage, graduation, projection, and lifecycle requirements." },
-    { path = "docs/v2/02-CELL.md", why = "Cell trait, nine protocol contracts, Store-Bus duality, Verify-as-oracle, TypeSchema, capabilities, protocol algebra, and TOML registration." },
-    { path = "docs/v2/ARCHITECTURE-GUIDE.md", lines = "40-1015", why = "Architecture-guide mapping for Engram/Pulse, protocol traits, foundation service traits, Bus/ColdStore, and the Cell supertrait." },
-    { path = "crates/roko-core/src/lib.rs", lines = "1-120", why = "roko-core exports and module boundaries for introducing or canonicalizing v2 kernel symbols." },
-    { path = "crates/roko-core/src/signal.rs", why = "Current Signal implementation surface to reconcile with docs/v2/01-SIGNAL.md." },
-    { path = "crates/roko-core/src/engram.rs", why = "Existing Engram compatibility surface; preserve migration aliases instead of deleting compatibility abruptly." },
-    { path = "crates/roko-core/src/cell.rs", why = "Current Cell trait and execution API to align with docs/v2/02-CELL.md." },
-]
-symbols = [
-    "Signal",
-    "Pulse",
-    "Kind",
-    "Cell",
-    "Store",
-    "Bus",
-    "Verify",
-    "Score",
-    "Provenance",
+    { path = "docs/v2/00-INDEX.md", why = "Read-only global vocabulary; DOCV2-T10 owns any index edits." },
+    { path = "docs/v2/01-SIGNAL.md", why = "Owned Signal/Pulse, Store/Bus, scoring, demurrage, provenance, and lifecycle source." },
+    { path = "docs/v2/02-CELL.md", why = "Owned Cell and protocol source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E19-signal-protocol/tasks.toml", why = "Canonical Signal protocol implementation owner and acceptance evidence contract." },
+    { path = "tmp/status-quo/backlog/plans/E20-cell-unification/tasks.toml", why = "Canonical Cell unification implementation owner." },
+    { path = "crates/roko-core/src/engram.rs", why = "Integrated durable Signal/Engram behavior to document, not modify." },
+    { path = "crates/roko-core/src/cell.rs", why = "Integrated Cell behavior to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT delete Engram compatibility shims unless all downstream crates are migrated in the same task.",
-    "Do NOT create a second hidden event/state channel; v2 data flow must use Store or Bus.",
-    "Do NOT introduce protocol-specific ad hoc structs when a Cell specialization is sufficient.",
-    "Do NOT weaken existing gate verdict semantics while adding v2 Verify vocabulary.",
+    "Do NOT edit production code, tests, manifests, shared indexes, or any docs/v2 file outside this task's files list.",
+    "Do NOT describe an owner-plan proposal as shipped behavior unless its merged implementation and tests prove it.",
+    "Do NOT erase normative design material merely because it is deferred; label the current/target boundary and preserve provenance.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'docs/v2/00-INDEX.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/01-SIGNAL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/02-CELL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ARCHITECTURE-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T01 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core 2>&1"
-fail_msg = "roko-core must compile after v2 kernel parity changes"
+command = "grep -q 'docs/v2/01-SIGNAL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/02-CELL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T01 sources must remain in the canonical coverage ledger"
 
 [[task.verify]]
 phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+command = "python3 -c 'from pathlib import Path; expected={\"docs/v2/01-SIGNAL.md\",\"docs/v2/02-CELL.md\"}; assert all(Path(p).is_file() for p in expected)'"
+fail_msg = "DOCV2-T01 owned documents must exist"
 
 [[task]]
 id = "DOCV2-T02"
-title = "Implement v2 Graph, Flow, hot execution, replay, and runner parity"
-description = "Turn the v2 Graph and Execution Engine docs into the live DAG/Flow/runtime behavior: typed graph loading, hot graph ticking, node execution, deterministic replay, budget/cancellation propagation, circuit-breaker integration, and runner-v2 orchestration parity."
+title = "Reconcile Graph, execution, Flow, replay, and orchestrator documentation"
+description = "After graph-engine, execution-runtime, and runner owners are merged, reconcile the Graph, Execution, and Orchestrator documents to reproducible integrated behavior. Record unsupported specification surfaces as deferred instead of implementing them in this roll-up."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 800
+tier = "integrative"
+max_loc = 2200
 files = [
-    "crates/roko-graph/src",
-    "crates/roko-runtime/src/workflow_engine.rs",
-    "crates/roko-runtime/src/pipeline_state.rs",
-    "crates/roko-runtime/src/state_snapshot.rs",
-    "crates/roko-cli/src/runner",
+    "docs/v2/03-GRAPH.md",
+    "docs/v2/04-EXECUTION.md",
+    "docs/v2/27-ORCHESTRATOR.md",
 ]
-role = "implementer"
-domain = "code"
-depends_on = ["DOCV2-T01"]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = []
 depends_on_plan = [
     "E01-execution-engine",
     "E05-gate-adaptivity-live",
     "E08-conductor-supervision",
-    "E13-SPEC-DEBT-V2",
+    "E21-graph-engine",
+    "E22-execution-runtime",
+    "E45-orchestrator-mori-parity",
 ]
 acceptance = [
-    "Graph definitions, typed edges, Flow snapshots, hot graph ticks, and resume/replay semantics are implemented through roko-graph, roko-runtime, and runner-v2.",
-    "Execution errors, budget enforcement, cancellation propagation, and circuit-breaker outcomes have deterministic tests.",
-    "The runner remains the only plan execution path and validates the v2 graph vocabulary without reintroducing legacy orchestrate behavior.",
+    "Graph loading, typed edges, Flow snapshots, hot ticks, replay/resume, budgets, cancellation, and runner routing claims match merged code and tests.",
+    "Legacy, current, and target execution paths are distinguished explicitly and no dry-run or unsupported path is documented as success.",
+    "An independent documentation review reproduces cited commands and confirms current-versus-target labels and local links.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/03-GRAPH.md", why = "Graph, typed DAG, edge validation, TOML definitions, hot graphs, snapshots, merge queue, and Flow semantics." },
-    { path = "docs/v2/04-EXECUTION.md", why = "Execution engine, Flow lifecycle, node execution, cognitive loop, T0 short-circuit, replay, errors, degradation, budgets, cancellation, and observability." },
-    { path = "docs/v2/27-ORCHESTRATOR.md", why = "Runner-v2 architecture, event loop, persistence, Mori parity gaps, migration strategy, and current-state reconciliation." },
-    { path = "docs/v2/ARCHITECTURE-GUIDE.md", lines = "1016-1458", why = "WorkflowEngine, EffectDriver, gate pipeline, CascadeRouter, and graph execution architecture mapping." },
-    { path = "crates/roko-graph/src/engine.rs", why = "Current graph execution engine." },
-    { path = "crates/roko-graph/src/hot.rs", why = "Current hot graph support." },
-    { path = "crates/roko-runtime/src/workflow_engine.rs", why = "WorkflowEngine implementation surface." },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", why = "Runner-v2 event loop where DAG execution, gates, cancellation, and replay converge." },
-]
-symbols = [
-    "Graph",
-    "Flow",
-    "HotGraph",
-    "WorkflowEngine",
-    "RunnerEvent",
-    "PlanEngine",
-    "CircuitBreaker",
+    { path = "docs/v2/03-GRAPH.md", why = "Owned Graph source." },
+    { path = "docs/v2/04-EXECUTION.md", why = "Owned execution source." },
+    { path = "docs/v2/27-ORCHESTRATOR.md", why = "Owned runner-v2 and Mori parity source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E21-graph-engine/tasks.toml", why = "Canonical Graph implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E22-execution-runtime/tasks.toml", why = "Canonical execution runtime implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity/tasks.toml", why = "Canonical remaining runner/Mori implementation owner." },
+    { path = "crates/roko-graph/src/engine.rs", why = "Integrated Graph engine truth to document, not modify." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", why = "Integrated runner truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT rebuild a parallel scheduler outside runner-v2.",
-    "Do NOT treat dry-run or graph-stub success as real execution.",
-    "Do NOT add hidden mutable state that cannot be represented in Flow snapshots.",
-    "Do NOT make graph replay depend on wall-clock or nondeterministic provider calls.",
+    "Do NOT edit runner, graph, runtime, test, plan, or shared-index files.",
+    "Do NOT turn a missing Graph or runner capability into product implementation under DOCV2-T02.",
+    "Do NOT claim deterministic replay, resume, or execution success without a merged test or reproducible command.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/03-GRAPH.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/04-EXECUTION.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/27-ORCHESTRATOR.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T02 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-graph -p roko-runtime -p roko-cli 2>&1"
-fail_msg = "graph/runtime/runner crates must compile after v2 execution parity changes"
+fail_msg = "DOCV2-T02 sources must remain in the canonical coverage ledger"
 
 [[task.verify]]
 phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+command = "python3 -c 'from pathlib import Path; expected={\"docs/v2/03-GRAPH.md\",\"docs/v2/04-EXECUTION.md\",\"docs/v2/27-ORCHESTRATOR.md\"}; assert all(Path(p).is_file() for p in expected)'"
+fail_msg = "DOCV2-T02 owned documents must exist"
 
 [[task]]
 id = "DOCV2-T03"
-title = "Implement v2 Agent runtime, vitality, modes, and nested cognitive loops"
-description = "Implement the v2 Agent runtime as a Space specialization with extensions, memory, clock, vitality, nested gamma/theta/delta loops, EFE gating, T0 probes, PAD/somatic modulation, emergent goals, and domain profiles."
+title = "Reconcile Agent lifecycle, vitality, modes, and cognitive-loop documentation"
+description = "After the agent-autonomy and cross-cut owners are merged, reconcile the Agent document to integrated lifecycle, vitality, energy, affect, goal, and cognitive-loop behavior. Read the cross-cut and architecture sources only for consistency; their edits belong to later roll-ups."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 750
-files = [
-    "crates/roko-core/src/agent.rs",
-    "crates/roko-core/src/domain_profile.rs",
-    "crates/roko-core/src/cognitive_workspace.rs",
-    "crates/roko-runtime/src/heartbeat.rs",
-    "crates/roko-runtime/src/heartbeat_probes.rs",
-    "crates/roko-daimon/src",
-    "crates/roko-cli/src/runner/types.rs",
-]
-role = "implementer"
-domain = "code"
-depends_on = ["DOCV2-T01", "DOCV2-T02"]
+tier = "integrative"
+max_loc = 1200
+files = ["docs/v2/05-AGENT.md"]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01"]
 depends_on_plan = [
     "E06-COMPOSE-UNIFY",
-    "E07-learning-knowledge",
     "E08-conductor-supervision",
     "E17-acp-completion",
+    "E23-agent-cognitive-autonomy",
+    "E44-cross-cut-functors",
 ]
 acceptance = [
-    "Agent lifecycle, vitality, mode transitions, cognitive timescales, and PAD/daimon routing behavior are explicit runtime concepts.",
-    "Gamma/theta/delta loop scheduling and T0 probe escalation are testable without requiring live model calls.",
-    "Domain profile and cognitive workspace behavior use the shared v2 kernel, not duplicated agent-only abstractions.",
+    "Lifecycle, vitality, modes, nested timescales, EFE, probes, PAD/energy, goals, and workspace claims match integrated types and tests.",
+    "Cross-cut behavior is cross-referenced without duplicating or pre-empting DOCV2-T04 ownership of docs/v2/26-CROSS-CUTS.md.",
+    "An independent documentation review confirms examples and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/05-AGENT.md", why = "Agent runtime, type-state lifecycle, vitality, cortical state, modes, cognitive timescales, T0 probes, EFE routing, PAD affect, cognitive energy, emergent goals, and domain profiles." },
-    { path = "docs/v2/26-CROSS-CUTS.md", why = "Cross-cut functors for memory, daimon, dreams, safety wrapper, arbitration, and gate failure cascade." },
-    { path = "docs/v2/ARCHITECTURE-GUIDE.md", lines = "1989-2419", why = "DaimonPolicy, SystemPromptBuilder, Conductor, RuntimeEvent, and affect engine mapping." },
-    { path = "crates/roko-core/src/agent.rs", why = "Current agent core types." },
-    { path = "crates/roko-runtime/src/heartbeat.rs", why = "Runtime heartbeat and clock integration surface." },
-    { path = "crates/roko-runtime/src/heartbeat_probes.rs", why = "Current probe implementation surface." },
-    { path = "crates/roko-daimon/src/policy.rs", why = "Affect policy and daimon modulation entry point." },
-]
-symbols = [
-    "Agent",
-    "CorticalState",
-    "Vitality",
-    "Gamma",
-    "Theta",
-    "Delta",
-    "DaimonPolicy",
-    "DomainProfile",
+    { path = "docs/v2/05-AGENT.md", why = "Owned Agent source." },
+    { path = "docs/v2/26-CROSS-CUTS.md", why = "Read-only cross-cut contract; DOCV2-T04 owns edits." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E23-agent-cognitive-autonomy/tasks.toml", why = "Canonical agent autonomy implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E44-cross-cut-functors/tasks.toml", why = "Canonical cross-cut implementation owner." },
+    { path = "crates/roko-agent/src/lifecycle.rs", why = "Integrated agent lifecycle truth to document, not modify." },
+    { path = "crates/roko-runtime/src/heartbeat.rs", why = "Integrated cognitive clock truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT make the agent loop a special path outside Graph/Cell semantics.",
-    "Do NOT require live provider calls for T0 probe or mode-transition tests.",
-    "Do NOT duplicate cognitive workspace or domain-profile logic in runner-only code.",
-    "Do NOT make affect modulation override hard safety or gate decisions.",
+    "Do NOT edit product code or shared cross-cut/public guides.",
+    "Do NOT implement missing autonomy, affect, or goal behavior in a documentation task.",
+    "Do NOT present type names or state transitions from owner proposals as current unless merged code proves them.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'docs/v2/05-AGENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/26-CROSS-CUTS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T03 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core -p roko-runtime -p roko-daimon -p roko-cli 2>&1"
-fail_msg = "agent/runtime/daimon crates must compile after v2 agent changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+command = "grep -q 'docs/v2/05-AGENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && test -f docs/v2/05-AGENT.md"
+fail_msg = "DOCV2-T03 source must exist and remain covered"
 
 [[task]]
 id = "DOCV2-T04"
-title = "Implement v2 Memory, learning loops, dreams, HDC, and c-factor feedback"
-description = "Close the v2 cognition substrate gaps for memory and learning: demurrage-weighted knowledge tiers, heuristic lifecycle, HDC operations, dream consolidation, temporal knowledge graphs, predict-publish-correct loops, CascadeRouter feedback, c-factor lenses, playbooks, experiments, and adaptive thresholds."
+title = "Reconcile Memory, learning, dreams, HDC, and cross-cut documentation"
+description = "After the memory, learning-loop, and cross-cut owners are merged, reconcile the Memory, Learning, and Cross-Cuts documents to durable integrated behavior and tests. Keep unimplemented research/specification material with explicit target or deferred labels rather than creating product mechanisms here."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 800
+tier = "integrative"
+max_loc = 2400
 files = [
-    "crates/roko-neuro/src",
-    "crates/roko-learn/src",
-    "crates/roko-dreams/src",
-    "crates/roko-compose/src",
-    "crates/roko-primitives/src/hdc.rs",
+    "docs/v2/06-MEMORY.md",
+    "docs/v2/07-LEARNING.md",
+    "docs/v2/26-CROSS-CUTS.md",
 ]
-role = "implementer"
-domain = "code"
-depends_on = ["DOCV2-T01", "DOCV2-T03"]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01"]
 depends_on_plan = [
     "E06-COMPOSE-UNIFY",
     "E07-learning-knowledge",
     "E09-OBSERVABILITY",
-    "E13-SPEC-DEBT-V2",
+    "E24-memory-advanced",
+    "E25-learning-loops-advanced",
+    "E44-cross-cut-functors",
 ]
 acceptance = [
-    "Memory admission, demurrage, HDC fingerprints, dream consolidation, and temporal consistency are implemented with durable state and tests.",
-    "Learning loops publish predictions and corrections over the shared event fabric and persist enough state to survive restarts.",
-    "CascadeRouter, playbook extraction, c-factor feedback, experiments, and adaptive thresholds share a single feedback vocabulary.",
+    "Memory tiers, demurrage, heuristics, HDC, dream consolidation, temporal knowledge, learning loops, c-factor, and cross-cut claims match merged code/tests or are labeled target/deferred.",
+    "The three owned documents use one vocabulary for persistence, feedback, transforms, and safety and preserve citations and historical rationale.",
+    "An independent documentation review confirms source provenance, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/06-MEMORY.md", why = "Memory specialization, demurrage, tiers, heuristics, worldviews, AntiKnowledge, HDC, dreams, temporal knowledge graph, pheromones, APIs, and config." },
-    { path = "docs/v2/07-LEARNING.md", why = "Predict-publish-correct, four learning loops, seven compounding loops, c-factor lenses, feedback graph, anti-metrics, and safety bounds." },
-    { path = "docs/v2/26-CROSS-CUTS.md", why = "Memory/Daimon/Dreams endofunctors and cross-cut gate failure behavior." },
-    { path = "docs/v2/ARCHITECTURE-GUIDE.md", lines = "1549-1988", why = "Learning, knowledge store, dream consolidation, and related current implementation mapping." },
-    { path = "crates/roko-neuro/src/knowledge_store.rs", why = "Current knowledge store implementation surface." },
-    { path = "crates/roko-learn/src/cascade_router.rs", why = "CascadeRouter feedback and routing state." },
-    { path = "crates/roko-dreams/src/cycle.rs", why = "Dream consolidation cycle entry point." },
-    { path = "crates/roko-compose/src/strategy.rs", why = "Compose/VCG learning and section-effect feedback surface." },
-]
-symbols = [
-    "KnowledgeStore",
-    "Demurrage",
-    "Heuristic",
-    "HdcFingerprint",
-    "DreamCycle",
-    "CascadeRouter",
-    "CFactor",
-    "Playbook",
+    { path = "docs/v2/06-MEMORY.md", why = "Owned memory source." },
+    { path = "docs/v2/07-LEARNING.md", why = "Owned learning source." },
+    { path = "docs/v2/26-CROSS-CUTS.md", why = "Owned cross-cut source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E24-memory-advanced/tasks.toml", why = "Canonical advanced-memory implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E25-learning-loops-advanced/tasks.toml", why = "Canonical learning-loop implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E44-cross-cut-functors/tasks.toml", why = "Canonical cross-cut implementation owner." },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", why = "Integrated knowledge behavior to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT make learning write-only; every learned state must have load/restore coverage.",
-    "Do NOT add a second memory store independent from the v2 Store/Signal kernel.",
-    "Do NOT optimize c-factor directly; use it as a gate/covariate per the docs.",
-    "Do NOT let dream consolidation mutate safety-critical policy without explicit verification.",
+    "Do NOT edit product code, tests, owner plans, or public guides.",
+    "Do NOT collapse research-backed normative design into a false shipped-status claim.",
+    "Do NOT create a competing memory, learning, or cross-cut implementation while reconciling prose.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/06-MEMORY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/07-LEARNING.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/26-CROSS-CUTS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T04 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-neuro -p roko-learn -p roko-dreams -p roko-compose 2>&1"
-fail_msg = "memory/learning/dreams/compose crates must compile after v2 cognition changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+fail_msg = "DOCV2-T04 sources must remain in the canonical coverage ledger"
 
 [[task]]
 id = "DOCV2-T05"
-title = "Implement v2 Gateway, feeds, recipes, groups, connectivity, and relay contracts"
-description = "Realize the infrastructure docs as composable Graphs of Cells: inference gateway pipeline, provider fallback, cache/cost attribution, Feed and Recipe primitives, Group spaces, membership, shared knowledge, Relay connectivity, MCP/A2A/ERC-8004/x402 exoskeleton flows, subscriptions, backpressure, reconnection, and connector discovery."
+title = "Reconcile Gateway, feeds, recipes, groups, connectivity, and relay documentation"
+description = "After the gateway, feed, group, connectivity, payment, and identity owners are merged, reconcile the four infrastructure documents to integrated contracts and tests. Document only observable product truth and explicit deferred targets."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 900
+tier = "integrative"
+max_loc = 2400
 files = [
-    "crates/roko-agent/src/hermes/gateway_service.rs",
-    "crates/roko-agent/src/provider",
-    "crates/roko-core/src/feed.rs",
-    "crates/roko-core/src/connector.rs",
-    "crates/roko-serve/src/routes/gateway.rs",
-    "crates/roko-serve/src/routes/feeds.rs",
-    "crates/roko-serve/src/routes/connectors.rs",
-    "crates/roko-serve/src/relay.rs",
+    "docs/v2/08-GATEWAY.md",
+    "docs/v2/09-FEEDS.md",
+    "docs/v2/10-GROUPS.md",
+    "docs/v2/11-CONNECTIVITY.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = ["DOCV2-T01", "DOCV2-T02"]
 depends_on_plan = [
-    "E10-FRONTEND-CONTRACT",
-    "E11-chain-isfr",
     "E14-providers-tools",
     "E15-mcp-config",
+    "E26-inference-gateway",
+    "E27-feeds-system",
+    "E28-groups-coordination",
+    "E29-connectivity-relay",
+    "E36-payments",
+    "E39-registries-identity",
 ]
 acceptance = [
-    "Gateway stages, provider fallback, cost tracking, and inference handles are implemented as inspectable Cell/Graph behavior.",
-    "Feeds, recipes, groups, connector discovery, relay rooms, subscriptions, and reconnection/backpressure behavior use Bus/Store rather than hidden channels.",
-    "MCP, A2A, ERC-8004, and x402 integration points are represented as connector or protocol adapters with health and lifecycle tests.",
+    "Gateway stages, providers, cache, cost, feeds, recipes, groups, connectors, relay, backpressure, and discovery claims match merged code and tests.",
+    "MCP, A2A, ERC-8004, and payment integration statements distinguish implemented adapters from normative targets.",
+    "An independent documentation review confirms examples, route/config names, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/08-GATEWAY.md", why = "Inference Gateway pipeline, protocol types, provider calls, cache, cost tracking, batch API, HTTP routes, CascadeRouter, and proxying." },
-    { path = "docs/v2/09-FEEDS.md", why = "Feeds, recipes, feed registry, subscription/payment, dynamic registration, on-chain advertisement, dashboard integration, and config." },
-    { path = "docs/v2/10-GROUPS.md", why = "Group primitive, identity, coordination modes, membership protocol, shared context, APIs, relay room, and acceptance criteria." },
-    { path = "docs/v2/11-CONNECTIVITY.md", why = "Connect protocol, connector lifecycle, exoskeleton protocols, relay discovery, subscription-only data flow, routing, backpressure, reconnection, and multi-chain temporal resolution." },
-    { path = "crates/roko-agent/src/hermes/gateway_service.rs", why = "Current gateway service surface." },
-    { path = "crates/roko-core/src/feed.rs", why = "Current Feed type surface." },
-    { path = "crates/roko-core/src/connector.rs", why = "Current Connector type surface." },
-    { path = "crates/roko-serve/src/relay.rs", why = "Relay implementation entry point." },
-]
-symbols = [
-    "InferenceGateway",
-    "ProviderBackend",
-    "Feed",
-    "Recipe",
-    "Group",
-    "Connector",
-    "RelayRoom",
-    "Subscription",
+    { path = "docs/v2/08-GATEWAY.md", why = "Owned inference-gateway source." },
+    { path = "docs/v2/09-FEEDS.md", why = "Owned feeds/recipes source." },
+    { path = "docs/v2/10-GROUPS.md", why = "Owned groups source." },
+    { path = "docs/v2/11-CONNECTIVITY.md", why = "Owned connectivity/relay source." },
+    { path = "tmp/status-quo/backlog/plans/E26-inference-gateway/tasks.toml", why = "Canonical inference-gateway implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E27-feeds-system/tasks.toml", why = "Canonical feeds implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E28-groups-coordination/tasks.toml", why = "Canonical groups implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E29-connectivity-relay/tasks.toml", why = "Canonical connectivity implementation owner." },
+    { path = "crates/roko-core/src/connector.rs", why = "Integrated connector truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT bypass the gateway pipeline with direct provider calls for normal agent turns.",
-    "Do NOT store feed/group state in dashboard-only caches.",
-    "Do NOT make relay subscriptions lossy without explicit gap detection and recovery.",
-    "Do NOT conflate connectors with extensions; lifecycle and hook semantics are distinct in the spec.",
+    "Do NOT edit gateway, feed, group, connector, relay, payment, or identity code.",
+    "Do NOT add a hidden channel or implementation shim to make prose appear true.",
+    "Do NOT describe a route, protocol, or config surface as available without merged evidence.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/08-GATEWAY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/09-FEEDS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/10-GROUPS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/11-CONNECTIVITY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T05 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-agent -p roko-core -p roko-serve -p roko-chain 2>&1"
-fail_msg = "gateway/feed/group/connectivity crates must compile after v2 infrastructure changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+fail_msg = "DOCV2-T05 sources must remain in the canonical coverage ledger"
 
 [[task]]
 id = "DOCV2-T06"
-title = "Implement v2 Extensions, triggers, tool catalog, and MCP tool parity"
-description = "Implement the extension and trigger system described by v2: eight extension layers, 22 hooks, CaMeL IFC at hook execution, discovery/dependency resolution, lifecycle and fault isolation, declarative triggers, conductor watcher triggers, built-in Cell/tool catalog, MCP exposure, and advertised-vs-executable tool parity."
+title = "Reconcile Extensions, triggers, tools, plugins, and MCP documentation"
+description = "After extension, trigger, and tool/plugin owners are merged, reconcile the Extensions, Triggers, and Tools documents to the integrated catalog, handler, safety, and lifecycle behavior. Missing capabilities remain explicitly deferred product work."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 800
+tier = "integrative"
+max_loc = 1800
 files = [
-    "crates/roko-core/src/extension.rs",
-    "crates/roko-core/src/config/subscriptions.rs",
-    "crates/roko-core/src/tool",
-    "crates/roko-std/src/tool",
-    "crates/roko-agent/src/process/mcp.rs",
-    "crates/roko-acp/src/builtin_tools.rs",
+    "docs/v2/12-EXTENSIONS.md",
+    "docs/v2/13-TRIGGERS.md",
+    "docs/v2/14-TOOLS.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = ["DOCV2-T01", "DOCV2-T05"]
 depends_on_plan = [
     "E04-security-perimeter",
     "E14-providers-tools",
     "E15-mcp-config",
     "E17-acp-completion",
+    "E30-extension-system",
+    "E31-trigger-system",
+    "E32-tool-plugin-ecosystem",
 ]
 acceptance = [
-    "Extension layers, hooks, decisions, loading, dependency resolution, timeouts, and lifecycle are concrete runtime behavior.",
-    "Triggers are declarative, debounced, filtered Graph ingress and include conductor watcher parity.",
-    "Built-in tool catalog, MCP tool exposure, and executable handler registry agree under automated tests.",
+    "Extension hooks/lifecycle, trigger bindings, tool catalog, handlers, plugins, MCP, and safety claims match integrated code/tests or carry explicit target/deferred labels.",
+    "Advertised tools and executable handlers are documented from one canonical catalog without inventing parallel registration behavior.",
+    "An independent documentation review confirms schemas, examples, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/12-EXTENSIONS.md", why = "Extension primitive, eight layers, hooks, decision enums, execution order, CaMeL IFC, fault isolation, loading, dependency resolution, lifecycle, and config." },
-    { path = "docs/v2/13-TRIGGERS.md", why = "Trigger system, event sources, bindings, debounce/filter/conditions, conductor watcher rules, APIs, and config." },
-    { path = "docs/v2/14-TOOLS.md", why = "Built-in Cell catalog across protocols, MCP integration, safety hooks, schema, synergy patterns, and implementation tiers." },
-    { path = "crates/roko-core/src/extension.rs", why = "Current extension type surface." },
-    { path = "crates/roko-core/src/config/subscriptions.rs", why = "Current subscription/trigger config surface." },
-    { path = "crates/roko-std/src/tool/registry.rs", why = "Current built-in tool registry." },
-    { path = "crates/roko-std/src/tool/handlers.rs", why = "Executable handler registry to keep in parity with advertised tools." },
-]
-symbols = [
-    "Extension",
-    "ExtensionHook",
-    "TriggerBinding",
-    "ConductorWatcher",
-    "ToolRegistry",
-    "ToolHandler",
-    "McpConfig",
+    { path = "docs/v2/12-EXTENSIONS.md", why = "Owned extensions source." },
+    { path = "docs/v2/13-TRIGGERS.md", why = "Owned triggers source." },
+    { path = "docs/v2/14-TOOLS.md", why = "Owned tools source." },
+    { path = "tmp/status-quo/backlog/plans/E30-extension-system/tasks.toml", why = "Canonical extension implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E31-trigger-system/tasks.toml", why = "Canonical trigger implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E32-tool-plugin-ecosystem/tasks.toml", why = "Canonical tool/plugin implementation owner." },
+    { path = "crates/roko-core/src/extension.rs", why = "Integrated extension truth to document, not modify." },
+    { path = "crates/roko-std/src/tool/registry.rs", why = "Integrated tool catalog truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT advertise a tool unless an executable handler exists or it is feature-gated off.",
-    "Do NOT run extension hooks without capability/IFC checks.",
-    "Do NOT implement triggers as one-off route handlers; they must fire Graphs through the Trigger protocol.",
-    "Do NOT block the agent loop on unbounded hook execution; timeouts and fault isolation are required.",
+    "Do NOT edit product code, tests, manifests, or ACP/MCP implementation.",
+    "Do NOT add missing handlers, hooks, triggers, or plugin behavior under a docs task.",
+    "Do NOT document catalog entries as executable unless the canonical registry and handler evidence agree.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/12-EXTENSIONS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/13-TRIGGERS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/14-TOOLS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T06 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core -p roko-std -p roko-agent -p roko-acp 2>&1"
-fail_msg = "extension/trigger/tool crates must compile after v2 tool changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+fail_msg = "DOCV2-T06 sources must remain in the canonical coverage ledger"
 
 [[task]]
 id = "DOCV2-T07"
-title = "Implement v2 Telemetry, security, auth, payments, and config contracts"
-description = "Realize operational v2 contracts: Observe/Lens and StateHub telemetry, c-factor projection, dashboard data contracts, taint lattice and immune pipeline, capability intersection, auth paths, invitation/team flows, x402/MPP payment flows, reputation pricing, disputes, config-as-Signal, schema migration, hot reload, domain profiles, and secret management."
+title = "Reconcile Telemetry, security, auth, payments, and config documentation"
+description = "After telemetry, security, auth, payment, and config owners are merged, reconcile the five operational-contract documents to integrated fail-closed behavior, schemas, routes, and tests. This roll-up documents behavior and deferrals; it does not repair product mechanisms."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 950
+tier = "integrative"
+max_loc = 3000
 files = [
-    "crates/roko-core/src/obs",
-    "crates/roko-core/src/state_hub.rs",
-    "crates/roko-core/src/immune.rs",
-    "crates/roko-core/src/config",
-    "crates/roko-core/src/secrets",
-    "crates/roko-serve/src/routes/middleware.rs",
-    "crates/roko-serve/src/routes/auth.rs",
-    "crates/roko-chain/src/x402.rs",
+    "docs/v2/15-TELEMETRY.md",
+    "docs/v2/16-SECURITY.md",
+    "docs/v2/17-AUTH.md",
+    "docs/v2/18-PAYMENTS.md",
+    "docs/v2/19-CONFIG.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = ["DOCV2-T01", "DOCV2-T02"]
 depends_on_plan = [
     "E02-STORAGE-CONVERGENCE",
     "E04-security-perimeter",
-    "E05-gate-adaptivity-live",
     "E09-OBSERVABILITY",
     "E18-DOCS-CONFIG-OPS",
+    "E33-telemetry-lens",
+    "E34-security-ifc",
+    "E35-auth-protocol",
+    "E36-payments",
+    "E42-config-evolution",
 ]
 acceptance = [
-    "Lens/Observe telemetry and StateHub projections are live data contracts for CLI, API, TUI, and web surfaces.",
-    "Security, auth, payment, and config behavior is fail-closed, scoped, hot-reloadable where specified, and covered by route/config tests.",
-    "Secrets, payment state, auth decisions, and config evolution are represented through v2 Store/Signal semantics with redaction and audit coverage.",
+    "Observe/Lens, StateHub, taint/capabilities, auth, payment, config, secrets, and audit claims match merged code/tests or are explicitly labeled target/deferred.",
+    "Security-sensitive examples and defaults are fail-closed and never imply credentials, authorization, or payment guarantees not proven by integrated behavior.",
+    "An independent security-aware documentation review confirms route/config names, redaction, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/15-TELEMETRY.md", why = "Observe protocol, LensScope, built-in lenses, c-factor sub-lenses, lens composition, StateHub, dashboard plumbing, config, and performance." },
-    { path = "docs/v2/16-SECURITY.md", why = "Taint lattice, immune system pipeline, capability intersection, sandboxing, CaMeL, corrigibility, quarantine, and security acceptance criteria." },
-    { path = "docs/v2/17-AUTH.md", why = "Privy/API key/agent-token/relay auth paths, team workspace sharing, invitation flow, JWKS caching, token lifecycle, and auth-as-Verify pipeline." },
-    { path = "docs/v2/18-PAYMENTS.md", why = "x402, MPP, reputation pricing, relay payment flow, disputes, feed marketplace economics, subscriptions, and dashboard integration." },
-    { path = "docs/v2/19-CONFIG.md", why = "Config-as-Signal, source priority, compose/verify cells, config reload triggers, schema migration, domain profiles, hierarchy, and secret management." },
-    { path = "crates/roko-core/src/obs/mod.rs", why = "Current telemetry module root." },
-    { path = "crates/roko-core/src/config/schema.rs", why = "Current config schema surface." },
-    { path = "crates/roko-serve/src/routes/middleware.rs", why = "Current auth/scope middleware surface." },
-    { path = "crates/roko-chain/src/x402.rs", why = "Current x402 payment implementation surface." },
-]
-symbols = [
-    "Lens",
-    "StateHub",
-    "ImmunePipeline",
-    "Taint",
-    "AuthPath",
-    "PaymentIntent",
-    "RokoConfig",
-    "SecretResolver",
+    { path = "docs/v2/15-TELEMETRY.md", why = "Owned telemetry source; DOCV2-T08 may read but not edit it." },
+    { path = "docs/v2/16-SECURITY.md", why = "Owned security source." },
+    { path = "docs/v2/17-AUTH.md", why = "Owned auth source." },
+    { path = "docs/v2/18-PAYMENTS.md", why = "Owned payments source." },
+    { path = "docs/v2/19-CONFIG.md", why = "Owned config source." },
+    { path = "tmp/status-quo/backlog/plans/E33-telemetry-lens/tasks.toml", why = "Canonical telemetry implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E34-security-ifc/tasks.toml", why = "Canonical IFC/security implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E35-auth-protocol/tasks.toml", why = "Canonical auth implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E36-payments/tasks.toml", why = "Canonical payments implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E42-config-evolution/tasks.toml", why = "Canonical config-evolution implementation owner." },
+    { path = "crates/roko-core/src/config/schema.rs", why = "Integrated config truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT expose secrets through config show, telemetry, SSE, WebSocket, or route errors.",
-    "Do NOT allow unknown auth scopes to fall back to permissive behavior.",
-    "Do NOT make StateHub a dashboard-only duplicate of runner state.",
-    "Do NOT silently drop config keys when schema migration or validation can report them.",
+    "Do NOT edit security, auth, payment, telemetry, config, secrets, route, or test code.",
+    "Do NOT weaken, invent, or silently normalize security-sensitive behavior in prose.",
+    "Do NOT expose real credentials or copy secrets into examples or evidence.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/15-TELEMETRY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/16-SECURITY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/17-AUTH.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/18-PAYMENTS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/19-CONFIG.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T07 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core -p roko-serve -p roko-chain 2>&1"
-fail_msg = "telemetry/security/auth/payment/config crates must compile after v2 operational changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+fail_msg = "DOCV2-T07 sources must remain in the canonical coverage ledger"
 
 [[task]]
 id = "DOCV2-T08"
-title = "Implement v2 Surfaces, marketplace, and dashboard data contracts"
-description = "Implement user-facing v2 surfaces and marketplace workflows: CLI/HTTP/TUI/dashboard projection contracts, visual composition and authoring surfaces, Workbench, Agent Inbox, Generative Canvas, marketplace passport/reputation/commerce, DAW composability, transparent take-rates, and fork-chain provenance."
+title = "Reconcile Surfaces, marketplace, and dashboard-contract documentation"
+description = "After surfaces, marketplace, telemetry, payment, and identity owners are merged, reconcile the Surfaces and Marketplace documents to the shared integrated projection and economy contracts. Telemetry is read-only context owned by DOCV2-T07."
 status = "ready"
 tier = "integrative"
-model_hint = "claude-sonnet-4-6"
-max_loc = 750
+max_loc = 1400
 files = [
-    "crates/roko-core/src/dashboard_snapshot.rs",
-    "crates/roko-core/src/job.rs",
-    "crates/roko-serve/src/projection_contract.rs",
-    "crates/roko-serve/src/routes/projections.rs",
-    "crates/roko-serve/src/routes/jobs.rs",
-    "demo/demo-app/src/app/DataHub.ts",
-    "demo/demo-app/src/components/cells/CellGraph.tsx",
-    "demo/demo-app/src/components/ChainActivityPanel.tsx",
+    "docs/v2/20-SURFACES.md",
+    "docs/v2/21-MARKETPLACE.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = ["DOCV2-T05", "DOCV2-T07"]
 depends_on_plan = [
     "E10-FRONTEND-CONTRACT",
-    "E11-chain-isfr",
-    "E14-providers-tools",
-    "E17-acp-completion",
+    "E33-telemetry-lens",
+    "E36-payments",
+    "E37-surfaces",
+    "E38-marketplace",
+    "E39-registries-identity",
 ]
 acceptance = [
-    "CLI/API/TUI/web surfaces consume shared StateHub/projection contracts instead of route-specific shape drift.",
-    "Marketplace identity, reputation, job commerce, fork chains, and transparent economics are backed by typed API and chain/state models.",
-    "Dashboard data contracts and visual authoring primitives are validated by build/e2e coverage.",
+    "CLI/API/TUI/web surface, StateHub/projection, marketplace identity, reputation, fork, and economy claims match merged code/tests or are labeled target/deferred.",
+    "The documents consume canonical telemetry/payment/identity contracts without defining alternate shapes or editing docs/v2/15-TELEMETRY.md.",
+    "An independent documentation review confirms public names, examples, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/20-SURFACES.md", why = "CLI, HTTP API, TUI, dashboard, visual composition, authoring primitives, Workbench, Agent Inbox, and Generative Canvas." },
-    { path = "docs/v2/21-MARKETPLACE.md", why = "Agent identity/passport, reputation, commerce, DAW composability, fork chains, transparent take-rates, and marketplace APIs." },
-    { path = "docs/v2/15-TELEMETRY.md", lines = "736-944", why = "StateHub and dashboard plumbing data contracts consumed by surfaces." },
-    { path = "crates/roko-serve/src/projection_contract.rs", why = "Current projection contract for frontend/TUI/API parity." },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "Current dashboard snapshot model." },
-    { path = "crates/roko-core/src/job.rs", why = "Current job/marketplace-adjacent type surface." },
-    { path = "demo/demo-app/src/app/DataHub.ts", why = "Dashboard data ingestion surface." },
-]
-symbols = [
-    "DashboardSnapshot",
-    "ProjectionContract",
-    "StateHub",
-    "AgentPassport",
-    "TraceRank",
-    "Marketplace",
-    "Workbench",
+    { path = "docs/v2/20-SURFACES.md", why = "Owned surfaces source." },
+    { path = "docs/v2/21-MARKETPLACE.md", why = "Owned marketplace source." },
+    { path = "docs/v2/15-TELEMETRY.md", why = "Read-only projection context owned by DOCV2-T07." },
+    { path = "tmp/status-quo/backlog/plans/E37-surfaces/tasks.toml", why = "Canonical surfaces implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E38-marketplace/tasks.toml", why = "Canonical marketplace implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E39-registries-identity/tasks.toml", why = "Canonical identity implementation owner." },
+    { path = "crates/roko-serve/src/projection_contract.rs", why = "Integrated projection truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT fork frontend wire shapes from roko-core or roko-serve projection contracts.",
-    "Do NOT put marketplace state only in frontend fixtures.",
-    "Do NOT obscure take-rates or reputation inputs; v2 requires transparent economics.",
-    "Do NOT introduce one-off dashboard polling when StateHub streaming/projections are available.",
+    "Do NOT edit frontend, projection, marketplace, chain, route, test, or telemetry-document files.",
+    "Do NOT define a route-specific data shape when the integrated projection contract is canonical.",
+    "Do NOT document visual authoring or marketplace operations as available without merged evidence.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'docs/v2/20-SURFACES.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/21-MARKETPLACE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T08 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core -p roko-serve 2>&1 && npm --prefix demo/demo-app run build"
-fail_msg = "surface/marketplace backend crates and dashboard build must pass after v2 surface changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+command = "grep -q 'docs/v2/20-SURFACES.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/21-MARKETPLACE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && test -f docs/v2/20-SURFACES.md && test -f docs/v2/21-MARKETPLACE.md"
+fail_msg = "DOCV2-T08 sources must exist and remain covered"
 
 [[task]]
 id = "DOCV2-T09"
-title = "Implement v2 registries, arenas, evals, bounties, and DeFi infrastructure"
-description = "Implement v2 economy/domain work: ERC-8004 registries, ZK-HDC attestations, on-chain InsightStore, chain witness, gossip/job market, arenas, evals, bounties, leaderboards, ISFR oracle, yield perpetuals, VCG clearing, venue adapters, DeFi risk engine, TradingReflect, and multi-chain event/API contracts."
+title = "Reconcile Registries, arenas, evals, bounties, and DeFi documentation"
+description = "After registry/identity, arena/eval, and DeFi owners are merged, reconcile the three chain-domain documents to integrated Rust, contract, route, and test truth. Unsupported or unsafe economic mechanisms remain clearly normative or deferred."
 status = "ready"
-tier = "architectural"
-model_hint = "claude-opus-4-6"
-max_loc = 1000
+tier = "integrative"
+max_loc = 1800
 files = [
-    "crates/roko-chain/src",
-    "contracts/src",
-    "contracts/script/Deploy.s.sol",
-    "crates/roko-serve/src/routes/chain.rs",
-    "crates/roko-serve/src/routes/isfr.rs",
-    "crates/roko-serve/src/routes/bench.rs",
+    "docs/v2/22-REGISTRIES.md",
+    "docs/v2/23-ARENAS.md",
+    "docs/v2/24-DEFI.md",
 ]
-role = "implementer"
-domain = "code"
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
 depends_on = ["DOCV2-T05", "DOCV2-T07", "DOCV2-T08"]
 depends_on_plan = [
-    "E04-security-perimeter",
     "E11-chain-isfr",
-    "E14-providers-tools",
-    "E15-mcp-config",
+    "E39-registries-identity",
+    "E40-arenas-evals",
+    "E41-defi-products",
 ]
 acceptance = [
-    "Registry, attestation, witness, job market, arena, eval, bounty, and DeFi models are implemented as typed Rust and Solidity contracts where applicable.",
-    "ISFR, yield perpetual, VCG clearing, venue adapter, risk, and trading reflection flows are wired through API/events and chain clients.",
-    "Contracts, roko-chain, and serving routes have compile/test coverage for domain-critical paths.",
+    "Registry, identity, witness, arena, eval, bounty, ISFR, DeFi, risk, route, and contract claims match merged code/tests or are explicitly target/deferred.",
+    "Examples never imply deployed contracts, live funds, or external-service state; local implementation evidence is distinguished from deployment status.",
+    "An independent chain-aware documentation review confirms types, APIs, local links, and current-versus-target labels.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/22-REGISTRIES.md", why = "ERC-8004 registries, ZK-HDC proofs, on-chain InsightStore, chain witness, gossip networking, and job market." },
-    { path = "docs/v2/23-ARENAS.md", why = "Arenas, evals, bounties, scoring functions, leaderboards, registry/contracts, APIs, and events." },
-    { path = "docs/v2/24-DEFI.md", why = "ISFR oracle, yield perpetuals, VCG clearing, multi-chain data, venue adapters, DeFi risk, TradingReflect, events, APIs, and deployment." },
-    { path = "crates/roko-chain/src/agent_registry.rs", why = "Current agent registry implementation surface." },
-    { path = "crates/roko-chain/src/isfr.rs", why = "Current ISFR implementation surface." },
-    { path = "crates/roko-chain/src/marketplace.rs", why = "Current marketplace/economy chain surface." },
-    { path = "contracts/script/Deploy.s.sol", why = "Current Solidity deployer, must remain in parity with authored contracts." },
-]
-symbols = [
-    "AgentRegistry",
-    "IdentityRegistry",
-    "ReputationRegistry",
-    "ValidationRegistry",
-    "InsightStore",
-    "Arena",
-    "BountyMarket",
-    "ISFR",
-    "VenueAdapter",
+    { path = "docs/v2/22-REGISTRIES.md", why = "Owned registries source." },
+    { path = "docs/v2/23-ARENAS.md", why = "Owned arenas/evals source." },
+    { path = "docs/v2/24-DEFI.md", why = "Owned DeFi source." },
+    { path = "tmp/status-quo/backlog/plans/E39-registries-identity/tasks.toml", why = "Canonical registry/identity implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E40-arenas-evals/tasks.toml", why = "Canonical arena/eval implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E41-defi-products/tasks.toml", why = "Canonical DeFi implementation owner." },
+    { path = "crates/roko-chain/src/agent_registry.rs", why = "Integrated registry truth to document, not modify." },
+    { path = "crates/roko-chain/src/isfr.rs", why = "Integrated ISFR truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT add chain-only state with no API/event projection.",
-    "Do NOT deploy only a subset of authored contracts.",
-    "Do NOT make eval or bounty scoring opaque; scoring functions must be typed and inspectable.",
-    "Do NOT bypass risk gates for DeFi actions, even in local Mirage/dev mode.",
+    "Do NOT edit Rust, Solidity, routes, deployment scripts, tests, or manifests.",
+    "Do NOT deploy, transact, mutate external services, or claim a local contract is deployed.",
+    "Do NOT turn speculative economics into a present-tense product guarantee.",
 ]
 
 [[task.verify]]
 phase = "structural"
 command = "grep -q 'docs/v2/22-REGISTRIES.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/23-ARENAS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/24-DEFI.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T09 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-chain -p roko-serve 2>&1"
-fail_msg = "roko-chain and serving routes must compile after v2 registry/arena/defi changes"
-
-[[task.verify]]
-phase = "test"
-command = "cd contracts && forge build 2>&1 | tail -20 && forge test 2>&1 | tail -20"
-fail_msg = "Solidity contracts must build and pass forge tests after v2 registry/arena/defi changes"
-
-[[task.verify]]
-phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "DOC-v2-core plan must remain roko-valid"
-
+fail_msg = "DOCV2-T09 sources must remain in the canonical coverage ledger"
 
 [[task]]
 id = "DOCV2-T10"
-title = "Reconcile v2 deployment, roadmap, public API, CLI, ACP, and integration guides"
-description = "Make v2 operations and guide docs executable against the implementation: deployment tiers, daemon lifecycle, WASM/native packaging, brain export/import, secrets, Railway/Fly/Docker, worker mode, monitoring, roadmap phase status, CLI reference, API reference, ACP integration guide, and end-to-end integration guide examples."
+title = "Reconcile the v2 index, deployment, roadmap, and public integration guides"
+description = "After every topical documentation roll-up and the deployment/orchestrator owners are merged, reconcile the global index, deployment and roadmap documents, and all five public guides to exact integrated CLI, API, ACP, architecture, config, and deployment truth. This is the final documentation acceptance roll-up, not a product implementation lane."
 status = "ready"
-tier = "integrative"
-model_hint = "claude-sonnet-4-6"
-max_loc = 700
+tier = "architectural"
+max_loc = 5000
 files = [
-    "crates/roko-cli/src/main.rs",
-    "crates/roko-serve/src/openapi.rs",
-    "crates/roko-serve/src/deploy",
-    "crates/roko-acp/src",
-    "docs/v2",
+    "docs/v2/00-INDEX.md",
+    "docs/v2/25-DEPLOYMENT.md",
+    "docs/v2/28-ROADMAP.md",
+    "docs/v2/ACP-INTEGRATION-GUIDE.md",
+    "docs/v2/API-REFERENCE.md",
+    "docs/v2/ARCHITECTURE-GUIDE.md",
+    "docs/v2/CLI-REFERENCE.md",
+    "docs/v2/INTEGRATION-GUIDE.md",
 ]
-role = "implementer"
-domain = "code"
-depends_on = ["DOCV2-T02", "DOCV2-T06", "DOCV2-T07", "DOCV2-T08", "DOCV2-T09"]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = [
+    "DOCV2-T01",
+    "DOCV2-T02",
+    "DOCV2-T03",
+    "DOCV2-T04",
+    "DOCV2-T05",
+    "DOCV2-T06",
+    "DOCV2-T07",
+    "DOCV2-T08",
+    "DOCV2-T09",
+]
 depends_on_plan = [
     "E01-execution-engine",
     "E10-FRONTEND-CONTRACT",
@@ -723,54 +534,48 @@ depends_on_plan = [
     "E16-prd-self-hosting-gaps",
     "E17-acp-completion",
     "E18-DOCS-CONFIG-OPS",
+    "E43-deployment-portability",
+    "E45-orchestrator-mori-parity",
 ]
 acceptance = [
-    "CLI, API, ACP, and integration guide examples match actual commands, routes, config keys, auth semantics, and deployment behavior.",
-    "Deployment, daemon, worker, secrets, monitoring, and roadmap status are verified against implemented code or explicitly marked deferred.",
-    "Guide drift guards cover the public reference paths most likely to go stale.",
+    "The index and roadmap report integrated status without converting open normative targets into shipped claims; superseded history and source mappings remain explicit.",
+    "CLI, API, ACP, architecture, integration, config, daemon, worker, secrets, and deployment examples match reproducible local help, route/schema, and test evidence.",
+    "An independent public-docs review runs all safe cited commands, checks local links, confirms all 34 sources remain covered, and rejects any product edit or unsupported claim.",
 ]
 
 [task.context]
 read_files = [
-    { path = "docs/v2/25-DEPLOYMENT.md", why = "Deployment tiers, daemon lifecycle, packaging, brain export/import, secrets, Railway/Fly/Docker, worker mode, execution tiers, relay/Mirage, and monitoring." },
-    { path = "docs/v2/28-ROADMAP.md", why = "Phase status, dependency graph, crate-to-concepts mapping, milestones, and current-state reconciliation." },
-    { path = "docs/v2/CLI-REFERENCE.md", why = "Public CLI reference and example commands to reconcile with roko-cli." },
-    { path = "docs/v2/API-REFERENCE.md", why = "Public HTTP/API reference to reconcile with roko-serve routes/openapi." },
-    { path = "docs/v2/INTEGRATION-GUIDE.md", why = "End-to-end integration, config, provider, MCP, gate, learning, event, deployment, and WorkflowEngine guide." },
-    { path = "docs/v2/ACP-INTEGRATION-GUIDE.md", why = "ACP JSON-RPC, session lifecycle, streaming updates, workflow pipeline, knowledge integration, config, transport, and limitations." },
-    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Long-form architecture guide used as public cross-reference for implementation parity." },
-    { path = "crates/roko-cli/src/main.rs", why = "CLI command wiring for CLI reference parity." },
-    { path = "crates/roko-serve/src/openapi.rs", why = "OpenAPI/export surface for API reference parity." },
-    { path = "crates/roko-acp/src/handler.rs", why = "ACP request/notification handler surface for ACP guide parity." },
-]
-symbols = [
-    "roko CLI",
-    "OpenAPI",
-    "AcpHandler",
-    "Deployment",
-    "Daemon",
-    "Worker",
-    "IntegrationGuide",
-    "Roadmap",
+    { path = "docs/v2/00-INDEX.md", why = "Owned global index and vocabulary source." },
+    { path = "docs/v2/25-DEPLOYMENT.md", why = "Owned deployment source." },
+    { path = "docs/v2/28-ROADMAP.md", why = "Owned global current-state roadmap." },
+    { path = "docs/v2/ACP-INTEGRATION-GUIDE.md", why = "Owned ACP public guide." },
+    { path = "docs/v2/API-REFERENCE.md", why = "Owned HTTP/API public reference." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Owned cross-cutting public architecture guide." },
+    { path = "docs/v2/CLI-REFERENCE.md", why = "Owned CLI public reference." },
+    { path = "docs/v2/INTEGRATION-GUIDE.md", why = "Owned end-to-end public guide." },
+    { path = "tmp/status-quo/backlog/plans/E43-deployment-portability/tasks.toml", why = "Canonical deployment implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity/tasks.toml", why = "Canonical remaining runner/Mori implementation owner." },
+    { path = "crates/roko-cli/src/main.rs", why = "Integrated CLI truth to document, not modify." },
+    { path = "crates/roko-serve/src/openapi.rs", why = "Integrated API schema truth to document, not modify." },
+    { path = "crates/roko-acp/src/handler.rs", why = "Integrated ACP truth to document, not modify." },
 ]
 anti_patterns = [
-    "Do NOT update docs to claim behavior that is not implemented or gated by a previous task.",
-    "Do NOT leave command examples using stale default-engine, auth, health, or deployment semantics.",
-    "Do NOT duplicate API schemas manually when openapi/projection contracts can be generated or checked.",
-    "Do NOT mark roadmap items done without linked implementation or explicit deferral evidence.",
+    "Do NOT edit production code, tests, manifests, generated indexes, lockfiles, or documents owned by DOCV2-T01 through T09.",
+    "Do NOT make a documented command succeed by changing the product; record a verified limitation or return it to the canonical owner.",
+    "Do NOT claim deployment, credentials, external mutation, or remote availability from local repository evidence.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'docs/v2/25-DEPLOYMENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/28-ROADMAP.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/CLI-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/API-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ACP-INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
-fail_msg = "DOCV2-T10 source docs must be listed in the docs-v2-core coverage ledger"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli -p roko-serve -p roko-acp 2>&1"
-fail_msg = "CLI, serve, and ACP crates must compile after v2 guide/API reconciliation"
+command = "grep -q 'docs/v2/25-DEPLOYMENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/28-ROADMAP.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/CLI-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/API-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ACP-INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ARCHITECTURE-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T10 sources must remain in the canonical coverage ledger"
 
 [[task.verify]]
 phase = "structural"
-command = "cargo run -q -p roko-cli --bin roko -- --help >/dev/null && cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-v2-core"
-fail_msg = "public CLI help must run and DOC-v2-core plan must remain roko-valid"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate --strict tmp/status-quo/backlog/plans"
+fail_msg = "The complete backlog plan graph must remain strictly valid after documentation reconciliation"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'from pathlib import Path; import tomllib; p=Path(\"tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml\"); d=tomllib.loads(p.read_text()); sources={str(x) for x in Path(\"docs/v2\").glob(\"**/*.md\")}; covered={r[\"path\"] for t in d[\"task\"] for r in t[\"context\"][\"read_files\"] if r[\"path\"].startswith(\"docs/v2/\")}; assert len(sources)==34 and sources<=covered and d[\"meta\"][\"total\"]==10 and d[\"meta\"][\"done\"]==0'"
+fail_msg = "DOC-v2-core must preserve all 34 sources, ten task IDs, and zero completed tasks"

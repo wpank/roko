@@ -144,7 +144,8 @@ that no external `P*` reference was canonicalized or removed.
 
 ## Integration
 
-Not yet integrated and not DONE. The coordinator/integration owner must record the
-candidate SHA, obtain independent acceptance of that immutable candidate, merge it
-in dependency order, rerun the census and validation on the integration branch, and
-only then update canonical Wave 0 status.
+- Candidate: `ace630cebebc0b00aadcb60e8b5af3414ccadf88`.
+- Independent review: ACCEPTED in `tmp/status-quo/execution-evidence/CTRL-03-REVIEW.md`; review commit `1c0fd5cc0dd1c9857c5734c589283cbaaff0d6ad`.
+- Integration merge: `4ae834b797fac4bf3be61714418388b2012e4206`.
+- Post-merge proof: candidate ancestry, diff check, clean integration status, and self-heal strict validation (0 diagnostics in 6 plans) pass. Backlog strict validation still reports only the unchanged 25 file-reference diagnostics assigned to CTRL-06/07; the independent exact-ID census proves 36 internal aliases resolved and the 11 external P references preserved.
+- Final status: `DONE`.

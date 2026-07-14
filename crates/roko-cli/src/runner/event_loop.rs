@@ -246,6 +246,18 @@ impl RoutedAgentEvent {
     }
 }
 
+fn refresh_eligible_agent_activity<R>(
+    ownership: &mut AttemptOwnership<R>,
+    attempt: &TaskAttemptRef,
+    effect: EffectRef,
+    now: crate::runner::deadlines::MonotonicTime,
+) -> bool {
+    if !ownership.event_is_eligible(attempt, AttemptPhase::Agent, effect) {
+        return false;
+    }
+    ownership.record_agent_activity(attempt, effect, now)
+}
+
 async fn forward_agent_events(
     attempt: TaskAttemptRef,
     effect: EffectRef,
@@ -1313,21 +1325,16 @@ pub async fn run(
                 let is_turn_done = matches!(&event, AgentEvent::TurnCompleted { .. });
                 let is_exited = matches!(&event, AgentEvent::Exited { .. });
                 let is_terminal = is_turn_done || is_exited;
-                if !attempt_ownership.event_is_eligible(
+                if !refresh_eligible_agent_activity(
+                    &mut attempt_ownership,
                     &event_attempt,
-                    AttemptPhase::Agent,
                     event_effect,
+                    monotonic_now(),
                 ) {
                     debug!(attempt = %event_attempt.key(), effect = event_effect.0,
                         "ignoring late agent event without exact ownership");
                     continue;
                 }
-                // Reset agent-silence deadline on every eligible agent event.
-                attempt_ownership.record_agent_activity(
-                    &event_attempt,
-                    event_effect,
-                    monotonic_now(),
-                );
                 let mut settlement = None;
                 let mut terminal_failure = None;
                 if is_terminal {
@@ -9945,6 +9952,67 @@ mod tests_post_gate_reflection_lessons {
         assert_eq!(routed_attempt, attempt);
         assert_eq!(routed_effect, effect);
         assert_eq!(agent_id, "agent-2");
+    }
+
+    #[test]
+    fn eligible_agent_activity_refresh_is_exact_and_monotonic() {
+        let attempt = TaskAttemptRef::new("plan", "task", 2);
+        let effect = EffectRef(17);
+        let started = crate::runner::deadlines::MonotonicTime::from_millis(10);
+        let refreshed = crate::runner::deadlines::MonotonicTime::from_millis(30);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new_at(AttemptPhase::Agent, effect, started),
+                (),
+            )
+            .unwrap();
+
+        assert!(!refresh_eligible_agent_activity(
+            &mut ownership,
+            &attempt,
+            EffectRef(999),
+            refreshed,
+        ));
+        assert!(refresh_eligible_agent_activity(
+            &mut ownership,
+            &attempt,
+            effect,
+            refreshed,
+        ));
+        assert!(refresh_eligible_agent_activity(
+            &mut ownership,
+            &attempt,
+            effect,
+            started,
+        ));
+        let timing = ownership.deadline_candidates().pop().unwrap().timing;
+        assert_eq!(timing.attempt_started_at, started);
+        assert_eq!(timing.phase_started_at, started);
+        assert_eq!(timing.last_agent_activity_at, refreshed);
+
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Agent, effect)
+            .unwrap();
+        ownership
+            .transition_claim(claim, AttemptPhase::AwaitingGate, effect)
+            .unwrap();
+        assert!(!refresh_eligible_agent_activity(
+            &mut ownership,
+            &attempt,
+            effect,
+            crate::runner::deadlines::MonotonicTime::from_millis(40),
+        ));
+        assert_eq!(
+            ownership
+                .deadline_candidates()
+                .pop()
+                .unwrap()
+                .timing
+                .last_agent_activity_at,
+            refreshed,
+        );
     }
 
     #[test]

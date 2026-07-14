@@ -44,7 +44,12 @@ Review readiness:
 - Required reviewer focus: confirm the relative path maps to `.`, every successful Unix rename reaches parent `sync_all`, unique `create_new` staging and invalid-JSONL clearing remain intact, and no full-SH03 claim is implied.
 
 Integration:
-- Review evidence: pending independent review.
-- Integration commit: pending.
-- Post-merge commands/results: pending integration-owner rerun.
-- Final status: `IMPLEMENTED_UNREVIEWED`; this bounded precursor does not mark `SH03-T05` done.
+- Independent review `5626cd136908ab00884fac702c0ad6f708cc3969`
+  accepted the exact candidate with no findings; integrated implementation and
+  review commits are `20fae2713` and `9c015378a`.
+- Post-merge atomic tests passed 7/7, runner persistence tests passed 8/8, the
+  full TUI regression selection remained green at 245/245, and the roko-cli
+  all-target check, format, and diff checks passed.
+- Final status: `DONE` for this bounded CTRL-02 atomic/persist precursor only.
+  Crash-point recovery, newest-owned artifact selection, stale cleanup,
+  quarantine, issues 30/58, and `SH03-T05` remain open.

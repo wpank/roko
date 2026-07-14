@@ -52,7 +52,13 @@ Review readiness:
 - Known limitations: full `SH04-T06` remains `ready`; issue 11 phase contradictions require structured identity and phase-state reconciliation in separately reviewed work.
 
 Integration:
-- Independent review: pending.
-- Integration commit: pending.
-- Post-merge verification: pending.
-- Final status: pending coordinator integration. This candidate closes only the bounded CTRL-02 TUI precursor attribution, not `SH04-T06`, SH04, issue 11, Wave 4, or the programme.
+- Independent review `14dc40953d83859a8c8293413e6dcdbfb977d380`
+  accepted the exact candidate with no findings; integrated implementation and
+  review commits are `0a307ab08` and `1eb2eabb6`.
+- Post-merge `cargo test -p roko-cli tui` passed 245/245 and
+  `cargo check -p roko-cli --all-targets`, format, and diff checks passed. The
+  only warning is the pre-existing plan-validation test crate's missing crate
+  documentation.
+- Final status: `DONE` for this bounded CTRL-02 TUI precursor attribution only.
+  `SH04-T06`, SH04, issue 11, remaining issue 14 findings, Wave 4, and the
+  programme remain open.

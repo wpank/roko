@@ -31,8 +31,6 @@ static CONFIG_MUTATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 struct UpdateCommit {
     response: Value,
-    toml: String,
-    generation: u64,
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -95,27 +93,6 @@ async fn update_config(
                 ApiError::internal(format!("config transaction task failed: {error}"))
             })??;
 
-    // Ephemeral copies follow the committed main-file/live-state truth. Their
-    // failures are reported independently and never roll that truth back.
-    let workspaces = {
-        let workspaces = state.ephemeral_workspaces.read().await;
-        workspaces
-            .values()
-            .map(|workspace| (workspace.id.clone(), workspace.path.clone()))
-            .collect::<Vec<_>>()
-    };
-    for (workspace_id, path) in workspaces {
-        if let Err(error) = tokio::fs::write(path.join("roko.toml"), &commit.toml).await {
-            tracing::warn!(
-                %workspace_id,
-                path = %path.display(),
-                %error,
-                generation = commit.generation,
-                "failed to propagate committed config to ephemeral workspace"
-            );
-        }
-    }
-
     let mut response = commit.response;
     mask_secret_fields(&mut response);
     Ok(Json(response))
@@ -132,6 +109,19 @@ fn update_config_transaction_with_hook<F>(
 ) -> Result<UpdateCommit, ApiError>
 where
     F: FnOnce(),
+{
+    update_config_transaction_with_hooks(state, partial, after_lock, || {})
+}
+
+fn update_config_transaction_with_hooks<F, G>(
+    state: &AppState,
+    partial: Value,
+    after_lock: F,
+    before_ephemeral_propagation: G,
+) -> Result<UpdateCommit, ApiError>
+where
+    F: FnOnce(),
+    G: FnOnce(),
 {
     let _owner = CONFIG_MUTATION_GATE
         .lock()
@@ -151,25 +141,47 @@ where
 
     let toml = toml::to_string_pretty(&updated)
         .map_err(|e| ApiError::internal(format!("serialize toml: {e}")))?;
+    let mut response = serde_json::to_value(&updated)
+        .map_err(|e| ApiError::internal(format!("serialize normalized config: {e}")))?;
+    expose_dashboard_config_fields(&mut response, &updated);
     let config_path = state.workdir.join("roko.toml");
     roko_fs::atomic_write_bytes(&config_path, toml.as_bytes())
         .map_err(|e| ApiError::internal(format!("write roko.toml: {e}")))?;
 
-    // Atomic persistence is the only fallible commit operation. The in-memory
-    // swap follows immediately, so a persistence failure leaves both the old
-    // file and old live generation intact.
-    let mut response = serde_json::to_value(&updated)
-        .map_err(|e| ApiError::internal(format!("serialize normalized config: {e}")))?;
-    expose_dashboard_config_fields(&mut response, &updated);
+    // The request's blocking transaction owns main-file persistence,
+    // propagation, and live publication as one ordered unit. Once this task
+    // starts, dropping the async request future does not cancel it. Keeping the
+    // ownership gate through propagation prevents an older accepted update
+    // from overwriting a newer generation in an ephemeral workspace.
+    before_ephemeral_propagation();
+    let workspaces = state
+        .ephemeral_workspaces
+        .blocking_read()
+        .values()
+        .map(|workspace| (workspace.id.clone(), workspace.path.clone()))
+        .collect::<Vec<_>>();
+    for (workspace_id, path) in workspaces {
+        let workspace_config = path.join("roko.toml");
+        if let Err(error) = roko_fs::atomic_write_bytes(&workspace_config, toml.as_bytes()) {
+            // Ephemeral copies are best-effort replicas. A failure is isolated
+            // to that workspace and does not roll back authoritative main-file
+            // truth or leave the main file and live state divergent.
+            tracing::warn!(
+                %workspace_id,
+                path = %workspace_config.display(),
+                %error,
+                "failed to propagate committed config to ephemeral workspace"
+            );
+        }
+    }
+
+    // Main-file atomic persistence is the authoritative fallible commit. The
+    // live swap is infallible and occurs before releasing mutation ownership.
     state.store_roko_config(updated);
     let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     tracing::debug!(generation, path = %config_path.display(), "committed config update");
 
-    Ok(UpdateCommit {
-        response,
-        toml,
-        generation,
-    })
+    Ok(UpdateCommit { response })
 }
 
 fn expose_dashboard_config_fields(value: &mut Value, config: &RokoConfig) {
@@ -249,46 +261,24 @@ where
     normalize_and_validate_dispatch_models(&mut new_config)?;
     let mut warnings = validate_references(&new_config);
 
-    // A reload may canonicalize aliases or merge an effective configuration.
-    // Publish that validated generation atomically before exposing it live.
+    // The unified loader returns effective runtime state: global values,
+    // environment overrides, interpolation, and file-secret resolution have
+    // already been applied. It must never be serialized back into the project
+    // source. Reload therefore preserves `roko.toml` byte-for-byte and only
+    // publishes the validated effective object.
     let config_path = state.workdir.join("roko.toml");
-    let serialized =
-        toml::to_string_pretty(&new_config).map_err(|error| LoadConfigError::Read {
-            path: config_path.clone(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-        })?;
-    let persisted_changed = match std::fs::read(&config_path) {
-        Ok(current) => current != serialized.as_bytes(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(source) => {
-            return Err(LoadConfigError::Read {
-                path: config_path,
-                source,
-            });
-        }
-    };
-    if persisted_changed {
-        roko_fs::atomic_write_bytes(&config_path, serialized.as_bytes()).map_err(|source| {
-            LoadConfigError::Read {
-                path: config_path.clone(),
-                source,
-            }
-        })?;
-    }
-
     // Compute diff and apply only hot-reloadable sections.
     let old_config = state.load_roko_config();
     let changes = hot_reload::config_diff(&old_config, &new_config);
 
     if changes.is_empty() {
-        if persisted_changed {
-            let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-            tracing::debug!(
-                generation,
-                path = %config_path.display(),
-                "committed canonical config reload"
-            );
-        }
+        state.store_roko_config(new_config);
+        let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+        tracing::debug!(
+            generation,
+            path = %config_path.display(),
+            "published validated config reload"
+        );
         return Ok(warnings);
     }
 
@@ -876,6 +866,18 @@ default_model = "first"
     fn waiting_reload_cannot_publish_stale_work_over_put_generation() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let workspace = dir.path().join("ephemeral-reload-order");
+        std::fs::create_dir_all(&workspace).expect("create ephemeral workspace");
+        state.ephemeral_workspaces.blocking_write().insert(
+            "reload-order".to_string(),
+            crate::state::WorkspaceInfo {
+                id: "reload-order".to_string(),
+                path: workspace.clone(),
+                created_at: 0,
+                last_accessed_at: 0,
+                status: crate::state::WorkspaceStatus::Active,
+            },
+        );
 
         let mut stale = RokoConfig::default();
         stale.server.port = 1111;
@@ -926,6 +928,289 @@ default_model = "first"
             &std::fs::read_to_string(dir.path().join("roko.toml")).expect("read persisted config"),
         )
         .expect("parse persisted config");
-        assert_eq!(persisted, *live, "file and live generations diverged");
+        assert_eq!(persisted.server.bind, live.server.bind);
+        assert_eq!(persisted.server.port, live.server.port);
+        let ephemeral: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(workspace.join("roko.toml")).expect("read propagated config"),
+        )
+        .expect("parse propagated config");
+        assert_eq!(
+            ephemeral, persisted,
+            "reload raced or rewrote PUT propagation"
+        );
+    }
+
+    #[test]
+    fn older_put_cannot_propagate_after_newer_put() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let workspace = dir.path().join("ephemeral-ordered");
+        std::fs::create_dir_all(&workspace).expect("create ephemeral workspace");
+        state.ephemeral_workspaces.blocking_write().insert(
+            "ordered".to_string(),
+            crate::state::WorkspaceInfo {
+                id: "ordered".to_string(),
+                path: workspace.clone(),
+                created_at: 0,
+                last_accessed_at: 0,
+                status: crate::state::WorkspaceStatus::Active,
+            },
+        );
+
+        let (older_ready_tx, older_ready_rx) = std::sync::mpsc::channel();
+        let (release_older_tx, release_older_rx) = std::sync::mpsc::channel();
+        let older_state = Arc::clone(&state);
+        let older = std::thread::spawn(move || {
+            update_config_transaction_with_hooks(
+                &older_state,
+                serde_json::json!({"server": {"port": 1111}}),
+                || {},
+                || {
+                    older_ready_tx
+                        .send(())
+                        .expect("signal older before propagation");
+                    release_older_rx.recv().expect("release older propagation");
+                },
+            )
+            .expect("commit older PUT");
+        });
+        older_ready_rx
+            .recv()
+            .expect("older reached propagation barrier");
+
+        let newer_state = Arc::clone(&state);
+        let newer = std::thread::spawn(move || {
+            update_config_transaction(&newer_state, serde_json::json!({"server": {"port": 2222}}))
+                .expect("commit newer PUT");
+        });
+        std::thread::sleep(std::time::Duration::from_millis(75));
+        assert!(
+            !newer.is_finished(),
+            "newer PUT entered while older propagation retained ownership"
+        );
+        assert!(
+            !workspace.join("roko.toml").exists(),
+            "older propagated before its deterministic release"
+        );
+
+        release_older_tx.send(()).expect("release older PUT");
+        older.join().expect("older PUT thread");
+        newer.join().expect("newer PUT thread");
+
+        let live = state.load_roko_config();
+        assert_eq!(live.server.port, 2222);
+        let main: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(dir.path().join("roko.toml")).expect("read main config"),
+        )
+        .expect("parse main config");
+        let replica: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(workspace.join("roko.toml")).expect("read ephemeral config"),
+        )
+        .expect("parse ephemeral config");
+        assert_eq!(main.server.port, 2222);
+        assert_eq!(replica, main, "older propagation overwrote newer truth");
+        assert_eq!(*live, main, "file and live generations diverged");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_put_finishes_propagation_and_publication() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let workspace = dir.path().join("ephemeral-cancelled");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("create ephemeral workspace");
+        state.ephemeral_workspaces.write().await.insert(
+            "cancelled".to_string(),
+            crate::state::WorkspaceInfo {
+                id: "cancelled".to_string(),
+                path: workspace.clone(),
+                created_at: 0,
+                last_accessed_at: 0,
+                status: crate::state::WorkspaceStatus::Active,
+            },
+        );
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let transaction_state = Arc::clone(&state);
+        let caller = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                update_config_transaction_with_hooks(
+                    &transaction_state,
+                    serde_json::json!({"server": {"port": 3333}}),
+                    || {},
+                    || {
+                        ready_tx.send(()).expect("signal transaction ownership");
+                        release_rx.recv().expect("release propagation");
+                    },
+                )
+            })
+            .await
+        });
+        ready_rx.await.expect("transaction reached propagation");
+        caller.abort();
+        assert!(caller.await.expect_err("caller cancelled").is_cancelled());
+        release_tx.send(()).expect("release detached transaction");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state.load_roko_config().server.port != 3333 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("detached blocking transaction published live state");
+        let main: RokoConfig = toml::from_str(
+            &tokio::fs::read_to_string(dir.path().join("roko.toml"))
+                .await
+                .expect("read main config"),
+        )
+        .expect("parse main config");
+        let replica: RokoConfig = toml::from_str(
+            &tokio::fs::read_to_string(workspace.join("roko.toml"))
+                .await
+                .expect("read ephemeral config"),
+        )
+        .expect("parse ephemeral config");
+        assert_eq!(main.server.port, 3333);
+        assert_eq!(replica, main);
+        assert_eq!(*state.load_roko_config(), main);
+    }
+
+    #[test]
+    fn ephemeral_write_failure_does_not_diverge_main_and_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let workspace = dir.path().join("ephemeral-failure");
+        std::fs::create_dir_all(workspace.join("roko.toml"))
+            .expect("make replica target unwritable as a file");
+        state.ephemeral_workspaces.blocking_write().insert(
+            "failure".to_string(),
+            crate::state::WorkspaceInfo {
+                id: "failure".to_string(),
+                path: workspace.clone(),
+                created_at: 0,
+                last_accessed_at: 0,
+                status: crate::state::WorkspaceStatus::Active,
+            },
+        );
+
+        update_config_transaction(&state, serde_json::json!({"server": {"port": 4444}}))
+            .expect("ephemeral failure is non-authoritative");
+
+        let main: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(dir.path().join("roko.toml")).expect("read main config"),
+        )
+        .expect("parse main config");
+        assert_eq!(main.server.port, 4444);
+        assert_eq!(*state.load_roko_config(), main);
+        assert!(
+            workspace.join("roko.toml").is_dir(),
+            "failed replica must remain isolated"
+        );
+    }
+
+    #[test]
+    fn reload_preserves_runtime_overlay_sources() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let workdir = root.path().join("project");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(home.join(".roko")).expect("create global config directory");
+        std::fs::create_dir_all(&workdir).expect("create project directory");
+        let secret_path = root.path().join("authorization.secret");
+        std::fs::write(&secret_path, "literal-file-secret\n").expect("write secret file");
+        let source = format!(
+            r#"config_version = 2
+
+[providers.project]
+kind = "openai_compat"
+base_url = "https://source.invalid/${{CTRL02_INTERPOLATED}}"
+
+[providers.project.extra_headers]
+authorization_file = "{}"
+trace = "${{CTRL02_INTERPOLATED}}"
+
+[models.project-model]
+provider = "project"
+slug = "project-slug"
+
+[agent]
+default_model = "project-model"
+
+[server]
+port = 3000
+"#,
+            secret_path.display()
+        );
+        std::fs::write(workdir.join("roko.toml"), &source).expect("write project source");
+        std::fs::write(
+            home.join(".roko/config.toml"),
+            r#"[providers.global]
+kind = "openai_compat"
+base_url = "https://global.invalid/v1"
+
+[models.global-model]
+provider = "global"
+slug = "global-slug"
+"#,
+        )
+        .expect("write global source");
+
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg("routes::config::tests::reload_preserves_runtime_overlay_sources_child")
+            .arg("--nocapture")
+            .env_clear()
+            .env("HOME", &home)
+            .env("CTRL02_RELOAD_CHILD", "1")
+            .env("CTRL02_WORKDIR", &workdir)
+            .env("CTRL02_INTERPOLATED", "runtime-fragment")
+            .env("ROKO_MODEL", "global-model")
+            .env("ROKO__SERVER__PORT", "4555")
+            .output()
+            .expect("run isolated reload source test");
+        assert!(
+            output.status.success(),
+            "child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let after = std::fs::read_to_string(workdir.join("roko.toml"))
+            .expect("read preserved project source");
+        assert_eq!(after, source, "reload rewrote project source bytes");
+        assert!(!after.contains("literal-file-secret"));
+        assert!(!after.contains("runtime-fragment"));
+        assert!(!after.contains("global-model"));
+        assert!(after.contains("authorization_file"));
+    }
+
+    #[test]
+    fn reload_preserves_runtime_overlay_sources_child() {
+        if std::env::var_os("CTRL02_RELOAD_CHILD").is_none() {
+            return;
+        }
+        let workdir =
+            std::path::PathBuf::from(std::env::var_os("CTRL02_WORKDIR").expect("child workdir"));
+        let state = test_state(workdir.clone(), RokoConfig::default());
+
+        reload_config_from_disk(&state).expect("reload effective config");
+
+        let effective = state.load_roko_config();
+        assert_eq!(effective.agent.default_model, "global-model");
+        assert_eq!(effective.server.port, 4555);
+        assert!(effective.providers.contains_key("global"));
+        let headers = effective.providers["project"]
+            .extra_headers
+            .as_ref()
+            .expect("resolved headers");
+        assert_eq!(
+            headers.get("authorization").map(String::as_str),
+            Some("literal-file-secret")
+        );
+        assert!(!headers.contains_key("authorization_file"));
+        assert_eq!(
+            headers.get("trace").map(String::as_str),
+            Some("runtime-fragment")
+        );
     }
 }

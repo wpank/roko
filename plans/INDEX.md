@@ -36,12 +36,13 @@
 | `P32-cli-polish` | 2 | 0 | 2 | 📋 ready | 2 |
 | `P33-model-ux` | 1 | 0 | 1 | 📋 ready | 1 |
 | `P34-verification-sweep` | 4 | 0 | 4 | 📋 ready | 1 |
+| `architecture-core-queue` | 24 | 0 | 24 | 📋 ready | 2 |
 | `architecture-defi-critical-path` | 3 | 0 | 3 | 📋 ready | 1 |
 | `e2e-smoke` | 2 | 0 | 2 | 📋 ready | 1 |
 
-**Executable Total**: 29 plans, 120 tasks, 0 done (0%), 120 remaining
+**Executable Total**: 30 plans, 144 tasks, 0 done (0%), 144 remaining
 **Complete Plans**: 0
-**Ready/In-Progress Plans**: 29
+**Ready/In-Progress Plans**: 30
 
 ## Superseded / Archived
 

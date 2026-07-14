@@ -9,277 +9,193 @@ max_parallel = 1
 
 [[task]]
 id = "T1"
-title = "Fix agent_id prefix match for current_task assignment in TaskStarted"
+title = "Acceptance roll-up: use structured task attribution"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T01"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10
-files = ["crates/roko-core/src/dashboard_snapshot.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "TaskStarted and all later events attribute agents by structured run, plan, task, and attempt fields; slash or colon display-ID parsing cannot affect current-task assignment.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "940-960", why = "TaskStarted apply handler — line 955 matches agent_id with prefix '{plan_id}:' but runner uses '{plan_id}/' separator" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "258-286", why = "AgentState struct — current_task and current_plan fields that should be populated" },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "807-817", why = "Runner formats agent_id as format!(\"{}/{}\", state.plan_id, state.current_task) — uses '/' not ':'" },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "849-851", why = "Second agent_id format site — also uses '/'" },
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "agent.agent_id.starts_with(&format!(\"{plan_id}:\")) — line 955, must also match '/'",
-    "format!(\"{}/{}\", state.plan_id, state.current_task) — runner agent_id format",
-    "struct AgentState { current_task: String, current_plan: String }",
+    "SH04-T01 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT change the runner's agent_id format — fix the match in dashboard_snapshot.rs only.",
-    "Do NOT remove the existing ':' match — ADD the '/' match alongside it to support both formats.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# In dashboard_snapshot.rs line 955, change:
-#   if agent.active && agent.agent_id.starts_with(&format!("{plan_id}:")) {
-# To:
-#   if agent.active && (agent.agent_id.starts_with(&format!("{plan_id}/"))
-#       || agent.agent_id.starts_with(&format!("{plan_id}:"))) {
-#
-# This matches both the runner v2 format ("{plan_id}/{task_id}") and the
-# orchestrate.rs format ("{plan_id}:{task_id}"). The current_task and
-# current_plan fields will now be correctly populated in push mode.
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T01\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'plan_id}/' crates/roko-core/src/dashboard_snapshot.rs"
-fail_msg = "TaskStarted apply must match agent_id with '/' separator"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-core 2>&1"
-fail_msg = "roko-core must compile"
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-core dashboard_snapshot 2>&1"
-fail_msg = "dashboard_snapshot tests must pass"
-
-# ─── T2: Publish EfficiencyEvent from runner v2 on turn completion ─────
-
+phase = "acceptance"
+command = "cargo test -p roko-core dashboard_snapshot && cargo test -p roko-cli runner::agent_events"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T2"
-title = "Publish EfficiencyEvent via TUI bridge on agent turn completion"
+title = "Acceptance roll-up: publish attributed live usage"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T03 + SH04-T05"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 30
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Approval TUI receives correctly attributed estimated and provider-final input tokens, output tokens, and cost without double counting or reading stale files.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "843-921", why = "Agent turn completion handler — TurnCompleted event has total_cost_usd, and state has cost_usd, input_tokens, output_tokens. This is where to add efficiency_event calls." },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2555-2610", why = "emit_turn_event function — it calls bus.publish for TurnStarted/TurnCompleted but does NOT publish EfficiencyEvents to the TUI bridge" },
-    { path = "crates/roko-cli/src/runner/tui_bridge.rs", lines = "116-124", why = "TuiBridge::efficiency_event method — already exists, just needs to be called" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1092-1128", why = "EfficiencyEvent apply handler — updates agent input_tokens, output_tokens, cost_usd via metric name matching" },
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "TuiBridge::efficiency_event(&self, plan_id: &str, task_id: &str, metric: &str, value: f64)",
-    "AgentEvent::TurnCompleted { session_id, total_cost_usd, num_turns, is_error }",
-    "state.cost_usd — cumulative cost for the current task's agent",
-    "state.input_tokens — cumulative input tokens",
-    "state.output_tokens — cumulative output tokens",
+    "SH04-T03 \u2014 canonical implementation owner",
+    "SH04-T05 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT duplicate the learning subscriber path — this is the push-mode path for TUI only.",
-    "Do NOT read from efficiency.jsonl — emit events from in-memory state.",
-    "Do NOT change the existing TuiBridge method signatures.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# After the agent_completed runner event emission (around line 878),
-# and before the turn_error check, add three efficiency_event calls:
-#
-#   // Publish token/cost metrics to TUI for real-time dashboard updates.
-#   tui.efficiency_event(&state.plan_id, &state.current_task, "input_tokens", state.input_tokens as f64);
-#   tui.efficiency_event(&state.plan_id, &state.current_task, "output_tokens", state.output_tokens as f64);
-#   tui.efficiency_event(&state.plan_id, &state.current_task, "cost_usd", state.cost_usd);
-#
-# These go through StateHub -> DashboardSnapshot::apply -> AgentState.input_tokens/output_tokens/cost_usd,
-# which the TUI's update_from_dashboard_snapshot already reads.
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T03\", \"SH04-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'efficiency_event.*input_tokens' crates/roko-cli/src/runner/event_loop.rs"
-fail_msg = "input_tokens efficiency event not published in event_loop.rs"
-
-[[task.verify]]
-phase = "structural"
-command = "grep -q 'efficiency_event.*cost_usd' crates/roko-cli/src/runner/event_loop.rs"
-fail_msg = "cost_usd efficiency event not published in event_loop.rs"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
-
-# ─── T3: Forward MessageDelta to TUI bridge as AgentOutput ─────────────
-
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::agent_events && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T3"
-title = "Forward AgentEvent::MessageDelta to TUI bridge as agent_output"
+title = "Acceptance roll-up: preserve typed live agent output"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T02 + SH04-T03"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Assistant deltas reach the approval TUI with structured task identity and typed channel and severity while provider failures and fatal errors remain distinguishable and console output is not duplicated.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "803-822", why = "The MessageDelta handler — currently only forwards to http_sink. Add tui.agent_output call here." },
-    { path = "crates/roko-cli/src/runner/tui_bridge.rs", lines = "82-88", why = "TuiBridge::agent_output method — already exists and publishes AgentOutput DashboardEvent" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1046-1050", why = "AgentOutput apply handler — increments agent.output_bytes. The text content also flows to TUI widgets." },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "849-851", why = "Agent ID format: format!(\"{}/{}\", state.plan_id, state.current_task)" },
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "TuiBridge::agent_output(&self, agent_id: &str, content: &str)",
-    "AgentEvent::MessageDelta { text } — the streaming text event from the agent",
+    "SH04-T02 \u2014 canonical implementation owner",
+    "SH04-T03 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT remove the existing http_sink forwarding — add TUI bridge call alongside it.",
-    "Do NOT throttle or buffer the output — let the TUI handle display truncation.",
-    "Do NOT gate this behind cli.quiet — the TUI bridge handles its own filtering.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# In the MessageDelta handler at line 814, add a TUI bridge call after the
-# http_sink block. The agent_id must match the format used elsewhere:
-#
-#   AgentEvent::MessageDelta { text } => {
-#       // Existing http_sink forwarding...
-#       if let Some(http_sink) = config.http_event_sink.as_ref() { ... }
-#       // NEW: Forward to TUI bridge for live output panel.
-#       let agent_id = format!("{}/{}", state.plan_id, state.current_task);
-#       tui.agent_output(&agent_id, text);
-#   }
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T02\", \"SH04-T03\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'tui.agent_output' crates/roko-cli/src/runner/event_loop.rs"
-fail_msg = "MessageDelta not forwarded to TUI bridge"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
-
-# ─── T4: Publish Diagnosis event on gate failure ───────────────────────
-
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::agent_events && cargo test -p roko-cli runner::output_sink && cargo test -p roko-cli tui"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T4"
-title = "Publish Diagnosis DashboardEvent when gate fails in runner v2"
+title = "Acceptance roll-up: publish one diagnosis for failed gates"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T04"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 30
-files = ["crates/roko-cli/src/runner/event_loop.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["T5"]
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "A failed gate publishes exactly one attributed diagnosis with classification and retry or blocker context; passing gates do not publish failure diagnoses.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1000-1030", why = "Gate result processing — when a gate fails, this is where to also publish a Diagnosis event" },
-    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1595-1610", why = "Final task failure after gate retries exhausted — another diagnosis publish point" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "81-84", why = "DashboardEvent::Diagnosis { summary: DiagnosisSummary } — the event variant to use" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "340-378", why = "DiagnosisSummary struct — fields: id, ts, severity, subject, detail, suggested_action, intervention_taken" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "328-338", why = "DiagnosisSeverity enum: Info, Warn, Alert" },
-    { path = "crates/roko-cli/src/runner/tui_bridge.rs", lines = "96-115", why = "TuiBridge::diagnosis method added by T5 — use tui.diagnosis(summary) to publish" },
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "TuiBridge::diagnosis(&self, summary: DiagnosisSummary) — added by T5, use this",
-    "DiagnosisSummary { id, ts, severity, subject, detail, suggested_action, intervention_taken }",
-    "DiagnosisSeverity::Warn",
-    "tui.gate_result(plan_id, task_id, gate, passed) — already called for gate verdicts",
+    "SH04-T04 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT publish Diagnosis for passing gates — only for failures.",
-    "Do NOT import conductor types — build DiagnosisSummary directly from gate failure data.",
-    "Do NOT access TuiBridge.sender directly — use the tui.diagnosis() method from T5.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# After the gate_result TUI call at line ~1016 (when !passed), add:
-#
-#   if !passed {
-#       tui.gate_result(plan_id, task_id, &gate_name, false);
-#       // Publish diagnosis for TUI Diagnosis panel.
-#       tui.diagnosis(roko_core::dashboard_snapshot::DiagnosisSummary {
-#           id: format!("gate-{plan_id}-{task_id}-{gate_name}"),
-#           ts: chrono::Utc::now(),
-#           severity: roko_core::dashboard_snapshot::DiagnosisSeverity::Warn,
-#           subject: format!("Gate failed: {gate_name}"),
-#           detail: format!("Task {task_id} in plan {plan_id}: {gate_name} gate failed"),
-#           suggested_action: Some("Check gate output and consider retry".to_string()),
-#           intervention_taken: None,
-#       });
-#   }
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T04\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'Diagnosis' crates/roko-cli/src/runner/event_loop.rs"
-fail_msg = "Diagnosis event not published on gate failure in event_loop.rs"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
-
-# ─── T5: Add diagnosis method to TuiBridge ─────────────────────────────
-
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::event_loop && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T5"
-title = "Add diagnosis convenience method to TuiBridge"
+title = "Acceptance roll-up: expose diagnoses through the canonical TUI bridge"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T04"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
-files = ["crates/roko-cli/src/runner/tui_bridge.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Runner diagnoses flow through the canonical structured dashboard event path and are visible to the TUI without a second diagnosis transport or direct sender access.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/runner/tui_bridge.rs", lines = "1-211", why = "Full TuiBridge — add diagnosis method following the same pattern as other methods" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "81-84", why = "DashboardEvent::Diagnosis { summary } variant" },
-    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "340-364", why = "DiagnosisSummary struct to accept as parameter" },
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "TuiBridge::gate_result(&self, plan_id: &str, task_id: &str, gate: &str, passed: bool) — pattern to follow",
-    "self.sender.publish(DashboardEvent::...) — how all TuiBridge methods publish events",
-    "DashboardEvent::Diagnosis { summary: DiagnosisSummary }",
+    "SH04-T04 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT create a new constructor for DiagnosisSummary inside TuiBridge — accept it as a parameter.",
-    "Do NOT break the existing method ordering — add after the existing gate methods.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# Add a new method to TuiBridge after gate_result (line 105):
-#
-#   /// Conductor or gate diagnosis event.
-#   pub fn diagnosis(&self, summary: roko_core::dashboard_snapshot::DiagnosisSummary) {
-#       self.sender.publish(DashboardEvent::Diagnosis { summary });
-#   }
-#
-# This is used by T4 to publish gate failure diagnoses. It follows the
-# same pattern as every other TuiBridge method.
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T04\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'fn diagnosis' crates/roko-cli/src/runner/tui_bridge.rs"
-fail_msg = "diagnosis method not added to TuiBridge"
-
-[[task.verify]]
-phase = "structural"
-command = "grep -q 'DashboardEvent::Diagnosis' crates/roko-cli/src/runner/tui_bridge.rs"
-fail_msg = "TuiBridge diagnosis method must publish DashboardEvent::Diagnosis"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::event_loop && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."

@@ -36,207 +36,116 @@ max_parallel = 1
 
 [[task]]
 id = "T1"
-title = "Push concrete gate steps for advanced rungs when enabled"
+title = "Acceptance roll-up: execute advanced rungs on the live runner path"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T05 + E05-T07"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 40
-files = ["crates/roko-cli/src/orchestrate.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "Live runner gate dispatch builds real RungExecutionInputs for every available advanced rung, reports unavailable inputs as skipped or not wired, and does not revive the legacy enable_advanced_rungs branch.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "17897-17997", why = "selected_gate_steps — the buggy match arm at 17965-17980" },
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "84-101", why = "Existing roko_gate imports — need to add SymbolGate, PropertyTestGate, IntegrationGate" },
-    { path = "crates/roko-gate/src/symbol_gate.rs", lines = "177-199", why = "SymbolGate::new(source_roots: Vec<PathBuf>) constructor" },
-    { path = "crates/roko-gate/src/property_test_gate.rs", lines = "50-100", why = "PropertyTestGate::new(build_system: BuildSystem) constructor" },
-    { path = "crates/roko-gate/src/integration_gate.rs", lines = "143-182", why = "IntegrationGate::build_test(build: BuildSystem, pattern) constructor" },
-    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "182-202", why = "Reference: how rung_dispatch constructs gates for these rungs" },
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "Orchestrator::selected_gate_steps — fn(&self, plan_id: &str, exec_dir: &Path) -> GateSelectionPlan",
-    "SymbolGate::new(source_roots: Vec<PathBuf>) -> Self",
-    "PropertyTestGate::new(build_system: BuildSystem) -> Self",
-    "IntegrationGate::build_test(build: BuildSystem, pattern: impl Into<String>) -> Self",
-    "GateSelectionPlan { steps: Vec<(Rung, Box<dyn Verify>)>, skipped_count: usize }",
+    "E05-T05 \u2014 canonical implementation owner",
+    "E05-T07 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT add symbol_gate, property_test_gate, integration_gate to the use roko_gate block as top-level names — import them via their module paths like the existing generated_test_gate import at line 93.",
-    "Do NOT remove the `if !gate_config.enable_advanced_rungs` branch — it correctly skips when the config is false. Only fix the `else` branch.",
-    "Do NOT skip the rung when the gate is pushed — only increment skipped_count when actually skipping.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# 1. Add imports at lines 84-101. Add after the existing generated_test_gate import:
-#       integration_gate::IntegrationGate,
-#       property_test_gate::PropertyTestGate,
-#       symbol_gate::SymbolGate,
-#
-# 2. Replace lines 17975-17979 (the else branch) with gate construction:
-#
-#   } else {
-#       match rung {
-#           Rung::Symbol => {
-#               let mut roots = Vec::new();
-#               let src = exec_dir.join("src");
-#               let crates_dir = exec_dir.join("crates");
-#               if src.is_dir() { roots.push(src); }
-#               if crates_dir.is_dir() { roots.push(crates_dir); }
-#               if roots.is_empty() { roots.push(exec_dir.to_path_buf()); }
-#               steps.push((rung, Box::new(SymbolGate::new(roots))));
-#           }
-#           Rung::PropertyTest => {
-#               steps.push((rung, Box::new(PropertyTestGate::new(build_system))));
-#           }
-#           Rung::Integration => {
-#               steps.push((rung, Box::new(IntegrationGate::build_test(
-#                   build_system, "integration",
-#               ))));
-#           }
-#           _ => {
-#               tracing::debug!(?rung, "unhandled advanced rung");
-#               skipped_count = skipped_count.saturating_add(1);
-#           }
-#       }
-#   }
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T05\", \"E05-T07\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -n 'SymbolGate::new\\|PropertyTestGate::new\\|IntegrationGate::build_test' crates/roko-cli/src/orchestrate.rs | grep -v '//' | grep -v test"
-fail_msg = "Advanced gate constructors must be called in selected_gate_steps"
-
-[[task.verify]]
-phase = "structural"
-command = "grep -n 'use roko_gate' crates/roko-cli/src/orchestrate.rs | head -1 && grep -n 'SymbolGate\\|PropertyTestGate\\|IntegrationGate' crates/roko-cli/src/orchestrate.rs | head -5"
-fail_msg = "SymbolGate, PropertyTestGate, IntegrationGate must be imported"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
-
-
-# ─────────────────────────────────────────────────────────────────────
-# T2: Add tracing for advanced rung activation
-# ─────────────────────────────────────────────────────────────────────
-#
-# When advanced rungs are activated, log the rung + gate name at info
-# level so operators can verify their config is taking effect. The
-# current debug-level log at line 17978 is too quiet.
-
+phase = "acceptance"
+command = "cargo test -p roko-gate -- complex_pipeline_has_seven_canonical_rungs && cargo check -p roko-cli -p roko-gate"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T2"
-title = "Upgrade advanced rung activation log to info level"
+title = "Acceptance roll-up: remove legacy advanced-rung activation logging"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T07"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10
-files = ["crates/roko-cli/src/orchestrate.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["T1"]
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "The inert legacy enable_advanced_rungs toggle and its misleading activation log are removed; live gate telemetry reports actual selected rungs and outcomes.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/orchestrate.rs", lines = "17965-17985", why = "The match arm for advanced rungs after T1's fix — add info-level log when a gate is pushed" },
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "Orchestrator::selected_gate_steps — fn(&self, plan_id: &str, exec_dir: &Path) -> GateSelectionPlan",
+    "E05-T07 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT add logging for the skip path (already has tracing::debug).",
-    "Do NOT change the skip path — only add an info log near where the step is pushed.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# After each steps.push() in the else branch (from T1), add:
-#     tracing::info!(?rung, "advanced gate step added to pipeline");
-#
-# This replaces the old `tracing::debug!(?rung, "advanced rung enabled via config")`
-# line that T1 removed. The key difference: the log now fires only when a
-# gate is actually instantiated (not when it's "enabled but skipped").
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T07\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -n 'advanced gate step added' crates/roko-cli/src/orchestrate.rs | wc -l | awk '{ if ($1 >= 1) exit 0; else exit 1 }'"
-fail_msg = "Must have at least one info-level log for advanced gate activation"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile"
-
-
-# ─────────────────────────────────────────────────────────────────────
-# T3: Add test for advanced rung selection
-# ─────────────────────────────────────────────────────────────────────
-#
-# The `select_rungs` function in roko-gate already has thorough tests.
-# The bug was in orchestrate.rs's `selected_gate_steps` which filters
-# the select_rungs output. We need a test that verifies the pipeline
-# includes advanced gates when enable_advanced_rungs is true.
-#
-# Since selected_gate_steps is a method on Orchestrator (not easily
-# unit-testable), add a test in roko-gate that verifies the
-# GatePipelineBuilder produces gates for all 7 rungs when complexity
-# is Complex.
-
+phase = "acceptance"
+command = "cargo check -p roko-cli -p roko-core"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T3"
-title = "Add test verifying Complex pipeline includes all 7 rung gates"
+title = "Acceptance roll-up: prove the canonical complex pipeline"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T05"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 30
-files = ["crates/roko-gate/src/rung_dispatch.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "The canonical complex pipeline contains all seven rungs and its test runs against the live-compatible gate configuration without treating unwired rungs as passes.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "88-165", why = "GatePipelineBuilder — from_config_with_execution builds pipeline from complexity + caps" },
-    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "182-202", why = "gate_from_known_rung — maps rungs to concrete gates" },
-    { path = "crates/roko-gate/src/rung_selector.rs", lines = "267-274", why = "select_rungs — Complex selects all 7" },
-    { path = "crates/roko-gate/src/rung_selector.rs", lines = "319-323", why = "Test: complex_selects_all_seven_rungs" },
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "GatePipelineBuilder::from_config_with_execution — fn(config: &GatesConfig, complexity: PlanComplexity, inputs: RungExecutionInputs, execution: RungExecutionConfig) -> ComposedGatePipeline",
-    "ComposedGatePipeline — has a .gates() or .len() method to count steps",
-    "PlanComplexity::Complex — selects all 7 rungs",
+    "E05-T05 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT test orchestrate.rs — its selected_gate_steps is private and tightly coupled. Test the rung_dispatch GatePipelineBuilder instead.",
-    "Do NOT require real SearchOracle or JudgeOracle implementations — use default RungExecutionConfig which causes stub verdicts.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
-# Add a test in the #[cfg(test)] section of rung_dispatch.rs:
-#
-# #[test]
-# fn complex_pipeline_has_seven_gates() {
-#     let config = GatesConfig::default();
-#     let pipeline = GatePipelineBuilder::from_config_with_execution(
-#         &config,
-#         PlanComplexity::Complex,
-#         RungExecutionInputs::default(),
-#         RungExecutionConfig::default(),
-#     );
-#     // Complex complexity selects all 7 rungs. Rung 4 (GeneratedTest)
-#     // and 5 (PropertyTest) and 6 (Integration) each contribute 1
-#     // CanonicalRungGate wrapping multiple sub-gates.
-#     assert!(pipeline.len() >= 7,
-#         "Complex pipeline should have at least 7 gates, got {}",
-#         pipeline.len());
-# }
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T05\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -n 'complex_pipeline_has_seven_gates\\|complex.*pipeline.*gate' crates/roko-gate/src/rung_dispatch.rs | wc -l | awk '{ if ($1 >= 1) exit 0; else exit 1 }'"
-fail_msg = "Must add a test verifying Complex pipeline gate count"
-
-[[task.verify]]
-phase = "test"
-command = "cargo test -p roko-gate complex_pipeline 2>&1"
-fail_msg = "complex_pipeline test must pass"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-gate 2>&1"
-fail_msg = "roko-gate must compile"
+phase = "acceptance"
+command = "cargo test -p roko-gate -- complex_pipeline_has_seven_canonical_rungs"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."

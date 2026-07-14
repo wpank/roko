@@ -24,123 +24,80 @@ max_parallel = 2
 
 [[task]]
 id = "T1"
-title = "Add OpenAI and Gemini key checks to roko doctor"
+title = "Acceptance roll-up: provider-aware doctor key checks"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "P27-provider-error-ux#T1"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 30
-files = ["crates/roko-cli/src/doctor.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = []
+depends_on_plan = ["P27-provider-error-ux"]
+acceptance = [
+    "Doctor reports missing credentials only for configured effective providers, covers OpenAI and Gemini when configured, and never emits unconditional warnings for unused providers.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor() function — list of checks to extend" },
-    { path = "crates/roko-cli/src/doctor.rs", lines = "720-746", why = "check_anthropic_api_key() — template for new checks" },
+    { path = "plans/P27-provider-error-ux/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport>",
-    "fn check_anthropic_api_key() -> DoctorCheck",
-    "DoctorCheck { id, status, message, detail, path, url, fix }",
+    "P27-provider-error-ux#T1 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT make missing OpenAI/Gemini keys a Fail — use Warn since they are optional providers.",
-    "Do NOT change the existing check_anthropic_api_key function.",
-    "Do NOT change the DoctorCheck struct — use the existing fields.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'OPENAI_API_KEY' crates/roko-cli/src/doctor.rs && grep -q 'GEMINI_API_KEY' crates/roko-cli/src/doctor.rs"
-fail_msg = "doctor.rs must check both OPENAI_API_KEY and GEMINI_API_KEY"
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"T1\"]; paths=[\"plans/P27-provider-error-ux/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -c 'check_openai_api_key\\|check_gemini_api_key' crates/roko-cli/src/doctor.rs | grep -qv '^0$'"
-fail_msg = "doctor.rs must define check functions for OpenAI and Gemini API keys"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile cleanly"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# T2: Add configured-provider key validation to doctor
-# ─────────────────────────────────────────────────────────────────────────────
-# The existing `check_provider_usable` (line 463-485) only checks if ANY
-# provider has working auth. It does not tell the user which configured
-# providers are broken. If roko.toml defines `[providers.anthropic]` and
-# `[providers.openai]`, and OPENAI_API_KEY is missing, the user should see
-# a warning for the openai provider specifically.
-#
-# Add a new `check_configured_providers` function that iterates over
-# `config.effective_providers()`, checks each provider's `api_key_env`
-# against the environment, and emits a Warn-level DoctorCheck for each
-# configured provider whose key is missing.
-#
-# This provides specific guidance: "provider 'openai' configured but
-# OPENAI_API_KEY not set" vs the vague "no LLM provider has working auth".
-
+phase = "acceptance"
+command = "cargo test -p roko-cli doctor"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T2"
-title = "Add per-provider key validation check to doctor"
+title = "Acceptance roll-up: configured-provider credential validation"
 status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "P27-provider-error-ux#T1"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 35
-files = ["crates/roko-cli/src/doctor.rs"]
-role = "implementer"
+files = []
+role = "quick-reviewer"
 depends_on = ["T1"]
+depends_on_plan = ["P27-provider-error-ux"]
+acceptance = [
+    "Each configured effective provider with a required api_key_env receives a specific nonfatal credential result, while no-provider and CLI-provider configurations remain truthful.",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/doctor.rs", lines = "463-485", why = "Existing check_provider_usable — composite check" },
-    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor() — where to insert the new check" },
-    { path = "crates/roko-cli/src/doctor.rs", lines = "164-170", why = "LoadedConfig struct — has resolved: Option<Config>" },
-    { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "1275-1285", why = "effective_providers() usage pattern" },
+    { path = "plans/P27-provider-error-ux/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
 ]
 symbols = [
-    "fn check_provider_usable(workdir: &Path) -> DoctorCheck",
-    "RokoConfig::effective_providers() -> IndexMap<String, ProviderConfig>",
-    "ProviderConfig { api_key_env: Option<String>, kind: ProviderKind }",
+    "P27-provider-error-ux#T1 \u2014 canonical implementation owner",
 ]
 anti_patterns = [
-    "Do NOT replace check_provider_usable — add a new complementary check.",
-    "Do NOT make missing provider keys a Fail — use Warn since the user may not need all providers.",
-    "Do NOT crash if loaded_config.resolved is None — return Skipped.",
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
 ]
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'check_configured_providers\\|configured_provider' crates/roko-cli/src/doctor.rs"
-fail_msg = "doctor.rs must contain a per-provider key validation check"
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"T1\"]; paths=[\"plans/P27-provider-error-ux/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
 
 [[task.verify]]
-phase = "structural"
-command = "grep -q 'effective_providers' crates/roko-cli/src/doctor.rs"
-fail_msg = "doctor.rs must call effective_providers() to enumerate configured providers"
-
-[[task.verify]]
-phase = "compile"
-command = "cargo check -p roko-cli 2>&1"
-fail_msg = "roko-cli must compile cleanly"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# T3: Add next-step hints to roko init output
-# ─────────────────────────────────────────────────────────────────────────────
-# After `roko init`, the user gets a bare confirmation with no guidance.
-# The solution doc (04-zero-knowledge-onboarding.md) specifies that `roko init`
-# should print next-step guidance after success.
-#
-# In `cmd_init` (crates/roko-cli/src/commands/util.rs), after the init succeeds,
-# print a "Next:" block when stdout is a TTY:
-#   Next: roko develop "describe what you want to build"
-#     or: roko doctor   to verify the setup
-#
-# Use `std::io::IsTerminal` to suppress in pipes/CI.
-
+phase = "acceptance"
+command = "cargo test -p roko-cli doctor"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
 [[task]]
 id = "T3"
 title = "Print next-step hints after roko init succeeds"
@@ -174,7 +131,6 @@ fail_msg = "util.rs must print next-step hints mentioning roko develop or roko d
 phase = "compile"
 command = "cargo check -p roko-cli 2>&1"
 fail_msg = "roko-cli must compile cleanly"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T4: Add next-step hints to roko setup output

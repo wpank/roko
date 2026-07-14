@@ -1,6 +1,7 @@
 //! Configuration read/write endpoints.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::routing::{get, post};
@@ -18,6 +19,21 @@ use crate::error::ApiError;
 use crate::events::ServerEvent;
 use crate::extract::ApiJson;
 use crate::state::AppState;
+
+/// A single ownership boundary for every mutation of the persisted and live
+/// configuration. The watcher-facing reload API is synchronous, so the
+/// transaction itself deliberately performs only synchronous work. Async HTTP
+/// callers run it on Tokio's blocking pool; no blocking mutex is held across an
+/// `.await`.
+static CONFIG_MUTATION_GATE: Mutex<()> = Mutex::new(());
+static CONFIG_MUTATION_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct UpdateCommit {
+    response: Value,
+    toml: String,
+    generation: u64,
+}
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -71,51 +87,89 @@ async fn update_config(
     State(state): State<Arc<AppState>>,
     ApiJson(partial): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    // Read current config, merge the partial update, and write back.
-    let cfg = state.load_roko_config();
+    let transaction_state = Arc::clone(&state);
+    let commit =
+        tokio::task::spawn_blocking(move || update_config_transaction(&transaction_state, partial))
+            .await
+            .map_err(|error| {
+                ApiError::internal(format!("config transaction task failed: {error}"))
+            })??;
 
-    // Serialize current to Value, deep-merge, then deserialize back.
-    let mut current = serde_json::to_value(cfg.as_ref())
-        .map_err(|e| ApiError::internal(format!("serialize current config: {e}")))?;
-
-    merge_json(&mut current, &partial);
-
-    let mut updated: RokoConfig = serde_json::from_value(current.clone())
-        .map_err(|e| ApiError::bad_request(format!("invalid config after merge: {e}")))?;
-    normalize_and_validate_dispatch_models(&mut updated).map_err(map_load_config_error)?;
-
-    // Reflect canonical model keys in both the persisted file and response.
-    current = serde_json::to_value(&updated)
-        .map_err(|e| ApiError::internal(format!("serialize normalized config: {e}")))?;
-
-    // Write to roko.toml.
-    let toml_str = toml::to_string_pretty(&updated)
-        .map_err(|e| ApiError::internal(format!("serialize toml: {e}")))?;
-    let config_path = state.workdir.join("roko.toml");
-    tokio::fs::write(&config_path, &toml_str)
-        .await
-        .map_err(|e| ApiError::internal(format!("write roko.toml: {e}")))?;
-
-    // Propagate to ephemeral workspaces so running scenarios see the change.
-    {
+    // Ephemeral copies follow the committed main-file/live-state truth. Their
+    // failures are reported independently and never roll that truth back.
+    let workspaces = {
         let workspaces = state.ephemeral_workspaces.read().await;
-        for ws in workspaces.values() {
-            if let Err(err) = tokio::fs::write(ws.path.join("roko.toml"), &toml_str).await {
-                tracing::warn!(
-                    workspace_id = %ws.id,
-                    path = %ws.path.display(),
-                    error = %err,
-                    "failed to propagate config update to ephemeral workspace"
-                );
-            }
+        workspaces
+            .values()
+            .map(|workspace| (workspace.id.clone(), workspace.path.clone()))
+            .collect::<Vec<_>>()
+    };
+    for (workspace_id, path) in workspaces {
+        if let Err(error) = tokio::fs::write(path.join("roko.toml"), &commit.toml).await {
+            tracing::warn!(
+                %workspace_id,
+                path = %path.display(),
+                %error,
+                generation = commit.generation,
+                "failed to propagate committed config to ephemeral workspace"
+            );
         }
     }
 
-    expose_dashboard_config_fields(&mut current, &updated);
-    state.store_roko_config(updated);
+    let mut response = commit.response;
+    mask_secret_fields(&mut response);
+    Ok(Json(response))
+}
 
-    mask_secret_fields(&mut current);
-    Ok(Json(current))
+fn update_config_transaction(state: &AppState, partial: Value) -> Result<UpdateCommit, ApiError> {
+    update_config_transaction_with_hook(state, partial, || {})
+}
+
+fn update_config_transaction_with_hook<F>(
+    state: &AppState,
+    partial: Value,
+    after_lock: F,
+) -> Result<UpdateCommit, ApiError>
+where
+    F: FnOnce(),
+{
+    let _owner = CONFIG_MUTATION_GATE
+        .lock()
+        .map_err(|_| ApiError::internal("config mutation ownership lock is poisoned"))?;
+    after_lock();
+
+    // Snapshot selection is inside the ownership boundary. A concurrent PUT
+    // therefore always merges over the preceding committed generation.
+    let cfg = state.load_roko_config();
+    let mut response = serde_json::to_value(cfg.as_ref())
+        .map_err(|e| ApiError::internal(format!("serialize current config: {e}")))?;
+    merge_json(&mut response, &partial);
+
+    let mut updated: RokoConfig = serde_json::from_value(response)
+        .map_err(|e| ApiError::bad_request(format!("invalid config after merge: {e}")))?;
+    normalize_and_validate_dispatch_models(&mut updated).map_err(map_load_config_error)?;
+
+    let toml = toml::to_string_pretty(&updated)
+        .map_err(|e| ApiError::internal(format!("serialize toml: {e}")))?;
+    let config_path = state.workdir.join("roko.toml");
+    roko_fs::atomic_write_bytes(&config_path, toml.as_bytes())
+        .map_err(|e| ApiError::internal(format!("write roko.toml: {e}")))?;
+
+    // Atomic persistence is the only fallible commit operation. The in-memory
+    // swap follows immediately, so a persistence failure leaves both the old
+    // file and old live generation intact.
+    let mut response = serde_json::to_value(&updated)
+        .map_err(|e| ApiError::internal(format!("serialize normalized config: {e}")))?;
+    expose_dashboard_config_fields(&mut response, &updated);
+    state.store_roko_config(updated);
+    let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    tracing::debug!(generation, path = %config_path.display(), "committed config update");
+
+    Ok(UpdateCommit {
+        response,
+        toml,
+        generation,
+    })
 }
 
 fn expose_dashboard_config_fields(value: &mut Value, config: &RokoConfig) {
@@ -137,7 +191,11 @@ fn expose_dashboard_config_fields(value: &mut Value, config: &RokoConfig) {
 pub async fn reload_config(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ReloadResponse>, ApiError> {
-    let warnings = reload_config_from_disk(&state).map_err(map_load_config_error)?;
+    let transaction_state = Arc::clone(&state);
+    let warnings = tokio::task::spawn_blocking(move || reload_config_from_disk(&transaction_state))
+        .await
+        .map_err(|error| ApiError::internal(format!("config reload task failed: {error}")))?
+        .map_err(map_load_config_error)?;
 
     Ok(Json(ReloadResponse {
         success: true,
@@ -172,15 +230,65 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
 /// Returns [`LoadConfigError::Read`] when `roko.toml` cannot be read and
 /// [`LoadConfigError::Parse`] when the file contents are not valid config.
 pub fn reload_config_from_disk(state: &AppState) -> Result<Vec<String>, LoadConfigError> {
+    reload_config_from_disk_with_hook(state, || {})
+}
+
+fn reload_config_from_disk_with_hook<F>(
+    state: &AppState,
+    after_lock: F,
+) -> Result<Vec<String>, LoadConfigError>
+where
+    F: FnOnce(),
+{
+    let _owner = CONFIG_MUTATION_GATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    after_lock();
+
     let mut new_config = load_config_unified(&state.workdir)?;
     normalize_and_validate_dispatch_models(&mut new_config)?;
     let mut warnings = validate_references(&new_config);
+
+    // A reload may canonicalize aliases or merge an effective configuration.
+    // Publish that validated generation atomically before exposing it live.
+    let config_path = state.workdir.join("roko.toml");
+    let serialized =
+        toml::to_string_pretty(&new_config).map_err(|error| LoadConfigError::Read {
+            path: config_path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        })?;
+    let persisted_changed = match std::fs::read(&config_path) {
+        Ok(current) => current != serialized.as_bytes(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(source) => {
+            return Err(LoadConfigError::Read {
+                path: config_path,
+                source,
+            });
+        }
+    };
+    if persisted_changed {
+        roko_fs::atomic_write_bytes(&config_path, serialized.as_bytes()).map_err(|source| {
+            LoadConfigError::Read {
+                path: config_path.clone(),
+                source,
+            }
+        })?;
+    }
 
     // Compute diff and apply only hot-reloadable sections.
     let old_config = state.load_roko_config();
     let changes = hot_reload::config_diff(&old_config, &new_config);
 
     if changes.is_empty() {
+        if persisted_changed {
+            let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+            tracing::debug!(
+                generation,
+                path = %config_path.display(),
+                "committed canonical config reload"
+            );
+        }
         return Ok(warnings);
     }
 
@@ -200,6 +308,12 @@ pub fn reload_config_from_disk(state: &AppState) -> Result<Vec<String>, LoadConf
 
     // Store the fully merged config (hot-reloaded + pending restart sections).
     state.store_roko_config(new_config);
+    let generation = CONFIG_MUTATION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    tracing::debug!(
+        generation,
+        path = %config_path.display(),
+        "committed config reload"
+    );
 
     // Emit config-changed event for dashboard visibility.
     let applied_count = result.applied.len();
@@ -701,5 +815,117 @@ default_model = "first"
         let payload: Value = serde_json::from_slice(&body).expect("parse body");
         assert_eq!(payload["agent"]["default_model"], "focused");
         assert_eq!(payload["default_model"], "focused");
+    }
+
+    #[test]
+    fn concurrent_disjoint_updates_preserve_both_commits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+
+        let port_state = Arc::clone(&state);
+        let port_barrier = Arc::clone(&barrier);
+        let port_update = std::thread::spawn(move || {
+            port_barrier.wait();
+            update_config_transaction(&port_state, serde_json::json!({"server": {"port": 4321}}))
+                .expect("commit port update");
+        });
+        let bind_state = Arc::clone(&state);
+        let bind_barrier = Arc::clone(&barrier);
+        let bind_update = std::thread::spawn(move || {
+            bind_barrier.wait();
+            update_config_transaction(
+                &bind_state,
+                serde_json::json!({"server": {"bind": "127.0.0.2"}}),
+            )
+            .expect("commit bind update");
+        });
+
+        barrier.wait();
+        port_update.join().expect("port thread");
+        bind_update.join().expect("bind thread");
+
+        let live = state.load_roko_config();
+        assert_eq!(live.server.port, 4321);
+        assert_eq!(live.server.bind, "127.0.0.2");
+        let persisted: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(dir.path().join("roko.toml")).expect("read persisted config"),
+        )
+        .expect("parse persisted config");
+        assert_eq!(persisted, *live, "file and live generations diverged");
+    }
+
+    #[test]
+    fn failed_atomic_persistence_keeps_live_generation_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+        let before = state.load_roko_config();
+        std::fs::create_dir(dir.path().join("roko.toml"))
+            .expect("block config file with directory");
+
+        let error =
+            update_config_transaction(&state, serde_json::json!({"server": {"port": 4321}}))
+                .expect_err("atomic replacement of a directory must fail");
+
+        assert!(error.to_string().contains("write roko.toml"));
+        assert_eq!(*state.load_roko_config(), *before);
+        assert!(dir.path().join("roko.toml").is_dir());
+    }
+
+    #[test]
+    fn waiting_reload_cannot_publish_stale_work_over_put_generation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(dir.path().to_path_buf(), RokoConfig::default());
+
+        let mut stale = RokoConfig::default();
+        stale.server.port = 1111;
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            toml::to_string_pretty(&stale).expect("serialize stale config"),
+        )
+        .expect("stage stale disk config");
+
+        let (put_acquired_tx, put_acquired_rx) = std::sync::mpsc::channel();
+        let (release_put_tx, release_put_rx) = std::sync::mpsc::channel();
+        let put_state = Arc::clone(&state);
+        let put = std::thread::spawn(move || {
+            update_config_transaction_with_hook(
+                &put_state,
+                serde_json::json!({"server": {"bind": "127.0.0.2"}}),
+                || {
+                    put_acquired_tx.send(()).expect("signal PUT ownership");
+                    release_put_rx.recv().expect("release PUT ownership");
+                },
+            )
+            .expect("commit winning PUT");
+        });
+        put_acquired_rx.recv().expect("PUT acquired ownership");
+
+        let (reload_started_tx, reload_started_rx) = std::sync::mpsc::channel();
+        let reload_state = Arc::clone(&state);
+        let reload = std::thread::spawn(move || {
+            reload_started_tx.send(()).expect("signal reload attempt");
+            reload_config_from_disk(&reload_state).expect("reload committed PUT file")
+        });
+        reload_started_rx
+            .recv()
+            .expect("reload attempted ownership");
+        release_put_tx.send(()).expect("release PUT");
+
+        put.join().expect("PUT thread");
+        reload.join().expect("reload thread");
+
+        let live = state.load_roko_config();
+        assert_eq!(live.server.bind, "127.0.0.2");
+        assert_eq!(
+            live.server.port,
+            RokoConfig::default().server.port,
+            "reload published the stale pre-transaction file"
+        );
+        let persisted: RokoConfig = toml::from_str(
+            &std::fs::read_to_string(dir.path().join("roko.toml")).expect("read persisted config"),
+        )
+        .expect("parse persisted config");
+        assert_eq!(persisted, *live, "file and live generations diverged");
     }
 }

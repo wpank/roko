@@ -72,7 +72,7 @@ Full field list, in schema order:
 | `model_hint` | Option\<String\> | optional | tier default | Preferred model. Short aliases `haiku`/`sonnet`/`opus` normalize (`normalize_model_alias`, `:633`). |
 | `replan_strategy` | Option\<ReplanStrategy\> | optional | none | Per-task replan override (e.g. `decompose`). |
 | `max_loc` | Option\<u32\> | optional | none | Max lines of change. `0` is normalized to `None` = unlimited (`normalize_max_loc`, `:351`). Injected into the prompt. |
-| `files` | Vec\<String\> | optional | `[]` | Files this task modifies. Alias: `write_files` (`:135`). Required for `implementer` role (`PLAN`/schema). Checked against workspace by `validate_file_references`. |
+| `files` | Vec\<String\> | optional | `[]` | Creation or mutation outputs owned by this task. Alias: `write_files` (`:135`). Required for `implementer` role (`PLAN`/schema). Outputs may be absent before execution and are not treated as pre-existing file prerequisites. |
 | `allowed_tools` | Option\<Vec\<String\>\> | optional | none | Whitelist of tool names. |
 | `denied_tools` | Option\<Vec\<String\>\> | optional | role default | Blocklist. If unset, filled from `denied_tools_for_role(role)` (`apply_role_tool_defaults`, `:612`). |
 | `mcp_servers` | Option\<Vec\<String\>\> | optional | none | MCP server names this task needs. |
@@ -167,7 +167,7 @@ Surgical context inlined into the agent prompt before it makes changes.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `read_files` | Vec\<ReadFile\> | `[]` | Files to read first. Content is inlined into the prompt (`build_prompt` `:519-540`). |
+| `read_files` | Vec\<ReadFile\> | `[]` | Prerequisite files to read first; content is inlined into the prompt (`build_prompt` `:519-540`). With workdir validation, each path must exist unless the exact path is produced by a declared transitive same-plan dependency or a loaded plan named by `depends_on_plan`. |
 | `symbols` | Vec\<String\> | `[]` | Key types/functions the agent should know (rendered as "Key symbols"). |
 | `anti_patterns` | Vec\<String\> | `[]` | "Do NOT" list, rendered with a ⛔ header. |
 | `prior_failures` | Vec\<String\> | `[]` | Context injected from previous failed attempts. |
@@ -289,7 +289,7 @@ validates with **zero errors**. Key rules:
 | `PLAN_010` | warning | Task unreachable from any root. |
 | `PLAN_011` | warning | `gate_rung = 0` but no verify steps. |
 | `PLAN_012` | error/warn | Malformed `acceptance_contract` / model alias. |
-| `PLAN_030/031` | warning | Declared `files` reference missing crate/package/path (needs `--workdir`). |
+| `PLAN_030/031` | warning | Declared `context.read_files` prerequisite is absent and no declared dependency produces its exact path (needs `--workdir`). `PLAN_030` identifies a missing crate/package root; `PLAN_031` identifies another missing path. |
 | `PLAN_032/033` | error | Greenfield claim / "create crate X" where X already exists. |
 | `PLAN_034` | error | Runtime parser (`TasksFile::parse_str`) would fail — `plan run` and `plan validate` agree. |
 | `PLAN_035` | error | `validate_against_schema` issue (bad role/tier/status, missing implementer `verify`/`files`, `timeout_secs == 0`). |

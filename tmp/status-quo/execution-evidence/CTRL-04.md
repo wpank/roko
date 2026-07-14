@@ -154,7 +154,15 @@ resolve these 11 exact dependencies, so this candidate leaves all navigation fil
 - Required reviewer focus: independently rebuild the union ID set from immutable commits, compare
   the 11-reference multiset with CTRL-03, verify all eight recovery hashes/task sets/statuses, and
   confirm that dependency resolution has not been described as task completion.
-- Independent review: pending.
-- Integration merge and post-merge verification: pending coordinator action.
-- Proposed final CTRL-04 status after accepted review and post-merge proof: `DONE` for external ID
-  resolution only; the 38 imported tasks remain active work under their own canonical owners.
+- Candidate: `c0be145d077b3989e6644bd9f0ca49823ce4da85`.
+- Independent review: `ACCEPTED` in `CTRL-04-REVIEW.md`; review commit
+  `b4661477763fbf1721bfb47ca1f6580a29ab6e63`.
+- Integration merge: `06e1d4404785b7d5c1fadcdd40740b89a8fe04b4`.
+- Post-merge verification: the immutable union census reports 87 plan IDs, 264
+  cross-plan references, zero unresolved references, and the exact eight targets with
+  38 ready/zero done tasks. Strict backlog validation reports `0 diagnostics in 55
+  plans`; each of the eight imported target plans reports `0 diagnostics in 1 plan`.
+  The sealed source index hash remains unchanged and `git diff --check` passes.
+- Final status: `DONE` for external ID resolution only. The 38 imported tasks remain
+  active work under their own canonical owners; this status does not supersede or
+  complete them.

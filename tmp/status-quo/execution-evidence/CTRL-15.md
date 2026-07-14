@@ -190,7 +190,21 @@ artifact remains in the worker.
 
 ## Integration
 
-- Independent review evidence: pending.
-- Integration commit: pending.
-- Post-merge proof: pending.
-- Canonical status: remains open.
+- Prior rejection: `tmp/status-quo/execution-evidence/CTRL-15-REVIEW.md`, committed on
+  integration as `3364eacbd`; it accepted the mapping but rejected ambiguous graph
+  edge labeling.
+- Corrected independent acceptance:
+  `tmp/status-quo/execution-evidence/CTRL-15-REVIEW-r2.md`, review commit
+  `0b406f230eee156cb8a722d177c3010e7f342f21` for cumulative candidate
+  `7303d2f8701c24842caec9a3e1850b43de92c906`.
+- Ordered integration commits: substantive candidate `736290140`, evidence
+  correction `e355800f4`, and accepted review `d98b15af0`.
+- Post-merge proof on `d98b15af0`: all 193 tracked TOMLs parse; 93 plans/881 tasks;
+  task-runtime refs `345/169` raw/unique, metadata refs `2/2`, all-declared
+  `347/171`, 849 resolved same-plan refs, zero unresolved refs, zero runtime or
+  all-declared cyclic SCCs; exact 120-row ledger with 99 retained and 21 roll-ups;
+  separate 24-task architecture queue. Disposable strict validation reported
+  backlog `0/55`, self-heal `0/6`, and only 94 bounded `PLAN_031` top-level
+  diagnostics. Regeneration produced the tracked 30-plan/144-task index exactly,
+  SHA-256 `27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8`.
+- Canonical status: `DONE` after accepted integration and reproduced post-merge proof.

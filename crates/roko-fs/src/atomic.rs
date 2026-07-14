@@ -44,10 +44,8 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> io::Res
 ///
 /// Returns [`std::io::Error`] if directory creation, write, or rename fails.
 pub fn atomic_write_bytes(path: &Path, data: &[u8]) -> io::Result<()> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    if let Some(parent) = parent {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = parent_dir_for(path);
+    std::fs::create_dir_all(parent)?;
 
     // A unique sibling prevents concurrent writers from truncating or
     // renaming each other's staging file. `create_new` also makes ownership
@@ -72,6 +70,12 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8]) -> io::Result<()> {
     sync_parent_dir(parent)?;
 
     Ok(())
+}
+
+fn parent_dir_for(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn create_staging_file(path: &Path) -> io::Result<(std::path::PathBuf, std::fs::File)> {
@@ -108,15 +112,12 @@ fn tmp_path_for(target: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
-fn sync_parent_dir(parent: Option<&Path>) -> io::Result<()> {
-    if let Some(parent) = parent {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
+fn sync_parent_dir(parent: &Path) -> io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_parent_dir(_parent: Option<&Path>) -> io::Result<()> {
+fn sync_parent_dir(_parent: &Path) -> io::Result<()> {
     // Opening a directory as a file is not portable. The data file has still
     // been synced above; platforms without directory fsync use rename's
     // native durability guarantees.
@@ -168,6 +169,15 @@ mod tests {
         atomic_write_bytes(&path, b"first").expect("write 1");
         atomic_write_bytes(&path, b"second").expect("write 2");
         assert_eq!(std::fs::read(&path).expect("read"), b"second");
+    }
+
+    #[test]
+    fn bare_relative_target_syncs_current_directory() {
+        assert_eq!(parent_dir_for(Path::new("state.json")), Path::new("."));
+        assert_eq!(
+            parent_dir_for(Path::new("nested/state.json")),
+            Path::new("nested")
+        );
     }
 
     #[test]

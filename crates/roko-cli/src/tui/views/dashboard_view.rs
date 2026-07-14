@@ -2337,4 +2337,42 @@ mod tests {
 
         assert!(rendered_text(&terminal).contains("model-canary"));
     }
+
+    #[test]
+    fn one_route_is_visible_at_minimum_panel_height() {
+        let backend = TestBackend::new(48, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut tui_state = TuiState::default();
+        tui_state.agents.push(crate::tui::state::AgentRow {
+            id: "agent-canary".into(),
+            active: true,
+            model: "model-canary".into(),
+            ..Default::default()
+        });
+        tui_state.route_metrics.insert(
+            "agent-canary".into(),
+            RouteMetrics {
+                model: "model-canary".into(),
+                tier: "fast".into(),
+                ..Default::default()
+            },
+        );
+        let theme = Theme::dark();
+
+        terminal
+            .draw(|frame| {
+                render_agent_routes_table(
+                    frame,
+                    frame.area(),
+                    &tui_state,
+                    &tui_state.route_metrics,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let rendered = rendered_text(&terminal);
+        assert!(rendered.contains("agent-canary"));
+        assert!(rendered.contains("model-canary"));
+    }
 }

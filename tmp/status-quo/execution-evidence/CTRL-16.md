@@ -288,7 +288,22 @@ matched exactly.
 - R3 review: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW-r3.md`, verdict
   `REJECTED`, integrated as `35b1eb455`; the case-insensitive APFS bypass and
   stock Bash 3.2 parse failure are addressed above.
-- Fresh r4 review evidence: pending independent review.
-- Integration commit: pending.
-- Post-merge commands/results: pending integration-owner verification.
-- Final status: `IMPLEMENTED_UNREVIEWED`.
+- Fresh r4 review evidence: `tmp/status-quo/execution-evidence/CTRL-16-REVIEW-r4.md`,
+  ACCEPTED at original review commit
+  `d971894203a8dd50fc83f5ea5f5a8ce8d8d45f2e` for exact cumulative candidate
+  `82598e68ef2d3837e26594842b4a492325c7d927`.
+- Ordered integration commits: r1 reconstruction `95135e50f`, r2 correction
+  `4b57c4556`, r3 correction `03c106fb1`, r4 correction `946805eef`, and
+  accepted review `fbc2e7f77`.
+- Post-merge proof on `fbc2e7f77`: stock Bash 3.2 and PATH Bash syntax pass;
+  the full two-shell forbidden-path matrix rejects without watched-tree
+  mutation and ordinary external simulations remain deterministic at SHA-256
+  `ed729b8bf452ba56c3b7bdb61090ddf75ef6038d27bba337e7cc4b21df35a01e`.
+  Corpus proof reports 193 parsed TOMLs, 30/144 ready and 2/66 superseded,
+  standalone roots 24/3/2, three absent historical roots, and Q14 1/3.
+  Disposable strict validation reports backlog `0/55`, self-heal `0/6`, and
+  top-level exactly 94 `PLAN_031` diagnostics; regenerated and tracked index
+  SHA-256 values both equal
+  `27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8`.
+  Formatting, diff hygiene, and integration cleanliness pass.
+- Final status: `DONE` after accepted integration and reproduced post-merge proof.

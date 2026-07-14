@@ -9274,6 +9274,25 @@ mod tests {
     use crate::task_parser::TasksFile;
 
     #[test]
+    fn plan_verify_uses_canonical_gate_test_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.gate_compile_secs = 101;
+        roko_config.timeouts.gate_clippy_secs = 202;
+        roko_config.timeouts.gate_test_secs = 303;
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+
+        assert_eq!(
+            gate_timeout(&config, gate_dispatch::RUNG_PLAN_VERIFY),
+            Duration::from_secs(303)
+        );
+    }
+
+    #[test]
     fn successful_plan_verify_finalizes_runner_plan() {
         let mut executor = ParallelExecutor::new(ExecutorConfig::default());
         executor.add_plan(OrcPlanState::new("plan-verify"));

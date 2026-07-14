@@ -1012,6 +1012,142 @@ default_model = "missing"
         assert!(error.to_string().contains("agent.default_model"));
     }
 
+    fn dispatch_config_with_model(key: &str, slug: &str) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            key.to_string(),
+            super::super::schema::ModelProfile {
+                provider: "provider".to_string(),
+                slug: slug.to_string(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn canonical_model_key_wins_over_another_models_slug() {
+        let mut config = dispatch_config_with_model("stable-key", "provider-stable");
+        config.models.insert(
+            "alias-owner".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "provider".to_string(),
+                slug: "stable-key".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agent.default_model = " stable-key ".to_string();
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config.agent.default_model, "stable-key");
+    }
+
+    #[test]
+    fn all_dispatch_model_references_normalize_to_canonical_keys() {
+        let mut config = dispatch_config_with_model("focused", "provider-model-v1");
+        config.agent.default_model = "provider-model-v1".to_string();
+        config.agent.fallback_model = Some(" provider-model-v1 ".to_string());
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "provider-model-v1".to_string());
+        config.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("provider-model-v1".to_string()),
+                ..Default::default()
+            },
+        );
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config.agent.default_model, "focused");
+        assert_eq!(config.agent.fallback_model.as_deref(), Some("focused"));
+        assert_eq!(
+            config
+                .agent
+                .tier_models
+                .get("mechanical")
+                .map(String::as_str),
+            Some("focused")
+        );
+        assert_eq!(
+            config
+                .agent
+                .roles
+                .get("reviewer")
+                .and_then(|role| role.model.as_deref()),
+            Some("focused")
+        );
+    }
+
+    #[test]
+    fn unresolved_nested_dispatch_models_report_their_fields() {
+        let mut fallback = dispatch_config_with_model("focused", "provider-model-v1");
+        fallback.agent.default_model = "focused".to_string();
+        fallback.agent.fallback_model = Some("missing".to_string());
+        let error = normalize_and_validate_dispatch_models(&mut fallback).unwrap_err();
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.fallback_model references unresolved model 'missing'"
+        );
+
+        let mut tier = dispatch_config_with_model("focused", "provider-model-v1");
+        tier.agent.default_model = "focused".to_string();
+        tier.agent
+            .tier_models
+            .insert("mechanical".to_string(), "missing".to_string());
+        let error = normalize_and_validate_dispatch_models(&mut tier).unwrap_err();
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.tier_models.mechanical references unresolved model 'missing'"
+        );
+
+        let mut role = dispatch_config_with_model("focused", "provider-model-v1");
+        role.agent.default_model = "focused".to_string();
+        role.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("missing".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let error = normalize_and_validate_dispatch_models(&mut role).unwrap_err();
+
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.roles.reviewer.model references unresolved model 'missing'"
+        );
+    }
+
+    #[test]
+    fn empty_model_registry_preserves_legacy_dispatch_references() {
+        let mut config = RokoConfig::default();
+        config.agent.default_model = "legacy-default".to_string();
+        config.agent.fallback_model = Some("legacy-fallback".to_string());
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "legacy-tier".to_string());
+        config.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("legacy-role".to_string()),
+                ..Default::default()
+            },
+        );
+        let original = config.clone();
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config, original);
+    }
+
     #[test]
     fn serialize_effective_roundtrips() {
         let config = RokoConfig::default();

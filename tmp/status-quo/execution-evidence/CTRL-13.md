@@ -216,3 +216,26 @@ the fresh current census above rather than assumed.
   ledger arithmetic, and confirm the sealed index/worktree scope.
 - This is an implementation/evidence candidate only. It does not mark CTRL-13 or
   CTRL-15 complete; review, merge, post-merge proof, and coordinator status remain.
+
+## Integrated disposition
+
+- Independent review: accepted by
+  `7971c328103405255c844df4e4dba5b0794e2d43`; integrated review commit
+  `5d30a1986` follows integrated candidate commit `3b40cd389`.
+- Post-merge census at `5d30a1986` includes the already integrated CTRL-09 DOC
+  roll-up. It reports 93 plans, 881 tasks, 849 same-plan references, 320
+  task-level plan references, two meta-level plan references, 160 unique runtime
+  task edges, 162 unique all-declared edges, zero unresolved references, and zero
+  cyclic SCCs. The count increase from this candidate's immutable-base census is
+  entirely attributable to CTRL-09; resolution remains closed.
+- All 193 tracked TOMLs parsed. Disposable strict validation reported zero
+  diagnostics in 55 backlog plans and zero diagnostics in six self-heal plans.
+  The source `plans/INDEX.md` remained sealed at SHA-256
+  `7ac5679f9ff7a32571ad0ed70e9914b579f12a5f22e4285f4804c20a19077b44`.
+- The shared test target currently identifies the review candidate because the
+  review's public-parser build rewrote the binary. Production parser/validator
+  source is byte-identical, so the post-merge semantic result is valid; CTRL-11
+  binary provenance must be rebuilt at the current integrated code SHA before a
+  release claim.
+- Final status: `DONE`. This proves identifier resolution only; CTRL-15 retains
+  ownership of the 120-task disposition ledger.

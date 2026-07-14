@@ -539,7 +539,7 @@ sealed.
 - [x] CTRL-10 Establish execution-evidence and reviewer evidence conventions.
 - [x] CTRL-11 Rebuild target/debug/roko from integrated current source.
 - [x] CTRL-12 Confirm self-heal and backlog strict validation both exit zero.
-- [ ] CTRL-13 Confirm zero unresolved internal/external plan IDs for the chosen execution root.
+- [x] CTRL-13 Confirm zero unresolved internal/external plan IDs for the chosen execution root.
 - [x] CTRL-14 Verify status-quo-authoring-gaps remains explicitly superseded (96/96
       skipped), with per-epic plan coverage proving why it must never execute.
 - [ ] CTRL-15 Reconcile all 120 executable tasks represented by plans/INDEX.md into

@@ -608,7 +608,7 @@ Single runner owner; do not parallelize these shared paths.
 
 Plan: tmp/status-quo/self-heal/plans/SH01-runner-lifecycle/tasks.toml
 
-- [ ] SH01-T06C4 Expire lost effects and close timeout races.
+- [x] SH01-T06C4 Expire lost effects and close timeout races.
 - [ ] SH01-T07 Reconcile truthful run and plan summaries.
 - [ ] SH01 reads 28/28 done after review, merge, and post-merge verification.
 - [ ] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence.

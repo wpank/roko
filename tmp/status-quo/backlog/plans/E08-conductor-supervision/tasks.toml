@@ -1,0 +1,604 @@
+[meta]
+plan = "E08-conductor-supervision"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T01: RuntimeEvent -> Engram adapter (bridge runner-v2 events to watchers)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T01"
+title = "Add RunnerEvent/AgentEvent -> Engram adapter for conductor watchers"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 220
+files = [
+    "crates/roko-cli/src/runner/conductor_adapter.rs",
+    "crates/roko-cli/src/runner/mod.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = ["Pure fns map RunnerEvent/AgentEvent to Option<Engram>; a synthetic ghost-turn + gate-fail stream, once adapted, drives Conductor::default().evaluate() to a non-Continue decision."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "561-765", why = "RunnerEvent enum variants + payload fields to map (plan_id, task, model, provider, gate pass/fail, cost)" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "309-321", why = "AgentEvent (AgentRuntimeEvent) variants: TurnCompleted carries cost; ToolCall/MessageDelta for activity" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "455-476", why = "extract_provider / extract_plan_id — the exact tag keys and Kinds watchers read from the stream" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "691-740", why = "Test fixtures show the ghost-turn Engram body schema + PlanPhase/GateVerdict/Metric tag layout watchers expect" },
+]
+symbols = [
+    "RunnerEvent — enum, runner/types.rs:564 (GateCompleted, TaskAttemptCompleted, PlanStarted, AgentCompleted ...)",
+    "AgentEvent — alias for roko_agent::AgentRuntimeEvent, runner/types.rs:41",
+    "roko_core::Engram — target signal type; ::builder(Kind).body(Body).tag(k,v).build()",
+    "roko_core::Kind — PlanPhase | GateVerdict | Metric | AgentOutput | Custom(String)",
+    "roko_conductor::PLAN_ID_TAG — the 'plan_id' tag key watchers key on",
+]
+anti_patterns = [
+    "Do NOT add roko-conductor as a dep just for this file — map to roko_core::Engram only; keep the adapter dependency-light.",
+    "Do NOT emit an Engram for every event — return Option and drop events no watcher consumes (avoids ring churn).",
+    "Do NOT invent new tag keys — reuse exactly plan_id/task/model/provider/severity as the watchers read them.",
+    "Do NOT mutate runner state or perform IO in the adapter — it must stay a pure mapping function.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-cli/src/runner/conductor_adapter.rs"
+fail_msg = "conductor_adapter.rs must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'fn .*runner_event.*Engram|fn .*to_engram' crates/roko-cli/src/runner/conductor_adapter.rs"
+fail_msg = "adapter must expose a RunnerEvent -> Engram mapping fn"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-cli"
+fail_msg = "crate must compile with the new adapter module"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_adapter"
+fail_msg = "adapter unit tests (ghost-turn/gate-fail stream -> non-Continue decision) must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T02: conductor_ring + FeedbackSink decorator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T02"
+title = "Add bounded conductor_ring fed by a ConductorRingSink FeedbackSink decorator"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 200
+files = [
+    "crates/roko-cli/src/runner/conductor_adapter.rs",
+    "crates/roko-cli/src/runtime_feedback/mod.rs",
+]
+role = "implementer"
+depends_on = ["E08-T01"]
+acceptance = ["A ConductorRingSink implementing FeedbackSink converts events via the T01 adapter and pushes into a bounded ring; fanning many events leaves the ring non-empty and capped; a failing push never aborts the facade fan-out."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runtime_feedback/mod.rs", lines = "121-210", why = "FeedbackSink trait (best-effort, per-sink error containment) + FeedbackFacade::with_sink registration pattern to mirror" },
+    { path = "crates/roko-cli/src/runtime_feedback/mod.rs", lines = "48-120", why = "FeedbackEvent vocabulary the sink receives — what to convert via the T01 adapter" },
+    { path = "crates/roko-cli/src/runner/conductor_adapter.rs", lines = "1-40", why = "The T01 adapter fns this sink calls before pushing into the ring" },
+]
+symbols = [
+    "FeedbackSink — trait, runtime_feedback/mod.rs:130 (on_event async, wants(&event)->bool)",
+    "FeedbackFacade::with_sink — runtime_feedback/mod.rs:191 builder registration",
+    "FeedbackEvent — runtime_feedback/mod.rs:48 provider-neutral event enum",
+    "std::collections::VecDeque + Arc<Mutex<..>> — ConductorRing backing store",
+]
+anti_patterns = [
+    "Do NOT let the ring grow unbounded — enforce a cap (~512) with drop-oldest (pop_front) semantics.",
+    "Do NOT block or .await under the ring Mutex — lock, push/trim, drop the guard immediately.",
+    "Do NOT panic on a poisoned lock or full ring — the sink is best-effort per the FeedbackSink contract.",
+    "Do NOT register the sink unconditionally — only when a conductor is present (added in E08-T03).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'ConductorRing|conductor_ring' crates/roko-cli/src/runner/conductor_adapter.rs"
+fail_msg = "a bounded conductor ring type must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'impl FeedbackSink for .*Ring|ConductorRingSink' crates/roko-cli/src/runtime_feedback/mod.rs crates/roko-cli/src/runner/conductor_adapter.rs"
+fail_msg = "a FeedbackSink decorator feeding the ring must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-cli"
+fail_msg = "crate must compile with the ring + sink"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_ring"
+fail_msg = "ring bound + best-effort push tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T03: Conductor::from_config wiring into the runner-v2 event loop
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T03"
+title = "Construct Conductor::from_config and thread it + ring into the event loop"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-opus-4-6"
+max_loc = 260
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/types.rs",
+]
+role = "implementer"
+depends_on = ["E08-T02"]
+acceptance = ["Conductor::from_config(&roko_config.conductor) is built once at run setup, stored as Arc on the run context, and shares the ConductorRing with the sink; a [conductor.watchers.ghost_turn] threshold in roko.toml is now honored at runtime (config no longer dead)."]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1258-1460", why = "RunConfig fields + from_roko_config builder — where roko_config.conductor is available and facades are constructed" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "744-790", why = "Run setup: facades/subscribers spawned here; the conductor + ring must be built alongside and shared into the sink" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "194-256", why = "Conductor::from_config(&ConductorConfig) and from_circuit_breaker_state — the constructors to call" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15416-15440", why = "Dead reference: how orchestrate built routing context from conductor.routing_bias()/signals — the pattern to port" },
+]
+symbols = [
+    "Conductor::from_config — roko_conductor, conductor.rs:204 (materializes [conductor.watchers.*])",
+    "RokoConfig.conductor — roko_core::config::schema::ConductorConfig, already parsed",
+    "RunConfig — runner/types.rs:1261; add Option<Arc<Conductor>> + ConductorRing handle",
+    "FeedbackFacade::with_sink — register the ConductorRingSink only when conductor present",
+]
+anti_patterns = [
+    "Do NOT default the conductor on when config is absent in a way that breaks smoke tests — gate on Option, preserve None-means-off.",
+    "Do NOT rebuild the conductor per tick — construct once at run start, share via Arc.",
+    "Do NOT bypass from_config with Conductor::new() — that would keep [conductor.watchers.*] dead (the whole point is to revive config).",
+    "Do NOT hold the conductor across an .await while also holding the ring lock.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko_conductor|Conductor::from_config' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "the event loop must construct the conductor from config (was zero conductor imports)"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -c 'roko_conductor' crates/roko-cli/src/runner"
+fail_msg = "runner tree must now reference roko_conductor (>0)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo build -p roko-cli"
+fail_msg = "crate must compile with the conductor wired into RunConfig/event loop"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli runner::"
+fail_msg = "existing runner tests must still pass with the conductor threaded through"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T04: Supervision select! branch
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T04"
+title = "Add conductor supervision select branch that evaluates and enforces decisions"
+description = "Add a cancel-safe periodic conductor supervision branch to the runner-v2 event loop. It snapshots the conductor ring, calls evaluate_full, and enforces Continue/Restart/Fail without waiting for the plan wall-clock timeout."
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-6"
+max_loc = 260
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/conductor_adapter.rs",
+]
+role = "implementer"
+depends_on = ["E08-T03"]
+acceptance = [
+    "The main tokio::select! loop has a conductor_tick or equivalent periodic branch guarded by the optional conductor/ring.",
+    "Each tick snapshots the bounded ring, calls Conductor::evaluate_full(&snapshot, &Context::now()), and handles ConductorDecision::Continue, Restart, and Fail.",
+    "Fail cancels or terminally fails the run with a RunnerEvent/reason naming the watcher; Restart requeues the current/offending task through the existing retry/re-dispatch path; subcritical CognitiveSignals are applied best-effort.",
+    "A regression test proves conductor supervision produces a conductor-named terminal/retry event before plan_timeout for a synthetic ghost-turn or repeat-failure stream.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "646-790", why = "Existing tick/flush/timeout intervals and tokio::select! cancel-safety comments" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1738-1860", why = "Current tick, flush, timeout, and cancellation branches to integrate with" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1488-1560", why = "Existing retry/re-dispatch path for gate failures; mirror this rather than inventing a separate scheduler" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "2017-2188", why = "Agent failure retry/exhaustion behavior and terminal event patterns" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "311-435", why = "evaluate_full decision, cognitive signals, and circuit-breaker recording behavior" },
+]
+symbols = [
+    "Conductor::evaluate_full(&[Engram], &Context) -> ConductorEvaluation",
+    "ConductorDecision::{Continue, Restart, Fail}",
+    "CancellationToken::cancel",
+    "ParallelExecutor::requeue_retryable_terminal / PlanState::reset_for_retry — existing retry surfaces to reuse when applicable",
+    "RunnerEvent::retry_decision / task_attempt_completed — event shapes for supervised intervention evidence",
+]
+anti_patterns = [
+    "Do NOT block inside the select branch or hold the conductor ring lock across await.",
+    "Do NOT evaluate the conductor on every runner tick if a separate interval is intended; keep supervision bounded and cheap.",
+    "Do NOT classify conductor Fail as plan-timeout; the emitted reason must name the watcher/circuit breaker.",
+    "Do NOT restart the whole executor blindly for a task-level Restart decision; use the existing retry/requeue path where possible.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'conductor_tick|supervision_tick|conductor_supervision' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event loop must add a named periodic conductor supervision branch"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'evaluate_full' crates/roko-cli/src/runner/event_loop.rs && rg -q 'ConductorDecision|\\.cancel\\(|requeue' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "supervision branch must evaluate the conductor and enforce fail/restart decisions"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile with conductor supervision enforcement"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_supervision 2>&1"
+fail_msg = "conductor supervision regression tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T05: Real conductor_load
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T05"
+title = "Replace hardcoded conductor_load with real runner pressure"
+description = "Replace the runner-v2 and runtime-feedback conductor_load: 0.0 placeholders with a bounded load derived from conductor routing bias, circuit-breaker pressure, active agents, and ready-queue depth."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runtime_feedback/routing.rs",
+]
+role = "implementer"
+depends_on = ["E08-T03"]
+acceptance = [
+    "No conductor_load: 0.0 literal remains in runner/event_loop.rs or runtime_feedback/routing.rs.",
+    "RoutingContext.conductor_load is computed from live runner state and/or conductor.routing_bias(), clamped to 0.0..=1.0.",
+    "A unit test covers neutral load and pressured load cases.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4248-4262", why = "Current live RoutingContext hardcodes conductor_load: 0.0" },
+    { path = "crates/roko-cli/src/runtime_feedback/routing.rs", lines = "119-137", why = "Fallback RoutingContext hardcodes conductor_load: 0.0 for feedback observations" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "35-45", why = "RoutingBias fields prefer_cheaper/deprioritize/reason" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "603-663", why = "derive_routing_bias pressure sources" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "3010-3025", why = "Dead legacy routing_load_pressure pattern cited by the epic; reuse only if still appropriate" },
+]
+symbols = [
+    "RoutingContext.conductor_load",
+    "Conductor::routing_bias() -> RoutingBias",
+    "active_agent_tasks.len() and ready queue depth",
+    "RoutingObservationSink fallback context",
+]
+anti_patterns = [
+    "Do NOT leave a zero constant in the live runner path.",
+    "Do NOT let conductor_load exceed 1.0 or become negative.",
+    "Do NOT require a conductor for the fallback context; no-conductor must remain a clean neutral load.",
+    "Do NOT recompute expensive queue scans on every small feedback event if the value can be passed from dispatch context.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'conductor_load: 0\\.0' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runtime_feedback/routing.rs"
+fail_msg = "live and fallback runner routing contexts must not hardcode conductor_load to 0.0"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'routing_bias|prefer_cheaper|compute_conductor_load|conductor_load_from' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runtime_feedback/routing.rs"
+fail_msg = "conductor_load must be computed from conductor/runner pressure"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_load 2>&1"
+fail_msg = "conductor_load tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T06: Snapshot / restore circuit-breaker state
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T06"
+title = "Snapshot and restore conductor circuit-breaker state on resume"
+description = "Persist the conductor circuit-breaker snapshot inside runner-owned run state and restore it on --resume through Conductor::from_circuit_breaker_state, so tripped failure budgets survive process restarts."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 180
+files = [
+    "crates/roko-cli/src/runner/persist.rs",
+    "crates/roko-cli/src/runner/resume.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/runner/snapshot_writer.rs",
+]
+role = "implementer"
+depends_on = ["E08-T03"]
+acceptance = [
+    "RunStateSnapshot includes an optional conductor circuit-breaker state with serde defaults for backward compatibility.",
+    "save_snapshot records conductor.circuit_breaker().snapshot_state() into run-state JSON and the unified StateSnapshot.",
+    "prepare_resume/ResumeReport exposes the prior conductor breaker state, and run setup restores it with Conductor::from_circuit_breaker_state before falling back to Conductor::from_config.",
+    "A resume test proves a tripped breaker before restart remains tripped after restore.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "93-139", why = "RunStateSnapshot schema; add optional conductor breaker state here" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3372-3394", why = "save_snapshot builds RunStateSnapshot and currently persists cascade router JSON only" },
+    { path = "crates/roko-cli/src/runner/resume.rs", lines = "41-75", why = "ResumeReport fields surfaced from prior run-state snapshot" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "289-470", why = "Resume loading and restored runtime state setup" },
+    { path = "crates/roko-conductor/src/circuit_breaker.rs", lines = "200-214", why = "CircuitBreaker::from_state constructor" },
+    { path = "crates/roko-conductor/src/circuit_breaker.rs", lines = "365-378", why = "CircuitBreaker::snapshot_state serializer" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "244-258", why = "Conductor::circuit_breaker and from_circuit_breaker_state" },
+]
+symbols = [
+    "persist::RunStateSnapshot",
+    "ResumeReport",
+    "Conductor::from_circuit_breaker_state(CircuitBreakerState)",
+    "CircuitBreaker::snapshot_state()",
+    "roko_runtime::StateSnapshot::new(... run_state_json ...)",
+]
+anti_patterns = [
+    "Do NOT store conductor circuit-breaker state only in the async SnapshotWriter payload; it must be part of runner-owned persisted state in persist.rs.",
+    "Do NOT make old run-state snapshots fail to deserialize; the new field must be optional/defaulted.",
+    "Do NOT restore with Conductor::new() when prior breaker state exists.",
+    "Do NOT overwrite restored breaker state by immediately calling from_config afterward without merging config thresholds intentionally.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'CircuitBreakerState|conductor_circuit_breaker|circuit_breaker_state' crates/roko-cli/src/runner/persist.rs crates/roko-cli/src/runner/resume.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner persistence/resume must carry conductor circuit-breaker state"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'snapshot_state|from_circuit_breaker_state' crates/roko-cli/src/runner/persist.rs crates/roko-cli/src/runner/resume.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner must save and restore conductor breaker state through the conductor API"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile with conductor breaker snapshot/resume"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_circuit_breaker_resume 2>&1"
+fail_msg = "conductor circuit-breaker resume tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T07: Close conductor loop into routing and docs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[[task]]
+id = "E08-T07"
+title = "Feed conductor routing bias into model routing and document live config"
+description = "Use Conductor::routing_bias to influence runner-v2 model routing after supervision is live, then update the v2 config/integration docs to say conductor watcher config is runtime-live."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 130
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/dispatch/model_routing.rs",
+    "docs/v2/19-CONFIG.md",
+    "docs/v2/INTEGRATION-GUIDE.md",
+]
+role = "implementer"
+depends_on = ["E08-T04", "E08-T05"]
+acceptance = [
+    "Runner-v2 model routing consumes conductor.routing_bias() so prefer_cheaper and deprioritize influence candidate selection or scoring.",
+    "A smoke/unit test demonstrates repeated failures on a model cause a routing decision to avoid or downgrade that model when possible.",
+    "docs/v2/19-CONFIG.md and docs/v2/INTEGRATION-GUIDE.md describe [conductor.watchers.*] as live in runner-v2 and mention routing bias behavior.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "35-45", why = "RoutingBias shape: deprioritize, prefer_cheaper, reason" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "873-920", why = "Existing tests proving routing_bias tracks pressure and recent model failures" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4228-4370", why = "Runner-v2 RoutingContext and model choice path where bias should be applied" },
+    { path = "crates/roko-cli/src/dispatch/model_routing.rs", lines = "180-230", why = "ModelRouter route fallback/cascade behavior; extend inputs or scoring here if needed" },
+    { path = "docs/v2/19-CONFIG.md", lines = "611-635", why = "Config reference [conductor] section to update as live runner-v2 behavior" },
+    { path = "docs/v2/INTEGRATION-GUIDE.md", lines = "756-835", why = "Integration guide conductor watcher examples to update" },
+]
+symbols = [
+    "Conductor::routing_bias() -> RoutingBias",
+    "RoutingBias.deprioritize",
+    "RoutingBias.prefer_cheaper",
+    "RoutingInputs / RoutingContext",
+    "[conductor.watchers.*] config docs",
+]
+anti_patterns = [
+    "Do NOT update crates/roko-cli/CLAUDE.md; that file is not part of this task and does not exist in the current tree.",
+    "Do NOT make conductor bias mandatory when no conductor is configured; preserve neutral routing behavior.",
+    "Do NOT hard-ban every deprioritized model if it is the only available candidate; degrade gracefully.",
+    "Do NOT leave docs claiming conductor watcher config is dark or orchestrate-only after this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'RoutingBias|deprioritize|prefer_cheaper' crates/roko-cli/src/dispatch/model_routing.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "model routing must consume conductor routing bias"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'runner-v2.*conductor|conductor.*runner-v2|routing bias' docs/v2/19-CONFIG.md docs/v2/INTEGRATION-GUIDE.md"
+fail_msg = "docs must describe conductor watcher config as live in runner-v2 and mention routing bias"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli conductor_routing_bias 2>&1"
+fail_msg = "conductor routing-bias smoke tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T08: Disk-space watcher for conductor
+# ═══════════════════════════════════════════════════════════════════════════════
+# Add a DiskSpaceWatcher to the conductor watcher set that fires an
+# intervention when available disk space drops below a critical threshold.
+# During long self-hosting runs, agents generate worktrees, episodes, metrics,
+# and build artifacts that can exhaust disk space. A conductor-level watcher
+# can halt execution early with a clear reason instead of letting agents fail
+# with cryptic ENOSPC errors mid-task.
+
+[[task]]
+id = "E08-T08"
+title = "Acceptance roll-up: E47 runtime disk-pressure watcher"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E47-T08"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = []
+role = "quick-reviewer"
+depends_on = ["E08-T03"]
+depends_on_plan = ["E47-resource-disk-management"]
+acceptance = [
+    "DiskPressureWatcher implements roko_core::React and consumes Metric Engrams tagged name=disk_free_mb without performing disk I/O itself.",
+    "Thresholds come from canonical [resources] ResourcesConfig: below warn_disk_mb emits warning, below min_free_disk_mb emits critical/pause, and below half the minimum emits emergency/abort.",
+    "The conductor registration/from_config path constructs the watcher from ResourcesConfig; no parallel [conductor.watchers.disk_space] schema is introduced.",
+    "Focused tests prove healthy, warning, critical, emergency, and recovery behavior through React::decide and intervention Engrams.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-conductor/src/watchers/cost_overrun.rs", lines = "1-100", why = "Canonical React/Metric/intervention pattern used by E47 DiskPressureWatcher" },
+    { path = "crates/roko-conductor/src/watchers/disk_pressure.rs", lines = "1-180", why = "Canonical E47 watcher implementation under review" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-170", why = "Watcher registration/from_config path consuming ResourcesConfig" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "140-225", why = "Canonical ResourcesConfig disk thresholds; no second conductor watcher schema" },
+]
+symbols = [
+    "DiskPressureWatcher",
+    "React::decide(&[Engram], &ReactContext) -> Vec<Engram>",
+    "Metric Engram tag name=disk_free_mb",
+    "ResourcesConfig::{warn_disk_mb,min_free_disk_mb}",
+    "intervention recommendation tags warning/pause/abort",
+]
+anti_patterns = [
+    "Do NOT use the nonexistent Watcher/WatcherOutput/evaluate API; the canonical conductor contract is React returning intervention Engrams.",
+    "Do NOT perform disk I/O inside the watcher; it consumes disk_free_mb Metric signals emitted by the monitor/adapter path.",
+    "Do NOT introduce [conductor.watchers.disk_space]; consume [resources] thresholds owned by E47-T01.",
+    "Do NOT hardcode thresholds or emit repeated critical interventions without transition/recovery handling.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-conductor/src/watchers/disk_pressure.rs"
+fail_msg = "canonical E47 disk_pressure.rs watcher module must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'DiskPressureWatcher' crates/roko-conductor/src/watchers/mod.rs crates/roko-conductor/src/conductor.rs"
+fail_msg = "canonical E47 DiskPressureWatcher must be registered"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-conductor -p roko-core 2>&1"
+fail_msg = "canonical React watcher and ResourcesConfig integration must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-conductor disk_pressure 2>&1"
+fail_msg = "canonical E47 DiskPressureWatcher tests must pass"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E08-T09: Worktree-count watcher for conductor
+# ═══════════════════════════════════════════════════════════════════════════════
+# Add a WorktreeCountWatcher that alerts when too many git worktrees are live.
+# E47-T09 is the sole producer of tagged `worktree_count` Metric Engrams from
+# WorktreeManager::active_count on both runner paths. This task is only the
+# React consumer: it reads that stream and emits a warning intervention when
+# the latest count exceeds its configurable threshold.
+
+[[task]]
+id = "E08-T09"
+title = "Add WorktreeCountWatcher to conductor watchers"
+status = "ready"
+ownership = "distinct-consumer"
+uses_owner = "E47-T09"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 140
+files = [
+    "crates/roko-conductor/src/watchers/worktree_count.rs",
+    "crates/roko-conductor/src/watchers/mod.rs",
+    "crates/roko-conductor/src/conductor.rs",
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-core/src/config/mod.rs",
+]
+role = "implementer"
+depends_on = ["E08-T03"]
+depends_on_plan = ["E47-resource-disk-management"]
+acceptance = [
+    "WorktreeCountWatcher implements React::decide and reads the latest Kind::Metric Engram tagged name=worktree_count and value=<active count>.",
+    "When the live count exceeds the configured maximum, decide emits a conductor.intervention Engram tagged severity=warning, watcher=worktree-count, count, and max_live; otherwise it returns no Engrams.",
+    "Conductor::from_config registers the watcher and honors [conductor.watchers.worktree_count].max_live through WatcherThresholds; absent configuration uses the documented default of 8.",
+    "Unit tests prove a metric value of 10 with max_live=8 emits exactly one warning intervention and a value at or below 8 emits none.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-conductor/src/watchers/cost_overrun.rs", lines = "1-110", why = "Live React pattern for consuming tagged Metric Engrams and emitting warning intervention Engrams" },
+    { path = "crates/roko-conductor/src/watchers/mod.rs", lines = "1-40", why = "React watcher module re-exports; add WorktreeCountWatcher here" },
+    { path = "crates/roko-conductor/src/conductor.rs", lines = "86-210", why = "default_watchers and configured_watchers; register WorktreeCountWatcher in both paths" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1250-1420", why = "ConductorConfig and WatcherThresholds; add WorktreeCountConfig with max_live default 8" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "7100-7185", why = "E47-T09 canonical tagged Metric emission into the conductor ring" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", why = "E47-T09 runner-v2 worktree_count Metric producer" },
+]
+symbols = [
+    "React::decide(&[Engram], &Context) -> Vec<Engram>",
+    "Kind::Metric tags name=worktree_count and value=<usize> — canonical E47-T09 input",
+    "Kind::Custom(conductor.intervention) — warning output Engram",
+    "WatcherThresholds.worktree_count / WorktreeCountConfig.max_live — configurable threshold with default 8",
+]
+anti_patterns = [
+    "Do NOT query git or WorktreeManager from the watcher; E47-T09 alone emits the count and this React stays pure.",
+    "Do NOT interpret disk_budget_remaining as a worktree count; consume only name=worktree_count metrics.",
+    "Do NOT introduce a Watcher trait, WatcherOutput, or evaluate API; the live interface is React::decide returning intervention Engrams.",
+    "Do NOT hardcode the runtime threshold in decide; use WorktreeCountConfig.max_live, whose missing-config default is 8.",
+    "Do NOT emit Critical/abort by default; count pressure is a severity=warning intervention.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-conductor/src/watchers/worktree_count.rs"
+fail_msg = "worktree_count.rs watcher module must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'WorktreeCountWatcher' crates/roko-conductor/src/watchers/mod.rs crates/roko-conductor/src/conductor.rs"
+fail_msg = "WorktreeCountWatcher must be registered in the watcher module and conductor"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'impl React for WorktreeCountWatcher' crates/roko-conductor/src/watchers/worktree_count.rs && rg -q 'worktree_count|WORKTREE_COUNT_METRIC' crates/roko-conductor/src/watchers/worktree_count.rs && rg -q 'conductor.intervention' crates/roko-conductor/src/watchers/worktree_count.rs"
+fail_msg = "WorktreeCountWatcher must consume the exact Metric and emit intervention Engrams through React::decide"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'WorktreeCountConfig|worktree_count' crates/roko-core/src/config/schema.rs crates/roko-core/src/config/mod.rs crates/roko-conductor/src/conductor.rs"
+fail_msg = "watcher threshold config and Conductor::from_config registration must be present"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-conductor 2>&1"
+fail_msg = "roko-core config and roko-conductor must compile with WorktreeCountWatcher"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-conductor worktree_count 2>&1"
+fail_msg = "WorktreeCountWatcher unit tests must pass"

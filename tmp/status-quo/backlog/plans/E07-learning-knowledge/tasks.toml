@@ -1,0 +1,599 @@
+[meta]
+plan = "E07-learning-knowledge"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T01: Export/import LinUCB A/b matrices on LinUCBRouter
+#
+# CascadeRouter::snapshot() hardcodes linucb_state:None (cascade_router.rs:1795)
+# and load_from discards _linucb_state (:1832). The LinUCBSnapshot type already
+# exists (cascade/persistence.rs:14-24) but is dead schema. Per-arm A/b live on
+# ArmState (model_router.rs:426 a_matrix / b_vector). Add export/import so the
+# stage-3 contextual bandit survives a restart instead of resetting to identity.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T01"
+title = "Add export_linucb_snapshot/import_linucb_snapshot to LinUCBRouter"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 70
+files = ["crates/roko-learn/src/model_router.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/model_router.rs", lines = "420-465", why = "ArmState with pub a_matrix / b_vector — the parameters to serialize" },
+    { path = "crates/roko-learn/src/model_router.rs", lines = "681-720", why = "LinUCBRouter struct + arms field + constructor — where to add methods" },
+    { path = "crates/roko-learn/src/cascade/persistence.rs", lines = "9-24", why = "LinUCBSnapshot {a_matrices, b_vectors, dim, observations} — the target type (currently pub(crate), dead)" },
+    { path = "crates/roko-learn/src/model_router.rs", lines = "1060-1086", why = "update_features_internal — confirms A += x·xᵀ, b += reward·x shape (dim x dim)" },
+]
+symbols = [
+    "struct LinUCBRouter { arms: Vec<ArmState>, .. } — at model_router.rs:681",
+    "struct ArmState { a_matrix: Vec<Vec<f64>>, b_vector: Vec<f64>, slug: String, .. }",
+    "LinUCBSnapshot { a_matrices: Vec<Vec<f64>>, b_vectors: Vec<Vec<f64>>, dim: usize, observations: usize } — cascade/persistence.rs:15",
+    "CONTEXT_DIM = 18 (model_router.rs:61) — the A/b dimensionality",
+]
+anti_patterns = [
+    "Do NOT change the ArmState field types — read a_matrix/b_vector as-is.",
+    "Do NOT panic on arm-count or dim mismatch in import — skip/pad defensively so an old snapshot with a different model set loads cleanly.",
+    "Do NOT flatten inconsistently — a_matrices[i] is arm i's row-major dim×dim matrix; keep the same order snapshot() will persist by slug.",
+]
+
+# Add two methods on impl LinUCBRouter:
+#   pub fn export_linucb_snapshot(&self) -> LinUCBSnapshot
+#     - a_matrices: each arm's a_matrix flattened row-major into a Vec<f64>
+#     - b_vectors: each arm's b_vector cloned
+#     - dim: CONTEXT_DIM, observations: total across arms
+#   pub fn import_linucb_snapshot(&mut self, snap: &LinUCBSnapshot)
+#     - for each arm by index, if snap has matching entry + dim, un-flatten into
+#       a_matrix and copy b_vector; otherwise leave the arm at its constructed default.
+# Promote LinUCBSnapshot to pub(crate) reachable from model_router (it already is).
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn export_linucb_snapshot' crates/roko-learn/src/model_router.rs && grep -q 'fn import_linucb_snapshot' crates/roko-learn/src/model_router.rs"
+fail_msg = "LinUCBRouter must expose export_linucb_snapshot and import_linucb_snapshot"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile after adding LinUCB export/import"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T02: Populate CascadeSnapshot.linucb_state and consume it on load
+#
+# With export/import available on LinUCBRouter, stop hardcoding None in
+# snapshot() (cascade_router.rs:1795) and stop discarding _linucb_state in
+# load_from (:1832). This makes .roko/learn/cascade-router.json carry the
+# bandit weights so the UCB stage resumes trained after a restart.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T02"
+title = "Persist and restore linucb_state in CascadeRouter snapshot/load_from"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = [
+    "crates/roko-learn/src/cascade_router.rs",
+    "crates/roko-learn/src/cascade/persistence.rs",
+]
+role = "implementer"
+depends_on = ["E07-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1757-1810", why = "snapshot()/snapshot_json — linucb_state:None hardcode at :1795 to replace" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1820-1885", why = "load_from — destructures linucb_state:_linucb_state (:1832), discarded today" },
+    { path = "crates/roko-learn/src/cascade/persistence.rs", lines = "26-46", why = "CascadeSnapshot.linucb_state: Option<LinUCBSnapshot> — the field to populate" },
+]
+symbols = [
+    "CascadeRouter::snapshot(&self) -> CascadeSnapshot — sets linucb_state",
+    "CascadeRouter::load_from(snapshot) — must call import_linucb_snapshot",
+    "self.linucb — the LinUCBRouter field inside CascadeRouter (locate exact field name)",
+    "LinUCBRouter::export_linucb_snapshot / import_linucb_snapshot — from E07-T01",
+]
+anti_patterns = [
+    "Do NOT break backward compat: linucb_state is #[serde(default)] Option — a None/absent field must still load (fresh bandit).",
+    "Do NOT remove total_observations restore — stage recovery still depends on it.",
+    "Do NOT import a snapshot whose dim mismatches without going through import_linucb_snapshot's defensive path.",
+]
+
+# In snapshot(): replace `linucb_state: None` with
+#   `linucb_state: Some(self.<linucb_field>.export_linucb_snapshot())`.
+# In load_from(): rename `_linucb_state` to `linucb_state` and, when Some,
+#   call `router.<linucb_field>.import_linucb_snapshot(&state)` after arms are built.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'linucb_state: Some' crates/roko-learn/src/cascade_router.rs"
+fail_msg = "snapshot() must populate linucb_state with Some(...)"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'linucb_state: None' crates/roko-learn/src/cascade_router.rs"
+fail_msg = "the hardcoded linucb_state: None must be removed"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'import_linucb_snapshot' crates/roko-learn/src/cascade_router.rs"
+fail_msg = "load_from must consume the snapshot via import_linucb_snapshot"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile after wiring linucb_state persistence"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T03: Cross-restart LinUCB persistence test
+#
+# Prove the fix: train a router past the UCB threshold (>200 obs), save to disk,
+# reload, and assert the A matrix is no longer identity (weights survived) and
+# that routing is stable across the reload. Guards against silent regression.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T03"
+title = "Add cross-restart LinUCB persistence test to cascade_router"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 60
+files = ["crates/roko-learn/src/cascade_router.rs"]
+role = "implementer"
+depends_on = ["E07-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1854-1885", why = "load_or_new / load_from — the disk round-trip entry points under test" },
+    { path = "crates/roko-learn/src/cascade/types.rs", lines = "245-250", why = "COLD_START_THRESHOLD=50, CONFIDENCE_TO_UCB_THRESHOLD=200 — obs count needed to reach UCB stage" },
+    { path = "crates/roko-learn/src/model_router.rs", lines = "1916-1965", why = "linucb_selects_best_arm_after_training test — pattern for feeding observations" },
+    { path = "crates/roko-learn/src/model_router.rs", lines = "2205-2225", why = "identity-A assertion pattern to invert (post-train A must differ from identity)" },
+]
+symbols = [
+    "CascadeRouter::load_or_new(path: &Path, model_slugs: Vec<String>) -> Self",
+    "CascadeRouter::save / snapshot — persistence entry point",
+    "ArmState.a_matrix — assert != identity after training",
+    "CONFIDENCE_TO_UCB_THRESHOLD = 200",
+]
+anti_patterns = [
+    "Do NOT write to the real .roko/ — use tempfile::tempdir for the router path.",
+    "Do NOT assert exact float equality on A — compare against identity with an epsilon tolerance.",
+    "Do NOT depend on network/LLM — feed synthetic observations directly via the observe/update API.",
+]
+
+# Add #[test] linucb_persists_across_restart:
+# 1. tempdir; build router with a few model slugs.
+# 2. Feed >200 observations (varied context + reward) so it enters UCB stage.
+# 3. save() to the tempdir path.
+# 4. load_or_new() from the same path (simulated restart).
+# 5. Assert reloaded router is in UCB stage AND a representative arm's a_matrix[0][0]
+#    differs from the identity value 1.0 by > epsilon (weights survived).
+# 6. Assert routing the same context yields the same primary slug pre/post reload.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn linucb_persists_across_restart\\|linucb_persist' crates/roko-learn/src/cascade_router.rs"
+fail_msg = "must add a cross-restart LinUCB persistence test"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn linucb_persist 2>&1"
+fail_msg = "cross-restart LinUCB persistence test must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T04: Wire knowledge reinforcement into episode completion
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T04"
+title = "Wire knowledge reinforcement into episode-completion path"
+description = "On task or episode completion, reinforce the knowledge IDs that were retrieved, routed, cited, or injected into the prompt so the demurrage balance loop has positive income on the live path."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 140
+files = [
+    "crates/roko-cli/src/knowledge_helpers.rs",
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "Episode completion for both legacy orchestrate and runner-v2 records positive reinforcement for task-local knowledge IDs when the task/gate succeeds.",
+    "The implementation uses KnowledgeStore::reinforce_entry, reinforce_batch, record_usage, or batch_record_usage rather than only writing feedback-service telemetry.",
+    "Empty knowledge-id sets are a no-op; store IO errors are logged and do not crash an otherwise completed task.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "11148-11180", why = "Existing record_knowledge_usage_feedback hook and task-local last_context_knowledge_ids" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "16052-16092", why = "Knowledge IDs collected from routing and prompt context before dispatch" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4410-4500", why = "Runner-v2 dispatch diagnostics carry prompt knowledge_ids; close the live-path loop here too" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1194-1248", why = "reinforce_entry / reinforce_batch update balance in one rewrite" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1486-1538", why = "record_usage / batch_record_usage APIs if confidence outcome is the chosen path" },
+]
+symbols = [
+    "TaskTracker.last_context_knowledge_ids — legacy task-local knowledge IDs",
+    "PromptDiagnostics.knowledge_ids — runner-v2 prompt/routing knowledge IDs",
+    "KnowledgeStore::reinforce_batch(entry_ids, ReinforcementSignal::Gated, novelty)",
+    "KnowledgeStore::batch_record_usage(outcomes)",
+]
+anti_patterns = [
+    "Do NOT reinforce every entry in the knowledge store; only IDs actually used by this task/episode.",
+    "Do NOT treat skipped/preflight-only gates as positive reinforcement.",
+    "Do NOT create a second knowledge writer that bypasses KnowledgeStore APIs.",
+    "Do NOT make a missing .roko/neuro/knowledge.jsonl file a hard task failure.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'reinforce_entry\\(|reinforce_batch\\(|batch_record_usage\\(' crates/roko-cli/src/knowledge_helpers.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "CLI completion path must call a KnowledgeStore reinforcement/usage API"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'last_context_knowledge_ids|knowledge_ids' crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "reinforcement must be tied to task-local knowledge IDs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after knowledge reinforcement wiring"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T05: Include balance/freshness in query scoring
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T05"
+title = "Make balance and freshness influence score_entry_for_query"
+description = "Update default knowledge retrieval scoring so reinforced entries with higher balance/freshness rank above otherwise equivalent zero-balance entries."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 70
+files = ["crates/roko-neuro/src/knowledge_store.rs"]
+role = "implementer"
+depends_on = ["E07-T04"]
+acceptance = [
+    "score_entry_for_query incorporates entry.balance, entry.freshness(now), or an equivalent bounded freshness/balance factor in the total score.",
+    "A focused unit test proves two entries with equal topic/confidence/recency sort with the reinforced/high-balance entry first.",
+    "Existing HDC contribution behavior remains additive and gated by the hdc feature.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "2108-2145", why = "score_entry_for_query currently ignores balance/freshness" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1173-1195", why = "apply_demurrage and balance lifecycle behavior" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "4411-4485", why = "Existing balance/freshness unit tests and helper patterns" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "3173-3225", why = "Existing query ranking test style" },
+]
+symbols = [
+    "score_entry_for_query(entry, topic_terms, topic_norm, topic, now)",
+    "KnowledgeEntry::freshness(now)",
+    "KnowledgeQueryHit.total_score",
+    "QUERY_SCORE_FLOOR",
+]
+anti_patterns = [
+    "Do NOT let raw balance dominate keyword relevance; use a bounded multiplier or term.",
+    "Do NOT remove the existing confidence, recency, emotional, or HDC contributions.",
+    "Do NOT require the hdc feature for balance/freshness scoring.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "sed -n '/fn score_entry_for_query/,/^}/p' crates/roko-neuro/src/knowledge_store.rs | rg -q 'balance|freshness'"
+fail_msg = "score_entry_for_query must use balance or freshness"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'query_prefers_.*balance|balance_.*query|freshness_.*query' crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "must add a focused retrieval ranking test for balance/freshness"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro balance 2>&1"
+fail_msg = "roko-neuro balance/query tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T06: Route lifecycle knowledge through admission
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T06"
+title = "Route record_lifecycle_knowledge through the admission gate"
+description = "Replace the direct lifecycle knowledge_store.add writer with a KnowledgeCandidateRecord submitted through KnowledgeAdmissionStore, including evidence and source metadata for lifecycle transitions."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-cli/src/knowledge_helpers.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "record_lifecycle_knowledge uses the admission parameter when present and calls submit_candidate with a lifecycle KnowledgeCandidateRecord.",
+    "The direct knowledge_store.add call and the placeholder 'let _ = admission' TODO are removed from record_lifecycle_knowledge.",
+    "Significant lifecycle filters and anti-knowledge vs heuristic kind selection remain unchanged.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/knowledge_helpers.rs", lines = "199-270", why = "Current direct lifecycle writer and TODO to replace" },
+    { path = "crates/roko-neuro/src/admission.rs", lines = "287-370", why = "KnowledgeCandidateRecord builder and with_scope/with_evidence APIs" },
+    { path = "crates/roko-neuro/src/admission.rs", lines = "641-668", why = "KnowledgeAdmissionStore::submit_candidate appends decisions and admits entries" },
+    { path = "crates/roko-neuro/src/lifecycle.rs", lines = "477-535", why = "Runtime lifecycle candidate/evidence construction pattern to mirror" },
+    { path = "crates/roko-neuro/src/lib.rs", lines = "727-745", why = "SourceChannel labels and trust semantics for lifecycle provenance" },
+]
+symbols = [
+    "record_lifecycle_knowledge(knowledge_store, admission, transition)",
+    "KnowledgeCandidateRecord::new(...).with_scope(...).with_evidence(...)",
+    "KnowledgeEvidence::supporting / KnowledgeEvidence::refuting / KnowledgeEvidence::gate",
+    "KnowledgeAdmissionStore::submit_candidate",
+]
+anti_patterns = [
+    "Do NOT silently ignore the admission argument.",
+    "Do NOT keep knowledge_store.add inside record_lifecycle_knowledge as the primary path.",
+    "Do NOT drop significant-transition filtering just to simplify the candidate construction.",
+    "Do NOT invent a new admission log file; use KnowledgeAdmissionStore.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "sed -n '/fn record_lifecycle_knowledge/,/^}/p' crates/roko-cli/src/knowledge_helpers.rs | rg -q 'submit_candidate|KnowledgeCandidateRecord'"
+fail_msg = "record_lifecycle_knowledge must submit a candidate through admission"
+
+[[task.verify]]
+phase = "structural"
+command = "! sed -n '/fn record_lifecycle_knowledge/,/^}/p' crates/roko-cli/src/knowledge_helpers.rs | rg -q 'knowledge_store\\.add|let _ = admission'"
+fail_msg = "record_lifecycle_knowledge must not keep the direct add placeholder path"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after lifecycle admission routing"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T07: Enable neuro HDC feature in shipped binaries
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T07"
+title = "Enable the roko-neuro hdc feature in shipped binaries"
+description = "Ensure roko-cli and roko-serve compile roko-neuro with the hdc feature so new durable knowledge entries receive HDC vectors in normal binaries."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 25
+files = [
+    "crates/roko-cli/Cargo.toml",
+    "crates/roko-serve/Cargo.toml",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "roko-cli and roko-serve depend on roko-neuro with features = [\"hdc\"] or roko-neuro makes hdc a default feature for these binaries.",
+    "cargo feature resolution for roko-cli includes roko-neuro/hdc.",
+    "The existing roko-neuro HDC ingest test passes with --features hdc.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-neuro/Cargo.toml", lines = "11-24", why = "roko-neuro hdc feature definition and optional roko-primitives dependency" },
+    { path = "crates/roko-cli/Cargo.toml", lines = "24-45", why = "roko-cli dependency list; roko-neuro is currently bare" },
+    { path = "crates/roko-serve/Cargo.toml", lines = "24-42", why = "roko-serve dependency list; roko-neuro is currently bare" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1874-1893", why = "ensure_hdc_vector runs only when feature hdc is active" },
+]
+symbols = [
+    "roko-neuro feature hdc = [\"dep:roko-primitives\"]",
+    "KnowledgeStore::ingest/add -> normalize_entry -> ensure_hdc_vector under cfg(feature = \"hdc\")",
+    "ingest_populates_hdc_vector_when_feature_is_enabled",
+]
+anti_patterns = [
+    "Do NOT confuse roko-learn episode hdc_fingerprint with roko-neuro knowledge-store hdc_vector.",
+    "Do NOT enable hdc only for tests; shipped roko-cli and roko-serve binaries must resolve it.",
+    "Do NOT remove roko-neuro's cfg(feature = \"hdc\") gates in this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko-neuro = \\{[^}]*features = \\[\"hdc\"\\]' crates/roko-cli/Cargo.toml && rg -q 'roko-neuro = \\{[^}]*features = \\[\"hdc\"\\]' crates/roko-serve/Cargo.toml"
+fail_msg = "roko-cli and roko-serve must enable roko-neuro's hdc feature"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro --features hdc ingest_populates_hdc_vector_when_feature_is_enabled 2>&1"
+fail_msg = "HDC ingest test must pass with the feature enabled"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-serve 2>&1"
+fail_msg = "shipped binaries must compile with roko-neuro hdc enabled"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T08: Backfill HDC vectors for existing knowledge entries
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T08"
+title = "Backfill HDC vectors for existing knowledge entries"
+description = "Add a one-shot knowledge backfill command that rewrites existing .roko/neuro/knowledge.jsonl entries with hdc_vector populated when the hdc feature is active."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "crates/roko-cli/src/main.rs",
+    "crates/roko-cli/src/commands/knowledge.rs",
+    "crates/roko-neuro/src/knowledge_store.rs",
+]
+role = "implementer"
+depends_on = ["E07-T07"]
+acceptance = [
+    "roko knowledge exposes a backfill-hdc command or an explicit equivalent subcommand for existing stores.",
+    "The command reads the selected workdir's .roko/neuro/knowledge.jsonl, populates missing hdc_vector values, and rewrites atomically through KnowledgeStore helpers.",
+    "The command is idempotent: running it twice leaves already-populated vectors unchanged and exits successfully.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "896-925", why = "KnowledgeCmd enum; add the user-facing backfill-hdc subcommand here" },
+    { path = "crates/roko-cli/src/commands/knowledge.rs", lines = "1-80", why = "dispatch_knowledge match; route the new command here" },
+    { path = "crates/roko-cli/src/commands/knowledge.rs", lines = "326-420", why = "Knowledge stats/gc command style and workdir resolution pattern" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1541-1688", why = "read_all and rewrite_all helpers for atomic store rewrite" },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "1874-1893", why = "ensure_hdc_vector/normalize_entry behavior to reuse or expose safely" },
+]
+symbols = [
+    "KnowledgeCmd::BackfillHdc or equivalent subcommand",
+    "KnowledgeStore::read_all / rewrite_all",
+    "ensure_hdc_vector / normalize_entry under cfg(feature = \"hdc\")",
+    "NEURO_KNOWLEDGE_FILE = \"knowledge.jsonl\"",
+]
+anti_patterns = [
+    "Do NOT parse or rewrite JSONL by ad hoc string replacement; use KnowledgeEntry serde through KnowledgeStore.",
+    "Do NOT require network or an embedding service; HDC vectors are local deterministic fingerprints.",
+    "Do NOT make the command destructive when the hdc feature is disabled; fail clearly or no-op with an explanatory message.",
+    "Do NOT touch episode hdc_fingerprint files; this task is only durable knowledge entries.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'BackfillHdc|backfill-hdc|backfill_hdc' crates/roko-cli/src/main.rs crates/roko-cli/src/commands/knowledge.rs"
+fail_msg = "knowledge CLI must expose a backfill-hdc command"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'backfill_hdc_vectors|ensure_hdc_vector|normalize_entry' crates/roko-cli/src/commands/knowledge.rs crates/roko-neuro/src/knowledge_store.rs"
+fail_msg = "backfill implementation must use knowledge-store HDC vector population logic"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-neuro --features hdc backfill_hdc 2>&1"
+fail_msg = "HDC backfill test must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile with the new knowledge backfill command"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T09: Unify legacy and runner-v2 knowledge routing after P19
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T09"
+title = "Unify legacy and Runner-v2 knowledge routing after P19"
+description = "Replace runner-v2's manual post-routing model nudge with the same knowledge-aware cascade selection semantics used by the legacy path. ACP selection is owned by P19-cascade-router-acp."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-cli/src/knowledge_helpers.rs",
+]
+role = "implementer"
+depends_on = ["E07-T02"]
+depends_on_plan = ["P19-cascade-router-acp"]
+acceptance = [
+    "runner/event_loop.rs calls select_for_frequency_among_with_knowledge or a shared wrapper with equivalent KnowledgeRoutingAdvice inputs.",
+    "The manual event_loop.rs score_for/baseline_model post-selection nudge is removed so model choice happens inside the cascade selection step.",
+    "Legacy orchestrate and runner-v2 share reward/fidelity semantics for knowledge-aware routing; P19 remains responsible for ACP parity.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15561-15670", why = "Legacy path: builds KnowledgeRoutingAdvice then calls select_for_frequency_among_with_knowledge" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4228-4370", why = "Runner-v2 manual knowledge nudge to replace" },
+    { path = "crates/roko-cli/src/knowledge_helpers.rs", lines = "527-600", why = "build_knowledge_routing_advice helper shared by both paths" },
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "1300-1365", why = "Knowledge-aware cascade selection API and expected inputs" },
+]
+symbols = [
+    "build_knowledge_routing_advice",
+    "CascadeRouter::select_for_frequency_among_with_knowledge",
+    "KnowledgeRoutingAdvice",
+    "dispatch_plan.model — runner-v2 selected model to replace with cascade result",
+]
+anti_patterns = [
+    "Do NOT re-implement ACP model selection; P19-cascade-router-acp owns ACP.",
+    "Do NOT keep the old manual score_for baseline nudge after adding knowledge-aware cascade selection.",
+    "Do NOT bypass E07-T02's persisted LinUCB state when selecting in runner-v2.",
+    "Do NOT make knowledge routing mandatory when the store is absent; preserve no-signal fallback behavior.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'select_for_frequency_among_with_knowledge' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner-v2 must call the shared knowledge-aware cascade selection path"
+
+[[task.verify]]
+phase = "structural"
+command = "! sed -n '4220,4375p' crates/roko-cli/src/runner/event_loop.rs | rg -q 'knowledge_advice\\.score_for|dispatcher\\+knowledge'"
+fail_msg = "manual post-selection knowledge nudge must be removed from runner-v2"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after routing parity changes"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E07-T10: Incremental adaptive gate-threshold flush
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E07-T10"
+title = "Flush adaptive gate thresholds incrementally"
+description = "Use the declared gate_thresholds_every_n cadence, or an equivalent per-task flush, so adaptive gate thresholds persist before graceful shutdown."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = [
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-learn/src/runtime_feedback.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "Adaptive thresholds are flushed after a bounded number of completed runs/tasks, not only in PlanRunner::shutdown.",
+    "runtime_feedback.rs consumes RuntimeFeedbackConfig::gate_thresholds_every_n or replaces it with a tested equivalent cadence.",
+    "A test proves threshold state is written before shutdown when the cadence is 1.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/runtime_feedback.rs", lines = "226-280", why = "RuntimeFeedbackConfig::gate_thresholds_every_n exists but is not wired" },
+    { path = "crates/roko-learn/src/runtime_feedback.rs", lines = "2321-2440", why = "LearningRuntime::record_completed_run is the natural incremental cadence point" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "5947-5960", why = "Current shutdown-only adaptive_thresholds.save path" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "17789-17805", why = "observe_pipeline updates adaptive threshold state during gates" },
+]
+symbols = [
+    "RuntimeFeedbackConfig::gate_thresholds_every_n",
+    "LearningRuntime::record_completed_run",
+    "AdaptiveThresholds::save",
+    ".roko/learn/gate-thresholds.json",
+]
+anti_patterns = [
+    "Do NOT rely on graceful shutdown as the only writer.",
+    "Do NOT flush on every tiny event when gate_thresholds_every_n is greater than one; honor the configured cadence.",
+    "Do NOT write gate-thresholds.json outside .roko/learn/.",
+    "Do NOT make threshold persistence failure silently pass; log or propagate according to the surrounding runtime pattern.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "sed -n '/record_completed_run/,/Ok(update)/p' crates/roko-learn/src/runtime_feedback.rs | rg -q 'gate_thresholds_every_n|gate_thresholds.*save|adaptive_thresholds'"
+fail_msg = "record_completed_run must consume the threshold flush cadence or save thresholds incrementally"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'gate_thresholds_every_n.*1|thresholds.*before.*shutdown|incremental.*threshold' crates/roko-learn/src/runtime_feedback.rs crates/roko-cli/src/orchestrate.rs"
+fail_msg = "must add a regression marker/test for incremental threshold flushing"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn gate_thresholds 2>&1"
+fail_msg = "gate-threshold feedback tests must pass"

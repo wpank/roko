@@ -1,0 +1,973 @@
+[meta]
+plan = "E33-telemetry-lens"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────
+# T01: Define telemetry Observe protocol trait and ObservableEvent enum
+# ─────────────────────────────────────────────────────────────────────
+# NAMING CONFLICT: An `Observe` trait ALREADY EXISTS at traits.rs:400:
+#   `pub trait Observe: crate::cell::Cell { fn observe(&self) -> Vec<Engram>; }`
+# It is re-exported from lib.rs:308. The v2 telemetry Observe protocol
+# has a completely different signature (async, takes &ObservableEvent,
+# returns Vec<Signal>). Use a DISTINCT name to avoid collision.
+
+[[task]]
+id = "E33-T01"
+title = "Add telemetry Observe trait, LensScope, and ObservableEvent/Kind enums to roko-core"
+description = """
+Define the telemetry Observe protocol as specified in docs/v2/15-TELEMETRY.md SS2-3.
+
+CRITICAL: An Observe trait ALREADY EXISTS at traits.rs:400:
+  `pub trait Observe: crate::cell::Cell { fn observe(&self) -> Vec<Engram>; }`
+It is re-exported from lib.rs:308. The new telemetry trait has a completely
+different signature. You MUST use a distinct name: `TelemetryObserve` (or
+`LensObserve`). Do NOT modify the existing Observe trait.
+
+Create `crates/roko-core/src/telemetry_observe.rs` with:
+
+  - `pub trait TelemetryObserve: Send + Sync` with 3 methods:
+    - `async fn observe(&self, event: &ObservableEvent) -> Result<Vec<Signal>>`
+    - `fn observes(&self) -> &[ObservableEventKind]`
+    - `fn scope(&self) -> LensScope`
+
+  - `LensScope` enum (6 variants):
+    Cell(String), Graph(String), Agent(String), Space(String),
+    Lens(String), Global
+    Use String placeholders where CellRef/GraphRef/AgentRef/SpaceId
+    don't exist as concrete types yet.
+
+  - `ObservableEvent` enum with 38 variants across 8 lifecycle families
+    (exact variants from spec SS3, lines 72-127):
+    Signal (8: Created, Scored, Routed, Verified, Composed, DemurrageApplied, Promoted, Pruned)
+    Cell (7: Started, Completed, Failed, Retried, Cancelled, PredictionPublished, CalibrationReceived)
+    Graph (6: Started, NodeCompleted, Completed, Failed, Paused, Resumed)
+    Agent (7: Tick, RegimeChange, BudgetUpdate, ModeChange, PhaseChange, StateTransition, SlotUpdate)
+    Memory (4: Retrieved, Stored, Consolidated, DemurrageApplied)
+    Verify (2: PreResult, PostResult)
+    Trigger (3: Fired, Armed, Disarmed)
+    Extension (2: HookCalled, HookFailed)
+
+  - `ObservableEventKind` filter enum (9 variants):
+    SignalLifecycle, CellLifecycle, GraphLifecycle, AgentLifecycle,
+    MemoryLifecycle, VerifyLifecycle, TriggerLifecycle, ExtensionLifecycle, All
+
+Register `pub mod telemetry_observe;` in lib.rs.
+Use String for all ref types. The trait needs async_trait (already in roko-core deps).
+The observe() method returns Vec<Signal> (not Vec<Engram> like the existing Observe trait).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+files = ["crates/roko-core/src/telemetry_observe.rs", "crates/roko-core/src/lib.rs"]
+depends_on = []
+max_loc = 160
+
+[task.context]
+read_files = [
+  { path = "crates/roko-core/src/traits.rs", lines = "397-403", why = "EXISTING Observe trait — `fn observe(&self) -> Vec<Engram>` — DO NOT modify or collide with" },
+  { path = "crates/roko-core/src/lib.rs", lines = "62-70", why = "Module registration pattern (pub mod)" },
+  { path = "crates/roko-core/src/lib.rs", lines = "306-315", why = "Re-exports: existing Observe re-exported at line 308 — new trait must use different name" },
+  { path = "crates/roko-core/src/cell.rs", lines = "1-30", why = "Cell trait, CellId, async_trait usage — follow same async_trait pattern" },
+  { path = "docs/v2/15-TELEMETRY.md", lines = "27-142", why = "Observe protocol spec: trait signature, LensScope enum, ObservableEvent enum (38 variants)" },
+  { path = "crates/roko-core/src/signal.rs", lines = "1-30", why = "Signal type — return type of the new observe() method" },
+  { path = "crates/roko-core/src/verdict.rs", lines = "1-20", why = "Verdict type used in VerifyPreResult/PostResult event variants" },
+]
+symbols = [
+  "Observe — EXISTING trait at traits.rs:400 returning Vec<Engram>; re-exported at lib.rs:308; MUST NOT collide",
+  "Cell — trait at cell.rs using async_trait; follow same pattern for TelemetryObserve",
+  "Signal — crate::Signal; return type of the new observe() method (NOT Engram)",
+  "Verdict — crate::Verdict; used in VerifyPreResult/PostResult event variants",
+  "Engram — used by existing Observe trait only; NOT used by the new TelemetryObserve",
+]
+anti_patterns = [
+  "Do NOT modify the existing Observe trait at traits.rs:400 — it is used by other subsystems and re-exported at lib.rs:308",
+  "Do NOT name the new trait 'Observe' — it WILL collide with the re-export at lib.rs:308",
+  "Do NOT name the file 'observe.rs' — use 'telemetry_observe.rs' to distinguish from the obs module",
+  "Do NOT use concrete Cell/Graph/Agent/Space types that don't exist as Rust types — use String-based refs",
+  "Do NOT make ObservableEvent variants carry heavy data — use refs (String) and lightweight summaries",
+  "Do NOT add new dependencies to roko-core — async_trait and serde are already present",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub trait.*Observe' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "Telemetry Observe trait must be defined in telemetry_observe.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ObservableEvent' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "ObservableEvent enum must be defined in telemetry_observe.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum LensScope' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "LensScope enum must be defined in telemetry_observe.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ObservableEventKind' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "ObservableEventKind filter enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'Signal\\|Cell\\|Graph\\|Agent\\|Memory\\|Verify\\|Trigger\\|Extension' crates/roko-core/src/telemetry_observe.rs | awk '{exit ($1 < 8 ? 1 : 0)}'"
+fail_msg = "ObservableEvent must cover all 8 lifecycle families from the spec"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod telemetry_observe' crates/roko-core/src/lib.rs"
+fail_msg = "telemetry_observe module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile after adding the telemetry observe module"
+
+# ─────────────────────────────────────────────────────────────────────
+# T02: Implement 4 core Lens payload structs
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T02"
+title = "Add CostReportPayload, LatencyPayload, QualityPayload, EfficiencyPayload"
+description = """
+Define the typed payload structs for the first 4 built-in Lenses as specified
+in docs/v2/15-TELEMETRY.md SS4.1-4.4. Add to `crates/roko-core/src/observe.rs`:
+
+  - CostReportPayload (SS4.1):
+    target: String, interval_ms: u64, total_usd: f64, total_tokens: u64,
+    input_tokens: u64, output_tokens: u64, model_breakdown: BTreeMap<String, f64>,
+    cumulative_usd: f64, budget_remaining: Option<f64>, vitality: Option<f64>
+
+  - LatencyPayload (SS4.2):
+    target: String, interval_ms: u64, count: u64,
+    p50_ms: u64, p95_ms: u64, p99_ms: u64, mean_ms: u64
+
+  - QualityPayload (SS4.3):
+    target: String, interval_ms: u64, total_verifications: u64,
+    pre_verify_vetoes: u64, post_verify_passed: u64, post_verify_failed: u64,
+    pass_rate: f64, avg_reward: f64, hard_criteria_failures: u64,
+    rung_breakdown: BTreeMap<String, (u64, u64)>
+
+  - EfficiencyPayload (SS4.4):
+    agent: String, interval_ms: u64, tasks_completed: u64,
+    tokens_per_task: f64, usd_per_task: f64, quality_per_usd: f64,
+    t0_hit_rate: f64, t1_hit_rate: f64, t2_hit_rate: f64,
+    avg_prediction_error: f64, vitality: f64
+
+All structs derive Serialize, Deserialize, Clone, Debug.
+Use u64 milliseconds for duration fields (not std::time::Duration) for
+serde compatibility.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/telemetry_observe.rs"]
+depends_on = ["E33-T01"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "146-247", why = "CostReportPayload, LatencyPayload, QualityPayload, EfficiencyPayload struct definitions with exact field names" },
+  { path = "crates/roko-core/src/telemetry_observe.rs", lines = "1-30", why = "Module header and imports from T01 -- add payload structs after event types" },
+  { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "759-790", why = "Existing DashboardSnapshot derives pattern for reference" },
+  { path = "crates/roko-learn/src/efficiency.rs", lines = "1-40", why = "Existing AgentEfficiencyEvent -- reference but do not duplicate" },
+]
+symbols = [
+  "CostReportPayload -- cost tracking per cell/graph (spec SS4.1)",
+  "LatencyPayload -- percentile duration tracking (spec SS4.2)",
+  "QualityPayload -- verify pass rates and continuous reward (spec SS4.3)",
+  "PassFailCounts -- helper struct for rung_breakdown BTreeMap values",
+  "EfficiencyPayload -- tokens-per-task efficiency (spec SS4.4)",
+  "AgentEfficiencyEvent -- existing efficiency type in roko-learn (check for overlap but don't duplicate)",
+]
+anti_patterns = [
+  "Do NOT use std::time::Duration directly in serde fields -- use u64 millis with a _ms suffix",
+  "Do NOT reference VitalityPhase enum if it doesn't exist in roko-core -- use String for vitality_phase",
+  "Do NOT duplicate AgentEfficiencyEvent from roko-learn -- these payloads are spec-aligned lens outputs, distinct from the learn subsystem's events",
+  "Do NOT put these in a separate file -- they belong in telemetry_observe.rs with the trait and enums",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CostReportPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "CostReportPayload must exist in telemetry_observe.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct LatencyPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "LatencyPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct QualityPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "QualityPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct EfficiencyPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "EfficiencyPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct PassFailCounts' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "PassFailCounts helper struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'Serialize, Deserialize' crates/roko-core/src/telemetry_observe.rs | awk '{exit ($1 < 4 ? 1 : 0)}'"
+fail_msg = "All payload structs must derive Serialize and Deserialize"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T03: Implement ErrorPayload, DriftPayload, BudgetAlertPayload,
+#       TrendPayload, AnomalyPayload
+# ─────────────────────────────────────────────────────────────────────
+# Spec SS4.5-4.9: remaining lens payloads including the chaining lenses
+# (Trend, Anomaly) that observe other lenses' output.
+
+[[task]]
+id = "E33-T03"
+title = "Add ErrorPayload, DriftPayload, BudgetAlertPayload, TrendPayload, AnomalyPayload structs"
+description = """
+Define the typed payload structs for built-in Lenses 5-9 as specified
+in docs/v2/15-TELEMETRY.md SS4.5-4.9. Add to telemetry_observe.rs:
+
+  - ErrorPayload (SS4.5):
+    target: String, interval_ms: u64, total_errors: u64,
+    by_category: BTreeMap<String, u64>, by_block: BTreeMap<String, u64>,
+    retry_count: u64, retry_success_rate: f64, error_rate: f64
+
+  - ErrorCategory enum (derive Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord):
+    Timeout, CapabilityDenied, External, LogicError, InputInvalid, Cancelled
+
+  - DriftPayload (SS4.6):
+    memory: String, interval_ms: u64, total_entries: u64,
+    tier_distribution: BTreeMap<String, u64>, avg_balance: f64,
+    balance_delta: f64, promotion_rate: f64, demotion_rate: f64,
+    cold_entries: u64, anti_knowledge_count: u64, heuristic_calibration_avg: f64
+
+  - BudgetAlertPayload (SS4.7):
+    target: String, budget_total: f64, budget_spent: f64,
+    budget_remaining: f64, vitality: f64, vitality_phase: String,
+    projected_exhaustion_ms: Option<i64>, burn_rate: f64,
+    level: AlertLevel
+
+  - AlertLevel enum: Info, Warning, Critical
+
+  - TrendPayload (SS4.8 -- chaining lens output):
+    source_lens: String, metric: String, window_ms: u64,
+    slope: f64, ema: f64, ema_previous: f64,
+    direction: TrendDirection, r_squared: f64, data_points: usize
+
+  - TrendDirection enum: Rising, Falling, Stable
+
+  - AnomalyPayload (SS4.9 -- chaining lens output):
+    source_lens: String, metric: String, observed_value: f64,
+    expected_value: f64, deviation: f64,
+    direction: AnomalyDirection, severity: AnomalyLevel
+
+  - AnomalyDirection enum: Above, Below
+  - AnomalyLevel enum: Moderate, Severe, Critical
+
+Use BTreeMap<String, u64> for by_category to simplify serde.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "claude-haiku-4-5"
+files = ["crates/roko-core/src/telemetry_observe.rs"]
+depends_on = ["E33-T01"]
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "249-373", why = "Error, Drift, Budget, Trend, Anomaly payload specs with exact field names and enums" },
+  { path = "crates/roko-core/src/telemetry_observe.rs", lines = "1-30", why = "Module header from T01 -- add alongside T02 payload structs" },
+  { path = "crates/roko-core/src/error/mod.rs", lines = "1-100", why = "Canonical RokoError taxonomy after the error module split; ErrorCategory remains a distinct telemetry classification" },
+]
+symbols = [
+  "ErrorPayload -- error classification and aggregation per interval (spec SS4.5)",
+  "ErrorCategory -- 6-variant classifier: Timeout, CapabilityDenied, External, LogicError, InputInvalid, Cancelled",
+  "DriftPayload -- knowledge quality degradation (spec SS4.6): demurrage-driven balance changes",
+  "BudgetAlertPayload -- budget threshold alerts (spec SS4.7) with vitality and burn rate",
+  "AlertLevel -- 3-stage alert severity: Info, Warning, Critical",
+  "TrendPayload -- statistical trend from chaining lens (spec SS4.8)",
+  "TrendDirection -- Rising/Falling/Stable enum for trend direction",
+  "AnomalyPayload -- outlier detection from chaining lens (spec SS4.9)",
+  "AnomalyDirection -- Above/Below for deviation direction",
+  "AnomalyLevel -- Moderate/Severe/Critical for anomaly severity",
+]
+anti_patterns = [
+  "Do NOT duplicate existing error enums from error/mod.rs -- ErrorCategory is a telemetry classification, not error handling",
+  "Do NOT use Duration types -- use u64 _ms fields for serde compatibility",
+  "Do NOT use chrono::DateTime -- use Option<i64> millis for projected_exhaustion",
+  "Do NOT import from roko-primitives -- keep payloads self-contained in roko-core",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ErrorPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "ErrorPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ErrorCategory' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "ErrorCategory enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct DriftPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "DriftPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct BudgetAlertPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "BudgetAlertPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct TrendPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "TrendPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct AnomalyPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "AnomalyPayload must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum TrendDirection' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "TrendDirection enum must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T04: C-Factor sub-lens compute functions
+# ─────────────────────────────────────────────────────────────────────
+# IMPORTANT: CohortMetrics, CohortWeights, CFactorSummary, and
+# CohortWeights::update() ALREADY EXIST in cfactor.rs. This task adds
+# only the 5 sub-lens compute functions and the CFactorPayload struct.
+
+[[task]]
+id = "E33-T04"
+title = "Add CFactorPayload and 5 sub-lens pure compute functions"
+description = """
+Implement the c-factor telemetry types from docs/v2/15-TELEMETRY.md SS4.11 and SS5.
+
+CRITICAL: crates/roko-core/src/cfactor.rs ALREADY contains:
+  - CohortMetrics (line 21) with 5 process variables
+  - CohortWeights (line 51) with learnable weights + bias
+  - CohortWeights::update (line 86) -- gradient step learner
+  - CFactorSummary (line 103) -- compact summary for policy eval
+  - CFactorPolicy (line 153) -- React that emits warnings
+
+What ALREADY EXISTS must NOT be duplicated. Add the following to
+telemetry_observe.rs (NOT cfactor.rs, to avoid modifying existing code):
+
+1. CFactorPayload struct (distinct from CFactorSummary):
+   space: String, interval_ms: u64, c_factor: f64,
+   turn_taking_entropy: f64, peer_prediction_accuracy: f64,
+   citation_reciprocity: f64, hdc_diversity: f64,
+   agent_count: usize, active_agents: usize,
+   dominant_agent_share: f64, knowledge_flow_edges: usize,
+   avg_agent_vitality: f64
+
+2. Five pure sub-lens compute functions:
+   - `pub fn turn_taking_entropy(turns_per_agent: &[u64]) -> f64`
+     H = -sum(p_i * ln(p_i)) / ln(N), guard for N<=1 and total==0
+   - `pub fn peer_prediction_accuracy(predictions: &[f64], outcomes: &[f64]) -> f64`
+     1.0 - MSE, clamped to [0.0, 1.0], return 0.5 for empty input
+   - `pub fn citation_reciprocity(survived_weights: &[f64], total_weights: &[f64]) -> f64`
+     Weighted fraction of survived citations
+   - `pub fn delivery_rate(confirmed: u64, dropped: u64) -> f64`
+     confirmed / (confirmed + dropped), return 1.0 for total==0
+   - `pub fn hdc_diversity(pairwise_similarities: &[f64]) -> f64`
+     1.0 - mean similarity, return 0.0 for empty input
+
+All compute functions must be pure (no async, no IO).
+Add unit tests for edge cases: empty input, single agent, uniform dist.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+files = ["crates/roko-core/src/telemetry_observe.rs"]
+depends_on = ["E33-T01"]
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "386-600", why = "CFactorPayload fields (SS4.11) and sub-lens formulas (SS5.1-5.5)" },
+  { path = "crates/roko-core/src/cfactor.rs", lines = "1-97", why = "EXISTING CohortMetrics, CohortWeights, update() -- do NOT duplicate" },
+  { path = "crates/roko-core/src/cfactor.rs", lines = "99-145", why = "EXISTING CFactorSummary -- CFactorPayload is a SEPARATE telemetry struct" },
+  { path = "crates/roko-core/src/lib.rs", lines = "74-75", why = "cfactor module already registered at line 74" },
+  { path = "crates/roko-core/src/lib.rs", lines = "182", why = "CFactorPolicy, CFactorSource, CFactorSummary already re-exported" },
+]
+symbols = [
+  "CohortMetrics -- ALREADY EXISTS at cfactor.rs:21; has turn_taking_entropy, peer_prediction_accuracy, etc.",
+  "CohortWeights -- ALREADY EXISTS at cfactor.rs:51; has update() method for gradient learning",
+  "CFactorSummary -- ALREADY EXISTS at cfactor.rs:103; compact policy summary (NOT the same as CFactorPayload)",
+  "CFactorPayload -- NEW telemetry-specific struct for CollectiveIntelligenceLens output",
+  "HdcVector -- from roko-primitives, already re-exported at lib.rs:269",
+]
+anti_patterns = [
+  "Do NOT recreate CohortMetrics, CohortWeights, or CFactorSummary -- they exist in cfactor.rs",
+  "Do NOT modify cfactor.rs -- add new types to telemetry_observe.rs to avoid touching existing code",
+  "Do NOT make c-factor a reward signal -- it is a covariate only (spec SS5, Woolley 2010)",
+  "Do NOT use f64 ln on zero -- guard all entropy calculations with early returns",
+  "Do NOT add a CohortWeightsLearner struct -- CohortWeights::update() already does this",
+  "Do NOT take HdcVector as input to hdc_diversity -- take pre-computed similarities as &[f64] to avoid coupling",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CFactorPayload' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "CFactorPayload must exist in telemetry_observe.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn turn_taking_entropy' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "turn_taking_entropy compute function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn peer_prediction_accuracy' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "peer_prediction_accuracy compute function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn delivery_rate' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "delivery_rate compute function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn hdc_diversity' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "hdc_diversity compute function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'pub struct CohortMetrics' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "CohortMetrics must NOT be duplicated -- it already exists in cfactor.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'pub struct CohortWeights' crates/roko-core/src/telemetry_observe.rs"
+fail_msg = "CohortWeights must NOT be duplicated -- it already exists in cfactor.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core telemetry 2>&1"
+fail_msg = "Telemetry unit tests must pass (test compute functions with edge cases)"
+
+# ─────────────────────────────────────────────────────────────────────
+# T05: 7 core StateHub projections
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T05"
+title = "Define 7 typed projection structs for StateHub"
+description = """
+Add 7 core projection schemas from docs/v2/15-TELEMETRY.md SS7. Create
+`crates/roko-core/src/telemetry_projections.rs` with:
+
+  1. CohortHealthProjection: agent_count (usize), active_count (usize),
+     avg_vitality (f64), avg_pass_rate (f64), total_spend_usd (f64),
+     error_rate (f64), t0_hit_rate (f64),
+     regime_distribution (BTreeMap<String, usize>)
+
+  2. ActiveTasksProjection: tasks (Vec<TaskSnapshot>), queued (usize),
+     completed_last_hour (usize), avg_task_duration_ms (u64)
+     - TaskSnapshot struct: id (String), title (String), status (String),
+       agent (Option<String>), started_at (Option<String>), duration_ms (Option<u64>)
+
+  3. GatePipelineProjection: rungs (Vec<RungSnapshot>), overall_pass_rate (f64),
+     avg_reward (f64), hard_criteria_fail_rate (f64)
+     - RungSnapshot struct: name (String), pass_count (u64), fail_count (u64),
+       pass_rate (f64)
+
+  4. CostMeterProjection: total_usd (f64), budget_remaining (f64),
+     burn_rate_usd_per_hour (f64),
+     model_breakdown (BTreeMap<String, f64>),
+     cost_trend (String: "rising"/"falling"/"stable")
+
+  5. KnowledgeHealthProjection: total_entries (u64),
+     tier_distribution (BTreeMap<String, u64>), avg_balance (f64),
+     cold_entries (u64), heuristic_count (u64),
+     heuristic_avg_calibration (f64), anti_knowledge_count (u64)
+
+  6. CFactorProjection: c_factor (f64), components (BTreeMap<String, f64>),
+     trend (String), agent_diversity (f64)
+
+  7. AgentVitalityProjection: agents (Vec<AgentVitalitySnapshot>)
+     - AgentVitalitySnapshot: name (String), vitality (f64), phase (String),
+       regime (String), slots_active (usize), slots_total (usize),
+       tasks_completed (u64), current_task (Option<String>)
+
+Register `pub mod telemetry_projections;` in lib.rs. All structs derive
+Serialize/Deserialize/Clone/Debug/Default. Use String for enum-typed
+fields (Regime, VitalityPhase, TrendDirection) for portability.
+
+Check existing DashboardSnapshot (dashboard_snapshot.rs) and
+ProjectionEnvelope (roko-serve/projection_contract.rs:42) to avoid field
+duplication. These projections are new typed views consumed by the spec's
+surface system -- distinct from the existing DashboardSnapshot.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/telemetry_projections.rs", "crates/roko-core/src/lib.rs"]
+depends_on = ["E33-T02", "E33-T03", "E33-T04"]
+max_loc = 140
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "765-845", why = "7 projection schema definitions with all fields" },
+  { path = "crates/roko-serve/src/projection_contract.rs", lines = "36-59", why = "Existing ProjectionEnvelope<T> (line 42) pattern for versioned projection responses" },
+  { path = "crates/roko-serve/src/projection_contract.rs", lines = "98-130", why = "Invalidation policies and projection_policies() catalog -- projections.rs must be compatible" },
+  { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-40", why = "Existing DashboardSnapshot pattern -- projections complement, don't replace" },
+  { path = "crates/roko-core/src/cfactor.rs", lines = "99-131", why = "CFactorSummary fields -- CFactorProjection wraps this" },
+  { path = "crates/roko-core/src/lib.rs", lines = "62-163", why = "Module declarations -- add pub mod projections; here" },
+]
+symbols = [
+  "ProjectionEnvelope<T> -- existing versioning envelope at projection_contract.rs:42 (name, version, cursor, computed_at, recovered, data)",
+  "DashboardSnapshot -- existing materialized snapshot in dashboard_snapshot.rs (do not replace)",
+  "RuntimeProjectionSet -- existing projection set in projection_contract.rs (has project/state_frame methods)",
+  "CFactorSummary -- at cfactor.rs:103 (wrap fields into CFactorProjection)",
+]
+anti_patterns = [
+  "Do NOT couple to roko-serve -- projections go in roko-core for reuse across crates",
+  "Do NOT duplicate DashboardSnapshot fields -- projections are new spec-aligned typed views",
+  "Do NOT use Duration types -- use u64 _ms fields for serde compatibility",
+  "Do NOT use domain enums (Regime, VitalityPhase) in projection structs if they'd force imports -- use String",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CohortHealthProjection' crates/roko-core/src/telemetry_projections.rs"
+fail_msg = "CohortHealthProjection must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CostMeterProjection' crates/roko-core/src/telemetry_projections.rs"
+fail_msg = "CostMeterProjection must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct AgentVitalityProjection' crates/roko-core/src/telemetry_projections.rs"
+fail_msg = "AgentVitalityProjection must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CFactorProjection' crates/roko-core/src/telemetry_projections.rs"
+fail_msg = "CFactorProjection must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod telemetry_projections' crates/roko-core/src/lib.rs"
+fail_msg = "telemetry_projections module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────
+# T06: Lens composition -- stacking, chaining, scoping
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T06"
+title = "Add LensRegistry with stacking, chaining, and scope routing"
+description = """
+Implement lens composition from docs/v2/15-TELEMETRY.md SS6. Create
+`crates/roko-core/src/lens_registry.rs` with:
+
+  1. LensConfig struct (TOML-parseable):
+     name: String, block: String, scope: String, params: BTreeMap<String, Value>
+     The `scope` field is a string that parses into a LensScope: "graph",
+     "agent", "cell:{name}", "lens:{name}", "global", etc.
+
+  2. LensRegistration struct (runtime):
+     config: LensConfig, scope: LensScope, observes: Vec<ObservableEventKind>
+
+  3. LensRegistry struct:
+     - registrations: Vec<LensRegistration>
+     - chains: BTreeMap<String, Vec<String>> (lens name -> downstream lens names)
+     - Methods:
+       - register(&mut self, config: LensConfig) -> Result<()>
+       - route(&self, event: &ObservableEvent) -> Vec<&LensRegistration>
+         (returns lenses whose scope + observes filter matches)
+       - chain_order(&self) -> Result<Vec<String>>
+         (topological sort of chained lenses, reject cycles)
+
+  4. Composition rules (implemented):
+     - Stacking: multiple lenses on same target receive same events independently
+     - Chaining: scope "lens:{name}" delivers upstream output to downstream
+     - Topological sort uses Kahn's algorithm to detect cycles at registration
+     - Cycle detection returns Err with the cycle path for debugging
+
+  5. parse_scope(s: &str) -> Result<LensScope> helper:
+     "global" -> Global, "graph" -> Graph("".into()),
+     "agent" -> Agent("".into()), "cell:{name}" -> Cell(name),
+     "lens:{name}" -> Lens(name), etc.
+
+Register `pub mod lens_registry;` in lib.rs. Add unit tests for
+cycle detection, scope routing, and topological sort.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-core/src/lens_registry.rs", "crates/roko-core/src/lib.rs"]
+depends_on = ["E33-T01"]
+max_loc = 150
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "695-733", why = "Lens composition rules: stacking, chaining, scoping, ordering, 5 composition rules" },
+  { path = "docs/v2/15-TELEMETRY.md", lines = "944-1007", why = "TOML configuration format for [[lenses]] with block/scope/params, chaining example" },
+  { path = "crates/roko-core/src/telemetry_observe.rs", lines = "1-50", why = "LensScope enum and ObservableEventKind from T01 -- used for routing" },
+  { path = "crates/roko-core/src/lib.rs", lines = "62-163", why = "Module registration -- add pub mod lens_registry;" },
+]
+symbols = [
+  "LensScope -- enum from T01 (Cell/Graph/Agent/Space/Lens/Global) for scope routing",
+  "ObservableEventKind -- filter enum from T01 (SignalLifecycle, CellLifecycle, ..., All) for event matching",
+  "Observe trait -- from T01 (observes() returns event kind filter)",
+]
+anti_patterns = [
+  "Do NOT allow cycles in chained lenses -- reject at registration time with clear error including cycle path",
+  "Do NOT make ordering dependent between stacked lenses -- they are independent (composition rule #1)",
+  "Do NOT add async to LensRegistry -- it's a routing table, not an executor",
+  "Do NOT import from roko-serve or roko-runtime -- LensRegistry is a pure roko-core construct",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct LensRegistry' crates/roko-core/src/lens_registry.rs"
+fail_msg = "LensRegistry must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn chain_order\\|fn topo_sort\\|topological' crates/roko-core/src/lens_registry.rs"
+fail_msg = "Topological sort for chain ordering must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn parse_scope\\|parse_scope' crates/roko-core/src/lens_registry.rs"
+fail_msg = "Scope parsing function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod lens_registry' crates/roko-core/src/lib.rs"
+fail_msg = "lens_registry module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core lens_registry 2>&1"
+fail_msg = "LensRegistry tests (stacking, chaining, cycle rejection) must pass"
+
+# ─────────────────────────────────────────────────────────────────────
+# T07: StateHub projection update pipeline
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T07"
+title = "Extend StateHub to maintain typed projections from lens observations"
+description = """
+Extend the existing StateHub (`crates/roko-runtime/src/state_hub.rs`) to
+support typed projections alongside the existing DashboardSnapshot flow.
+
+The current StateHub (line 80) has:
+  - snapshot_tx/rx: watch::channel for DashboardSnapshot
+  - event_bus: EventBus<DashboardEvent>
+  - event_log: Optional JSONL writer
+  - publish() at line 144: broadcast + apply to snapshot + log
+  - sender() at line 263: clone-safe StateHubSender
+
+Add:
+  1. A `ProjectionState` struct: id (String), version (u64),
+     data (serde_json::Value), updated_at (String -- ISO 8601),
+     source_lenses (Vec<String>)
+
+  2. A `projections: Arc<Mutex<BTreeMap<String, ProjectionState>>>` field
+     to StateHub
+
+  3. Methods on StateHub:
+     - `update_projection(&self, id: &str, data: Value, source_lens: &str)`
+       that updates the projection, increments version, sets updated_at
+     - `get_projection(&self, id: &str) -> Option<ProjectionState>`
+       returns clone of current state
+     - `projection_version(&self, id: &str) -> Option<u64>`
+       returns just the version number
+
+  4. Add projection methods to StateHubSender (line 263) as well, so
+     subsystems with only a sender handle can query projections
+
+Do NOT break the existing DashboardSnapshot-based flow. The projection
+store is additive -- it sits alongside the snapshot_tx/rx channels.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-runtime/src/state_hub.rs"]
+depends_on = ["E33-T05"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-runtime/src/state_hub.rs", lines = "68-98", why = "StateHub struct at line 80 (snapshot_tx/rx, event_bus, event_log)" },
+  { path = "crates/roko-runtime/src/state_hub.rs", lines = "88-153", why = "new(), with_event_log(), publish() -- understand initialization and event flow" },
+  { path = "crates/roko-runtime/src/state_hub.rs", lines = "170-195", why = "snapshot(), current_snapshot(), subscribe_events() -- existing query methods to extend" },
+  { path = "crates/roko-runtime/src/state_hub.rs", lines = "258-280", why = "StateHubSender at line 263 -- needs projection support too" },
+  { path = "docs/v2/15-TELEMETRY.md", lines = "736-878", why = "StateHub projection spec: core design, 7 projections, update flow, subscription resolutions" },
+  { path = "crates/roko-serve/src/projection_contract.rs", lines = "36-59", why = "ProjectionEnvelope<T> -- existing versioning pattern to align with" },
+]
+symbols = [
+  "StateHub -- existing hub struct at state_hub.rs:80 (snapshot_tx, event_bus, event_log fields)",
+  "StateHubSender -- clone-safe handle at state_hub.rs:263 (snapshot_tx, bus_sender, event_log)",
+  "publish -- event publishing at state_hub.rs:144 (broadcast + apply + log)",
+  "DashboardSnapshot -- existing snapshot type, must not break",
+  "ProjectionEnvelope<T> -- versioned wrapper in roko-serve at projection_contract.rs:42",
+  "EventBus<DashboardEvent> -- broadcast channel at state_hub.rs:83",
+]
+anti_patterns = [
+  "Do NOT replace the DashboardSnapshot path -- add projections alongside it",
+  "Do NOT make projections require all lenses wired -- projections with no data return Default",
+  "Do NOT store full projection history in memory -- only current state + version",
+  "Do NOT break existing StateHub tests -- DashboardEvent replay and broadcast must still work",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ProjectionState' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "ProjectionState must be added to StateHub"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'update_projection' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "update_projection method must be added"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'get_projection' crates/roko-runtime/src/state_hub.rs"
+fail_msg = "get_projection method must be added"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-runtime 2>&1"
+fail_msg = "roko-runtime must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime state_hub 2>&1"
+fail_msg = "Existing StateHub tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────
+# T08: Lens circuit breaker
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T08"
+title = "Add lens circuit breaker with 3-stage degradation"
+description = """
+Implement the performance circuit breaker from docs/v2/15-TELEMETRY.md SS10.
+Create `crates/roko-core/src/lens_circuit_breaker.rs` with:
+
+  1. `LensBreakerStage` enum: Active, Sampled, Disabled
+
+  2. `LensCircuitBreaker` struct:
+     - stage: LensBreakerStage
+     - consecutive_violations: u32
+     - total_violations: u64
+     - budget_pct: f64 (default 0.01 -- 1% overhead budget)
+     - sample_threshold: u32 (default 3 -- violations before sampling)
+     - disable_threshold: u32 (default 10 -- violations before disable)
+
+  3. Methods:
+     - `new(budget_pct: f64) -> Self`
+     - `with_thresholds(mut self, sample: u32, disable: u32) -> Self` (builder)
+     - `check(&mut self, lens_duration_ms: u64, cell_duration_ms: u64) -> LensBreakerAction`
+       Returns what to do: Allow, Skip (sampled), Disable
+     - `should_invoke(&self) -> bool` (pre-check: false when Disabled)
+     - `reset(&mut self)` (operator re-enables, starts in Sampled mode)
+     - `stage(&self) -> LensBreakerStage` (getter)
+
+  4. Stage progression:
+     - Active: first violation -> log warning, stay Active
+     - Active: sample_threshold consecutive violations -> move to Sampled
+     - Sampled: disable_threshold consecutive violations -> move to Disabled
+     - Disabled: stays disabled until reset() called
+     - Any stage: if check passes (no violation), reset consecutive_violations to 0
+
+  5. `LensBreakerAction` enum: Allow, Skip, Disable
+
+This is a pure synchronous state machine -- no async, no IO, no tokio.
+Add unit tests for each stage transition and edge cases.
+
+Register `pub mod lens_circuit_breaker;` in lib.rs.
+
+Note: roko-conductor has a circuit_breaker.rs with Holt forecasting and
+binary open/closed states -- this is a separate, simpler mechanism specific
+to lens overhead tracking with 3 degradation stages.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/lens_circuit_breaker.rs", "crates/roko-core/src/lib.rs"]
+depends_on = ["E33-T01"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "docs/v2/15-TELEMETRY.md", lines = "1010-1036", why = "Circuit breaker spec: overhead budget, 3 stages, recovery" },
+  { path = "crates/roko-conductor/src/circuit_breaker.rs", lines = "1-60", why = "Existing conductor circuit breaker -- different mechanism (Holt forecasting, binary open/closed), don't duplicate" },
+  { path = "crates/roko-core/src/lib.rs", lines = "62-163", why = "Module declarations -- add pub mod lens_circuit_breaker;" },
+]
+symbols = [
+  "LensCircuitBreaker -- new pure state machine with Active/Sampled/Disabled stages",
+  "CircuitBreaker -- existing conductor breaker at conductor/circuit_breaker.rs (separate, Holt-based, binary)",
+]
+anti_patterns = [
+  "Do NOT use tokio or async -- this is a pure synchronous state machine",
+  "Do NOT duplicate the conductor circuit breaker -- this is lens-specific with different semantics (3 stages vs binary)",
+  "Do NOT add sampling logic inside the breaker -- just return the action, let the caller decide",
+  "Do NOT hardcode thresholds without a builder method -- accept them as configuration via with_thresholds()",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct LensCircuitBreaker' crates/roko-core/src/lens_circuit_breaker.rs"
+fail_msg = "LensCircuitBreaker must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Disabled\\|Sampled\\|Active' crates/roko-core/src/lens_circuit_breaker.rs"
+fail_msg = "Circuit breaker stages (Active, Sampled, Disabled) must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum LensBreakerAction' crates/roko-core/src/lens_circuit_breaker.rs"
+fail_msg = "LensBreakerAction enum must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod lens_circuit_breaker' crates/roko-core/src/lib.rs"
+fail_msg = "lens_circuit_breaker module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core lens_circuit 2>&1"
+fail_msg = "Circuit breaker tests (stage transitions, recovery) must pass"
+
+# ─────────────────────────────────────────────────────────────────────
+# T09: Wire projections to serve routes
+# ─────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "E33-T09"
+title = "Register new projections in RuntimeProjectionSet and serve routes"
+description = """
+Wire the new typed projections into the existing roko-serve infrastructure.
+The existing routes/projections.rs (line 21) already has:
+  - GET /api/projections/catalog
+  - GET /api/projections/{name}
+  - GET /api/projections/{name}/stream (SSE)
+
+And the existing projection_contract.rs has RuntimeProjectionSet and
+ProjectionEnvelope<T>.
+
+Extend the existing infrastructure:
+  1. Register the 7 new projection IDs in the projection catalog by
+     extending projection_policies() in projection_contract.rs:
+     cohort_health, active_tasks, gate_pipeline, cost_meter,
+     knowledge_health, c_factor, agent_vitality
+
+  2. Extend RuntimeProjectionSet::project() to handle the new projection
+     names. When no lens data exists yet, return default/empty projection
+     serialized as serde_json::Value.
+
+  3. Import the 7 projection structs from roko_core::projections (T05)
+     and use them in project() dispatch.
+
+  4. Add 2 new statehub-specific routes to routes/projections.rs:
+     - GET /api/statehub/{projection_id} -- current projection from StateHub
+     - GET /api/statehub/{projection_id}/history -- placeholder returning []
+
+  5. The existing SSE stream_projection should work for new projections
+     without changes as long as RuntimeProjectionSet handles them.
+
+Do NOT create a new route module -- extend the existing projections.rs.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-serve/src/projection_contract.rs", "crates/roko-serve/src/routes/projections.rs"]
+depends_on = ["E33-T05", "E33-T07"]
+depends_on_plan = ["E10-FRONTEND-CONTRACT"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/projection_contract.rs", lines = "36-97", why = "ProjectionEnvelope, DataQuality, existing projection contract types" },
+  { path = "crates/roko-serve/src/projection_contract.rs", lines = "98-200", why = "Invalidation policies, RuntimeProjectionSet, project() method -- extend here" },
+  { path = "crates/roko-serve/src/routes/projections.rs", lines = "1-42", why = "Existing routes: catalog, get_projection, stream_projection" },
+  { path = "crates/roko-serve/src/routes/projections.rs", lines = "44-70", why = "stream_projection SSE handler -- should work for new projections via RuntimeProjectionSet" },
+  { path = "docs/v2/15-TELEMETRY.md", lines = "880-940", why = "WS/SSE/REST API spec for projection endpoints" },
+  { path = "crates/roko-core/src/telemetry_projections.rs", lines = "1-60", why = "The 7 projection structs from T05 to import into serve" },
+]
+symbols = [
+  "RuntimeProjectionSet -- projection_contract.rs (holds loadable projections, has project() method)",
+  "projection_policies() -- catalog function listing projection names, versions, invalidation rules",
+  "ProjectionEnvelope<T> -- versioned wrapper for projection responses at projection_contract.rs:42",
+  "project(&name, &query) -- existing dispatch method to extend with new projection names",
+  "projection_accepts_event -- event filter for SSE streaming",
+  "stream_projection -- SSE handler at projections.rs:44",
+  "routes() -- route builder at projections.rs:21 (add statehub routes here)",
+]
+anti_patterns = [
+  "Do NOT break existing projection routes -- extend the catalog and RuntimeProjectionSet",
+  "Do NOT add new route modules -- extend the existing projections.rs",
+  "Do NOT implement full time-series history -- placeholder returning [] is fine",
+  "Do NOT add roko-core projections.rs types as direct dependencies without going through project() dispatch",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cohort_health\\|cost_meter\\|c_factor' crates/roko-serve/src/projection_contract.rs"
+fail_msg = "New projections must be registered in the catalog"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'statehub' crates/roko-serve/src/routes/projections.rs"
+fail_msg = "StateHub routes must be added"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"

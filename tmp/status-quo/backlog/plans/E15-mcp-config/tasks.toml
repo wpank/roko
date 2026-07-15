@@ -1,0 +1,423 @@
+[meta]
+plan = "E15-mcp-config"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── E15-T1: Normalize McpConfig → Claude {"mcpServers":{}} shape ──────────────
+#
+# resolve_mcp_config_path serializes `McpConfig { servers: Vec<..> }` as
+# {"servers":[...]} and hands it to `claude --mcp-config <path> --strict-mcp-config`.
+# Claude expects {"mcpServers":{"<name>":{command,args,env}}}. The "servers" key is
+# unknown → 0 servers registered → agent sees NO roko MCP tools. Convert to the
+# Claude map shape before writing the file. This is the single highest-value MCP fix.
+
+[[task]]
+id = "E15-T1"
+title = "Normalize McpConfig to Claude mcpServers shape in resolve_mcp_config_path"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 55
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "4254-4302", why = "resolve_mcp_config_path — builds McpConfig { servers } and serde_json::to_string_pretty at 4277; replace with Claude-shape serialization" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig fields: name, command, args, env (HashMap), transport, endpoint, auth_token, tier — source for the mcpServers map entries" },
+    { path = "crates/roko-agent/src/claude_cli_agent.rs", lines = "325-350", why = "ClaudeCliAgent command construction consumes the generated file via --mcp-config and --strict-mcp-config, so it must use Claude's mcpServers shape" },
+]
+symbols = [
+    "PlanRunner::resolve_mcp_config_path — async fn at orchestrate.rs:4254, returns Option<PathBuf>",
+    "McpServerConfig { name, command, args, env } — config.rs:14",
+]
+anti_patterns = [
+    "Do NOT change the roko `{\"servers\":[…]}` reader format for .mcp.json (C2) — only the OUTPUT written for the Claude CLI must be the mcpServers map.",
+    "Do NOT emit the roko-only fields (tier, transport, endpoint, auth_token) into the Claude map — Claude accepts command/args/env only.",
+    "Do NOT drop per-server env from the emitted map — include env when non-empty (pairs with E15-T2).",
+    "Do NOT hand-format JSON with string concatenation — build a serde_json::json!/Map value and to_string_pretty it.",
+]
+
+# Build `{"mcpServers": { <name>: {"command":.., "args":[..], "env":{..}} , ... }}`.
+# Serialize that Value (not the McpConfig) and write it to .roko/mcp-config.json.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mcpServers' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "resolve_mcp_config_path must emit a top-level mcpServers key"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n '\"servers\"' crates/roko-cli/src/orchestrate.rs | grep -q 'to_string_pretty'"
+fail_msg = "The file written for the Claude CLI must not serialize the roko servers-array shape"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after the normalizer change"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- resolve_mcp_config 2>&1"
+fail_msg = "Add/keep a unit test asserting the generated JSON has an mcpServers map keyed by server name"
+
+# ── E15-T2: Pass per-server env via spawn_with_env in setup_mcp ───────────────
+#
+# setup_mcp spawns each server with StdioTransport::spawn(&command, &args), which
+# ignores the per-server `env` map from McpServerConfig. Credentials declared in
+# .mcp.json (e.g. GITHUB_TOKEN) never reach the child. The bridge path already uses
+# spawn_with_env; the plan-runner path must too.
+
+[[task]]
+id = "E15-T2"
+title = "Pass per-server env via spawn_with_env in PlanRunner::setup_mcp"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 20
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = ["E15-T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "4168-4215", why = "setup_mcp spawn loop — StdioTransport::spawn at 4172 drops env; swap to spawn_with_env(&server.command, &server.args, &server.env)" },
+    { path = "crates/roko-agent/src/mcp/client.rs", lines = "172-200", why = "StdioTransport::spawn (172) vs spawn_with_env (180) — signature to call" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig.env: HashMap<String,String> at config.rs:28" },
+    { path = "crates/roko-agent/src/mcp/bridge.rs", lines = "38-96", why = "reference: bridge path already calls spawn_with_env correctly" },
+]
+symbols = [
+    "StdioTransport::spawn_with_env(command: &str, args: &[String], env: &HashMap<String,String>) -> Result<Self, McpError> — client.rs:180",
+    "McpServerConfig.env — HashMap<String,String> at config.rs:28",
+]
+anti_patterns = [
+    "Do NOT env_clear the child — spawn_with_env should layer server.env over the inherited environment, matching the bridge path.",
+    "Do NOT expand ${VAR} yourself unless the bridge path does — keep behavior identical to bridge.rs for consistency.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'spawn_with_env' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "setup_mcp must call spawn_with_env so per-server env reaches the child"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'StdioTransport::spawn(' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "The env-dropping StdioTransport::spawn call must be replaced"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after switching to spawn_with_env"
+
+# ── E15-T3: Fix registry grouping separator __ → . ───────────────────────────
+#
+# After dedup, tools are named `{server}.{tool}` (separator "."). setup_mcp groups
+# them by tool.name.split("__").next(), so the group key becomes the entire tool
+# name and add_mcp_tools mis-attributes the server. Split on "." (or reuse
+# handler.rs::split_prefixed_tool_name) so `github.get_pr` groups under `github`.
+
+[[task]]
+id = "E15-T3"
+title = "Group MCP tools by the '.' server prefix, not '__'"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 15
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = ["E15-T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "4221-4239", why = "grouping loop: tool.name.split(\"__\").next() at 4231 — change delimiter to '.'" },
+    { path = "crates/roko-agent/src/mcp/handler.rs", lines = "19-79", why = "split_prefixed_tool_name splits on '.' — the canonical namespacing; reuse or mirror it" },
+    { path = "crates/roko-agent/src/mcp/dedup.rs", lines = "21-43", why = "confirms deduped names use `{server}.{tool}` (server.tool namespacing)" },
+]
+symbols = [
+    "by_server grouping loop — orchestrate.rs:4227-4238",
+    "roko_agent::mcp::handler::split_prefixed_tool_name — handler.rs:19",
+]
+anti_patterns = [
+    "Do NOT split_once from the RIGHT — server prefix is everything before the FIRST '.'; use splitn/split_once on the first '.'.",
+    "Do NOT change the dispatch resolver in handler.rs — it already splits on '.' correctly; only the grouping loop is wrong.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'split(\"__\")' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "The '__' separator split must be removed from the MCP grouping loop"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after the separator fix"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- mcp_group 2>&1"
+fail_msg = "Add a unit test asserting a tool named 'github.get_pr' groups under server key 'github'"
+
+# ── E15-T4: Thread session MCP into Claude-CLI ACP dispatch ──────────────────
+#
+# P25 wired the generic/openai-compatible side of ACP MCP passthrough, but the
+# Claude-CLI-backed ACP path still drops session.mcp_servers. Because the E15-T1
+# normalizer lives in roko-cli and is private to that crate, ACP needs a local
+# serializer for the same Claude {"mcpServers":{}} shape before invoking Claude.
+
+[[task]]
+id = "E15-T4"
+title = "Thread session mcp_servers into Claude-CLI ACP dispatch"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 220
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["E15-T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1260-1475", why = "session_mcp_servers is cloned, but ClaudeCli currently falls through to the generic dispatch without a Claude --mcp-config path." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2150-2220", why = "MCP tool-loop branch is gated by openai_compat_tool_loop_supported, which excludes ClaudeCli." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2264-2325", why = "openai_compat_tool_loop_supported and run_openai_compat_mcp_tool_loop are the existing generic-path MCP implementation." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2628-2678", why = "setup_session_mcp_tools discovers session MCP tools for stdio only; reuse behavior where appropriate but add Claude config passthrough." },
+    { path = "crates/roko-acp/src/types.rs", lines = "260-290", why = "ACP session/new mcp_servers wire shape; serialize these into Claude mcpServers entries." },
+]
+symbols = [
+    "session_mcp_servers",
+    "ProviderKind::ClaudeCli",
+    "mcpServers",
+    "--mcp-config",
+]
+anti_patterns = [
+    "Do NOT call or depend on E15-T1's roko-cli helper directly; roko-acp needs its own local/shared serializer for the Claude mcpServers shape.",
+    "Do NOT keep the openai_compat_tool_loop_supported gate as the only MCP branch; ClaudeCli must get session MCP tools too.",
+    "Do NOT write the roko {servers:[...]} shape for Claude CLI; strict Claude config expects mcpServers as a map.",
+    "Do NOT support HTTP session MCP by pretending it works; keep the existing fail-closed/unsupported status for HTTP transports.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'mcpServers|--mcp-config|mcp_config' crates/roko-acp/src/bridge_events.rs && rg -q 'ClaudeCli' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "bridge_events.rs must include a ClaudeCli MCP config path that emits Claude mcpServers config."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after threading session MCP into ClaudeCli ACP dispatch."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp mcp 2>&1"
+fail_msg = "ACP MCP tests must cover ClaudeCli session mcp_servers passthrough."
+
+acceptance = [
+    "A ClaudeCli-backed ACP session with session/new mcp_servers writes or passes a Claude-shape mcpServers config.",
+    "The ClaudeCli dispatch branch receives that config instead of silently dropping session MCP.",
+    "OpenAI-compatible MCP tool-loop behavior remains unchanged.",
+]
+
+# ── E15-T5: Emit MCP tool annotations from roko-mcp-code ─────────────────────
+#
+# roko-mcp-code hand-rolls tools/list with only name/description/inputSchema.
+# roko-agent currently consumes readOnly/openWorld annotations, while MCP docs
+# and newer clients use readOnlyHint/openWorldHint. This task must account for
+# both names so read-only code-intel tools stop being classified as Write tools.
+
+[[task]]
+id = "E15-T5"
+title = "Emit read-only and open-world MCP tool annotations from tool_spec"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 150
+files = [
+    "crates/roko-mcp-code/src/lib.rs",
+    "crates/roko-agent/src/mcp/client.rs",
+    "crates/roko-agent/src/mcp/to_tool_def.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-mcp-code/src/lib.rs", lines = "217-370", why = "tools/list construction; mark code-intel read-only tools through tool_spec." },
+    { path = "crates/roko-mcp-code/src/lib.rs", lines = "1538-1565", why = "tool_spec currently emits only name, description, and inputSchema." },
+    { path = "crates/roko-agent/src/mcp/client.rs", lines = "80-100", why = "Current annotation deserializer uses readOnly/openWorld; add compatibility for readOnlyHint/openWorldHint or emit both." },
+    { path = "crates/roko-agent/src/mcp/to_tool_def.rs", lines = "19-55", why = "readOnly annotation maps MCP tools down from Write to Read permission." },
+]
+symbols = [
+    "tool_spec",
+    "readOnly",
+    "readOnlyHint",
+    "openWorld",
+    "openWorldHint",
+    "mcp_to_tool_def",
+]
+anti_patterns = [
+    "Do NOT only emit readOnlyHint if the current consumer still ignores it; update the consumer or emit compatibility aliases.",
+    "Do NOT mark tools that can mutate files or execute commands as read-only.",
+    "Do NOT change the JSON-RPC tools/list envelope; only add annotations on each tool object.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'readOnlyHint|readOnly' crates/roko-mcp-code/src/lib.rs && rg -q 'readOnlyHint|openWorldHint|readOnly|openWorld' crates/roko-agent/src/mcp/client.rs"
+fail_msg = "roko-mcp-code must emit read-only annotations and roko-agent must deserialize the annotation names it receives."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-mcp-code -p roko-agent 2>&1"
+fail_msg = "roko-mcp-code and roko-agent must compile after annotation changes."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent mcp_to_tool_def 2>&1 && cargo test -p roko-mcp-code tools_list 2>&1"
+fail_msg = "MCP conversion and tools/list tests must prove read-only code tools map to non-write permissions."
+
+acceptance = [
+    "The 10 code-intel tools in roko-mcp-code tools/list carry read-only annotations.",
+    "roko-agent accepts the emitted annotation names and maps read-only MCP tools to ToolPermission.write = false.",
+    "openWorld/network annotations remain explicit rather than defaulting all code tools to network access.",
+]
+
+# ── E15-T6: Neutralize dead C4 writer so it cannot clobber C5 ────────────────
+#
+# process/mcp.rs writes .roko/mcp-config.json from the dead C4 launch path, the
+# same path used by E15-T1's Claude-shape C5 writer. It also falls back to
+# cargo run -p roko-mcp even though no roko-mcp crate exists. Remove or redirect
+# that writer and delete the nonexistent-crate fallback.
+
+[[task]]
+id = "E15-T6"
+title = "Neutralize the dead C4 MCP writer and roko-mcp fallback"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 80
+files = [
+    "crates/roko-agent/src/process/mcp.rs",
+    "crates/roko-agent/src/process/mod.rs",
+]
+role = "implementer"
+depends_on = ["E15-T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/process/mcp.rs", lines = "73-132", why = "Dead roko-mcp binary detection and cargo run fallback; roko-mcp crate is absent." },
+    { path = "crates/roko-agent/src/process/mcp.rs", lines = "143-202", why = "C4 find/write path includes .roko/mcp-config.json, clobbering C5's runtime path." },
+    { path = "crates/roko-agent/src/process/mod.rs", lines = "30-45", why = "write_mcp_config is re-exported here; remove the re-export if the writer is deleted." },
+    { path = "tmp/status-quo/backlog/epics/E15-MCP-CONFIG.md", lines = "28-47", why = "C4/C5 collision table and exact path-clobbering failure." },
+]
+symbols = [
+    "write_mcp_config",
+    "find_mcp_launch",
+    "roko-mcp",
+    ".roko/mcp-config.json",
+]
+anti_patterns = [
+    "Do NOT leave any writer in roko-agent process/mcp.rs targeting .roko/mcp-config.json; E15-T1 owns the C5 writer.",
+    "Do NOT keep a cargo fallback for package roko-mcp; that crate is absent from this workspace.",
+    "Do NOT remove unrelated process supervision exports from process/mod.rs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'pub fn write_mcp_config|dir\\.join\\(\"mcp-config\\.json\"\\)|cargo_run_roko_mcp_launch|roko-mcp\"' crates/roko-agent/src/process/mcp.rs"
+fail_msg = "The dead C4 writer and nonexistent roko-mcp fallback must be removed from process/mcp.rs."
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -q 'write_mcp_config' crates/roko-agent/src/process/mod.rs"
+fail_msg = "process/mod.rs must not re-export a removed or neutralized C4 writer."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile after neutralizing the C4 MCP writer."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent process::mcp 2>&1"
+fail_msg = "process::mcp tests must be updated to the neutralized C4 behavior."
+
+acceptance = [
+    "No roko-agent process/mcp.rs writer can overwrite .roko/mcp-config.json.",
+    "No fallback references the nonexistent roko-mcp package or binary.",
+    "Remaining MCP launch discovery behavior is either removed cleanly or constrained to non-clobbering explicit config paths.",
+]
+
+# ── E15-T7: Auto-discover roko-mcp-github binary and configure it ────────────
+#
+# The MCP config path (resolve_mcp_config_path) auto-discovers roko-mcp-code
+# but not roko-mcp-github. Add auto-discovery logic that finds the
+# roko-mcp-github binary (via PATH, cargo target dir, or workspace bin) and
+# registers it as an MCP server entry. This is the config-layer complement
+# to E01-T13's runtime default wiring — E15-T7 ensures the binary is found
+# and configured, while E01-T13 ensures it is included in the agent dispatch.
+
+[[task]]
+id = "E15-T7"
+title = "Auto-discover roko-mcp-github binary and configure it"
+ownership = "canonical-owner"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 100
+files = [
+    "crates/roko-cli/src/orchestrate.rs",
+    "crates/roko-agent/src/mcp/config.rs",
+]
+role = "implementer"
+depends_on = ["E15-T3", "E15-T6"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "4254-4302", why = "resolve_mcp_config_path — extend the auto-discovery loop to also look for roko-mcp-github" },
+    { path = "crates/roko-agent/src/process/mcp.rs", lines = "73-132", why = "Existing binary discovery patterns (find_mcp_launch) — reuse the which::which or cargo bin pattern for roko-mcp-github" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig shape — construct one for the discovered github binary" },
+    { path = "crates/roko-mcp-github/Cargo.toml", lines = "1-15", why = "Package name and binary target to search for" },
+]
+symbols = [
+    "resolve_mcp_config_path — orchestrate.rs:4254",
+    "McpServerConfig { name, command, args, env } — config.rs:14",
+    "roko-mcp-github — binary name to discover",
+]
+anti_patterns = [
+    "Do NOT hardcode an absolute path to the binary — use which::which, cargo_bin, or PATH-based discovery.",
+    "Do NOT fail if roko-mcp-github is not found — log a debug note and skip; the server is optional.",
+    "Do NOT override a user-configured server named 'github' — only add the auto-discovered entry if no 'github' server exists in user config.",
+    "Do NOT duplicate the discovery logic if a shared helper already exists for roko-mcp-code discovery; extend it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'roko-mcp-github' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "resolve_mcp_config_path must include auto-discovery logic for roko-mcp-github"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'github' crates/roko-cli/src/orchestrate.rs | head -1"
+fail_msg = "orchestrate.rs must reference the github MCP server in config construction"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding roko-mcp-github auto-discovery"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- mcp_github_discover 2>&1"
+fail_msg = "a test must verify roko-mcp-github is auto-discovered when the binary exists on PATH"
+
+acceptance = [
+    "resolve_mcp_config_path auto-discovers roko-mcp-github alongside roko-mcp-code.",
+    "When the binary is found, a McpServerConfig entry named 'github' is added to the MCP config.",
+    "User-configured 'github' servers take precedence over auto-discovery.",
+    "When the binary is not found, the config is generated without it and a debug log notes the absence.",
+    "GITHUB_TOKEN from the environment is included in the auto-discovered server's env map.",
+]

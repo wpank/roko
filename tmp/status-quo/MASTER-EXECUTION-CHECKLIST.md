@@ -7,8 +7,6 @@
 > Initial audit baseline: main at 1649c18b2c3d, audited 2026-07-14
 >
 > Status: active control document; coordinator and integration agents are its only editors
->
-> Last updated: 2026-07-15 by human operator from integration branch evidence
 
 ## 1. Mission and terminal outcome
 
@@ -63,27 +61,6 @@ The root checkout was dirty at audit time, with 18 modified code files, modified
 status documents, untracked audit/backlog files, logs, and many existing worktrees.
 The first coordinator must re-inspect rather than assume those exact counts remain
 current.
-
-### Progress since audit (updated 2026-07-15)
-
-**Main branch** advanced to `3041d095d` with a comprehensive audit-and-harden pass
-covering 5 bug fixes and 12 design improvements across 9 source files (see
-`tmp/status-quo/self-heal/changelog/AUDIT-2026-07-14-PASS2.md`).
-
-**Integration branch** has 2,909 commits with a disciplined review→merge→proof workflow.
-
-**Wave 0 progress**: 15/16 CTRL items DONE. Only CTRL-02 (worktree-reattach) remains
-in progress. The Codex remediation programme has been running ~17 hours with 7
-processes and up to 30 agents.
-
-| Wave 0 item | Status |
-|---|---|
-| CTRL-01 through CTRL-16 (except CTRL-02) | DONE with integrated proof |
-| CTRL-02 | In progress — 6 precursors accepted, worktree-reattach on r4 |
-| SH01-T06C4 | DONE — timeout races closed, integrated proof recorded |
-| Backlog strict validation | Reduced to zero diagnostics (CTRL-07) |
-| Cross-plan dependencies | Canonicalized (CTRL-03), externals resolved (CTRL-04) |
-| Plan ID resolution | Zero unresolved (CTRL-13) |
 
 ## 3. Authority order and context map
 
@@ -551,41 +528,25 @@ These may use parallel analysis/implementation agents after the baseline is safe
 sealed.
 
 - [x] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
-      — Integrated proof: `e736f324b`, `01c00546b`
-- [~] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
-      — Precursors accepted: TUI bounds, atomic persistence, workspace lock, StateHub SSE, config dispatch.
-      — In progress: worktree-reattach (revision 4, review pending). Not yet terminal.
+- [ ] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
 - [x] CTRL-03 Canonicalize 36 invalid depends_on_plan names to exact meta.plan IDs.
-      — Integrated proof: `af6a85767`, `4ae834b79`
 - [x] CTRL-04 Resolve 11 external dependencies on P08/P09/P16/P19/P22/P23/P25/P28.
-      — Terminal integrated proof: `310ec1b27`, `06e1d4404`
 - [x] CTRL-05 Resolve E11’s absent architecture-core-queue prerequisite.
-      — Integrated proof: `a4278ced0`, `4f7e0e34c`
 - [x] CTRL-06 Make strict validation distinguish intended creation outputs from missing prerequisites.
-      — Integrated proof: `5719b51c0`, `d4749f9c7`
 - [x] CTRL-07 Reduce backlog strict validation from 23 diagnostics to zero without placeholders.
-      — Terminal integrated proof: `fb5a47f6b`, `f0cf7e769`
 - [x] CTRL-08 Deduplicate overlapping E01/SH/E02/E09/E14/E46–E48 ownership.
-      — Terminal integrated proof: `bb5048f4c`, `515cbff5f`
 - [x] CTRL-09 Convert DOC-v2-core into an acceptance roll-up or supersede duplicate product tasks.
-      — Corrected integrated proof: `bafcebb68`; graph-count evidence corrected after rejection.
 - [x] CTRL-10 Establish execution-evidence and reviewer evidence conventions.
-      — Terminal integrated proof: `d0942fc63`, `18aad5c10`
 - [x] CTRL-11 Rebuild target/debug/roko from integrated current source.
 - [x] CTRL-12 Confirm self-heal and backlog strict validation both exit zero.
-      — CTRL-11/12 combined terminal proof: `dd611500e`, `1e478eaf1`
 - [x] CTRL-13 Confirm zero unresolved internal/external plan IDs for the chosen execution root.
-      — Integrated resolution proof: `85d8e3253`
 - [x] CTRL-14 Verify status-quo-authoring-gaps remains explicitly superseded (96/96
       skipped), with per-epic plan coverage proving why it must never execute.
-      — Terminal supersession proof: `1cbca115f`, `9b3822b72`
 - [x] CTRL-15 Reconcile all 120 executable tasks represented by plans/INDEX.md into
       canonical epic/self-heal ownership or an explicitly retained plan task.
-      — Integrated ownership proof: `3a4e57f02`
 - [x] CTRL-16 Remove or repair stale implementation-order references to absent
       architecture-core-queue, dry-run-flag, and live-demo-phase1/phase2 plan roots;
       do not manufacture empty plan directories.
-      — Integrated root reconciliation: `bb46e510f`; Bash 3 casefold guards accepted r4.
 
 Wave gate:
 
@@ -648,8 +609,6 @@ Single runner owner; do not parallelize these shared paths.
 Plan: tmp/status-quo/self-heal/plans/SH01-runner-lifecycle/tasks.toml
 
 - [x] SH01-T06C4 Expire lost effects and close timeout races.
-      — Integrated timeout proof: `ebcc3add0`; rejected once (`f42df7d7a` resume gap),
-        corrected and accepted: `4ef4e0d84`
 - [ ] SH01-T07 Reconcile truthful run and plan summaries.
 - [ ] SH01 reads 28/28 done after review, merge, and post-merge verification.
 - [ ] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence.
@@ -1184,20 +1143,21 @@ through review/integration fixes; corpus size and stale prose are not blockers.
 
 Before ending any coordinator context, update this section on the integration branch:
 
-- Integration branch: status-quo/integration (in worktree `agent-worktrees/status-quo-20260714T073140Z/integration`)
-- Integration HEAD: `7254baaa5` + ~35 additional commits (2,909 total as of 2026-07-15)
-- Last completed wave/task: Wave 0 — 15/16 CTRL items DONE; CTRL-02 in progress (worktree-reattach r4).
-  Wave 1 — SH01-T06C4 DONE; SH01-T07 not started.
-- Active assignments and worktrees:
-  - CTRL-02-worktree-reattach (worker, clean, review pending r4)
-  - 19 Claude Code agent worktrees under `.claude/worktrees/`
-  - 7 Codex processes running the remediation programme
-- Accepted but unmerged commits: CTRL-02 worktree-reattach candidate (under review)
-- Current blockers and exact resumption commands: None — CTRL-02 worktree-reattach is the last Wave 0 item.
-- Next dependency-ready tasks: SH01-T07 (after Wave 0 completes), Wave 2 SH02 tasks.
-- Last global gate results: main passes fmt/clippy/test (1556 tests, verified 2026-07-14 at `3041d095d`)
-- Dirty/untracked state: main has staged changes in `agent_stream.rs`; untracked tmp/ files (logs, backlog docs)
-- Remote actions still unauthorized/required: ALLOW_REMOTE_PUSH=no, ALLOW_PR_MERGE=no, ALLOW_DEPLOY=no
+- Run ID: `status-quo-20260714T073140Z`
+- Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
+- Integration HEAD before this checkpoint commit: `63f248b7c`
+- Base SHA: `3041d095d4daebed2c9e05c63eacb18e668e37e3`
+- Worktree root: `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z`
+- Maximum agents: 4 (one coordinator plus three reusable worker/review/integration slots)
+- Authorization: `ALLOW_MAIN_MERGE=yes`; `ALLOW_REMOTE_PUSH=no`; `ALLOW_PR_MERGE=no`; `ALLOW_DEPLOY=no`; `ALLOW_EXTERNAL_MUTATION=no`
+- Last completed wave/task: `CTRL-16` is DONE after three retained rejection cycles, r4 acceptance, ordered integration (`95135e50f`, `4b57c4556`, `03c106fb1`, `946805eef`, `fbc2e7f77`), and current post-merge proof. Wave 0 is active with only `CTRL-02` open and nine bounded precursor clusters integrated; config-dispatch r5 is independently accepted, integrated through `f60bbbc5a`, and post-merge green.
+- Active assignments and worktrees: config-dispatch is bounded `DONE` with four retained rejection cycles, accepted candidate `788aedfd42`, integrated review `f60bbbc5a`, and integration evidence updated after post-merge proof. Worktree-reattach r6 candidate `6eb27dd88` was independently rejected at review `f00528439`, integrated as `63f248b7c`, because its alleged repository-wide lock lived under configurable `worktrees_root`, allowing same-repository managers with divergent roots to acquire different lock inodes. The r7 correction is the only active precursor lane and must bind the permanent lock to canonical Git common-directory/repository identity, retain the accepted r6 ownership protocol, and add deterministic cross-root manager/process coverage plus the omitted platform and cleanup-prefix cases. The final 31-path census is integrated at `7254baaa5` and is ready for finalization only after worktree-reattach is accepted and integrated.
+- Accepted but unmerged commits: none. The historical deadline candidate `c2f3f18fb945` and review `739750232d54` remain retained evidence but were superseded by the reviewed integration-based reconstruction after merge preflight found their semantic conflict.
+- Current blockers and exact resumption commands: the original checkout's existing `.git` is read-only in this environment, so the integration branch is owned by `coordinator.git`; retry final import only after `git -C /Users/will/dev/nunchi/roko/roko branch <probe> 3041d095d` can create and delete a local probe branch without `Operation not permitted`.
+- Next dependency-ready tasks: complete and independently review worktree-reattach r7, refresh the final CTRL-02 census/status proof, run the Wave 0 gate, and advance SH01-T07 as the next serialized event-loop writer only after Wave 0.
+- Last global gate results: integrated CTRL-15 post-merge proof reports 93 plans, 881 tasks, 345 raw/169 unique task-runtime edges plus 2 raw/2 unique metadata edges (347/171 all-declared), 849 same-plan references, zero unresolved references/SCCs, an exact 120-row ownership bijection (99 retained/21 roll-ups), separate 24-task architecture queue, and 193/193 parsed TOMLs. Disposable strict results are backlog `0/55`, self-heal `0/6`, and top-level 94 bounded `PLAN_031` diagnostics; regenerated and tracked `plans/INDEX.md` both have SHA-256 `27c6a5e0c486c2485ffc3f973a77ff73bffdf68a85cfcd78a409195c48ca95a8` and report 30 executable plans/144 tasks. After nine integrated CTRL-02 precursor clusters, post-merge focused gates pass for runtime ledger `7/7`, event loop `51/51`, projection `7/7`, TUI `245/245`, atomic writes `7/7`, persistence `8/8`, workspace-lock runtime `11/11`, SSE `4/4`, connected-state `8/8`, config routes `19/19`, loader `27/27`, both config startup boundaries `1/1`, relevant all-target checks, formatting, and diff cleanliness. The shared binary must be rebuilt after the latest source integrations before release proof.
+- Dirty/untracked state: the sealed original remains unchanged relative to the saved Wave 0 inventory. A programme-created untracked worktree-review draft discovered by the final census was hash/diff preserved outside the repository, reconciled at `0ce6af71c`, removed with a named patch, and the original 32-line porcelain-v2 status was reproved byte-identical. The standard inventory still contains 23 attributed visible control-plane paths, 56 ignored canonical backlog manifests, and 15 preserved unrelated artifacts. The ignored canonical bundle SHA-256 remains `01c10b4565c1a897c92ced109c7f351fcb35513816860d094efa446da62c34e0`. The original inventory was reproved byte-identical again at integration HEAD `73be06879`; integration was clean at `63f248b7c` before this coordinator-only checkpoint edit and the surviving r6 author worktree remains confined to its recorded scope.
+- Remote actions still unauthorized/required: all push, PR merge, deploy, publish, secret rotation, and external-service mutation remain unauthorized; none is required for local programme execution.
 
 The next coordinator must reread the full document, verify this checkpoint against
 Git and evidence, then continue. The checkpoint is a hint, never a substitute for

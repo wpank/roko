@@ -7,6 +7,19 @@ Scope: every one of the 102 files under `tmp/status-quo/backlog/`
 Current repository HEAD: `1649c18b2c3d`
 Backlog documents' stated baseline: mostly `5852c93c05` (2026-07-09/10)
 
+> Historical baseline notice: the semantic-duplication finding and recovery-order
+> item 4 below are addressed by the corrected CTRL-08 ownership contract in
+> [`../backlog/17-OPERATIONAL-OWNERSHIP.md`](../backlog/17-OPERATIONAL-OWNERSHIP.md).
+> Candidate `b9387fe6c3f42209a317a301302b027a6b882042` was independently rejected and is
+> preserved with review `b0e21f69f427e738a7198f43ad5d827cf0b7c486`. Its replacement
+> `ff6dc54afeccf4d06ebd95e476756d2383422205` was also rejected and is preserved with
+> review `87461143496d405a0c3a0adffa9bfa2c278f1bc6`. Candidate
+> `ec3ecf2f89f0dd74a6c5e973c9ea4c7185bec30e` was likewise rejected and preserved
+> with review `ac3cfb8439bd4223663759360ad73a7b18461419`. The current correction was
+> reconstructed from integration base `dd611500e7f9051fbdd3843cd20c5472efcfcbb7`.
+> Counts and implementation states in this dated audit remain historical until their
+> separately owned status reconciliation; this notice does not rewrite them.
+
 ## Verdict
 
 The backlog is substantially **authored**, but barely **recorded as executed**.

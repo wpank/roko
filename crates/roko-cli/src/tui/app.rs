@@ -3652,6 +3652,23 @@ mod tests {
     }
 
     #[test]
+    fn connected_topology_update_preserves_published_plan_state() {
+        let dir = tempdir().unwrap();
+        let hub = crate::state_hub::shared_state_hub();
+        let app = App::new_connected(dir.path(), &hub);
+
+        hub.publish(roko_core::DashboardEvent::PlanStarted {
+            plan_id: "live-plan".to_string(),
+        });
+        app.apply_state_hub_agent_topology(roko_core::AgentTopology::default());
+
+        assert!(
+            hub.current_snapshot().plans.contains_key("live-plan"),
+            "a connected TUI snapshot mutation overwrote runner-published state"
+        );
+    }
+
+    #[test]
     fn app_new_standalone_installs_snapshot_receiver() {
         let dir = tempdir().unwrap();
         let app = App::new(dir.path());

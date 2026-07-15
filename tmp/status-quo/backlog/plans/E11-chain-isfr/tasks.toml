@@ -1,0 +1,319 @@
+[meta]
+plan = "E11-chain-isfr"
+total = 5
+done = 1
+status = "ready"
+max_parallel = 1
+
+# ── E11-T01: Confirm the reviewed architecture-core-queue recovery ──
+#
+# CTRL-01 recovered the canonical 24-task Q01-Q24 queue byte-for-byte at
+# plans/architecture-core-queue/tasks.toml. Recovery implementation
+# 699df4e0ea34bddabc4516695d28d1bf41328774 was independently accepted by
+# c19bd30160443759f96d8fef6149cc9b146a5bde and merged by
+# 01c00546bc57a485ff53553d0fe53006afa8ed42. Coordinator closure
+# f576dedaaf7b45478b136802785bf2a9dfc11371 records the integrated proof.
+# The canonical file's SHA-256 is
+# 3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5.
+# E11-T01 now verifies that recovery and the DeFi parity-link resolution; it
+# does not copy from ignored worktrees or change the recovered queue.
+
+[[task]]
+id = "E11-T01"
+title = "Confirm reviewed architecture-core-queue recovery and DeFi source links"
+status = "done"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["plans/architecture-core-queue/tasks.toml"]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "The tracked, non-empty canonical plans/architecture-core-queue/tasks.toml has SHA-256 3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5 and contains task Q14-chain-registries-defi-foundation.",
+    "Every architecture-defi-critical-path parity source_ref resolves to the canonical Q14-chain-registries-defi-foundation task.",
+    "CTRL-01 implementation 699df4e0e, accepted review c19bd3016, and merge 01c00546b are ancestors of the integrated recovery closure f576dedaa.",
+    "Focused strict validation passes without an ignored-worktree prerequisite, placeholder file, or empty architecture-core-queue directory.",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/architecture-core-queue/tasks.toml", lines = "1-1697", why = "Reviewed canonical recovery (SHA-256 3f90263a…); Q14 is the source anchor consumed by the DeFi queue" },
+    { path = "plans/architecture-defi-critical-path/tasks.toml", lines = "1-187", why = "All three parity rows must resolve to the canonical Q14 task" },
+    { path = "tmp/status-quo/execution-evidence/CTRL-01-IGNORED-CANONICAL-IMPORT.md", lines = "1-163", why = "Merged recovery implementation, integration SHA, and post-merge proof" },
+    { path = "tmp/status-quo/execution-evidence/CTRL-01-IGNORED-CANONICAL-IMPORT-REVIEW.md", lines = "1-156", why = "Independent acceptance of the exact recovered bytes and source identity" },
+]
+symbols = [
+    "Q14-chain-registries-defi-foundation — canonical source anchor for all architecture-defi parity rows",
+]
+anti_patterns = [
+    "Do NOT copy from an ignored worktree; the reviewed canonical file is already committed under plans/.",
+    "Do NOT edit or regenerate the recovered queue as part of this reconciliation.",
+    "Do NOT manufacture a placeholder file or empty architecture-core-queue directory; verify the exact canonical bytes and Q14 anchor.",
+    "Do NOT mark E11-T01 done before independent review, integration, and coordinator status reconciliation.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "git ls-files --error-unmatch plans/architecture-core-queue/tasks.toml >/dev/null && test -s plans/architecture-core-queue/tasks.toml && test \"$(shasum -a 256 plans/architecture-core-queue/tasks.toml | awk '{print $1}')\" = \"3f90263abd24f1b937a882244e3c67290a1580bb11ebe724c6d399d0741d3fe5\""
+fail_msg = "architecture-core-queue must be the tracked, non-empty, byte-exact reviewed recovery"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'import tomllib; q=tomllib.load(open(\"plans/architecture-core-queue/tasks.toml\",\"rb\")); d=tomllib.load(open(\"plans/architecture-defi-critical-path/tasks.toml\",\"rb\")); anchor=\"Q14-chain-registries-defi-foundation\"; target=f\"plans/architecture-core-queue/tasks.toml#{anchor}\"; assert anchor in {t[\"id\"] for t in q[\"task\"]}; refs=[r[\"source_ref\"] for t in d[\"task\"] for r in t[\"acceptance_contract\"][\"parity_ledger\"][\"rows\"]]; assert refs == [target, target, target]'"
+fail_msg = "the canonical Q14 anchor and all three architecture-defi source_ref consumers must resolve exactly"
+
+[[task.verify]]
+phase = "structural"
+command = "git merge-base --is-ancestor 699df4e0ea34bddabc4516695d28d1bf41328774 HEAD && git merge-base --is-ancestor c19bd30160443759f96d8fef6149cc9b146a5bde HEAD && git merge-base --is-ancestor 01c00546bc57a485ff53553d0fe53006afa8ed42 HEAD"
+fail_msg = "the exact CTRL-01 implementation, accepted review, and recovery merge must be integrated ancestors"
+
+[[task.verify]]
+phase = "custom"
+command = "repo=$(pwd) && tmp_dir=$(mktemp -d) && trap 'rm -rf \"$tmp_dir\"' EXIT && mkdir -p \"$tmp_dir/e11\" \"$tmp_dir/plans\" \"$tmp_dir/.roko\" && cp tmp/status-quo/backlog/plans/E11-chain-isfr/tasks.toml \"$tmp_dir/e11/tasks.toml\" && ln -s \"$repo/crates\" \"$tmp_dir/crates\" && ln -s \"$repo/contracts\" \"$tmp_dir/contracts\" && ln -s \"$repo/docs\" \"$tmp_dir/docs\" && ln -s \"$repo/tmp\" \"$tmp_dir/tmp\" && ln -s \"$repo/CLAUDE.md\" \"$tmp_dir/CLAUDE.md\" && ln -s \"$repo/.roko/GAPS.md\" \"$tmp_dir/.roko/GAPS.md\" && ln -s \"$repo/plans/architecture-core-queue\" \"$tmp_dir/plans/architecture-core-queue\" && ln -s \"$repo/plans/architecture-defi-critical-path\" \"$tmp_dir/plans/architecture-defi-critical-path\" && (cd \"$tmp_dir\" && \"$repo/target/debug/roko\" plan validate --strict e11 --color never)"
+fail_msg = "E11 must pass focused strict validation with the corrected prerequisite-aware validator"
+
+
+# ── E11-T02: Implement AlloyChainClient::get_logs ──
+#
+# alloy_impl.rs:147-157 returns Err(ChainError::Unsupported("get_logs")) — the
+# only real chain client cannot eth_getLogs. This is the single load-bearing
+# gap blocking any event indexer / log-hydrated registry, i.e. exactly what
+# architecture-defi-critical-path D01 ("event indexer foundation") promises.
+# mock.rs already returns LogEntry values, so the target shape is defined.
+# Build an alloy Filter from (from,to,addresses,topics), call
+# provider.get_logs(&filter), map into Vec<LogEntry>. Never return Unsupported.
+
+[[task]]
+id = "E11-T02"
+title = "Implement AlloyChainClient::get_logs via eth_getLogs (unblocks event indexers)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["crates/roko-chain/src/alloy_impl.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/alloy_impl.rs", lines = "140-175", why = "The stub get_logs returning Unsupported + surrounding provider-call conventions (get_receipt maps logs already)" },
+    { path = "crates/roko-chain/src/mock.rs", why = "Reference LogEntry shape the mock returns — match it" },
+    { path = "crates/roko-chain/src/types.rs", why = "LogEntry / BlockNumber / ChainError definitions" },
+    { path = "crates/roko-chain/src/client.rs", why = "ChainClient::get_logs trait signature to satisfy" },
+]
+symbols = [
+    "AlloyChainClient::get_logs — alloy_impl.rs:147 (currently Unsupported)",
+    "LogEntry — roko-chain/src/types.rs",
+    "ChainError::Unsupported — remove this return path for get_logs",
+]
+anti_patterns = [
+    "Do NOT leave the Unsupported fallback — a real provider.get_logs call must replace it.",
+    "Do NOT change the ChainClient::get_logs trait signature — implement the existing one.",
+    "Do NOT panic/unwrap on empty topic or address slices — empty means unfiltered (build a Filter without those constraints).",
+    "Do NOT make the non-alloy build fail — this method lives behind the alloy-backend impl only.",
+    "Parse hex address/topic strings the same way the rest of alloy_impl does (from_hex-style helpers), not ad-hoc.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! (grep -A8 'async fn get_logs' crates/roko-chain/src/alloy_impl.rs | grep -q 'Unsupported(\"get_logs\")')"
+fail_msg = "get_logs must no longer return ChainError::Unsupported"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain --features alloy-backend 2>&1 | tail -10"
+fail_msg = "roko-chain must compile with alloy-backend after get_logs implementation"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain --features alloy-backend get_logs 2>&1 | tail -10"
+fail_msg = "a get_logs test must build and pass (real logs, not Unsupported)"
+
+
+# ── E11-T03: Deploy-path parity — deploy all 13 contracts ──
+#
+# 13 authored contracts, 3 disjoint deployers, none deploys all 13.
+# Deploy.s.sol currently instantiates 6 (MockERC20, AgentRegistry,
+# WorkerRegistry, BountyMarket, ConsortiumValidator, InsightBoard). The
+# ERC-8004 trio (IdentityRegistry, ReputationRegistry, ValidationRegistry) and
+# FeeDistributor are authored + forge-tested but deployed by NO path — they
+# exist only as compiled artifacts. Make Deploy.s.sol the canonical full-suite
+# reference path: deploy all 13 with correct constructor wiring. isfr_bootstrap
+# (serve runtime) + roko-demo (alloy) stay as subset paths, documented as such.
+
+[[task]]
+id = "E11-T03"
+title = "Extend Deploy.s.sol to deploy all 13 contracts (ERC-8004 trio + FeeDistributor + ISFR set)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = ["contracts/script/Deploy.s.sol"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "contracts/script/Deploy.s.sol", lines = "1-70", why = "Current 6-contract deployer + Deployed struct + post-deploy wiring to extend" },
+    { path = "crates/roko-chain/src/isfr_bootstrap.rs", lines = "13-52", why = "Reference deploy order + role grants for RoleRegistry/ISFROracle/ISFRBountyPool (the ISFR slice)" },
+    { path = "contracts/src/IdentityRegistry.sol", why = "ERC-8004 IdentityRegistry constructor args (deployed by no path today)" },
+    { path = "contracts/src/ReputationRegistry.sol", why = "ReputationRegistry constructor + dependency on IdentityRegistry" },
+    { path = "contracts/src/ValidationRegistry.sol", why = "ValidationRegistry constructor" },
+    { path = "contracts/src/FeeDistributor.sol", why = "FeeDistributor constructor args" },
+]
+symbols = [
+    "Deploy.run() — contracts/script/Deploy.s.sol (6 contracts today; extend to 13)",
+    "IdentityRegistry / ReputationRegistry / ValidationRegistry — ERC-8004 trio, deployed by NO path",
+    "FeeDistributor — authored + tested, deployed by NO path",
+]
+anti_patterns = [
+    "Do NOT break the existing 6-contract wiring (setAuthorized / setResolver) — extend, don't rewrite.",
+    "Do NOT deploy KORAI.sol — it does not exist; deploys use MockERC20(\"DAEJI\").",
+    "Do NOT wire constructor deps in the wrong order — ReputationRegistry/ValidationRegistry may need IdentityRegistry's address first; read each constructor.",
+    "Do NOT change the runtime deploy path (isfr_bootstrap.rs) — Deploy.s.sol is the pure-forge reference; keep the two consistent, not merged.",
+    "Emit every deployed address via console2 so `forge script` prints all 13.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "[ \"$(grep -c 'new [A-Z][A-Za-z0-9]*' contracts/script/Deploy.s.sol)\" -ge 13 ]"
+fail_msg = "Deploy.s.sol must instantiate at least 13 contracts"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'IdentityRegistry' contracts/script/Deploy.s.sol && grep -q 'ReputationRegistry' contracts/script/Deploy.s.sol && grep -q 'ValidationRegistry' contracts/script/Deploy.s.sol && grep -q 'FeeDistributor' contracts/script/Deploy.s.sol"
+fail_msg = "the ERC-8004 trio + FeeDistributor (deployed by no path today) must appear in Deploy.s.sol"
+
+[[task.verify]]
+phase = "custom"
+command = "cd contracts && forge build 2>&1 | tail -5 && forge test 2>&1 | tail -5"
+fail_msg = "contracts must build and forge tests must stay green after extending the deployer"
+
+
+# ── E11-T04: Delete dead Engram/Provenance/CustodyEntry stubs ──
+#
+# identity_economy_markets.rs defines a second bare `pub struct Engram` plus
+# local Provenance/CustodyEntry shadows for forensic replay stubs. This overlaps
+# E03-T07. Do not schedule both in the same execution wave: whichever task lands
+# first satisfies the cleanup, and the other should be closed as done-by-that
+# task after verifying only roko_core::engram::Engram remains.
+
+[[task]]
+id = "E11-T04"
+title = "Delete dead Engram/Provenance/CustodyEntry stubs (coordinate with E03-T07)"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 45
+files = ["crates/roko-chain/src/identity_economy_markets.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/identity_economy_markets.rs", lines = "640-705", why = "Dead local Engram, Provenance, and CustodyEntry definitions to remove or make an explicit no-op if still referenced" },
+    { path = "crates/roko-core/src/engram.rs", lines = "55-95", why = "Canonical Engram definition that should remain the only bare Engram struct in the tree" },
+    { path = "tmp/status-quo/backlog/epics/E03-TYPE-CONSOLIDATION.md", lines = "1-80", why = "Coordination context: E03-T07 may delete the same stub first" },
+]
+symbols = [
+    "identity_economy_markets::Engram — dead local shadow",
+    "identity_economy_markets::Provenance — local shadow tied only to the dead Engram",
+    "identity_economy_markets::CustodyEntry — local shadow tied only to the dead Engram",
+    "roko_core::engram::Engram — canonical Engram",
+]
+anti_patterns = [
+    "Do NOT delete or rename roko_core::engram::Engram; it is the canonical type.",
+    "Do NOT schedule this concurrently with E03-T07; if E03 lands first, mark this task done-by-E03 after verification.",
+    "Do NOT leave a second bare `pub struct Engram` in roko-chain.",
+    "Do NOT remove unrelated identity_economy_markets compliance or marketplace placeholder types in this mechanical cleanup.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "[ \"$(rg -n -F 'pub struct Engram {' crates | wc -l | tr -d ' ')\" -eq 1 ] && ! rg -q 'pub struct Provenance|pub struct CustodyEntry' crates/roko-chain/src/identity_economy_markets.rs"
+fail_msg = "Only the canonical roko-core Engram may remain; local Provenance/CustodyEntry shadows must be removed from identity_economy_markets.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1 | tail -10"
+fail_msg = "roko-chain must compile after removing the dead identity_economy_markets stubs"
+
+acceptance = [
+    "The local roko-chain Engram/Provenance/CustodyEntry forensic replay stubs are gone, or this task is closed as done-by-E03 if E03-T07 removed them first.",
+    "Exactly one bare `pub struct Engram` remains under crates/: the canonical roko-core definition.",
+    "roko-chain compiles without the local shadow types.",
+]
+
+
+# ── E11-T05: Decide wire-or-shelve for zero-caller chain modules + fence daeji ──
+#
+# roko-chain contains 16 real-logic modules with zero runtime callers. This task
+# is a documentation/decision implementation task: record which modules are
+# intentionally Phase-2 shelf-ware and which will be wired by future follow-up
+# tasks. Also fix the repo docs so daeji is clearly the node/precompile side and
+# roko-chain is the client/runtime integration side.
+
+[[task]]
+id = "E11-T05"
+title = "Wire-or-shelve decision doc for zero-caller chain modules and daeji fence"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 140
+files = [".roko/GAPS.md", "CLAUDE.md", "docs/v2/22-REGISTRIES.md"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/epics/E11-CHAIN-ISFR.md", lines = "1-130", why = "Module status table, zero-caller list, daeji fence, and recommended default to shelve" },
+    { path = "crates/roko-chain/src/lib.rs", lines = "40-130", why = "Exported module list to classify as WIRE or SHELVE" },
+    { path = "CLAUDE.md", lines = "220-236", why = "Stale roko-chain row currently says only Chain witness primitives / Phase 2+" },
+    { path = "CLAUDE.md", lines = "305-320", why = "Existing chain runtime integration note to update with ISFR-wired reality and daeji fence" },
+    { path = ".roko/GAPS.md", lines = "1-80", why = "Canonical gaps tracker; add the wire-or-shelve decision table or link to it here" },
+    { path = "docs/v2/22-REGISTRIES.md", lines = "600-710", why = "Registry/witness prose currently reads as more runtime-live than the roko client actually is" },
+]
+symbols = [
+    "witness",
+    "x402",
+    "korai_token",
+    "marketplace",
+    "agent_registry",
+    "reputation_registry",
+    "validation_registry",
+    "isfr.rs",
+    "trace_rank",
+    "collusion",
+    "nelson_siegel",
+    "futures_market",
+    "gate::{mev,tx_sim,wallet}",
+    "heartbeat_ext",
+    "daeji",
+]
+anti_patterns = [
+    "Do NOT implement runtime wiring for any zero-caller module in this task; this is a decision/doc task.",
+    "Do NOT claim daeji node, BFT, precompiles, or verified-state live in this repo; fence them as separate-repo dependencies.",
+    "Do NOT revert the ISFR-wired reality to a blanket 'roko-chain is Phase 2+' statement.",
+    "Do NOT leave any of the 16 zero-caller modules without a WIRE or SHELVE verdict and reason.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qi 'daeji' CLAUDE.md && grep -qi 'ISFR' CLAUDE.md && ! grep -q 'roko-chain | `crates/roko-chain/` | Chain witness primitives | Phase 2+' CLAUDE.md"
+fail_msg = "CLAUDE.md must document the daeji fence, ISFR-wired reality, and remove the stale roko-chain Phase 2+ row"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qiE 'wire|shelve' .roko/GAPS.md && grep -qi 'witness' .roko/GAPS.md && grep -qi 'x402' .roko/GAPS.md && grep -qi 'heartbeat' .roko/GAPS.md"
+fail_msg = ".roko/GAPS.md must include WIRE/SHELVE decisions for representative zero-caller chain modules"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qi 'daeji' docs/v2/22-REGISTRIES.md && grep -qiE 'wire|shelve|phase.?2' docs/v2/22-REGISTRIES.md"
+fail_msg = "docs/v2/22-REGISTRIES.md must include the daeji boundary and module maturity decision"
+
+acceptance = [
+    "Every zero-caller module named in the E11 epic has an explicit WIRE or SHELVE verdict with a blocking dependency or follow-up task pointer.",
+    "CLAUDE.md states that roko-chain is the client/runtime integration side, daeji owns node/precompile/consensus pieces, and ISFR is already wired.",
+    ".roko/GAPS.md and docs/v2/22-REGISTRIES.md no longer imply the shelf-ware modules are runtime-live today.",
+]

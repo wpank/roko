@@ -1,0 +1,774 @@
+[meta]
+plan = "E21-graph-engine"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T01: Add typed edge validation using TypeSchema
+# ─────────────────────────────────────────────────────────────────────────────
+# The Graph (types.rs) currently has no type-checking on edges. The v2 spec
+# (03-GRAPH.md §3) requires edge validation: an edge from node A to node B is
+# valid only if A's output TypeSchema is compatible with B's input TypeSchema.
+# The roko-graph engine resolves cells via CellRegistry (registry.rs:16) and
+# needs schema info from the cells to validate edges.
+[[task]]
+id = "E21-T01"
+title = "Add typed edge validation to Graph using Cell TypeSchema"
+description = """Add a `validate_edges()` method to `Graph` (types.rs, Graph struct around line 88)
+that checks each edge: the source Cell's output_schema must be compatible with the target
+Cell's input_schema using `TypeSchema::is_compatible_with` (roko-core cell.rs:75).
+
+The method needs access to Cell metadata (schemas), so it takes a `CellRegistry` parameter:
+```rust
+pub fn validate_edges(&self, registry: &CellRegistry) -> Vec<EdgeValidationError>
+```
+
+`EdgeValidationError` struct:
+```rust
+pub struct EdgeValidationError {
+    pub edge_from: String,
+    pub edge_to: String,
+    pub source_schema: Option<TypeSchema>,
+    pub target_schema: Option<TypeSchema>,
+    pub reason: String,
+}
+```
+
+Collect ALL errors (don't fail-fast). Edges where either cell has `None` (Any) schema
+are always valid. Call this from `GraphEngine::new()` or `load_graph()` as a warning pass."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = ["crates/roko-graph/src/types.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E20-cell-unification"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/types.rs", lines = "1-31", why = "Edge and EdgeCondition — edge structure with from/to node IDs" },
+    { path = "crates/roko-graph/src/types.rs", lines = "88-140", why = "Graph struct with nodes/edges Vec, add_node, add_edge methods" },
+    { path = "crates/roko-graph/src/registry.rs", lines = "16-40", why = "CellRegistry — needed to look up Cell schemas by type name" },
+    { path = "crates/roko-core/src/cell.rs", lines = "63-90", why = "TypeSchema enum and is_compatible_with method" },
+    { path = "crates/roko-core/src/cell.rs", lines = "112-121", why = "Cell::input_schema() and output_schema() — schema accessors" },
+    { path = "docs/v2/03-GRAPH.md", lines = "99-200", why = "Edge spec with typed schema validation" },
+]
+symbols = [
+    "Graph (types.rs:88) — struct to add validate_edges() to",
+    "Edge (types.rs:1) — struct with from/to node IDs and condition",
+    "TypeSchema::is_compatible_with (roko-core cell.rs:75) — validation predicate",
+    "CellRegistry (registry.rs:16) — lookup table for Cell factories",
+    "Cell::input_schema, Cell::output_schema (roko-core cell.rs:112) — schema accessors",
+]
+anti_patterns = [
+    "Do NOT fail-fast on the first invalid edge — collect all errors.",
+    "Do NOT make validation mandatory in add_edge — validation is called separately.",
+    "Do NOT require Cell impls to have schemas — None (Any) is always compatible.",
+    "Do NOT panic on missing cells in registry — include in error list.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'validate_edges\\|EdgeValidationError' crates/roko-graph/src/types.rs"
+fail_msg = "Graph must have validate_edges method and EdgeValidationError type"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph types 2>&1"
+fail_msg = "graph type tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T02: Add Graph TOML policy section with hot/workflow/activity config
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (03-GRAPH.md §1) requires Graphs to carry a policy section that
+# determines execution mode (OneShot/Hot), failure strategy, concurrency limits,
+# and timeout. HotPolicy (hot.rs:29) exists but isn't part of the Graph TOML.
+[[task]]
+id = "E21-T02"
+title = "Add GraphPolicy section to Graph definition TOML"
+description = """Add a `GraphPolicy` struct to `types.rs`:
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphPolicy {
+    pub mode: GraphMode,
+    pub failure_strategy: FailureStrategy,
+    pub max_concurrent_nodes: usize,
+    pub timeout_ms: Option<u64>,
+    pub hot: Option<HotPolicy>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub enum GraphMode { #[default] OneShot, Hot }
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub enum FailureStrategy { #[default] FailFast, SkipFailed, Retry { max_retries: u32 } }
+```
+
+Add a `pub policy: GraphPolicy` field to the `Graph` struct (types.rs:~88). Default:
+OneShot mode, FailFast, max_concurrent=4, no timeout, no hot config.
+
+Update the TOML loader (loader.rs, RawGraphFile around line 9) to deserialize a
+`[graph.policy]` section. If absent, use the default."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 70
+files = [
+    "crates/roko-graph/src/types.rs",
+    "crates/roko-graph/src/loader.rs",
+]
+role = "implementer"
+depends_on = []
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/types.rs", lines = "34-47", why = "GraphMetadata — policy is a sibling struct" },
+    { path = "crates/roko-graph/src/types.rs", lines = "88-140", why = "Graph struct — add policy field here" },
+    { path = "crates/roko-graph/src/loader.rs", lines = "9-70", why = "RawGraphFile TOML deserialization — add policy section" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "29-51", why = "HotPolicy struct — embed in GraphPolicy for Hot mode" },
+    { path = "docs/v2/03-GRAPH.md", lines = "48-70", why = "GraphPolicy spec with mode, failure_strategy, concurrency" },
+]
+symbols = [
+    "Graph (types.rs:88) — add policy: GraphPolicy field",
+    "GraphMetadata (types.rs:34) — sibling metadata struct, policy sits alongside",
+    "RawGraphFile (loader.rs:9) — TOML deserialization struct, add policy",
+    "HotPolicy (hot.rs:29) — existing Hot config to embed in GraphPolicy",
+]
+anti_patterns = [
+    "Do NOT duplicate HotPolicy fields — reference the existing struct.",
+    "Do NOT make policy mandatory in TOML — default to OneShot with FailFast.",
+    "Do NOT change Graph::new() signature — add a with_policy() builder method instead.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraphPolicy' crates/roko-graph/src/types.rs"
+fail_msg = "GraphPolicy struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'policy.*GraphPolicy' crates/roko-graph/src/types.rs"
+fail_msg = "Graph must have a policy field of type GraphPolicy"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FailureStrategy\\|GraphMode' crates/roko-graph/src/types.rs"
+fail_msg = "FailureStrategy and GraphMode enums must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph loader 2>&1"
+fail_msg = "graph loader tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T03: Add ExecutionClass tagging to Graph nodes
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (03-GRAPH.md §2) separates Workflow (deterministic orchestration)
+# from Activity (non-deterministic execution) for replay. The spec calls this
+# `execution_class` on Node. Currently Node (types.rs:54) has cell_type but no
+# execution classification.
+[[task]]
+id = "E21-T03"
+title = "Add ExecutionClass tagging to Graph nodes for replay classification"
+description = """Add an `ExecutionClass` enum to `types.rs`:
+```rust
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionClass {
+    /// Deterministic: routing, scoring, composition. Re-derived on replay.
+    Workflow,
+    /// Non-deterministic: LLM calls, tool execution, external APIs. Recorded for replay.
+    #[default]
+    Activity,
+}
+```
+
+Add `pub execution_class: ExecutionClass` field to the `Node` struct (types.rs:54).
+Default to `Activity` (non-deterministic) since most graph nodes involve external computation.
+
+Update the TOML loader (loader.rs, RawNode around line 30) to parse `execution_class`
+from node definitions. If absent, default to `Activity`.
+
+The spec says: "Workflow nodes can be re-derived from inputs; Activity nodes must be recorded
+because they involve non-deterministic external calls." The Graph Engine (E21-T05) will use
+this for snapshot decisions — only Activity outputs need saving."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 45
+files = [
+    "crates/roko-graph/src/types.rs",
+    "crates/roko-graph/src/loader.rs",
+]
+role = "implementer"
+depends_on = []
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/types.rs", lines = "54-87", why = "Node struct — add execution_class field" },
+    { path = "crates/roko-graph/src/loader.rs", lines = "30-52", why = "RawNode — add execution_class parsing" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "36-50", why = "NodeStatus enum — execution_class complements this" },
+    { path = "docs/v2/03-GRAPH.md", lines = "99-200", why = "Node spec with execution_class field" },
+]
+symbols = [
+    "Node (types.rs:54) — struct to add execution_class field to",
+    "RawNode (loader.rs:30) — TOML deserialization struct for nodes",
+    "NodeStatus (engine.rs:36) — runtime status, distinct from classification",
+]
+anti_patterns = [
+    "Do NOT implement the replay engine here — just the type tagging.",
+    "Do NOT default to Workflow — most nodes are Activity (non-deterministic) by default.",
+    "Do NOT conflate with NodeStatus — ExecutionClass is compile-time metadata, NodeStatus is runtime.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ExecutionClass\\|Workflow\\|Activity' crates/roko-graph/src/types.rs"
+fail_msg = "ExecutionClass enum with Workflow/Activity variants must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'execution_class' crates/roko-graph/src/types.rs"
+fail_msg = "Node must have execution_class field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph 2>&1"
+fail_msg = "roko-graph tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T04: Implement parallel node execution in GraphEngine
+# ─────────────────────────────────────────────────────────────────────────────
+# GraphEngine (engine.rs) currently executes nodes sequentially in topological
+# order (topo.rs). The v2 spec (03-GRAPH.md §4) and GraphPolicy require
+# parallel execution of independent nodes within a topological wave.
+[[task]]
+id = "E21-T04"
+title = "Implement parallel node execution within topological waves"
+description = """Modify `GraphEngine::execute()` (engine.rs) to run independent nodes concurrently:
+
+1. Use `topological_order()` (topo.rs) to get the execution order
+2. Group nodes into "waves" — each wave contains nodes whose predecessors are all in earlier waves
+3. Within a wave, spawn nodes as tokio tasks using `JoinSet`
+4. Use a `tokio::sync::Semaphore` with `GraphPolicy::max_concurrent_nodes` permits to limit concurrency
+5. Collect results from JoinSet before proceeding to the next wave
+
+```rust
+let semaphore = Arc::new(Semaphore::new(policy.max_concurrent_nodes));
+for wave in waves {
+    let mut join_set = JoinSet::new();
+    for node_id in wave {
+        let permit = semaphore.clone().acquire_owned().await?;
+        join_set.spawn(async move {
+            let result = cell.execute(inputs, &ctx).await;
+            drop(permit);
+            (node_id, result)
+        });
+    }
+    while let Some(result) = join_set.join_next().await { ... }
+}
+```
+
+When `max_concurrent_nodes = 1`, this degrades to sequential execution (backward compat).
+Existing tests should pass without modification since they use default policy."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 130
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E21-T02"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "1-50", why = "GraphEngine struct and imports" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "100-200", why = "GraphEngine::execute — current sequential node execution loop" },
+    { path = "crates/roko-graph/src/topo.rs", lines = "1-60", why = "topological_order() function — groups nodes for execution" },
+    { path = "crates/roko-graph/src/types.rs", lines = "88-107", why = "Graph struct — edges/nodes used for wave computation" },
+    { path = "crates/roko-orchestrator/src/dag.rs", lines = "1-50", why = "UnifiedTaskDag wave-based execution — reference pattern" },
+]
+symbols = [
+    "GraphEngine (engine.rs:~85) — struct to modify for parallel execution",
+    "GraphEngine::execute (engine.rs:~100) — main execution method, currently sequential",
+    "topological_order (topo.rs) — existing topo sort producing node order",
+    "NodeResult (engine.rs:~44) — per-node result struct collected by engine",
+    "GraphPolicy — max_concurrent_nodes limit (from T02)",
+]
+anti_patterns = [
+    "Do NOT use unbounded parallelism — respect max_concurrent_nodes via Semaphore.",
+    "Do NOT break existing sequential behavior — sequential is the fallback when max_concurrent_nodes=1.",
+    "Do NOT spawn OS threads — use tokio tasks exclusively.",
+    "Do NOT change the NodeResult shape — callers depend on the current structure.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'JoinSet\\|join_set\\|Semaphore\\|semaphore' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must use async parallelism for node execution"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph engine 2>&1"
+fail_msg = "graph engine tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T05: Implement Graph snapshot and resume
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (03-GRAPH.md §6) requires Graphs to be snapshot-able mid-execution
+# and resumable from a snapshot. Critical for long-running Hot Graphs and crash
+# recovery. The orchestrator already has ExecutorSnapshot — follow that pattern.
+[[task]]
+id = "E21-T05"
+title = "Add Graph execution snapshot and resume support"
+description = """Add a `GraphSnapshot` struct to `engine.rs`:
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphSnapshot {
+    pub graph_name: String,
+    pub graph_id: String,
+    pub node_statuses: HashMap<String, NodeStatus>,
+    pub node_outputs: HashMap<String, NodeResult>,
+    pub tick_count: u64,           // for Hot Graphs
+    pub created_at_ms: i64,
+    pub policy: GraphPolicy,       // preserve policy for resume
+}
+```
+
+Add methods to GraphEngine:
+- `snapshot(&self) -> GraphSnapshot` — capture current execution state
+- `resume_from(snapshot: GraphSnapshot, registry: &CellRegistry) -> Result<Self>` — reconstruct
+  engine from snapshot, marking completed nodes as done and re-executing pending nodes
+
+Only Activity nodes' outputs need saving (Workflow nodes can be re-derived). Use
+`ExecutionClass` from T03 to decide what to include.
+
+Serialize to JSON for persistence to `.roko/state/graph-snapshots/`. Follow the pattern
+from `crates/roko-orchestrator/src/runtime_snapshot.rs` for snapshot structure."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E21-T03", "E21-T04"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/engine.rs", lines = "36-60", why = "NodeStatus and NodeResult — snapshot captures these" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "60-100", why = "GraphOutput and GraphEngine struct — add snapshot support" },
+    { path = "crates/roko-orchestrator/src/runtime_snapshot.rs", lines = "1-44", why = "OrchestratorSnapshot — pattern to follow for snapshot struct" },
+    { path = "crates/roko-orchestrator/src/executor/snapshot.rs", lines = "1-50", why = "ExecutorSnapshot — another snapshot pattern reference" },
+]
+symbols = [
+    "GraphEngine (engine.rs:~85) — add snapshot() and resume_from()",
+    "NodeStatus (engine.rs:36) — per-node status to include in snapshot",
+    "NodeResult (engine.rs:44) — per-node result to include in snapshot",
+    "GraphOutput (engine.rs:~60) — execution result shape",
+    "ExecutionClass (types.rs) — determines which outputs to snapshot (from T03)",
+]
+anti_patterns = [
+    "Do NOT snapshot Cell internal state — only execution metadata and outputs.",
+    "Do NOT make resume mandatory — one-shot graphs may not need it.",
+    "Do NOT store the full Graph definition in the snapshot — store graph_id for lookup.",
+    "Do NOT serialize Arc-wrapped Cell instances — they are re-resolved from CellRegistry on resume.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraphSnapshot' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphSnapshot struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn snapshot\\|resume_from' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must have snapshot and resume_from methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph engine 2>&1"
+fail_msg = "graph engine tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T06: Wire Hot Graph tick intervals with nested loop support
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (04-EXECUTION.md) defines 3 nested loop levels:
+# gamma (100-2000ms), theta (2-30s), delta (1-600s). HotPolicy (hot.rs:29)
+# has tick_interval_ms but doesn't support named loop levels with spec defaults.
+[[task]]
+id = "E21-T06"
+title = "Add nested loop level configuration to HotPolicy"
+description = """Add a `LoopLevel` enum to `hot.rs`:
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoopLevel {
+    Gamma,  // fast: perception, reflex (default 250ms)
+    Theta,  // medium: planning, deliberation (default 10_000ms)
+    Delta,  // slow: learning, consolidation (default 60_000ms)
+}
+```
+
+Add `LoopLevel::default_interval_ms() -> u64` returning the spec defaults.
+
+Extend `HotPolicy` (hot.rs:29) with:
+- `loop_level: Option<LoopLevel>` — if set, overrides tick_interval_ms with the level's default
+- `resolve_tick_interval_ms() -> u64` — returns loop_level default if set, else tick_interval_ms
+
+Update `start_hot()` (hot.rs) to use `resolve_tick_interval_ms()` instead of raw
+`tick_interval_ms` when computing the tick interval."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = ["crates/roko-graph/src/hot.rs"]
+role = "implementer"
+depends_on = []
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/hot.rs", lines = "1-30", why = "Imports and module docs" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "29-51", why = "HotPolicy struct — add loop_level field" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "52-100", why = "HotGraphHandle and start_hot — use resolve_tick_interval_ms()" },
+]
+symbols = [
+    "HotPolicy (hot.rs:29) — extend with loop_level and resolve method",
+    "start_hot (hot.rs) — tick loop that needs to use resolved interval",
+    "HotGraphHandle (hot.rs) — returned by start_hot, manages lifecycle",
+]
+anti_patterns = [
+    "Do NOT remove the manual tick_interval_ms — loop_level is a convenience that overrides it.",
+    "Do NOT implement inter-loop communication here — that is the Engine's job.",
+    "Do NOT change HotPolicy's existing Default — add loop_level as None by default.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'LoopLevel\\|Gamma\\|Theta\\|Delta' crates/roko-graph/src/hot.rs"
+fail_msg = "LoopLevel enum must exist in hot.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'resolve_tick_interval\\|loop_level' crates/roko-graph/src/hot.rs"
+fail_msg = "HotPolicy must have loop_level and resolve method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph hot 2>&1"
+fail_msg = "hot graph tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T07: Add Graph-as-Cell wrapper for fractal composition
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (03-GRAPH.md §1) says "A Graph IS a Cell" — any Graph can be
+# embedded as a SubGraph node inside another Graph. roko-graph already has
+# Cell implementations for specific types (agent, compose, graduation) but
+# no wrapper that makes a generic Graph behave as a Cell.
+[[task]]
+id = "E21-T07"
+title = "Implement GraphCell wrapper for fractal Graph composition"
+description = """Add a `GraphCell` struct that wraps a `Graph` and implements the roko-graph Cell trait
+(cell.rs:74). When executed, it runs the inner graph via `GraphEngine` and returns
+the terminal nodes' outputs as the Cell's output Engrams.
+
+```rust
+pub struct GraphCell {
+    graph: Graph,
+    registry: Arc<CellRegistry>,
+    max_depth: u32,  // prevents infinite nesting
+}
+```
+
+Implement `cell::Cell for GraphCell`:
+- `cell_id()` returns graph.id
+- `cell_name()` returns graph.name
+- `protocols()` returns empty (graphs are compositions, not protocol implementors)
+- `execute()` creates a `GraphEngine`, runs it, collects terminal node outputs
+
+Add a `subgraph` cell type to the `CellRegistry` default registration (engine.rs,
+`default_registry()`) so TOML graphs can reference sub-graphs by name.
+
+Depth limit: GraphCell tracks current depth and refuses execution if depth exceeds
+max_depth (default 8). This prevents infinite recursion from circular graph references."""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 90
+files = [
+    "crates/roko-graph/src/cells/mod.rs",
+]
+role = "implementer"
+depends_on = ["E21-T04"]
+depends_on_plan = ["E20-cell-unification"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/cell.rs", lines = "68-106", why = "roko-graph Cell trait — implement for GraphCell" },
+    { path = "crates/roko-graph/src/cells/mod.rs", lines = "1-19", why = "Cell module exports — add GraphCell here" },
+    { path = "crates/roko-graph/src/cells/agent.rs", lines = "1-30", why = "AgentCell — reference pattern for Cell implementation" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "85-135", why = "GraphEngine — used to execute the inner graph" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "220-260", why = "default_registry() — register subgraph cell type here" },
+    { path = "crates/roko-graph/src/registry.rs", lines = "16-40", why = "CellRegistry — registration mechanism" },
+    { path = "docs/v2/03-GRAPH.md", lines = "71-96", why = "Graph-as-Cell fractal composition spec" },
+]
+symbols = [
+    "Cell trait (cell.rs:74) — roko-graph Cell, implement for GraphCell",
+    "cells/mod.rs — module hub, add GraphCell export",
+    "AgentCell (cells/agent.rs) — reference Cell implementation to follow",
+    "GraphEngine (engine.rs:85) — executes the inner Graph",
+    "default_registry (engine.rs:~220) — register 'subgraph' cell type",
+    "CellRegistry (registry.rs:16) — registration target",
+]
+anti_patterns = [
+    "Do NOT allow infinite nesting — enforce max_depth limit.",
+    "Do NOT share mutable state between parent and child graph execution contexts.",
+    "Do NOT make registry required in execute() — GraphCell carries its own registry Arc.",
+    "Do NOT implement this as a new file — add to an existing cells/ submodule or cells/mod.rs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraphCell' crates/roko-graph/src/cells/mod.rs"
+fail_msg = "GraphCell must be declared in cells/mod.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_depth\\|depth' crates/roko-graph/src/cells/mod.rs"
+fail_msg = "GraphCell must have a depth limit for nesting"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T08: Wire edge condition evaluation into GraphEngine execution
+# ─────────────────────────────────────────────────────────────────────────────
+# Condition evaluation exists (condition.rs with evaluate() function and tests)
+# but the GraphEngine doesn't use it during execution. Edges are traversed
+# unconditionally. Wire condition checks so the engine skips edges/nodes whose
+# conditions are not met.
+[[task]]
+id = "E21-T08"
+title = "Wire edge Condition evaluation into GraphEngine execution"
+description = """In `GraphEngine::execute()` (engine.rs), add condition evaluation:
+
+1. After each node completes, build its `NodeOutput` from the `NodeResult`
+2. For each outgoing edge from that node, call `condition::evaluate(&edge.condition, &output)`
+3. If the condition returns false, do NOT deliver data to the downstream node via that edge
+4. A downstream node is skipped (status=Skipped) if ALL its incoming edges are either
+   not-yet-evaluated or failed their conditions
+
+The `condition.rs` module already has:
+- `Condition` enum: Always, OnSuccess, OnFailure, When (line 33)
+- `evaluate()` function (line 85) that takes `&Condition` and `&NodeOutput`
+- `NodeOutput` with success/failed/skipped constructors (types.rs)
+- Full test coverage (lines 177-268)
+
+Key integration point: the engine's edge traversal loop needs to check conditions before
+adding nodes to the next wave. Currently edges are just adjacency — make them conditional."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E21-T04"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/condition.rs", lines = "33-50", why = "Condition enum: Always, OnSuccess, OnFailure, When" },
+    { path = "crates/roko-graph/src/condition.rs", lines = "85-104", why = "evaluate() function — call from engine execution loop" },
+    { path = "crates/roko-graph/src/types.rs", lines = "1-31", why = "Edge with condition field, NodeOutput with success/failed/skipped" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "100-200", why = "GraphEngine::execute — edge traversal loop to modify" },
+    { path = "crates/roko-graph/src/condition.rs", lines = "177-268", why = "Existing condition tests — reference for expected behavior" },
+]
+symbols = [
+    "condition::evaluate (condition.rs:85) — predicate to call per edge",
+    "Condition (condition.rs:33) — enum with Always, OnSuccess, OnFailure, When variants",
+    "NodeOutput (types.rs) — success/failed/skipped constructors for condition input",
+    "Edge.condition (types.rs:~10) — condition field on each edge",
+    "GraphEngine::execute (engine.rs) — main loop to modify",
+]
+anti_patterns = [
+    "Do NOT skip nodes when ANY edge condition passes — skip only when ALL incoming edges fail.",
+    "Do NOT change the Always condition behavior — it always evaluates to true.",
+    "Do NOT remove the standalone evaluate() tests in condition.rs.",
+    "Do NOT duplicate condition evaluation logic — call the existing evaluate() function.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'condition::evaluate\\|evaluate.*condition\\|edge.*condition' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must call condition evaluation during edge traversal"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-graph 2>&1"
+fail_msg = "all roko-graph tests must pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T09: Integrate MergeQueue with Graph execution for concurrent plans
+# ─────────────────────────────────────────────────────────────────────────────
+# MergeQueue (roko-orchestrator merge_queue.rs) serializes file-conflict-aware
+# merges. When the Graph engine is used to execute plans (via plan_to_graph
+# conversion), completed plans should enqueue merge requests.
+[[task]]
+id = "E21-T09"
+title = "Wire MergeQueue into Graph execution for concurrent plan merges"
+description = """Add an optional `merge_queue: Option<Arc<MergeQueue>>` field to `GraphEngine`
+(or its config/builder). After a Graph completes successfully and represents a plan execution,
+enqueue a `MergeRequest` with the plan's changed files.
+
+The integration point:
+1. GraphEngine gains a `with_merge_queue(queue: Arc<MergeQueue>) -> Self` builder method
+2. In `GraphEngine::execute()`, after successful completion, if merge_queue is Some:
+   - Collect changed files from Activity node outputs (convention: nodes emit `files_changed` in output)
+   - Create a `MergeRequest` with graph name as plan_id and collected files
+   - Call `merge_queue.enqueue(request)`
+
+The MergeQueue types are in roko-orchestrator — add `roko-orchestrator` as an optional
+dependency of roko-graph (feature-gated if desired, or just optional dep)."""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 55
+files = ["crates/roko-graph/src/engine.rs"]
+role = "implementer"
+depends_on = ["E21-T04"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/merge_queue.rs", lines = "30-70", why = "MergeRequest struct and MergeQueue::enqueue API" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "60-100", why = "GraphOutput and GraphEngine struct — add merge_queue field" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "200-220", why = "End of execute() — merge enqueue point" },
+    { path = "crates/roko-graph/src/convert.rs", lines = "1-30", why = "plan_to_graph — converts plans to graphs, context for plan execution" },
+]
+symbols = [
+    "MergeQueue (roko-orchestrator merge_queue.rs) — thread-safe merge serializer",
+    "MergeRequest (merge_queue.rs:33) — enqueue payload with plan_id, branch, files_changed",
+    "GraphEngine (engine.rs) — add merge_queue field and with_merge_queue builder",
+    "GraphOutput (engine.rs) — completion structure, trigger merge enqueue",
+]
+anti_patterns = [
+    "Do NOT make MergeQueue a hard dependency — keep it optional (Option<Arc<>>).",
+    "Do NOT merge automatically — just enqueue; the runner handles actual git merge.",
+    "Do NOT add roko-orchestrator as a required dependency — use optional dep or feature gate.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'merge_queue\\|MergeQueue\\|MergeRequest' crates/roko-graph/src/engine.rs"
+fail_msg = "GraphEngine must reference MergeQueue"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E21-T10: Re-export Graph types from roko-graph lib.rs
+# ─────────────────────────────────────────────────────────────────────────────
+# Wire all new Graph types into the public API of roko-graph.
+[[task]]
+id = "E21-T10"
+title = "Re-export new Graph types from roko-graph lib.rs"
+description = """Ensure new types from T01-T09 are exported from roko-graph's `lib.rs`.
+
+Current exports (lib.rs:58-71) include types, engine, registry, cell, hot, condition, etc.
+Add/verify exports for:
+- `GraphPolicy`, `GraphMode`, `FailureStrategy` (from T02 in types.rs)
+- `ExecutionClass` (from T03 in types.rs)
+- `GraphSnapshot` (from T05 in engine.rs)
+- `LoopLevel` (from T06 in hot.rs)
+- `EdgeValidationError` (from T01 in types.rs)
+- `GraphCell` (from T07 in cells/mod.rs)
+
+Since lib.rs already uses selective re-exports for types.rs (line 61: `pub use types::{...}`),
+add the new type names to that list. For engine.rs exports (line 59), add GraphSnapshot.
+For hot.rs (line 71), add LoopLevel."""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-graph/src/lib.rs"]
+role = "implementer"
+depends_on = ["E21-T01", "E21-T02", "E21-T03", "E21-T05", "E21-T06", "E21-T07"]
+domain = "graph-engine"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-graph/src/lib.rs", lines = "58-71", why = "Current exports — add new types to existing pub use lines" },
+    { path = "crates/roko-graph/src/types.rs", lines = "1-10", why = "Types module — verify new types are pub" },
+    { path = "crates/roko-graph/src/engine.rs", lines = "1-10", why = "Engine module — verify GraphSnapshot is pub" },
+    { path = "crates/roko-graph/src/hot.rs", lines = "1-10", why = "Hot module — verify LoopLevel is pub" },
+]
+symbols = [
+    "types re-export (lib.rs:61) — add GraphPolicy, GraphMode, FailureStrategy, ExecutionClass, EdgeValidationError",
+    "engine re-export (lib.rs:59) — add GraphSnapshot",
+    "hot re-export (lib.rs:71) — add LoopLevel",
+    "cells re-export — add GraphCell",
+]
+anti_patterns = [
+    "Do NOT remove existing exports.",
+    "Do NOT change the import style from selective to glob — keep selective for documentation clarity.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraphPolicy\\|GraphMode\\|FailureStrategy' crates/roko-graph/src/lib.rs"
+fail_msg = "lib.rs must export GraphPolicy, GraphMode, FailureStrategy"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GraphSnapshot\\|LoopLevel\\|ExecutionClass' crates/roko-graph/src/lib.rs"
+fail_msg = "lib.rs must export GraphSnapshot, LoopLevel, ExecutionClass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-graph 2>&1"
+fail_msg = "roko-graph must compile"

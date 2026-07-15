@@ -1,7 +1,7 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 28
-done = 26
+done = 27
 status = "ready"
 max_parallel = 1
 skip_enrichment = true
@@ -530,7 +530,7 @@ acceptance = ["Hard cap never resets.", "Only successfully persisted useful life
 id = "SH01-T06C4"
 title = "Expire lost effects and close timeout races"
 description = "Detect missing or stuck owned effects regardless of gate-map membership, expire them through exact ownership, and consistently terminalize or drain siblings. Integrate typed timeout outcomes with ledger replay and projections, with deterministic tests for completion-versus-expiry, stale events, duplicate expiry, lost producers, and resume."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "codex-default"
 max_loc = 420

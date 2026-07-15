@@ -1,0 +1,724 @@
+[meta]
+plan = "E27-feeds-system"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 3
+
+# ── T01: Feed Cell type — kernel decomposition of Connect+Trigger+Store ──
+
+[[task]]
+id = "E27-T01"
+title = "Implement Feed as Cell + Connect + Trigger + Store kernel decomposition"
+description = """
+Add a FeedCell struct to roko-core that implements the kernel decomposition
+(09-FEEDS.md section 1, lines 17-24):
+
+Feed = Cell + Connect + Trigger + Store
+
+FeedCell struct fields:
+- cell_id, cell_name, version (from Cell protocol)
+- connector: Box<dyn ConnectorOps> (wraps Connect methods)
+- trigger: FeedTrigger (wraps Trigger: listen, filter, debounce, fire)
+- store: Option<Box<dyn StoreOps>> (wraps Store: put, get, query, prune)
+- config: FeedCellConfig (kind: FeedKind, access: FeedAccess, polling_interval: Duration)
+- status: FeedStatus enum (Idle, Connecting, Connected, Degraded, Disconnected)
+
+The existing FeedInfo (feed.rs:52) is the descriptor. FeedCell is the runtime
+instance that actually connects, triggers, and stores. FeedInfo gets a
+cell_id field to link to its FeedCell.
+
+Connect protocol methods (from v2/11-CONNECTIVITY.md concept):
+- async fn connect(&mut self) -> Result<()>
+- async fn query(&self, q: &str) -> Result<Value>
+- async fn disconnect(&mut self) -> Result<()>
+- async fn health(&self) -> ConnectorStatus
+
+Trigger protocol methods:
+- async fn listen(&mut self) -> Result<()> — start watching
+- fn filter(&self, event: &Value) -> bool — predicate
+- fn debounce_ms(&self) -> u64 — minimum interval
+- fn fire(&self, event: Value) -> FeedPulse — wrap event as pulse
+
+Store protocol (optional, for persistence):
+- async fn put(&self, key: &str, value: Value) -> Result<()>
+- async fn get(&self, key: &str) -> Result<Option<Value>>
+
+Implement Cell trait for FeedCell (cell_id, cell_name, protocols).
+
+Note: Use existing ConnectorKind (connector.rs:24) and ConnectorStatus
+(connector.rs:41) from roko-core. Do not duplicate.
+"""
+role = "implementer"
+status = "ready"
+tier = "architectural"
+files = ["crates/roko-core/src/feed_cell.rs"]
+depends_on = []
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "1-35", why = "Feed kernel decomposition: Cell + Connect + Trigger + Store" },
+  { path = "docs/v2/09-FEEDS.md", lines = "36-80", why = "Feed kinds (Raw/Derived/Composite/Meta), access levels, lifecycle states" },
+  { path = "crates/roko-core/src/feed.rs", lines = "1-72", why = "FeedKind enum (line 24), FeedAccess enum (line 37), FeedInfo struct (line 52) — existing descriptor types" },
+  { path = "crates/roko-core/src/feed.rs", lines = "157-185", why = "FeedRuntimeStatus struct (line 163) — connected, rate_hz, pulses_produced, error" },
+  { path = "crates/roko-core/src/connector.rs", lines = "1-50", why = "ConnectorKind enum (line 24), ConnectorStatus enum (line 41) — reuse these, do not duplicate" },
+]
+symbols = [
+  "FeedKind — Raw/Derived/Composite/Meta classification (feed.rs:24)",
+  "FeedAccess — Public/Private/Paid visibility (feed.rs:37)",
+  "FeedInfo — feed descriptor with id, name, kind, access, agent_id (feed.rs:52)",
+  "FeedRuntimeStatus — runtime status with connected, rate_hz, pulses_produced (feed.rs:163)",
+  "ConnectorKind — Mcp/Api/Database/Blockchain/Feed/Custom (connector.rs:24)",
+  "ConnectorStatus — Connected/Disconnected/Degraded (connector.rs:41)",
+]
+anti_patterns = [
+  "Do NOT duplicate FeedKind, FeedAccess, ConnectorKind, ConnectorStatus — they already exist in roko-core",
+  "Do NOT make Store mandatory — it is optional per the kernel decomposition",
+  "Do NOT make the trait methods synchronous — all Connect/Trigger/Store methods must be async",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/feed_cell.rs && grep -q 'FeedCell' crates/roko-core/src/feed_cell.rs && grep -q 'FeedTrigger\\|FeedPulse' crates/roko-core/src/feed_cell.rs"
+fail_msg = "FeedCell with FeedTrigger and FeedPulse must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T02: FeedRegistry v2 — runtime lifecycle management ─────────────
+
+[[task]]
+id = "E27-T02"
+title = "Extend FeedRegistry with runtime lifecycle management and health tracking"
+description = """
+Extend the existing FeedRegistry (feed.rs:81) with runtime lifecycle:
+
+1. Add FeedHandle struct that wraps a FeedCell + JoinHandle for its
+   background task. Tracks: started_at, last_pulse_at, pulse_count,
+   error_count.
+
+2. Add RuntimeRegistry struct that owns running FeedHandles:
+   - pub fn start(&mut self, cell: FeedCell) -> Result<FeedHandle>
+     Spawns tokio task calling cell.connect() then cell.listen() in a loop
+   - pub fn stop(&mut self, feed_id: &str) -> Result<()>
+     Sends shutdown signal via CancellationToken, awaits JoinHandle
+   - pub fn health(&self) -> Vec<FeedRuntimeStatus>
+     Converts each FeedHandle state to FeedRuntimeStatus (feed.rs:163)
+   - pub fn get(&self, feed_id: &str) -> Option<&FeedHandle>
+
+3. Auto-reconnect on disconnect with exponential backoff:
+   initial=1s, max=60s, factor=2. Reset on successful connect.
+
+The existing FeedRegistry (feed.rs:81) stays as the static descriptor
+registry. RuntimeRegistry manages the running instances.
+
+Currently, runtime_feeds in AppState (roko-serve) returns hardcoded
+FeedRuntimeStatus for file-watch, provider-health, isfr-keeper. This
+new RuntimeRegistry replaces that with actual feed lifecycle management.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-core/src/feed_runtime.rs"]
+depends_on = ["E27-T01"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "80-120", why = "Feed lifecycle: connect, listen, fire, disconnect, auto-reconnect" },
+  { path = "docs/v2/09-FEEDS.md", lines = "121-150", why = "Feed health model: heartbeat interval, error threshold, degraded state" },
+  { path = "crates/roko-core/src/feed.rs", lines = "75-155", why = "FeedRegistry struct (line 81), register(), unregister(), list(), list_by_kind() methods" },
+  { path = "crates/roko-core/src/feed.rs", lines = "157-185", why = "FeedRuntimeStatus (line 163) — id, topic, kind, connected, rate_hz, pulses_produced, error" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "204-221", why = "list_runtime_feeds and get_runtime_feed_status handlers — currently read from AppState" },
+]
+symbols = [
+  "FeedRegistry — in-memory feed descriptor registry (feed.rs:81)",
+  "FeedRuntimeStatus — runtime status snapshot (feed.rs:163)",
+  "list_runtime_feeds — HTTP handler returning runtime feed status (feeds.rs:205)",
+  "FeedCell — runtime feed instance from T01",
+]
+anti_patterns = [
+  "Do NOT replace the existing FeedRegistry — extend it or add RuntimeRegistry alongside it",
+  "Do NOT spawn unbounded reconnect loops — use exponential backoff with max 60s",
+  "Do NOT block the main thread on feed connect/disconnect — all operations must be async",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/feed_runtime.rs && grep -q 'RuntimeRegistry\\|FeedHandle' crates/roko-core/src/feed_runtime.rs"
+fail_msg = "RuntimeRegistry with FeedHandle must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T03: Built-in feeds — file watcher, provider health, ISFR ──────
+
+[[task]]
+id = "E27-T03"
+title = "Implement three built-in feed cells: file-watcher, provider-health, ISFR"
+description = """
+Create concrete FeedCell implementations for the three feeds that are
+currently hardcoded in roko-serve AppState:
+
+1. FileWatchFeedCell (replaces "file-watch-roko-dir"):
+   - Connect: verify .roko/ directory exists
+   - Trigger: use notify::RecommendedWatcher (already in roko-cli TUI at
+     tui/fs_watch.rs) to watch .roko/ for file changes
+   - Store: none (events are transient)
+   - Topic: "fs.changed"
+   - Debounce: 200ms
+   - Filter: ignore .tmp files and partial writes
+
+2. ProviderHealthFeedCell (replaces "provider-health-feed"):
+   - Connect: read provider list from roko.toml config
+   - Trigger: poll each provider endpoint every 30 seconds
+   - Store: none (health is transient)
+   - Topic: "provider.health"
+   - Output pulse: { provider, status: Connected/Disconnected/Degraded, latency_ms }
+
+3. ISFRKeeperFeedCell (replaces "isfr-keeper"):
+   - Connect: read ISFR keeper config from roko.toml (isfr section)
+   - Trigger: compute ISFR rates every 60 seconds from episode log
+   - Store: append to .roko/learn/isfr.jsonl
+   - Topic: "isfr.rates"
+   - Output pulse: { rates: HashMap<String, f64>, computed_at }
+
+Each implements FeedCell (from T01) and can be registered with
+RuntimeRegistry (from T02).
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/feeds/mod.rs", "crates/roko-core/src/feeds/file_watch.rs", "crates/roko-core/src/feeds/provider_health.rs", "crates/roko-core/src/feeds/isfr.rs"]
+depends_on = ["E27-T01", "E27-T02"]
+max_loc = 150
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "152-220", why = "Built-in feed examples: file-system, provider health, ISFR computation" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "526-558", why = "list_runtime_feeds_returns_two_entries test — expected ids: file-watch-roko-dir, provider-health-feed, isfr-keeper" },
+  { path = "crates/roko-core/src/config/schema.rs", lines = "148-153", why = "ISFRSection (line 150), FeedAgentsConfig (line 153) in RokoConfig" },
+  { path = "crates/roko-core/src/connector.rs", lines = "40-49", why = "ConnectorStatus enum — Connected/Disconnected/Degraded for health checks" },
+]
+symbols = [
+  "FileWatchFeedCell — file system watcher for .roko/ directory changes",
+  "ProviderHealthFeedCell — LLM provider health checker",
+  "ISFRKeeperFeedCell — Implied Success/Failure Rate computation feed",
+  "ISFRSection — ISFR config from roko.toml (config/schema.rs:150)",
+  "FeedAgentsConfig — feed agent config from roko.toml (config/schema.rs:153)",
+  "ConnectorStatus — Connected/Disconnected/Degraded (connector.rs:41)",
+]
+anti_patterns = [
+  "Do NOT duplicate the file watcher logic from tui/fs_watch.rs — extract shared code or import it",
+  "Do NOT poll more frequently than the debounce interval",
+  "Do NOT make provider health checks blocking — use reqwest with a 5-second timeout",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/feeds/file_watch.rs && test -f crates/roko-core/src/feeds/provider_health.rs && test -f crates/roko-core/src/feeds/isfr.rs"
+fail_msg = "Three built-in feed implementations must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T04: DerivedFeedCell — feed composition with inputs ─────────────
+
+[[task]]
+id = "E27-T04"
+title = "Implement DerivedFeedCell that computes output from upstream feed inputs"
+description = """
+Add DerivedFeedCell to roko-core that computes derived data from one or
+more upstream feeds (09-FEEDS.md section 3, lines 224-290):
+
+DerivedFeedCell is a FeedCell whose Trigger listens to output pulses from
+upstream feeds (via Bus topic subscriptions) rather than external sources.
+
+Struct fields:
+- input_topics: Vec<String> — upstream feed topics to subscribe to
+- transform: Box<dyn Fn(&[FeedPulse]) -> Option<FeedPulse>> — pure transform
+- window: Option<Duration> — optional time window for aggregation
+- input_buffer: VecDeque<(Instant, FeedPulse)> — buffered inputs within window
+
+Behavior:
+- On each input pulse, buffer it and call transform with all buffered pulses
+- If transform returns Some, fire the derived pulse on the output topic
+- If window is set, evict buffered pulses older than window
+- If window is None, transform sees only the most recent pulse per input topic
+
+Example use cases:
+- Moving average feed: window=5min, transform averages numeric values
+- Cost anomaly feed: window=1hr, transform computes z-score of costs
+- Gate regression feed: no window, transform compares latest gate results
+
+Connect: subscribe to input_topics on Bus (via existing event bus pattern)
+Disconnect: unsubscribe from all input_topics
+Health: connected when all input topics have produced at least one pulse
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/feeds/derived.rs"]
+depends_on = ["E27-T01"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "224-290", why = "Derived feed spec — input composition, transform function, windowed aggregation" },
+  { path = "docs/v2/09-FEEDS.md", lines = "36-80", why = "FeedKind::Derived definition and semantics" },
+  { path = "crates/roko-core/src/feed.rs", lines = "26-28", why = "FeedKind::Derived variant definition" },
+]
+symbols = [
+  "DerivedFeedCell — FeedCell that transforms upstream inputs",
+  "FeedPulse — output pulse type from T01",
+  "FeedKind::Derived — classification for computed feeds (feed.rs:28)",
+]
+anti_patterns = [
+  "Do NOT make the transform async — it should be a pure synchronous function over buffered data",
+  "Do NOT grow the input_buffer unboundedly — always evict by window or keep only latest per topic",
+  "Do NOT subscribe to topics at construction — subscribe in connect(), unsubscribe in disconnect()",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/feeds/derived.rs && grep -q 'DerivedFeedCell\\|transform' crates/roko-core/src/feeds/derived.rs"
+fail_msg = "DerivedFeedCell with transform must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T05: Recipe as Graph of Score Cells ─────────────────────────────
+
+[[task]]
+id = "E27-T05"
+title = "Implement Recipe as a pure-data Graph of Score Cells"
+description = """
+Add Recipe struct to roko-core (09-FEEDS.md section 5, lines 320-388):
+
+A Recipe is a named Graph of Score Cells that transforms a set of feeds
+into a final numeric score. Recipes are pure data — no side effects,
+no external I/O. They compose from existing primitives.
+
+Recipe struct:
+- id: String
+- name: String
+- version: u32
+- nodes: Vec<RecipeNode> — each node is a Score operation
+- edges: Vec<RecipeEdge> — data flow between nodes
+- input_feeds: Vec<String> — feed ids that provide input data
+- output_schema: Option<Value> — JSON schema for the output
+
+RecipeNode:
+- id: String
+- operation: ScoreOp enum (WeightedAverage, Normalize, Threshold,
+  ZScore, Clamp, Rescale, Custom(String))
+- params: HashMap<String, f64>
+
+RecipeEdge:
+- from: String (node id)
+- to: String (node id)
+- field: String (which output field to route)
+
+Recipe execution:
+- pub fn evaluate(&self, inputs: &HashMap<String, Value>) -> Result<Value>
+  Topological sort nodes, evaluate each in order, return final output.
+- pub fn validate(&self) -> Vec<String>
+  Check: no cycles, all edges reference valid nodes, all input_feeds present.
+
+Persistence: TOML file per recipe in .roko/recipes/
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/recipe.rs"]
+depends_on = []
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "320-388", why = "Recipe spec — node types, edge wiring, evaluation semantics, TOML format" },
+  { path = "docs/v2/09-FEEDS.md", lines = "390-420", why = "Recipe examples — portfolio risk, cost anomaly, agent efficiency" },
+]
+symbols = [
+  "Recipe — named Graph of Score Cells with id, name, nodes, edges",
+  "RecipeNode — scored operation with id, operation, params",
+  "RecipeEdge — data flow edge with from, to, field",
+  "ScoreOp — operation enum: WeightedAverage/Normalize/Threshold/ZScore/Clamp/Rescale/Custom",
+]
+anti_patterns = [
+  "Do NOT add async to evaluate — recipes are pure synchronous data transforms",
+  "Do NOT allow cycles — validate() must reject cyclic graphs",
+  "Do NOT hardcode operations — use the ScoreOp enum for extensibility",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/recipe.rs && grep -q 'Recipe\\|RecipeNode\\|ScoreOp' crates/roko-core/src/recipe.rs"
+fail_msg = "Recipe with RecipeNode and ScoreOp must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- recipe 2>&1 | tail -5"
+fail_msg = "Recipe tests must pass"
+
+# ── T06: Feed discovery API routes ──────────────────────────────────
+
+[[task]]
+id = "E27-T06"
+title = "Add feed discovery and lifecycle API routes to roko-serve"
+description = """
+Extend the existing feed routes in roko-serve (feeds.rs:27) with lifecycle
+and discovery endpoints (09-FEEDS.md section 7, lines 440-480):
+
+New routes (add to existing Router in feeds.rs:27):
+- POST   /api/feeds/start/{id}   — start a registered feed (calls RuntimeRegistry::start)
+- POST   /api/feeds/stop/{id}    — stop a running feed (calls RuntimeRegistry::stop)
+- GET    /api/feeds/discover     — list available feed types (built-in + configured)
+- GET    /api/feeds/search?q=    — full-text search across feed names and descriptions
+- GET    /api/feeds/health       — aggregated health for all running feeds
+
+Extend existing routes:
+- GET /api/feeds (list_feeds at line 105) — add "running" field to response
+  by cross-referencing FeedRegistry with RuntimeRegistry
+- GET /api/feeds/{id} (get_feed at line 162) — add runtime status if running
+
+The existing routes (list, create, get, delete, catalog, runtime) stay
+unchanged. New routes are additive.
+
+Connect RuntimeRegistry (from T02) to AppState. Replace the hardcoded
+runtime_feeds field with the actual RuntimeRegistry.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-serve/src/routes/feeds.rs", "crates/roko-serve/src/state.rs"]
+depends_on = ["E27-T02", "E27-T03"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "440-480", why = "Feed discovery API spec — search, health, start/stop endpoints" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "1-37", why = "Existing feed routes — Router with list/create/get/delete/catalog/runtime" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "104-129", why = "list_feeds handler (line 105) — to extend with running status" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "161-171", why = "get_feed handler (line 162) — to extend with runtime status" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "204-221", why = "list_runtime_feeds and get_runtime_feed_status — currently from AppState.runtime_feeds" },
+]
+symbols = [
+  "routes() — feed Router constructor mounting all routes (feeds.rs:27)",
+  "list_feeds — GET /api/feeds handler (feeds.rs:105)",
+  "get_feed — GET /api/feeds/{id} handler (feeds.rs:162)",
+  "list_runtime_feeds — GET /api/feeds/runtime handler (feeds.rs:205)",
+  "AppState — server state containing feeds and runtime_feeds fields",
+  "RuntimeRegistry — runtime lifecycle manager from T02",
+]
+anti_patterns = [
+  "Do NOT break existing feed route tests (7 tests in feeds.rs:224-608)",
+  "Do NOT remove the existing /api/feeds/catalog route",
+  "Do NOT expose internal feed implementation details in the API — return FeedInfo + status only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '/feeds/start\\|/feeds/stop\\|/feeds/discover\\|/feeds/health' crates/roko-serve/src/routes/feeds.rs"
+fail_msg = "Feed lifecycle and discovery routes must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- feeds 2>&1 | tail -5"
+fail_msg = "Existing feed tests must still pass"
+
+# ── T07: CLI feed commands — list, status, start, stop ──────────────
+
+[[task]]
+id = "E27-T07"
+title = "Extend roko feed CLI with start/stop/health subcommands"
+description = """
+Extend the existing feed CLI (commands/feed.rs:16) with lifecycle commands:
+
+Add to FeedCmd enum:
+- Start { id: String } — POST /api/feeds/start/{id}
+- Stop { id: String } — POST /api/feeds/stop/{id}
+- Health — GET /api/feeds/health (aggregated health summary)
+- Discover — GET /api/feeds/discover (available feed types)
+- Search { query: String } — GET /api/feeds/search?q=
+
+The existing List and Status commands (feed.rs:18-23) remain unchanged.
+
+For each new subcommand:
+- Make HTTP request to roko serve (using serve_base_url at line 34)
+- Handle "roko serve is not running" gracefully (same pattern as list/status)
+- Support --json output (check cli.json flag at line 61)
+- Print human-readable table/status for non-JSON output
+
+Example output for `roko feed health`:
+  FEED                     STATUS      PULSES    RATE
+  ─────────────────────────────────────────────────────
+  file-watch-roko-dir      connected   1,234     0.05 Hz
+  provider-health-feed     connected   42        0.02 Hz
+  isfr-keeper              connected   7         0.02 Hz
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-cli/src/commands/feed.rs"]
+depends_on = ["E27-T06"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/commands/feed.rs", lines = "1-32", why = "Existing FeedCmd enum (line 16) with List and Status variants, cmd_feed dispatch" },
+  { path = "crates/roko-cli/src/commands/feed.rs", lines = "33-116", why = "serve_base_url (line 34), cmd_list (line 52), cmd_status (line 118) — pattern for new commands" },
+  { path = "crates/roko-cli/src/commands/feed.rs", lines = "118-172", why = "cmd_status full implementation — json/table output, error handling pattern" },
+]
+symbols = [
+  "FeedCmd — clap Subcommand enum with List, Status (feed.rs:16)",
+  "cmd_feed — dispatch function for feed subcommands (feed.rs:26)",
+  "serve_base_url — resolve roko serve URL (feed.rs:34)",
+  "cmd_list — existing list implementation with json/table output (feed.rs:52)",
+  "cmd_status — existing status implementation (feed.rs:118)",
+]
+anti_patterns = [
+  "Do NOT break existing List and Status commands — new commands are additive",
+  "Do NOT add reqwest dependency — it is already used in the existing commands",
+  "Do NOT panic on HTTP errors — follow the existing graceful error handling pattern",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Start\\|Stop\\|Health\\|Discover' crates/roko-cli/src/commands/feed.rs"
+fail_msg = "Start, Stop, Health, Discover subcommands must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T08: Recipe TOML persistence and CLI ────────────────────────────
+
+[[task]]
+id = "E27-T08"
+title = "Add Recipe TOML persistence and CLI commands"
+description = """
+Add Recipe persistence to .roko/recipes/ as TOML files and CLI commands:
+
+Persistence (RecipeStore):
+- .roko/recipes/{id}.toml — one file per recipe
+- pub fn load(id: &str) -> Result<Recipe>
+- pub fn save(recipe: &Recipe) -> Result<()>
+- pub fn list() -> Result<Vec<String>> — list available recipe ids
+- pub fn delete(id: &str) -> Result<bool>
+
+CLI commands (add RecipeCmd to the CLI):
+- roko recipe list — list all recipes
+- roko recipe show <id> — show recipe details (nodes, edges, inputs)
+- roko recipe validate <id> — run Recipe::validate() and print warnings
+- roko recipe run <id> [--input key=value]... — evaluate recipe with
+  literal inputs (useful for testing)
+
+HTTP routes (add to roko-serve):
+- GET  /api/recipes — list recipes
+- GET  /api/recipes/{id} — get recipe details
+- POST /api/recipes — create/update recipe
+- DELETE /api/recipes/{id} — delete recipe
+- POST /api/recipes/{id}/evaluate — evaluate with inputs
+
+TOML format example:
+```toml
+id = "cost-anomaly"
+name = "Cost Anomaly Detector"
+version = 1
+input_feeds = ["gateway-cost-feed"]
+
+[[nodes]]
+id = "zscore"
+operation = "ZScore"
+[nodes.params]
+window_size = 100.0
+
+[[edges]]
+from = "input"
+to = "zscore"
+field = "cost_usd"
+```
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/recipe_store.rs", "crates/roko-cli/src/commands/recipe.rs"]
+depends_on = ["E27-T05"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "388-440", why = "Recipe persistence spec — TOML format, store semantics, CLI commands" },
+  { path = "crates/roko-cli/src/commands/feed.rs", lines = "1-32", why = "Pattern for CLI subcommand structure — clap Subcommand enum + dispatch" },
+]
+symbols = [
+  "Recipe — recipe struct from T05 (recipe.rs)",
+  "RecipeStore — TOML-backed persistence for recipes",
+  "RecipeCmd — clap Subcommand enum for recipe CLI",
+]
+anti_patterns = [
+  "Do NOT store recipes in JSON — use TOML for consistency with tasks.toml and roko.toml",
+  "Do NOT allow overwriting a recipe without incrementing version",
+  "Do NOT register CLI commands that shadow existing subcommands",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/recipe_store.rs && grep -q 'RecipeStore' crates/roko-core/src/recipe_store.rs"
+fail_msg = "RecipeStore must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T09: Feed-to-Bus bridge — pulse routing ─────────────────────────
+
+[[task]]
+id = "E27-T09"
+title = "Wire feed pulses to the Bus event system for downstream consumption"
+description = """
+Add FeedBusBridge that routes FeedPulse events from running feeds to the
+existing Bus/event system (09-FEEDS.md section 8, lines 480-520):
+
+The bridge listens for FeedPulse from each running FeedCell (via the
+RuntimeRegistry from T02) and publishes them as events on the Bus.
+
+Topic pattern: "feed:{feed_id}:data" (e.g. "feed:file-watch-roko-dir:data")
+
+FeedBusBridge:
+- Spawned as a background task alongside RuntimeRegistry
+- Subscribes to each running feed's output channel
+- For each FeedPulse, wraps it as a Bus event and publishes to the topic
+- Tracks per-feed: pulses_routed, bytes_routed, last_routed_at
+
+This enables DerivedFeedCells (T04) to subscribe to upstream feed topics
+and receive data without direct coupling to the producing feed.
+
+The existing event bus in roko-runtime can receive these events. Check
+how the event bus is used in orchestrate.rs for the integration pattern.
+
+Implementation:
+- pub struct FeedBusBridge with per-feed counters
+- pub fn spawn(registry: Arc<RuntimeRegistry>) -> JoinHandle<()>
+- fn route_pulse(feed_id, pulse, bus) — wraps and publishes
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-core/src/feed_bus_bridge.rs"]
+depends_on = ["E27-T01", "E27-T02"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "docs/v2/09-FEEDS.md", lines = "480-520", why = "Feed-to-Bus bridge spec — topic pattern, routing semantics, metrics" },
+  { path = "docs/v2/09-FEEDS.md", lines = "7-8", why = "Bus topic pattern: feed:{id}:data" },
+  { path = "crates/roko-runtime/src/lib.rs", lines = "1-30", why = "Event bus and runtime infrastructure — integration point for feed events" },
+]
+symbols = [
+  "FeedBusBridge — background task routing FeedPulse to Bus topics",
+  "RuntimeRegistry — source of running feed instances from T02",
+  "FeedPulse — output pulse type from T01",
+]
+anti_patterns = [
+  "Do NOT buffer pulses unboundedly — route immediately or drop with a warning",
+  "Do NOT create a new Bus — use the existing event bus from roko-runtime",
+  "Do NOT couple the bridge to specific feed implementations — it works generically over any FeedCell",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-core/src/feed_bus_bridge.rs && grep -q 'FeedBusBridge\\|route_pulse' crates/roko-core/src/feed_bus_bridge.rs"
+fail_msg = "FeedBusBridge with route_pulse must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ── T10: Integration tests for feed lifecycle ───────────────────────
+
+[[task]]
+id = "E27-T10"
+title = "Add integration tests for feed registration, lifecycle, and discovery"
+description = """
+Add integration tests covering the full feed lifecycle:
+
+1. Register a feed via FeedRegistry -> verify it appears in list
+2. Start a MockFeedCell via RuntimeRegistry -> verify it enters Connected state
+3. Stop the feed -> verify it enters Disconnected state
+4. Auto-reconnect test: MockFeedCell that disconnects after 2 pulses,
+   verify RuntimeRegistry reconnects with backoff
+5. DerivedFeedCell test: create upstream mock feed + derived feed that
+   averages upstream values, verify derived pulses appear
+6. Recipe validation test: create a recipe with cycle -> verify
+   Recipe::validate() catches it
+7. Recipe evaluation test: create a simple WeightedAverage recipe with
+   known inputs -> verify output matches expected value
+
+8. HTTP API tests (extend existing feeds.rs test suite):
+   - POST /api/feeds/start/{id} -> verify 200 and feed becomes connected
+   - POST /api/feeds/stop/{id} -> verify 200 and feed stops
+   - GET /api/feeds/health -> verify aggregated status
+   - GET /api/feeds/search?q=health -> verify search finds provider-health-feed
+
+Use tempdir for all file-based tests. Use MockFeedCell that produces
+deterministic pulses on a timer.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-core/src/feed_runtime.rs", "crates/roko-core/src/recipe.rs", "crates/roko-serve/src/routes/feeds.rs"]
+depends_on = ["E27-T01", "E27-T02", "E27-T04", "E27-T05", "E27-T06"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "223-608", why = "Existing feed route tests — pattern for new HTTP API tests" },
+  { path = "crates/roko-serve/src/routes/feeds.rs", lines = "235-247", why = "test_state helper function — creates test AppState with temp dir" },
+  { path = "crates/roko-core/src/feed.rs", lines = "187-301", why = "Existing feed unit tests — registration, filtering, search patterns" },
+]
+symbols = [
+  "test_state — helper creating AppState for tests (feeds.rs:235)",
+  "FeedRegistry — descriptor registry to test (feed.rs:81)",
+  "RuntimeRegistry — lifecycle manager to test (feed_runtime.rs, from T02)",
+  "Recipe — recipe evaluation to test (recipe.rs, from T05)",
+  "DerivedFeedCell — derived feed to test (feeds/derived.rs, from T04)",
+]
+anti_patterns = [
+  "Do NOT break existing feed tests — all 7 tests in feeds.rs:224-608 must continue passing",
+  "Do NOT use real external services — use MockFeedCell for all lifecycle tests",
+  "Do NOT use fixed sleep durations — use tokio::time::advance for deterministic timing",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- feed 2>&1 | tail -5"
+fail_msg = "Feed core tests must pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- feeds 2>&1 | tail -5"
+fail_msg = "Feed serve tests must pass"

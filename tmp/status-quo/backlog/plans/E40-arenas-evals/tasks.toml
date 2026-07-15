@@ -1,0 +1,500 @@
+[meta]
+plan = "E40-arenas-evals"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─── T01: Define Arena, Attempt, and scoring types ───────────────────────────
+
+[[task]]
+id = "E40-T01"
+title = "Implement Arena and Attempt core types in roko-chain"
+description = """
+Per spec 23-ARENAS.md sections 3-4, implement the arena measurement surface types.
+All arenas declare scoring at registration time (design constraint #2: declarative scoring).
+
+Types to implement:
+1. Arena struct with fields: id ([u8; 32]), name (String), description (String),
+   category (ArenaCategory), state (ArenaState), task_source (TaskSource),
+   scoring (ScoringFunction), aggregation (AggregationRule), weight (f64, default 1.0),
+   creator_identity_id (u256), prize_pool_usdc (u256), max_attempts_per_agent (u32),
+   cooldown_blocks (u64), deadline_block (u64), ground_truth (GroundTruthSource).
+2. ArenaState enum: Draft, Active, Paused, Concluded.
+3. ArenaCategory enum: Coding, Trading, Prediction, Games, Persuasion,
+   Negotiation, Optimization, Research, UserCreated.
+4. TaskSource enum: Static, Procedural, UserContributed, Adversarial.
+5. AttemptState enum: Queued, Running, Evaluating, Completed, Failed,
+   Cancelled, Disqualified.
+6. Attempt struct with fields: id ([u8; 32]), arena_id ([u8; 32]),
+   agent_identity_id (u256), state (AttemptState), task_hash (Option<[u8; 32]>),
+   output_hash (Option<[u8; 32]>), gate_verdicts (Vec<bool>), score (Option<f64>),
+   started_at_block (u64), completed_at_block (Option<u64>).
+
+All types derive Debug, Clone, Serialize, Deserialize. Use u256 = u128 from phase2.rs.
+Create crates/roko-chain/src/arena.rs and add `pub mod arena;` to lib.rs after line 88.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = [
+  "crates/roko-chain/src/arena.rs",
+  "crates/roko-chain/src/lib.rs",
+]
+depends_on = []
+max_loc = 150
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/lib.rs", lines = "45-89", why = "Module declarations — add `pub mod arena` after `witness`" },
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "27-80", why = "JobState enum pattern for AttemptState; MarketplaceJob pattern for Attempt" },
+  { path = "crates/roko-chain/src/phase2.rs", lines = "31-44", why = "Type aliases: Address = String, u256 = u128, B256 = [u8; 32]" },
+  { path = "docs/v2/23-ARENAS.md", lines = "1-50", why = "Design constraints: no self-grading, declarative scoring, escrow before execution" },
+]
+symbols = [
+  "JobState (marketplace.rs:29) — enum pattern for AttemptState",
+  "MarketplaceJob (marketplace.rs:49) — struct pattern for Attempt",
+  "u256 (phase2.rs:44) — type alias u128 for identity/amount fields",
+  "Address (phase2.rs:32) — type alias String for addresses",
+]
+anti_patterns = [
+  "Do NOT use weighted-sum in composite scoring — spec requires conjunctive+Pareto (doc-02 §Verify)",
+  "Do NOT depend on roko-gate crate — arena types are chain-layer definitions, not gate pipeline",
+  "Do NOT add arena re-exports to lib.rs yet — let T08 handle route wiring",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod arena' crates/roko-chain/src/lib.rs && grep -q 'pub struct Arena' crates/roko-chain/src/arena.rs && grep -q 'pub struct Attempt' crates/roko-chain/src/arena.rs && grep -q 'pub enum ArenaState' crates/roko-chain/src/arena.rs && grep -q 'pub enum AttemptState' crates/roko-chain/src/arena.rs"
+fail_msg = "arena module must exist with Arena, Attempt, ArenaState, and AttemptState"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+# ─── T02: Implement ScoringFunction types ────────────────────────────────────
+
+[[task]]
+id = "E40-T02"
+title = "Implement ScoringFunction, BinaryCriterion, ContinuousMetric, and Normalization"
+description = """
+Per spec 23-ARENAS.md section 4.2, implement the scoring function hierarchy.
+These are pure data types — no scoring logic, just Serialize/Deserialize definitions.
+
+Types to implement:
+1. ScoringFunction enum: Binary(BinaryCriterion), Continuous(ContinuousMetric),
+   Composite(Vec<ScoringComponent>).
+2. BinaryCriterion enum: AllGatesPass, TestSuitePass, OracleVerdict.
+3. ContinuousMetric enum: SharpeRatio, CRPS, Latency, TokenEfficiency,
+   Custom(String).
+4. Normalization enum: Identity, MinMax, ZScore, Percentile.
+5. ScoringComponent struct: name (String), function (ScoringFunction),
+   weight (f64), normalization (Normalization).
+6. AggregationRule enum: BestOf(usize), AverageLastN(usize), EWMA(f64), Median.
+7. GroundTruthSource enum: TestSuite, ChainState, HumanReview,
+   BenchmarkDataset(String), ExternalOracle(String).
+
+Add to arena.rs after the core types from T01.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T01"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/arena.rs", lines = "1-50", why = "Add scoring types after core Arena/Attempt structs" },
+  { path = "docs/v2/23-ARENAS.md", lines = "100-170", why = "Scoring function hierarchy and aggregation rules" },
+]
+symbols = [
+  "Arena::scoring — field that uses ScoringFunction",
+  "Arena::aggregation — field that uses AggregationRule",
+  "Arena::ground_truth — field that uses GroundTruthSource",
+]
+anti_patterns = [
+  "Do NOT implement actual scoring logic — just type definitions with Serialize/Deserialize",
+  "Do NOT add weight validation — that belongs in ArenaRegistry::create_arena (T03)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ScoringFunction' crates/roko-chain/src/arena.rs && grep -q 'pub enum BinaryCriterion' crates/roko-chain/src/arena.rs && grep -q 'pub enum AggregationRule' crates/roko-chain/src/arena.rs && grep -q 'pub enum GroundTruthSource' crates/roko-chain/src/arena.rs"
+fail_msg = "ScoringFunction, BinaryCriterion, AggregationRule, and GroundTruthSource must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+# ─── T03: Implement ArenaRegistry (arena CRUD + attempt tracking) ────────────
+
+[[task]]
+id = "E40-T03"
+title = "Implement ArenaRegistry for arena lifecycle and attempt tracking"
+description = """
+Build the ArenaRegistry state machine managing arena instances and tracking attempts.
+Follow the Marketplace pattern (marketplace.rs:127-155): HashMap-based store + state machine.
+
+Implement:
+1. ArenaError enum (NotFound, DuplicateArena, InvalidState, CooldownActive,
+   MaxAttemptsReached, ArenaNotActive).
+2. ArenaRegistry struct: arenas (HashMap<[u8;32], Arena>),
+   attempts (HashMap<[u8;32], Vec<Attempt>>), current_block (u64).
+3. set_block(block) — update current block.
+4. create_arena(arena) -> Result<(), ArenaError> — insert in Draft state, reject duplicates.
+5. activate_arena(id) / pause_arena(id) / conclude_arena(id) — state transitions
+   with validation (only Draft->Active, Active->Paused, Active/Paused->Concluded).
+6. start_attempt(arena_id, agent_id) -> Result<Attempt, ArenaError>
+   — validate: arena is Active, agent hasn't exceeded max_attempts,
+   cooldown_blocks since last attempt is satisfied.
+7. submit_attempt(attempt_id) — transition to Evaluating.
+8. complete_attempt(attempt_id, score, gate_verdicts) / fail_attempt(attempt_id)
+   — final state transitions.
+9. get_attempts_for_agent(arena_id, agent_id) and get_arena_attempts(arena_id) queries.
+10. At least 3 unit tests: create+activate lifecycle, attempt with cooldown, max attempts.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T01", "E40-T02"]
+max_loc = 200
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "127-165", why = "Marketplace struct pattern: HashMap store, new(), set_block(), get_job()" },
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "206-248", why = "create_job() pattern: duplicate check, state init, escrow deposit" },
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "392-437", why = "State transition pattern: start_work(), submit_result()" },
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "780-821", why = "MarketplaceError pattern for ArenaError" },
+]
+symbols = [
+  "Marketplace (marketplace.rs:129) — struct pattern: HashMap-based store + state machine",
+  "MarketplaceError (marketplace.rs:781) — enum pattern for ArenaError",
+  "Marketplace::create_job (marketplace.rs:211) — CRUD create pattern",
+  "Marketplace::start_work (marketplace.rs:397) — state transition pattern",
+]
+anti_patterns = [
+  "Do NOT allow attempts on non-Active arenas — check ArenaState::Active",
+  "Do NOT skip cooldown enforcement — it prevents attempt spam per spec",
+  "Do NOT store attempts flat — index by arena_id for efficient lookup",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ArenaRegistry' crates/roko-chain/src/arena.rs && grep -q 'fn create_arena' crates/roko-chain/src/arena.rs && grep -q 'fn start_attempt' crates/roko-chain/src/arena.rs && grep -q 'pub enum ArenaError' crates/roko-chain/src/arena.rs"
+fail_msg = "ArenaRegistry with create_arena, start_attempt, and ArenaError must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- arena 2>&1"
+fail_msg = "arena tests must pass"
+
+# ─── T04: Implement Leaderboard derivation ───────────────────────────────────
+
+[[task]]
+id = "E40-T04"
+title = "Implement Leaderboard derivation from attempt scores"
+description = """
+Per spec 23-ARENAS.md section 9, leaderboards aggregate per-agent scores.
+
+Implement:
+1. LeaderboardEntry struct: agent_identity_id (u256), rank (u32),
+   aggregate_score (f64), attempt_count (u32), best_score (f64),
+   last_attempt_block (u64).
+2. Leaderboard struct: arena_id ([u8; 32]), entries (Vec<LeaderboardEntry>
+   sorted by aggregate_score descending), computed_at_block (u64).
+3. ArenaRegistry::compute_leaderboard(arena_id) -> Result<Leaderboard, ArenaError>
+   — collects completed attempts per agent, applies the arena's AggregationRule:
+   * BestOf(n): take best n scores, average them
+   * AverageLastN(n): average the last n scores
+   * EWMA(alpha): exponentially weighted moving average
+   * Median: median of all scores
+   — sort entries by aggregate_score descending, assign ranks.
+4. ArenaRegistry::get_leaderboard(arena_id) convenience method.
+5. At least 2 tests: BestOf aggregation, EWMA aggregation.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T03"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/arena.rs", lines = "1-50", why = "Arena struct with aggregation: AggregationRule field" },
+  { path = "docs/v2/23-ARENAS.md", lines = "200-260", why = "Leaderboard derivation and aggregation rules" },
+]
+symbols = [
+  "AggregationRule (arena.rs) — enum with BestOf, AverageLastN, EWMA, Median",
+  "ArenaRegistry (arena.rs) — add compute_leaderboard method",
+  "Attempt::score (arena.rs) — Option<f64> source data for aggregation",
+]
+anti_patterns = [
+  "Do NOT use weighted-sum for composite — use the AggregationRule from the Arena",
+  "Do NOT include non-Completed attempts in aggregation — filter by AttemptState::Completed",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct LeaderboardEntry' crates/roko-chain/src/arena.rs && grep -q 'pub struct Leaderboard' crates/roko-chain/src/arena.rs && grep -q 'fn compute_leaderboard' crates/roko-chain/src/arena.rs"
+fail_msg = "LeaderboardEntry, Leaderboard, and compute_leaderboard must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- arena 2>&1"
+fail_msg = "arena tests must pass"
+
+# ─── T05: Implement bounty escrow for arenas ─────────────────────────────────
+
+[[task]]
+id = "E40-T05"
+title = "Add bounty escrow to ArenaRegistry for prize-pool arenas"
+description = """
+Per spec 23-ARENAS.md section 10 (Bounty Market with Escrow), arenas can have
+prize pools. Design constraint #3: escrow before execution.
+
+Implement:
+1. BountyEscrow struct: arena_id ([u8;32]), depositor_identity_id (u256),
+   amount_usdc (u256), released (bool), release_condition (ReleaseCondition).
+2. ReleaseCondition enum: TopN(usize), AllAboveThreshold(f64),
+   ProportionalToScore.
+3. ArenaRegistry field: escrow (HashMap<[u8;32], BountyEscrow>).
+4. deposit_prize(arena_id, depositor, amount, condition) -> Result<(), ArenaError>
+   — locks funds, arena must be in Draft or Active state.
+5. distribute_prizes(arena_id) -> Result<Vec<(u256, u256)>, ArenaError>
+   — releases escrowed funds according to release condition and leaderboard.
+   * TopN(n): split equally among top n
+   * AllAboveThreshold(t): split among agents above threshold
+   * ProportionalToScore: split proportional to aggregate scores
+6. refund_prize(arena_id) -> Result<u256, ArenaError>
+   — for Concluded arenas, refund unused funds to depositor.
+7. At least 2 tests: TopN distribution, refund on empty arena.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T04"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "86-101", why = "EscrowEntry pattern: job_id, depositor, amount, recipient, released, disputed" },
+  { path = "crates/roko-chain/src/marketplace.rs", lines = "448-481", why = "settle_job() escrow release pattern" },
+  { path = "docs/v2/23-ARENAS.md", lines = "280-340", why = "Bounty escrow spec and release conditions" },
+]
+symbols = [
+  "EscrowEntry (marketplace.rs:88) — struct pattern for BountyEscrow",
+  "Marketplace::settle_job (marketplace.rs:448) — escrow release pattern",
+  "Leaderboard — needed for prize distribution ordering (from T04)",
+]
+anti_patterns = [
+  "Do NOT implement real token transfers — track amounts in-memory like marketplace does",
+  "Do NOT allow prize deposit after arena is Concluded",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct BountyEscrow' crates/roko-chain/src/arena.rs && grep -q 'pub enum ReleaseCondition' crates/roko-chain/src/arena.rs && grep -q 'fn distribute_prizes' crates/roko-chain/src/arena.rs"
+fail_msg = "BountyEscrow, ReleaseCondition, and distribute_prizes must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- arena 2>&1"
+fail_msg = "arena tests must pass"
+
+# ─── T06: Implement 7-step flywheel types ────────────────────────────────────
+
+[[task]]
+id = "E40-T06"
+title = "Define FlywheelStage enum and FlywheelPipeline for arena-to-learning"
+description = """
+Per spec 23-ARENAS.md section 3 (7-step flywheel), arena attempts feed a pipeline:
+trace -> grade -> preference-mine -> failure-cluster -> curriculum-gen ->
+pattern-extract -> preference-bootstrap.
+
+This defines the DATA FLOW types; actual execution lives in roko-learn.
+
+Implement:
+1. FlywheelStage enum with all 7 stages: Trace, Grade, PreferenceMine,
+   FailureCluster, CurriculumGen, PatternExtract, PreferenceBootstrap.
+2. FlywheelResult struct: stage (FlywheelStage), input_count (usize),
+   output_count (usize), artifacts (Vec<String>), completed_at (Option<u64>).
+3. FlywheelPipeline struct: arena_id ([u8;32]),
+   results (Vec<FlywheelResult>), status (FlywheelStatus).
+4. FlywheelStatus enum: Idle, Running(FlywheelStage), Completed, Failed(String).
+5. AttemptTrace struct: attempt_id ([u8;32]), episode_id (Option<String>),
+   gate_verdicts (Vec<bool>), scoring_dimensions (Vec<(String, f64)>),
+   hdc_fingerprint (Option<Vec<f64>>).
+
+Add to arena.rs. These are pure data types — no logic.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T01"]
+max_loc = 50
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/arena.rs", lines = "1-30", why = "Module context — add flywheel types after Attempt" },
+  { path = "docs/v2/23-ARENAS.md", lines = "50-100", why = "7-step flywheel pipeline and trace structure" },
+]
+symbols = [
+  "Attempt (arena.rs) — source of traces for the flywheel",
+  "Arena (arena.rs) — each arena can have an associated FlywheelPipeline",
+]
+anti_patterns = [
+  "Do NOT implement flywheel execution logic — just type definitions",
+  "Do NOT pull in roko-learn as a dependency — types only, no cross-crate coupling",
+  "Do NOT add hdc computation logic — the fingerprint is passed in externally",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum FlywheelStage' crates/roko-chain/src/arena.rs && grep -q 'pub struct FlywheelPipeline' crates/roko-chain/src/arena.rs && grep -q 'pub struct AttemptTrace' crates/roko-chain/src/arena.rs"
+fail_msg = "FlywheelStage, FlywheelPipeline, and AttemptTrace must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+# ─── T07: Implement arena-to-reputation integration ──────────────────────────
+
+[[task]]
+id = "E40-T07"
+title = "Wire arena completion into reputation effects"
+description = """
+Per spec 22-REGISTRIES.md section 3.1, arena completions produce reputation:
+  delta = (score - 0.5) * arena.weight
+
+The caller (orchestrate.rs) applies these effects to the ReputationRegistry.
+
+Implement:
+1. ArenaReputationEffect struct: agent_identity_id (u256), domain (String),
+   delta (f64), arena_id ([u8;32]), attempt_id ([u8;32]).
+2. ArenaRegistry::compute_reputation_effect(arena_id, attempt_id)
+   -> Result<ArenaReputationEffect, ArenaError>
+   — takes a Completed attempt, computes delta = (score - 0.5) * arena.weight.
+   The domain comes from the ArenaCategory (Coding -> "coding", Trading -> "chain",
+   Research -> "research", etc.).
+3. Helper: ArenaCategory::to_reputation_domain(&self) -> &str.
+4. Test: completed attempt with score 0.8, weight 1.0 -> delta 0.3.
+"""
+role = "implementer"
+status = "ready"
+tier = "mechanical"
+files = ["crates/roko-chain/src/arena.rs"]
+depends_on = ["E40-T03"]
+max_loc = 40
+
+[task.context]
+read_files = [
+  { path = "crates/roko-chain/src/arena.rs", lines = "1-30", why = "Arena struct with weight field" },
+  { path = "crates/roko-chain/src/reputation_registry.rs", lines = "1-50", why = "7 reputation domains: coding, security, research, chain, knowledge, operations, strategy" },
+  { path = "docs/v2/23-ARENAS.md", lines = "170-200", why = "Reputation effect formula from arena completions" },
+]
+symbols = [
+  "Attempt::score (arena.rs) — base for delta computation",
+  "Arena::weight (arena.rs) — f64 field that scales reputation impact",
+  "ReputationRegistry (reputation_registry.rs:1) — 7-domain EMA scoring (consumer of effects)",
+]
+anti_patterns = [
+  "Do NOT call ReputationRegistry directly from arena — return ArenaReputationEffect for the caller",
+  "Do NOT map all categories to 'general' — each ArenaCategory should map to a specific domain",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ArenaReputationEffect' crates/roko-chain/src/arena.rs && grep -q 'fn compute_reputation_effect' crates/roko-chain/src/arena.rs && grep -q 'fn to_reputation_domain' crates/roko-chain/src/arena.rs"
+fail_msg = "ArenaReputationEffect, compute_reputation_effect, and to_reputation_domain must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- arena 2>&1"
+fail_msg = "arena tests must pass"
+
+# ─── T08: Add arena API route stubs to roko-serve ────────────────────────────
+
+[[task]]
+id = "E40-T08"
+title = "Add arena REST route stubs to roko-serve"
+description = """
+Per spec 23-ARENAS.md section 11 (API surface), roko-serve should expose arena endpoints.
+Add route stubs (handler functions that return placeholder JSON) for:
+
+1. GET  /api/arenas — list arenas with optional state filter
+2. POST /api/arenas — create arena (accept JSON body, return 501)
+3. GET  /api/arenas/:id — arena detail
+4. GET  /api/arenas/:id/leaderboard — leaderboard
+5. POST /api/arenas/:id/attempts — start attempt
+6. GET  /api/arenas/:id/attempts — list attempts
+
+Create crates/roko-serve/src/routes/arenas.rs with stub handlers.
+Wire into build_router() in routes/mod.rs by adding `.merge(arenas::routes())`.
+
+Handlers return 501 Not Implemented with JSON: {"status": "not_implemented", "message": "..."}.
+Follow the existing route pattern: `pub fn routes() -> Router<Arc<AppState>>`.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = [
+  "crates/roko-serve/src/routes/arenas.rs",
+  "crates/roko-serve/src/routes/mod.rs",
+]
+depends_on = ["E40-T01"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-serve/src/routes/mod.rs", lines = "1-52", why = "Route module declarations — add `mod arenas;` after existing mods" },
+  { path = "crates/roko-serve/src/routes/mod.rs", lines = "130-192", why = "build_router() — add .merge(arenas::routes()) in the api chain" },
+  { path = "crates/roko-serve/src/routes/isfr.rs", lines = "1-30", why = "Pattern for stub route module with routes() function" },
+]
+symbols = [
+  "build_router (routes/mod.rs:131) — merge arenas routes here",
+  "AppState (routes/mod.rs:58) — shared state type for route handlers",
+  "Router<Arc<AppState>> — return type for routes() functions",
+]
+anti_patterns = [
+  "Do NOT implement full handlers — stub with 501 or placeholder JSON only",
+  "Do NOT break existing routes — add alongside, never replace",
+  "Do NOT add complex deserialization — stubs don't need request parsing",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'mod arenas' crates/roko-serve/src/routes/mod.rs && grep -q 'arenas::routes' crates/roko-serve/src/routes/mod.rs && test -f crates/roko-serve/src/routes/arenas.rs"
+fail_msg = "arenas module must exist and be wired into build_router"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"

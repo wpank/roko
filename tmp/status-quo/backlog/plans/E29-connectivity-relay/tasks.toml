@@ -1,0 +1,650 @@
+[meta]
+plan = "E29-connectivity-relay"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T01: Define Connect protocol trait with 5 lifecycle methods
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §1) defines Connect as one of the 9 Cell
+# protocols. The existing connector.rs has ConnectorKind/ConnectorRegistry
+# as data-only types. Add the async Connect trait with 5 methods and its
+# associated request/response types.
+[[task]]
+id = "E29-T01"
+title = "Define Connect protocol trait with connect/query/execute/health/disconnect"
+description = """Add to crates/roko-core/src/connector.rs:
+
+- async trait Connect (via async_trait) with 5 methods:
+  - connect(&mut self, config: &ConnectConfig) -> Result<()>
+  - query(&self, req: QueryRequest) -> Result<QueryResponse>
+  - execute(&self, req: ExecuteRequest) -> Result<ExecuteResponse>
+  - health(&self) -> Result<ConnectHealthStatus>
+  - disconnect(&mut self) -> Result<()>
+
+- ConnectConfig { endpoint: String, auth: Option<String>,
+  headers: Option<HashMap<String, String>>, timeout_ms: u64 }
+  (Note: the existing ConnectorConfig at line 54 is similar but this is
+  the Connect-protocol-specific variant with slightly different semantics)
+- QueryRequest { operation: String, params: serde_json::Value }
+- QueryResponse { data: serde_json::Value, latency_ms: u64 }
+- ExecuteRequest { operation: String, params: serde_json::Value }
+- ExecuteResponse { result: serde_json::Value, latency_ms: u64 }
+- ConnectHealthStatus { status: ConnectorStatus, latency_ms: u64,
+  last_check: DateTime<Utc>, error: Option<String> }
+
+Keep existing ConnectorKind, ConnectorConfig, ConnectorRegistry unchanged.
+Add async_trait to roko-core Cargo.toml if not already present (it is
+used by extension.rs)."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+max_loc = 100
+files = ["crates/roko-core/src/connector.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/connector.rs", lines = "1-16", why = "Module docs and migration note — Connect trait supersedes ConnectorRegistry" },
+    { path = "crates/roko-core/src/connector.rs", lines = "20-37", why = "Existing ConnectorKind enum — keep unchanged" },
+    { path = "crates/roko-core/src/connector.rs", lines = "39-102", why = "Existing ConnectorStatus, ConnectorConfig, ConnectorHealth, ConnectorInfo — keep unchanged" },
+    { path = "crates/roko-core/src/connector.rs", lines = "104-161", why = "Existing ConnectorRegistry — keep unchanged, mark migration note" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "12-42", why = "V2 Connect protocol trait spec with 5 async methods" },
+]
+symbols = [
+    "ConnectorKind — existing enum at connector.rs:24 (Mcp, Api, Database, Blockchain, Feed, Custom)",
+    "ConnectorConfig — existing config struct at connector.rs:54",
+    "ConnectorHealth — existing health snapshot at connector.rs:78",
+    "ConnectorStatus — existing status enum at connector.rs:41 (Connected, Disconnected, Degraded)",
+]
+anti_patterns = [
+    "Do NOT remove existing types — they are used by roko-serve routes",
+    "Do NOT implement the trait for any concrete type — only define it",
+    "Do NOT add Cell dependency — Connect is independent of Cell at this stage",
+    "Do NOT rename existing ConnectorConfig to ConnectConfig — add ConnectConfig alongside it",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub trait Connect' crates/roko-core/src/connector.rs || grep -q 'trait Connect' crates/roko-core/src/connector.rs"
+fail_msg = "Connect protocol trait must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct QueryRequest' crates/roko-core/src/connector.rs && grep -q 'pub struct ExecuteRequest' crates/roko-core/src/connector.rs"
+fail_msg = "QueryRequest and ExecuteRequest must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'async fn connect' crates/roko-core/src/connector.rs && grep -q 'async fn disconnect' crates/roko-core/src/connector.rs"
+fail_msg = "Connect trait must have connect() and disconnect() async methods"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T02: Add ConnectorManifest and ReconnectStrategy types
+# ─────────────────────────────────────────────────────────────────────────────
+# Every Connector carries a manifest declaring its identity, config schema,
+# and reconnection behavior. Expand ConnectorKind with v2 variants.
+[[task]]
+id = "E29-T02"
+title = "Add ConnectorManifest, ReconnectStrategy, and expanded ConnectorKind"
+description = """Add to crates/roko-core/src/connector.rs:
+
+- ConnectorManifest { name: String, kind: ConnectorKind, version: String,
+  description: String, config_schema: Option<serde_json::Value>,
+  capabilities: Vec<String>, health_interval_secs: u64,
+  reconnect_strategy: ReconnectStrategy }
+- ReconnectStrategy enum:
+  - ExponentialBackoff { base_ms: u64, max_ms: u64, jitter: bool }
+  - FixedInterval { interval_ms: u64 }
+  - Manual
+
+Add new ConnectorKind variants to the existing enum (it is #[non_exhaustive]):
+  - ChainRpc (alias for Blockchain — blockchain RPC endpoints)
+  - Exchange (centralized exchange APIs)
+  - McpServer (MCP tool servers)
+  - A2aClient (A2A agent-card peers)
+  - Webhook (outbound HTTP webhooks)
+
+Keep all existing variants. Add serde backward compat with #[serde(alias)]
+where needed."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 70
+files = ["crates/roko-core/src/connector.rs"]
+depends_on = ["E29-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/connector.rs", lines = "20-37", why = "Existing ConnectorKind with #[non_exhaustive] — add v2 variants" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "45-115", why = "V2 ConnectorKind variants and ConnectorManifest struct definition" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "107-115", why = "V2 ReconnectStrategy enum variants" },
+]
+symbols = [
+    "ConnectorKind — enum at connector.rs:24, #[non_exhaustive] allows adding variants",
+]
+anti_patterns = [
+    "Do NOT remove existing Mcp/Api/Database/Blockchain/Feed/Custom variants",
+    "Do NOT add runtime logic — manifest is pure data",
+    "Do NOT use semver::Version — use String for version field to avoid new dependency",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ConnectorManifest' crates/roko-core/src/connector.rs && grep -q 'pub enum ReconnectStrategy' crates/roko-core/src/connector.rs"
+fail_msg = "ConnectorManifest and ReconnectStrategy must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ChainRpc' crates/roko-core/src/connector.rs && grep -q 'McpServer' crates/roko-core/src/connector.rs"
+fail_msg = "ChainRpc and McpServer variants must be added to ConnectorKind"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib connector 2>&1"
+fail_msg = "Existing connector tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T03: Add wire protocol envelope types (room, seq, backpressure)
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §9) defines a WebSocket message envelope
+# with seq, ts, room, type, payload. The existing ws.rs has BackPressureMode
+# but lacks the envelope. Add WireEnvelope and room/subscription types.
+[[task]]
+id = "E29-T03"
+title = "Add WireEnvelope, RoomName, and subscription message types"
+description = """Create crates/roko-core/src/wire_protocol.rs with:
+
+- WireEnvelope { seq: u64, ts: u64, room: String, msg_type: String,
+  payload: serde_json::Value }
+  (Note: use msg_type not type to avoid Rust keyword conflict,
+  with #[serde(rename = "type")])
+- SubscribeMessage { rooms: Vec<String> }
+- UnsubscribeMessage { rooms: Vec<String> }
+- ResumeMessage { last_seq: u64 }
+- SnapshotMessage { seq: u64, state: serde_json::Value }
+- RoomPattern — helper struct with const fn methods for room naming:
+  - agent(id) -> "agent:{id}"
+  - agent_heartbeat(id) -> "agent:{id}:heartbeat"
+  - agent_output(id) -> "agent:{id}:output"
+  - plan(id) -> "plan:{id}"
+  - group(id) -> "group:{id}"
+  - chain(chain_id) -> "chain:{chain_id}"
+  - system() -> "system"
+  - learning() -> "learning"
+
+All types derive Serialize, Deserialize, Debug, Clone.
+Register `pub mod wire_protocol;` in lib.rs."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 70
+files = ["crates/roko-core/src/wire_protocol.rs", "crates/roko-core/src/lib.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "1-62", why = "Existing WS server: ws_upgrade, BackPressureMode, ClientMsg — uses ad-hoc message format" },
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "51-62", why = "Existing BackPressureMode enum (AtMostOnce, Coalesce, ResumeRequired)" },
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "73-80", why = "Existing ClientMsg struct with subscribe and cursor fields" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "459-494", why = "V2 wire protocol envelope: seq, ts, room, type, payload fields" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "483-494", why = "V2 room naming convention table" },
+    { path = "crates/roko-core/src/lib.rs", lines = "62-96", why = "Module declarations — add pub mod wire_protocol" },
+]
+symbols = [
+    "BackPressureMode — existing enum in ws.rs:54 (AtMostOnce, Coalesce, ResumeRequired)",
+    "ClientMsg — existing WS client message at ws.rs:74",
+    "WS_MAX_MESSAGE_SIZE — existing const at ws.rs:35",
+]
+anti_patterns = [
+    "Do NOT modify ws.rs internals — add envelope types in roko-core separately",
+    "Do NOT add transport/connection logic — these are data types only",
+    "Do NOT use 'type' as a field name — use msg_type with #[serde(rename = 'type')]",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct WireEnvelope' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "WireEnvelope must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod wire_protocol' crates/roko-core/src/lib.rs"
+fail_msg = "wire_protocol module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SubscribeMessage' crates/roko-core/src/wire_protocol.rs && grep -q 'ResumeMessage' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "SubscribeMessage and ResumeMessage must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T04: Add reconnection FSM types (resume, snapshot, gap detection)
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §15) defines a reconnection protocol with
+# resume from last_seq, gap detection, and snapshot fallback.
+[[task]]
+id = "E29-T04"
+title = "Add ReconnectionState FSM and ring buffer size config"
+description = """Add to crates/roko-core/src/wire_protocol.rs:
+
+- ReconnectionState enum:
+  - Disconnected
+  - Connecting
+  - Resuming { last_seq: u64 }
+  - Connected
+  - Superseded { by_instance: String }
+- GapAction enum:
+  - Replay { from_seq: u64, to_seq: u64 }
+  - Snapshot
+- SupersededNotice { agent_id: String, by_instance: String }
+
+Add ring_buffer_size field to RelayConfig in config/chain.rs:
+  #[serde(default = "default_ring_buffer_size")]
+  pub ring_buffer_size: usize
+  Default: 65536 (64K entries).
+
+All types derive Serialize, Deserialize, Debug, Clone.
+ReconnectionState and GapAction also derive PartialEq, Eq."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-core/src/wire_protocol.rs", "crates/roko-core/src/config/chain.rs"]
+depends_on = ["E29-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/chain.rs", lines = "56-95", why = "RelayConfig struct — add ring_buffer_size field" },
+    { path = "crates/roko-core/src/config/chain.rs", lines = "86-95", why = "RelayConfig Default impl — add ring_buffer_size: 65536" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "745-815", why = "V2 reconnection protocol: resume, gap detection, snapshot fallback, supersession" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "807-814", why = "V2 superseded notice: multi-instance handling" },
+    { path = "crates/roko-core/src/wire_protocol.rs", lines = "1-20", why = "Existing wire_protocol types from T03" },
+]
+symbols = [
+    "RelayConfig — struct at chain.rs:68, needs ring_buffer_size field",
+    "RelayConfig::default() — impl at chain.rs:87",
+]
+anti_patterns = [
+    "Do NOT implement the FSM logic — only define the state types",
+    "Do NOT change existing RelayConfig default field values",
+    "Do NOT add reconnection loop logic — types only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum ReconnectionState' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "ReconnectionState must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ring_buffer_size' crates/roko-core/src/config/chain.rs"
+fail_msg = "ring_buffer_size must be added to RelayConfig"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Superseded' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "Superseded variant must exist in ReconnectionState"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T05: Add FinalityLevel, FinalityTag, and ChainReorgPulse types
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §16) defines multi-chain temporal
+# resolution with finality levels and reorg detection.
+[[task]]
+id = "E29-T05"
+title = "Add FinalityLevel, FinalityTag, and ChainReorgPulse types"
+description = """Add to crates/roko-core/src/connector.rs:
+
+- FinalityLevel enum { Final, QuasiFinalized, Reversible }
+  with PartialEq, Eq, PartialOrd, Ord, serde(rename_all = "snake_case")
+- FinalityTag { level: FinalityLevel, chain_id: u64, block_number: u64,
+  confirmations: u64, timestamp: DateTime<Utc> }
+- ChainReorgPulse { chain_id: u64, old_head: String, new_head: String,
+  orphaned_range_start: u64, orphaned_range_end: u64,
+  new_range_start: u64, new_range_end: u64, depth: u64 }
+  (Use String for block hashes, u64 ranges instead of Range<u64> for serde compat)
+
+Add finality_confirmations field to ChainConfig in config/chain.rs:
+  #[serde(default)]
+  pub finality_confirmations: Option<u64>
+
+These are pure data types used by chain connectors and the finality oracle."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 55
+files = ["crates/roko-core/src/connector.rs", "crates/roko-core/src/config/chain.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/connector.rs", lines = "20-37", why = "ConnectorKind::Blockchain — chain types go alongside" },
+    { path = "crates/roko-core/src/config/chain.rs", lines = "10-54", why = "ChainConfig struct — add finality_confirmations field" },
+    { path = "crates/roko-core/src/config/chain.rs", lines = "116-134", why = "ChainConfig Default impl — add finality_confirmations: None" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "838-864", why = "V2 FinalityLevel enum with Final/QuasiFinalized/Reversible and doc comments" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "856-863", why = "V2 FinalityTag struct definition" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "884-893", why = "V2 ChainReorgPulse struct with ranges and depth" },
+]
+symbols = [
+    "ConnectorKind::Blockchain — existing chain connector kind at connector.rs:32",
+    "ChainConfig — chain config struct at chain.rs:11",
+    "ChainConfig::default() — Default impl at chain.rs:117",
+]
+anti_patterns = [
+    "Do NOT implement the finality oracle — only define data types",
+    "Do NOT add alloy or ethers dependencies — use String for block hashes",
+    "Do NOT use std::ops::Range<u64> — use separate start/end fields for serde compatibility",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum FinalityLevel' crates/roko-core/src/connector.rs && grep -q 'pub struct ChainReorgPulse' crates/roko-core/src/connector.rs"
+fail_msg = "FinalityLevel and ChainReorgPulse must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct FinalityTag' crates/roko-core/src/connector.rs"
+fail_msg = "FinalityTag must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib connector 2>&1"
+fail_msg = "Existing connector tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T06: Add exoskeleton protocol adapter types (MCP, A2A payloads)
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §4) defines what flows through MCP
+# (Signal/Pulse over tool calls) and A2A (agent cards with HDC fingerprints).
+[[task]]
+id = "E29-T06"
+title = "Add McpCellPayload, McpCellResponse, and A2A AgentCardV2 types"
+description = """Create crates/roko-core/src/exoskeleton.rs with:
+
+- McpCellPayload { input: serde_json::Value, context: serde_json::Value }
+  (what flows through MCP tool.call envelopes)
+- McpCellResponse { output: serde_json::Value, persist: Vec<serde_json::Value>,
+  metrics: serde_json::Value }
+- AgentCardV2 { name: String, description: String, url: Option<String>,
+  capabilities: Vec<String>, hdc_fingerprint: Option<String>,
+  protocols: Vec<String>, version: String,
+  vitality: Option<f64>, profile: Option<String> }
+  (Extends the existing AgentCard in roko-agent-server with HDC fingerprint)
+- PaymentIntent { payer: String, payee: String, max_amount: String,
+  denomination: String, purpose: String,
+  expiry: Option<DateTime<Utc>>, budget_ref: Option<String> }
+  (Use String for addresses/amounts to avoid alloy dependency in roko-core)
+
+Register `pub mod exoskeleton;` in lib.rs. All types derive Serialize,
+Deserialize, Debug, Clone."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-core/src/exoskeleton.rs", "crates/roko-core/src/lib.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/lib.rs", lines = "62-96", why = "Module declarations — add pub mod exoskeleton in alphabetical position near 'extension'" },
+    { path = "crates/roko-agent-server/src/registration.rs", lines = "27-39", why = "Existing AgentCard struct — v2 extends it with HDC fingerprint, vitality, profile" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "134-157", why = "V2 McpCellPayload and McpCellResponse definitions" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "170-188", why = "V2 A2A agent card with HDC fingerprint JSON example" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "214-225", why = "V2 PaymentIntent struct for x402 budget-bounded payments" },
+]
+symbols = [
+    "AgentCard — existing struct at roko-agent-server/src/registration.rs:28",
+    "AgentEndpoints — re-exported via registration.rs from roko_core::heartbeat",
+]
+anti_patterns = [
+    "Do NOT import roko-agent-server types into roko-core — define AgentCardV2 standalone",
+    "Do NOT add alloy/ethers types (Address, U256) — use String placeholders",
+    "Do NOT add HdcVector from roko-primitives — use Option<String> for fingerprint",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct McpCellPayload' crates/roko-core/src/exoskeleton.rs && grep -q 'pub struct AgentCardV2' crates/roko-core/src/exoskeleton.rs"
+fail_msg = "McpCellPayload and AgentCardV2 must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod exoskeleton' crates/roko-core/src/lib.rs"
+fail_msg = "exoskeleton module must be declared in lib.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct PaymentIntent' crates/roko-core/src/exoskeleton.rs"
+fail_msg = "PaymentIntent must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T07: Add backpressure strategy types and coalescing config
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §14) defines 4 backpressure strategies.
+# The existing ws.rs has BackPressureMode (AtMostOnce, Coalesce,
+# ResumeRequired). Add the full v2 set as separate types in wire_protocol.
+[[task]]
+id = "E29-T07"
+title = "Add BackpressureStrategy enum and per-event-type config"
+description = """Add to crates/roko-core/src/wire_protocol.rs:
+
+- BackpressureStrategy enum:
+  - Coalesce { interval_ms: u64 }
+  - DropOldest { ring_size: usize }
+  - Lossless
+  - Sample { every_nth: u64 }
+- EventBackpressureConfig { event_type: String, strategy: BackpressureStrategy }
+- Default mapping comment documenting:
+  - heartbeat -> Coalesce(500)
+  - output_chunk -> DropOldest(1024)
+  - gate_result -> Lossless
+  - feed_data -> Sample(dynamic)
+
+These are config types consumed by the WS server. Do NOT modify the
+existing BackPressureMode in ws.rs — that will be migrated later."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 45
+files = ["crates/roko-core/src/wire_protocol.rs"]
+depends_on = ["E29-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "51-62", why = "Existing BackPressureMode enum — v2 replaces with richer enum, DO NOT modify" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "733-744", why = "V2 backpressure strategy table: Coalesce, Drop-oldest, Lossless, Sample" },
+    { path = "crates/roko-core/src/wire_protocol.rs", lines = "1-20", why = "Existing wire_protocol types from T03" },
+]
+symbols = [
+    "BackPressureMode — existing enum in ws.rs:54 (AtMostOnce, Coalesce, ResumeRequired)",
+]
+anti_patterns = [
+    "Do NOT modify ws.rs BackPressureMode — add the new types in wire_protocol.rs",
+    "Do NOT implement backpressure logic — only define config types",
+    "Do NOT add a fn default_backpressure_map() — just document the defaults in comments",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum BackpressureStrategy' crates/roko-core/src/wire_protocol.rs && grep -q 'DropOldest' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "BackpressureStrategy with DropOldest variant must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct EventBackpressureConfig' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "EventBackpressureConfig must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T08: Add MergedAgent view and agent discovery types
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §13) defines agent discovery from 3 sources
+# (relay, A2A, chain) merged into a single MergedAgent view.
+[[task]]
+id = "E29-T08"
+title = "Add MergedAgent and agent discovery source types"
+description = """Add to crates/roko-core/src/connector.rs:
+
+- MergedAgent { id: String, name: String, online: bool, last_seen: u64,
+  mode: Option<String>, profile: Option<String>,
+  a2a_capabilities: Option<Vec<String>>,
+  hdc_fingerprint: Option<String>,
+  supported_protocols: Option<Vec<String>>,
+  wallet: Option<String>, reputation: Option<f64>,
+  stake: Option<u128>, tier: Option<AgentTier>,
+  direct_url: Option<String>,
+  deploy_platform: Option<DeployPlatform> }
+- AgentDiscoverySource enum { Relay, A2A, Chain, Deployment }
+- DeployPlatform enum { Railway, Fly, Docker, Custom }
+- AgentTier enum { Gray, Copper, Silver, Gold, Amber }
+
+All enums derive PartialEq, Eq, serde(rename_all = "snake_case").
+These support the 3-source agent discovery merge defined in v2 §13."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 60
+files = ["crates/roko-core/src/connector.rs"]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/connector.rs", lines = "1-20", why = "Connector module header — add agent discovery types" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "688-730", why = "V2 MergedAgent struct with fields from relay, A2A, chain, deployment sources" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "196-207", why = "V2 AgentTier enum: gray/copper/silver/gold/amber" },
+]
+symbols = [
+    "ConnectorKind — related external system classification at connector.rs:24",
+]
+anti_patterns = [
+    "Do NOT import roko-agent types — keep kernel-level",
+    "Do NOT add HdcVector type — use Option<String> for fingerprint",
+    "Do NOT use alloy Address — use Option<String> for wallet",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct MergedAgent' crates/roko-core/src/connector.rs"
+fail_msg = "MergedAgent must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum AgentTier' crates/roko-core/src/connector.rs && grep -q 'pub enum DeployPlatform' crates/roko-core/src/connector.rs"
+fail_msg = "AgentTier and DeployPlatform must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core --lib connector 2>&1"
+fail_msg = "Existing connector tests must still pass"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E29-T09: Add workspace discovery types and hello message
+# ─────────────────────────────────────────────────────────────────────────────
+# The v2 spec (11-CONNECTIVITY.md §8) defines workspace registration with
+# the relay on startup.
+[[task]]
+id = "E29-T09"
+title = "Add WorkspaceHello, WorkspaceInfo, and relay discovery types"
+description = """Add to crates/roko-core/src/wire_protocol.rs:
+
+- WorkspaceHello { workspace_id: String, name: String, url: Option<String>,
+  version: String, capabilities: Vec<String>,
+  owner_wallet: Option<String>, agents_count: u32,
+  uptime_secs: u64, exoskeleton: ExoskeletonStatus }
+- ExoskeletonStatus { mcp: bool, a2a: bool,
+  erc8004_chain_id: Option<u64>, x402: bool }
+- WorkspaceInfo { workspace_id: String, name: String,
+  url: Option<String>, owner_wallet: Option<String>,
+  agents_count: u32, online: bool, last_seen_ms: u64 }
+- WorkspaceEvent enum:
+  - Connected { workspace_id: String, url: Option<String> }
+  - Disconnected { workspace_id: String }
+
+These support relay workspace registration and dashboard auto-discovery.
+The existing RelayConfig (chain.rs:68) already has url and workspace_name
+fields. The existing relay.rs has RelayConnectionState."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+max_loc = 55
+files = ["crates/roko-core/src/wire_protocol.rs"]
+depends_on = ["E29-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/relay.rs", lines = "1-44", why = "Existing relay module: RelayConnectionState enum (Direct, Relayed, Degraded, Local)" },
+    { path = "crates/roko-core/src/config/chain.rs", lines = "56-84", why = "RelayConfig with url, workspace_name, public_url fields" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "371-399", why = "V2 workspace_hello JSON payload with all fields" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "401-418", why = "V2 workspace discovery: GET /relay/workspaces response" },
+    { path = "docs/v2/11-CONNECTIVITY.md", lines = "394-399", why = "V2 workspace event types: workspace_connected, workspace_disconnected" },
+]
+symbols = [
+    "RelayConfig — existing config at chain.rs:68 with url and workspace_name",
+    "RelayConnectionState — existing enum at relay.rs:18",
+]
+anti_patterns = [
+    "Do NOT modify the existing relay.rs implementation — add types in roko-core",
+    "Do NOT add actual WebSocket connection logic — types only",
+    "Do NOT modify RelayConfig — it already has the right fields",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct WorkspaceHello' crates/roko-core/src/wire_protocol.rs && grep -q 'pub struct WorkspaceInfo' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "WorkspaceHello and WorkspaceInfo must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct ExoskeletonStatus' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "ExoskeletonStatus must be defined"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum WorkspaceEvent' crates/roko-core/src/wire_protocol.rs"
+fail_msg = "WorkspaceEvent enum must be defined"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"

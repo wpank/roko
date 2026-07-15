@@ -1,0 +1,440 @@
+[meta]
+plan = "E05-gate-adaptivity-live"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────
+# E05-T01 — Persist GateThresholds to the learn file on the live path
+# ─────────────────────────────────────────────────────────────────────
+# GateThresholds::save (persist.rs:230, pub(crate)) writes
+# .roko/learn/gate-thresholds.json but has ZERO callers in the live
+# runner. Live threshold state only rides inside the executor snapshot
+# (event_loop.rs:3401), so `roko learn tune gates` and any cross-run
+# adaptation read a file the runner never rewrites. Call save() wherever
+# save_snapshot fires (and once at teardown).
+[[task]]
+id = "E05-T01"
+title = "Persist GateThresholds to .roko/learn/gate-thresholds.json on snapshot"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/persist.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "230-243", why = "GateThresholds::save + load_gate_thresholds; paths.gate_thresholds_json is the target" },
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "40-80", why = "PersistPaths::gate_thresholds_json = layout.gate_thresholds_path()" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "3390-3420", why = "build_unified_snapshot serializes gate_thresholds into the executor snapshot only" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "900-1000", why = "save_snapshot call sites (:919,:995) where a threshold save should ride along" },
+]
+symbols = [
+    "GateThresholds::save(&self, path: &Path) -> Result<()>",
+    "PersistPaths { gate_thresholds_json: PathBuf, .. }",
+]
+anti_patterns = [
+    "Do NOT change GateThresholds::observe or the EMA formula — this task only persists.",
+    "Do NOT touch the legacy orchestrate.rs AdaptiveThresholds::save (5953) — different type, dead path.",
+    "Do NOT make save() failures abort the run — log and continue (thresholds are best-effort telemetry).",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'gate_thresholds\\.save\\(|GateThresholds::save|\\.save\\(&?paths\\.gate_thresholds_json' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "GateThresholds::save must be called from the live runner (event_loop.rs)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["""
+After a `roko plan run` over a Rust workspace, `.roko/learn/gate-thresholds.json` is
+written/rewritten by the runner (mtime advances past process start, not only the executor
+snapshot). save() is invoked on each save_snapshot and at teardown. No behavioural change
+to gate pass/fail. `cargo check -p roko-cli` clean.
+"""]
+
+# ─────────────────────────────────────────────────────────────────────
+# E05-T02 — Make stub verdicts neutral (Skipped), not Verdict::pass
+# ─────────────────────────────────────────────────────────────────────
+# stub_verdict (rung_dispatch.rs:290-296) returns Verdict::pass for every
+# unwired advanced rung (Symbol/GenTest/VerifyChain/FactCheck/LlmJudge/
+# Integration). CanonicalRungGate aggregates with all(passed) (:535), so
+# stubs silently make the aggregate PASS. A skipped/not-wired gate must be
+# neutral, never a green checkmark. Use the skipped flag on Verdict (see
+# roko_core::Verdict) or GateStatus::NotWired.
+[[task]]
+id = "E05-T02"
+title = "stub_verdict returns a skipped (neutral) verdict, excluded from all(passed)"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 45
+files = ["crates/roko-gate/src/rung_dispatch.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "285-310", why = "stub_verdict — currently Verdict::pass; make it skipped/not-wired" },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "520-545", why = "CanonicalRungGate aggregation with all(passed) — must exclude skipped" },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "245-296", why = "run_canonical_rung + which rungs feed stub_verdict" },
+    { path = "crates/roko-core/src/foundation.rs", lines = "360-400", why = "Verdict/GateVerdict skipped/skip_reason fields to reuse" },
+]
+symbols = [
+    "stub_verdict(gate: &str, detail: impl Into<String>) -> Verdict",
+    "Verdict { passed: bool, skipped: bool, .. }",
+    "CanonicalRungGate::verify — aggregates inner verdicts",
+]
+anti_patterns = [
+    "Do NOT delete the advanced rungs — they must appear as skipped/not-wired, not vanish.",
+    "Do NOT flip stubs to Verdict::fail — an unwired gate failing would block every run; neutral is correct.",
+    "Do NOT change Compile/Lint/Test/PropertyTest — those are real gates, untouched.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'Verdict::pass' crates/roko-gate/src/rung_dispatch.rs | grep -iE 'stub' ; test $(grep -c 'skip' crates/roko-gate/src/rung_dispatch.rs) -ge 1"
+fail_msg = "stub_verdict must produce a skipped verdict, not Verdict::pass"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-gate 2>&1"
+fail_msg = "roko-gate tests must pass"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-gate 2>&1"
+fail_msg = "roko-gate must compile"
+
+acceptance = ["""
+Unwired advanced rungs (Symbol/GeneratedTest/VerifyChain/FactCheck/LlmJudge/Integration)
+produce verdicts with skipped=true (or GateStatus::NotWired) and a reason of "stub/not wired".
+CanonicalRungGate's aggregate no longer counts a skipped inner verdict as a pass:
+a pipeline whose only "successes" are stubs does NOT report passed=true. Existing real gates
+unchanged. `cargo test -p roko-gate` green.
+"""]
+
+# ─────────────────────────────────────────────────────────────────────
+# E05-T03 — Exclude skipped verdicts from `passed` and from the EMA
+# ─────────────────────────────────────────────────────────────────────
+# gate_dispatch.rs:140 computes passed = verdicts.iter().all(|v| v.passed);
+# once E05-T02 makes stubs skipped, they must be dropped from this fold
+# (skipped != failed). event_loop.rs:1128 then calls
+# update_gate_thresholds → observe(rung, passed): a rung whose verdicts are
+# ALL skipped must NOT feed the EMA (it would inflate the pass rate toward
+# 1.0 with no real signal — F2/F3).
+[[task]]
+id = "E05-T03"
+title = "Skipped verdicts are neutral in passed-computation and never observed by the EMA"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["E05-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "120-182", why = "passed = all(v.passed) and GateCompletion assembly — filter skipped" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1120-1170", why = "update_gate_thresholds / observe call site; skip when all inner verdicts are skipped" },
+    { path = "crates/roko-cli/src/runner/persist.rs", lines = "195-228", why = "GateThresholds::observe — the EMA that must not see stub-only rungs" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "130-160", why = "GateVerdictSummary — carry a skipped flag through to completion" },
+]
+symbols = [
+    "run_gate_once — passed = verdicts.iter().all(|v| v.passed)",
+    "GateThresholds::observe(&mut self, rung: u32, passed: bool)",
+    "GateVerdictSummary { gate_name, passed, .. }",
+]
+anti_patterns = [
+    "Do NOT count a skipped verdict as failed — passed must ignore skipped, not fail on it.",
+    "Do NOT observe() a rung when every non-verify verdict was skipped — that is the EMA-inflation bug.",
+    "Do NOT drop skipped verdicts from the summaries/output — operators still need to see they were skipped.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'skipped|!v\\.skipped|filter' crates/roko-cli/src/runner/gate_dispatch.rs"
+fail_msg = "passed-computation in gate_dispatch must account for skipped verdicts"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'skipped|observe' crates/roko-cli/src/runner/event_loop.rs | grep -iE 'skip|observe'"
+fail_msg = "EMA observe must be guarded against stub-only rungs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["""
+`passed` in run_gate_once ignores skipped verdicts (they are neither pass nor fail). A rung
+whose only non-verify verdicts are skipped stubs is NOT passed to GateThresholds::observe, so
+`.roko/learn/gate-thresholds.json` (persisted by E05-T01) does not drift toward 1.0 from stub
+passes. GateVerdictSummary carries the skipped flag through to GateCompletion so the TUI/ledger
+can show "skipped". `cargo check -p roko-cli` clean.
+"""]
+
+
+# E05-T04 - Label GateCompletion with the real inner rung; drive per-rung EMA
+[[task]]
+id = "E05-T04"
+title = "Emit real selected rung labels from live gate dispatch"
+description = "Stop hard-labeling every gate completion with max_gate_rung. Carry the actual selected canonical rung through GateCompletion and use that value for threshold observation, retry suggestions, and the advance branch."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 150
+files = ["crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+depends_on = ["E05-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "27-180", why = "spawn_gate/run_gate_once currently receive one rung and build one GateCompletion." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1120-1170", why = "GateCompletion.rung is observed into GateThresholds." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4680-4775", why = "pipeline_rung is hard-labeled and used to create the completion effect key." },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "120-155", why = "GateCompletion and GateVerdictSummary shapes to extend if per-inner-rung metadata is needed." },
+]
+symbols = [
+    "GateCompletion.rung",
+    "GateVerdictSummary",
+    "update_gate_thresholds",
+    "gate_effect_key",
+]
+anti_patterns = [
+    "Do NOT keep using max_gate_rung as the only emitted rung value.",
+    "Do NOT flatten multiple selected rungs into a single EMA observation.",
+    "Do NOT break PlanVerify or Merge sentinel rungs; this task applies to GateCompletionKind::Gate.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'selected.*rung|actual.*rung|inner.*rung|GateVerdictSummary.*rung|rung_index' crates/roko-cli/src/runner/gate_dispatch.rs crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/types.rs"
+fail_msg = "gate dispatch must carry the actual selected rung, not only max_gate_rung"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- gate_completion_uses_real_rung_for_thresholds 2>&1"
+fail_msg = "runner tests must prove GateThresholds observe real inner rung keys"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["A live gate completion records the actual canonical rung that produced the verdict, GateThresholds.observe receives that same rung, and runs over multiple selected rungs persist multiple rung keys instead of only max_gate_rung."]
+
+
+# E05-T05 - Port enrich_rung_config into live gate_dispatch
+[[task]]
+id = "E05-T05"
+title = "Build real RungExecutionInputs for live gate dispatch"
+description = "Port the useful enrichment behavior from the legacy orchestrate path into runner/gate_dispatch so Symbol, GeneratedTest, FactCheck, LlmJudge, and Integration rungs receive real inputs or explicit skipped verdicts."
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-6"
+max_loc = 240
+files = ["crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-gate/src/rung_dispatch.rs"]
+role = "implementer"
+depends_on = ["E05-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/gate_dispatch.rs", lines = "87-125", why = "Live path currently uses RungExecutionInputs::default()." },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "18490-18635", why = "Legacy enrichment reference only; port useful input assembly, do not revive the legacy engine." },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "47-90", why = "RungExecutionInputs and RungExecutionConfig fields available to populate." },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "245-420", why = "Advanced rungs and their required inputs." },
+]
+symbols = [
+    "RungExecutionInputs",
+    "RungExecutionConfig",
+    "GatePipelineBuilder::from_config_with_execution",
+    "enrich_rung_config (legacy reference)",
+]
+anti_patterns = [
+    "Do NOT depend on P14 or patch only orchestrate.rs; P14 targeted the wrong engine.",
+    "Do NOT let missing advanced-rung inputs produce Verdict::pass.",
+    "Do NOT introduce network oracle calls unless config and credentials make them available; otherwise return explicit skipped/not-wired verdicts.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'RungExecutionInputs::default()' crates/roko-cli/src/runner/gate_dispatch.rs | grep -q ."
+fail_msg = "live gate dispatch must not use bare RungExecutionInputs::default() for all rungs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'symbol_signal|fact_check_signal|llm_judge_signal|generated_test_artifacts|integration_test_pattern|verdict_publisher' crates/roko-cli/src/runner/gate_dispatch.rs crates/roko-cli/src/runner/event_loop.rs crates/roko-gate/src/rung_dispatch.rs"
+fail_msg = "live gate path must populate real RungExecutionInputs/RungExecutionConfig fields"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-gate -- complex_pipeline_has_seven_canonical_rungs 2>&1"
+fail_msg = "absorb P14-T3 intent with a roko-gate canonical pipeline coverage test"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-gate 2>&1"
+fail_msg = "roko-cli and roko-gate must compile"
+
+acceptance = ["Live runner gate dispatch supplies real source roots and available oracle/artifact inputs into RungExecutionConfig. Missing advanced capabilities are surfaced as skipped/not-wired, not passing stubs. The useful P14 complex-pipeline test intent is covered without depending on P14."]
+
+
+# E05-T06 - Unify three rung dialects onto rung_selector::Rung
+[[task]]
+id = "E05-T06"
+title = "Use rung_selector::Rung as the canonical rung dialect"
+description = "Remove or adapt the registry/effect-driver numeric gate dialects so gate registry metadata, runtime effects, and live runner threshold labels use the same canonical Rung ordering."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 180
+files = ["crates/roko-gate/src/registry.rs", "crates/roko-gate/src/rung_selector.rs", "crates/roko-runtime/src/effect_driver.rs"]
+role = "implementer"
+depends_on = ["E05-T04"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-gate/src/rung_selector.rs", lines = "90-130", why = "Canonical Rung order and labels." },
+    { path = "crates/roko-gate/src/registry.rs", lines = "120-190", why = "Gate registry currently carries a separate gate/rung mapping." },
+    { path = "crates/roko-runtime/src/effect_driver.rs", lines = "320-360", why = "Runtime gate-name-to-rung mapping and confidence heuristic." },
+    { path = "crates/roko-runtime/src/effect_driver.rs", lines = "690-715", why = "Confidence behavior currently keyed to a separate rung numbering assumption." },
+]
+symbols = [
+    "rung_selector::Rung",
+    "CANONICAL_ORDER",
+    "GATE_SPECS",
+    "rung_for_gate_name",
+]
+anti_patterns = [
+    "Do NOT create a fourth translation table.",
+    "Do NOT leave `confidence = if rung <= 4` keyed to non-canonical numbering.",
+    "Do NOT rename public labels without compatibility tests for existing serialized gate names.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'rung_selector::Rung|CANONICAL_ORDER|Rung::from_index' crates/roko-gate/src/registry.rs crates/roko-runtime/src/effect_driver.rs"
+fail_msg = "registry and effect driver must use the canonical rung_selector::Rung dialect"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-gate -- registry_uses_canonical_rung_order 2>&1"
+fail_msg = "roko-gate tests must pin registry metadata to canonical rung order"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-runtime -- effect_driver_uses_canonical_rung_mapping 2>&1"
+fail_msg = "roko-runtime tests must prove effect-driver mapping matches canonical rung order"
+
+acceptance = ["registry.rs and effect_driver.rs derive rung labels/order from rung_selector::Rung or a single adapter around it, and confidence/scoring no longer depends on stale independent rung numbers."]
+
+
+# E05-T07 - Remove the dead enable_advanced_rungs toggle
+[[task]]
+id = "E05-T07"
+title = "Delete the legacy-only enable_advanced_rungs toggle"
+description = "Remove the inert gates.enable_advanced_rungs config surface and legacy branch now that live gate dispatch decides advanced rungs through canonical rung selection and real execution inputs."
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 80
+files = ["crates/roko-cli/src/orchestrate.rs", "crates/roko-core/src/config/gates.rs", "crates/roko-core/src/config/compat.rs"]
+role = "implementer"
+depends_on = ["E05-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "18250-18275", why = "Dead legacy-only toggle branch; both paths skip advanced rungs." },
+    { path = "crates/roko-core/src/config/gates.rs", lines = "40-80", why = "Config field and default for enable_advanced_rungs." },
+    { path = "crates/roko-core/src/config/compat.rs", lines = "190-210", why = "Compatibility mapping for the toggle." },
+]
+symbols = [
+    "GatesConfig.enable_advanced_rungs",
+    "enable_advanced_rungs",
+]
+anti_patterns = [
+    "Do NOT make live runner behavior depend on this toggle.",
+    "Do NOT remove unrelated gates config fields.",
+    "Do NOT leave docs/tests advertising enable_advanced_rungs as effective.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'enable_advanced_rungs' crates/roko-cli/src crates/roko-core/src/config"
+fail_msg = "enable_advanced_rungs must be removed from live/legacy config code"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-core 2>&1"
+fail_msg = "roko-cli and roko-core must compile after removing the config field"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- gates_config 2>&1"
+fail_msg = "roko-core gate config tests must pass after removing the toggle"
+
+acceptance = ["No code path or config schema field named enable_advanced_rungs remains under crates/roko-cli/src or crates/roko-core/src/config; advanced rung activation is controlled by live canonical selection and execution inputs."]
+
+
+# E05-T08 - Wire VerdictPublisher on the live path
+[[task]]
+id = "E05-T08"
+title = "Publish live gate verdicts as Kind::GateVerdict engrams"
+description = "Replace the live runner's ad-hoc signals.jsonl gate verdict append with the existing VerdictPublisher mechanism so dashboard and query paths read real Kind::GateVerdict engrams."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 180
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/gate_dispatch.rs", "crates/roko-gate/src/verdict_publisher.rs"]
+role = "implementer"
+depends_on = ["E05-T04", "E05-T06"]
+depends_on_plan = ["E02-STORAGE-CONVERGENCE"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1138-1168", why = "Current live path appends ad-hoc JSON GateVerdict rows to signals.jsonl." },
+    { path = "crates/roko-gate/src/verdict_publisher.rs", lines = "1-100", why = "Existing publisher creates Pulse values with Kind::GateVerdict." },
+    { path = "crates/roko-gate/src/rung_dispatch.rs", lines = "70-90", why = "RungExecutionConfig already has an optional verdict_publisher field." },
+    { path = "crates/roko-fs/src/layout.rs", lines = "200-220", why = "Canonical engrams.jsonl path and legacy signals.jsonl path." },
+]
+symbols = [
+    "VerdictPublisher",
+    "Kind::GateVerdict",
+    "RungExecutionConfig.verdict_publisher",
+    "RokoLayout::engrams_path",
+]
+anti_patterns = [
+    "Do NOT keep writing new live gate verdicts only to signals.jsonl.",
+    "Do NOT publish duplicate verdicts for the same completion/rung.",
+    "Do NOT bypass E02's canonical storage direction; use depends_on_plan for that prerequisite instead of local depends_on.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'VerdictPublisher|Kind::GateVerdict|verdict_publisher|engrams_path' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/gate_dispatch.rs crates/roko-gate/src/verdict_publisher.rs"
+fail_msg = "live runner must wire VerdictPublisher to emit canonical GateVerdict engrams"
+
+[[task.verify]]
+phase = "structural"
+command = "! awk 'NR>=1138 && NR<=1168 {print}' crates/roko-cli/src/runner/event_loop.rs | grep -q 'signals_path'"
+fail_msg = "live gate verdict publication must not be the old ad-hoc signals.jsonl append block"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- live_gate_verdicts_publish_engram 2>&1"
+fail_msg = "runner tests must prove live gate verdicts publish Kind::GateVerdict engrams"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-gate 2>&1"
+fail_msg = "roko-cli and roko-gate must compile"
+
+acceptance = ["Live gate dispatch publishes each real gate verdict through VerdictPublisher as Kind::GateVerdict on the canonical engram path, and the old ad-hoc signals.jsonl append is removed or gated as legacy compatibility only."]

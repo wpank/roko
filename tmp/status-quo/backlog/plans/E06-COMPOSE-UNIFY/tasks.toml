@@ -1,0 +1,492 @@
+[meta]
+plan = "E06-COMPOSE-UNIFY"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T01: Decide the canonical prompt-assembly surface and record the ADR
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T01"
+title = "Decide canonical prompt-assembly surface and write ADR"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-sonnet-4-5"
+max_loc = 80
+files = ["tmp/status-quo/backlog/decisions/E06-canonical-surface.md"]
+role = "architect"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/34-COMPOSE-PROMPTS.md", lines = "118-207", why = "Live-path trace, 6-surface census, VCG path, unify checklist" },
+    { path = "crates/roko-cli/src/prompting.rs", lines = "69-96", why = "build_role_system_prompt — the proposed canonical CLI entrypoint (wraps surface C)" },
+    { path = "crates/roko-compose/src/role_prompts.rs", lines = "261-468", why = "RoleSystemPromptSpec::new/build/build_sections — surface C" },
+]
+symbols = [
+    "build_role_system_prompt — pub fn(AgentRole, TaskContext, impl Into<String>, PromptBuildOptions) -> String",
+    "RoleSystemPromptSpec::new — pub fn new(role: AgentRole, task_context: TaskContext, tool_csv: impl Into<String>) -> Self",
+]
+anti_patterns = [
+    "Do NOT invent a new v2 ComposeProtocol/ComposeBid trait — that is a later epic; pick among existing surfaces A/C/D/E only.",
+    "Do NOT write any Rust code in this task — the ADR is a decision doc only.",
+    "Do NOT leave the VCG verdict ambiguous — the ADR MUST choose either 'warm the bidders' or 'downgrade to diagnostics'.",
+]
+acceptance = ["ADR names the canonical surface (recommended: C via build_role_system_prompt), the plan to route/retire surface D, deletion of surface E, and an explicit VCG verdict (warm vs downgrade)."]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f tmp/status-quo/backlog/decisions/E06-canonical-surface.md && rg -q 'canonical' tmp/status-quo/backlog/decisions/E06-canonical-surface.md"
+fail_msg = "ADR file must exist and name the canonical surface"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T02: Delete dormant surface E (templates/assembly.rs PromptAssembler)
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T02"
+title = "Delete dormant templates/assembly.rs PromptAssembler (zero callers)"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 40
+files = [
+    "crates/roko-compose/src/templates/assembly.rs",
+    "crates/roko-compose/src/templates/mod.rs",
+    "crates/roko-compose/src/lib.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-compose/src/templates/assembly.rs", lines = "1-60", why = "The dormant PromptAssembler struct + impl to remove (keep nothing here)" },
+    { path = "crates/roko-compose/src/templates/mod.rs", lines = "1-40", why = "Module declaration + re-export of assembly::PromptAssembler to remove" },
+    { path = "crates/roko-compose/src/lib.rs", lines = "60-100", why = "Any crate-root re-export of the templates PromptAssembler to remove" },
+]
+symbols = [
+    "PromptAssembler (templates/assembly.rs) — dormant knapsack+U-shape assembler over RolePromptTemplate::sections",
+]
+anti_patterns = [
+    "Do NOT delete templates/common.rs (PromptBudget, adaptive_budget_for) — it is shared by live templates.",
+    "Do NOT touch the CLI-side PromptAssembler in roko-cli/src/dispatch/prompt_builder.rs — that is surface D, handled by E06-T03/T04.",
+    "Do NOT remove the RolePromptTemplate trait or any role template struct.",
+]
+acceptance = ["templates/assembly.rs removed along with its module decl and re-exports; roko-compose compiles; no assemble_from / TemplateAssembly / templates::assembly references remain in the workspace."]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'templates::assembly|assembly::PromptAssembler|assemble_from|TemplateAssembly' crates/ --glob '!target/**'"
+fail_msg = "No references to the dormant templates assembly surface may remain"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile after removing the dormant surface"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T03: Route Runner v2 Dispatcher prompt through the canonical surface
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T03"
+title = "Route Runner v2 Dispatcher prompt through build_role_system_prompt (canonical)"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-opus-4-1"
+max_loc = 180
+files = [
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-cli/src/dispatch/mod.rs",
+]
+role = "implementer"
+depends_on = ["E06-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "708-1010", why = "Surface D: PromptAssembler struct + assemble() hand-rolled markdown to replace with a canonical call" },
+    { path = "crates/roko-cli/src/dispatch/mod.rs", lines = "108-160", why = "Dispatcher holds prompt_assembler and invokes assemble() at :158 — the live runner-v2 call site" },
+    { path = "crates/roko-cli/src/prompting.rs", lines = "1-96", why = "build_role_system_prompt + build_spec + PromptBuildOptions — the canonical entrypoint to delegate to" },
+    { path = "crates/roko-compose/src/role_prompts.rs", lines = "130-160", why = "TaskContext::new — needed to map PromptContext/TaskDef into the canonical inputs" },
+]
+symbols = [
+    "PromptAssembler::assemble — pub fn assemble(&self, task: &TaskDef, ctx: &PromptContext) -> Result<AssembledPrompt, DispatchError>",
+    "build_role_system_prompt — pub fn(AgentRole, TaskContext, impl Into<String>, PromptBuildOptions) -> String",
+    "Dispatcher (dispatch/mod.rs:112) — holds prompt_assembler: PromptAssembler",
+]
+anti_patterns = [
+    "Do NOT reintroduce a second parallel assembler — assemble() MUST end up calling build_role_system_prompt (or RoleSystemPromptSpec directly).",
+    "Do NOT change the Dispatcher::assemble call site signature at dispatch/mod.rs:158 unless required; keep AssembledPrompt as the adapter return type.",
+    "Do NOT drop context the runner already passes (files_in_scope, acceptance, prior outputs) — map them into TaskContext/PromptBuildOptions.",
+    "Do NOT delete the hand-rolled markdown helpers yet — that removal is E06-T04, after this routing is proven.",
+]
+acceptance = ["PromptAssembler::assemble delegates to the canonical builder; grep for build_role_system_prompt / RoleSystemPromptSpec / SystemPromptBuilder in prompt_builder.rs returns >0; roko-cli tests pass; default `roko plan run` now exercises the 12-slot builder."]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'build_role_system_prompt|RoleSystemPromptSpec|SystemPromptBuilder' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "Runner-v2 assembler must reference the canonical builder surface"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after routing the prompt through the canonical surface"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --lib dispatch 2>&1"
+fail_msg = "Dispatch prompt tests must pass after routing"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T04: Retire surface D markdown authorship after canonical routing
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T04"
+title = "Retire surface D markdown authorship after canonical routing"
+description = "Remove the CLI PromptAssembler's local role/task/files/acceptance/verify markdown section authorship after E06-T03 delegates assembly to the canonical compose surface. Keep PromptContext and AssembledPrompt as adapter types only."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-cli/src/dispatch/prompt_builder.rs"]
+role = "implementer"
+depends_on = ["E06-T03"]
+acceptance = [
+    "PromptAssembler::assemble still returns AssembledPrompt and preserves user-prompt task context, acceptance, and verify command rendering.",
+    "The system-prompt path no longer constructs local '# Role', '# Task', '# Files in scope', '# Acceptance criteria', or '# Verify' sections in roko-cli.",
+    "Dispatcher call sites remain source-compatible; no new prompt assembly abstraction is introduced.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "778-1005", why = "Surface D assemble() body; remove local markdown section construction while keeping adapter output shape" },
+    { path = "crates/roko-cli/src/dispatch/mod.rs", lines = "108-165", why = "Live Dispatcher call site; do not break assemble() signature or AssembledPrompt usage" },
+    { path = "crates/roko-cli/src/prompting.rs", lines = "71-96", why = "Canonical build_role_system_prompt wrapper that E06-T03 delegates through" },
+]
+symbols = [
+    "PromptAssembler::assemble(task, ctx) -> Result<AssembledPrompt, DispatchError>",
+    "AssembledPrompt { system_prompt, user_prompt, tool_allowlist, diagnostics }",
+    "build_role_system_prompt / RoleSystemPromptSpec — canonical surface selected by the ADR",
+]
+anti_patterns = [
+    "Do NOT change Dispatcher::dispatch or other call-site signatures just to delete helper code.",
+    "Do NOT recreate the old markdown section builder under a different helper name.",
+    "Do NOT remove task.context, task.acceptance, or task.verify rendering from the user prompt; only retire duplicate system-prompt authorship.",
+    "Do NOT touch roko-compose templates/assembly.rs here; surface E is owned by E06-T02.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'build_role_system_prompt|RoleSystemPromptSpec|SystemPromptBuilder' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "surface D must still delegate to the canonical builder"
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'let role_section|let task_section|let files_section|let acceptance_section|let verify_section' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "CLI prompt_builder.rs must not keep local system-prompt markdown section authorship"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after retiring local markdown authorship"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T05: De-duplicate section-effectiveness onto compose effective_priority
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T05"
+title = "De-duplicate section-effectiveness onto compose effective_priority"
+description = "Remove the runner-v2 local apply_section_effectiveness copy and make the canonical compose path consume SectionEffectivenessRegistry through SystemPromptBuilder / prompting.rs."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = [
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-cli/src/prompting.rs",
+    "crates/roko-compose/src/system_prompt_builder.rs",
+]
+role = "implementer"
+depends_on = ["E06-T03"]
+acceptance = [
+    "No roko-cli-local apply_section_effectiveness function or call remains in dispatch/prompt_builder.rs.",
+    "The runner-v2 canonical prompt path passes section-effectiveness data into the compose builder rather than mutating PromptSection drop_priority locally.",
+    "Existing section-effectiveness tests still pass or are moved to the compose-owned implementation.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "920-935", why = "Current local call site applied immediately before enforce_budget" },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "1548-1570", why = "Local apply_section_effectiveness implementation to remove" },
+    { path = "crates/roko-cli/src/prompting.rs", lines = "81-96", why = "Validated canonical build path already accepts SectionEffectivenessRegistry" },
+    { path = "crates/roko-compose/src/system_prompt_builder.rs", lines = "344-360", why = "with_section_effectiveness API that owns effective-priority adjustment" },
+    { path = "crates/roko-compose/src/system_prompt_builder.rs", lines = "746-765", why = "Compose effective_priority implementation; runner should rely on this one" },
+]
+symbols = [
+    "SectionEffectivenessRegistry::load_or_new",
+    "build_role_system_prompt_validated(..., section_effectiveness)",
+    "SystemPromptBuilder::with_section_effectiveness",
+]
+anti_patterns = [
+    "Do NOT keep a second priority-mutation helper in roko-cli after the runner delegates to compose.",
+    "Do NOT change the SectionEffectivenessRegistry file format or learning semantics in this task.",
+    "Do NOT remove section-effectiveness support entirely; move the live path to the compose-owned implementation.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'fn apply_section_effectiveness|apply_section_effectiveness\\(' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "dispatch/prompt_builder.rs must not contain or call the duplicate section-effectiveness helper"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'with_section_effectiveness|build_with_context_window_and_section_effectiveness' crates/roko-cli/src/prompting.rs crates/roko-compose/src/system_prompt_builder.rs"
+fail_msg = "section-effectiveness must be owned by the canonical compose path"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-compose 2>&1"
+fail_msg = "roko-cli and roko-compose must compile after de-duplicating section effectiveness"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T06: Persist LearningBidders store for prompt composition
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T06"
+title = "Persist LearningBidders store under .roko/learn/attention-bidders.json"
+description = "Load and save a HashMap<AttentionBidder, LearningBidder> under .roko/learn/attention-bidders.json and construct PromptComposer with those bidders on the canonical runner-v2 prompt path."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-cli/src/runner/event_loop.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "Runner-v2 prompt composition loads existing attention bidders from .roko/learn/attention-bidders.json when present.",
+    "PromptComposer is built with with_learning_bidders on the canonical path; missing or malformed store files degrade to an empty bidder map with a warning, not a crash.",
+    "A run that composes prompts writes a valid JSON attention-bidders store back under .roko/learn/.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-compose/src/prompt.rs", lines = "633-705", why = "PromptComposer::new, with_learning_bidders, update_bidders, and JSON-serializable bidder types" },
+    { path = "crates/roko-compose/src/auction.rs", lines = "20-60", why = "LearningBidder is Serialize/Deserialize and stores section observation counts" },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "717-1005", why = "Canonical runner-v2 prompt adapter and where composer options can be threaded" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "640-760", why = "Run setup area; use config.layout.learn_dir() for .roko/learn paths" },
+]
+symbols = [
+    "AttentionBidder — serde key enum for bidder map",
+    "LearningBidder — serde value storing learned section observations",
+    "PromptComposer::with_learning_bidders(HashMap<AttentionBidder, LearningBidder>)",
+    "RokoLayout::learn_dir() — canonical .roko/learn path helper",
+]
+anti_patterns = [
+    "Do NOT write attention-bidders.json at the workspace root; the path is .roko/learn/attention-bidders.json.",
+    "Do NOT make prompt composition fail hard because the bidder store is absent or older than the current schema.",
+    "Do NOT add another prompt assembly surface while adding bidder persistence.",
+    "Do NOT use .roko/signals.jsonl as the bidder store; persist a dedicated JSON file.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'attention-bidders\\.json|attention_bidders' crates/roko-cli/src/dispatch/prompt_builder.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "runner-v2 must name and use the .roko/learn/attention-bidders.json store"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'with_learning_bidders' crates/roko-cli/src/dispatch/prompt_builder.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "PromptComposer must be constructed with persisted learning bidders"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-compose 2>&1"
+fail_msg = "prompt bidder persistence must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T07: Close VCG warmup via bidder updates or ADR downgrade
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T07"
+title = "Close VCG warmup by updating bidders post-gate or downgrading Auto"
+description = "Follow the E06 ADR branch: either update persisted LearningBidders after gate outcomes so Auto can legitimately select VCG, or downgrade Auto to diagnostics-only density-greedy behavior."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = [
+    "crates/roko-cli/src/runner/event_loop.rs",
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-compose/src/strategy.rs",
+]
+role = "implementer"
+depends_on = ["E06-T01", "E06-T06"]
+acceptance = [
+    "Warm branch: post-gate runner-v2 code records included prompt sections and calls update_bidders or update_bidders_with_cost before persisting attention-bidders.json.",
+    "Downgrade branch: CompositionStrategy::Auto no longer silently flips to Vcg; VCG payment diagnostics remain available for explicit Vcg usage.",
+    "The branch taken matches tmp/status-quo/backlog/decisions/E06-canonical-surface.md and has a regression test.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/decisions/E06-canonical-surface.md", why = "ADR branch selector: warm VCG bidders vs downgrade Auto to diagnostics-only" },
+    { path = "crates/roko-compose/src/prompt.rs", lines = "692-720", why = "PromptComposer::update_bidders and update_bidders_with_cost APIs" },
+    { path = "crates/roko-compose/src/strategy.rs", lines = "1-105", why = "Auto -> Vcg warmup behavior to keep honest or downgrade" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1215-1305", why = "Gate completion path with pass/fail verdicts available for post-gate bidder updates" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "5039-5140", why = "SectionOutcomeRecord path already joins prompt sections to gate pass/fail; reuse rather than inventing a parallel attribution stream" },
+]
+symbols = [
+    "PromptComposer::update_bidders(included_sections, gate_passed)",
+    "PromptComposer::update_bidders_with_cost(section_costs)",
+    "CompositionStrategy::resolve / auto_select",
+    "SectionOutcomeRecord — existing section-presence to gate-outcome ledger",
+]
+anti_patterns = [
+    "Do NOT leave Auto selecting Vcg unless persisted bidder observations can actually reach the warmup threshold on the live path.",
+    "Do NOT count skipped or preflight-only gates as positive bidder feedback.",
+    "Do NOT update bidders before the gate result is known.",
+    "Do NOT make the warm and downgrade branches both partially active; pick the ADR branch and make the tests match it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "if rg -qi 'downgrade.*diagnostics|diagnostics-only' tmp/status-quo/backlog/decisions/E06-canonical-surface.md; then rg -q 'Self::Auto => Self::DensityGreedy|Self::Auto => Self::WeightedSum' crates/roko-compose/src/strategy.rs; else rg -q 'update_bidders|update_bidders_with_cost' crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/dispatch/prompt_builder.rs; fi"
+fail_msg = "implementation must either update bidders post-gate or downgrade Auto according to the ADR"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-compose strategy 2>&1"
+fail_msg = "composition strategy tests must reflect the selected ADR branch"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-compose 2>&1"
+fail_msg = "VCG warmup/downgrade changes must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T08: Expose prompt composition config
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T08"
+title = "Expose [prompt] composition_strategy and vcg_warmup_observations config"
+description = "Add typed prompt composition config in crates/roko-core/src/config/schema.rs and consume it at the canonical PromptComposer construction site. Default behavior must preserve current density-greedy cold starts."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 110
+files = [
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-cli/src/prompting.rs",
+]
+role = "implementer"
+depends_on = ["E06-T06"]
+acceptance = [
+    "RokoConfig owns a serde/defaulted prompt config section with composition_strategy and vcg_warmup_observations.",
+    "The canonical runner-v2 prompt path passes those values into PromptComposer::with_strategy and with_vcg_warmup_observations.",
+    "roko config show or generated example config exposes the prompt knobs without using the stale crates/roko-core/src/config.rs path.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/schema.rs", lines = "89-205", why = "RokoConfig fields/default; add prompt config here, not stale config.rs" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "866-1010", why = "Generated example config writer; add [prompt] output here if examples are generated centrally" },
+    { path = "crates/roko-compose/src/strategy.rs", lines = "1-55", why = "CompositionStrategy serde enum already uses snake_case names" },
+    { path = "crates/roko-compose/src/prompt.rs", lines = "657-667", why = "PromptComposer::with_strategy and with_vcg_warmup_observations setters" },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "717-1005", why = "Canonical runner-v2 prompt construction adapter to consume config" },
+]
+symbols = [
+    "RokoConfig — add prompt: PromptConfig with serde(default)",
+    "CompositionStrategy — serde snake_case enum from roko-compose",
+    "PromptComposer::with_strategy",
+    "PromptComposer::with_vcg_warmup_observations",
+]
+anti_patterns = [
+    "Do NOT edit crates/roko-core/src/config.rs; the live schema is crates/roko-core/src/config/schema.rs.",
+    "Do NOT use stringly typed strategy names in runner code if CompositionStrategy can be parsed through serde.",
+    "Do NOT change the default so cold Auto starts directly in Vcg without bidder observations.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'PromptConfig|composition_strategy|vcg_warmup_observations' crates/roko-core/src/config/schema.rs"
+fail_msg = "schema.rs must define and expose prompt composition config"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'with_strategy|with_vcg_warmup_observations' crates/roko-cli/src/dispatch/prompt_builder.rs crates/roko-cli/src/prompting.rs"
+fail_msg = "runner-v2 prompt construction must consume the prompt config knobs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-cli 2>&1"
+fail_msg = "prompt config changes must compile"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E06-T09: Verify only one canonical prompt assembly entrypoint remains
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E06-T09"
+title = "Verify single canonical prompt assembly entrypoint remains"
+description = "Perform a final structural sweep after routing and cleanup: surface E must be gone, surface D must delegate to the canonical build_role_system_prompt path, and no runner-v2 duplicate section-effectiveness path may remain."
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = [
+    "crates/roko-cli/src/dispatch/prompt_builder.rs",
+    "crates/roko-compose/src/templates/mod.rs",
+    "crates/roko-compose/src/lib.rs",
+    "crates/roko-compose/src/system_prompt_builder.rs",
+]
+role = "implementer"
+depends_on = ["E06-T02", "E06-T03", "E06-T04", "E06-T05"]
+acceptance = [
+    "No templates::assembly, assembly::PromptAssembler, assemble_from, or TemplateAssembly references remain under crates/.",
+    "Runner-v2 prompt_builder.rs reaches build_role_system_prompt, RoleSystemPromptSpec, or SystemPromptBuilder and does not author local system-prompt markdown sections.",
+    "roko-cli and roko-compose compile together after the sweep.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "1-80", why = "Module-level prompt assembly documentation; update if it still claims local assembly ownership" },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "717-1005", why = "Runner-v2 adapter should now delegate rather than author canonical sections" },
+    { path = "crates/roko-compose/src/templates/mod.rs", lines = "1-60", why = "Surface E module/re-export should have been removed by E06-T02" },
+    { path = "crates/roko-compose/src/lib.rs", lines = "60-105", why = "Crate-root exports should not re-export the dormant template assembler" },
+]
+symbols = [
+    "build_role_system_prompt — canonical CLI entrypoint",
+    "RoleSystemPromptSpec / SystemPromptBuilder — canonical compose surface",
+    "templates::assembly::PromptAssembler — deleted dormant surface E",
+]
+anti_patterns = [
+    "Do NOT implement product behavior in this sweep beyond removing stale duplicate leftovers.",
+    "Do NOT reintroduce templates/assembly.rs to satisfy an export.",
+    "Do NOT remove PromptAssembler adapter types if Dispatcher still needs their public shape.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'templates::assembly|assembly::PromptAssembler|assemble_from|TemplateAssembly' crates/ --glob '!target/**'"
+fail_msg = "dormant template assembly surface must be gone"
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'build_role_system_prompt|RoleSystemPromptSpec|SystemPromptBuilder' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "runner-v2 prompt_builder.rs must reach the canonical surface"
+
+[[task.verify]]
+phase = "structural"
+command = "! rg -n 'fn apply_section_effectiveness|let role_section|let task_section|let files_section|let acceptance_section|let verify_section' crates/roko-cli/src/dispatch/prompt_builder.rs"
+fail_msg = "runner-v2 prompt_builder.rs must not keep duplicate prompt authorship or section-effectiveness code"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli -p roko-compose 2>&1"
+fail_msg = "canonical prompt assembly sweep must compile"

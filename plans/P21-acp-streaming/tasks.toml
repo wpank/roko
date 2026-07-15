@@ -1,0 +1,318 @@
+[meta]
+plan = "P21-acp-streaming"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Stream non-progress stdout lines immediately in run_slash_command ─────
+#
+# Currently run_slash_command (bridge_events.rs:3961-4067) accumulates
+# non-progress stdout lines into `output: String` (lines 4034-4036) and only
+# sends them as a single TokenChunk at line 4067.  The ROKO_PROGRESS lines
+# are dispatched as structured events, but everything else is buffered.
+#
+# Fix: send each non-progress stdout line as a TokenChunk immediately, like
+# run_shell_command already does (line 4138).  Keep accumulating into `output`
+# only for the "no output" fallback message.
+
+[[task]]
+id = "T1"
+title = "Stream non-progress stdout lines in run_slash_command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3961-4076", why = "The main select loop in run_slash_command. Lines 4034-4036 buffer non-progress stdout into `output` instead of streaming. Line 4067 sends the buffered output as one TokenChunk." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4123-4164", why = "Reference: run_shell_command already streams each line immediately via TokenChunk at line 4138." },
+]
+symbols = [
+    "run_slash_command — async fn(session_id: &str, raw_input: &str, workdir: &Path, model_key: String, cancel_token: CancelToken, event_sender: mpsc::Sender<CognitiveEvent>, shared_run: SharedWorkflowRun) -> Result<()>",
+    "CognitiveEvent::TokenChunk(String) — variant used to stream text to the editor",
+]
+anti_patterns = [
+    "Do NOT remove the `output` accumulator entirely — it is still needed for the `output.is_empty()` fallback at line 4063.",
+    "Do NOT change the ROKO_PROGRESS parsing logic (lines 3974-4033) — that already works correctly.",
+    "Do NOT touch run_shell_command — it already streams correctly.",
+]
+
+# In the `Ok(Some(l))` branch at line 3973, in the else clause at lines 4034-4036:
+#
+# BEFORE:
+#   } else {
+#       output.push_str(&l);
+#       output.push('\n');
+#   }
+#
+# AFTER:
+#   } else {
+#       had_output = true;
+#       let _ = event_sender
+#           .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
+#           .await;
+#   }
+#
+# Also add a `had_output` bool alongside `output` at line 3958.
+# Change line 4063 from `output.is_empty()` to `!had_output`.
+# Remove the unconditional `event_sender.send(TokenChunk(output))` at line 4067
+# — only send the "no output" fallback when `!had_output`.
+# Keep the Complete event at lines 4068-4073.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'had_output' crates/roko-acp/src/bridge_events.rs | head -5"
+fail_msg = "Must introduce had_output tracking variable"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'TokenChunk(format!(\"{l}' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "Must stream non-progress lines as individual TokenChunk events"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T2: Stream stderr lines in run_slash_command instead of buffering ─────────
+#
+# Currently stderr lines in run_slash_command are appended to `output` with
+# dim ANSI escape codes (line 4049).  They should be streamed as TokenChunk
+# immediately, like run_shell_command does (line 4153).
+
+[[task]]
+id = "T2"
+title = "Stream stderr lines immediately in run_slash_command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4046-4058", why = "The stderr branch in run_slash_command. Line 4049 appends to output instead of streaming." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4148-4162", why = "Reference: run_shell_command already streams stderr with dim ANSI at line 4153." },
+]
+symbols = [
+    "CognitiveEvent::TokenChunk(String) — send each stderr line as dim ANSI text immediately",
+]
+anti_patterns = [
+    "Do NOT remove the dim ANSI escape codes — they distinguish stderr from stdout visually.",
+    "Do NOT change the stderr_done tracking — it is correct.",
+]
+
+# In the stderr Ok(Some(l)) branch at line 4048-4049:
+#
+# BEFORE:
+#   Ok(Some(l)) => {
+#       output.push_str(&format!("\x1b[2m{}\x1b[0m\n", l));
+#   }
+#
+# AFTER:
+#   Ok(Some(l)) => {
+#       had_output = true;
+#       let _ = event_sender
+#           .send(CognitiveEvent::TokenChunk(format!("\x1b[2m{l}\x1b[0m\n")))
+#           .await;
+#   }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A3 'stderr_lines.next_line' crates/roko-acp/src/bridge_events.rs | grep -c 'TokenChunk'"
+fail_msg = "Stderr branch must send TokenChunk directly"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T3: Remove dead `output` accumulator from run_slash_command ───────────────
+#
+# After T1 and T2, the `output: String` variable at line 3958 is only needed
+# for the `!had_output` fallback.  Remove `output` entirely and use `had_output`
+# bool.  This removes the dead buffering path.
+
+[[task]]
+id = "T3"
+title = "Remove dead output accumulator from run_slash_command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3956-3960", why = "Variable declarations. Remove `let mut output = String::new()` at line 3958 — use only `had_output`." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4023-4033", why = "The unknown ROKO_PROGRESS type fallback and JSON parse failure paths. These still push to `output` — change them to stream via TokenChunk." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4060-4075", why = "Post-loop: remove dead `output.is_empty()` check and `TokenChunk(output)` send." },
+]
+symbols = [
+    "run_slash_command — the function being cleaned up",
+]
+anti_patterns = [
+    "Do NOT remove had_output — it is needed for the 'no output' fallback message.",
+    "Do NOT remove the Complete event send at lines 4068-4073.",
+    "Make sure the fallback paths (unknown progress type line 4025, JSON parse fail line 4031) send TokenChunk instead of pushing to output.",
+]
+
+# 1. Remove `let mut output = String::new();` at line 3958.
+# 2. In unknown progress type (lines 4024-4027):
+#    Replace output.push_str(&l) / output.push('\n') with:
+#      had_output = true;
+#      let _ = event_sender.send(CognitiveEvent::TokenChunk(format!("{l}\n"))).await;
+# 3. In JSON parse fail (lines 4030-4032):
+#    Same replacement.
+# 4. Replace lines 4063-4067 with:
+#    if !had_output {
+#        let _ = event_sender.send(CognitiveEvent::TokenChunk(
+#            format!("/{command} completed (no output)")
+#        )).await;
+#    }
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'let mut output = String::new' crates/roko-acp/src/bridge_events.rs | grep -v 'run_shell' | grep -q ."
+fail_msg = "Must remove the output String accumulator from run_slash_command"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'output\\.push_str' crates/roko-acp/src/bridge_events.rs | grep -q ."
+fail_msg = "Must not have any output.push_str remaining in run_slash_command"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+# ── T4: Wire AcpProgressSink into plan run and do commands ────────────────────
+#
+# AcpProgressSink is built (output_sink.rs:774) but never used as an output_sink
+# in plan.rs or do_cmd.rs.  When ROKO_ACP_PROGRESS=1 env var is set (which the
+# ACP bridge can set before spawning the subprocess), use AcpProgressSink
+# alongside FormattedStderrSink to emit structured ROKO_PROGRESS: lines on
+# stdout.
+
+[[task]]
+id = "T4"
+title = "Wire AcpProgressSink as output_sink when ROKO_ACP_PROGRESS is set"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = ["crates/roko-cli/src/commands/plan.rs", "crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "581-596", why = "The output_sink selection logic. Need to add AcpProgressSink when ROKO_ACP_PROGRESS is set." },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "591-602", why = "Same pattern in do_cmd.rs." },
+    { path = "crates/roko-cli/src/runner/output_sink.rs", lines = "767-920", why = "AcpProgressSink implementation — already built, emits ROKO_PROGRESS: JSON lines to stdout." },
+    { path = "crates/roko-cli/src/runner/output_sink.rs", lines = "50-155", why = "RunOutputSink trait — AcpProgressSink implements it." },
+]
+symbols = [
+    "AcpProgressSink::new() -> Self — constructor",
+    "RunOutputSink — trait implemented by AcpProgressSink",
+    "FormattedStderrSink::new(color: bool) -> Self — the existing stderr sink",
+]
+anti_patterns = [
+    "Do NOT replace FormattedStderrSink — AcpProgressSink runs alongside it. Use a FanOutSink or TeeOutputSink wrapper, or simply check the env var and use AcpProgressSink when set.",
+    "Do NOT add AcpProgressSink unconditionally — only when ROKO_ACP_PROGRESS=1 is set. The ACP bridge will set this env var before spawning the subprocess.",
+]
+
+# Implementation approach:
+#
+# The simplest approach: when `std::env::var("ROKO_ACP_PROGRESS").ok().as_deref() == Some("1")`,
+# use AcpProgressSink as the output_sink instead of FormattedStderrSink.
+# The AcpProgressSink writes structured JSON to stdout, while the
+# FormattedStderrSink writes human-readable text to stderr.
+#
+# In plan.rs at line 581, add a check:
+#   output_sink: if std::env::var("ROKO_ACP_PROGRESS").ok().as_deref() == Some("1") {
+#       std::sync::Arc::new(roko_cli::runner::output_sink::AcpProgressSink::new())
+#           as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
+#   } else if !approval && !cli.quiet && !cli.json {
+#       ...existing...
+#
+# Same pattern in do_cmd.rs.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'AcpProgressSink' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "plan.rs must reference AcpProgressSink"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'AcpProgressSink' crates/roko-cli/src/commands/do_cmd.rs"
+fail_msg = "do_cmd.rs must reference AcpProgressSink"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'ROKO_ACP_PROGRESS' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "Must check ROKO_ACP_PROGRESS env var"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ── T5: Set ROKO_ACP_PROGRESS=1 env var on subprocess in run_slash_command ────
+#
+# When run_slash_command spawns the roko CLI subprocess, set ROKO_ACP_PROGRESS=1
+# so the child process uses AcpProgressSink and emits structured progress lines
+# that the parent already knows how to parse (lines 3974-4033).
+
+[[task]]
+id = "T5"
+title = "Set ROKO_ACP_PROGRESS=1 on subprocess in run_slash_command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["T4"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "3925-3932", why = "The tokio::process::Command builder for the roko CLI subprocess. Add .env(\"ROKO_ACP_PROGRESS\", \"1\") before .spawn()." },
+]
+symbols = [
+    "tokio::process::Command — builder for the subprocess. Chain .env() before .spawn().",
+]
+anti_patterns = [
+    "Do NOT set this env var on run_shell_command — shell commands (cargo build, etc.) do not emit ROKO_PROGRESS lines.",
+    "Do NOT set this on the parent process — only on the spawned child.",
+]
+
+# At line 3925, add .env("ROKO_ACP_PROGRESS", "1") to the Command builder:
+#
+# let mut child = match tokio::process::Command::new(&roko_bin)
+#     .args(&cli_args)
+#     .current_dir(workdir)
+#     .env("ROKO_ACP_PROGRESS", "1")    // <-- ADD THIS
+#     .stdin(std::process::Stdio::null())
+#     .stdout(std::process::Stdio::piped())
+#     .stderr(std::process::Stdio::piped())
+#     .spawn()
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A8 'Command::new(&roko_bin)' crates/roko-acp/src/bridge_events.rs | grep -c 'ROKO_ACP_PROGRESS'"
+fail_msg = "Must set ROKO_ACP_PROGRESS env var on subprocess Command"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"

@@ -1,0 +1,240 @@
+[meta]
+plan = "P12-runner-parallelism"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Read max_parallel from plan meta and clamp RunConfig.max_concurrent_tasks
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Currently plan.rs (line 371) sets max_concurrent_tasks from CLI --max-tasks,
+# roko.toml runner.max_concurrent_tasks, or executor config — but NEVER reads
+# meta.max_parallel from the loaded plans' tasks.toml.
+#
+# After plans are loaded (line 440: load_plans), iterate over plans and take
+# the maximum max_parallel value. If any plan declares max_parallel > 1, use
+# that as a floor for max_concurrent_tasks (unless --max-tasks was explicit).
+#
+# In plan.rs, between the load_plans call (line 440) and the RunConfig
+# construction (line 520), add:
+#
+#   // Honor tasks.toml max_parallel as a floor for concurrency
+#   let plan_max_parallel = plans
+#       .iter()
+#       .map(|p| p.tasks.meta.max_parallel as usize)
+#       .max()
+#       .unwrap_or(1);
+#   if plan_max_parallel > max_concurrent_tasks && max_tasks == 0 {
+#       eprintln!(
+#           "▸ Increasing max_concurrent_tasks from {max_concurrent_tasks} to \
+#            {plan_max_parallel} (from plan meta.max_parallel)"
+#       );
+#       max_concurrent_tasks = plan_max_parallel;
+#   }
+#
+# This requires making max_concurrent_tasks mutable (add `let mut` at line 371).
+#
+[[task]]
+id = "T1"
+title = "Acceptance roll-up: enforce effective per-plan concurrency"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH02-T01 + E01-T05"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 20
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH02-isolation-recovery", "E01-execution-engine"]
+acceptance = [
+    "Effective task capacity is bounded by both global capacity and plan.max_parallel, explicit operator limits are not silently raised, and capacity spans preflight through commit.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+    { path = "tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH02-T01 \u2014 canonical implementation owner",
+    "E01-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH02-T01\", \"E01-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml\", \"tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-runtime task_scheduler && cargo test -p roko-cli runner::event_loop"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T2"
+title = "Acceptance roll-up: attribute concurrent active tasks per plan"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH02-T01 + E01-T04 + E01-T05"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 40
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH02-isolation-recovery", "E01-execution-engine"]
+acceptance = [
+    "Multiple independent tasks in one plan may be active only within effective capacity; duplicate dispatch is impossible and each terminal path releases exactly its own task reservation.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+    { path = "tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH02-T01 \u2014 canonical implementation owner",
+    "E01-T04 \u2014 canonical implementation owner",
+    "E01-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH02-T01\", \"E01-T04\", \"E01-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml\", \"tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-runtime task_scheduler && cargo test -p roko-cli runner::event_loop"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T3"
+title = "Acceptance roll-up: own concurrent agent handles per task"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH02-T01 + E01-T04 + E01-T05"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 50
+files = []
+role = "quick-reviewer"
+depends_on = ["T2"]
+depends_on_plan = ["SH02-isolation-recovery", "E01-execution-engine"]
+acceptance = [
+    "Concurrent task attempts retain independently addressable process ownership through completion and shutdown; one task cannot remove, leak, or terminate a sibling handle.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+    { path = "tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH02-T01 \u2014 canonical implementation owner",
+    "E01-T04 \u2014 canonical implementation owner",
+    "E01-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH02-T01\", \"E01-T04\", \"E01-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml\", \"tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-runtime task_scheduler && cargo test -p roko-cli runner::event_loop"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T4"
+title = "Acceptance roll-up: preserve per-task output attribution"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T01 + SH04-T02"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Parallel agent output is keyed by structured run, plan, task, and attempt identity, retains typed channel and severity, and cannot overwrite or terminalize a sibling task output.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T01 \u2014 canonical implementation owner",
+    "SH04-T02 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T01\", \"SH04-T02\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::agent_events && cargo test -p roko-cli runner::projection"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T5"
+title = "Acceptance roll-up: dispatch independent tasks within effective capacity"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH02-T01 + E01-T04 + E01-T05"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 40
+files = []
+role = "quick-reviewer"
+depends_on = ["T2", "T3"]
+depends_on_plan = ["SH02-isolation-recovery", "E01-execution-engine"]
+acceptance = [
+    "The live DAG can dispatch multiple independent ready tasks from one plan up to effective capacity, while blocked dependents and max_parallel=1 plans never overlap.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+    { path = "tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH02-T01 \u2014 canonical implementation owner",
+    "E01-T04 \u2014 canonical implementation owner",
+    "E01-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH02-T01\", \"E01-T04\", \"E01-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml\", \"tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-runtime task_scheduler && cargo test -p roko-cli runner::task_dag && cargo test -p roko-cli runner::event_loop"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."

@@ -1,0 +1,244 @@
+[meta]
+plan = "P24-workspace-paths"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# T1: Align main.rs resolve_plans_dir with plan.rs plans_dir
+# ────────────────────────────────────────────────────────────────────
+# Two functions resolve the plans directory with OPPOSITE preferences:
+#   - plan.rs:15-22 (plans_dir): prefers ./plans/, falls back to .roko/plans/
+#   - main.rs:2860-2881 (resolve_plans_dir): prefers .roko/plans/, falls back to ./plans/
+#
+# The canonical location is ./plans/ (top-level), which is what plan.rs uses
+# and what the actual 11 plan directories live in. Change resolve_plans_dir
+# to match plan.rs by preferring ./plans/ first.
+
+[[task]]
+id = "T1"
+title = "Align resolve_plans_dir in main.rs to prefer top-level plans/"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "2857-2881", why = "resolve_plans_dir: prefers .roko/plans/ — must flip to prefer ./plans/" },
+    { path = "crates/roko-cli/src/plan.rs", lines = "12-22", why = "plans_dir: the canonical version that prefers ./plans/ — match this" },
+    { path = "crates/roko-cli/src/main.rs", lines = "2686-2697", why = "Only call site of resolve_plans_dir — resume flow" },
+    { path = "crates/roko-cli/src/main.rs", lines = "3824-3860", why = "Tests for resolve_plans_dir — must update to match new preference order" },
+]
+symbols = [
+    "resolve_plans_dir — fn resolve_plans_dir(workdir: &Path, explicit: Option<&Path>) -> PathBuf",
+    "plans_dir — pub fn plans_dir(workdir: &Path) -> PathBuf (in plan.rs)",
+]
+anti_patterns = [
+    "Do NOT delete resolve_plans_dir entirely — it has the explicit-path-wins feature that plans_dir lacks, and has tests.",
+    "Do NOT remove the .roko/plans/ fallback — just swap the preference order so ./plans/ is checked first.",
+    "Do NOT change plan.rs — it already has the correct order.",
+]
+
+# Swap the canonical and fallback variables in resolve_plans_dir:
+#   let canonical = workdir.join("plans");        // was .roko/plans
+#   let fallback = workdir.join(".roko").join("plans");  // was plans/
+# Also update the four unit tests to match the new order.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -A3 'fn resolve_plans_dir' crates/roko-cli/src/main.rs | grep -q 'let canonical = workdir.join(\"plans\")'"
+fail_msg = "canonical must be workdir.join(\"plans\") (top-level), not .roko/plans"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -A5 'fn resolve_plans_dir' crates/roko-cli/src/main.rs | grep -q 'let canonical = workdir.join(\".roko\")'"
+fail_msg = "Must not prefer .roko/plans as canonical anymore"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after swapping preference order"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli resolve_plans_dir 2>&1"
+fail_msg = "resolve_plans_dir tests must pass with updated preference order"
+
+# ────────────────────────────────────────────────────────────────────
+# T2: Update research subcommand doc strings referencing .roko/plans/
+# ────────────────────────────────────────────────────────────────────
+# The Research::EnhancePlan and Research::EnhanceTasks subcommands
+# (main.rs:1479,1484) have doc comments saying "Plan directory name
+# under .roko/plans/". Update to say "under plans/" to match the
+# canonical location.
+
+[[task]]
+id = "T2"
+title = "Update doc strings referencing .roko/plans/ to plans/"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1475-1490", why = "EnhancePlan and EnhanceTasks doc comments referencing .roko/plans/" },
+    { path = "crates/roko-cli/src/main.rs", lines = "2686-2697", why = "Comment on line 2686 also references .roko/plans/ as canonical" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT change any code logic — only change doc comment strings.",
+    "Do NOT change references in other files — this task is scoped to main.rs doc strings only.",
+]
+
+# Change:
+#   "Plan directory name under .roko/plans/."
+# to:
+#   "Plan directory name under plans/."
+# Also update the comment on line 2686.
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'under .roko/plans' crates/roko-cli/src/main.rs | grep -v '// was\\|fallback\\|test\\|assert\\|not found in'"
+fail_msg = "Doc strings should reference plans/ not .roko/plans/ as canonical"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after doc string changes"
+
+# ────────────────────────────────────────────────────────────────────
+# T3: Add orphaned .tmp file check to roko doctor
+# ────────────────────────────────────────────────────────────────────
+# .roko/learn/ accumulates orphaned .tmp files from crashed atomic
+# writes. Add a doctor check that warns about them and suggests cleanup.
+
+[[task]]
+id = "T3"
+title = "Add orphaned tmp file detection to roko doctor"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 45
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor: where checks are pushed — add new check here" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "29-65", why = "DoctorStatus and DoctorCheck struct definitions — follow the pattern" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "415-461", why = "check_layout_basics: example of a check that scans .roko directories" },
+]
+symbols = [
+    "run_doctor — pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport>",
+    "DoctorCheck — pub struct DoctorCheck { id, status, message, detail, path, url, fix }",
+    "DoctorStatus — pub enum DoctorStatus { Ok, Warn, Fail, Skipped }",
+]
+anti_patterns = [
+    "Do NOT auto-delete tmp files — doctor should only warn and suggest a fix command.",
+    "Do NOT make this a Fail status — use Warn since orphaned tmp files are not blocking.",
+    "Do NOT scan recursively — only check .roko/learn/ directly.",
+]
+
+# 1. Add fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck
+#    - Scan .roko/learn/ for files with .tmp extension
+#    - If found: DoctorStatus::Warn with count and fix suggestion
+#    - If none: DoctorStatus::Ok
+#    - Fix text: "rm .roko/learn/*.tmp"
+# 2. Add checks.push(check_orphaned_tmp_files(&workdir)) in run_doctor
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'orphaned_tmp\\|check_orphaned' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must add orphaned tmp file check function"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'check_orphaned.*workdir\\|orphaned_tmp.*workdir' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must call the orphaned tmp check in run_doctor"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"orphaned_tmp' crates/roko-cli/src/doctor.rs"
+fail_msg = "Check must have id 'orphaned_tmp_files' or similar"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after adding doctor check"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli doctor 2>&1"
+fail_msg = "Existing doctor tests must still pass"
+
+# ────────────────────────────────────────────────────────────────────
+# T4: Add doctor check for plans directory conflict
+# ────────────────────────────────────────────────────────────────────
+# When both ./plans/ AND .roko/plans/ exist, warn the user about the
+# conflict. This catches the common case where prd plan wrote to one
+# location while plan list looks in the other.
+
+[[task]]
+id = "T4"
+title = "Add plans directory conflict detection to roko doctor"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 35
+files = ["crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = ["T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "173-210", why = "run_doctor: where to add the new check" },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "415-461", why = "check_layout_basics: pattern for directory-checking doctor checks" },
+    { path = "crates/roko-cli/src/plan.rs", lines = "12-22", why = "plans_dir function showing canonical preference for ./plans/" },
+]
+symbols = [
+    "run_doctor — pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport>",
+    "DoctorCheck — pub struct DoctorCheck { id, status, message, detail, path, url, fix }",
+]
+anti_patterns = [
+    "Do NOT auto-migrate files between directories — just warn.",
+    "Do NOT check for this if neither directory exists — only warn when BOTH exist.",
+    "Do NOT use Fail status — use Warn since both locations work, it's just confusing.",
+]
+
+# 1. Add fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck
+#    - Check if both workdir.join("plans") and workdir.join(".roko/plans") exist
+#    - If both: DoctorStatus::Warn with message about conflict
+#    - Detail: list plan count in each directory
+#    - Fix: "mv .roko/plans/* plans/ && rmdir .roko/plans"
+#    - If only one or neither: DoctorStatus::Ok
+# 2. Add checks.push(check_plans_dir_conflict(&workdir)) in run_doctor
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'plans_dir_conflict\\|check_plans.*conflict' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must add plans directory conflict check function"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '.roko.*plans' crates/roko-cli/src/doctor.rs && grep -q 'workdir.join(\"plans\")' crates/roko-cli/src/doctor.rs"
+fail_msg = "Must check both plans/ and .roko/plans/ locations"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after adding doctor check"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli doctor 2>&1"
+fail_msg = "Existing doctor tests must still pass"

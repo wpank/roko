@@ -310,3 +310,12 @@ Same schema; key acceptance/verify notes:
 > nominally routes through the openai-compat cognitive task (`:1459-1460`) which *does* thread
 > `mcp_servers`; confirm at pickup whether the Claude-CLI *dispatch* (delegated `claude` binary)
 > actually consumes them, and fold into E17-T03 / **E15** if not.
+
+## CTRL-08 ownership reconciliation
+
+E17-T07/T08 remain ACP-specific adapters only. They consume SH05/E48 budget state
+and E48 provider-health state after those plans; they must not define another
+budget guardrail, limiter, health registry, or router. The plan runs at
+`max_parallel = 1` because its adapters share ACP bridge/handler/type hot surfaces.
+See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

@@ -1,0 +1,201 @@
+[meta]
+plan = "P18-tui-agent-data"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─── T1: Fix agent_id prefix match in TaskStarted apply ───────────────
+
+[[task]]
+id = "T1"
+title = "Acceptance roll-up: use structured task attribution"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T01"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "TaskStarted and all later events attribute agents by structured run, plan, task, and attempt fields; slash or colon display-ID parsing cannot affect current-task assignment.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T01 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T01\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-core dashboard_snapshot && cargo test -p roko-cli runner::agent_events"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T2"
+title = "Acceptance roll-up: publish attributed live usage"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T03 + SH04-T05"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Approval TUI receives correctly attributed estimated and provider-final input tokens, output tokens, and cost without double counting or reading stale files.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T03 \u2014 canonical implementation owner",
+    "SH04-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T03\", \"SH04-T05\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::agent_events && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T3"
+title = "Acceptance roll-up: preserve typed live agent output"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T02 + SH04-T03"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Assistant deltas reach the approval TUI with structured task identity and typed channel and severity while provider failures and fatal errors remain distinguishable and console output is not duplicated.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T02 \u2014 canonical implementation owner",
+    "SH04-T03 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T02\", \"SH04-T03\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::agent_events && cargo test -p roko-cli runner::output_sink && cargo test -p roko-cli tui"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T4"
+title = "Acceptance roll-up: publish one diagnosis for failed gates"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T04"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = []
+role = "quick-reviewer"
+depends_on = ["T5"]
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "A failed gate publishes exactly one attributed diagnosis with classification and retry or blocker context; passing gates do not publish failure diagnoses.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T04 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T04\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::event_loop && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T5"
+title = "Acceptance roll-up: expose diagnoses through the canonical TUI bridge"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "SH04-T04"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["SH04-runtime-telemetry-tui"]
+acceptance = [
+    "Runner diagnoses flow through the canonical structured dashboard event path and are visible to the TUI without a second diagnosis transport or direct sender access.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "SH04-T04 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"SH04-T04\"]; paths=[\"tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli runner::event_loop && cargo test -p roko-cli tui && cargo test -p roko-core dashboard_snapshot"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."

@@ -1,5 +1,19 @@
 # 03 — Work-Breakdown: Master Roadmap (18 Epics)
 
+> **Current-control-plane notice (2026-07-14, CTRL-15):** This is the preserved
+> July 9 E01-E18 roadmap, not the current aggregate counter. The live manifests
+> now contain 447 E01-E48 implementation records (7 done/440 ready), 57
+> self-heal records (27 done/30 ready), and 144 current top-level executable
+> records (all ready): 648 execution records in total, 34 done/614 ready. Of
+> those, 33 are deliberately zero-write acceptance roll-ups (12 in the canonical
+> E plans and 21 in the sealed-120 reconciliation), leaving 615 retained
+> implementation/verification owner records. The 71 DOC records are a separate
+> all-ready documentation queue, and 96 authoring-gap plus 66 self-dev records
+> remain execution-excluded superseded history. See
+> [`plans/_meta/EXECUTION-OWNERSHIP.md`](../../../plans/_meta/EXECUTION-OWNERSHIP.md)
+> for the exact top-level 120-row ownership mapping and current 30/144 index
+> boundary. The historical 149/120/~293 figures below remain baseline facts only.
+>
 > **What this doc is:** the synthesis layer over `backlog/epics/E01..E18-*.md`. It fixes the
 > cross-epic dependency DAG, assigns each epic to a milestone with entry/exit criteria, names the
 > critical path and the parallelizable tracks, and gives a single recommended execution order that

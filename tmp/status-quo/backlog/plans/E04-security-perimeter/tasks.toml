@@ -1,0 +1,957 @@
+[meta]
+plan = "E04-security-perimeter"
+total = 19
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── E04-T01: Move relay proxy under the auth stack (P0-1 / F1) ──
+#
+# relay_proxy::routes() is merged at the top-level router (routes/mod.rs:248),
+# OUTSIDE the /api nest, so require_api_key + require_scope never run. Any
+# client proxies arbitrary GET/POST/DELETE + 2 WS bridges to the internal
+# agent-relay fully unauthed. Wrap the relay router in the same auth layers
+# used for the /api nest and ws routes (only when api_auth.enabled).
+
+[[task]]
+id = "E04-T01"
+title = "Gate relay proxy routes behind require_api_key + require_scope"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 40
+files = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/relay_proxy.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "224-263", why = "Router assembly. `ws` shows the conditional require_api_key layering pattern (224-231); relay is merged unauthed at 248." },
+    { path = "crates/roko-serve/src/routes/relay_proxy.rs", lines = "23-31", why = "routes() returns the relay Router to be wrapped." },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "356-397", why = "required_scope_for / is_scope_sufficient — relay writes should require `write` or `agent:write`, not `read`." },
+]
+symbols = [
+    "relay_proxy::routes() -> Router<Arc<AppState>> — relay_proxy.rs:23",
+    "middleware::require_api_key — layered on ws when api_auth.enabled",
+    "middleware::require_scope — scope enforcement layer",
+]
+anti_patterns = [
+    "Do NOT leave relay merged outside the auth layers — that is the bug.",
+    "Do NOT auth relay when api_auth.enabled is false — match the existing ws/api conditional so local/dev is unchanged.",
+    "Do NOT break the WS upgrade — apply the same layer pattern used for ws::routes() so /relay/*/ws still upgrades.",
+]
+
+# Steps:
+# 1. Mirror the `ws` binding (mod.rs:224-231): build `let relay = if api_auth.enabled {
+#    relay_proxy::routes().layer(from_fn_with_state(state, require_api_key))
+#        .layer(from_fn_with_state(state, require_scope)) } else { relay_proxy::routes() };`
+# 2. Replace `.merge(relay_proxy::routes())` at line 248 with `.merge(relay)`.
+# 3. Confirm relay mutations resolve to a non-`read` scope (they hit `/relay/...`,
+#    not `/api/...`, so add a relay arm to required_scope_for or force `write`).
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'merge(relay_proxy::routes())' crates/roko-serve/src/routes/mod.rs | grep -q ."
+fail_msg = "relay_proxy must no longer be merged unwrapped; it must go through the auth layers"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- relay_requires_auth 2>&1"
+fail_msg = "an integration test must assert GET/POST/WS on /relay/* returns 401 without an API key when auth is enabled"
+
+acceptance = ["With auth.enabled=true, an unauthenticated GET/POST/DELETE to /relay/* and a WS upgrade to /relay/agents/ws all return 401; with a valid key + sufficient scope they proxy as before; with auth.enabled=false behavior is unchanged."]
+
+
+# ── E04-T02: Deny-by-default scope fallback (P0-2 / F2) ──
+#
+# required_scope_for (middleware.rs:385) returns "read" for every unlisted
+# mutating /api route, and is_scope_sufficient treats "read" as always-satisfied,
+# so a read key can POST run/jobs/dream/research/deploy/etc. Flip the fallback
+# to a mutating default ("write") so read keys are rejected on unclassified
+# mutations.
+
+[[task]]
+id = "E04-T02"
+title = "Change unlisted-mutating-route scope fallback from read to write"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 20
+files = ["crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "356-397", why = "required_scope_for classifies by method+prefix; the `read` fallback at 385 is the defect. is_scope_sufficient at 389-397 (read always passes)." },
+]
+symbols = [
+    "required_scope_for(method: &Method, path: &str) -> &'static str — middleware.rs:356",
+    "is_scope_sufficient(has: &str, required: &str) -> bool — middleware.rs:389",
+]
+anti_patterns = [
+    "Do NOT change the GET/HEAD/OPTIONS `read` return (358) — read methods stay read.",
+    "Do NOT weaken the admin/agent:write/plan:write/write classifications above the fallback.",
+    "Do NOT invent a scope hierarchy here — only change the terminal fallback (385) from `read` to `write`.",
+]
+
+# Steps:
+# 1. Replace the trailing `"read"` at line 385 with `"write"` so any mutating
+#    /api route not explicitly classified requires at least a `write` scope.
+# 2. Leave is_scope_sufficient as-is (admin overrides; exact match otherwise).
+
+[[task.verify]]
+phase = "structural"
+command = "awk 'NR==385' crates/roko-serve/src/routes/middleware.rs | grep -q '\"write\"'"
+fail_msg = "the mutating-route fallback must default to write, not read"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- read_scope_denied_on_mutation 2>&1"
+fail_msg = "a test must assert a read-scoped key gets 403 on POST /api/jobs (an unlisted mutating route)"
+
+acceptance = ["A caller holding only a `read` scope receives 403 on POST to any previously-unclassified mutating /api route (jobs, run, dream, research, deploy, gateway, neuro, learning). Admin and route-specific scopes still succeed. GET requests are unaffected."]
+
+
+# ── E04-T03: CI test — every mutating route is explicitly classified (F2 regression guard) ──
+#
+# The deny-by-default fallback (T02) is safe but silent: a new mutating route
+# will inherit `write` without a deliberate scope decision. Add a test that
+# enumerates the assembled router's mutating routes and fails if any resolves
+# to a scope only via the fallback, forcing explicit classification.
+
+[[task]]
+id = "E04-T03"
+title = "CI guard: fail when a mutating route lacks explicit scope classification"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = ["E04-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "356-397", why = "required_scope_for is the classifier under test." },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "148-263", why = "Router assembly enumerates the route groups whose mutating paths must be classified." },
+]
+symbols = [
+    "required_scope_for(method, path) -> &'static str — middleware.rs:356",
+    "build_router / api nest assembly — routes/mod.rs",
+]
+anti_patterns = [
+    "Do NOT hardcode a route list that silently drifts from the router — derive from a maintained EXPECTED_MUTATING_ROUTES const and assert each maps to a non-fallback scope, and add a note to update it when adding routes.",
+    "Do NOT mark the fallback scope itself as acceptable — the test must distinguish an explicit `write` classification from the fallback `write`.",
+]
+
+# Steps:
+# 1. Introduce a sentinel: have required_scope_for return a distinct
+#    `\"write:unclassified\"` (or expose a bool) for the fallback branch so the
+#    test can tell explicit-write from fallback-write. Map both to `write` for
+#    is_scope_sufficient, but let the test detect the fallback.
+# 2. Add a #[test] that iterates a maintained list of representative mutating
+#    paths (POST /api/jobs, /api/run, /api/dream, /api/deployments, ...) and
+#    asserts none resolve via the fallback sentinel — every one is explicitly
+#    classified.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'unclassified\\|fallback' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "a fallback sentinel must exist so the guard test can detect unclassified mutating routes"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- mutating_routes_are_classified 2>&1"
+fail_msg = "the guard test must pass and must fail if a mutating route falls through to the scope fallback"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["A test enumerates mutating /api routes and fails CI if any resolves to a scope only through the fallback branch, so adding a new mutating route without an explicit scope classification breaks the build."]
+
+
+# E04-T04: Redact secrets in serialize_effective / config show (F6)
+[[task]]
+id = "E04-T04"
+title = "Redact resolved secrets before config show --effective prints TOML"
+description = "Prevent `roko config show --effective` from printing API keys or token values after file-secret and environment interpolation. Keep the TOML shape useful, but replace secret-like leaf values with a stable redaction marker before serialization."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 70
+files = ["crates/roko-core/src/config/loader.rs", "crates/roko-cli/src/commands/config_cmd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/loader.rs", lines = "150-178", why = "Config load path applies env overrides and resolves file secrets before effective serialization." },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "560-575", why = "serialize_effective currently emits raw TOML for already-resolved config values." },
+    { path = "crates/roko-cli/src/commands/config_cmd.rs", lines = "50-75", why = "config show path that calls serialize_effective." },
+]
+symbols = [
+    "serialize_effective(config: &RokoConfig) -> Result<String, toml::ser::Error>",
+    "resolve_file_secrets()",
+    "cmd_show / --effective output path",
+]
+anti_patterns = [
+    "Do NOT redact by deleting fields; preserve valid TOML keys so users can inspect effective config shape.",
+    "Do NOT redact non-secret model names, URLs, booleans, or numeric settings.",
+    "Do NOT print the secret once and then scrub stdout; redact before serialization.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'redact|REDACTED|secret' crates/roko-core/src/config/loader.rs crates/roko-cli/src/commands/config_cmd.rs"
+fail_msg = "effective config serialization must include an explicit secret redaction path"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core -- serialize_effective_redacts_secrets 2>&1"
+fail_msg = "roko-core must include a serialize_effective redaction regression test"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- config_show_effective_redacts_interpolated_secret 2>&1"
+fail_msg = "roko-cli must prove config show --effective does not print resolved secret literals"
+
+acceptance = ["A test seeds a secret-looking value, serializes the effective config, and asserts the literal is absent while a redaction marker remains. `config show --effective` uses the same redacted path."]
+
+
+# E04-T05: Promote post-dispatch secret/path violations to Block (F5)
+[[task]]
+id = "E04-T05"
+title = "Make SecretLeak and PathEscape post-dispatch findings blocking"
+description = "Upgrade the post-dispatch safety checks that detect secret leakage and path escape from warning-only findings into blocking violations that callers must fail on."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["crates/roko-agent/src/safety/mod.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/safety/mod.rs", lines = "748-807", why = "post_dispatch_check creates SecretLeak, PathEscape, and ContractViolation findings currently downgraded to Warn." },
+    { path = "crates/roko-agent/src/safety/mod.rs", lines = "1455-1510", why = "existing post-dispatch tests to extend with blocking severity assertions." },
+]
+symbols = [
+    "SafetyLayer::post_dispatch_check",
+    "ViolationType::SecretLeak",
+    "ViolationType::PathEscape",
+    "ViolationSeverity::Block",
+]
+anti_patterns = [
+    "Do NOT only change log text; callers need Block severity to fail closed.",
+    "Do NOT weaken pre_dispatch_check, which already blocks path and contract violations.",
+    "Do NOT suppress the violation from the returned list; downstream audit still needs evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "awk 'NR>=748 && NR<=807 {print}' crates/roko-agent/src/safety/mod.rs | grep -n 'ViolationSeverity::Block'"
+fail_msg = "post_dispatch_check must emit Block severity for high-risk post-dispatch findings"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent -- post_dispatch_check 2>&1"
+fail_msg = "post-dispatch safety tests must pass and cover blocking severity"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile"
+
+acceptance = ["SecretLeak and PathEscape findings returned by post_dispatch_check have ViolationSeverity::Block, and regression tests fail if either silently returns Warn."]
+
+
+# E04-T06: Invoke safety funnel on the default Claude-CLI runner path (F4)
+[[task]]
+id = "E04-T06"
+title = "Run roko safety checks around default Claude-CLI dispatch"
+description = "Wire SafetyLayer pre- and post-dispatch checks into the default runner path that launches Claude CLI so roko enforces its own contract instead of delegating entirely to the external binary."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = ["crates/roko-cli/src/dispatch_v2.rs", "crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/agent_stream.rs", "crates/roko-agent/src/safety/mod.rs"]
+role = "implementer"
+depends_on = ["E04-T05"]
+depends_on_plan = ["P16-safety-contracts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/dispatch_v2.rs", lines = "1-220", why = "Default Claude-CLI dispatch surface that currently lacks roko-side pre/post safety calls." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4600-4785", why = "Runner path that spawns the agent and emits gate completions." },
+    { path = "crates/roko-cli/src/runner/agent_stream.rs", lines = "1-180", why = "Agent stream bridge for CLI provider output and completion metadata." },
+    { path = "crates/roko-agent/src/safety/mod.rs", lines = "676-807", why = "SafetyLayer pre_dispatch_check and post_dispatch_check APIs to reuse." },
+]
+symbols = [
+    "SafetyLayer::pre_dispatch_check",
+    "SafetyLayer::post_dispatch_check",
+    "CliDispatchRequest / dispatch_v2 default provider path",
+]
+anti_patterns = [
+    "Do NOT edit the legacy orchestrate.rs path for this task; the live runner path is event_loop + agent_stream + dispatch_v2.",
+    "Do NOT rely only on Claude CLI disallowed-tools flags from P16; roko must evaluate its own safety layer.",
+    "Do NOT allow Block post-checks to become warnings in the runner result.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'pre_dispatch_check|post_dispatch_check|SafetyLayer' crates/roko-cli/src/dispatch_v2.rs crates/roko-cli/src/runner/event_loop.rs crates/roko-cli/src/runner/agent_stream.rs"
+fail_msg = "live Claude-CLI dispatch must call roko SafetyLayer checks"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- claude_cli_dispatch_runs_safety_funnel 2>&1"
+fail_msg = "runner test must prove default Claude-CLI dispatch exercises pre/post safety checks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["A default Claude-CLI plan run invokes roko-side pre_dispatch_check before spawning and post_dispatch_check on output/tool artifacts; any Block violation fails the task instead of being logged as a warning."]
+
+
+# E04-T07: Real hash-chaining in custody append + verify (F7)
+[[task]]
+id = "E04-T07"
+title = "Make custody log append and verify tamper-evident"
+description = "Add prev_hash/hash fields to custody records, compute them on append, and make `custody verify` recompute the chain so edited or reordered rows fail verification."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 140
+files = ["crates/roko-cli/src/custody.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/custody.rs", lines = "1-120", why = "Custody record shape and append helpers." },
+    { path = "crates/roko-cli/src/custody.rs", lines = "175-245", why = "cmd_custody_verify currently checks monotonic timestamps and required fields only." },
+]
+symbols = [
+    "CustodyEntry",
+    "cmd_custody_append",
+    "cmd_custody_verify",
+]
+anti_patterns = [
+    "Do NOT hash the raw JSON line including the hash field itself; canonicalize the signed payload and then attach the digest.",
+    "Do NOT keep accepting missing prev_hash/hash on new rows except through an explicit legacy compatibility branch.",
+    "Do NOT report OK when a middle row payload, prev_hash, or hash has changed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'prev_hash|hash_chain|chain break|sha256|Sha256' crates/roko-cli/src/custody.rs"
+fail_msg = "custody records and verify path must contain explicit hash-chain logic"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- custody_verify_detects_tampered_chain 2>&1"
+fail_msg = "custody tests must detect tampered payloads or broken prev_hash links"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["Appending two custody records writes a linked hash chain. Editing the first record's action/principal/timestamp or either hash makes `roko custody verify` fail with a chain-break error."]
+
+
+# E04-T08: Auth the worker result callback (F9)
+[[task]]
+id = "E04-T08"
+title = "Require a signed worker callback credential"
+description = "Protect deployed-worker result callbacks with a shared callback token or signature generated by the CLI and validated by roko-serve before accepting status updates."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-cli/src/worker/mod.rs", "crates/roko-cli/src/commands/server.rs", "crates/roko-serve/src/routes/deployments.rs"]
+role = "implementer"
+depends_on = ["E04-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/deployments.rs", lines = "438-466", why = "receive_callback accepts worker callback bodies without an auth check." },
+    { path = "crates/roko-cli/src/commands/server.rs", lines = "340-390", why = "Worker deployment env assembly, where a callback secret can be generated and injected." },
+    { path = "crates/roko-cli/src/worker/mod.rs", lines = "1-120", why = "Worker server entrypoint and callback-related environment surface." },
+]
+symbols = [
+    "receive_callback",
+    "ROKO_WORKER_CALLBACK_TOKEN",
+    "Authorization header or X-Roko-Worker-Signature",
+]
+anti_patterns = [
+    "Do NOT accept callbacks with no credential when serve auth is enabled.",
+    "Do NOT reuse a user-facing API key in the worker environment; use a callback-specific secret.",
+    "Do NOT log the callback token or include it in serialized deployment state.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'callback.*token|worker.*signature|ROKO_WORKER_CALLBACK|X-Roko-Worker|Authorization' crates/roko-cli/src/worker/mod.rs crates/roko-cli/src/commands/server.rs crates/roko-serve/src/routes/deployments.rs"
+fail_msg = "worker callback path must generate, send, and validate a callback credential"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- deployments_callback_requires_auth 2>&1"
+fail_msg = "roko-serve must reject unauthenticated worker callbacks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["POST /api/deployments/:id/callback without the worker callback credential returns 401/403; the worker receives a callback-specific secret and valid callbacks continue to be accepted."]
+
+
+# E04-T09: Sanitize workspace prefix and write uninterpolated config (F8)
+[[task]]
+id = "E04-T09"
+title = "Constrain workspace prefixes and avoid writing resolved secrets"
+description = "Validate workspace creation prefixes before joining temp paths and ensure newly written workspace config comes from an uninterpolated template rather than a resolved config containing secret values."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-serve/src/routes/workspaces.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/workspaces.rs", lines = "80-135", why = "Workspace prefix is joined into a temp path and config is written for the new workspace." },
+]
+symbols = [
+    "CreateWorkspaceRequest.prefix",
+    "temp_dir().join(...)",
+    "roko.toml writer in workspaces route",
+]
+anti_patterns = [
+    "Do NOT accept prefixes containing '/', '\\\\', '..', drive letters, or path separators.",
+    "Do NOT canonicalize after joining and silently allow traversal; validate before join.",
+    "Do NOT write a config value after resolve_file_secrets has replaced references with literal secrets.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'sanitize|validate.*prefix|contains\\(\"\\.\\.\"\\)|path separator|PathComponent|components\\(' crates/roko-serve/src/routes/workspaces.rs"
+fail_msg = "workspace prefix must be validated before path join"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- workspace_prefix_rejects_traversal 2>&1"
+fail_msg = "workspace route tests must reject traversal prefixes"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- workspace_config_does_not_write_resolved_secret 2>&1"
+fail_msg = "workspace config writer must not persist interpolated secret literals"
+
+acceptance = ["Workspace creation rejects traversal and absolute prefixes, and generated roko.toml files do not contain resolved API keys or token literals."]
+
+
+# E04-T10: Privy JWT membership/role authorization (F10)
+[[task]]
+id = "E04-T10"
+title = "Authorize Privy JWTs against workspace membership before granting admin"
+description = "Replace the signature-valid-means-admin Privy branch with membership and role authorization so a valid Privy JWT must belong to the configured workspace/org and map to an allowed role."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "198-215", why = "try_privy_jwt currently validates the token and grants admin without membership checks." },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "254-315", why = "Auth middleware branch order and authenticated principal insertion." },
+]
+symbols = [
+    "try_privy_jwt",
+    "jwks_cache.validate",
+    "AuthenticatedPrincipal / scope assigned to Privy users",
+]
+anti_patterns = [
+    "Do NOT grant admin solely because the JWT signature and app id are valid.",
+    "Do NOT ignore missing membership claims; fail closed or map to read-only if explicitly configured.",
+    "Do NOT bypass existing API-key and agent-token paths.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "awk 'NR>=198 && NR<=215 {print}' crates/roko-serve/src/routes/middleware.rs | grep -nE 'membership|role|workspace|org|tenant'"
+fail_msg = "Privy JWT auth must inspect membership or role claims before authorization"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- privy_jwt_requires_membership 2>&1"
+fail_msg = "Privy JWT tests must reject a signature-valid token without workspace membership"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["A signature-valid Privy JWT without configured workspace/org membership is rejected or mapped below admin; only authorized membership/role claims receive admin or write scopes."]
+
+
+# E04-T11: Require scope for terminal and drop token-in-env (F11)
+[[task]]
+id = "E04-T11"
+title = "Put terminal routes behind scope checks and stop injecting auth token into shells"
+description = "Require API auth and a write/admin terminal scope for PTY routes even on loopback when terminal is enabled, and remove ROKO_SERVER_AUTH_TOKEN from spawned shell environments."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/terminal.rs"]
+role = "implementer"
+depends_on = ["E04-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "198-225", why = "Terminal route assembly currently has loopback/auth conditional behavior." },
+    { path = "crates/roko-serve/src/terminal.rs", lines = "140-170", why = "PTY environment setup that injects ROKO_SERVER_AUTH_TOKEN." },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "356-397", why = "Scope classifier to ensure terminal mutating routes require write/admin scope." },
+]
+symbols = [
+    "terminal_requires_auth",
+    "crate::terminal::routes()",
+    "ROKO_SERVER_AUTH_TOKEN",
+]
+anti_patterns = [
+    "Do NOT preserve an unauthenticated terminal fast path on loopback when terminal is enabled.",
+    "Do NOT put bearer/API tokens into child shell environments.",
+    "Do NOT weaken disabled terminal routes; disabled remains disabled.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'terminal.*require_scope|require_scope.*terminal|terminal:write|admin' crates/roko-serve/src/routes/mod.rs crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "terminal routes must require a scope, not only loopback"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'ROKO_SERVER_AUTH_TOKEN' crates/roko-serve/src/terminal.rs | grep -q 'env'"
+fail_msg = "terminal shell spawn must not inject ROKO_SERVER_AUTH_TOKEN into the environment"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- terminal_requires_scope 2>&1"
+fail_msg = "terminal route tests must enforce scope even on loopback"
+
+acceptance = ["Terminal PTY routes require an authenticated principal with a sufficient scope when enabled, and spawned shells do not receive ROKO_SERVER_AUTH_TOKEN."]
+
+
+# E04-T12: Add PermissionRequest event/reply channel (F3)
+[[task]]
+id = "E04-T12"
+title = "Add ACP CognitiveEvent::PermissionRequest with a reply channel"
+description = "Introduce a production event carrying permission request parameters and a oneshot reply sender so spawned ACP tool loops can ask the parent session loop for a decision."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "200-240", why = "CognitiveEvent enum location where PermissionRequest should be added." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "760-830", why = "Existing request_permission helper and decision types." },
+    { path = "crates/roko-acp/src/types.rs", lines = "930-1025", why = "Permission request/response wire types to reuse." },
+]
+symbols = [
+    "CognitiveEvent",
+    "PermissionRequestParams",
+    "PermissionDecision",
+    "tokio::sync::oneshot::Sender",
+]
+anti_patterns = [
+    "Do NOT call request_permission from builtin_tools.rs in this task; builtin tools do not own the ACP transport.",
+    "Do NOT block by polling shared state; use a reply channel so the spawned tool loop can await one decision.",
+    "Do NOT make reject/malformed decisions default to allow.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'PermissionRequest|oneshot' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "CognitiveEvent must include a PermissionRequest variant with a reply channel"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- permission_request_event_carries_reply_channel 2>&1"
+fail_msg = "ACP tests must cover the PermissionRequest reply channel shape"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+acceptance = ["bridge_events.rs exposes a PermissionRequest CognitiveEvent carrying the request action/detail and a oneshot Sender for PermissionDecision, with tests proving the event can be sent and answered."]
+
+
+# E04-T13: Answer PermissionRequest in parent loop (F3)
+[[task]]
+id = "E04-T13"
+title = "Handle ACP PermissionRequest by calling request_permission in the parent loop"
+description = "Teach the parent ACP event loop to receive PermissionRequest events, call the existing request_permission transport helper, and send the resulting decision back through the reply channel."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 140
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["E04-T12"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "760-830", why = "request_permission helper that already sends session/request_permission and fails closed." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "930-1030", why = "stream_events_to_editor event loop that owns transport and session state." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "5150-5238", why = "Existing request_permission tests for allow, always-allow persistence, and malformed reject." },
+]
+symbols = [
+    "stream_events_to_editor",
+    "request_permission",
+    "PermissionDecision",
+]
+anti_patterns = [
+    "Do NOT answer permission requests inside the spawned tool loop; the parent loop owns the transport.",
+    "Do NOT drop the reply sender silently; send a reject decision on helper error or closed transport.",
+    "Do NOT let AlwaysAllow skip persistence; reuse request_permission's existing behavior.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'PermissionRequest|request_permission\\(' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "parent ACP loop must handle PermissionRequest by calling request_permission"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- permission_request_event_invokes_transport 2>&1"
+fail_msg = "ACP tests must prove PermissionRequest emits session/request_permission and replies"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile"
+
+acceptance = ["When a spawned ACP tool loop emits PermissionRequest, the parent loop sends session/request_permission, forwards Allow/Reject/AlwaysAllow to the oneshot reply, and fails closed on malformed or missing editor response."]
+
+
+# E04-T14: Gate ACP builtin execution on the decision (F3)
+[[task]]
+id = "E04-T14"
+title = "Fail closed unless ACP builtin tool permission is granted"
+description = "Use the PermissionRequest reply channel before executing permission-requiring ACP builtin tools, and run write/edit/bash only after an Allow or AlwaysAllow decision."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = ["crates/roko-acp/src/bridge_events.rs", "crates/roko-acp/src/builtin_tools.rs"]
+role = "implementer"
+depends_on = ["E04-T13"]
+depends_on_plan = ["P22-acp-tool-permission"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "260-305", why = "needs_permission and execute_acp_builtin_tool currently execute write/bash unconditionally." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "320-380", why = "Tool action/description helpers for permission prompts." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2440-2940", why = "ACP builtin tool-loop wrapper where permission requests can be emitted before handler execution." },
+]
+symbols = [
+    "needs_permission",
+    "execute_acp_builtin_tool",
+    "AcpBuiltinToolHandler",
+    "PermissionDecision::Allow / AlwaysAllow / Reject",
+]
+anti_patterns = [
+    "Do NOT auto-approve write_file, edit_file, or bash.",
+    "Do NOT duplicate static allowed/denied tool filtering from P22; this task adds interactive consent on top.",
+    "Do NOT execute the tool before the permission reply resolves.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'needs_permission|PermissionRequest|PermissionDecision|AlwaysAllow|Reject' crates/roko-acp/src/bridge_events.rs crates/roko-acp/src/builtin_tools.rs"
+fail_msg = "ACP builtin execution must be gated by permission decisions"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_builtin_reject_blocks_write_file 2>&1"
+fail_msg = "Reject decision must block write_file before filesystem mutation"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_builtin_always_allow_persists_and_allows 2>&1"
+fail_msg = "AlwaysAllow decision must persist and allow the current/future matching action"
+
+acceptance = ["A write_file/edit_file/bash tool call emits a permission request before mutation; Reject returns an error and performs no mutation; Allow runs once; AlwaysAllow persists via the existing permission store."]
+
+
+# E04-T15: Producer-side SSE/WS secret scrub (F12)
+[[task]]
+id = "E04-T15"
+title = "Scrub secrets before emitting streaming SSE and WS payloads"
+description = "Add producer-side LogScrubber usage for text/event-stream and websocket producers because response-body middleware intentionally skips streaming content."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = ["crates/roko-serve/src/routes/sse.rs", "crates/roko-serve/src/routes/ws.rs", "crates/roko-serve/src/terminal.rs", "crates/roko-cli/src/runner/sse_stream.rs", "crates/roko-cli/src/runner/agent_stream.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "524-548", why = "scrub_secrets intentionally skips text/event-stream; producers must scrub." },
+    { path = "crates/roko-serve/src/routes/sse.rs", lines = "1-120", why = "SSE route payload production surface." },
+    { path = "crates/roko-serve/src/routes/ws.rs", lines = "1-140", why = "Websocket route payload production surface." },
+    { path = "crates/roko-serve/src/terminal.rs", lines = "1-180", why = "Terminal stream output can include secrets from shell output." },
+]
+symbols = [
+    "LogScrubber",
+    "middleware::scrub_secrets",
+    "SSE event producer",
+    "WS message producer",
+]
+anti_patterns = [
+    "Do NOT try to buffer streaming responses in middleware; scrub at the producer before each send.",
+    "Do NOT scrub binary frames by lossy text conversion; only scrub textual payloads.",
+    "Do NOT rely on client-side redaction.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'scrubber|LogScrubber|scrub\\(' crates/roko-serve/src/routes/sse.rs crates/roko-serve/src/routes/ws.rs crates/roko-serve/src/terminal.rs crates/roko-cli/src/runner/sse_stream.rs crates/roko-cli/src/runner/agent_stream.rs"
+fail_msg = "streaming producers must scrub textual payloads before sending"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- streaming_payloads_scrub_secrets 2>&1"
+fail_msg = "serve streaming tests must prove SSE/WS/terminal payloads are redacted"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["A secret-looking token in agent, terminal, SSE, or WS producer output is redacted before send. Non-streaming response scrub middleware remains unchanged."]
+
+
+# E04-T16: Route ACP bash/web_fetch through network policy + SSRF block (F13)
+[[task]]
+id = "E04-T16"
+title = "Apply safety network and bash policies to ACP bash and web_fetch"
+description = "Before ACP builtin bash or web_fetch executes, route the call through the existing roko-agent safety layer so private-network fetches, disallowed schemes, and unsafe shell commands fail closed."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 150
+files = ["crates/roko-acp/src/builtin_tools.rs", "crates/roko-agent/src/safety/mod.rs", "crates/roko-agent/src/safety/network.rs", "crates/roko-agent/src/safety/bash.rs"]
+role = "implementer"
+depends_on = ["E04-T14"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "760-805", why = "exec_web_fetch currently fetches URL directly with reqwest." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "640-735", why = "exec_bash command execution surface." },
+    { path = "crates/roko-agent/src/safety/mod.rs", lines = "400-430", why = "SafetyLayer network policy check for URL arguments." },
+    { path = "crates/roko-agent/src/safety/network.rs", lines = "87-170", why = "Default NetworkPolicy blocks private IP literals and disallowed schemes." },
+]
+symbols = [
+    "exec_web_fetch",
+    "exec_bash",
+    "network::check_url_with_policy",
+    "SafetyLayer::pre_dispatch_check",
+]
+anti_patterns = [
+    "Do NOT only check the URL after reqwest follows redirects; validate before the first request and handle redirects safely.",
+    "Do NOT allow localhost, link-local, RFC1918, file://, or metadata IP literals through web_fetch.",
+    "Do NOT bypass bash deny patterns for ACP because the call came from an editor session.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'check_url|NetworkPolicy|pre_dispatch_check|check_command|bash_policy' crates/roko-acp/src/builtin_tools.rs crates/roko-agent/src/safety/mod.rs"
+fail_msg = "ACP bash/web_fetch must call existing safety policy checks before execution"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_web_fetch_blocks_private_networks 2>&1"
+fail_msg = "ACP web_fetch must reject private/loopback network targets"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_bash_honors_safety_policy 2>&1"
+fail_msg = "ACP bash must honor roko-agent bash safety policy"
+
+acceptance = ["ACP web_fetch rejects private/loopback/link-local/file targets before issuing a request, and ACP bash uses the same denylist/path policy as the agent safety layer."]
+
+
+# E04-T17: Surface MCP command/env allowlist in roko doctor (F14)
+[[task]]
+id = "E04-T17"
+title = "Add roko doctor checks for MCP command and environment allowlists"
+description = "Have `roko doctor` inspect configured MCP servers and warn/fail when commands are not on an approved allowlist or inherit sensitive environment values."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = ["crates/roko-agent/src/mcp/config.rs", "crates/roko-cli/src/doctor.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "1-180", why = "MCP config structs and loader expose server command/env definitions." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "150-190", why = "run_doctor check assembly; add an MCP security check here." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "930-1040", why = "Doctor test module pattern to extend." },
+]
+symbols = [
+    "McpConfig",
+    "McpServerConfig",
+    "DoctorCheck",
+    "run_doctor",
+]
+anti_patterns = [
+    "Do NOT spawn MCP commands during doctor; inspect config statically.",
+    "Do NOT print secret env values in doctor detail; show key names and redacted values only.",
+    "Do NOT treat missing MCP config as a failure.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'mcp|MCP|allowlist|allow list|env' crates/roko-cli/src/doctor.rs crates/roko-agent/src/mcp/config.rs"
+fail_msg = "doctor must inspect MCP command/env configuration and surface allowlist status"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- doctor_reports_mcp_allowlist_status 2>&1"
+fail_msg = "doctor tests must report unsafe MCP command/env configuration"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = ["`roko doctor` reports configured MCP server commands, flags commands outside the allowlist, warns about inherited secret-like env keys without printing values, and passes when no MCP config exists."]
+
+
+# E04-T18: Per-API-key / per-IP rate limiter (F15)
+[[task]]
+id = "E04-T18"
+title = "Replace global single-bucket route rate limit with keyed API-key/IP limits"
+description = "Keep the existing global cap as a backstop if desired, but add keyed request limiting by authenticated API key when present and client IP otherwise so one caller cannot exhaust the shared budget."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "88-125", why = "Current RateLimiter is a single NotKeyed global bucket." },
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "140-190", why = "Router assembly layers the rate limit middleware." },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "254-315", why = "Auth middleware identifies API key/agent/Privy principals that can provide a rate-limit key." },
+]
+symbols = [
+    "GlobalRateLimiter",
+    "rate_limit_middleware",
+    "RateLimiter::keyed",
+    "ConnectInfo / client IP",
+]
+anti_patterns = [
+    "Do NOT keep one shared bucket as the only enforcement.",
+    "Do NOT key unauthenticated clients to a constant string; use client IP or a stable forwarded-IP policy.",
+    "Do NOT include raw API keys in logs or metrics; hash or label them safely.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'RateLimiter::keyed|Keyed|rate_limit_key|client_ip|ConnectInfo|api.*hash' crates/roko-serve/src/routes/mod.rs crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "route rate limiter must be keyed per API key or client IP"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- rate_limit_is_keyed_per_api_key 2>&1"
+fail_msg = "rate-limit tests must prove one API key cannot drain another key's bucket"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["Two different API keys receive independent rate-limit budgets; unauthenticated callers are limited by client IP; logs/metrics never expose raw API key material."]
+
+
+# E04-T19: Generate route-to-scope manifest (F2 navigation)
+[[task]]
+id = "E04-T19"
+title = "Generate and test a route-to-scope manifest from router assembly"
+description = "Add a maintained route/scope manifest derived from the router assembly and scope classifier so mutating routes are auditable and route additions must make an explicit scope decision."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 110
+files = ["crates/roko-serve/src/routes/mod.rs", "crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = ["E04-T02", "E04-T03"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", lines = "140-265", why = "Router assembly with API, WS, terminal, relay, and extension routes." },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "356-397", why = "required_scope_for classifier to expose in the manifest." },
+]
+symbols = [
+    "required_scope_for",
+    "build_router",
+    "route scope manifest",
+]
+anti_patterns = [
+    "Do NOT duplicate a stale prose-only route table; build the manifest from code-side route definitions or a single maintained const used by tests.",
+    "Do NOT hide fallback-classified routes in the generated manifest.",
+    "Do NOT include secrets or API keys in generated output.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -nE 'route.*scope|scope.*manifest|RouteScope|mutating_routes_are_classified' crates/roko-serve/src/routes/mod.rs crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "routes must expose a route-to-scope manifest tied to the classifier"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- route_scope_manifest_matches_router 2>&1"
+fail_msg = "manifest test must fail when router mutating routes and scope classifier drift"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["A generated or code-derived route-to-scope manifest covers mutating API/relay/terminal routes, marks fallback classifications explicitly, and has tests that fail when router assembly and required_scope_for drift."]

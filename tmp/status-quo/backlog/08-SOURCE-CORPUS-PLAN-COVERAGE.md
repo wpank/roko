@@ -8,13 +8,13 @@
 
 | Corpus | Source docs | Plan | Tasks | Ledger |
 |---|---:|---|---:|---|
-| `tmp/status-quo/*.md` | 108 | `plans/DOC-status-quo-corpus` | 12 | `source-coverage/status-quo-corpus.md` |
+| `tmp/status-quo/*.md` | 109 | `plans/DOC-status-quo-corpus` | 12 | `source-coverage/status-quo-corpus.md` |
 | `docs/v1` kernel slice | 113 | `plans/DOC-v1-kernel` | 8 | `source-coverage/docs-v1-kernel.md` |
 | `docs/v1` cognition slice | 119 | `plans/DOC-v1-cognition` | 7 | `source-coverage/docs-v1-cognition.md` |
 | `docs/v1` ecosystem slice | 185 | `plans/DOC-v1-ecosystem` | 10 | `source-coverage/docs-v1-ecosystem.md` |
 | `docs/v2/**/*.md` | 34 | `plans/DOC-v2-core` | 10 | `source-coverage/docs-v2-core.md` |
 | `docs/v2-depth/**/*.md` | 185 | `plans/DOC-v2-depth` | 24 | `source-coverage/docs-v2-depth.md` |
-| **Total** | **744** | **6 DOC plans** | **71** | **6 ledgers** |
+| **Total** | **745** | **6 DOC plans** | **71** | **6 ledgers** |
 
 The DOC plans are not replacements for E01-E18. They are a source-corpus reconciliation layer:
 each task tells a future agent to read a coherent cluster of source docs, map it to existing
@@ -23,7 +23,7 @@ an explicit `mapped`, `doc-follow-up`, `deferred`, or `no-op` result in the sour
 
 ## DAG Shape
 
-- `DOC-status-quo-corpus` covers the 108-document audit/status pack and should run before broad
+- `DOC-status-quo-corpus` covers the 109-document audit/status/control-plane pack and should run before broad
   source-doc reconciliation.
 - `DOC-v1-kernel` covers root v1 docs plus architecture, orchestration, agent, composition, and
   verification specs.
@@ -80,7 +80,7 @@ PY
 Current result:
 
 ```text
-sources=744
+sources=745
 missing_from_ledgers=0
 missing_from_doc_tasks=0
 ```

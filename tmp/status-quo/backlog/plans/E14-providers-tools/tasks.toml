@@ -1,0 +1,729 @@
+[meta]
+plan = "E14-providers-tools"
+total = 12
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T01: Stop advertising tools that have no handler (P0 correctness)
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T01"
+title = "Stop advertising builtins that have no executable handler"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 90
+files = [
+    "crates/roko-std/src/tool/handlers.rs",
+    "crates/roko-std/src/tool/registry.rs",
+    "crates/roko-std/src/tool/builtin/mod.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/tool/handlers.rs", lines = "26-45", why = "handler_for: 16 match arms + `_ => None` for the other 21 tools" },
+    { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "44-97", why = "TOOL_COUNT=37, ROKO_BUILTIN_TOOLS (16 std + chain + isfr), BUILTIN_TOOL_NAMES" },
+    { path = "crates/roko-std/src/tool/registry.rs", lines = "108-160", why = "registry construction + BUILTIN_TOOL_NAMES/TOOL_COUNT test scaffolding" },
+]
+symbols = [
+    "handler_for(name: &str) -> Option<Arc<dyn ToolHandler>> — handlers.rs:26",
+    "ROKO_BUILTIN_TOOLS: LazyLock<Vec<ToolDef>> — builtin/mod.rs:50",
+    "TOOL_COUNT: usize = 37 — builtin/mod.rs:44",
+]
+anti_patterns = [
+    "Do NOT return Some(no-op handler) that silently succeeds — a called-but-unimplemented tool must surface a typed ToolResult error or not be advertised at all.",
+    "Do NOT delete the chain/ISFR ToolDefs — they are needed once handlers land (E14-T02/T03); only gate what the DEFAULT agent registry advertises.",
+    "Do NOT hardcode a new count literal that will drift — derive the advertised set from handler_for coverage.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile after gating unadvertised tools"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std tool:: 2>&1"
+fail_msg = "Every advertised builtin must resolve to a handler; no silent None on the dispatch path"
+
+acceptance = [
+    "No model is advertised a builtin whose handler_for returns None, OR calling such a tool yields a typed unimplemented-tool ToolResult error.",
+    "Advertised-builtin set equals handler-backed set, asserted by a test.",
+    "The 16 implemented tools behave exactly as before.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T02: Implement the 4 ISFR tool handlers
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T02"
+title = "Implement executable handlers for the 4 ISFR tools"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 220
+files = [
+    "crates/roko-std/src/tool/builtin/isfr.rs",
+    "crates/roko-std/src/tool/handlers.rs",
+]
+role = "implementer"
+depends_on = ["E14-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/tool/builtin/isfr.rs", lines = "130-160", why = "all_tool_defs() + ISFR_TOOL_NAMES [4] — the definition-only tools needing handlers" },
+    { path = "crates/roko-std/src/tool/builtin/glob.rs", lines = "60-90", why = "reference ToolHandler impl: fn name + async fn execute(&self, call, ctx) -> ToolResult" },
+    { path = "crates/roko-std/src/tool/handlers.rs", lines = "26-45", why = "handler_for match block to register the 4 new handlers into" },
+]
+symbols = [
+    "ISFR_TOOL_NAMES: [&str; 4] — isfr.rs:143",
+    "trait ToolHandler { fn name(&self)->&str; async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult }",
+    "handler_for(name) -> Option<Arc<dyn ToolHandler>> — handlers.rs:26",
+]
+anti_patterns = [
+    "Do NOT stub execute() to return an empty success — implement the real ISFR behavior or a typed error for the unsupported branch.",
+    "Do NOT change ISFR_TOOL_NAMES or the ToolDefs — only add handlers + registration.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile with the 4 ISFR handlers"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std isfr 2>&1"
+fail_msg = "Each ISFR tool must resolve to a handler and execute to a well-formed ToolResult"
+
+acceptance = [
+    "Each of the 4 ISFR names resolves to Some(handler) from handler_for.",
+    "Each handler executes and returns a well-formed ToolResult, covered by a unit test.",
+    "handler_for handler count rises from 16 to 20.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T03: Implement or feature-gate the 17 chain-domain tool handlers
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T03"
+title = "Implement or feature-gate the 17 chain-domain tool handlers"
+status = "ready"
+tier = "architectural"
+model_hint = "claude-opus-4-20250514"
+max_loc = 320
+files = [
+    "crates/roko-std/src/tool/handlers.rs",
+    "crates/roko-std/src/tool/builtin/mod.rs",
+    "crates/roko-chain/src/tools.rs",
+]
+role = "implementer"
+depends_on = ["E14-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "19-72", why = "CHAIN_DOMAIN_TOOLS/CHAIN_TOOL_NAMES import + extend into ROKO_BUILTIN_TOOLS at line 69" },
+    { path = "crates/roko-chain/src/tools.rs", lines = "1-60", why = "CHAIN_DOMAIN_TOOLS + CHAIN_TOOL_NAMES definitions and available chain primitives" },
+    { path = "crates/roko-std/src/tool/handlers.rs", lines = "26-45", why = "handler_for — where chain handlers register or stay excluded under feature gate" },
+]
+symbols = [
+    "CHAIN_TOOL_NAMES — 17 names, roko_chain::tools",
+    "CHAIN_DOMAIN_TOOLS — Vec<ToolDef>, roko_chain::tools",
+    "handler_for(name) -> Option<Arc<dyn ToolHandler>> — handlers.rs:26",
+]
+anti_patterns = [
+    "Do NOT advertise chain tools when no witness/blockchain backend is wired (Phase 2+) — gate them behind a `chain` cargo feature instead of leaving them handler-less.",
+    "Do NOT couple roko-std unconditionally to a live chain backend; keep the default build green with chain disabled.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1 && cargo check -p roko-std --features chain 2>&1"
+fail_msg = "roko-std must compile with chain both disabled (default) and enabled"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std 2>&1"
+fail_msg = "Registry vs handler parity must hold in both feature states — no advertised-but-unimplemented chain tool"
+
+acceptance = [
+    "With chain disabled, the 17 chain tools are not advertised and the active TOOL_COUNT reflects that.",
+    "With chain enabled, each chain tool resolves to a handler backed by roko-chain and executes.",
+    "No path leaves a chain tool advertised-but-unimplemented.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T04: Add streaming to the Gemini native backend
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T04"
+title = "Add native streaming to the Gemini backend"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 240
+files = [
+    "crates/roko-agent/src/tool_loop/backends/gemini_native.rs",
+    "crates/roko-agent/src/gemini/types.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/tool_loop/mod.rs", lines = "90-175", why = "LlmBackend streaming contract: native backends override stream_turn and may also support send_turn_streaming." },
+    { path = "crates/roko-agent/src/tool_loop/backends/gemini_native.rs", lines = "140-215", why = "GeminiNativeBackend currently implements only send_turn; add streaming alongside this request construction." },
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "468-535", why = "Reference stream_turn implementation that parses provider streaming into StreamEvent values." },
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "706-760", why = "Reference channel-based send_turn_streaming compatibility path." },
+]
+symbols = [
+    "GeminiNativeBackend",
+    "LlmBackend::stream_turn",
+    "LlmBackend::send_turn_streaming",
+    "streamGenerateContent",
+]
+anti_patterns = [
+    "Do NOT rely on the default synthetic stream; this task is for Gemini's native streaming endpoint.",
+    "Do NOT change non-streaming send_turn semantics or request JSON shape except to share helpers safely.",
+    "Do NOT emit Done before the first text/tool delta from the provider stream.",
+    "Do NOT make tests call the live Gemini network API; use the existing poster/mock pattern in gemini_native.rs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'streamGenerateContent|stream_generate_content|async fn stream_turn|async fn send_turn_streaming' crates/roko-agent/src/tool_loop/backends/gemini_native.rs"
+fail_msg = "GeminiNativeBackend must implement a real streaming path, not only blocking send_turn."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile after adding Gemini streaming."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent gemini_native 2>&1"
+fail_msg = "Gemini native backend tests, including a mocked streaming event test, must pass."
+
+acceptance = [
+    "GeminiNativeBackend overrides stream_turn and/or send_turn_streaming with the Gemini streamGenerateContent SSE endpoint.",
+    "A mocked streaming test observes at least one incremental event and one terminal event.",
+    "Existing non-streaming send_turn tests still pass.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T05: Add ProviderKind::GeminiCli and dispatch/preflight wiring
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T05"
+title = "Add ProviderKind::GeminiCli and wire CLI provider dispatch"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 160
+files = [
+    "crates/roko-core/src/agent.rs",
+    "crates/roko-agent/src/provider/mod.rs",
+    "crates/roko-agent/src/provider/pre_flight.rs",
+    "crates/roko-agent/src/tool_loop/backends/mod.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/agent.rs", lines = "28-100", why = "ProviderKind enum, label(), and to_backend() match arms; add GeminiCli beside GeminiApi." },
+    { path = "crates/roko-core/src/agent.rs", lines = "1195-1225", why = "ProviderKind label/serde tests that must cover gemini_cli." },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "80-150", why = "Provider adapter registry; decide whether GeminiCli reuses a CLI adapter or returns a clear unsupported configuration error." },
+    { path = "crates/roko-agent/src/provider/pre_flight.rs", lines = "70-125", why = "CLI provider readiness checks; GeminiCli should check a configured command or default `gemini` binary." },
+    { path = "crates/roko-agent/src/tool_loop/backends/mod.rs", lines = "145-205", why = "Tool-loop backend factory match arms must be exhaustive for the new provider kind." },
+]
+symbols = [
+    "ProviderKind::GeminiApi",
+    "ProviderKind::GeminiCli",
+    "ProviderKind::label",
+    "ProviderKind::to_backend",
+]
+anti_patterns = [
+    "Do NOT make GeminiCli depend on GeminiNativeBackend streaming; CLI subprocess wiring is independent from API streaming.",
+    "Do NOT silently fall back to GeminiApi when the gemini CLI is absent; return a clear pre-flight or creation error.",
+    "Do NOT leave wildcard ProviderKind matches that hide missing dispatch behavior.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GeminiCli' crates/roko-core/src/agent.rs && rg -q 'ProviderKind::GeminiCli' crates/roko-agent/src/provider crates/roko-agent/src/tool_loop"
+fail_msg = "ProviderKind::GeminiCli must exist and be handled in roko-agent provider/tool-loop wiring."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-agent 2>&1"
+fail_msg = "roko-core and roko-agent must compile with the new GeminiCli provider kind."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core provider_kind 2>&1"
+fail_msg = "ProviderKind serde/label/backend tests must cover gemini_cli."
+
+acceptance = [
+    "ProviderKind::GeminiCli serializes as `gemini_cli` and round-trips from config.",
+    "Provider readiness checks a Gemini CLI command and reports a clear missing-binary error.",
+    "All ProviderKind match sites compile without wildcarding away the new variant.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T06: Pass image blocks through non-Anthropic translators
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T06"
+title = "Pass image blocks through non-Anthropic translators"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 260
+files = [
+    "crates/roko-acp/src/bridge_events.rs",
+    "crates/roko-agent/src/translate/mod.rs",
+    "crates/roko-agent/src/translate/gemini.rs",
+    "crates/roko-agent/src/provider/openai_compat.rs",
+    "crates/roko-agent/src/openai_compat_backend.rs",
+    "crates/roko-agent/src/tool_loop/backends/gemini_native.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1218-1235", why = "ACP message builder already branches Anthropic vs OpenAI-style image content; keep this aligned with backend translators." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4337-4405", why = "Current image content helpers for OpenAI image_url and Anthropic base64 parts." },
+    { path = "crates/roko-agent/src/tool_loop/backends/gemini_native.rs", lines = "70-130", why = "Gemini native message translation currently handles text parts; add inlineData image parts here or through shared helpers." },
+    { path = "crates/roko-agent/src/gemini/types.rs", lines = "50-70", why = "Gemini Part::InlineData wire shape uses inlineData." },
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "300-380", why = "OpenAI-compatible request body construction must preserve image_url parts for vision-capable models." },
+    { path = "crates/roko-agent/src/translate/capability.rs", lines = "40-130", why = "Model supports_vision capability should decide preserve-vs-drop behavior." },
+]
+symbols = [
+    "ContentBlock::Image",
+    "build_openai_content_parts",
+    "Gemini inlineData",
+    "OpenAI image_url",
+    "supports_vision",
+]
+anti_patterns = [
+    "Do NOT limit the fix to translate/gemini.rs; the backend request builders and ACP message-building path must agree.",
+    "Do NOT send image blocks to models whose capability profile says supports_vision = false; drop with the existing placeholder/log path.",
+    "Do NOT convert images into plain text placeholders for vision-capable models.",
+    "Do NOT change Anthropic passthrough behavior owned by P28 except to keep shared helpers consistent.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'inlineData|inline_data' crates/roko-agent/src/tool_loop/backends/gemini_native.rs crates/roko-agent/src/translate/gemini.rs"
+fail_msg = "Gemini translation/request code must preserve images as inlineData."
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'image_url|data:.*base64' crates/roko-agent/src/openai_compat_backend.rs crates/roko-acp/src/bridge_events.rs"
+fail_msg = "OpenAI-compatible translation/request code must preserve images as image_url data URIs."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent -p roko-acp 2>&1"
+fail_msg = "roko-agent and roko-acp must compile after non-Anthropic image passthrough changes."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent image 2>&1"
+fail_msg = "Image translation tests must cover Gemini inlineData and OpenAI image_url passthrough."
+
+acceptance = [
+    "Vision-capable Gemini requests receive image blocks as inlineData parts.",
+    "Vision-capable OpenAI-compatible requests receive image blocks as image_url content parts.",
+    "Non-vision models drop images cleanly with the existing placeholder/log behavior.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T07: Regression test for advertised-handler parity
+# ─────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E14-T07"
+title = "Regression test advertised builtins against executable handlers"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 90
+files = [
+    "crates/roko-std/src/tool/registry.rs",
+    "crates/roko-std/src/tool/handlers.rs",
+]
+role = "implementer"
+depends_on = ["E14-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/tool/registry.rs", lines = "108-160", why = "Default registry and existing BUILTIN_TOOL_NAMES/TOOL_COUNT scaffolding for parity enumeration." },
+    { path = "crates/roko-std/src/tool/handlers.rs", lines = "26-50", why = "handler_for is the executable-handler truth; the test should assert every advertised tool resolves here." },
+    { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "44-72", why = "Builtin tool list construction; T01 may gate definition-only tools out of the default advertised set." },
+]
+symbols = [
+    "handler_for",
+    "ROKO_BUILTIN_TOOLS",
+    "ToolRegistry",
+]
+anti_patterns = [
+    "Do NOT make this wait on E14-T02 or E14-T03; if T01 gates definition-only tools correctly, default advertised-handler parity can already be asserted.",
+    "Do NOT assert a hardcoded count; enumerate the actual default advertised registry and check handler_for(name).is_some().",
+    "Do NOT hide unimplemented tools behind a handler that silently succeeds.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'handler_for' crates/roko-std/src/tool/registry.rs crates/roko-std/tests 2>/dev/null"
+fail_msg = "The registry parity test must call handler_for for advertised builtins."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std advertised_handler_parity 2>&1"
+fail_msg = "A regression test named for advertised-handler parity must pass."
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile after adding the registry parity test."
+
+acceptance = [
+    "A test enumerates every default advertised builtin and asserts handler_for(name).is_some().",
+    "The test fails if a future definition-only builtin is added to the default registry.",
+    "The test does not rely on a hardcoded TOOL_COUNT.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T08: Implement per-provider rate limit tracking (RPM/TPM counters)
+# ─────────────────────────────────────────────────────────────────────
+# Each LLM provider has its own rate limits (requests per minute, tokens per
+# minute). The dispatcher currently has no awareness of provider-level quotas,
+# so concurrent plans can collectively exceed limits and trigger 429s. Add
+# per-provider RPM/TPM counters that track usage across all concurrent agent
+# dispatches and gate new requests when approaching provider limits.
+[[task]]
+id = "E14-T08"
+title = "Acceptance roll-up: E48 configured and live per-provider RPM/TPM enforcement"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E48-T02 + E48-T03"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 200
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["E48-rate-limit-budgeting"]
+acceptance = [
+    "E48-T02 defines one configurable per-provider RPM/TPM limiter from the live ProviderConfig schema, and E48-T03 shares that exact limiter across concurrent legacy and runner-v2 model calls.",
+    "Every live LLM request awaits the shared limiter before provider I/O; no tool-dispatch counter, process-global fallback limiter, or per-agent limiter can satisfy this roll-up.",
+    "Focused tests prove configured RPM and TPM limits gate the live ModelCallService/provider request boundary across concurrent calls while different providers retain independent budgets.",
+    "Limit exhaustion produces the typed retriable provider outcome consumed by canonical retry and health handling.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/rate_limit.rs", why = "E48-T02 canonical per-provider RPM/TPM limiter and typed limit outcome" },
+    { path = "crates/roko-core/src/config/provider.rs", lines = "255-325", why = "E48-T02 live [providers.<name>] schema for configured limits" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "E48-T03 live model/provider request boundary; acquire must occur before agent.run" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "175-260", why = "Config-driven provider construction must receive the runtime-scoped shared limiter" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "1735-1965", why = "Legacy prepared-agent execution and concurrent dispatch path must share one limiter" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1200-1400", why = "Runner-v2 runtime construction and concurrent request path must use the same pooled limiter" },
+]
+symbols = [
+    "ProviderRateLimiter::acquire — awaited immediately before live provider I/O",
+    "ProviderConfig — canonical RPM/TPM configuration",
+    "ModelCallService / create_agent_for_model — provider-call boundary, not ToolDispatcher",
+    "Arc<ProviderRateLimiter> — one runtime-scoped pool shared by concurrent agents",
+]
+anti_patterns = [
+    "Do NOT inspect or modify ToolDispatcher; tool calls are not LLM provider requests.",
+    "Do NOT accept E48-T02 alone; configured counters without E48-T03 live acquire wiring are dormant.",
+    "Do NOT use one process-global default in place of runtime configuration or create one limiter per agent.",
+    "Do NOT block indefinitely; limit exhaustion must remain a typed retriable outcome for E01-T12/E48-T01.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'ProviderLimits\\|tpm\\|rpm\\|rate_limit' crates/roko-agent/src/rate_limit.rs crates/roko-core/src/config/provider.rs && rg -q 'ProviderRateLimiter|acquire' crates/roko-agent/src/model_call_service.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "canonical E48 limiter must be configured and acquired on both live runner paths"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent -p roko-core -p roko-cli 2>&1"
+fail_msg = "limiter configuration and both live runner integrations must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent rate_limit 2>&1 && cargo test -p roko-cli provider_rate_limit 2>&1"
+fail_msg = "focused tests must prove configured pooled RPM/TPM enforcement at the live model-call boundary"
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T09: Add Retry-After header parsing for all LLM backends
+# ─────────────────────────────────────────────────────────────────────
+# When a provider returns 429, the response often includes a Retry-After header
+# (seconds or HTTP-date). Currently backends discard this header and the caller
+# guesses a backoff duration. Parse Retry-After from 429/529 responses across
+# all HTTP-based backends and surface it in the error type so the retry wrapper
+# (E01-T12) can use the provider's recommended wait time.
+[[task]]
+id = "E14-T09"
+title = "Add Retry-After header parsing for all LLM backends"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "crates/roko-agent/src/openai_compat_backend.rs",
+    "crates/roko-agent/src/tool_loop/backends/gemini_native.rs",
+    "crates/roko-agent/src/dispatcher/mod.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/openai_compat_backend.rs", lines = "300-380", why = "HTTP response handling for OpenAI-compat — where to extract Retry-After on 429" },
+    { path = "crates/roko-agent/src/tool_loop/backends/gemini_native.rs", lines = "140-215", why = "Gemini HTTP response handling — same extraction point" },
+    { path = "crates/roko-agent/src/dispatcher/mod.rs", lines = "1-80", why = "AgentDispatchError — add retry_after_secs field to retriable variants" },
+]
+symbols = [
+    "AgentDispatchError — error enum",
+    "OpenAiCompatBackend — HTTP response path",
+    "GeminiNativeBackend — HTTP response path",
+]
+anti_patterns = [
+    "Do NOT parse only integer seconds — Retry-After can also be an HTTP-date (RFC 7231 7.1.3).",
+    "Do NOT silently ignore parse failures — log a warning and fall back to None (let the retry wrapper use its default backoff).",
+    "Do NOT add Retry-After parsing only for one backend — cover all HTTP-based backends consistently.",
+    "Do NOT change the retry logic itself — this task only surfaces the header value; E01-T12 consumes it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -qi 'retry.after\\|retry_after' crates/roko-agent/src/openai_compat_backend.rs crates/roko-agent/src/tool_loop/backends/gemini_native.rs crates/roko-agent/src/dispatcher/mod.rs"
+fail_msg = "all HTTP-based backends and the dispatch error type must handle Retry-After"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent must compile after Retry-After parsing addition"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-agent retry_after 2>&1"
+fail_msg = "a test must assert that a 429 response with Retry-After header surfaces the parsed duration"
+
+acceptance = [
+    "A 429 response with `Retry-After: 30` produces an error carrying retry_after_secs = Some(30).",
+    "A 429 response with an HTTP-date Retry-After is parsed into a duration from now.",
+    "A 429 response with no Retry-After header produces retry_after_secs = None.",
+    "All HTTP-based LLM backends (OpenAI-compat, Gemini native, Anthropic API) extract the header consistently.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T10: Add provider health degradation tracking in CascadeRouter
+# ─────────────────────────────────────────────────────────────────────
+# CascadeRouter selects models for tasks but has no awareness of provider
+# health. When a provider is returning 429s or elevated error rates, the router
+# should degrade that provider's selection priority so tasks route to healthier
+# alternatives. Wire the rate limit counters (E14-T08) and error observations
+# into CascadeRouter's scoring so degraded providers are deprioritized until
+# they recover.
+[[task]]
+id = "E14-T10"
+title = "Acceptance roll-up: E48 canonical provider-health routing"
+ownership = "acceptance-roll-up"
+superseded_by = "E48-T05"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = []
+role = "quick-reviewer"
+depends_on = ["E14-T08"]
+depends_on_plan = ["E48-rate-limit-budgeting"]
+acceptance = [
+    "CascadeRouter and both runner entry paths consume the same runtime-scoped ProviderHealthRegistry; roko-agent outcomes reach it through a trait-typed callback without a roko-agent -> roko-learn production dependency.",
+    "Closed providers are eligible, Open providers are filtered at every automatic routing stage, and HalfOpen permits the registry's single probe semantics.",
+    "A healthy fallback is selected when the preferred provider is unavailable, and all-unavailable failure is explicit.",
+    "Real LLM dispatch success and typed 429, 529/server-error, and timeout outcomes call ProviderHealthRegistry::record_success/record_failure before later gate evaluation.",
+    "Explicit force_backend remains selectable for user intent but cannot bypass canonical outcome recording.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/cascade_router.rs", lines = "700-810", why = "Canonical E48 routing stages consume ProviderHealthRegistry availability" },
+    { path = "crates/roko-learn/src/provider_health.rs", lines = "196-285", why = "Canonical Closed/Open/HalfOpen registry and typed record_success/record_failure behavior" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "80-215", why = "Dependency-safe trait callback pattern for real model/provider outcomes" },
+    { path = "crates/roko-agent/src/model_call_service.rs", lines = "1545-1660", why = "Real model/provider call outcomes, including fallback attempts" },
+    { path = "crates/roko-learn/src/event_subscriber.rs", lines = "130-230", why = "Typed runner outcome events must update the same registry used by routing" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15184-17535", why = "Legacy model selection and dispatch outcomes must share one registry instance" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1220-1400", why = "Runner-v2 constructs routing, subscriber, and shared health state" },
+]
+symbols = [
+    "CascadeRouter::set_provider_health",
+    "ProviderHealthRegistry::is_available",
+    "ProviderHealthRegistry::record_success/record_failure",
+    "ProviderOutcomeRecorder trait callback backed by the same registry Arc",
+    "ProviderHealth::is_available — Closed/Open/HalfOpen transition oracle",
+]
+anti_patterns = [
+    "Do NOT implement an E14-local EMA, score, or circuit breaker beside ProviderHealthRegistry.",
+    "Do NOT use ToolDispatcher outcomes; tool handler execution cannot observe LLM provider 429/529/timeout responses.",
+    "Do NOT introduce a roko-agent -> roko-learn production dependency; use a trait-typed outcome adapter.",
+    "Do NOT approve routing that checks health only in one stage; every automatic selection stage must filter Open providers.",
+    "Do NOT treat HalfOpen as unavailable; the canonical registry permits its probe semantics.",
+    "Do NOT approve fallback routing unless success and retriable failure outcomes update the same registry.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'ProviderHealthRegistry|provider_health' crates/roko-learn/src/cascade_router.rs crates/roko-learn/src/event_subscriber.rs && rg -q 'ProviderOutcomeRecorder|provider_outcome' crates/roko-agent/src/model_call_service.rs && rg -q 'record_success|record_failure' crates/roko-learn/src/event_subscriber.rs crates/roko-cli/src/orchestrate.rs crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "canonical E48 routing and real model-call paths must share ProviderHealthRegistry outcome recording"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn -p roko-agent 2>&1"
+fail_msg = "canonical provider-health routing must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn cascade_router 2>&1 && cargo test -p roko-learn provider_health 2>&1 && cargo test -p roko-agent model_call_service 2>&1 && cargo test -p roko-cli provider_health 2>&1"
+fail_msg = "focused tests must cover registry identity, all-stage filtering, fallback, HalfOpen, and real dispatch outcome recording"
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T11: Register GitHub MCP tools in the builtin tool catalog
+# ─────────────────────────────────────────────────────────────────────
+# roko-mcp-github exposes tools (create_pr, push_branch, list_issues, etc.)
+# but these are only available when the MCP server is explicitly configured.
+# Register the GitHub MCP tool definitions in the builtin tool catalog
+# (roko-std) so the tool registry knows about them for documentation,
+# permission checks, and tool-listing even before the MCP server is running.
+# This is the catalog-side complement to E01-T13's runtime wiring.
+[[task]]
+id = "E14-T11"
+title = "Register GitHub MCP tools in the builtin tool catalog"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 120
+files = [
+    "crates/roko-std/src/tool/builtin/mod.rs",
+    "crates/roko-std/src/tool/handlers.rs",
+    "crates/roko-std/src/tool/registry.rs",
+]
+role = "implementer"
+depends_on = ["E14-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-std/src/tool/builtin/mod.rs", lines = "44-97", why = "ROKO_BUILTIN_TOOLS construction — add GitHub MCP tool definitions here, gated like chain tools" },
+    { path = "crates/roko-std/src/tool/handlers.rs", lines = "26-45", why = "handler_for — GitHub tools route to MCP dispatch, not builtin handlers; register as MCP-backed" },
+    { path = "crates/roko-std/src/tool/registry.rs", lines = "108-160", why = "registry construction — tools must appear in the catalog with correct permissions (write for PR/push, read for list)" },
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "1-40", why = "GitHub MCP server tool names and schemas to mirror in the catalog" },
+]
+symbols = [
+    "ROKO_BUILTIN_TOOLS — LazyLock<Vec<ToolDef>> at builtin/mod.rs:50",
+    "handler_for(name) -> Option<Arc<dyn ToolHandler>> — handlers.rs:26",
+    "ToolRegistry — registry.rs",
+]
+anti_patterns = [
+    "Do NOT add executable ToolHandler impls for GitHub tools — they are MCP-dispatched, not locally executed.",
+    "Do NOT make GitHub tools appear in the advertised-handler parity test (E14-T07) — they are MCP-backed, not handler-backed.",
+    "Do NOT hardcode GitHub tool schemas; derive or import them from roko-mcp-github if possible, or define ToolDefs that match the MCP server's tools/list response.",
+    "Do NOT mark GitHub write tools (create_pr, push_branch) as read-only in the catalog.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'github\\|GitHub' crates/roko-std/src/tool/builtin/mod.rs crates/roko-std/src/tool/registry.rs"
+fail_msg = "builtin tool catalog must include GitHub MCP tool definitions"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-std 2>&1"
+fail_msg = "roko-std must compile after adding GitHub tool catalog entries"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-std github_tool 2>&1"
+fail_msg = "a test must verify GitHub MCP tools appear in the tool catalog with correct permissions"
+
+acceptance = [
+    "GitHub MCP tool definitions (create_pr, push_branch, list_issues, etc.) appear in the tool catalog.",
+    "GitHub tools are marked as MCP-backed, not handler-backed, so the advertised-handler parity test still passes.",
+    "Write tools (create_pr, push_branch) have write permission; read tools (list_issues, get_pr) have read permission.",
+    "The catalog entries match the tool schemas served by roko-mcp-github's tools/list response.",
+]
+
+# ─────────────────────────────────────────────────────────────────────
+# E14-T12: Add GitHub rate limit state to provider health tracking
+# ─────────────────────────────────────────────────────────────────────
+# GitHub's API has its own rate limits (5000 requests/hour for authenticated,
+# 60/hour unauthenticated) separate from LLM provider limits. The provider
+# health tracking (E14-T08/T10) should also cover GitHub API rate limits
+# so the runner can back off GitHub operations when approaching the limit.
+# The roko-mcp-github server should report its rate limit state, and the
+# runner should consume it.
+[[task]]
+id = "E14-T12"
+title = "Add GitHub rate limit state to provider health tracking"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 150
+files = [
+    "crates/roko-mcp-github/src/main.rs",
+    "crates/roko-agent/src/provider/mod.rs",
+    "crates/roko-agent/src/mcp/client.rs",
+]
+role = "implementer"
+depends_on = ["E14-T08"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "1-40", why = "GitHub MCP server — add rate limit reporting endpoint or tool" },
+    { path = "crates/roko-agent/src/provider/mod.rs", lines = "80-150", why = "provider health tracking — extend to include non-LLM service health (GitHub API)" },
+    { path = "crates/roko-agent/src/mcp/client.rs", lines = "80-100", why = "MCP client — could query MCP server health/rate-limit status" },
+    { path = "crates/roko-serve/src/integrations.rs", lines = "1-40", why = "integrations module references roko-mcp-github; understand existing integration surface" },
+]
+symbols = [
+    "roko-mcp-github — MCP server binary",
+    "ProviderHealth — health tracking from E14-T08/T10",
+    "McpClient — MCP client connection",
+]
+anti_patterns = [
+    "Do NOT poll the GitHub API for rate limit status on every tool call — cache the X-RateLimit-Remaining header from responses.",
+    "Do NOT hardcode the 5000/hour limit — read it from the X-RateLimit-Limit response header.",
+    "Do NOT block all GitHub operations when rate limited — only back off; some operations may use different rate limit buckets.",
+    "Do NOT couple this to LLM provider rate limiting logic directly — use a shared health abstraction.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -qi 'rate.limit\\|x.ratelimit\\|github.*health\\|GitHubRateLimit' crates/roko-mcp-github/src/main.rs crates/roko-agent/src/provider/mod.rs"
+fail_msg = "GitHub MCP server or provider health must track GitHub API rate limit state"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-mcp-github -p roko-agent 2>&1"
+fail_msg = "roko-mcp-github and roko-agent must compile after GitHub rate limit tracking"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-mcp-github rate_limit 2>&1"
+fail_msg = "a test must verify GitHub rate limit headers are parsed and cached"
+
+acceptance = [
+    "roko-mcp-github tracks X-RateLimit-Remaining and X-RateLimit-Limit from GitHub API responses.",
+    "Rate limit state is available to the runner via a health query or MCP status tool.",
+    "When GitHub rate limit is near exhaustion, the runner backs off GitHub MCP tool calls.",
+    "Rate limit tracking does not add a separate API call per tool invocation — it piggybacks on response headers.",
+]

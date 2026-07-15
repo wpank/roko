@@ -6,7 +6,7 @@ Future agents running these tasks should compare the source document against the
 
 ## Summary
 
-- Source corpus: 108 direct markdown files.
+- Source corpus: 109 direct markdown files.
 - Executable reconciliation tasks: 12.
 - Coverage status: all sources are queued for reconciliation.
 - Backlog subtree excluded: `tmp/status-quo/backlog/**`.
@@ -28,6 +28,7 @@ Future agents running these tasks should compare the source document against the
 | `tmp/status-quo/28-DEFINITION-OF-DONE.md` | E01-E18 done criteria | DOC-SQ-01 | queued for reconciliation |
 | `tmp/status-quo/29-RISK-REGISTER.md` | E01-E18 risk mitigation coverage | DOC-SQ-01 | queued for reconciliation |
 | `tmp/status-quo/DOC-MANIFEST.md` | E01-E18 corpus taxonomy and consolidation | DOC-SQ-01 | queued for reconciliation |
+| `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md` | Durable execution, review, integration, release-gate, and continuation control plane | DOC-SQ-01 | queued for reconciliation |
 
 ### DOC-SQ-02 - Spec Coverage
 

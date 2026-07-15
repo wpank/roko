@@ -1109,6 +1109,48 @@ mod tests {
     }
 
     #[test]
+    fn missing_resource_claims_leave_slot_and_nonce_unchanged() {
+        let key = attempt(1);
+        let owner =
+            AttemptOwner::new_at(AttemptPhase::Agent, AGENT, MonotonicTime::from_millis(17));
+        let mut ownership = AttemptOwnership::<&'static str>::default();
+        ownership.next_nonce = 41;
+        ownership.owners.insert(
+            key.clone(),
+            OwnershipSlot {
+                owner: owner.clone(),
+                resource: None,
+                claimed: false,
+                claim_nonce: None,
+            },
+        );
+
+        assert!(matches!(
+            ownership.claim_cancellation_exact(&key, Some((AttemptPhase::Agent, AGENT)),),
+            Err(OwnershipError::Ineligible)
+        ));
+        assert_eq!(ownership.next_nonce, 41);
+        let slot = &ownership.owners[&key];
+        assert_eq!(slot.owner, owner);
+        assert_eq!(slot.resource, None);
+        assert!(!slot.claimed);
+        assert_eq!(slot.claim_nonce, None);
+        assert_eq!(slot.owner.cancellation, CancellationState::None);
+
+        assert!(matches!(
+            ownership.take_resource(&key),
+            Err(OwnershipError::Ineligible)
+        ));
+        assert_eq!(ownership.next_nonce, 41);
+        let slot = &ownership.owners[&key];
+        assert_eq!(slot.owner, owner);
+        assert_eq!(slot.resource, None);
+        assert!(!slot.claimed);
+        assert_eq!(slot.claim_nonce, None);
+        assert_eq!(slot.owner.cancellation, CancellationState::None);
+    }
+
+    #[test]
     fn quarantined_agent_metadata_has_stable_attempt_order() {
         let quarantined = TaskAttemptRef::new("plan", "a-quarantined", 1);
         let live = TaskAttemptRef::new("plan", "z-live", 1);

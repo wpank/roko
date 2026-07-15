@@ -1,0 +1,581 @@
+[meta]
+plan = "DOC-v2-core"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 2
+estimated_total_minutes = 1800
+skip_enrichment = true
+
+# CTRL-09 converts the former product-implementation umbrella into ten
+# documentation acceptance roll-ups. Product behavior is owned by E01-E45.
+# These tasks run only after their named owner plans are complete and may write
+# only their disjoint docs/v2 files. Source coverage and ownership are tracked in:
+# tmp/status-quo/backlog/source-coverage/docs-v2-core.md
+
+[[task]]
+id = "DOCV2-T01"
+title = "Reconcile Signal, Pulse, Cell, Store, Bus, and protocol kernel documentation"
+description = "After the canonical kernel and protocol owners are merged, reconcile the Signal/Pulse and Cell documents to the integrated code, tests, and owner evidence. Preserve the specification as a normative target where implementation remains deferred, but label that boundary explicitly; this task must not implement product behavior."
+status = "ready"
+tier = "integrative"
+max_loc = 1800
+files = [
+    "docs/v2/01-SIGNAL.md",
+    "docs/v2/02-CELL.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = []
+depends_on_plan = [
+    "E03-type-consolidation",
+    "E13-SPEC-DEBT-V2",
+    "E19-signal-protocol",
+    "E20-cell-unification",
+    "E29-connectivity-relay",
+    "E31-trigger-system",
+    "E33-telemetry-lens",
+    "E34-security-ifc",
+]
+acceptance = [
+    "Every present-tense behavior claim is traceable to merged code, tests, or accepted owner evidence; unimplemented normative requirements are explicitly marked deferred.",
+    "Signal/Pulse, Store/Bus, Cell, and nine-protocol vocabulary agrees across both documents without inventing a second implementation contract.",
+    "An independent documentation review confirms source citations, local links, examples, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/00-INDEX.md", why = "Read-only global vocabulary; DOCV2-T10 owns any index edits." },
+    { path = "docs/v2/01-SIGNAL.md", why = "Owned Signal/Pulse, Store/Bus, scoring, demurrage, provenance, and lifecycle source." },
+    { path = "docs/v2/02-CELL.md", why = "Owned Cell and protocol source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E19-signal-protocol/tasks.toml", why = "Canonical Signal protocol implementation owner and acceptance evidence contract." },
+    { path = "tmp/status-quo/backlog/plans/E20-cell-unification/tasks.toml", why = "Canonical Cell unification implementation owner." },
+    { path = "crates/roko-core/src/engram.rs", why = "Integrated durable Signal/Engram behavior to document, not modify." },
+    { path = "crates/roko-core/src/cell.rs", why = "Integrated Cell behavior to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit production code, tests, manifests, shared indexes, or any docs/v2 file outside this task's files list.",
+    "Do NOT describe an owner-plan proposal as shipped behavior unless its merged implementation and tests prove it.",
+    "Do NOT erase normative design material merely because it is deferred; label the current/target boundary and preserve provenance.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/01-SIGNAL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/02-CELL.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T01 sources must remain in the canonical coverage ledger"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'from pathlib import Path; expected={\"docs/v2/01-SIGNAL.md\",\"docs/v2/02-CELL.md\"}; assert all(Path(p).is_file() for p in expected)'"
+fail_msg = "DOCV2-T01 owned documents must exist"
+
+[[task]]
+id = "DOCV2-T02"
+title = "Reconcile Graph, execution, Flow, replay, and orchestrator documentation"
+description = "After graph-engine, execution-runtime, and runner owners are merged, reconcile the Graph, Execution, and Orchestrator documents to reproducible integrated behavior. Record unsupported specification surfaces as deferred instead of implementing them in this roll-up."
+status = "ready"
+tier = "integrative"
+max_loc = 2200
+files = [
+    "docs/v2/03-GRAPH.md",
+    "docs/v2/04-EXECUTION.md",
+    "docs/v2/27-ORCHESTRATOR.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = []
+depends_on_plan = [
+    "E01-execution-engine",
+    "E05-gate-adaptivity-live",
+    "E08-conductor-supervision",
+    "E21-graph-engine",
+    "E22-execution-runtime",
+    "E45-orchestrator-mori-parity",
+]
+acceptance = [
+    "Graph loading, typed edges, Flow snapshots, hot ticks, replay/resume, budgets, cancellation, and runner routing claims match merged code and tests.",
+    "Legacy, current, and target execution paths are distinguished explicitly and no dry-run or unsupported path is documented as success.",
+    "An independent documentation review reproduces cited commands and confirms current-versus-target labels and local links.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/03-GRAPH.md", why = "Owned Graph source." },
+    { path = "docs/v2/04-EXECUTION.md", why = "Owned execution source." },
+    { path = "docs/v2/27-ORCHESTRATOR.md", why = "Owned runner-v2 and Mori parity source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E21-graph-engine/tasks.toml", why = "Canonical Graph implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E22-execution-runtime/tasks.toml", why = "Canonical execution runtime implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity/tasks.toml", why = "Canonical remaining runner/Mori implementation owner." },
+    { path = "crates/roko-graph/src/engine.rs", why = "Integrated Graph engine truth to document, not modify." },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", why = "Integrated runner truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit runner, graph, runtime, test, plan, or shared-index files.",
+    "Do NOT turn a missing Graph or runner capability into product implementation under DOCV2-T02.",
+    "Do NOT claim deterministic replay, resume, or execution success without a merged test or reproducible command.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/03-GRAPH.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/04-EXECUTION.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/27-ORCHESTRATOR.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T02 sources must remain in the canonical coverage ledger"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'from pathlib import Path; expected={\"docs/v2/03-GRAPH.md\",\"docs/v2/04-EXECUTION.md\",\"docs/v2/27-ORCHESTRATOR.md\"}; assert all(Path(p).is_file() for p in expected)'"
+fail_msg = "DOCV2-T02 owned documents must exist"
+
+[[task]]
+id = "DOCV2-T03"
+title = "Reconcile Agent lifecycle, vitality, modes, and cognitive-loop documentation"
+description = "After the agent-autonomy and cross-cut owners are merged, reconcile the Agent document to integrated lifecycle, vitality, energy, affect, goal, and cognitive-loop behavior. Read the cross-cut and architecture sources only for consistency; their edits belong to later roll-ups."
+status = "ready"
+tier = "integrative"
+max_loc = 1200
+files = ["docs/v2/05-AGENT.md"]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01"]
+depends_on_plan = [
+    "E06-COMPOSE-UNIFY",
+    "E08-conductor-supervision",
+    "E17-acp-completion",
+    "E23-agent-cognitive-autonomy",
+    "E44-cross-cut-functors",
+]
+acceptance = [
+    "Lifecycle, vitality, modes, nested timescales, EFE, probes, PAD/energy, goals, and workspace claims match integrated types and tests.",
+    "Cross-cut behavior is cross-referenced without duplicating or pre-empting DOCV2-T04 ownership of docs/v2/26-CROSS-CUTS.md.",
+    "An independent documentation review confirms examples and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/05-AGENT.md", why = "Owned Agent source." },
+    { path = "docs/v2/26-CROSS-CUTS.md", why = "Read-only cross-cut contract; DOCV2-T04 owns edits." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E23-agent-cognitive-autonomy/tasks.toml", why = "Canonical agent autonomy implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E44-cross-cut-functors/tasks.toml", why = "Canonical cross-cut implementation owner." },
+    { path = "crates/roko-agent/src/lifecycle.rs", why = "Integrated agent lifecycle truth to document, not modify." },
+    { path = "crates/roko-runtime/src/heartbeat.rs", why = "Integrated cognitive clock truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit product code or shared cross-cut/public guides.",
+    "Do NOT implement missing autonomy, affect, or goal behavior in a documentation task.",
+    "Do NOT present type names or state transitions from owner proposals as current unless merged code proves them.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/05-AGENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && test -f docs/v2/05-AGENT.md"
+fail_msg = "DOCV2-T03 source must exist and remain covered"
+
+[[task]]
+id = "DOCV2-T04"
+title = "Reconcile Memory, learning, dreams, HDC, and cross-cut documentation"
+description = "After the memory, learning-loop, and cross-cut owners are merged, reconcile the Memory, Learning, and Cross-Cuts documents to durable integrated behavior and tests. Keep unimplemented research/specification material with explicit target or deferred labels rather than creating product mechanisms here."
+status = "ready"
+tier = "integrative"
+max_loc = 2400
+files = [
+    "docs/v2/06-MEMORY.md",
+    "docs/v2/07-LEARNING.md",
+    "docs/v2/26-CROSS-CUTS.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01"]
+depends_on_plan = [
+    "E06-COMPOSE-UNIFY",
+    "E07-learning-knowledge",
+    "E09-OBSERVABILITY",
+    "E24-memory-advanced",
+    "E25-learning-loops-advanced",
+    "E44-cross-cut-functors",
+]
+acceptance = [
+    "Memory tiers, demurrage, heuristics, HDC, dream consolidation, temporal knowledge, learning loops, c-factor, and cross-cut claims match merged code/tests or are labeled target/deferred.",
+    "The three owned documents use one vocabulary for persistence, feedback, transforms, and safety and preserve citations and historical rationale.",
+    "An independent documentation review confirms source provenance, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/06-MEMORY.md", why = "Owned memory source." },
+    { path = "docs/v2/07-LEARNING.md", why = "Owned learning source." },
+    { path = "docs/v2/26-CROSS-CUTS.md", why = "Owned cross-cut source." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Read-only public architecture cross-check; DOCV2-T10 owns edits." },
+    { path = "tmp/status-quo/backlog/plans/E24-memory-advanced/tasks.toml", why = "Canonical advanced-memory implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E25-learning-loops-advanced/tasks.toml", why = "Canonical learning-loop implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E44-cross-cut-functors/tasks.toml", why = "Canonical cross-cut implementation owner." },
+    { path = "crates/roko-neuro/src/knowledge_store.rs", why = "Integrated knowledge behavior to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit product code, tests, owner plans, or public guides.",
+    "Do NOT collapse research-backed normative design into a false shipped-status claim.",
+    "Do NOT create a competing memory, learning, or cross-cut implementation while reconciling prose.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/06-MEMORY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/07-LEARNING.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/26-CROSS-CUTS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T04 sources must remain in the canonical coverage ledger"
+
+[[task]]
+id = "DOCV2-T05"
+title = "Reconcile Gateway, feeds, recipes, groups, connectivity, and relay documentation"
+description = "After the gateway, feed, group, connectivity, payment, and identity owners are merged, reconcile the four infrastructure documents to integrated contracts and tests. Document only observable product truth and explicit deferred targets."
+status = "ready"
+tier = "integrative"
+max_loc = 2400
+files = [
+    "docs/v2/08-GATEWAY.md",
+    "docs/v2/09-FEEDS.md",
+    "docs/v2/10-GROUPS.md",
+    "docs/v2/11-CONNECTIVITY.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01", "DOCV2-T02"]
+depends_on_plan = [
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E26-inference-gateway",
+    "E27-feeds-system",
+    "E28-groups-coordination",
+    "E29-connectivity-relay",
+    "E36-payments",
+    "E39-registries-identity",
+]
+acceptance = [
+    "Gateway stages, providers, cache, cost, feeds, recipes, groups, connectors, relay, backpressure, and discovery claims match merged code and tests.",
+    "MCP, A2A, ERC-8004, and payment integration statements distinguish implemented adapters from normative targets.",
+    "An independent documentation review confirms examples, route/config names, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/08-GATEWAY.md", why = "Owned inference-gateway source." },
+    { path = "docs/v2/09-FEEDS.md", why = "Owned feeds/recipes source." },
+    { path = "docs/v2/10-GROUPS.md", why = "Owned groups source." },
+    { path = "docs/v2/11-CONNECTIVITY.md", why = "Owned connectivity/relay source." },
+    { path = "tmp/status-quo/backlog/plans/E26-inference-gateway/tasks.toml", why = "Canonical inference-gateway implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E27-feeds-system/tasks.toml", why = "Canonical feeds implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E28-groups-coordination/tasks.toml", why = "Canonical groups implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E29-connectivity-relay/tasks.toml", why = "Canonical connectivity implementation owner." },
+    { path = "crates/roko-core/src/connector.rs", why = "Integrated connector truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit gateway, feed, group, connector, relay, payment, or identity code.",
+    "Do NOT add a hidden channel or implementation shim to make prose appear true.",
+    "Do NOT describe a route, protocol, or config surface as available without merged evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/08-GATEWAY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/09-FEEDS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/10-GROUPS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/11-CONNECTIVITY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T05 sources must remain in the canonical coverage ledger"
+
+[[task]]
+id = "DOCV2-T06"
+title = "Reconcile Extensions, triggers, tools, plugins, and MCP documentation"
+description = "After extension, trigger, and tool/plugin owners are merged, reconcile the Extensions, Triggers, and Tools documents to the integrated catalog, handler, safety, and lifecycle behavior. Missing capabilities remain explicitly deferred product work."
+status = "ready"
+tier = "integrative"
+max_loc = 1800
+files = [
+    "docs/v2/12-EXTENSIONS.md",
+    "docs/v2/13-TRIGGERS.md",
+    "docs/v2/14-TOOLS.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01", "DOCV2-T05"]
+depends_on_plan = [
+    "E04-security-perimeter",
+    "E14-providers-tools",
+    "E15-mcp-config",
+    "E17-acp-completion",
+    "E30-extension-system",
+    "E31-trigger-system",
+    "E32-tool-plugin-ecosystem",
+]
+acceptance = [
+    "Extension hooks/lifecycle, trigger bindings, tool catalog, handlers, plugins, MCP, and safety claims match integrated code/tests or carry explicit target/deferred labels.",
+    "Advertised tools and executable handlers are documented from one canonical catalog without inventing parallel registration behavior.",
+    "An independent documentation review confirms schemas, examples, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/12-EXTENSIONS.md", why = "Owned extensions source." },
+    { path = "docs/v2/13-TRIGGERS.md", why = "Owned triggers source." },
+    { path = "docs/v2/14-TOOLS.md", why = "Owned tools source." },
+    { path = "tmp/status-quo/backlog/plans/E30-extension-system/tasks.toml", why = "Canonical extension implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E31-trigger-system/tasks.toml", why = "Canonical trigger implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E32-tool-plugin-ecosystem/tasks.toml", why = "Canonical tool/plugin implementation owner." },
+    { path = "crates/roko-core/src/extension.rs", why = "Integrated extension truth to document, not modify." },
+    { path = "crates/roko-std/src/tool/registry.rs", why = "Integrated tool catalog truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit product code, tests, manifests, or ACP/MCP implementation.",
+    "Do NOT add missing handlers, hooks, triggers, or plugin behavior under a docs task.",
+    "Do NOT document catalog entries as executable unless the canonical registry and handler evidence agree.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/12-EXTENSIONS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/13-TRIGGERS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/14-TOOLS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T06 sources must remain in the canonical coverage ledger"
+
+[[task]]
+id = "DOCV2-T07"
+title = "Reconcile Telemetry, security, auth, payments, and config documentation"
+description = "After telemetry, security, auth, payment, and config owners are merged, reconcile the five operational-contract documents to integrated fail-closed behavior, schemas, routes, and tests. This roll-up documents behavior and deferrals; it does not repair product mechanisms."
+status = "ready"
+tier = "integrative"
+max_loc = 3000
+files = [
+    "docs/v2/15-TELEMETRY.md",
+    "docs/v2/16-SECURITY.md",
+    "docs/v2/17-AUTH.md",
+    "docs/v2/18-PAYMENTS.md",
+    "docs/v2/19-CONFIG.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T01", "DOCV2-T02"]
+depends_on_plan = [
+    "E02-STORAGE-CONVERGENCE",
+    "E04-security-perimeter",
+    "E09-OBSERVABILITY",
+    "E18-DOCS-CONFIG-OPS",
+    "E33-telemetry-lens",
+    "E34-security-ifc",
+    "E35-auth-protocol",
+    "E36-payments",
+    "E42-config-evolution",
+]
+acceptance = [
+    "Observe/Lens, StateHub, taint/capabilities, auth, payment, config, secrets, and audit claims match merged code/tests or are explicitly labeled target/deferred.",
+    "Security-sensitive examples and defaults are fail-closed and never imply credentials, authorization, or payment guarantees not proven by integrated behavior.",
+    "An independent security-aware documentation review confirms route/config names, redaction, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/15-TELEMETRY.md", why = "Owned telemetry source; DOCV2-T08 may read but not edit it." },
+    { path = "docs/v2/16-SECURITY.md", why = "Owned security source." },
+    { path = "docs/v2/17-AUTH.md", why = "Owned auth source." },
+    { path = "docs/v2/18-PAYMENTS.md", why = "Owned payments source." },
+    { path = "docs/v2/19-CONFIG.md", why = "Owned config source." },
+    { path = "tmp/status-quo/backlog/plans/E33-telemetry-lens/tasks.toml", why = "Canonical telemetry implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E34-security-ifc/tasks.toml", why = "Canonical IFC/security implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E35-auth-protocol/tasks.toml", why = "Canonical auth implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E36-payments/tasks.toml", why = "Canonical payments implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E42-config-evolution/tasks.toml", why = "Canonical config-evolution implementation owner." },
+    { path = "crates/roko-core/src/config/schema.rs", why = "Integrated config truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit security, auth, payment, telemetry, config, secrets, route, or test code.",
+    "Do NOT weaken, invent, or silently normalize security-sensitive behavior in prose.",
+    "Do NOT expose real credentials or copy secrets into examples or evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/15-TELEMETRY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/16-SECURITY.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/17-AUTH.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/18-PAYMENTS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/19-CONFIG.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T07 sources must remain in the canonical coverage ledger"
+
+[[task]]
+id = "DOCV2-T08"
+title = "Reconcile Surfaces, marketplace, and dashboard-contract documentation"
+description = "After surfaces, marketplace, telemetry, payment, and identity owners are merged, reconcile the Surfaces and Marketplace documents to the shared integrated projection and economy contracts. Telemetry is read-only context owned by DOCV2-T07."
+status = "ready"
+tier = "integrative"
+max_loc = 1400
+files = [
+    "docs/v2/20-SURFACES.md",
+    "docs/v2/21-MARKETPLACE.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T05", "DOCV2-T07"]
+depends_on_plan = [
+    "E10-FRONTEND-CONTRACT",
+    "E33-telemetry-lens",
+    "E36-payments",
+    "E37-surfaces",
+    "E38-marketplace",
+    "E39-registries-identity",
+]
+acceptance = [
+    "CLI/API/TUI/web surface, StateHub/projection, marketplace identity, reputation, fork, and economy claims match merged code/tests or are labeled target/deferred.",
+    "The documents consume canonical telemetry/payment/identity contracts without defining alternate shapes or editing docs/v2/15-TELEMETRY.md.",
+    "An independent documentation review confirms public names, examples, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/20-SURFACES.md", why = "Owned surfaces source." },
+    { path = "docs/v2/21-MARKETPLACE.md", why = "Owned marketplace source." },
+    { path = "docs/v2/15-TELEMETRY.md", why = "Read-only projection context owned by DOCV2-T07." },
+    { path = "tmp/status-quo/backlog/plans/E37-surfaces/tasks.toml", why = "Canonical surfaces implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E38-marketplace/tasks.toml", why = "Canonical marketplace implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E39-registries-identity/tasks.toml", why = "Canonical identity implementation owner." },
+    { path = "crates/roko-serve/src/projection_contract.rs", why = "Integrated projection truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit frontend, projection, marketplace, chain, route, test, or telemetry-document files.",
+    "Do NOT define a route-specific data shape when the integrated projection contract is canonical.",
+    "Do NOT document visual authoring or marketplace operations as available without merged evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/20-SURFACES.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/21-MARKETPLACE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && test -f docs/v2/20-SURFACES.md && test -f docs/v2/21-MARKETPLACE.md"
+fail_msg = "DOCV2-T08 sources must exist and remain covered"
+
+[[task]]
+id = "DOCV2-T09"
+title = "Reconcile Registries, arenas, evals, bounties, and DeFi documentation"
+description = "After registry/identity, arena/eval, and DeFi owners are merged, reconcile the three chain-domain documents to integrated Rust, contract, route, and test truth. Unsupported or unsafe economic mechanisms remain clearly normative or deferred."
+status = "ready"
+tier = "integrative"
+max_loc = 1800
+files = [
+    "docs/v2/22-REGISTRIES.md",
+    "docs/v2/23-ARENAS.md",
+    "docs/v2/24-DEFI.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = ["DOCV2-T05", "DOCV2-T07", "DOCV2-T08"]
+depends_on_plan = [
+    "E11-chain-isfr",
+    "E39-registries-identity",
+    "E40-arenas-evals",
+    "E41-defi-products",
+]
+acceptance = [
+    "Registry, identity, witness, arena, eval, bounty, ISFR, DeFi, risk, route, and contract claims match merged code/tests or are explicitly target/deferred.",
+    "Examples never imply deployed contracts, live funds, or external-service state; local implementation evidence is distinguished from deployment status.",
+    "An independent chain-aware documentation review confirms types, APIs, local links, and current-versus-target labels.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/22-REGISTRIES.md", why = "Owned registries source." },
+    { path = "docs/v2/23-ARENAS.md", why = "Owned arenas/evals source." },
+    { path = "docs/v2/24-DEFI.md", why = "Owned DeFi source." },
+    { path = "tmp/status-quo/backlog/plans/E39-registries-identity/tasks.toml", why = "Canonical registry/identity implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E40-arenas-evals/tasks.toml", why = "Canonical arena/eval implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E41-defi-products/tasks.toml", why = "Canonical DeFi implementation owner." },
+    { path = "crates/roko-chain/src/agent_registry.rs", why = "Integrated registry truth to document, not modify." },
+    { path = "crates/roko-chain/src/isfr.rs", why = "Integrated ISFR truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit Rust, Solidity, routes, deployment scripts, tests, or manifests.",
+    "Do NOT deploy, transact, mutate external services, or claim a local contract is deployed.",
+    "Do NOT turn speculative economics into a present-tense product guarantee.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/22-REGISTRIES.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/23-ARENAS.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/24-DEFI.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T09 sources must remain in the canonical coverage ledger"
+
+[[task]]
+id = "DOCV2-T10"
+title = "Reconcile the v2 index, deployment, roadmap, and public integration guides"
+description = "After every topical documentation roll-up and the deployment/orchestrator owners are merged, reconcile the global index, deployment and roadmap documents, and all five public guides to exact integrated CLI, API, ACP, architecture, config, and deployment truth. This is the final documentation acceptance roll-up, not a product implementation lane."
+status = "ready"
+tier = "architectural"
+max_loc = 5000
+files = [
+    "docs/v2/00-INDEX.md",
+    "docs/v2/25-DEPLOYMENT.md",
+    "docs/v2/28-ROADMAP.md",
+    "docs/v2/ACP-INTEGRATION-GUIDE.md",
+    "docs/v2/API-REFERENCE.md",
+    "docs/v2/ARCHITECTURE-GUIDE.md",
+    "docs/v2/CLI-REFERENCE.md",
+    "docs/v2/INTEGRATION-GUIDE.md",
+]
+role = "scribe"
+domain = "docs"
+ownership = "documentation-acceptance-roll-up"
+depends_on = [
+    "DOCV2-T01",
+    "DOCV2-T02",
+    "DOCV2-T03",
+    "DOCV2-T04",
+    "DOCV2-T05",
+    "DOCV2-T06",
+    "DOCV2-T07",
+    "DOCV2-T08",
+    "DOCV2-T09",
+]
+depends_on_plan = [
+    "E01-execution-engine",
+    "E10-FRONTEND-CONTRACT",
+    "E11-chain-isfr",
+    "E16-prd-self-hosting-gaps",
+    "E17-acp-completion",
+    "E18-DOCS-CONFIG-OPS",
+    "E43-deployment-portability",
+    "E45-orchestrator-mori-parity",
+]
+acceptance = [
+    "The index and roadmap report integrated status without converting open normative targets into shipped claims; superseded history and source mappings remain explicit.",
+    "CLI, API, ACP, architecture, integration, config, daemon, worker, secrets, and deployment examples match reproducible local help, route/schema, and test evidence.",
+    "An independent public-docs review runs all safe cited commands, checks local links, confirms all 34 sources remain covered, and rejects any product edit or unsupported claim.",
+]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/00-INDEX.md", why = "Owned global index and vocabulary source." },
+    { path = "docs/v2/25-DEPLOYMENT.md", why = "Owned deployment source." },
+    { path = "docs/v2/28-ROADMAP.md", why = "Owned global current-state roadmap." },
+    { path = "docs/v2/ACP-INTEGRATION-GUIDE.md", why = "Owned ACP public guide." },
+    { path = "docs/v2/API-REFERENCE.md", why = "Owned HTTP/API public reference." },
+    { path = "docs/v2/ARCHITECTURE-GUIDE.md", why = "Owned cross-cutting public architecture guide." },
+    { path = "docs/v2/CLI-REFERENCE.md", why = "Owned CLI public reference." },
+    { path = "docs/v2/INTEGRATION-GUIDE.md", why = "Owned end-to-end public guide." },
+    { path = "tmp/status-quo/backlog/plans/E43-deployment-portability/tasks.toml", why = "Canonical deployment implementation owner." },
+    { path = "tmp/status-quo/backlog/plans/E45-orchestrator-mori-parity/tasks.toml", why = "Canonical remaining runner/Mori implementation owner." },
+    { path = "crates/roko-cli/src/main.rs", why = "Integrated CLI truth to document, not modify." },
+    { path = "crates/roko-serve/src/openapi.rs", why = "Integrated API schema truth to document, not modify." },
+    { path = "crates/roko-acp/src/handler.rs", why = "Integrated ACP truth to document, not modify." },
+]
+anti_patterns = [
+    "Do NOT edit production code, tests, manifests, generated indexes, lockfiles, or documents owned by DOCV2-T01 through T09.",
+    "Do NOT make a documented command succeed by changing the product; record a verified limitation or return it to the canonical owner.",
+    "Do NOT claim deployment, credentials, external mutation, or remote availability from local repository evidence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'docs/v2/25-DEPLOYMENT.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/28-ROADMAP.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/CLI-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/API-REFERENCE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ACP-INTEGRATION-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md && grep -q 'docs/v2/ARCHITECTURE-GUIDE.md' tmp/status-quo/backlog/source-coverage/docs-v2-core.md"
+fail_msg = "DOCV2-T10 sources must remain in the canonical coverage ledger"
+
+[[task.verify]]
+phase = "structural"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate --strict tmp/status-quo/backlog/plans"
+fail_msg = "The complete backlog plan graph must remain strictly valid after documentation reconciliation"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'from pathlib import Path; import tomllib; p=Path(\"tmp/status-quo/backlog/plans/DOC-v2-core/tasks.toml\"); d=tomllib.loads(p.read_text()); sources={str(x) for x in Path(\"docs/v2\").glob(\"**/*.md\")}; covered={r[\"path\"] for t in d[\"task\"] for r in t[\"context\"][\"read_files\"] if r[\"path\"].startswith(\"docs/v2/\")}; assert len(sources)==34 and sources<=covered and d[\"meta\"][\"total\"]==10 and d[\"meta\"][\"done\"]==0'"
+fail_msg = "DOC-v2-core must preserve all 34 sources, ten task IDs, and zero completed tasks"

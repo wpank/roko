@@ -1,0 +1,60 @@
+# CTRL-06 implementation evidence
+
+Assignment:
+- Plan: `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`, Wave 0
+- Base SHA: `e736f324bf6f1c6840d9d011c9189fe26e4cf052`
+- Branch/worktree: `agent/CTRL-06-output-prereq-validation` at `/Users/will/dev/nunchi/roko/agent-worktrees/status-quo-20260714T073140Z/workers/CTRL-06`
+- Integration branch: `status-quo/integration-status-quo-20260714T073140Z`
+- Reserved write scope: `crates/roko-cli/src/plan_validate.rs`, `crates/roko-cli/tests/plan_validate.rs`, `crates/roko-cli/tests/plan_validation.rs`, `tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md`, and this evidence file. The canonical schema was added to correction scope after independent review found its output/prerequisite contract stale.
+
+Requirement:
+- Original defect or missing behavior: `validate_file_references` treats `task.files` and `write_files` mutation outputs as required pre-existing inputs, producing 25 misleading strict diagnostics for intended ADRs, workflows, config, graph, and the planned `roko-gateway` crate. It does not validate the actual prerequisites in `task.context.read_files`.
+- Expected behavior: missing task outputs are valid; missing `context.read_files` inputs remain strict diagnostics unless a declared same-plan task dependency or loaded `depends_on_plan` plan produces that exact path; existing prerequisites pass.
+- Acceptance requirements: implement the schema distinction without path/plan special cases; add positive and adversarial tests; preserve strict failure for undeclared missing prerequisites; run both validator integration suites, formatting, `cargo check -p roko-cli`, rebuild the CLI, and report backlog/self-heal strict results without changing manifests.
+- Explicit non-goals: editing task manifests, hiding diagnostics by plan/path identity, weakening strict mode, changing runtime task parsing, or treating outputs from unrelated tasks as available.
+- Dependencies and their integration commits: CTRL-01 integrated at `1a385eb52c405e9471f0ad7e23cae9650c570290`; coordinator status at base `e736f324bf6f1c6840d9d011c9189fe26e4cf052`.
+
+Reproduction:
+- Pre-fix command: `/Users/will/dev/nunchi/roko/roko/target/debug/roko plan validate --strict tmp/status-quo/backlog/plans`
+- Expected: validator distinguishes authored outputs from prerequisites.
+- Actual: exit 1 with `25 diagnostics in 55 plans`; all diagnostics are emitted from output paths declared in `files`, including 14 references under the not-yet-created `crates/roko-gateway`.
+- Control command: `/Users/will/dev/nunchi/roko/roko/target/debug/roko plan validate --strict tmp/status-quo/self-heal/plans`
+- Actual: exit 0 with `0 diagnostics in 6 plans`.
+
+Implementation:
+- Design and invariants: `files` and `write_files` are collected as outputs, while only `context.read_files[*].path` is collected as a prerequisite. A missing prerequisite is accepted only when the exact path is produced by the transitive closure of the task's declared same-plan `depends_on` tasks or by a loaded plan named in `depends_on_plan`. Outputs from unrelated tasks or plans never satisfy an input. Existing `PLAN_030`/`PLAN_031` warning severities and strict-mode warning failure are preserved.
+- Files/symbols changed: `crates/roko-cli/src/plan_validate.rs` adds typed path classification, plan-output indexing, dependency output closure, prerequisite-only diagnostics, and matching public rustdoc; `crates/roko-cli/tests/plan_validate.rs` adds strict CLI coverage and removes obsolete output-stub setup; `crates/roko-cli/tests/plan_validation.rs` adds validator coverage for missing/existing/output/dependency cases; the canonical task schema now documents the same output/prerequisite contract and `PLAN_030/031` meanings.
+- Compatibility/migration: no serialized task shape, CLI flag, manifest, lockfile, or public command changed. Existing plans continue using `files`, `write_files`, `context.read_files`, `depends_on`, and `depends_on_plan`; validation and the canonical schema now apply and describe their documented meanings consistently.
+- Failure/recovery/security behavior: malformed plans remain governed by existing schema diagnostics. Missing undeclared prerequisites remain warnings and therefore fail `--strict`. The implementation does not read prerequisite contents or execute plan commands and introduces no external mutation.
+
+Verification:
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo test -p roko-cli --test plan_validation` — exit 0; 24 passed, 0 failed. The existing test-harness `missing documentation for the crate` warning remains.
+- `cargo test -p roko-cli --test plan_validate` — exit 0; 18 passed, 0 failed.
+- `cargo check -p roko-cli` — exit 0.
+- `cargo build -p roko-cli --bin roko` — exit 0.
+- `target/debug/roko plan validate --strict tmp/status-quo/backlog/plans` — exit 1 with 16 prerequisite diagnostics in 55 plans. This replaces the baseline's 25 output-path false positives with actual missing `context.read_files` inputs for manifest remediation under CTRL-07; no `files`/`write_files` output is diagnosed.
+- `target/debug/roko plan validate --strict tmp/status-quo/self-heal/plans` — exit 0 with 0 diagnostics in 6 plans.
+- `git diff --check` — exit 0.
+- F1 correction rerun with clean `CARGO_TARGET_DIR=/private/tmp/roko-ctrl06-review-target`: `plan_validation` 24/24 and `plan_validate` 18/18 passed; `cargo check -p roko-cli` and `cargo build -p roko-cli --bin roko` passed; rebuilt strict self-heal remained 0 diagnostics in 6 plans and strict backlog remained the expected 16 prerequisite diagnostics in 55 plans; final formatting and diff checks passed.
+- An initial correction rerun against the worker-local target failed while compiling unchanged `roko-serve` because that target had been reused by an isolated parent-commit review and contained mismatched path-dependency artifacts. Switching to the reviewer's clean CTRL-06 target was the materially different remedy; the complete rerun passed without source changes.
+- F2 correction rerun with the serialized CTRL-06 review target: `plan_validation` 24/24 and `plan_validate` 18/18 passed; `cargo fmt --all -- --check` and `git diff --check` passed; strict self-heal remained 0 diagnostics in 6 plans and strict backlog remained the expected 16 prerequisite diagnostics in 55 plans. The strict binary reports candidate `5014afa2c`; F2 changes only test setup/comments and evidence, so the reviewed production binary is unchanged.
+- The first F2 test attempt against the coordinator-wide integration target failed while compiling unchanged `roko-serve` against incompatible path-dependency artifacts from another active worktree. The target was preserved; switching to the already serialized CTRL-06 target isolated this branch and completed the focused suite successfully.
+
+Review readiness:
+- Implementation commit: `ea018feedcbccca3a3d922d293721134e6c7e829`.
+- Review-correction commit: `25da49fc9b9b33aac003649b0d17b9c791727fc5`.
+- Second review-correction commit: `e9df2b2b064c5967354157306dbfa33c6282d60e`.
+- Rejected candidate: `5e837e25e78bfd702f432dffb2d3cd1c022db080`; independent review accepted the algorithm/tests but rejected stale public rustdoc, canonical schema text, and three output-stub test rationales as F1.
+- F1 correction: public rustdoc now states the exact output/prerequisite/dependency exception; schema rows for `files`, `read_files`, and `PLAN_030/031` match it; obsolete output-stub setup was removed while the real architecture prerequisite fixture remains explicitly identified.
+- Renewed rejected candidate: `5014afa2cd2c7f00f7dd40c5e17f08d8f8646acc`; review commit `d5671d1e9994bb002563879e4f049004f470b31e` accepted the production behavior and F1 disposition but identified one remaining obsolete output-stub setup/rationale in the complete architecture-deferral fixture as F2.
+- F2 correction: the supporting plan remains to exercise recursive multi-plan validation, but its declared `stub/lib.rs` output is now intentionally absent; the obsolete directory/file creation is removed and both fixture comments state the multi-plan and absent-output purpose.
+- Diff scope reviewed: the three reserved validator source/test files, canonical schema, and this evidence record are the complete task scope; no task manifest or lockfile changed.
+- Known limitations: cross-plan dependency outputs are available only when the producer plan is loaded in the same validation run. Path matching is deliberately exact and lexical, matching the authored schema; aliases or undeclared producers are not inferred.
+- Required reviewer focus: output/prerequisite classification, dependency closure, undeclared-producer rejection, and strict backlog/self-heal results.
+
+Integration:
+- Review evidence: F1 rejection `CTRL-06-REVIEW-F1-REJECTED.md` (`35fd8b912b2d…`), F2 rejection `CTRL-06-REVIEW.md` (`d5671d1e9994…`), and final independent acceptance `CTRL-06-REVIEW-FINAL.md` (`595eac759a2f…`). Both rejection findings are explicitly dispositioned.
+- Integration commit: final accepted merge `d4749f9c708eac02f01d0a4d9ee5a3dd84cdcf84`; both rejected-review commits, final candidate `7f62204e50bf…`, and final review are ancestors.
+- Post-merge commands/results: `cargo test -p roko-cli --test plan_validation` passed 24/24; `cargo test -p roko-cli --test plan_validate` passed 18/18; integrated `target/debug/roko` rebuilt at git `d4749f9c7`; strict self-heal passed with 0 diagnostics/6 plans; strict backlog reported 13 prerequisite-only diagnostics/55 plans after the separately merged canonical queue/GAPS import removed three real missing inputs. The validator's documented `plans/INDEX.md` side effect was restored byte-for-byte to the independently reviewed sealed SHA-256 `7ac5679f…`; integration is clean.
+- Final status: `DONE` for CTRL-06. The remaining 13 prerequisite diagnostics are owned by CTRL-05/CTRL-07 and are not validator false positives.

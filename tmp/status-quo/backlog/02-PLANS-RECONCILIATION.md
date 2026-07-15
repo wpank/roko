@@ -1,5 +1,28 @@
 # 02 — Plans ↔ Status-Quo Reconciliation
 
+> **Current-control-plane notice (2026-07-14, CTRL-15):** This document's body is
+> the July 9 baseline analysis at `5852c93c05`; its claims that
+> `architecture-core-queue` is missing and that the generated index contains
+> only 29 plans/120 tasks are superseded. The reviewed recovery now includes the
+> 24-task architecture queue, so a current generated `plans/INDEX.md` reports
+> 30 executable plans/144 tasks. The original sealed 120-task population is
+> reconciled row-for-row in
+> [`plans/_meta/EXECUTION-OWNERSHIP.md`](../../../plans/_meta/EXECUTION-OWNERSHIP.md):
+> 99 retained owners and 21 zero-write acceptance roll-ups. Historical analysis
+> below is preserved for provenance and must not be used as current inventory.
+> The current standalone roots are the recovered 24-task
+> `architecture-core-queue`, the three-task `architecture-defi-critical-path`,
+> and the two-task `e2e-smoke`. `dry-run-flag`, `live-demo-phase1`, and
+> `live-demo-phase2` were deleted by `7899494d` and remain absent and
+> non-runnable. They are not indexed, and no empty replacement directories were
+> manufactured. The dry-run proposal has no task-for-task current supersession;
+> only its exported preview data structs survive, without `roko run`/runtime
+> wiring or plan tests. The phase-1 greeting function survives unexported and
+> untested; the farewell function/test are absent. These residues are not
+> accepted completion, and the live-demo tasks are not equivalent to
+> `e2e-smoke`. The old demo script's `--live` mode now fails closed; simulated
+> mode makes no plan-run or network call.
+>
 > **The bridge between the authored `plans/` backlog and the status-quo findings.**
 > - Repo HEAD: `5852c93c05` on `main`
 > - Date: 2026-07-09

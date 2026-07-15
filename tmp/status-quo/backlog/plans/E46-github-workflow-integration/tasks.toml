@@ -1,0 +1,742 @@
+[meta]
+plan = "E46-github-workflow-integration"
+total = 12
+done = 0
+status = "ready"
+phase = "M1"
+max_parallel = 2
+depends_on_plan = ["E01-execution-engine"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T01: Add GitHubConfig to roko.toml schema
+# ─────────────────────────────────────────────────────────────────────────────
+# The MCP GitHub server reads GITHUB_TOKEN from env but nothing in roko.toml
+# knows which owner/repo/default_branch to target. Add a [github] section so
+# the runner and CLI can resolve repo coordinates without env vars in every
+# prompt. The webhook secret already lives under [webhooks.github]; this new
+# section covers repo identity + workflow preferences.
+[[task]]
+id = "E46-T01"
+title = "Add [github] config section to RokoConfig schema"
+description = """Add a GitHubConfig struct to roko-core's config schema with fields:
+owner (String), repo (String), default_branch (String, default "main"),
+auto_pr (bool, default false), merge_method (enum: merge/squash/rebase, default squash),
+label_prefix (String, default "roko/").
+Wire into RokoConfig as `pub github: GitHubConfig` with serde defaults.
+Add to scaffold_default_toml output."""
+status = "ready"
+tier = "focused"
+max_loc = 55
+files = ["crates/roko-core/src/config/schema.rs"]
+role = "implementer"
+depends_on = []
+domain = "config"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1-60", why = "RokoConfig struct definition — add github field here" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1060-1100", why = "scaffold_default_toml — add [github] section" },
+    { path = "crates/roko-core/src/config/serve.rs", lines = "470-500", why = "GithubWebhookConfig pattern to follow for struct style" },
+]
+symbols = [
+    "RokoConfig — top-level config struct, add `pub github: GitHubConfig`",
+    "scaffold_default_toml — appends default TOML sections",
+    "GithubWebhookConfig — existing GitHub config struct for webhooks (reference pattern)",
+]
+anti_patterns = [
+    "Do NOT move or rename the existing [webhooks.github] section — that stays for webhook secrets.",
+    "Do NOT make owner/repo required — they should be optional Strings that callers check at use-site.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub github: GitHubConfig' crates/roko-core/src/config/schema.rs"
+fail_msg = "RokoConfig must have a github field"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'merge_method' crates/roko-core/src/config/schema.rs"
+fail_msg = "GitHubConfig must have merge_method field"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = [
+    "GitHubConfig struct with owner, repo, default_branch, auto_pr, merge_method, label_prefix",
+    "Serde defaults so missing [github] in existing roko.toml files doesn't break deserialization",
+    "scaffold_default_toml emits commented-out [github] section",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T02: Add GitHub signal kinds for CI and merge events
+# ─────────────────────────────────────────────────────────────────────────────
+# The webhook handler already maps push/PR/review/issue events to signal kinds.
+# Add constants for CI check status changes and PR merge events so the trigger
+# system can react to CI failures and completed merges.
+[[task]]
+id = "E46-T02"
+title = "Add CI and merge signal kind constants"
+description = """Add signal kind constants to signal_kinds.rs:
+GITHUB_CHECK_COMPLETED = "github:check_suite:completed"
+GITHUB_PR_MERGED = "github:pull_request:merged"
+GITHUB_PR_CLOSED = "github:pull_request:closed"
+GITHUB_CI_FAILED = "github:ci:failed"
+Then extend github_signal_kind() in webhooks.rs to map:
+- check_suite events with action=completed -> GITHUB_CHECK_COMPLETED
+- pull_request closed+merged (non-plan branches) -> GITHUB_PR_MERGED
+- pull_request closed+not_merged -> GITHUB_PR_CLOSED"""
+status = "ready"
+tier = "focused"
+max_loc = 40
+files = ["crates/roko-core/src/signal_kinds.rs", "crates/roko-serve/src/routes/webhooks.rs"]
+role = "implementer"
+depends_on = []
+domain = "signals"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/signal_kinds.rs", lines = "1-16", why = "existing signal kind constants — add new ones here" },
+    { path = "crates/roko-serve/src/routes/webhooks.rs", lines = "224-257", why = "github_signal_kind() — extend match arms" },
+]
+symbols = [
+    "signal_kinds — module with pub const &str for each signal type",
+    "github_signal_kind — maps GitHub event_type + payload to Kind",
+]
+anti_patterns = [
+    "Do NOT remove the existing PRD_PLAN_APPROVED mapping for plan/ branch merges.",
+    "Do NOT change the existing webhook signature verification logic.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GITHUB_CHECK_COMPLETED' crates/roko-core/src/signal_kinds.rs"
+fail_msg = "signal_kinds must define GITHUB_CHECK_COMPLETED"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GITHUB_PR_MERGED' crates/roko-core/src/signal_kinds.rs"
+fail_msg = "signal_kinds must define GITHUB_PR_MERGED"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core -p roko-serve 2>&1"
+fail_msg = "roko-core and roko-serve must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve -- webhooks 2>&1"
+fail_msg = "webhook tests must pass"
+
+acceptance = [
+    "4 new signal kind constants in signal_kinds.rs",
+    "github_signal_kind handles check_suite completed, PR merged, PR closed",
+    "existing webhook tests still pass",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T03: Extract GitHub API client from MCP server into a reusable library
+# ─────────────────────────────────────────────────────────────────────────────
+# The MCP server has all the HTTP plumbing but it's trapped in a binary crate.
+# Extract the core API client (auth, rate limiting, request building) into a
+# lib.rs so other crates (roko-cli runner, roko-serve) can call GitHub without
+# shelling out to the MCP server or duplicating HTTP code.
+[[task]]
+id = "E46-T03"
+title = "Extract GitHub API client into roko-mcp-github lib.rs"
+description = """Split crates/roko-mcp-github into lib.rs + main.rs:
+- lib.rs exports: GitHubClient struct (wraps reqwest::blocking::Client + token + rate limit state),
+  plus public functions: create_branch, create_pr, merge_pr, get_actions_status,
+  create_issue, close_issue, add_labels, comment_pr, review_pr, list_prs.
+- main.rs keeps the MCP JSON-RPC framing and calls lib.rs functions.
+- GitHubClient::new(token: &str) constructor.
+- GitHubClient::from_env() reads GITHUB_TOKEN.
+Add `[lib]` section to Cargo.toml so the crate can be used as both binary and library."""
+status = "ready"
+tier = "integrative"
+max_loc = 60
+files = ["crates/roko-mcp-github/src/lib.rs", "crates/roko-mcp-github/src/main.rs", "crates/roko-mcp-github/Cargo.toml"]
+role = "implementer"
+depends_on = []
+domain = "github-api"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "1-30", why = "imports and module structure" },
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "827-852", why = "dispatch_tool_call — shows all tool names" },
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "858-900", why = "handle_list_prs/handle_get_pr — pattern for API call wrappers" },
+    { path = "crates/roko-mcp-github/Cargo.toml", lines = "1-25", why = "add [lib] section" },
+]
+symbols = [
+    "github_client() — creates reqwest client with auth headers",
+    "dispatch_tool_call — routes tool name to handler",
+    "GithubRateLimiter — rate limit + backoff state",
+]
+anti_patterns = [
+    "Do NOT change tool names or MCP protocol behavior — main.rs must remain backward-compatible.",
+    "Do NOT make the client async — keep blocking reqwest for now since the MCP server is sync.",
+    "Do NOT remove any existing public tool from the MCP dispatch.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-mcp-github/src/lib.rs"
+fail_msg = "lib.rs must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct GitHubClient' crates/roko-mcp-github/src/lib.rs"
+fail_msg = "GitHubClient must be a public struct in lib.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-mcp-github 2>&1"
+fail_msg = "roko-mcp-github must compile as both lib and bin"
+
+acceptance = [
+    "lib.rs exports GitHubClient with from_env() constructor",
+    "main.rs uses lib.rs types — no duplicated HTTP logic",
+    "Cargo.toml has [lib] section",
+    "MCP server binary still works identically",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T04: Add GitHubOps trait + runner integration point
+# ─────────────────────────────────────────────────────────────────────────────
+# The runner needs a trait-based interface to GitHub so it can be mocked in
+# tests. Define GitHubOps in roko-core (or roko-orchestrator) and implement
+# it using the extracted GitHubClient.
+[[task]]
+id = "E46-T04"
+title = "Define GitHubOps trait for runner-level GitHub operations"
+description = """Add a GitHubOps async trait in crates/roko-orchestrator/src/github_ops.rs:
+- create_plan_branch(plan_id, base_sha) -> Result<String>  (returns branch name)
+- open_pr(branch, title, body) -> Result<u64>  (returns PR number)
+- check_ci_status(ref_name) -> Result<CiStatus>  (enum: Pending/Success/Failure)
+- merge_pr(pr_number, method) -> Result<()>
+- create_task_issue(task_id, title, body, labels) -> Result<u64>
+- close_issue(number) -> Result<()>
+- comment_pr(pr_number, body) -> Result<()>
+
+Implement NoOpGitHubOps (all methods return Ok with dummy values) as default.
+Add `pub github_ops: Arc<dyn GitHubOps>` to ExecutorConfig or a new RunnerGitHub wrapper."""
+status = "ready"
+tier = "focused"
+max_loc = 55
+files = ["crates/roko-orchestrator/src/github_ops.rs", "crates/roko-orchestrator/src/lib.rs"]
+role = "implementer"
+depends_on = ["E46-T03"]
+domain = "orchestrator"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/lib.rs", lines = "1-40", why = "crate root — add pub mod github_ops" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "194-224", why = "RunContext struct — where github_ops would be added as a field" },
+]
+symbols = [
+    "ExecutorConfig — may gain github_ops field or it lives in RunContext",
+    "RunContext — shared state for the dispatch loop, natural home for github_ops",
+]
+anti_patterns = [
+    "Do NOT make GitHubOps depend on the MCP server crate — it's a trait with its own types.",
+    "Do NOT add blocking calls — the trait should be async since the runner is tokio-based.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub trait GitHubOps' crates/roko-orchestrator/src/github_ops.rs"
+fail_msg = "GitHubOps trait must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'NoOpGitHubOps' crates/roko-orchestrator/src/github_ops.rs"
+fail_msg = "NoOpGitHubOps default impl must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-orchestrator 2>&1"
+fail_msg = "roko-orchestrator must compile"
+
+acceptance = [
+    "GitHubOps trait with 7 async methods",
+    "CiStatus enum (Pending, Success, Failure)",
+    "NoOpGitHubOps that returns dummy Ok values",
+    "Trait is object-safe (dyn GitHubOps works)",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T05: Implement GitHubOps using extracted GitHubClient
+# ─────────────────────────────────────────────────────────────────────────────
+# Bridge the GitHubOps trait to the real GitHubClient from roko-mcp-github.
+# This lives in roko-cli since it combines config (owner/repo from GitHubConfig)
+# with the API client.
+[[task]]
+id = "E46-T05"
+title = "Implement LiveGitHubOps backed by GitHubClient"
+description = """Create crates/roko-cli/src/github_ops_impl.rs:
+- LiveGitHubOps struct holds GitHubClient + owner + repo + config.
+- Implements GitHubOps trait by calling GitHubClient methods.
+- create_plan_branch: calls create_branch with name "roko/plan/{plan_id}".
+- open_pr: calls create_pr with head=branch, base=default_branch from config.
+- check_ci_status: calls get_actions_status, maps combined status to CiStatus.
+- merge_pr: calls merge_pr with merge_method from config.
+- Constructor: LiveGitHubOps::from_config(cfg: &GitHubConfig) -> Result<Self>.
+Uses tokio::task::spawn_blocking to bridge sync GitHubClient to async trait."""
+status = "ready"
+tier = "integrative"
+max_loc = 55
+files = ["crates/roko-cli/src/github_ops_impl.rs", "crates/roko-cli/Cargo.toml"]
+role = "implementer"
+depends_on = ["E46-T03", "E46-T04"]
+domain = "github-api"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-mcp-github/src/lib.rs", lines = "1-40", why = "GitHubClient public API (after T03 extraction)" },
+    { path = "crates/roko-orchestrator/src/github_ops.rs", lines = "1-40", why = "GitHubOps trait to implement (from T04)" },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1-30", why = "GitHubConfig fields (from T01)" },
+]
+symbols = [
+    "GitHubClient — sync API client from roko-mcp-github",
+    "GitHubOps — async trait from roko-orchestrator",
+    "GitHubConfig — config section from roko-core (T01)",
+]
+anti_patterns = [
+    "Do NOT block the tokio runtime — use spawn_blocking for sync calls.",
+    "Do NOT hardcode owner/repo — read from GitHubConfig.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'impl GitHubOps for LiveGitHubOps' crates/roko-cli/src/github_ops_impl.rs"
+fail_msg = "LiveGitHubOps must implement GitHubOps"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "LiveGitHubOps struct in roko-cli",
+    "from_config constructor reads GitHubConfig",
+    "All 7 trait methods implemented with spawn_blocking bridge",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T06: Wire GitHubOps into runner event loop
+# ─────────────────────────────────────────────────────────────────────────────
+# Add GitHubOps to RunContext so the event loop can call GitHub operations
+# at key points: plan start (create branch), task completion (comment PR),
+# all gates pass (merge PR).
+[[task]]
+id = "E46-T06"
+title = "Wire GitHubOps into RunContext and event loop"
+ownership = "distinct-github-extension"
+uses_owner = "E01-T14; SH02-T02"
+description = """Modify crates/roko-cli/src/runner/event_loop.rs:
+1. Add `github_ops: Arc<dyn GitHubOps>` to RunContext.
+2. In run() function, construct LiveGitHubOps from config if github.owner+repo
+   are set, else use NoOpGitHubOps.
+3. Pass github_ops into RunContext.
+4. In the plan-start path (where PlanState is initialized): if auto_pr is enabled,
+   call github_ops.create_plan_branch() and github_ops.open_pr() with draft=true.
+   Store the PR number in PlanState (add a `github_pr: Option<u64>` field).
+5. On MergeBranch action success (after regression gate passes): if github_pr
+   is set, call github_ops.merge_pr().
+
+Modify crates/roko-cli/src/runner/types.rs to add RunConfig.github_ops field."""
+status = "ready"
+tier = "integrative"
+max_loc = 50
+files = ["crates/roko-cli/src/runner/event_loop.rs", "crates/roko-cli/src/runner/types.rs"]
+role = "implementer"
+depends_on = ["E46-T01", "E46-T04", "E46-T05"]
+domain = "runner"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "194-233", why = "RunContext struct — add github_ops field" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "237-280", why = "run() function start — construct github_ops" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4957-5018", why = "MergeBranch action handler — add PR merge after gate pass" },
+    { path = "crates/roko-cli/src/runner/types.rs", lines = "1280-1300", why = "RunConfig struct — add github_ops or github config" },
+]
+symbols = [
+    "RunContext — add github_ops: Arc<dyn GitHubOps>",
+    "run() — construct and inject github_ops",
+    "ExecutorAction::MergeBranch — call github_ops.merge_pr after gate pass",
+]
+anti_patterns = [
+    "Do NOT make GitHub calls blocking in the select! loop — spawn them as tasks.",
+    "Do NOT fail the plan if GitHub calls fail — log a warning and continue.",
+    "Do NOT change the existing MergeQueue/PlanMerger flow — GitHub PR is additive.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'github_ops' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "RunContext must reference github_ops"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "github_ops in RunContext",
+    "LiveGitHubOps constructed when github config has owner+repo",
+    "NoOpGitHubOps used as fallback",
+    "Plan start creates branch + draft PR when auto_pr=true",
+    "MergeBranch success merges the GitHub PR",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T07: Issue creation on task gate failure
+# ─────────────────────────────────────────────────────────────────────────────
+# When a task fails its gate pipeline and exhausts retries, create a GitHub
+# issue tagged with roko labels so the failure is tracked externally.
+[[task]]
+id = "E46-T07"
+title = "Create GitHub issues for terminal task failures"
+description = """In the event loop's gate failure terminal path (where task status
+becomes Failed after max retries):
+1. Call github_ops.create_task_issue() with:
+   - title: "[roko] Task {task_id} failed: {task_title}"
+   - body: gate output, error summary, plan context
+   - labels: ["{label_prefix}task-failure", "{label_prefix}plan/{plan_id}"]
+2. Store the issue number in task state (add github_issue: Option<u64> to
+   TaskAttemptOutcome or RunState tracking).
+3. When a previously-failed task succeeds on retry/replan, call
+   github_ops.close_issue() to auto-close the tracking issue."""
+status = "ready"
+tier = "focused"
+max_loc = 45
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["E46-T06"]
+domain = "runner"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1000-1120", why = "Gate completion handling — find the terminal failure path" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "194-224", why = "RunContext — github_ops is already there from T06" },
+]
+symbols = [
+    "GateCompletion — carries plan_id, task_id, passed, output",
+    "TaskAttemptStatus::Failed — terminal state where issue should be created",
+    "github_ops.create_task_issue — from GitHubOps trait",
+]
+anti_patterns = [
+    "Do NOT create issues for non-terminal failures (retries pending).",
+    "Do NOT block the event loop on issue creation — spawn as a background task.",
+    "Do NOT fail the run if issue creation fails — log warning and continue.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'create_task_issue' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event loop must call create_task_issue on terminal failure"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "Terminal task failure creates a GitHub issue with roko labels",
+    "Issue body includes gate output and plan context",
+    "Issue is auto-closed when task subsequently passes",
+    "Issue creation is non-blocking and failure-tolerant",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T08: PR gate comments on task completion
+# ─────────────────────────────────────────────────────────────────────────────
+# Post structured comments on the plan's PR as tasks complete, giving real-time
+# visibility into plan execution progress through the GitHub UI.
+[[task]]
+id = "E46-T08"
+title = "Post PR comments on task gate results"
+description = """After each task's gate pipeline completes (pass or fail), if the plan
+has a github_pr number (from T06), post a summary comment:
+1. Build a markdown comment with: task ID, title, gate verdict (pass/fail),
+   duration, key output lines (truncated to 2000 chars).
+2. Call github_ops.comment_pr(pr_number, body).
+3. On plan completion, post a final summary comment with overall stats
+   (tasks passed/failed, total duration, cost).
+4. Rate-limit comments: skip intermediate gate rungs, only comment on
+   the final verdict per task (not every rung)."""
+status = "ready"
+tier = "focused"
+max_loc = 50
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["E46-T06", "E46-T07"]
+domain = "runner"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1000-1110", why = "Gate completion handler — add PR comment after final verdict" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4920-4955", why = "Plan completion path — post final summary" },
+]
+symbols = [
+    "GateCompletion — has plan_id, task_id, verdicts, output, duration_ms",
+    "PlanOutcome::Completed/Failed — plan terminal states for summary comment",
+]
+anti_patterns = [
+    "Do NOT post a comment for every gate rung — only the final verdict per task.",
+    "Do NOT include full gate output in comments — truncate to 2000 chars.",
+    "Do NOT block the event loop — spawn comment posting as a background task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'comment_pr' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "event loop must call comment_pr for gate results"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "Task gate final verdict posts a structured PR comment",
+    "Plan completion posts a summary comment",
+    "Comments are rate-limited (no per-rung spam)",
+    "Comment posting is non-blocking",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T09: CI status check before merge
+# ─────────────────────────────────────────────────────────────────────────────
+# Before merging a plan's PR, check that GitHub Actions CI has passed.
+# The MCP server already has get_actions_status; this wires it into the
+# merge decision.
+[[task]]
+id = "E46-T09"
+title = "Check CI status before PR merge"
+description = """In the MergeBranch handler (event_loop.rs), after the local regression
+gate passes but before calling github_ops.merge_pr():
+1. Call github_ops.check_ci_status(branch_name).
+2. If CiStatus::Pending, log info and retry after a delay (schedule a
+   re-check via a timer in the select! loop, max 5 retries with 30s intervals).
+3. If CiStatus::Failure, log error, post a PR comment with CI failure details,
+   and skip the merge (leave PR open for manual intervention).
+4. If CiStatus::Success, proceed with merge.
+Add a ci_check_retries counter to track attempts."""
+status = "ready"
+tier = "focused"
+max_loc = 45
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["E46-T06", "E46-T08"]
+domain = "runner"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "4957-5018", why = "MergeBranch handler — insert CI check before merge" },
+    { path = "crates/roko-orchestrator/src/github_ops.rs", lines = "1-30", why = "CiStatus enum and check_ci_status signature (from T04)" },
+]
+symbols = [
+    "ExecutorAction::MergeBranch — the merge trigger point",
+    "CiStatus — Pending/Success/Failure enum from GitHubOps",
+    "github_ops.check_ci_status — the call to make",
+]
+anti_patterns = [
+    "Do NOT block the event loop waiting for CI — use async retry with timer.",
+    "Do NOT fail the plan on CI pending — retry with backoff.",
+    "Do NOT skip CI check entirely if github_ops is NoOp — NoOp returns Success.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'check_ci_status' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "merge handler must call check_ci_status"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "CI status checked before PR merge",
+    "Pending CI retried with 30s intervals up to 5 times",
+    "Failed CI posts a PR comment and skips merge",
+    "Successful CI proceeds with merge",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T10: GitHub webhook event triggers for plan execution
+# ─────────────────────────────────────────────────────────────────────────────
+# Wire the existing webhook handler to trigger plan actions when GitHub events
+# arrive — e.g., start a plan when an issue is labeled, re-run tasks when
+# a review requests changes.
+[[task]]
+id = "E46-T10"
+title = "Wire GitHub webhook events to plan triggers"
+description = """In roko-serve, add a subscriber to the event bus that reacts to
+GitHub webhook signals:
+1. GITHUB_ISSUE_OPENED with label "{label_prefix}plan": look up the issue body
+   for a plan reference, queue the plan for execution via the plan API.
+2. GITHUB_PR_REVIEW with event=REQUEST_CHANGES: emit a replan signal for the
+   plan associated with the PR branch (match "roko/plan/{plan_id}").
+3. GITHUB_CHECK_COMPLETED with conclusion=failure: emit a CI failure signal
+   for the plan associated with the check's branch.
+
+Create a github_event_subscriber function (similar pattern to the existing
+prd_publish_subscriber) that takes the event bus receiver and processes events."""
+status = "ready"
+tier = "integrative"
+max_loc = 55
+files = ["crates/roko-serve/src/routes/webhooks.rs", "crates/roko-serve/src/events.rs"]
+role = "implementer"
+depends_on = ["E46-T02"]
+domain = "serve"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/webhooks.rs", lines = "210-257", why = "persist_webhook_signal + github_signal_kind — event creation" },
+    { path = "crates/roko-serve/src/events.rs", lines = "1-40", why = "ServerEvent enum and event bus pattern" },
+]
+symbols = [
+    "ServerEvent::WebhookReceived — the event published on webhook ingress",
+    "persist_webhook_signal — where signals are persisted and published",
+    "prd_publish_subscriber — reference pattern for event bus subscriber",
+]
+anti_patterns = [
+    "Do NOT process webhooks synchronously in the handler — use the event bus subscriber.",
+    "Do NOT couple the subscriber to plan execution directly — emit signals that the trigger system can consume.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'github_event_subscriber\\|github_webhook_subscriber' crates/roko-serve/src/events.rs"
+fail_msg = "events.rs must define a github event subscriber function"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = [
+    "GitHub webhook subscriber processes issue, PR review, and CI events",
+    "Issue with plan label triggers plan queue",
+    "PR review with REQUEST_CHANGES emits replan signal",
+    "CI failure emits failure signal for the plan's branch",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T11: `roko github status` CLI command
+# ─────────────────────────────────────────────────────────────────────────────
+# Add a CLI command to show GitHub integration status: config validation,
+# active PRs from roko plans, open issues from roko, CI status.
+[[task]]
+id = "E46-T11"
+title = "Add `roko github status` CLI command"
+description = """Add a `github` subcommand group to roko-cli with a `status` subcommand:
+1. Parse [github] config section — show owner/repo/auto_pr/merge_method.
+2. Check GITHUB_TOKEN is set — show authenticated user.
+3. List open PRs with head matching "roko/plan/*" — show PR number, title, CI status.
+4. List open issues with label "{label_prefix}task-failure" — show count and titles.
+5. Output a structured summary to stdout.
+
+Add GithubCmd enum with Status variant. Register in main.rs Command enum."""
+status = "ready"
+tier = "focused"
+max_loc = 55
+files = ["crates/roko-cli/src/commands/github.rs", "crates/roko-cli/src/main.rs"]
+role = "implementer"
+depends_on = ["E46-T01", "E46-T03"]
+domain = "cli"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1-50", why = "Command enum — add Github variant" },
+    { path = "crates/roko-cli/src/commands/", lines = "", why = "directory listing to see command module pattern" },
+]
+symbols = [
+    "Command — top-level clap enum in main.rs",
+    "GitHubClient::from_env — from lib.rs (T03)",
+    "GitHubConfig — from roko-core (T01)",
+]
+anti_patterns = [
+    "Do NOT make this command require a running server — it should work standalone.",
+    "Do NOT panic on missing GITHUB_TOKEN — print a helpful error message.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Github\\|GitHub' crates/roko-cli/src/main.rs"
+fail_msg = "main.rs Command enum must have a Github variant"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+acceptance = [
+    "`roko github status` shows config, auth status, active PRs, open issues",
+    "Works without a running server",
+    "Graceful error when GITHUB_TOKEN is missing",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E46-T12: Integration test for GitHub workflow end-to-end
+# ─────────────────────────────────────────────────────────────────────────────
+# Test the full flow with a mock GitHubOps implementation: plan start creates
+# branch + PR, gate pass posts comment, merge triggers PR merge, failure
+# creates issue.
+[[task]]
+id = "E46-T12"
+title = "Integration test for GitHub workflow with mock GitHubOps"
+description = """Create a test module in crates/roko-cli/src/runner/tests/ (or inline in
+event_loop.rs) that:
+1. Implements MockGitHubOps recording all calls in a Vec<GitHubCall> (enum
+   with variants for each method).
+2. Runs a minimal 2-task plan with auto_pr=true using the mock.
+3. Asserts: create_plan_branch called once, open_pr called once with draft=true,
+   comment_pr called for each task's gate result, merge_pr called on plan success.
+4. Runs a failing task plan and asserts create_task_issue is called.
+5. Verifies NoOpGitHubOps produces no side effects.
+
+This test does NOT call real GitHub APIs — it validates the wiring through the
+mock trait implementation."""
+status = "ready"
+tier = "integrative"
+max_loc = 60
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+role = "implementer"
+depends_on = ["E46-T06", "E46-T07", "E46-T08", "E46-T09"]
+domain = "testing"
+
+[task.context]
+read_files = [
+    { path = "crates/roko-orchestrator/src/github_ops.rs", lines = "1-40", why = "GitHubOps trait to mock (from T04)" },
+    { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "6500-6600", why = "existing test patterns at end of file" },
+]
+symbols = [
+    "GitHubOps — trait to mock",
+    "NoOpGitHubOps — verify it produces no calls",
+    "run() — entry point to exercise with mock",
+]
+anti_patterns = [
+    "Do NOT call real GitHub APIs — this is a mock-based integration test.",
+    "Do NOT duplicate test infra that already exists in the runner test harness.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'MockGitHubOps' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "MockGitHubOps must be defined in the test module"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- github 2>&1"
+fail_msg = "GitHub integration tests must pass"
+
+acceptance = [
+    "MockGitHubOps records all calls",
+    "Plan success flow: create_branch -> open_pr -> comment_pr x N -> merge_pr",
+    "Plan failure flow: create_task_issue called for terminal failures",
+    "NoOpGitHubOps verified to produce no side effects",
+]

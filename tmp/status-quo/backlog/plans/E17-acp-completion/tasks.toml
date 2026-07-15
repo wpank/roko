@@ -1,0 +1,489 @@
+[meta]
+plan = "E17-acp-completion"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T01: Reply-channel permission gate (Fa)
+#
+# request_permission (bridge_events.rs:768, fail-closed, tested) has zero prod
+# callers. The builtin handler AcpBuiltinToolHandler::execute (:2926) takes _ctx
+# (ignored) and runs inside the detached tokio::spawn cognitive task (:1320) that
+# holds only event_sender — it cannot reach transport/&mut session, which
+# request_permission needs. Fix: add a CognitiveEvent::PermissionRequest carrying
+# a oneshot reply sender; the cognitive task emits it (instead of executing a
+# needs_permission tool) and awaits the decision; the parent stream_events_to_editor
+# loop (holds transport+session) calls request_permission and replies through the
+# oneshot; execute_acp_builtin_tool then runs the tool ONLY on Allow/AlwaysAllow.
+# This is the SAME chain as E04-T12→T14 (security lens) — execute once.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T01"
+title = "Add PermissionRequest reply channel and gate ACP builtin tool exec fail-closed"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 120
+files = [
+    "crates/roko-acp/src/bridge_events.rs",
+    "crates/roko-acp/src/builtin_tools.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["E04-security-perimeter", "P22-acp-tool-permission"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "760-820", why = "request_permission signature (<R,W>, needs transport + &mut session); the fail-closed decision logic to reuse verbatim." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1312-1360", why = "The detached tokio::spawn cognitive task (:1320) — holds only event_sender; this is what must emit PermissionRequest instead of executing." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1479-1520", why = "stream_events_to_editor invocation — the parent loop that owns transport + &mut session and must answer PermissionRequest." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "160-320", why = "needs_permission (:173) classifies write_file/edit_file/bash; execute_acp_builtin_tool (:269) runs them unconditionally; dead tool_needs_permission (:326)." },
+]
+symbols = [
+    "request_permission<R,W>(transport, session, action, ...) -> PermissionDecision — bridge_events.rs:768",
+    "enum CognitiveEvent — add PermissionRequest { action, title, detail, reply: tokio::sync::oneshot::Sender<PermissionDecision> }",
+    "execute_acp_builtin_tool(call, ctx) — builtin_tools.rs:269, gate on decision",
+    "needs_permission(name: &str) -> bool — builtin_tools.rs:173",
+    "stream_events_to_editor(...) — parent loop, bridge_events.rs (~954-1013 + invoked :1479)",
+]
+anti_patterns = [
+    "Do NOT execute a needs_permission tool then ask — emit PermissionRequest and AWAIT the decision BEFORE execute_acp_builtin_tool runs (fail-closed).",
+    "Do NOT try to call request_permission from the handler/cognitive task — it has no transport (that is exactly Fa). Route through the oneshot to the parent loop.",
+    "Do NOT drop the reply sender on the cancel/error path — a dropped oneshot must resolve to Reject, not hang the tool.",
+    "Do NOT duplicate E04-T12→T14 — this is the same chain; if E04 landed, reuse its CognitiveEvent variant and only wire the ACP handler side.",
+]
+
+# Steps:
+# 1. Add CognitiveEvent::PermissionRequest { action, title, detail,
+#    reply: oneshot::Sender<PermissionDecision> } (skip if E04-T12 already added it).
+# 2. In the cognitive task, when a tool with needs_permission(name)==true is about
+#    to run, build a oneshot, send PermissionRequest, await recv() (Err => Reject).
+# 3. In stream_events_to_editor, match PermissionRequest, call request_permission
+#    (existing fail-closed logic, persists AlwaysAllow to .roko/trust/permissions.json),
+#    then reply.send(decision).
+# 4. In execute_acp_builtin_tool, run the tool only on Allow | AlwaysAllow; on Reject
+#    return a ToolResult error "permission denied" without side effects.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PermissionRequest' crates/roko-acp/src/bridge_events.rs && grep -c 'request_permission(' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "a PermissionRequest event must exist and request_permission must have a non-test caller"
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after adding the reply channel"
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- permission_prompt_precedes_write 2>&1"
+fail_msg = "a test must assert request_permission fires before write_file executes and Reject blocks the write"
+
+acceptance = ["An ACP turn that calls write_file/edit_file/bash emits an outbound session/request_permission BEFORE the tool runs; a Reject decision blocks the side effect and returns a permission-denied ToolResult; an AlwaysAllow persists to .roko/trust/permissions.json and skips future prompts. With no editor answer (dropped reply) the tool is denied, not hung."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T02: Consult ExperimentStore in the ACP path (Fb remainder)
+#
+# ACP is write-only telemetry: record_cascade_observation only calls
+# router.observe (:712); DaimonPolicy::default() is hardcoded (:634). P19 wires
+# select_model + real DaimonState. This task closes the LAST inert loop:
+# ExperimentStore is never consulted on ACP, so ACP turns never participate in
+# prompt/model A/B experiments the way plan run does.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T02"
+title = "Consult ExperimentStore for ACP prompt/model variant selection"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["P19-cascade-router-acp", "E07-learning-knowledge"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "620-720", why = "DaimonPolicy::default() hardcode (:634) [P19 replaces]; record_cascade_observation (:685-718) is observe-only — the telemetry site to pair with a selection call." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1590-1625", why = "resolved slug / cascade_router_model_slugs call site (:1606-1618) where a variant assignment belongs." },
+    { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "395-455", why = "Current ExperimentStore load, active lookup, and assign_variant APIs to mirror for ACP variant selection." },
+    { path = "crates/roko-learn/src/prompt_experiment.rs", lines = "590-605", why = "ExperimentStore replay boundary and record_metric implementation for the outcome-recording half of the ACP selection/outcome pair." },
+]
+symbols = [
+    "ExperimentStore::assign_variant(experiment_name) -> Option<(variant_id, content)> and record_metric(experiment_id, variant_id, metric) — the selection/outcome pair P19 does not add",
+    "record_cascade_observation(...) — bridge_events.rs:685, the paired telemetry sink",
+    "select_model — added by P19; ExperimentStore selection layers alongside it",
+]
+anti_patterns = [
+    "Do NOT re-implement select_model / DaimonState loading — P19 owns those; depend on it.",
+    "Do NOT assign a variant without recording the outcome — assignment and reward must both land or the experiment is biased.",
+    "Do NOT hardcode an experiment id — read the active experiment set from ExperimentStore, no-op cleanly when none is active.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ExperimentStore\\|experiment' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "the ACP path must consult ExperimentStore, not just observe"
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after wiring ExperimentStore"
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- experiment_assignment 2>&1"
+fail_msg = "a test must assert an ACP turn assigns a variant when an experiment is active and records its outcome"
+
+acceptance = ["When an experiment is active in .roko/learn/experiments.json, an ACP turn is assigned a variant and its outcome recorded, so ACP turns contribute to A/B statistics identically to a plan run turn. With no active experiment the path is a clean no-op."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T03: MCP session-tool parity for the Anthropic dispatch path (Fc)
+#
+# session/new accepts mcpServers and session.mcp_servers is populated (:1270),
+# but only the openai-compat cognitive task receives &session_mcp_servers and
+# calls setup_session_mcp_tools (:2313). The Anthropic branch invokes
+# run_anthropic_cognitive_task (:1444-1457) with NO mcp_servers arg, so Anthropic
+# ACP sessions silently get no session MCP tools. Thread the servers through.
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T03"
+title = "Thread session_mcp_servers into run_anthropic_cognitive_task and register MCP tools"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["P25-mcp-acp-passthrough"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1440-1476", why = "Provider dispatch branch: AnthropicApi -> run_anthropic_cognitive_task (no mcp arg); _ -> run_openai_compat_cognitive_task(&session_mcp_servers) which does get it." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2277-2320", why = "setup_session_mcp_tools(:2313) — the registration helper the Anthropic path must also call." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1260-1275", why = "session.mcp_servers clone (:1270) — the source of truth already available at the call site." },
+]
+symbols = [
+    "run_anthropic_cognitive_task(session_id, messages, model_key, slug, config, workdir, effort, tools_enabled, cancel, sender) — add mcp_servers: &[McpServerConfig]",
+    "setup_session_mcp_tools(session_id, mcp_servers, sender) — bridge_events.rs:2277",
+    "run_openai_compat_cognitive_task — the reference impl that already threads mcp_servers",
+]
+anti_patterns = [
+    "Do NOT duplicate MCP config discovery — P25 already plumbs config to session.mcp_servers; only pass the existing slice through.",
+    "Do NOT register MCP tools when session_mcp_servers is empty — match the openai-compat guard so no-MCP sessions are unchanged.",
+    "Do NOT block on unreachable MCP servers — reuse setup_session_mcp_tools' existing timeout/error handling.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "awk '/fn run_anthropic_cognitive_task/,/^}/' crates/roko-acp/src/bridge_events.rs | grep -q 'setup_session_mcp_tools\\|mcp_servers'"
+fail_msg = "the Anthropic cognitive task must receive and register session MCP servers"
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after threading mcp_servers into the Anthropic path"
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- anthropic_session_mcp_tools 2>&1"
+fail_msg = "a test must assert an Anthropic-provider ACP session registers tools from a configured mcpServers entry"
+
+acceptance = ["An ACP session created with an mcpServers entry and an Anthropic-provider model exposes those MCP tools to the model, matching the openai-compat path. Sessions with no mcpServers are unchanged on both provider paths."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T04: Derive tool capabilities from role/session consent (Fd)
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T04"
+title = "Derive ACP tool_context.capabilities from session and role consent"
+description = "Replace the hard-forced all-true ToolPermission assignments in bridge_events.rs with one small derivation path that starts from the ACP session/client capability declarations and the role/session consent substrate from P22. The task is only about the ToolContext capabilities passed into the tool loop; it must not rebuild the interactive PermissionRequest flow from E17-T01."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["P22-acp-tool-permission"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/types.rs", lines = "112-150", why = "InitializeParams and ClientCapabilities/FsCapabilities show what the client declares." },
+    { path = "crates/roko-acp/src/types.rs", lines = "250-272", why = "SessionNewParams carries optional per-session client_capabilities." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1260-1285", why = "Session creation already clones session fields such as mcp_servers; add capability propagation nearby if needed." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1800-1845", why = "First all-true ToolPermission assignment used by one tool-loop path." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2345-2370", why = "Second all-true ToolPermission assignment used by another provider path." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "2500-2525", why = "Third all-true ToolPermission assignment used by another provider path." },
+]
+symbols = [
+    "ClientCapabilities and FsCapabilities - ACP client/session declarations in types.rs",
+    "ToolContext::testing(workdir).with_cancel_token(...) - current ACP tool-loop context seed",
+    "ToolPermission { read, write, exec, git, network } - capability gate consumed by roko-std builtins",
+]
+anti_patterns = [
+    "Do NOT leave any production ACP tool-loop path with read/write/exec/git/network all set to true unconditionally.",
+    "Do NOT conflate capability derivation with interactive permission prompting; E17-T01 owns PermissionRequest and this task only controls the ToolContext capability booleans.",
+    "Do NOT treat missing client capability data as maximum privilege; preserve read-only or fail-closed defaults unless P22 provides a narrower explicit policy.",
+    "Do NOT fork separate capability logic per provider; add one helper and call it from each ACP tool-loop path.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'python3 -c "import pathlib,re; t=pathlib.Path(\"crates/roko-acp/src/bridge_events.rs\").read_text(); assert not re.search(r\"ToolPermission\\s*\\{\\s*read:\\s*true,\\s*write:\\s*true,\\s*exec:\\s*true,\\s*git:\\s*true,\\s*network:\\s*true,\\s*\\}\", t, re.S)"'
+fail_msg = "ACP bridge_events.rs must not hard-force every ToolPermission field to true"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after capability derivation is centralized"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- capabilities_reflect_session 2>&1"
+fail_msg = "a regression test must prove declined session capabilities block matching ACP tools before execution"
+
+acceptance = ["An ACP session that does not grant exec cannot run bash from the tool loop, and a session without write capability cannot run write_file/edit_file. All provider paths use the same capability derivation helper, and missing capability data does not grant all permissions by default."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T05: Advertised-vs-accepted prompt capability guard (Fd)
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T05"
+title = "Guard ACP advertised prompt capabilities against accepted image and audio inputs"
+description = "Add a single source of truth for ACP PromptCapabilities so initialize cannot advertise image/audio support that disagrees with the dispatch path. P28 owns model-vision detection; this task ties that result to InitializeResult and adds a guard for audio remaining false until an audio dispatch path exists."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 70
+files = [
+    "crates/roko-acp/src/handler.rs",
+    "crates/roko-acp/src/types.rs",
+]
+role = "implementer"
+depends_on = ["E17-T04"]
+depends_on_plan = ["P28-image-support"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/handler.rs", lines = "270-305", why = "initialize currently returns PromptCapabilities { image: false, audio: false }." },
+    { path = "crates/roko-acp/src/types.rs", lines = "171-225", why = "InitializeResult, AgentCapabilities, and PromptCapabilities serialization shape." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1220-1230", why = "Dispatch path already builds image parts for provider-specific requests." },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "4351-4398", why = "OpenAI-compatible and Anthropic image conversion helpers that define accepted image input." },
+]
+symbols = [
+    "PromptCapabilities { image, audio, embedded_context } - advertised in initialize",
+    "build_openai_content_parts(prompt) and build_anthropic_content_parts(prompt) - accepted image dispatch path",
+    "advertised_prompt_capabilities - add this helper in handler.rs or types.rs and test it",
+]
+anti_patterns = [
+    "Do NOT set image by hand in initialize while dispatch has a separate notion of image support.",
+    "Do NOT mark audio true until there is a concrete audio content block and provider dispatch path.",
+    "Do NOT duplicate P28's model vision support logic; depend on it and consume the resulting boolean.",
+    "Do NOT weaken T04's tool capability guard; prompt media capabilities are separate from ToolPermission.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -R -q 'advertised_prompt_capabilities' crates/roko-acp/src/handler.rs crates/roko-acp/src/types.rs"
+fail_msg = "initialize must use a named advertised_prompt_capabilities helper instead of inline booleans"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after adding the prompt capability guard"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- advertised_prompt_capabilities_match_dispatch 2>&1"
+fail_msg = "a test must assert advertised image/audio capabilities match what the ACP dispatch path accepts"
+
+acceptance = ["InitializeResult.prompt_capabilities.image is derived from the same model/dispatch support used to accept image content, and prompt_capabilities.audio remains false with a test proving no audio dispatch path is advertised prematurely."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T06: End-to-end ACP conformance capstone (Fa-Fd)
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E17-T06"
+title = "Add ACP conformance test covering consent, experiment selection, MCP, and capabilities"
+description = "Add an end-to-end ACP conformance test in the existing bridge_events.rs test module. The test should exercise the completed ACP surface across E17-T01 through E17-T05: permission before side effects, experiment assignment and recording, Anthropic session MCP tool registration, and advertised capabilities matching enforcement."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = ["crates/roko-acp/src/bridge_events.rs"]
+role = "implementer"
+depends_on = ["E17-T01", "E17-T02", "E17-T03", "E17-T04", "E17-T05"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "5100-5245", why = "Existing ACP bridge test fixtures and session setup patterns." },
+    { path = "crates/roko-acp/src/builtin_tools.rs", lines = "160-320", why = "Permission-sensitive builtin tools and side-effect entrypoint to assert against." },
+    { path = "crates/roko-acp/src/handler.rs", lines = "270-305", why = "initialize capability response that must match the enforcement path from T04/T05." },
+    { path = "crates/roko-acp/src/types.rs", lines = "171-225", why = "PromptCapabilities / InitializeResult types used in the conformance assertions." },
+]
+symbols = [
+    "session/request_permission notification - must precede write_file/edit_file/bash side effects",
+    "ExperimentStore assignment and outcome recording - ACP A/B participation from E17-T02",
+    "setup_session_mcp_tools - Anthropic session MCP registration from E17-T03",
+    "advertised_prompt_capabilities - T05 guard checked by the conformance test",
+]
+anti_patterns = [
+    "Do NOT replace the focused tests from T01-T05; add one capstone flow that fails if the surfaces drift apart.",
+    "Do NOT require live external MCP servers or network calls; use the repo's existing fake transport/tool-loop test fixtures.",
+    "Do NOT assert only that events are emitted; assert ordering and side-effect blocking for Reject.",
+    "Do NOT omit T05 from the dependency chain; this conformance test must cover advertised capabilities from T04/T05.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'acp_conformance' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "bridge_events.rs must contain a named ACP conformance regression test"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after adding the conformance test"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- acp_conformance 2>&1"
+fail_msg = "the ACP conformance test must pass"
+
+acceptance = ["A single ACP conformance regression proves: Reject blocks a permissioned write before any side effect, active experiments assign and record an ACP variant, Anthropic sessions with mcpServers expose the expected session MCP tool, and advertised prompt/tool capabilities match enforcement."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T07: Add cost budget display in ACP turns
+# ─────────────────────────────────────────────────────────────────────────────
+# ACP sessions consume tokens and cost money but the user has no visibility
+# into spend during an interactive session. Add cost budget awareness to ACP
+# turns: read the configured cost_budget_usd, track accumulated cost from
+# efficiency events emitted per turn, and surface remaining budget in session
+# status responses. When budget is exhausted, prevent further turns with a
+# clear budget-exceeded message instead of silently failing at the dispatch
+# layer.
+[[task]]
+id = "E17-T07"
+title = "Add cost budget display in ACP turns"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = [
+    "crates/roko-acp/src/bridge_events.rs",
+    "crates/roko-acp/src/types.rs",
+    "crates/roko-acp/src/handler.rs",
+]
+role = "implementer"
+depends_on = []
+ownership = "distinct-acp-consumer"
+uses_owner = "SH05-T04; E48-T04"
+depends_on_plan = ["E01-execution-engine", "E48-rate-limit-budgeting"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "620-720", why = "ACP turn dispatch and telemetry — accumulate cost here" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "685-718", why = "record_cascade_observation — efficiency/cost data already flows through here" },
+    { path = "crates/roko-acp/src/types.rs", lines = "171-225", why = "session types — add budget fields to session status response" },
+    { path = "crates/roko-acp/src/handler.rs", lines = "270-305", why = "handler response types — surface budget in status/initialize" },
+]
+symbols = [
+    "record_cascade_observation — ACP telemetry sink",
+    "SessionStatus — ACP session status response type",
+    "EfficiencyEvent — per-turn cost data",
+]
+anti_patterns = [
+    "Do NOT block turns without informing the user why — return a structured budget-exceeded message.",
+    "Do NOT track cost only in memory — persist accumulated session cost so it survives handler restarts.",
+    "Do NOT hardcode a budget — read from config; no configured budget means unlimited.",
+    "Do NOT duplicate the cost accumulation logic from E01-T11 — reuse or share the budget tracker.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'cost_budget\\|budget_remaining\\|budget_exceeded\\|accumulated_cost' crates/roko-acp/src/bridge_events.rs crates/roko-acp/src/types.rs"
+fail_msg = "ACP must track and surface cost budget status"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after cost budget display addition"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- cost_budget 2>&1"
+fail_msg = "a test must assert that ACP turns surface remaining budget and block when exhausted"
+
+acceptance = [
+    "ACP session status responses include cost_budget_usd, accumulated_cost_usd, and budget_remaining_usd fields.",
+    "When accumulated cost exceeds the configured budget, new turns are rejected with a budget-exceeded message.",
+    "No configured budget means unlimited — no enforcement, budget fields omitted or null.",
+    "Cost accumulates from efficiency events emitted per ACP turn.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E17-T08: Add rate limit status in ACP provider selection
+# ─────────────────────────────────────────────────────────────────────────────
+# ACP provider selection via cascade_router_model_slugs has no awareness of
+# current rate limit state. When a provider is near or at its RPM/TPM limit,
+# ACP should prefer an alternative provider instead of dispatching to the
+# rate-limited one and getting a 429. Wire the per-provider rate limit counters
+# (E14-T08) and provider health scores (E14-T10) into the ACP model selection
+# path so degraded providers are deprioritized in interactive sessions.
+[[task]]
+id = "E17-T08"
+title = "Add rate limit status in ACP provider selection"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 100
+files = [
+    "crates/roko-acp/src/bridge_events.rs",
+]
+role = "implementer"
+depends_on = []
+ownership = "distinct-acp-consumer"
+uses_owner = "E14-T10; E48-T05"
+depends_on_plan = ["E14-providers-tools", "E48-rate-limit-budgeting"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "1590-1625", why = "cascade_router_model_slugs call site — where provider selection happens for ACP turns" },
+    { path = "crates/roko-acp/src/bridge_events.rs", lines = "620-720", why = "ACP turn dispatch — where rate limit awareness should influence model choice" },
+]
+symbols = [
+    "cascade_router_model_slugs — ACP model selection call site",
+    "CascadeRouter::select_model — scoring path with health factor from E14-T10",
+    "ProviderHealth — health tracking from E14-T10",
+]
+anti_patterns = [
+    "Do NOT duplicate CascadeRouter health logic in ACP — consume the existing health-aware select_model from E14-T10.",
+    "Do NOT silently switch providers without logging — the user should see why a different model was selected.",
+    "Do NOT override explicit user model selection in ACP — if the user picks a specific model, honor it even if degraded.",
+    "Do NOT block ACP turns entirely when all providers are degraded — degrade gracefully and attempt the least-bad option.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "rg -q 'provider_health\\|health_score\\|rate_limit_status\\|is_rate_limited' crates/roko-acp/src/bridge_events.rs"
+fail_msg = "ACP provider selection must consider rate limit and health status"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-acp 2>&1"
+fail_msg = "roko-acp must compile after rate limit awareness in provider selection"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-acp -- rate_limit_provider_selection 2>&1"
+fail_msg = "a test must assert that a rate-limited provider is deprioritized in ACP model selection"
+
+acceptance = [
+    "ACP model selection consults CascadeRouter health scores so rate-limited providers are deprioritized.",
+    "When a provider is near its RPM/TPM limit, ACP prefers a healthier alternative if available.",
+    "Explicit user model selection is honored even for degraded providers.",
+    "Provider selection changes are logged so the user can see routing decisions.",
+]

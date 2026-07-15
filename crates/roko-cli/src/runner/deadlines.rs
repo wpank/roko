@@ -278,6 +278,12 @@ mod tests {
     }
 
     #[test]
+    fn duration_conversion_is_exact_then_saturates_at_u64_boundary() {
+        assert_eq!(duration_millis_u64(Duration::from_millis(17)), 17);
+        assert_eq!(duration_millis_u64(Duration::MAX), u64::MAX);
+    }
+
+    #[test]
     fn global_clocks_are_independent_and_expire_at_boundary() {
         let mut tracker = DeadlineTracker::new(MonotonicTime::from_millis(10));
         tracker.record_scheduler_progress(MonotonicTime::from_millis(90));

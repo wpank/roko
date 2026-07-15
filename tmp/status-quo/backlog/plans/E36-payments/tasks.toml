@@ -1,0 +1,651 @@
+[meta]
+plan = "E36-payments"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ── E36-T01: Define payment domain types and pricing tiers ──
+#
+# The spec (18-PAYMENTS) defines two payment protocols (x402, MPP),
+# 5 reputation-based pricing tiers, and settlement batching. x402.rs
+# already has PaymentRequest/PaymentAuthorization types but lacks the
+# higher-level payment domain types: PricingTier, SessionPricing, and
+# FeedPricingConfig. Add these to roko-core so both roko-chain and
+# roko-serve can reference them without circular deps.
+
+[[task]]
+id = "E36-T01"
+title = "Add payment domain types: PricingTier, SessionPricing, FeedPricingConfig"
+description = """
+Add payment domain types to roko-core::feed alongside the existing FeedAccess::Paid.
+
+The current feed.rs has FeedAccess enum (Public/Private/Paid at line 39) and
+FeedInfo (line 52) with no pricing details. The spec defines:
+
+  - PricingTier enum with 5 tiers:
+    - Free: no payment required, price_multiplier = 0.0
+    - Starter: basic access, price_multiplier = 0.5
+    - Standard: default tier, price_multiplier = 1.0
+    - Professional: priority access, price_multiplier = 1.5
+    - Enterprise: SLA-backed, price_multiplier = 2.0
+  - SessionPricing struct: { base_rate_per_minute: f64, burst_rate: f64,
+    max_session_cost: f64, settlement_interval_secs: u64 }
+  - FeedPricingConfig struct: { tier: PricingTier, per_request_cost: f64,
+    session_pricing: Option<SessionPricing>, protocol: PaymentProtocol }
+  - PaymentProtocol enum: X402 (per-request), Mpp (session-based)
+
+All types must derive Serialize, Deserialize, Clone, Debug. Keep types pure data
+with no chain/crypto dependencies — roko-core must stay lightweight.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-core/src/feed.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/feed.rs", lines = "1-47", why = "FeedKind (line 24), FeedAccess (line 39 — has Paid variant), existing enums" },
+    { path = "crates/roko-core/src/feed.rs", lines = "48-72", why = "FeedInfo struct (line 52) — pricing config will be an optional field here" },
+    { path = "docs/v2/18-PAYMENTS.md", lines = "1-50", why = "Spec overview: x402 per-request, MPP session-based, 5 reputation tiers" },
+]
+symbols = [
+    "FeedAccess::Paid — feed.rs:44, already signals paid feeds exist",
+    "FeedInfo — feed.rs:52, struct { id, name, kind, access, agent_id, description, schema, created_at }",
+    "FeedKind — feed.rs:24, enum Raw/Derived/Composite/Meta",
+]
+anti_patterns = [
+    "Do NOT duplicate types that already exist in roko-chain x402.rs (PaymentRequest, PaymentAuthorization, X402Config)",
+    "Do NOT add chain/crypto dependencies to roko-core — keep types pure data",
+    "Do NOT import roko-chain into roko-core — these are standalone domain types",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub enum PricingTier' crates/roko-core/src/feed.rs"
+fail_msg = "PricingTier enum must be defined in feed.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct SessionPricing' crates/roko-core/src/feed.rs"
+fail_msg = "SessionPricing struct must be defined in feed.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct FeedPricingConfig' crates/roko-core/src/feed.rs"
+fail_msg = "FeedPricingConfig struct must be defined in feed.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+acceptance = ["PricingTier enum with 5 tiers (Free, Starter, Standard, Professional, Enterprise) plus per-request and session-based pricing config structs exist in roko-core::feed, all derive Serialize/Deserialize"]
+
+
+# ── E36-T02: Extend x402 payment protocol with settlement batching ──
+#
+# x402.rs has PaymentRequest/PaymentAuthorization and a per-request
+# verification flow, but lacks the settlement batch queue described in
+# the spec: "Batch (10min or 100+ auths)". Add a SettlementBatch struct
+# that accumulates authorizations and a batch_settle method.
+
+[[task]]
+id = "E36-T02"
+title = "Add SettlementBatch accumulator to x402 payment protocol"
+description = """
+Add settlement batching to the existing x402 payment protocol.
+
+The current x402.rs has X402Manager (line 189) with create_payment_request(),
+verify_authorization(), record_nonce(), and state channel management
+(open_channel, update_channel, request_close, finalize_close). The spec requires
+batch settlement: "Batch (10min or 100+ auths)". Add:
+
+  - SettlementBatch struct: { authorizations: Vec<(PaymentAuthorization, PaymentRequest)>,
+    created_at: u64, max_batch_size: usize, batch_timeout_secs: u64 }
+  - SettlementBatch::new(max_size: usize, timeout_secs: u64) -> Self
+  - add_authorization(auth, request) -> bool — returns false if batch is full
+  - should_settle(current_timestamp: u64) -> bool — true if batch_size >= 100
+    OR elapsed time >= timeout (default 600 seconds = 10 min)
+  - drain() -> Vec<(PaymentAuthorization, PaymentRequest)> — take all pending
+    authorizations, resetting the batch
+  - Wire into X402Manager: add a SettlementBatch field and queue_for_settlement()
+    method that adds verified authorizations to the batch
+
+Do NOT change existing PaymentRequest/PaymentAuthorization structs.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-chain/src/x402.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/x402.rs", lines = "1-65", why = "PaymentRequest (line 27), PaymentAuthorization (line 46), VerificationStatus (line 69)" },
+    { path = "crates/roko-chain/src/x402.rs", lines = "89-215", why = "X402Config (line 94), X402Manager (line 189), create_payment_request, verify_authorization" },
+    { path = "crates/roko-chain/src/x402.rs", lines = "300-310", why = "record_nonce() — called after verification, before settlement" },
+    { path = "docs/v2/18-PAYMENTS.md", lines = "10-20", why = "Settlement: Batch (10min or 100+ auths)" },
+]
+symbols = [
+    "PaymentAuthorization — x402.rs:46, ERC-3009 auth struct (from, to, value, valid_after, valid_before, nonce, v, r, s)",
+    "PaymentRequest — x402.rs:27, struct (recipient, amount, token, nonce, deadline, reason)",
+    "VerificationStatus — x402.rs:69, enum Valid/Expired/NonceReused/AmountMismatch/RecipientMismatch/InvalidSignature",
+    "X402Manager — x402.rs:189, manages payment requests, verification, nonces, and state channels",
+    "X402Config — x402.rs:94, config struct (default_deadline_secs, challenge_window_blocks, min_channel_deposit)",
+]
+anti_patterns = [
+    "Do NOT change existing PaymentRequest/PaymentAuthorization struct fields",
+    "Do NOT add actual blockchain submission — this is the in-memory queue only",
+    "Do NOT add async/tokio — keep synchronous",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct SettlementBatch' crates/roko-chain/src/x402.rs"
+fail_msg = "SettlementBatch struct must exist in x402.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn add_authorization' crates/roko-chain/src/x402.rs"
+fail_msg = "add_authorization method must exist to queue auths"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn should_settle' crates/roko-chain/src/x402.rs"
+fail_msg = "should_settle() method must exist for batch trigger logic"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+acceptance = ["SettlementBatch accumulates PaymentAuthorizations, has should_settle() returning true at 100+ auths or configurable timeout, and a drain method for batch submission"]
+
+
+# ── E36-T03: Add MPP session-based metered pricing protocol ──
+#
+# The spec defines Metered Payment Protocol (MPP): one ERC-3009 per
+# session with settlement on session close/expire. roko-chain has x402
+# for per-request but no session-based protocol. Add MppSession and
+# MppSessionManager types alongside x402.
+
+[[task]]
+id = "E36-T03"
+title = "Add MPP session-based metered pricing types to roko-chain"
+description = """
+Add Metered Payment Protocol (MPP) session types alongside x402.
+
+The spec defines MPP as the session-based alternative to x402's per-request model:
+one ERC-3009 authorization per session, usage metered during the session, final
+settlement on session close or expiry. Add:
+
+  - MppSession struct: { session_id: [u8; 32], subscriber: Address (from phase2),
+    provider: Address, authorization: PaymentAuthorization, usage_units: u64,
+    rate_per_unit: u256, max_cost: u256, started_at: u64, deadline: u64,
+    state: MppSessionState }
+  - MppSessionState enum: Active, Closed, Expired, Disputed
+  - MppSessionManager struct: { sessions: HashMap<[u8; 32], MppSession> }
+  - meter_usage(session_id, units: u64) -> Result<(), MppError> — increments
+    usage_units, checks against max_cost
+  - settle(session_id) -> Result<MppSettlement, MppError> — computes final
+    amount = usage_units * rate_per_unit, transitions to Closed
+  - is_expired(session_id, current_timestamp) -> bool — checks deadline
+  - expire_stale(current_timestamp) — marks all past-deadline sessions as Expired
+
+Keep types in x402.rs since both protocols share the same module. Use Address
+and u256 from phase2.rs.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = ["crates/roko-chain/src/x402.rs"]
+role = "implementer"
+depends_on = ["E36-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/x402.rs", lines = "1-20", why = "Module doc + imports including phase2::{Address, u256}" },
+    { path = "crates/roko-chain/src/x402.rs", lines = "46-65", why = "PaymentAuthorization — MPP uses one per session for the authorization" },
+    { path = "crates/roko-chain/src/x402.rs", lines = "114-163", why = "StateChannel and ChannelLifecycle — MPP sessions are analogous" },
+    { path = "crates/roko-chain/src/x402.rs", lines = "517-559", why = "X402Error — extend or add MppError alongside" },
+    { path = "docs/v2/18-PAYMENTS.md", lines = "1-20", why = "MPP: session-based, one ERC-3009 per session, settle on close/expire" },
+]
+symbols = [
+    "PaymentAuthorization — x402.rs:46, MPP uses one per session as the spending authorization",
+    "Address — phase2.rs, type alias for wallet addresses (String)",
+    "u256 — phase2.rs, type alias for amounts (u128)",
+    "ChannelLifecycle — x402.rs:149, enum Open/Closing/Closed/Disputed — MPP sessions follow similar lifecycle",
+    "X402Error — x402.rs:519, existing error enum to extend or mirror for MPP",
+]
+anti_patterns = [
+    "Do NOT merge MPP into x402 types — keep as separate structs in the same file",
+    "Do NOT add tokio/async runtime — keep as pure data + sync methods",
+    "Do NOT add actual settlement logic — this is the accounting layer only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct MppSession' crates/roko-chain/src/x402.rs"
+fail_msg = "MppSession struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn meter_usage' crates/roko-chain/src/x402.rs"
+fail_msg = "meter_usage method must exist on MppSessionManager for usage tracking"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'MppSessionState\\|MppSessionManager' crates/roko-chain/src/x402.rs"
+fail_msg = "MppSessionState enum and MppSessionManager must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+acceptance = ["MppSession tracks session-id, subscriber, accumulated usage, and auth; meter_usage increments; settle computes final amount; expired sessions are detectable via deadline check"]
+
+
+# ── E36-T04: Implement reputation-based pricing tier resolution ──
+#
+# The spec defines 5 pricing tiers based on agent reputation. Currently
+# reputation_registry.rs has EMA scores but no pricing integration. Add
+# a function that maps reputation scores to PricingTier and computes the
+# effective price multiplier.
+
+[[task]]
+id = "E36-T04"
+title = "Add reputation-to-pricing-tier resolution function"
+description = """
+Add pricing tier resolution based on aggregate reputation scores.
+
+The current reputation_registry.rs has ReputationRegistry with 7-domain EMA scoring
+(REPUTATION_DOMAINS at line 51: coding, security, research, chain, knowledge,
+operations, strategy), adaptive alpha (line 206), and 30-day half-life decay toward
+neutral 0.5 (NEUTRAL at line 33). DisciplineState (line 62) has
+GoodStanding/Probation/Suspended/Banned. Add:
+
+  - resolve_pricing_tier(registry, passport_id, now) -> PricingTierResult
+  - PricingTierResult struct: { tier_name: String, price_multiplier: f64,
+    aggregate_score: f64, discipline: String }
+  - Tier thresholds (aggregate = mean of all 7 domain effective scores):
+    - Free: discipline != GoodStanding (suspended/banned agents get free tier = cannot sell)
+    - Starter: aggregate < 0.4
+    - Standard: 0.4 <= aggregate < 0.6
+    - Professional: 0.6 <= aggregate < 0.8
+    - Enterprise: aggregate >= 0.8
+  - Price multiplier: Free=0.0, Starter=0.5, Standard=1.0, Professional=1.5, Enterprise=2.0
+  - The function does NOT import roko-core PricingTier — it returns string tier names
+    to avoid circular dependencies. The caller maps to PricingTier.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["crates/roko-chain/src/reputation_registry.rs"]
+role = "implementer"
+depends_on = ["E36-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "1-60", why = "Constants, REPUTATION_DOMAINS (7 domains), DisciplineState enum" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "159-213", why = "DomainReputation: effective_score() with 30-day decay, adaptive_alpha()" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "491-567", why = "ReputationRegistry: get_score(), get_all_scores(), discipline_state()" },
+    { path = "docs/v2/18-PAYMENTS.md", lines = "1-50", why = "5 reputation tiers with price multipliers" },
+]
+symbols = [
+    "REPUTATION_DOMAINS — reputation_registry.rs:51, the 7 scored domains: coding, security, research, chain, knowledge, operations, strategy",
+    "NEUTRAL (0.5) — reputation_registry.rs:33, decay target constant",
+    "ReputationRegistry — reputation_registry.rs:493, main registry struct",
+    "get_all_scores() — reputation_registry.rs:556, returns HashMap<String, f64> of decay-adjusted scores",
+    "discipline_state() — reputation_registry.rs:602, returns DisciplineState",
+    "DisciplineState — reputation_registry.rs:62, enum GoodStanding/Probation/Suspended/Banned",
+]
+anti_patterns = [
+    "Do NOT modify the EMA scoring algorithm — only add a mapping function on top",
+    "Do NOT import roko-core into roko-chain — use string-based tier names",
+    "Do NOT change DisciplineState enum — use it as-is for tier gating",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn resolve_pricing_tier' crates/roko-chain/src/reputation_registry.rs"
+fail_msg = "resolve_pricing_tier function must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PricingTierResult\\|price_multiplier' crates/roko-chain/src/reputation_registry.rs"
+fail_msg = "PricingTierResult struct with price_multiplier must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- pricing_tier 2>&1"
+fail_msg = "pricing tier resolution must have a test"
+
+acceptance = ["resolve_pricing_tier maps aggregate reputation score to 5 tiers with defined thresholds, returns tier name and price multiplier; tested with boundary values"]
+
+
+# ── E36-T05: Add feed pricing config to FeedInfo ──
+#
+# FeedInfo has FeedAccess::Paid but no pricing details. Extend it with
+# an optional pricing config that references the FeedPricingConfig (T01).
+
+[[task]]
+id = "E36-T05"
+title = "Extend FeedInfo with optional pricing configuration"
+description = """
+Add an optional pricing field to FeedInfo.
+
+The current FeedInfo (feed.rs:52) has: id, name, kind, access, agent_id,
+description, schema (Option<Value>), created_at. When access == FeedAccess::Paid,
+consumers need to know the pricing terms. Add:
+
+  - A `pricing: Option<FeedPricingConfig>` field to FeedInfo
+  - Use #[serde(default, skip_serializing_if = "Option::is_none")] for backward
+    compatibility with existing serialized FeedInfo
+  - Update the sample_feed() test helper (feed.rs:191) to include pricing: None
+  - Add a test that FeedInfo with pricing serializes and deserializes correctly
+  - Add a test that FeedInfo without pricing deserializes from old JSON (no pricing key)
+
+This is a mechanical extension — the FeedPricingConfig type from T01 already exists.
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-core/src/feed.rs"]
+role = "implementer"
+depends_on = ["E36-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/feed.rs", lines = "48-72", why = "FeedInfo struct — add optional pricing field after schema" },
+    { path = "crates/roko-core/src/feed.rs", lines = "187-202", why = "sample_feed() test helper and register_assigns_id test — update for new field" },
+    { path = "crates/roko-core/src/feed.rs", lines = "291-301", why = "serde_roundtrip test — verify pricing survives roundtrip" },
+]
+symbols = [
+    "FeedInfo — feed.rs:52, struct with 8 fields, pricing will be the 9th",
+    "FeedAccess::Paid — feed.rs:44, already signals paid feeds",
+    "sample_feed — feed.rs:191, test helper that constructs FeedInfo",
+]
+anti_patterns = [
+    "Do NOT break existing FeedInfo serialization — new field must be Option with serde(default)",
+    "Do NOT remove any existing fields from FeedInfo",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pricing' crates/roko-core/src/feed.rs"
+fail_msg = "pricing field must exist on FeedInfo"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core feed 2>&1"
+fail_msg = "Feed tests must pass (including serde roundtrip with pricing)"
+
+acceptance = ["FeedInfo has an optional pricing field (skip_serializing_if = Option::is_none, serde default) referencing FeedPricingConfig"]
+
+
+# ── E36-T06: Wire cost tracking into existing CostsDb ──
+#
+# CostsDb tracks per-request LLM costs but has no support for payment
+# costs (feed subscriptions, x402 charges). Add PaymentCostRecord.
+
+[[task]]
+id = "E36-T06"
+title = "Add payment cost tracking to CostsDb alongside LLM cost records"
+description = """
+Add payment cost tracking to the existing CostsDb.
+
+The current CostsDb (costs_db.rs) stores Vec<CostRecord> behind a
+parking_lot::RwLock with query methods (by_model, by_role, by_plan, etc.)
+and CostSummary aggregation. CostRecord (line 26) is LLM-specific with
+model/provider/input_tokens/output_tokens fields. Add:
+
+  - PaymentCostRecord struct: { timestamp: String, feed_id: String,
+    protocol: String ("x402" or "mpp"), amount_korai: f64, payer: String,
+    payee: String, session_id: String, settled: bool }
+  - Add a separate `payment_records: RwLock<Vec<PaymentCostRecord>>` to CostsDb
+  - record_payment(record: PaymentCostRecord) — append to payment records
+  - payments_by_feed(feed_id) -> Vec<PaymentCostRecord>
+  - payments_by_protocol(protocol) -> Vec<PaymentCostRecord>
+  - payment_summary() -> PaymentSummary { total_korai, record_count, by_protocol }
+  - Extend to_jsonl/from_jsonl to include payment records (use a type tag to
+    distinguish LLM vs payment records in the JSONL stream)
+
+Do NOT change the existing CostRecord struct. PaymentCostRecord is separate.
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["crates/roko-learn/src/costs_db.rs"]
+role = "implementer"
+depends_on = ["E36-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/costs_db.rs", lines = "1-56", why = "CostRecord struct (line 26) with LLM-specific fields, CostSummary (line 61)" },
+    { path = "crates/roko-learn/src/costs_db.rs", lines = "466-510", why = "CostsDb struct (line 472) with RwLock<Vec<CostRecord>>, insert, len, is_empty" },
+    { path = "crates/roko-learn/src/costs_db.rs", lines = "630-660", why = "to_jsonl() and from_jsonl() — need to extend for payment records" },
+]
+symbols = [
+    "CostRecord — costs_db.rs:26, per-LLM-request cost entry with 13 fields",
+    "CostsDb — costs_db.rs:472, struct { records: RwLock<Vec<CostRecord>> }",
+    "CostSummary — costs_db.rs:61, aggregate summary struct",
+    "to_jsonl — costs_db.rs:630, serializes all records to JSONL string",
+    "from_jsonl — costs_db.rs:645, imports records from JSONL, tolerates bad lines",
+]
+anti_patterns = [
+    "Do NOT change the existing CostRecord struct — add a new PaymentCostRecord",
+    "Do NOT add database dependencies — keep the Vec-based in-memory pattern",
+    "Do NOT merge payment and LLM records into a single Vec — keep separate for type safety",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct PaymentCostRecord' crates/roko-learn/src/costs_db.rs"
+fail_msg = "PaymentCostRecord struct must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn record_payment' crates/roko-learn/src/costs_db.rs"
+fail_msg = "record_payment method must exist on CostsDb"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn payments_by_feed\\|fn payments_by_protocol\\|fn payment_summary' crates/roko-learn/src/costs_db.rs"
+fail_msg = "Payment query methods must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn costs_db 2>&1"
+fail_msg = "CostsDb tests must pass"
+
+acceptance = ["PaymentCostRecord captures feed_id, protocol (x402/mpp), amount, payer, payee, timestamp; CostsDb.record_payment appends to a separate Vec; query methods support filtering by protocol"]
+
+
+# ── E36-T07: Add payment verification middleware for roko-serve ──
+#
+# The spec describes payment as a Verify Cell in the feed subscription
+# pipeline. In the current HTTP serve layer, feed routes exist
+# (routes/feeds.rs) but have no payment gating. Add middleware that
+# checks x402 headers on paid-feed requests.
+
+[[task]]
+id = "E36-T07"
+title = "Add x402 payment verification middleware for feed routes"
+description = """
+Add x402 payment verification to the feed subscription routes.
+
+The spec defines payment as a Verify Cell: a subscription request must pass
+through payment verification before data flows. In the HTTP serve layer,
+feed routes exist in routes/feeds.rs. Add:
+
+  - x402 header handling in feed routes or middleware:
+    1. On request for a paid feed (FeedAccess::Paid), check for
+       X-Payment-Authorization header
+    2. If missing: respond with 402 Payment Required + JSON body containing
+       a PaymentRequest (recipient, amount, token, nonce, deadline)
+    3. If present: parse the X-Payment-Authorization header, validate structure
+       (correct JSON shape matching PaymentAuthorization fields), check amount
+       >= required. Do NOT verify signatures — just structural validation.
+    4. On valid structure: pass through to feed handler
+  - Non-paid feeds (FeedAccess::Public, Private) bypass payment check entirely
+  - Add require_payment() middleware function following the require_api_key pattern
+    from middleware.rs
+
+The middleware returns 402 (not 401 or 403) to signal the specific payment
+requirement per the HTTP 402 spec.
+"""
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 80
+files = ["crates/roko-serve/src/routes/feeds.rs", "crates/roko-serve/src/routes/middleware.rs"]
+role = "implementer"
+depends_on = ["E36-T01", "E36-T02"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/feeds.rs", lines = "1-60", why = "Existing feed routes: list, get, register, subscribe endpoints" },
+    { path = "crates/roko-serve/src/routes/middleware.rs", lines = "1-50", why = "Existing middleware patterns: extract_bearer_token, require_api_key" },
+    { path = "crates/roko-core/src/feed.rs", lines = "36-46", why = "FeedAccess enum — Paid variant triggers payment check" },
+    { path = "docs/v2/18-PAYMENTS.md", lines = "1-50", why = "x402 flow: 402 Payment Required -> X-Payment-Authorization header" },
+]
+symbols = [
+    "FeedAccess::Paid — feed.rs:44, triggers payment middleware",
+    "FeedRegistry — feed.rs:81, in-memory registry queried for feed access level",
+    "extract_bearer_token — middleware.rs:28, pattern for header extraction",
+    "ApiError — error.rs, existing error type for HTTP responses",
+]
+anti_patterns = [
+    "Do NOT verify signatures cryptographically — just validate header presence and JSON structure",
+    "Do NOT break unauthenticated access to non-paid (Public) feeds",
+    "Do NOT return 401 for missing payment — use 402 Payment Required specifically",
+    "Do NOT block all feed routes — only paid feeds require payment",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'X-Payment\\|x_payment\\|payment_required' crates/roko-serve/src/routes/feeds.rs || grep -q 'X-Payment\\|x_payment\\|payment_required' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "X-Payment header handling must exist in feed routes or middleware"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '402\\|PaymentRequired\\|PAYMENT_REQUIRED' crates/roko-serve/src/routes/feeds.rs || grep -q '402\\|PaymentRequired\\|PAYMENT_REQUIRED' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "HTTP 402 response must be returned for missing payment"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile"
+
+acceptance = ["Requests for paid feeds without X-Payment-Authorization header receive 402 with X-Payment-Request body; requests with valid header structure pass through; non-paid feeds unaffected"]
+
+
+# ── E36-T08: Add payment status to DashboardSnapshot ──
+#
+# DashboardSnapshot drives the TUI and web dashboard but has no
+# payment-related events or summary. Add payment event variants and
+# a cost_by_protocol summary so surfaces can show payment activity.
+
+[[task]]
+id = "E36-T08"
+title = "Add payment events and summary to DashboardSnapshot"
+description = """
+Add payment-related events and summary fields to DashboardSnapshot.
+
+The current DashboardEvent (dashboard_snapshot.rs:23) has ~20 variants including
+PlanStarted, TaskStarted, GateResult, AgentSpawned, etc. DashboardSnapshot is
+the materialized state. StateHub (state_hub.rs:80) applies events to the snapshot.
+Add:
+
+  - New DashboardEvent variants (preserve existing serde tag format):
+    - PaymentReceived { feed_id: String, protocol: String, amount_korai: f64,
+      payer: String, payee: String }
+    - SettlementCompleted { protocol: String, batch_size: u32, total_korai: f64 }
+  - New fields on DashboardSnapshot:
+    - payment_count: u64 — total payments received
+    - total_payment_korai: f64 — cumulative payment amount
+    - payments_by_protocol: HashMap<String, u64> — count per protocol
+  - Update DashboardSnapshot::apply() to handle the new event variants:
+    - PaymentReceived: increment payment_count, add to total, update by_protocol
+    - SettlementCompleted: increment a settlement_count counter
+  - Ensure StateHub compiles with the new variants (state_hub.rs uses
+    DashboardEvent from roko-core)
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 40
+files = ["crates/roko-core/src/dashboard_snapshot.rs"]
+role = "implementer"
+depends_on = ["E36-T01"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "1-50", why = "DashboardEvent enum (line 23) with serde tag=type, rename_all=snake_case" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", lines = "50-120", why = "Additional DashboardEvent variants: EpisodeRecorded, TaskOutputAppended, EventLogEntry, CascadeRouterUpdated" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "1-40", why = "StateHub imports DashboardEvent/DashboardSnapshot from roko-core" },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "68-100", why = "StateHub struct with publish() that applies events to snapshot" },
+]
+symbols = [
+    "DashboardEvent — dashboard_snapshot.rs:23, serde-tagged enum with ~20 variants",
+    "DashboardSnapshot — dashboard_snapshot.rs (further down), materialized state with apply()",
+    "StateHub — state_hub.rs:80, struct { snapshot_tx, event_bus } that publish() events",
+]
+anti_patterns = [
+    "Do NOT remove existing DashboardEvent variants — only add new ones",
+    "Do NOT change the serde tag format — keep tag = 'type', rename_all = 'snake_case'",
+    "Do NOT add fields that break Default for DashboardSnapshot — new fields default to 0/empty",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PaymentReceived' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "PaymentReceived event variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SettlementCompleted' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "SettlementCompleted event variant must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'payment_count\\|total_payment' crates/roko-core/src/dashboard_snapshot.rs"
+fail_msg = "Payment summary fields must exist on DashboardSnapshot"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-runtime 2>&1"
+fail_msg = "roko-runtime must compile (StateHub applies events)"
+
+acceptance = ["DashboardEvent has PaymentReceived and SettlementCompleted variants; DashboardSnapshot tracks payment_count and total_payment_korai; StateHub apply handles the new variants"]

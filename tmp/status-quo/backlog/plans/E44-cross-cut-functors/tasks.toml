@@ -1,0 +1,510 @@
+[meta]
+plan = "E44-cross-cut-functors"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─── T01: Define CrossCutFunctor trait ───
+
+[[task]]
+id = "E44-T01"
+title = "Define CrossCutFunctor trait with pre_enrich and post_enrich hooks"
+description = """
+The spec (26-CROSS-CUTS.md:38-62) defines cross-cuts as endofunctors F: Signal -> Signal
+wrapping Cells with pre/post enrichment. No CrossCutFunctor trait exists in the codebase.
+
+Add to roko-compose (new file `cross_cut.rs` or in lib.rs):
+
+1. **CrossCutFunctor trait** — async trait with:
+   - `fn name(&self) -> &str` — identity (e.g. "memory", "daimon", "dreams", "safety")
+   - `async fn pre_enrich(&self, input: Vec<Signal>, ctx: &CrossCutContext) -> Result<Vec<Signal>>`
+   - `async fn post_enrich(&self, output: Vec<Signal>, ctx: &CrossCutContext) -> Result<Vec<Signal>>`
+   - `fn should_short_circuit(&self) -> bool` — optimization hint
+
+2. **CrossCutContext** — lightweight context struct holding: current loop step (SENSE/ASSESS
+   /COMPOSE/ACT/VERIFY/PERSIST/REACT), plan_id, task_id, agent_role.
+
+3. **EnrichedCell** — wrapper that applies one or more CrossCutFunctors to an inner operation:
+   `pre_enrich(input) -> operation(enriched_input) -> post_enrich(output)`.
+
+4. **Re-export** from lib.rs public API.
+
+The trait must be generic over the context and NOT depend on concrete Cell types from other
+crates. Keep roko-compose as the home since it already owns composition strategy.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-compose/src/cross_cut.rs", "crates/roko-compose/src/lib.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-compose/src/lib.rs", lines = "1-99", why = "Module declarations, public API exports — add cross_cut module" },
+  { path = "crates/roko-compose/src/strategy.rs", lines = "1-65", why = "CompositionStrategy enum — cross-cuts interact with strategy selection" },
+  { path = "crates/roko-compose/src/prompt.rs", lines = "1-40", why = "AttentionBidder enum — existing bidder types that cross-cuts will produce" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "38-62", why = "CrossCutFunctor trait spec with Rust code example" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "825-846", why = "Short-circuit optimization rules per functor" },
+]
+symbols = [
+  "CompositionStrategy — strategy.rs:15, cross-cuts compose within this",
+  "AttentionBidder — prompt.rs, existing bidder enum for VCG auction",
+  "RoleSystemPromptSpec — role_prompts.rs, prompt builder that cross-cuts enrich",
+]
+anti_patterns = [
+  "Do NOT make CrossCutFunctor depend on concrete Cell type — keep it generic over Signal vecs",
+  "Do NOT add roko-core dependency for Cell — cross-cuts live at compose level",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'trait CrossCutFunctor\\|CrossCutFunctor\\|pre_enrich\\|post_enrich' crates/roko-compose/src/cross_cut.rs"
+fail_msg = "CrossCutFunctor trait must be defined in cross_cut.rs"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T02: Implement MemoryFunctor (F_memory) ───
+
+[[task]]
+id = "E44-T02"
+title = "Implement MemoryFunctor wrapping neuro KnowledgeStore queries"
+description = """
+Implement F_memory as a CrossCutFunctor (spec: 26-CROSS-CUTS.md:75-218):
+
+1. **SENSE pre_enrich** — query KnowledgeStore::query() (knowledge_store.rs:634) by task
+   description keywords. When HDC feature is enabled, use query_similar() (:651) for
+   HDC-based similarity retrieval. Inject matched entries into the Signal bundle with source
+   and tier metadata. Cap at `max_entries` (default 10).
+
+2. **COMPOSE pre_enrich** — generate VCG bids from knowledge entries. The existing
+   AttentionBidder::Neuro variant already participates in the auction (prompt.rs). Wire
+   MemoryFunctor to provide the entries that NeuroBidder bids on.
+
+3. **REACT post_enrich** — on gate pass, boost demurrage balance of knowledge entries that
+   were in context. On gate fail, weaken them. Use KnowledgeStore::update_confidence() or
+   similar mutation. The reinforcement/weakening mirrors the spec's self-trimming demurrage.
+
+4. **Short-circuit** — return true from should_short_circuit() when the knowledge store is
+   empty or query returns zero results.
+
+Keep MemoryFunctor in a new file `crates/roko-compose/src/memory_functor.rs`.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-compose/src/memory_functor.rs"]
+depends_on = ["E44-T01"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "120-175", why = "KnowledgeStore struct, KnowledgeQueryHit, KnowledgeQueryBreakdown" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "634-700", why = "query(), query_similar(), query_hits() — retrieval interface" },
+  { path = "crates/roko-neuro/src/knowledge_store.rs", lines = "481-520", why = "ingest() — for understanding entry update patterns" },
+  { path = "crates/roko-compose/src/auction.rs", lines = "30-55", why = "LearningBidder struct — VCG auction integration" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "75-129", why = "F_memory SENSE enrichment spec — HDC query, max_entries, similarity_threshold" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "131-218", why = "F_memory COMPOSE (VCG bids) and REACT (reinforcement/weakening)" },
+]
+symbols = [
+  "KnowledgeStore::query — keyword-based retrieval at knowledge_store.rs:634",
+  "KnowledgeStore::query_similar — HDC-based retrieval at :651",
+  "KnowledgeQueryHit — scored hit with breakdown at :168",
+  "LearningBidder — VCG auction bidder at auction.rs:32",
+  "AttentionBidder::Neuro — neuro bidder variant in prompt.rs",
+]
+anti_patterns = [
+  "Do NOT duplicate KnowledgeStore queries — use the existing query/query_similar interface",
+  "Do NOT make MemoryFunctor own the KnowledgeStore — take Arc<KnowledgeStore>",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'MemoryFunctor\\|impl CrossCutFunctor' crates/roko-compose/src/memory_functor.rs"
+fail_msg = "MemoryFunctor must implement CrossCutFunctor"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T03: Implement DaimonFunctor (F_daimon) ───
+
+[[task]]
+id = "E44-T03"
+title = "Implement DaimonFunctor wrapping PAD bias and somatic markers"
+description = """
+Implement F_daimon as a CrossCutFunctor (spec: 26-CROSS-CUTS.md:222-364):
+
+1. **ASSESS pre_enrich** — inject PAD vector (PadVector from roko-core) and somatic markers
+   into scored Signals. Use the existing DaimonState API from roko-daimon:
+   - current_pad() for the PAD vector
+   - BehavioralState enum (Neutral/Cautious/Anxious/Struggling)
+   - SomaticRetrieval (somatic_ta.rs) for marker retrieval
+   - 15% mandatory contrarian retrieval per spec (ContrarianConfig at daimon/phase2_stubs.rs)
+
+2. **ASSESS post_enrich** — check for tier escalation when PAD indicates high anxiety
+   (arousal > 0.5) + low dominance (< -0.3). The BehavioralStateThresholds struct exists
+   in roko-daimon phase2_stubs.rs.
+
+3. **ACT pre_enrich** — gate high-risk actions in Cautious/Anxious behavioral state.
+   Inject a deferral signal.
+
+4. **ACT post_enrich** — apply prospect-theory value computation:
+   `prospect_value(outcome, reference)` with lambda=2.25, alpha=0.88 (Kahneman-Tversky).
+   Losses hurt 2.25x more than equivalent gains.
+
+5. **Short-circuit** — return true when PAD is in the Neutral region (all dims < 0.1 abs).
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-compose/src/daimon_functor.rs"]
+depends_on = ["E44-T01"]
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "crates/roko-daimon/src/lib.rs", lines = "37-72", why = "Imports: BehavioralState, PadVector, SomaticRetrieval, ContrarianConfig" },
+  { path = "crates/roko-daimon/src/lib.rs", lines = "86-108", why = "RetrievalWeights — 4-factor scoring model for somatic markers" },
+  { path = "crates/roko-daimon/src/somatic_ta.rs", lines = "1-60", why = "SomaticOracleContext, somatic_confidence_bias, SomaticRetrieval" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "222-288", why = "F_daimon ASSESS enrichment — PAD, somatic markers, tier escalation" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "290-364", why = "F_daimon ACT enrichment — prospect theory (lambda=2.25, alpha=0.88)" },
+]
+symbols = [
+  "PadVector — pleasure/arousal/dominance from roko-core",
+  "BehavioralState — Neutral/Cautious/Anxious/Struggling at roko-core",
+  "BehavioralStateThresholds — configurable thresholds at roko-daimon/phase2_stubs.rs",
+  "SomaticRetrieval — somatic marker retrieval at somatic_ta.rs",
+  "ContrarianConfig — 15% contrarian blending at roko-daimon/phase2_stubs.rs",
+  "SomaticOracleContext — pre-computed bias for oracle predictions at somatic_ta.rs:52",
+]
+anti_patterns = [
+  "Do NOT hardcode PAD thresholds — use BehavioralStateThresholds",
+  "Do NOT hardcode prospect theory constants — use named constants at module level",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DaimonFunctor\\|prospect_value\\|lambda.*2.25\\|alpha.*0.88' crates/roko-compose/src/daimon_functor.rs"
+fail_msg = "DaimonFunctor with prospect theory must be implemented"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T04: Implement DreamsFunctor (F_dreams) ───
+
+[[task]]
+id = "E44-T04"
+title = "Implement DreamsFunctor wrapping dream cycle output injection"
+description = """
+Implement F_dreams as a CrossCutFunctor (spec: 26-CROSS-CUTS.md:369-512).
+
+F_dreams is fundamentally different from Memory and Daimon: it does NOT inject per-tick.
+pre_enrich is always a pass-through (short-circuit). The functor's role is to:
+
+1. **Always short-circuit per-tick** — pre_enrich returns input unchanged. should_short_circuit()
+   returns true. The functor runs on a delta-speed schedule, not per-loop-step.
+
+2. **DreamOutputConsumer** — a struct that reads DreamCycleReport output (from
+   roko-dreams/src/cycle.rs:58 — DreamCycleReport export) and publishes results to the
+   appropriate stores:
+   - Consolidated knowledge -> KnowledgeStore (via natural transformation eta_DM)
+   - Depotentiated affect -> DaimonState update (via natural transformation eta_DN)
+   - Routing advice -> CascadeRouter (via DreamRoutingAdvice at roko-dreams/routing_advice.rs)
+
+3. **Integration with dream runner** — the existing DreamRunner (roko-dreams/runner.rs)
+   and DreamEngine (roko-dreams/lib.rs:116) already run cycles. DreamOutputConsumer wires
+   their output into the cross-cut pipeline.
+
+Keep DreamsFunctor in `crates/roko-compose/src/dreams_functor.rs`.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-compose/src/dreams_functor.rs"]
+depends_on = ["E44-T01"]
+max_loc = 60
+
+[task.context]
+read_files = [
+  { path = "crates/roko-dreams/src/lib.rs", lines = "57-84", why = "DreamCycleReport, DreamReplayBatch, DreamRoutingAdvice exports" },
+  { path = "crates/roko-dreams/src/cycle.rs", lines = "1-59", why = "DreamCycle struct, AgentDispatcher trait, constants" },
+  { path = "crates/roko-dreams/src/routing_advice.rs", lines = "1-30", why = "DreamRoutingAdvice, generate_routing_advice, load/save helpers" },
+  { path = "crates/roko-dreams/src/runner.rs", lines = "1-30", why = "DreamRunner, DreamEngine, DreamConfig exports" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "369-512", why = "F_dreams spec — delta speed, 3-phase cycle, integration staging" },
+]
+symbols = [
+  "DreamCycleReport — output of a dream cycle at dreams/cycle.rs",
+  "DreamReplayBatch — NREM replay batch at dreams/replay.rs",
+  "DreamRoutingAdvice — routing hints from dream analysis at dreams/routing_advice.rs",
+  "DreamRunner — runtime loop at dreams/runner.rs",
+  "DreamEngine — facade at dreams/lib.rs:116",
+]
+anti_patterns = [
+  "Do NOT make F_dreams inject per-tick — it always short-circuits",
+  "Do NOT duplicate dream cycle logic — consume DreamCycleReport output only",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DreamsFunctor\\|DreamOutputConsumer\\|short_circuit.*true\\|impl CrossCutFunctor' crates/roko-compose/src/dreams_functor.rs"
+fail_msg = "DreamsFunctor must be implemented with short-circuit"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T05: Implement natural transformations between cross-cuts ───
+
+[[task]]
+id = "E44-T05"
+title = "Implement 6 natural transformations forming the cross-cut triangle"
+description = """
+Wire the 6 natural transformations (spec: 26-CROSS-CUTS.md:520-571):
+
+| Name | Direction | What it does |
+|------|-----------|-------------|
+| eta_MN | Memory -> Daimon | Knowledge outcomes (gate pass/fail) update PAD vector |
+| eta_NM | Daimon -> Memory | PAD assessment stored as knowledge entry |
+| eta_MD | Memory -> Dreams | Episodes provided for NREM replay |
+| eta_DM | Dreams -> Memory | Consolidated knowledge stored in KnowledgeStore |
+| eta_ND | Daimon -> Dreams | PAD triggers dream consolidation when Struggling |
+| eta_DN | Dreams -> Daimon | Depotentiation reduces negative affect |
+
+Each transformation is a function:
+`fn eta_XY(source_output: &SourceOutput) -> TargetInput`
+
+The commuting triangle must hold (spec: 26-CROSS-CUTS.md:533-543):
+Daimon->Memory->Dreams (eta_NM then eta_MD) == Daimon->Dreams (eta_ND)
+Both paths produce compatible consolidation priorities.
+
+Add a `natural_transforms.rs` in roko-compose/src/ with the 6 transformation functions
+and a `run_gate_failure_cascade()` convenience that fires the 7-step cascade from spec :549.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-compose/src/natural_transforms.rs"]
+depends_on = ["E44-T02", "E44-T03", "E44-T04"]
+max_loc = 120
+
+[task.context]
+read_files = [
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "520-571", why = "6 natural transformations spec and commuting triangle" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "545-571", why = "Gate failure cascade 7-step example" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "810-847", why = "Feedback loops: memory reinforcement, daimon adaptation, dream prioritization" },
+]
+symbols = [
+  "MemoryFunctor — F_memory from T02 (memory_functor.rs)",
+  "DaimonFunctor — F_daimon from T03 (daimon_functor.rs)",
+  "DreamsFunctor — F_dreams from T04 (dreams_functor.rs)",
+  "KnowledgeStore — knowledge target for eta_DM, eta_NM",
+  "PadVector — PAD state target for eta_MN, eta_DN",
+  "DreamCycleReport — dream output consumed by eta_DM, eta_DN",
+]
+anti_patterns = [
+  "Do NOT hardcode the cascade sequence — express via the transformation functions",
+  "Do NOT make transformations bidirectional — each is one-way source->target",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'eta_MN\\|eta_NM\\|eta_MD\\|eta_DM\\|eta_ND\\|eta_DN\\|NaturalTransformation' crates/roko-compose/src/natural_transforms.rs"
+fail_msg = "All 6 natural transformation functions must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T06: Wire VCG auction for cross-cut arbitration ───
+
+[[task]]
+id = "E44-T06"
+title = "Wire VCG auction as tiebreaker when cross-cuts produce conflicting recommendations"
+description = """
+The vcg_allocate() function exists in auction.rs (roko-compose) for prompt budget allocation.
+Add cross-cut arbitration alongside it (spec: 26-CROSS-CUTS.md:575-660):
+
+1. **CrossCutArbitrator struct** — holds references to Memory/Daimon/Dreams functors.
+
+2. **Priority hierarchy (Layer 1)** — fixed ordering applied first:
+   - Priority 1 (highest): Daimon safety (safety_critical flag)
+   - Priority 2: Memory (Consolidated tier or higher overrides Dreams)
+   - Priority 3 (lowest): Dreams (speculative hypotheses)
+   Implement as `resolve_by_priority()` function per spec :589-615.
+
+3. **VCG tiebreaker (Layer 2)** — when priority doesn't resolve:
+   - Same level + both confidence > 0.5 + Route/Compose decision
+   - Second-price mechanism: winner pays second-highest bid
+   - Implement as `resolve_by_vcg()` using existing LearningBidder patterns
+
+4. **Safety exclusion** — F_safety never participates in VCG (it pre-filters). The
+   arbitrator applies safety filtering BEFORE collecting cross-cut bids.
+
+Add to auction.rs as a `CrossCutArbitrator` struct alongside existing `vcg_allocate`.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-compose/src/auction.rs"]
+depends_on = ["E44-T02", "E44-T03"]
+max_loc = 100
+
+[task.context]
+read_files = [
+  { path = "crates/roko-compose/src/auction.rs", lines = "1-55", why = "Existing SubsystemId, LearningBidder, SectionAllocation types" },
+  { path = "crates/roko-compose/src/auction.rs", lines = "57-120", why = "LearningBidder::bid(), update() — Thompson sampling pattern" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "575-660", why = "VCG arbitration spec — priority hierarchy, tiebreaker, when invoked" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "662-720", why = "Arbitration as Cell + when VCG is invoked conditions" },
+]
+symbols = [
+  "LearningBidder — per-subsystem bidder at auction.rs:32",
+  "SubsystemId — type alias for AttentionBidder at :11",
+  "SectionAllocation — allocation data at :21",
+  "vcg_allocate — existing VCG function (for prompt budget, NOT cross-cuts)",
+]
+anti_patterns = [
+  "Do NOT replace existing vcg_allocate for prompt budget — add cross-cut arbitration alongside",
+  "Do NOT make safety participate in VCG — it is structurally prior",
+  "Do NOT invoke VCG when cross-cuts are at different priority levels",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CrossCutArbitrator\\|resolve_by_priority\\|resolve_by_vcg' crates/roko-compose/src/auction.rs"
+fail_msg = "CrossCutArbitrator with priority and VCG resolution must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T07: Implement SafetyFunctor (F_safety) as outer wrapper ───
+
+[[task]]
+id = "E44-T07"
+title = "Implement SafetyFunctor as capability-level pre-filter outside VCG"
+description = """
+Implement F_safety (spec: 26-CROSS-CUTS.md:724-808):
+
+1. **Capability-level, not behavioral** — SafetyFunctor operates on what is PERMITTED,
+   not what is ADVISABLE (that's Daimon's job). It filters based on AgentContract and
+   capability grants.
+
+2. **pre_enrich** — filter Signals that require capabilities not in the agent's grant set.
+   The AgentContract exists in roko-agent safety module. SafetyFunctor needs the agent's
+   current capability set to evaluate.
+
+3. **post_enrich** — verify output against AgentContract safety contracts. Filter out
+   Signals that violate contracts. Log violations as warnings (not errors — contracts may
+   be permissive default).
+
+4. **Never short-circuits** — safety is always active, unlike the other three functors.
+   should_short_circuit() always returns false.
+
+5. **Composition order** — F_total = F_safety . F_arbitrated(F_memory, F_daimon, F_dreams).
+   Safety wraps the entire arbitrated pipeline. It runs BEFORE the arbitrator, not inside it.
+
+Keep in `crates/roko-compose/src/safety_functor.rs`.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-compose/src/safety_functor.rs"]
+depends_on = ["E44-T01", "E44-T06"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "724-808", why = "F_safety spec — capability filtering, contract enforcement, vs Daimon" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "800-808", why = "F_total composition: F_safety . F_arbitrated(...)" },
+]
+symbols = [
+  "CrossCutFunctor — trait from T01 (cross_cut.rs)",
+  "CrossCutArbitrator — arbitrator from T06 that safety wraps",
+  "AgentContract — safety contracts from roko-agent/src/safety/",
+]
+anti_patterns = [
+  "Do NOT make safety participate in VCG auction — it is structurally prior",
+  "Do NOT short-circuit safety — it is always active",
+  "Do NOT make safety block on permissive-default contracts — log and pass through",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'SafetyFunctor\\|impl CrossCutFunctor.*Safety\\|short_circuit.*false' crates/roko-compose/src/safety_functor.rs"
+fail_msg = "SafetyFunctor must be implemented and never short-circuit"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-compose 2>&1"
+fail_msg = "roko-compose must compile"
+
+# ─── T08: Gate failure cascade through cross-cut pipeline ───
+
+[[task]]
+id = "E44-T08"
+title = "Wire gate failure cascade through Memory -> Daimon -> Dreams pipeline"
+description = """
+Wire the 7-step gate failure cascade from spec (26-CROSS-CUTS.md:545-571) into the runner
+event loop. When a gate fails, the natural transformations fire in sequence:
+
+1. VERIFY emits gate_failure Verdict Signal
+2. F_memory REACT: weakens knowledge entries in context (via MemoryFunctor.post_enrich)
+3. eta_MN: knowledge outcome updates PAD (Memory->Daimon natural transformation)
+4. F_daimon ASSESS next tick: PAD shifted (pleasure down, arousal up)
+5. eta_ND: if Daimon is Struggling, trigger delta dream (Daimon->Dreams)
+6. Dreams NREM: replays failed episode (eta_MD provided it)
+7. eta_DM + eta_DN: new heuristic stored + depotentiation reduces negative affect
+
+Wire this into the runner event loop (event_loop.rs) where GateCompletion is received.
+The existing gate handling at event_loop.rs is where GateFailed events are processed.
+Use the natural transformation functions from T05 — do NOT hardcode the cascade.
+
+The cascade should be async and non-blocking. Steps 5-7 (dream cycle) run in background
+via tokio::spawn since they are delta-speed operations.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = ["crates/roko-cli/src/runner/event_loop.rs"]
+depends_on = ["E44-T05", "E44-T06"]
+max_loc = 80
+
+[task.context]
+read_files = [
+  { path = "crates/roko-cli/src/runner/event_loop.rs", lines = "1-69", why = "Event loop imports: PostGateReflectionStore at :47, gate types" },
+  { path = "crates/roko-cli/src/runner/types.rs", lines = "46-66", why = "GateCompletionKind, RunnerFailureKind types" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "545-571", why = "Gate failure cascade 7-step spec" },
+  { path = "docs/v2/26-CROSS-CUTS.md", lines = "810-847", why = "Feedback loops that the cascade feeds" },
+]
+symbols = [
+  "GateCompletion — gate result at types.rs, received in event loop",
+  "GateCompletionKind — Gate/PlanVerify/Merge at types.rs:48",
+  "RunnerFailureKind — Transient/Permanent/Resource/Structural at :58",
+  "PostGateReflectionStore — reflection store imported at event_loop.rs:47",
+  "run_gate_failure_cascade() — convenience from natural_transforms.rs (T05)",
+]
+anti_patterns = [
+  "Do NOT hardcode the cascade — use natural transformation functions from T05",
+  "Do NOT block the event loop on dream cycle — spawn it as background task",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'gate_failure_cascade\\|cross_cut_cascade\\|eta_MN\\|memory.*react' crates/roko-cli/src/runner/event_loop.rs"
+fail_msg = "Gate failure cascade through cross-cuts must be wired"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"

@@ -1,0 +1,828 @@
+[meta]
+plan = "E18-DOCS-CONFIG-OPS"
+total = 15
+done = 0
+status = "ready"
+max_parallel = 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T01: Fix MSRV drift (Cargo.toml 1.85 -> 1.91)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The workspace declares rust-version = "1.85" (Cargo.toml:93) but the MSRV CI
+# job pins toolchain "1.91" (.github/workflows/msrv.yml:21) and the release
+# Docker image is rust:1.91-slim-bookworm (Dockerfile:20). The alloy deps also
+# require 1.91+ (CLAUDE.md "Known blockers"). Bump the single declared MSRV so
+# the manifest, the MSRV gate, and the build image all agree.
+#
+[[task]]
+id = "E18-T01"
+title = "Bump workspace rust-version 1.85 -> 1.91 to match msrv.yml + Dockerfile"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 3
+files = ["Cargo.toml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "Cargo.toml", lines = "88-98", why = "[workspace.package] rust-version = \"1.85\" at :93 — the stale MSRV" },
+    { path = ".github/workflows/msrv.yml", lines = "16-23", why = "MSRV job pins toolchain \"1.91\"; comment says it must match Cargo.toml rust-version" },
+    { path = "Dockerfile", lines = "18-21", why = "Release image is rust:1.91-slim-bookworm — the effective floor" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT change msrv.yml or the Dockerfile — Cargo.toml is the one that is wrong.",
+    "Do NOT bump edition or any other version key; only rust-version.",
+    "Do NOT add per-crate rust-version overrides; the workspace key is authoritative.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'rust-version = \"1.91\"' Cargo.toml"
+fail_msg = "Cargo.toml workspace rust-version must be 1.91"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'rust-version = \"1.85\"' Cargo.toml"
+fail_msg = "The stale 1.85 MSRV must be gone"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo metadata --no-deps --format-version 1 >/dev/null 2>&1"
+fail_msg = "Cargo.toml must still parse after the MSRV bump"
+
+acceptance = ["Cargo.toml declares rust-version 1.91, matching msrv.yml (toolchain 1.91) and Dockerfile (rust:1.91). `cargo metadata` succeeds."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T02: Add a pre-build test+clippy gate to the release workflow
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# release.yml triggers on tag push (v*) and jumps straight to `cargo build`
+# (:61-64) — it never runs clippy or tests. The clippy+test job lives in ci.yml,
+# which triggers on push/PR to main, NOT on tags. So a tag cut from a commit that
+# never went through CI ships un-gated binaries. Add a `check` job (clippy -D
+# warnings + workspace test) and make the `build` matrix job `needs: check`, so
+# the release aborts before packaging if the tagged commit is red.
+#
+[[task]]
+id = "E18-T02"
+title = "Gate release.yml on cargo clippy + cargo test before building binaries"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = [".github/workflows/release.yml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = ".github/workflows/release.yml", lines = "25-77", why = "The `build` job goes straight to cargo build with no test/clippy gate — insert a `check` job it depends on" },
+    { path = ".github/workflows/ci.yml", lines = "12-24", why = "Reuse this exact clippy+test recipe (toolchain@stable + components: clippy; cargo clippy --workspace --no-deps -D warnings; cargo test --workspace)" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT weaken the existing ci.yml — this is an ADDITIONAL gate scoped to the tag/release trigger.",
+    "Do NOT run the gate per-target in the build matrix (wasteful); one ubuntu-latest `check` job that `build` needs is enough.",
+    "Do NOT drop `-D warnings` from clippy; the release gate must be as strict as CI.",
+    "Do NOT change the release/artifact jobs beyond adding the `needs: check` edge on `build`.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cargo test --workspace' .github/workflows/release.yml && grep -q 'cargo clippy --workspace' .github/workflows/release.yml"
+fail_msg = "release.yml must run clippy and tests before building"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'needs: check' .github/workflows/release.yml || grep -qE 'needs:\\s*\\[?\\s*check' .github/workflows/release.yml"
+fail_msg = "The build job must depend on the new check gate"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))\""
+fail_msg = "release.yml must remain valid YAML"
+
+acceptance = ["A release tag now runs clippy -D warnings + `cargo test --workspace` and refuses to build/publish binaries if either fails."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T03: Add a cargo-deny CI workflow (the unused deny.toml)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A deny.toml sits at the repo root but NO workflow ever runs cargo-deny, so the
+# advisory/license/bans policy is dead. Add .github/workflows/deny.yml that
+# installs cargo-deny and runs `cargo deny check` on push/PR, using the existing
+# deny.toml as-is (do not author a new policy here).
+#
+[[task]]
+id = "E18-T03"
+title = "Add cargo-deny workflow running `cargo deny check` against deny.toml"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 35
+files = [".github/workflows/deny.yml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "deny.toml", lines = "1-40", why = "The existing policy this workflow enforces — do NOT rewrite it, just run it" },
+    { path = ".github/workflows/ci.yml", lines = "1-24", why = "Match the on: push[main]/pull_request trigger + actions/checkout@v4 + Swatinem/rust-cache@v2 conventions used across this repo" },
+    { path = ".github/workflows/msrv.yml", lines = "1-24", why = "Reference for a small single-job workflow shape" },
+]
+symbols = []
+anti_patterns = [
+    "Do NOT edit deny.toml — the task is to wire the existing policy into CI, not tune it.",
+    "Do NOT use a bespoke `cargo install cargo-deny` if a maintained action exists (prefer taiki-e/install-action@cargo-deny or EmbarkStudios/cargo-deny-action).",
+    "Do NOT make the job non-blocking (no continue-on-error) — a supply-chain violation must fail the build.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f .github/workflows/deny.yml && grep -q 'cargo deny check' .github/workflows/deny.yml"
+fail_msg = "deny.yml must exist and run `cargo deny check`"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"import yaml,sys; yaml.safe_load(open('.github/workflows/deny.yml'))\""
+fail_msg = "deny.yml must be valid YAML"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'continue-on-error' .github/workflows/deny.yml"
+fail_msg = "The cargo-deny gate must be blocking, not advisory"
+
+acceptance = ["`.github/workflows/deny.yml` runs `cargo deny check` on push/PR against the existing deny.toml and blocks on any advisory/license/ban violation."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T04: Coverage must fail when tests fail
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T04"
+title = "Drop --ignore-run-fail from coverage workflow"
+description = "Remove the --ignore-run-fail flag from the cargo llvm-cov invocation in coverage.yml so the coverage job turns red when the test run fails. Do not change the report upload or filename ignore regex."
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = [".github/workflows/coverage.yml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = ".github/workflows/coverage.yml", lines = "1-28", why = "The html coverage command currently includes --ignore-run-fail; remove only that flag." },
+]
+symbols = [
+    "cargo llvm-cov --html --output-dir target/llvm-cov - must fail when cargo test fails",
+]
+anti_patterns = [
+    "Do NOT remove the coverage workflow or artifact uploads.",
+    "Do NOT add continue-on-error to compensate for failing coverage.",
+    "Do NOT change the ignore-filename-regex unless required by llvm-cov syntax.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q -- '--ignore-run-fail' .github/workflows/coverage.yml"
+fail_msg = "coverage.yml must not pass --ignore-run-fail to cargo llvm-cov"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cargo llvm-cov --html' .github/workflows/coverage.yml && grep -q 'actions/upload-artifact@v4' .github/workflows/coverage.yml"
+fail_msg = "coverage.yml must still generate and upload coverage artifacts"
+
+acceptance = ["The coverage workflow still produces html and summary artifacts, but the llvm-cov test run fails the job when tests fail."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T05: Docker clean-checkout config file
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T05"
+title = "Track docker/roko.toml and copy it from Dockerfile"
+description = "Fix clean-checkout Docker builds by adding a committed docker/roko.toml default and changing the root Dockerfile to COPY docker/roko.toml /workspace/roko.toml. Keep the startup script behavior that can generate a default when the file is absent."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 45
+files = [
+    "Dockerfile",
+    "docker/roko.toml",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "Dockerfile", lines = "70-82", why = "The broken clean-checkout COPY roko.toml /workspace/roko.toml is here." },
+    { path = "docker/start-railway.sh", lines = "1-120", why = "Startup already knows how to generate or consume default roko.toml; keep that behavior consistent." },
+    { path = "Cargo.toml", lines = "88-98", why = "Use the workspace defaults/MSRV context if the docker config needs a minimal comment." },
+]
+symbols = [
+    "docker/roko.toml - committed default copied into the image",
+    "COPY docker/roko.toml /workspace/roko.toml - Dockerfile clean-checkout path",
+]
+anti_patterns = [
+    "Do NOT keep COPY roko.toml from the repository root; that path was untracked and breaks git-archive builds.",
+    "Do NOT put real API keys or machine-local paths in docker/roko.toml.",
+    "Do NOT remove the start-railway fallback generation path; containers should still start if a mounted workspace omits roko.toml.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'COPY docker/roko.toml /workspace/roko.toml' Dockerfile"
+fail_msg = "Dockerfile must copy the committed docker/roko.toml default"
+
+[[task.verify]]
+phase = "structural"
+command = "test -f docker/roko.toml && grep -Eq '^(schema_version|\\[agent\\]|\\[server\\])' docker/roko.toml"
+fail_msg = "docker/roko.toml must exist and contain a minimal parseable roko config"
+
+acceptance = ["A checkout containing only tracked files has the Dockerfile COPY source present under docker/roko.toml, and the file contains no secrets."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T06: Collapse dual-config silent drop
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T06"
+title = "Make load_resolved_config consume core validation and warn on dropped keys"
+description = "Stop load_resolved_config from validating with roko_core and discarding the result before reparsing through the legacy ConfigLayer path. The implementation may keep legacy CLI-only projections, but it must surface core diagnostics/unknown-key warnings and make the core validated config authoritative for provider/model/env behavior."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 160
+files = [
+    "crates/roko-cli/src/config.rs",
+    "crates/roko-core/src/config/loader.rs",
+    "crates/roko-core/src/config/validation.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/config.rs", lines = "2877-2925", why = "load_resolved_config binds _core_validated and then falls through to the legacy layer path." },
+    { path = "crates/roko-cli/src/config.rs", lines = "927-1050", why = "ConfigLayer is still needed for CLI-only compatibility fields; keep it as a projection, not the authoritative schema." },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "142-180", why = "ValidatedConfig contains migrated config, diagnostics, and provenance to consume." },
+    { path = "crates/roko-core/src/config/validation.rs", lines = "1-80", why = "Strict raw-TOML validation helper; extend or reuse for unknown-key diagnostics if needed." },
+]
+symbols = [
+    "load_resolved_config(workdir) -> ResolvedConfig - CLI compatibility entrypoint",
+    "load_config_validated_with_options(workdir, LoadOptions::default()) -> ValidatedConfig",
+    "ValidatedConfig::diagnostics - warnings that must not be silently dropped",
+    "ConfigLayer - legacy projection for auto_plan/repos/gate/dreams/daimon/runner compatibility only",
+]
+anti_patterns = [
+    "Do NOT leave an underscore-prefixed _core_validated binding whose value is ignored.",
+    "Do NOT delete CLI-only fields such as auto_plan, repos, legacy [[gate]], dreams, daimon, or runner.plan_timeout_secs without a projection path.",
+    "Do NOT make legacy ConfigLayer override core providers/models/agent/env values after core validation has resolved them.",
+    "Do NOT turn unknown keys into a panic; emit actionable diagnostics or warnings while preserving existing valid config load behavior.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'let _core_validated' crates/roko-cli/src/config.rs"
+fail_msg = "load_resolved_config must not discard the core validated config in an underscore binding"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after config convergence"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli config_unknown_keys_warn 2>&1"
+fail_msg = "a config regression test must prove unknown/dropped keys produce a warning instead of silent loss"
+
+acceptance = ["load_resolved_config uses the roko_core validated config as the authoritative provider/model/env source, preserves documented CLI-only compatibility fields through a projection path, and emits a warning or diagnostic for unknown keys that would otherwise be silently dropped."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T07: Redact secrets in CLI config show
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T07"
+title = "Redact secrets in roko config show and --effective output"
+description = "Apply the same secret-masking policy used by the serve config routes to the CLI config show paths, especially config show --effective. The CLI must never print literal provider API keys, serve auth keys, deploy tokens, webhook secrets, or chain wallet keys."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = [
+    "crates/roko-cli/src/config_cmd.rs",
+    "crates/roko-core/src/config/loader.rs",
+]
+role = "implementer"
+depends_on = ["E18-T06"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/config_cmd.rs", lines = "214-232", why = "cmd_show and cmd_show_effective currently print resolved/effective config without redaction." },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "560-572", why = "serialize_effective is the current effective TOML serializer used by config show --effective." },
+    { path = "crates/roko-serve/src/routes/config.rs", lines = "306-345", why = "Serve-side mask_secret_fields policy to mirror or extract into shared code." },
+]
+symbols = [
+    "cmd_show(workdir) and cmd_show_effective(workdir) - CLI output paths",
+    "serialize_effective(config) - effective TOML serialization path",
+    "mask_secret_fields - serve-side redaction policy to reuse or port",
+]
+anti_patterns = [
+    "Do NOT only redact --effective; plain config show must not leak secret fields either.",
+    "Do NOT replace secrets with empty strings if that loses useful shape; use a stable mask such as ****.",
+    "Do NOT redact non-secret fields like provider names, model slugs, or api_key_env variable names.",
+    "Do NOT introduce a dependency cycle between roko-core and roko-serve; extract shared redaction downward or duplicate the small policy deliberately in CLI/core.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -Eq 'redact|mask_secret|secret.*mask' crates/roko-cli/src/config_cmd.rs crates/roko-core/src/config/loader.rs"
+fail_msg = "CLI config output must call an explicit redaction/masking path"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after config output redaction"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli config_show_effective_redacts_secret 2>&1"
+fail_msg = "a regression test must prove config show --effective does not print literal secret values"
+
+acceptance = ["Running roko config show and roko config show --effective with secret-bearing config/env values prints masked placeholders and never emits the raw secret bytes."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T08: Docker push + Fly/compose deploy parity
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T08"
+title = "Add docker deploy --push and align Fly/compose port and health"
+description = "Add a --push flag to roko deploy docker that runs docker push after a successful build/tag, and align deploy health/port drift across docker-compose, root fly.toml, .github/workflows/deploy-fly.yml, and the FLY_TOML_TEMPLATE in server.rs. Use --bind/--port instead of removed --listen in compose."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_loc = 150
+files = [
+    "crates/roko-cli/src/main.rs",
+    "crates/roko-cli/src/commands/server.rs",
+    "docker/docker-compose.yml",
+    ".github/workflows/deploy-fly.yml",
+    "fly.toml",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/main.rs", lines = "1688-1725", why = "DeployCmd::Docker currently has no --push flag." },
+    { path = "crates/roko-cli/src/commands/server.rs", lines = "410-500", why = "cmd_deploy_docker builds/tags but never pushes; cmd_deploy_fly writes root fly.toml." },
+    { path = "crates/roko-cli/src/commands/server.rs", lines = "755-780", why = "FLY_TOML_TEMPLATE currently uses /api/health; keep template and root fly.toml in sync." },
+    { path = "docker/docker-compose.yml", lines = "65-95", why = "Compose still runs serve --listen 0.0.0.0:9092." },
+    { path = ".github/workflows/deploy-fly.yml", lines = "45-75", why = "Workflow has an inline fly.toml heredoc that must match root fly.toml/template health semantics." },
+    { path = "fly.toml", lines = "1-40", why = "Tracked root Fly config currently has port/health drift from the generated template and Dockerfile." },
+    { path = "Dockerfile", lines = "100-115", why = "Root image HEALTHCHECK uses /health on port 6677; align Fly health checks to the same live endpoint." },
+]
+symbols = [
+    "DeployCmd::Docker { push: bool } - add the clap flag in main.rs",
+    "cmd_deploy_docker(...) - run docker push only when --push is set",
+    "FLY_TOML_TEMPLATE - generated root fly.toml source of truth",
+    "docker/docker-compose.yml command - use serve --bind 0.0.0.0 --port 9092",
+]
+anti_patterns = [
+    "Do NOT push by default; docker push must require the explicit --push flag.",
+    "Do NOT update only .github/workflows/deploy-fly.yml; root fly.toml and FLY_TOML_TEMPLATE must match.",
+    "Do NOT keep --listen in docker-compose; serve examples must use --bind and --port.",
+    "Do NOT mix /api/health and /health for Fly checks after this task; choose the endpoint that matches the root Dockerfile health path.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q -- '--push' crates/roko-cli/src/main.rs && grep -Eq 'docker.*push|push.*docker' crates/roko-cli/src/commands/server.rs"
+fail_msg = "roko deploy docker must expose --push and call docker push when requested"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q -- '--listen' docker/docker-compose.yml && grep -q -- '--bind' docker/docker-compose.yml && grep -q -- '--port' docker/docker-compose.yml"
+fail_msg = "docker-compose must use serve --bind/--port, not --listen"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'path = \"/health\"' fly.toml && grep -q 'path = \"/health\"' crates/roko-cli/src/commands/server.rs && grep -q 'path = \"/health\"' .github/workflows/deploy-fly.yml"
+fail_msg = "root fly.toml, FLY_TOML_TEMPLATE, and deploy-fly.yml must agree on /health"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after deploy command changes"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli deploy_docker_push 2>&1"
+fail_msg = "a deploy CLI regression test must cover the --push flag and push command path"
+
+acceptance = ["roko deploy docker builds and tags as before, pushes only when --push is passed, docker-compose starts serve with --bind/--port, and Fly health/port settings are consistent across root fly.toml, deploy-fly.yml, and FLY_TOML_TEMPLATE."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T09: Runtime-dead config surface notes
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T09"
+title = "Document dead conductor config surfaces and review cold_storage config"
+description = "Mark conductor.watchers.* and conductor.context_pressure_enabled as deprecated/runtime-dead for runner-v2 with a roko doctor warning or schema note. Review cold_storage only as a live config surface: field docs, defaults, and an optional doctor note. Do not label cold_storage runtime-dead; its copy-not-move growth bug belongs to E02-T12."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 90
+files = [
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-cli/src/doctor.rs",
+]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1250-1315", why = "ConductorConfig context_pressure_enabled and watchers config surface to deprecate or warn about." },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1560-1605", why = "ColdStorageConfig docs/defaults; review but do not mark runtime-dead." },
+    { path = "crates/roko-serve/src/lib.rs", lines = "2085-2110", why = "Cold archival timer consumes cold_storage at runtime, proving it is live." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "160-195", why = "Doctor check assembly; add a warning check here if using doctor rather than comments only." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "930-990", why = "Existing doctor warning-check style for v2 abstractions." },
+]
+symbols = [
+    "ConductorConfig.context_pressure_enabled - runtime-dead in runner-v2 until a subscriber exists",
+    "ConductorConfig.watchers - threshold overrides for an unwired runner-v2 watcher surface",
+    "ColdStorageConfig - runtime-live config consumed by start_cold_archival_timer",
+    "DoctorCheck { id, status, message, detail, fix } - doctor warning shape",
+]
+anti_patterns = [
+    "Do NOT mark cold_storage as runtime-dead; it is consumed by the serve cold archival timer.",
+    "Do NOT fix the copy-not-move archival growth bug here; E02-T12 owns that runtime defect.",
+    "Do NOT delete conductor config fields unless every parser/default/doc surface is updated safely.",
+    "Do NOT add a doctor failure for these fields; use warning/deprecation language because existing configs should still load.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -Eq 'runtime-dead|deprecated|runner-v2' crates/roko-core/src/config/schema.rs crates/roko-cli/src/doctor.rs"
+fail_msg = "schema or doctor output must explicitly mark the dead conductor config surfaces"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cold_storage' crates/roko-core/src/config/schema.rs && ! grep -R -nE 'cold_storage.*runtime-dead|runtime-dead.*cold_storage' crates/roko-core/src/config/schema.rs crates/roko-cli/src/doctor.rs"
+fail_msg = "cold_storage must remain documented as runtime-live, not runtime-dead"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after schema/doctor updates"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli doctor_dead_config 2>&1"
+fail_msg = "a doctor/schema regression test must cover the dead conductor config warning"
+
+acceptance = ["Users can see that conductor.watchers.* and conductor.context_pressure_enabled are deprecated/runtime-dead under runner-v2, while cold_storage remains documented as runtime-live with any growth bug cross-referenced to E02-T12."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T10: Rewrite CLAUDE.md from status-quo truth
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T10"
+title = "Rewrite CLAUDE.md from status-quo truth"
+description = "Rewrite CLAUDE.md so it reflects the fixed state after E01 and E18-T05 through T08: current workspace count, Engram terminology, runner-v2 as the live engine, fail-closed safety, state-snapshot.json, 37 tools, 10 TUI tabs, roko knowledge, and corrected deploy/config behavior."
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 220
+files = ["CLAUDE.md"]
+role = "implementer"
+depends_on = ["E18-T05", "E18-T06", "E18-T07", "E18-T08"]
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "CLAUDE.md", lines = "1-120", why = "Top-level stale claims: 18 crates, F1-F7, ~85 routes, default plan run examples, executor.json." },
+    { path = "CLAUDE.md", lines = "180-210", why = "Command reference has stale route/tab counts." },
+    { path = "tmp/status-quo/backlog/epics/E18-DOCS-CONFIG-OPS.md", lines = "1-90", why = "Status-quo truth table D1-D10 to rewrite into CLAUDE.md." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", lines = "1-35", why = "Backlog count and milestone framing to keep docs aligned with the executable plan." },
+]
+symbols = [
+    "35 workspace members",
+    "Engram",
+    "Runner v2 / crates/roko-cli/src/runner/event_loop.rs",
+    ".roko/state/state-snapshot.json",
+    "roko knowledge",
+]
+anti_patterns = [
+    "Do NOT document orchestrate.rs as the default live engine; it is legacy/feature-gated.",
+    "Do NOT keep bare default plan run examples that imply the old graph dry-run path.",
+    "Do NOT keep stale counts: 18 crates, 1 noun (Signal), F1-F7, ~85 routes, or 19 builtin tools.",
+    "Do NOT document fixed config/deploy behavior until the local deps E18-T05 through E18-T08 have landed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -qE '18 crates|1 noun \\(Signal\\)|F1.?F7|~85 routes|roko neuro|executor\\.json' CLAUDE.md"
+fail_msg = "CLAUDE.md must not retain known stale status-quo claims"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '35 workspace members' CLAUDE.md && grep -q 'Engram' CLAUDE.md && grep -q 'state-snapshot.json' CLAUDE.md && grep -q -- '--engine runner-v2' CLAUDE.md"
+fail_msg = "CLAUDE.md must name the corrected workspace count, noun, snapshot path, and runner-v2 examples"
+
+acceptance = ["CLAUDE.md is a concise, truthful operator guide for the post-E01/E18 fixed state and passes the explicit stale-pattern guards."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T11: Rewrite README.md from status-quo truth
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T11"
+title = "Rewrite README.md with runner-v2 and current command semantics"
+description = "Rewrite README.md to match the same post-fix truth as CLAUDE.md: current workspace count, runner-v2 examples, roko knowledge, --bind/--port, /health and /ready, 10 TUI tabs, and current route/tool language."
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 260
+files = ["README.md"]
+role = "implementer"
+depends_on = ["E18-T06", "E18-T07", "E18-T10"]
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "README.md", lines = "1-90", why = "Top-level stale claims and bare plan run examples." },
+    { path = "README.md", lines = "220-255", why = "roko neuro and ~85 routes drift." },
+    { path = "README.md", lines = "420-465", why = "Command table and contributor guidance with stale commands/counts." },
+    { path = "CLAUDE.md", lines = "1-140", why = "Use the freshly corrected operator guide as the consistency reference." },
+    { path = "tmp/status-quo/backlog/epics/E18-DOCS-CONFIG-OPS.md", lines = "1-90", why = "D1-D10 status-quo truth table." },
+]
+symbols = [
+    "roko plan run ... --engine runner-v2",
+    "roko knowledge",
+    "roko serve --bind ... --port ...",
+    "/health and /ready",
+    "10 TUI tabs",
+]
+anti_patterns = [
+    "Do NOT leave any real run example without --engine runner-v2 unless E01 has removed the need and the text says why.",
+    "Do NOT keep roko neuro examples; the current surface is roko knowledge.",
+    "Do NOT keep --listen, /healthz, /readyz, F1-F7, ~85 routes, or 18 crates.",
+    "Do NOT broaden this into a marketing rewrite; keep it an accurate developer/operator README.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -qE '18 crates|roko neuro|--listen|~85 routes|F1.?F7|/healthz|/readyz' README.md"
+fail_msg = "README.md must not retain known stale command/count patterns"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '35 workspace members' README.md && grep -q -- '--engine runner-v2' README.md && grep -q 'roko knowledge' README.md && grep -q -- '--bind' README.md && grep -q -- '--port' README.md"
+fail_msg = "README.md must include corrected count, engine, knowledge, and serve flag semantics"
+
+acceptance = ["README.md matches CLAUDE.md on the corrected engine/config/ops claims and contains no guarded stale patterns."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T12: Patch v2 docs and docker README
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T12"
+title = "Patch docs/v2 and docker README with current engine and deploy semantics"
+description = "Patch only the selected docs/v2 files and docker/README.md so examples and runbooks reflect runner-v2, --bind/--port, /health and /ready, clean-checkout Docker config, and Fly/compose health behavior. Keep the docs-lint scope narrow to these files plus README.md and CLAUDE.md."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 240
+files = [
+    "docs/v2/CLI-REFERENCE.md",
+    "docs/v2/04-EXECUTION.md",
+    "docs/v2/INTEGRATION-GUIDE.md",
+    "docs/v2/25-DEPLOYMENT.md",
+    "docker/README.md",
+]
+role = "implementer"
+depends_on = ["E18-T05", "E18-T08"]
+depends_on_plan = ["E01-execution-engine"]
+
+[task.context]
+read_files = [
+    { path = "docs/v2/CLI-REFERENCE.md", lines = "145-160", why = "Bare plan run example near the quick reference." },
+    { path = "docs/v2/CLI-REFERENCE.md", lines = "620-640", why = "Plan run/resume examples need runner-v2 semantics." },
+    { path = "docs/v2/04-EXECUTION.md", lines = "460-480", why = "Execution/resume examples cite stale executor paths." },
+    { path = "docs/v2/INTEGRATION-GUIDE.md", lines = "70-90", why = "Integration example uses bare plan run." },
+    { path = "docs/v2/25-DEPLOYMENT.md", lines = "1-130", why = "Deployment runbook needs health/port and clean-checkout Docker semantics." },
+    { path = "docker/README.md", why = "Docker-specific operator docs must match E18-T05 and E18-T08." },
+]
+symbols = [
+    "runner-v2 engine examples",
+    "--bind / --port serve flags",
+    "/health and /ready endpoints",
+    "docker/roko.toml clean-checkout default",
+    "Fly health path from FLY_TOML_TEMPLATE",
+]
+anti_patterns = [
+    "Do NOT edit all of docs/; T13 will lint README.md CLAUDE.md docs/v2 docker/README.md, so keep this task scoped there.",
+    "Do NOT keep /healthz, /readyz, --listen, or roko neuro in the selected files.",
+    "Do NOT mention the old .roko/state/executor.json as the runner-v2 resume state.",
+    "Do NOT document Docker root roko.toml as required; E18-T05 makes docker/roko.toml the clean-checkout default.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -R -nE '/healthz|/readyz|--listen|roko neuro' docs/v2/CLI-REFERENCE.md docs/v2/04-EXECUTION.md docs/v2/INTEGRATION-GUIDE.md docs/v2/25-DEPLOYMENT.md docker/README.md"
+fail_msg = "selected docs must not retain stale health, serve flag, or neuro commands"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -R -nE 'roko plan run plans(/[^[:space:]]*)?([[:space:]]*(#.*)?)?$' docs/v2/CLI-REFERENCE.md docs/v2/04-EXECUTION.md docs/v2/INTEGRATION-GUIDE.md docs/v2/25-DEPLOYMENT.md docker/README.md"
+fail_msg = "selected docs must not contain bare default plan run examples"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -R -q -- '--engine runner-v2' docs/v2/CLI-REFERENCE.md docs/v2/04-EXECUTION.md docs/v2/INTEGRATION-GUIDE.md docs/v2/25-DEPLOYMENT.md && grep -q 'docker/roko.toml' docker/README.md"
+fail_msg = "selected docs must document runner-v2 examples and docker/roko.toml clean-checkout behavior"
+
+acceptance = ["The selected docs/v2 files and docker/README.md agree with README.md/CLAUDE.md on engine, serve flags, health endpoints, Docker config, and Fly/compose semantics."]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T13: Docs-lint drift guard
+# ─────────────────────────────────────────────────────────────────────────────
+[[task]]
+id = "E18-T13"
+title = "Add docs-lint workflow guarding status-quo drift patterns"
+description = "Add a blocking docs-lint workflow that greps only README.md, CLAUDE.md, docs/v2, and docker/README.md for the forbidden drift patterns fixed by E18-T10 through T12. The lint scope must match T12; do not grep all docs/ unless T12 is broadened."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 60
+files = [".github/workflows/docs-lint.yml"]
+role = "implementer"
+depends_on = ["E18-T10", "E18-T11", "E18-T12"]
+
+[task.context]
+read_files = [
+    { path = ".github/workflows/ci.yml", lines = "1-24", why = "Reuse the repo's push/pull_request workflow shape and checkout convention." },
+    { path = ".github/workflows/coverage.yml", lines = "1-20", why = "Reference for a small single-job workflow." },
+    { path = "tmp/status-quo/backlog/epics/E18-DOCS-CONFIG-OPS.md", lines = "1-90", why = "D11 forbidden drift patterns and narrowed lint scope." },
+]
+symbols = [
+    "README.md CLAUDE.md docs/v2 docker/README.md - exact docs-lint scope",
+    "roko neuro, --listen, 18 crates, F1-F7, ~85 routes, roko plan run plans/ - forbidden drift patterns",
+]
+anti_patterns = [
+    "Do NOT grep all docs/ unless E18-T12 also rewrites all docs; keep lint scope narrow and enforceable.",
+    "Do NOT make docs-lint continue-on-error; drift must block CI.",
+    "Do NOT use placeholder echo/true checks; the workflow must fail on a forbidden match.",
+    "Do NOT omit E18-T12 from dependencies; docs/v2 and docker/README.md must be rewritten before lint turns on.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f .github/workflows/docs-lint.yml && grep -q 'README.md CLAUDE.md docs/v2 docker/README.md' .github/workflows/docs-lint.yml"
+fail_msg = "docs-lint workflow must exist and use the narrowed README/CLAUDE/docs-v2/docker README scope"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -Eq 'roko neuro|--listen|18 crates|F1.?F7|~85 routes|roko plan run plans/' .github/workflows/docs-lint.yml"
+fail_msg = "docs-lint workflow must guard the known forbidden drift patterns"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"import yaml,sys; yaml.safe_load(open('.github/workflows/docs-lint.yml'))\""
+fail_msg = "docs-lint.yml must be valid YAML"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'continue-on-error' .github/workflows/docs-lint.yml"
+fail_msg = "docs-lint must be a blocking CI guard"
+
+acceptance = ["A CI run fails if README.md, CLAUDE.md, docs/v2, or docker/README.md reintroduces the guarded stale patterns, and the workflow scope matches the docs rewritten by E18-T10 through T12."]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T14: Create a GitHub Actions workflow for roko plan validation
+# ─────────────────────────────────────────────────────────────────────────────
+# Add a CI workflow that validates roko plan files (tasks.toml) on push/PR.
+# Use `roko plan validate <dir>` to lint all plans in the repository,
+# catching schema errors, missing dependencies, and invalid task IDs before
+# they reach the runner. This is the CI-side guard for plan quality.
+[[task]]
+id = "E18-T14"
+title = "Create GitHub Actions workflow for roko plan validation"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = [".github/workflows/plan-validate.yml"]
+role = "implementer"
+depends_on = ["E18-T02", "E18-T03"]
+
+[task.context]
+read_files = [
+    { path = ".github/workflows/ci.yml", lines = "1-24", why = "Reuse the repo's push/PR workflow shape, checkout, and rust-cache conventions" },
+    { path = ".github/workflows/deny.yml", lines = "1-30", why = "Reference for a small single-job workflow that installs a cargo tool and runs a check" },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1-40", why = "roko plan validate <dir> entry point — the command the workflow runs" },
+]
+symbols = [
+    "roko plan validate <dir> — CLI subcommand that lints tasks.toml files",
+    "plan-validate.yml — new workflow file",
+]
+anti_patterns = [
+    "Do NOT validate plans by running them — use the existing `roko plan validate` which lints without executing.",
+    "Do NOT make the workflow non-blocking (no continue-on-error) — invalid plans must fail CI.",
+    "Do NOT hardcode plan directories — discover plans/ dirs in the repo or validate a known set.",
+    "Do NOT require an LLM provider or API keys — plan validation is offline.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f .github/workflows/plan-validate.yml && grep -q 'plan validate' .github/workflows/plan-validate.yml"
+fail_msg = "plan-validate.yml must exist and run roko plan validate"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"import yaml,sys; yaml.safe_load(open('.github/workflows/plan-validate.yml'))\""
+fail_msg = "plan-validate.yml must be valid YAML"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'continue-on-error' .github/workflows/plan-validate.yml"
+fail_msg = "plan validation must be a blocking CI gate"
+
+acceptance = [
+    "A CI workflow runs `roko plan validate` on push/PR and fails if any plan has schema errors.",
+    "The workflow builds roko-cli from source (or uses a cached binary) and requires no API keys.",
+    "Invalid task IDs, missing dependencies, and schema violations are caught before merge.",
+    "The workflow uses the same checkout/cache conventions as other CI workflows.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E18-T15: Document the GitHub integration setup
+# ─────────────────────────────────────────────────────────────────────────────
+# Add a docs/v2/GITHUB-INTEGRATION.md that documents: how roko-mcp-github
+# works, required env vars (GITHUB_TOKEN), auto-discovery behavior (E15-T7),
+# the branch naming convention (roko/plan/<id>), how to configure GitHub
+# MCP in .mcp.json and roko.toml, and the CI plan validation workflow.
+[[task]]
+id = "E18-T15"
+title = "Document the GitHub integration setup in docs/v2"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 200
+files = ["docs/v2/GITHUB-INTEGRATION.md"]
+role = "implementer"
+depends_on = ["E18-T14"]
+ownership = "distinct-documentation-consumer"
+uses_owner = "E46; E15-T7; E18-T14"
+depends_on_plan = ["E01-execution-engine", "E15-mcp-config", "E46-github-workflow-integration"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-mcp-github/src/main.rs", lines = "1-40", why = "GitHub MCP server entry point — document the binary name, transport, and tool list" },
+    { path = "crates/roko-orchestrator/src/worktree.rs", lines = "150-158", why = "format_branch_name convention to document" },
+    { path = "crates/roko-agent/src/mcp/config.rs", lines = "14-41", why = "McpServerConfig shape — document how to configure GitHub MCP in .mcp.json" },
+    { path = "docs/v2/CLI-REFERENCE.md", lines = "1-30", why = "Existing docs style and structure to match" },
+]
+symbols = [
+    "roko-mcp-github — binary name",
+    "GITHUB_TOKEN — required env var",
+    "format_branch_name — roko/plan/<id> convention",
+    ".mcp.json — user MCP config file",
+]
+anti_patterns = [
+    "Do NOT document features that are not yet wired — only cover what E01-T13/T14, E14-T11/T12, and E15-T7 deliver.",
+    "Do NOT include real tokens or secrets in examples — use placeholder values.",
+    "Do NOT duplicate content from README.md or CLAUDE.md — cross-reference instead.",
+    "Do NOT document internal implementation details — focus on operator/user-facing setup.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f docs/v2/GITHUB-INTEGRATION.md && grep -q 'GITHUB_TOKEN' docs/v2/GITHUB-INTEGRATION.md && grep -q 'roko-mcp-github' docs/v2/GITHUB-INTEGRATION.md"
+fail_msg = "GITHUB-INTEGRATION.md must exist and document GITHUB_TOKEN and roko-mcp-github"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko/plan/' docs/v2/GITHUB-INTEGRATION.md && grep -q '.mcp.json' docs/v2/GITHUB-INTEGRATION.md"
+fail_msg = "GITHUB-INTEGRATION.md must document the branch naming convention and MCP config"
+
+acceptance = [
+    "docs/v2/GITHUB-INTEGRATION.md exists and covers: roko-mcp-github binary, GITHUB_TOKEN setup, auto-discovery, branch naming, .mcp.json config, and CI plan validation.",
+    "Examples use placeholder tokens, not real secrets.",
+    "The document cross-references CLI-REFERENCE.md and deployment docs where appropriate.",
+    "The scope matches what the E01/E14/E15 GitHub tasks actually deliver.",
+]

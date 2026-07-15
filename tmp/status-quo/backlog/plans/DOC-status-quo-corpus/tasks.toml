@@ -1,0 +1,611 @@
+[meta]
+plan = "DOC-status-quo-corpus"
+total = 12
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "DOC-SQ-01"
+title = "Encapsulate navigation and roadmap status-quo docs into executable backlog"
+description = "Compare the listed global status-quo docs to the existing E01-E18 executable plans. Add or refine downstream planning tasks under tmp/status-quo/backlog/plans for any implementation-relevant finding not already represented. If a finding is already covered or intentionally non-actionable, record the no-op mapping in tmp/status-quo/backlog/source-coverage/status-quo-corpus.md. This is task-authoring work only; do not implement product code."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/00-INDEX.md", why = "Status pack navigation and source priority rules." },
+    { path = "tmp/status-quo/01-EXECUTIVE-SUMMARY.md", why = "Whole-system current truth summary." },
+    { path = "tmp/status-quo/12-ROADMAP.md", why = "Risk-ordered roadmap with proof gates." },
+    { path = "tmp/status-quo/13-CURRENT-STATE-MATRIX.md", why = "System-by-system shipped, partial, stub, and stale matrix." },
+    { path = "tmp/status-quo/24-OPEN-ISSUE-LEDGER.md", why = "P0/P1/P2 issue ledger to reconcile with E01-E18." },
+    { path = "tmp/status-quo/25-PROOF-GATES.md", why = "Proof commands and acceptance criteria that may need task verify coverage." },
+    { path = "tmp/status-quo/26-CANONICAL-DECISIONS.md", why = "Architecture decisions that should stop implementation drift." },
+    { path = "tmp/status-quo/27-IMPLEMENTATION-BACKLOG.md", why = "Prior backlog slice to compare with executable tasks." },
+    { path = "tmp/status-quo/28-DEFINITION-OF-DONE.md", why = "Done criteria for downstream migration tasks." },
+    { path = "tmp/status-quo/29-RISK-REGISTER.md", why = "Operational risks that may require explicit backlog coverage." },
+    { path = "tmp/status-quo/DOC-MANIFEST.md", why = "Taxonomy and consolidation map for the whole status-quo corpus." },
+    { path = "tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md", why = "Durable programme control plane whose execution, review, integration, and release contracts must remain represented." },
+]
+anti_patterns = [
+    "Do not edit product implementation files.",
+    "Do not create duplicate downstream tasks when an E01-E18 task already covers the finding.",
+    "Do not use depends_on for E01-E18 ids; use depends_on_plan only when a real cross-plan prerequisite is needed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/00-INDEX.md tmp/status-quo/01-EXECUTIVE-SUMMARY.md tmp/status-quo/12-ROADMAP.md tmp/status-quo/13-CURRENT-STATE-MATRIX.md tmp/status-quo/24-OPEN-ISSUE-LEDGER.md tmp/status-quo/25-PROOF-GATES.md tmp/status-quo/26-CANONICAL-DECISIONS.md tmp/status-quo/27-IMPLEMENTATION-BACKLOG.md tmp/status-quo/28-DEFINITION-OF-DONE.md tmp/status-quo/29-RISK-REGISTER.md tmp/status-quo/DOC-MANIFEST.md tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every navigation and roadmap source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed navigation/global roadmap source has a ledger row.",
+    "Every actionable finding is represented by an existing or refined downstream E01-E18 task, or the ledger records a no-op reason.",
+    "The DOC-status-quo-corpus plan validates.",
+]
+
+[[task]]
+id = "DOC-SQ-02"
+title = "Encapsulate spec-coverage status-quo docs into executable backlog"
+description = "Compare the listed v1, v2, v2-depth, source-manifest, and spec-debt docs to the existing E01-E18 executable plans. Add or refine downstream planning tasks when coverage gaps imply implementation work, and record no-op mappings for findings already represented or intentionally deferred."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/02-SPEC-EVOLUTION.md", why = "Spec-history context for v1, v2, and v2-depth drift." },
+    { path = "tmp/status-quo/14-V1-COVERAGE.md", why = "v1 corpus to implementation coverage audit." },
+    { path = "tmp/status-quo/15-V2-COVERAGE.md", why = "v2 coverage summary." },
+    { path = "tmp/status-quo/18-V2-DEPTH-COVERAGE.md", why = "v2-depth coverage audit." },
+    { path = "tmp/status-quo/72-SOURCE-DOC-COVERAGE-LEDGER.md", why = "Source-doc manifest gaps across source corpora." },
+    { path = "tmp/status-quo/78-V2-DEPTH-RESEARCH-PROMPT-LEDGER.md", why = "Research-prompt ledger that must be fenced from implementation truth." },
+    { path = "tmp/status-quo/79-REFERENCE-PROVENANCE-LEDGER.md", why = "Reference provenance and status-use rules." },
+    { path = "tmp/status-quo/80-SOURCE-DOC-MANIFEST.md", why = "Generated source-doc manifest with owners and status tags." },
+    { path = "tmp/status-quo/85-V2-COVERAGE-KERNEL.md", why = "Kernel spec coverage matrix." },
+    { path = "tmp/status-quo/86-V2-COVERAGE-PLATFORM.md", why = "Platform spec coverage matrix." },
+    { path = "tmp/status-quo/87-V2-COVERAGE-ECOSYSTEM.md", why = "Ecosystem spec and guide coverage matrix." },
+    { path = "tmp/status-quo/102-SPEC-DEBT-LEDGER.md", why = "Concept-level spec debt ledger to map into executable work." },
+]
+anti_patterns = [
+    "Do not treat aspirational spec language as shipped behavior without code evidence.",
+    "Do not add product-code implementation in this plan.",
+    "Do not duplicate E13 spec-debt tasks without a distinct, actionable gap.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/02-SPEC-EVOLUTION.md tmp/status-quo/14-V1-COVERAGE.md tmp/status-quo/15-V2-COVERAGE.md tmp/status-quo/18-V2-DEPTH-COVERAGE.md tmp/status-quo/72-SOURCE-DOC-COVERAGE-LEDGER.md tmp/status-quo/78-V2-DEPTH-RESEARCH-PROMPT-LEDGER.md tmp/status-quo/79-REFERENCE-PROVENANCE-LEDGER.md tmp/status-quo/80-SOURCE-DOC-MANIFEST.md tmp/status-quo/85-V2-COVERAGE-KERNEL.md tmp/status-quo/86-V2-COVERAGE-PLATFORM.md tmp/status-quo/87-V2-COVERAGE-ECOSYSTEM.md tmp/status-quo/102-SPEC-DEBT-LEDGER.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every spec-coverage source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed spec-coverage source has a ledger row.",
+    "Spec-debt findings are mapped to E13 or other appropriate E01-E18 tasks, or recorded as no-op/deferred with rationale.",
+]
+
+[[task]]
+id = "DOC-SQ-03"
+title = "Encapsulate census and type-cleanup status-quo docs into executable backlog"
+description = "Compare the listed crate, wiring, dependency, inventory, foundation-type, migration, duplicate-type, and dead-code census docs to the existing E01-E18 executable plans. Add or refine downstream tasks where the corpus exposes missing cleanup, consolidation, or proof work; otherwise update the ledger with no-op mappings."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/03-CRATE-AUDIT.md", why = "Per-package audit and crate status." },
+    { path = "tmp/status-quo/06-WIRING-STATUS.md", why = "Built-but-unwired census." },
+    { path = "tmp/status-quo/11-DEPENDENCY-GRAPH.md", why = "Workspace dependency and layering notes." },
+    { path = "tmp/status-quo/16-CODEBASE-INVENTORY.md", why = "Package, file, route, doc, and test inventory." },
+    { path = "tmp/status-quo/47-FOUNDATION-TYPES-REDESIGN.md", why = "Foundation type consolidation status." },
+    { path = "tmp/status-quo/54-PER-CRATE-MIGRATION-CHECKLIST.md", why = "Crate ownership and migration checklist." },
+    { path = "tmp/status-quo/103-DUPLICATE-TYPES-CENSUS.md", why = "Cross-crate duplicated type families." },
+    { path = "tmp/status-quo/104-DEAD-CODE-AND-FACADE-CENSUS.md", why = "Dead code, feature facade, and orphan-file census." },
+]
+anti_patterns = [
+    "Do not delete or refactor crate code while reconciling these docs.",
+    "Do not collapse distinct duplicate-type tasks unless the downstream E03/E12 coverage is truly identical.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/03-CRATE-AUDIT.md tmp/status-quo/06-WIRING-STATUS.md tmp/status-quo/11-DEPENDENCY-GRAPH.md tmp/status-quo/16-CODEBASE-INVENTORY.md tmp/status-quo/47-FOUNDATION-TYPES-REDESIGN.md tmp/status-quo/54-PER-CRATE-MIGRATION-CHECKLIST.md tmp/status-quo/103-DUPLICATE-TYPES-CENSUS.md tmp/status-quo/104-DEAD-CODE-AND-FACADE-CENSUS.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every census and cleanup source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed census/cleanup source has a ledger row.",
+    "Duplicate-type, dead-code, and crate-boundary findings are mapped to E03/E12/E18 or recorded as no-op with evidence.",
+]
+
+[[task]]
+id = "DOC-SQ-04"
+title = "Encapsulate execution and self-hosting status-quo docs into executable backlog"
+description = "Compare the listed runner lineage, orchestration, engine drift, self-hosting, PRD, and gate-trace docs to E01-E18. Add or refine downstream tasks for uncovered execution-engine, self-hosting, PRD front-half, or gate pipeline issues; otherwise record no-op mappings in the source coverage ledger."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/23-TASKRUNNER-MIGRATION-STATUS.md", why = "Taskrunner and unified migration runner status." },
+    { path = "tmp/status-quo/36-ORCHESTRATION-RUNNERS.md", why = "Orchestration and runner handoff audit." },
+    { path = "tmp/status-quo/37-RUNNER-V2-AND-GRAPH.md", why = "Operational guide for the two plan engines." },
+    { path = "tmp/status-quo/91-PRD-RESEARCH.md", why = "PRD lifecycle and research pipeline status." },
+    { path = "tmp/status-quo/95-ENGINE-DRIFT.md", why = "Cross-cutting engine drift reference." },
+    { path = "tmp/status-quo/96-TRACE-RUNNER-V2-EXECUTION.md", why = "Runner v2 execution trace." },
+    { path = "tmp/status-quo/98-TRACE-SELF-HOSTING-LOOP.md", why = "Self-hosting loop trace." },
+    { path = "tmp/status-quo/101-TRACE-GATE-PIPELINE.md", why = "Gate pipeline trace and live/dead path split." },
+]
+anti_patterns = [
+    "Do not mark Graph dry-run behavior as acceptable without an explicit downstream task or no-op rationale.",
+    "Do not use local depends_on values for E01-E18 plan ids.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/23-TASKRUNNER-MIGRATION-STATUS.md tmp/status-quo/36-ORCHESTRATION-RUNNERS.md tmp/status-quo/37-RUNNER-V2-AND-GRAPH.md tmp/status-quo/91-PRD-RESEARCH.md tmp/status-quo/95-ENGINE-DRIFT.md tmp/status-quo/96-TRACE-RUNNER-V2-EXECUTION.md tmp/status-quo/98-TRACE-SELF-HOSTING-LOOP.md tmp/status-quo/101-TRACE-GATE-PIPELINE.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every execution and self-hosting source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed execution/self-hosting source has a ledger row.",
+    "Execution, PRD, and gate-pipeline findings are mapped to E01/E05/E16 or recorded as no-op with rationale.",
+]
+
+[[task]]
+id = "DOC-SQ-05"
+title = "Encapsulate core substrate status-quo docs into executable backlog"
+description = "Compare the listed core, graph, event, code-index, plugin, daimon, conductor, primitives, runtime/fs/std, and runner-module docs to the existing E01-E18 executable plans. Add or refine downstream tasks where substrate, naming, eventing, or runtime gaps are not already represented; otherwise update the ledger with a no-op mapping."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/30-CORE-SIGNAL.md", why = "Core noun and trait migration." },
+    { path = "tmp/status-quo/31-GRAPH-CELLS-ENGINE.md", why = "Graph engine and cell audit." },
+    { path = "tmp/status-quo/32-EVENTS-BUS-STATEHUB.md", why = "Event bus, StateHub, and projection split audit." },
+    { path = "tmp/status-quo/49-INDEX-LANG.md", why = "Code index and language parser status." },
+    { path = "tmp/status-quo/52-PLUGIN-EXTENSIONS.md", why = "Plugin SDK, extension hooks, and manifest gaps." },
+    { path = "tmp/status-quo/56-DAIMON.md", why = "Daimon affect state and duplicate persistence paths." },
+    { path = "tmp/status-quo/88-CONDUCTOR.md", why = "Conductor supervision and circuit-breaker status." },
+    { path = "tmp/status-quo/89-PRIMITIVES-HDC.md", why = "HDC primitives and tier routing status." },
+    { path = "tmp/status-quo/90-RUNTIME-FS-STD.md", why = "Runtime, filesystem, and standard tool substrate audit." },
+    { path = "tmp/status-quo/92-RUNNER-V2-MODULE-FAMILY.md", why = "Runner v2 module family ledger." },
+]
+anti_patterns = [
+    "Do not create broad substrate rewrite tasks without executable scope and verification.",
+    "Do not conflate dark/dead paths with live runner-v2 behavior.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/30-CORE-SIGNAL.md tmp/status-quo/31-GRAPH-CELLS-ENGINE.md tmp/status-quo/32-EVENTS-BUS-STATEHUB.md tmp/status-quo/49-INDEX-LANG.md tmp/status-quo/52-PLUGIN-EXTENSIONS.md tmp/status-quo/56-DAIMON.md tmp/status-quo/88-CONDUCTOR.md tmp/status-quo/89-PRIMITIVES-HDC.md tmp/status-quo/90-RUNTIME-FS-STD.md tmp/status-quo/92-RUNNER-V2-MODULE-FAMILY.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every core substrate source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed core substrate source has a ledger row.",
+    "Substrate findings are mapped to E01/E02/E03/E07/E08/E12/E13 or recorded as no-op with evidence.",
+]
+
+[[task]]
+id = "DOC-SQ-06"
+title = "Encapsulate agent, safety, provider, ACP, and MCP status-quo docs into executable backlog"
+description = "Compare the listed agent safety, prompt composition, gates, providers/tools, agent-server, MCP, ACP, security matrix, agent-turn trace, and ACP trace docs to E01-E18. Add or refine downstream tasks for missing safety, provider, tool, MCP, ACP, or gate work; record no-op mappings for covered findings."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/33-AGENT-SAFETY.md", why = "Safety contracts, taint, capabilities, custody, and audit." },
+    { path = "tmp/status-quo/34-COMPOSE-PROMPTS.md", why = "Prompt composition and VCG status." },
+    { path = "tmp/status-quo/35-GATES-VERIFICATION.md", why = "Gate pipeline, rungs, verdicts, and gate-service drift." },
+    { path = "tmp/status-quo/38-AGENT-PROVIDERS-TOOLS.md", why = "Provider and tool execution surface." },
+    { path = "tmp/status-quo/44-AGENT-SERVER.md", why = "Agent sidecar server and aggregation status." },
+    { path = "tmp/status-quo/48-MCP-CRATES.md", why = "MCP crates and config drift." },
+    { path = "tmp/status-quo/51-ACP.md", why = "ACP/editor integration and permission gate status." },
+    { path = "tmp/status-quo/75-SECURITY-AUTH-SCOPE-MATRIX.md", why = "Security, auth, scope, ACP, MCP, and tool-safety trust boundaries." },
+    { path = "tmp/status-quo/99-TRACE-AGENT-TURN.md", why = "One agent turn trace." },
+    { path = "tmp/status-quo/100-TRACE-ACP-SESSION.md", why = "ACP session lifecycle trace." },
+]
+anti_patterns = [
+    "Do not weaken safety findings into documentation-only tasks when runtime enforcement is required.",
+    "Do not duplicate E04/E14/E15/E17 tasks unless the source proves a separate gap.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/33-AGENT-SAFETY.md tmp/status-quo/34-COMPOSE-PROMPTS.md tmp/status-quo/35-GATES-VERIFICATION.md tmp/status-quo/38-AGENT-PROVIDERS-TOOLS.md tmp/status-quo/44-AGENT-SERVER.md tmp/status-quo/48-MCP-CRATES.md tmp/status-quo/51-ACP.md tmp/status-quo/75-SECURITY-AUTH-SCOPE-MATRIX.md tmp/status-quo/99-TRACE-AGENT-TURN.md tmp/status-quo/100-TRACE-ACP-SESSION.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every agent/safety/provider/ACP/MCP source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed agent/safety/provider/ACP/MCP source has a ledger row.",
+    "Findings are mapped to E04/E06/E14/E15/E17 or recorded as no-op with evidence.",
+]
+
+[[task]]
+id = "DOC-SQ-07"
+title = "Encapsulate learning and observability status-quo docs into executable backlog"
+description = "Compare the listed knowledge, learning, dreams, observability, parity-test, and proof-inventory docs to E01-E18. Add or refine downstream tasks for missing learning-loop, telemetry, dream, proof, or parity coverage; record no-op mappings where existing E tasks are sufficient."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/39-NEURO-KNOWLEDGE.md", why = "Knowledge store, retrieval, demurrage, and HDC status." },
+    { path = "tmp/status-quo/40-LEARNING-TELEMETRY.md", why = "Learning, feedback, episodes, router, and telemetry reality." },
+    { path = "tmp/status-quo/41-DREAMS.md", why = "Dream consolidation and replay status." },
+    { path = "tmp/status-quo/53-OBSERVABILITY.md", why = "Metrics, events, traces, logs, and Lens gaps." },
+    { path = "tmp/status-quo/64-PARITY-TEST-MATRIX.md", why = "Cross-surface parity tests required before migration completion." },
+    { path = "tmp/status-quo/74-TEST-AND-PROOF-INVENTORY.md", why = "Test and proof inventory with false-green census." },
+]
+anti_patterns = [
+    "Do not count mocked or false-green tests as proof without matching verify commands.",
+    "Do not move long-horizon Lens work ahead of M0-M2 blockers unless the source requires it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/39-NEURO-KNOWLEDGE.md tmp/status-quo/40-LEARNING-TELEMETRY.md tmp/status-quo/41-DREAMS.md tmp/status-quo/53-OBSERVABILITY.md tmp/status-quo/64-PARITY-TEST-MATRIX.md tmp/status-quo/74-TEST-AND-PROOF-INVENTORY.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every learning and observability source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed learning/observability source has a ledger row.",
+    "Learning, telemetry, dream, parity, and proof findings are mapped to E05/E07/E08/E09/E16/E17 or recorded as no-op.",
+]
+
+[[task]]
+id = "DOC-SQ-08"
+title = "Encapsulate chain, ISFR, apps, and demo status-quo docs into executable backlog"
+description = "Compare the listed chain/ISFR, roko-demo, feed-agent, and app-mirage/relay/watcher docs to E01-E18. Add or refine downstream tasks for uncovered chain, demo, feed, relay, watcher, or app gaps; record no-op mappings for findings already covered."
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/42-CHAIN-REGISTRIES-ISFR.md", why = "Chain, contracts, registries, ISFR, relay, and deploy status." },
+    { path = "tmp/status-quo/93-ROKO-DEMO.md", why = "roko-demo crate and TUI status." },
+    { path = "tmp/status-quo/94-FEED-AGENTS-FLEET.md", why = "Serve-side feed agents and events firehose status." },
+    { path = "tmp/status-quo/106-APPS-MIRAGE-RELAY-WATCHER.md", why = "apps/ mirage, relay, and watcher deep dive." },
+]
+anti_patterns = [
+    "Do not treat demo/app parity gaps as user-facing complete without verification.",
+    "Do not create chain tasks that conflict with E11 task ownership.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/42-CHAIN-REGISTRIES-ISFR.md tmp/status-quo/93-ROKO-DEMO.md tmp/status-quo/94-FEED-AGENTS-FLEET.md tmp/status-quo/106-APPS-MIRAGE-RELAY-WATCHER.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every chain/apps/demo source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed chain/apps/demo source has a ledger row.",
+    "Chain, ISFR, demo, feed, and app findings are mapped to E10/E11/E14/E18 or recorded as no-op.",
+]
+
+[[task]]
+id = "DOC-SQ-09"
+title = "Encapsulate surface, API, CLI, and data-contract status-quo docs into executable backlog"
+description = "Compare the listed UX surface, CLI, serve, route, command, frontend/API parity, data-contract, serve-trace, and frontend-deep-dive docs to E01-E18. Add or refine downstream tasks for uncovered surface, API, command, schema, or replay issues; record no-op mappings when coverage already exists."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/43-SURFACES-DEMO-UX.md", why = "React demo, TUI, static demos, and UX migration status." },
+    { path = "tmp/status-quo/45-CLI-SURFACE.md", why = "CLI command surface and TUI notes." },
+    { path = "tmp/status-quo/46-SERVE-HTTP-REALTIME.md", why = "HTTP API, auth, StateHub, SSE/WS, and persistence audit." },
+    { path = "tmp/status-quo/59-API-ROUTE-LEDGER.md", why = "Route counts, namespaces, frontend mismatches, and maturity." },
+    { path = "tmp/status-quo/62-CLI-COMMAND-LEDGER.md", why = "CLI command status and stale-doc proof checklist." },
+    { path = "tmp/status-quo/66-FRONTEND-API-PARITY.md", why = "React DataHub/API route parity and ownership checklist." },
+    { path = "tmp/status-quo/76-DATA-CONTRACTS-SCHEMAS.md", why = "Runtime/server/frontend/schema ownership and drift ledger." },
+    { path = "tmp/status-quo/97-TRACE-SERVE-LIFECYCLE.md", why = "roko serve lifecycle trace." },
+    { path = "tmp/status-quo/105-FRONTEND-DEMO-APP.md", why = "demo/demo-app deep dive." },
+]
+anti_patterns = [
+    "Do not add frontend-only fixes for backend route-contract gaps unless the source proves that scope.",
+    "Do not leave schema casing drift as prose-only coverage when an executable task is needed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/43-SURFACES-DEMO-UX.md tmp/status-quo/45-CLI-SURFACE.md tmp/status-quo/46-SERVE-HTTP-REALTIME.md tmp/status-quo/59-API-ROUTE-LEDGER.md tmp/status-quo/62-CLI-COMMAND-LEDGER.md tmp/status-quo/66-FRONTEND-API-PARITY.md tmp/status-quo/76-DATA-CONTRACTS-SCHEMAS.md tmp/status-quo/97-TRACE-SERVE-LIFECYCLE.md tmp/status-quo/105-FRONTEND-DEMO-APP.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every surface/API/CLI/data-contract source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed surface/API/CLI/data-contract source has a ledger row.",
+    "Surface, CLI, route, schema, and frontend findings are mapped to E09/E10/E15/E17/E18 or recorded as no-op.",
+]
+
+[[task]]
+id = "DOC-SQ-10"
+title = "Encapsulate persistence, config, CI, deploy, and ops status-quo docs into executable backlog"
+description = "Compare the listed deployment, CI/release, data-dir, config, jobs/deploy, persistence, config/env, proof-gap, examples/plans, operations, and env-var docs to E01-E18. Add or refine downstream tasks for uncovered persistence, config, CI, release, docs-lint, deploy, or example-plan issues; record no-op mappings for already-covered findings."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/09-DEPLOYMENT-STATUS.md", why = "Deployment status and clean-checkout blockers." },
+    { path = "tmp/status-quo/50-QUALITY-CI-RELEASE.md", why = "Quality, CI, release, and doc-proof policy overview." },
+    { path = "tmp/status-quo/55-DATA-DIR.md", why = ".roko filesystem state and artifact paths." },
+    { path = "tmp/status-quo/57-CONFIG.md", why = "Config state and drift." },
+    { path = "tmp/status-quo/58-JOBS-DEPLOY.md", why = "Jobs, worker, deploy, and marketplace status." },
+    { path = "tmp/status-quo/60-STATE-PERSISTENCE-LEDGER.md", why = "State and persistence writer-reader matrix." },
+    { path = "tmp/status-quo/61-CONFIG-ENV-MATRIX.md", why = "Config source, env var, secret, and provenance matrix." },
+    { path = "tmp/status-quo/71-CI-RELEASE-PROOF-GAPS.md", why = "CI and release workflow gap table." },
+    { path = "tmp/status-quo/73-EXAMPLES-PLANS-GRAPHS.md", why = "Examples, executable plans, PRD plans, and graph proof status." },
+    { path = "tmp/status-quo/77-OPERATIONS-DEPLOY-RUNBOOK.md", why = "Docker, Railway, Fly, release, health, and ops runbook gaps." },
+    { path = "tmp/status-quo/83-ENV-VAR-MANIFEST.md", why = "Generated direct env-var manifest." },
+]
+anti_patterns = [
+    "Do not change CI or deployment files while authoring this reconciliation plan.",
+    "Do not let docs-only updates satisfy runtime config or persistence bugs unless the source marks them docs-only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/09-DEPLOYMENT-STATUS.md tmp/status-quo/50-QUALITY-CI-RELEASE.md tmp/status-quo/55-DATA-DIR.md tmp/status-quo/57-CONFIG.md tmp/status-quo/58-JOBS-DEPLOY.md tmp/status-quo/60-STATE-PERSISTENCE-LEDGER.md tmp/status-quo/61-CONFIG-ENV-MATRIX.md tmp/status-quo/71-CI-RELEASE-PROOF-GAPS.md tmp/status-quo/73-EXAMPLES-PLANS-GRAPHS.md tmp/status-quo/77-OPERATIONS-DEPLOY-RUNBOOK.md tmp/status-quo/83-ENV-VAR-MANIFEST.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every persistence/config/CI/deploy/ops source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed persistence/config/CI/deploy/ops source has a ledger row.",
+    "Persistence, config, CI, deploy, and environment findings are mapped to E02/E09/E16/E18 or recorded as no-op.",
+]
+
+[[task]]
+id = "DOC-SQ-11"
+title = "Encapsulate docs, migration, and debt status-quo docs into executable backlog"
+description = "Compare the listed naming, architecture-reality, migration, tech-debt, testing, doc-drift, delete/archive, docs-convergence, root-doc rewrite, command-drift, and pack-maintenance docs to E01-E18. Add or refine downstream tasks where repo docs, migration debt, testing claims, or deletion policy need executable coverage; record no-op mappings for findings already represented."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/04-NAMING-MIGRATION.md", why = "Signal/Engram and naming migration state." },
+    { path = "tmp/status-quo/05-ARCHITECTURE-REALITY.md", why = "Architecture reality notes and stale framing caveats." },
+    { path = "tmp/status-quo/07-MIGRATION-CHECKLIST.md", why = "Older migration checklist to reconcile as superseded or still-actionable." },
+    { path = "tmp/status-quo/08-TECH-DEBT.md", why = "Older tech-debt list to reconcile with current backlog." },
+    { path = "tmp/status-quo/10-TESTING-STATUS.md", why = "Testing-status summary and false-green caveats." },
+    { path = "tmp/status-quo/19-DOC-DRIFT-REGISTER.md", why = "Maintained-doc drift claims to map into docs tasks." },
+    { path = "tmp/status-quo/63-DELETE-ARCHIVE-PLAN.md", why = "Removal/archive candidates and required proofs." },
+    { path = "tmp/status-quo/65-DOCS-CONVERGENCE-PLAN.md", why = "Docs convergence strategy." },
+    { path = "tmp/status-quo/81-ROOT-DOCS-REWRITE-QUEUE.md", why = "README/CLAUDE/v2/demo/deploy docs rewrite queue." },
+    { path = "tmp/status-quo/82-COMMAND-EXAMPLE-DRIFT-LEDGER.md", why = "Stale command examples and replacement rules." },
+    { path = "tmp/status-quo/84-STATUS-PACK-MAINTENANCE.md", why = "Status-pack regeneration and validation commands." },
+]
+anti_patterns = [
+    "Do not re-open superseded docs as fresh implementation tasks unless they contain a still-uncovered finding.",
+    "Do not make documentation truthful by editing docs here; author downstream tasks only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/04-NAMING-MIGRATION.md tmp/status-quo/05-ARCHITECTURE-REALITY.md tmp/status-quo/07-MIGRATION-CHECKLIST.md tmp/status-quo/08-TECH-DEBT.md tmp/status-quo/10-TESTING-STATUS.md tmp/status-quo/19-DOC-DRIFT-REGISTER.md tmp/status-quo/63-DELETE-ARCHIVE-PLAN.md tmp/status-quo/65-DOCS-CONVERGENCE-PLAN.md tmp/status-quo/81-ROOT-DOCS-REWRITE-QUEUE.md tmp/status-quo/82-COMMAND-EXAMPLE-DRIFT-LEDGER.md tmp/status-quo/84-STATUS-PACK-MAINTENANCE.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every docs/migration/debt source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed docs/migration/debt source has a ledger row.",
+    "Docs drift, migration, deletion, and command-example findings are mapped to E03/E12/E18 or recorded as no-op.",
+]
+
+[[task]]
+id = "DOC-SQ-12"
+title = "Encapsulate tmp-archaeology status-quo docs into executable backlog"
+description = "Compare the listed tmp-source ranking, newest tmp inventory, May batch, legacy tmp, dogfooding feedback, self-developing crosswalk, residual audit, and relay protocol docs to E01-E18. Add or refine downstream tasks when tmp archaeology exposes still-open implementation, API, relay, dogfood, or docs gaps; otherwise record no-op mappings."
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+role = "implementer"
+domain = "docs"
+files = [
+    "tmp/status-quo/backlog/source-coverage/status-quo-corpus.md",
+    "tmp/status-quo/backlog/plans",
+]
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/01-TASK-EXECUTION-SCHEMA.md", why = "Roko-compatible task schema to preserve while refining downstream plans." },
+    { path = "tmp/status-quo/backlog/05-MASTER-CHECKLIST.md", why = "Canonical E01-E18 task inventory to compare against." },
+    { path = "tmp/status-quo/17-TMP-SOURCE-RANKING.md", why = "Tmp folder authority and freshness ranking." },
+    { path = "tmp/status-quo/20-TMP-NEWEST.md", why = "Newest tmp inventory and current dogfood evidence." },
+    { path = "tmp/status-quo/21-TMP-MAY-BATCH.md", why = "May batch reconciliation." },
+    { path = "tmp/status-quo/22-TMP-LEGACY.md", why = "Older tmp folder archaeology." },
+    { path = "tmp/status-quo/67-TMP-FEEDBACK-2-CROSSWALK.md", why = "Dogfooding feedback mapped to current code/docs." },
+    { path = "tmp/status-quo/68-SELF-DEVELOPING-CROSSWALK.md", why = "Self-developing architecture tmp designs mapped to implementation status." },
+    { path = "tmp/status-quo/69-RESIDUAL-AUDIT-TRACKER.md", why = "Residual audit tracker and remaining unknowns." },
+    { path = "tmp/status-quo/70-RELAY-PROTOCOL-FREEZE.md", why = "Relay/API response-shape freeze checklist." },
+]
+anti_patterns = [
+    "Do not promote stale tmp design claims over current code and the status-pack source priority order.",
+    "Do not create broad archaeology tasks when a source finding can map to an existing E01-E18 task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "for p in tmp/status-quo/17-TMP-SOURCE-RANKING.md tmp/status-quo/20-TMP-NEWEST.md tmp/status-quo/21-TMP-MAY-BATCH.md tmp/status-quo/22-TMP-LEGACY.md tmp/status-quo/67-TMP-FEEDBACK-2-CROSSWALK.md tmp/status-quo/68-SELF-DEVELOPING-CROSSWALK.md tmp/status-quo/69-RESIDUAL-AUDIT-TRACKER.md tmp/status-quo/70-RELAY-PROTOCOL-FREEZE.md; do grep -Fq $p tmp/status-quo/backlog/source-coverage/status-quo-corpus.md || exit 1; done"
+fail_msg = "Coverage ledger must mention every tmp-archaeology source path."
+
+[[task.verify]]
+phase = "integration"
+command = "cargo run -q -p roko-cli --bin roko -- plan validate tmp/status-quo/backlog/plans/DOC-status-quo-corpus"
+fail_msg = "DOC-status-quo-corpus plan must validate."
+timeout_ms = 120000
+
+acceptance = [
+    "Every listed tmp-archaeology source has a ledger row.",
+    "Tmp-derived findings are mapped to E04/E10/E11/E14/E17/E18 or recorded as no-op with source-priority rationale.",
+]

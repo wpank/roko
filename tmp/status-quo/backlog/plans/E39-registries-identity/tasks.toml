@@ -1,0 +1,597 @@
+[meta]
+plan = "E39-registries-identity"
+total = 8
+done = 0
+status = "ready"
+max_parallel = 2
+
+# ─── T01: Upgrade AgentRegistry to ERC-8004 transferable identity ────────────
+#
+# The current AgentRegistry (agent_registry.rs) implements soulbound
+# (non-transferable) ERC-721 passports. The doc header at line 1 says
+# "soulbound (non-transferable)"; transfer() at line 163 always returns
+# Err(SoulboundTransferDenied) at line 169; RegistryError::SoulboundTransferDenied
+# is at line 75.
+#
+# The v2 spec (22-REGISTRIES §2) requires ERC-8004 transferable NFTs
+# with delegation caveats, service_endpoints, and feeds fields.
+# AgentPassport is defined in phase2.rs and imported at line 14.
+
+[[task]]
+id = "E39-T01"
+title = "Convert AgentRegistry from soulbound to ERC-8004 transferable identity"
+description = """
+The current AgentRegistry (agent_registry.rs) implements soulbound (non-transferable)
+ERC-721 passports. The v2 spec (22-REGISTRIES.md section 2) requires ERC-8004
+transferable NFTs with delegation caveats. Update the existing AgentRegistry to:
+1. Remove the SoulboundTransferDenied error (line 75) and make transfer() succeed (line 163).
+2. Add a TransferHistory vec tracking previous owners.
+3. Add delegation_caveats field to AgentPassport (Vec<DelegationCaveat>).
+4. Add service_endpoints and feeds fields per spec section 2.3.
+Update existing tests to reflect transferability.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/agent_registry.rs"]
+depends_on = []
+max_loc = 80
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "1-100", why = "Soulbound header (line 1-10), SoulboundTransferDenied error (line 75), AgentRegistryConfig (line 96), AgentRegistry struct (line 103)" },
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "100-200", why = "AgentRegistry::new (line 117), mint() (line 132), transfer() (line 163, always returns SoulboundTransferDenied), get_passport() (line 173)" },
+    { path = "crates/roko-chain/src/phase2.rs", lines = "1-50", why = "u256 type alias (line 44), Address = String (line 32), AgentPassport type definition used by registry" },
+    { path = "docs/v2/22-REGISTRIES.md", lines = "1-50", why = "Design constraints: transferable identities (constraint 1), ERC-8004 standard" },
+    { path = "docs/v2/22-REGISTRIES.md", lines = "116-180", why = "Rust types: AgentIdentity with feeds, service_endpoints, delegation_caveats, parent_identity fields" },
+]
+symbols = [
+    "AgentRegistry — agent_registry.rs:103, main registry struct with passports HashMap",
+    "RegistryError::SoulboundTransferDenied — agent_registry.rs:75, must remove",
+    "transfer() — agent_registry.rs:163, currently always returns Err",
+    "AgentPassport — phase2.rs, imported at agent_registry.rs:14, needs new fields",
+    "mint() — agent_registry.rs:132, creates passport with passport_id, owner, capability_list",
+    "get_passport() — agent_registry.rs:173, lookup by ID",
+]
+anti_patterns = [
+    "Do NOT create a new struct — extend the existing AgentRegistry",
+    "Do NOT break the existing mint() / get_passport() API",
+    "Do NOT remove the capability_list field — add new fields alongside it",
+    "Do NOT change the u256 type or Address alias",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn transfer' crates/roko-chain/src/agent_registry.rs && ! grep -q 'SoulboundTransferDenied' crates/roko-chain/src/agent_registry.rs"
+fail_msg = "transfer() must exist and SoulboundTransferDenied must be removed"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TransferHistory\\|transfer_history' crates/roko-chain/src/agent_registry.rs"
+fail_msg = "Transfer history tracking must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- agent_registry 2>&1"
+fail_msg = "agent_registry tests must pass"
+
+acceptance = ["SoulboundTransferDenied removed; transfer(passport_id, from, to) succeeds when caller is owner, records TransferRecord{from, to, block} in transfer_history; AgentPassport gains delegation_caveats: Vec<DelegationCaveat>, service_endpoints: Vec<String>, feeds: Vec<String>; existing mint/get_passport API unchanged; tests verify successful transfer and history tracking"]
+
+
+# ─── T02: Add DelegationCaveat enforcement to AgentRegistry ──────────────────
+#
+# Per spec (22-REGISTRIES §5), agents can delegate subsets of their
+# capabilities to other agents with constraints. The 10 capability
+# constants (CAP_INFERENCE through CAP_STRATEGY) are at lines 31-49.
+# has_capability() is the method to extend with delegation support.
+
+[[task]]
+id = "E39-T02"
+title = "Implement DelegationCaveat enforcement in AgentRegistry"
+description = """
+Per spec section 5 (Delegation Caveats), agents can delegate subsets of their
+capabilities to other agents with constraints. Implement:
+1. DelegationCaveat struct (delegatee: u256, allowed_capabilities: u64 bitmask,
+   expiry_block: u64, max_spend: Option<u256>, scope: Option<String>).
+2. add_caveat() / revoke_caveat() methods on AgentRegistry.
+3. check_delegation() method that validates whether a delegatee can act on behalf
+   of a delegator for a given capability.
+Wire into existing capability checking.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/agent_registry.rs"]
+depends_on = ["E39-T01"]
+max_loc = 70
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "30-50", why = "10 capability constants: CAP_INFERENCE (1<<0) through CAP_STRATEGY (1<<9) — bitmask for delegation" },
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "100-130", why = "AgentRegistry struct (line 103) with passports HashMap — add delegation tracking" },
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "163-200", why = "transfer() and get_passport() — delegation methods sit alongside these" },
+    { path = "docs/v2/22-REGISTRIES.md", lines = "86-114", why = "Solidity interface: updateCaveats, delegation narrowing rules for meta-agent children" },
+]
+symbols = [
+    "CAP_INFERENCE..CAP_STRATEGY — agent_registry.rs:31-49, 10 capability bitmask constants",
+    "AgentRegistry — agent_registry.rs:103, registry struct to add caveat tracking",
+    "AgentPassport.capability_list — u64 bitmask of capabilities",
+]
+anti_patterns = [
+    "Do NOT use dynamic dispatch for caveat checking — keep it data-driven with bitmask operations",
+    "Do NOT store caveats separately from passports — add to AgentPassport or as a parallel HashMap",
+    "Do NOT allow caveats to widen parent capabilities — delegation can only narrow",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DelegationCaveat' crates/roko-chain/src/agent_registry.rs && grep -q 'check_delegation' crates/roko-chain/src/agent_registry.rs"
+fail_msg = "DelegationCaveat and check_delegation must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'add_caveat' crates/roko-chain/src/agent_registry.rs"
+fail_msg = "add_caveat method must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'revoke_caveat' crates/roko-chain/src/agent_registry.rs"
+fail_msg = "revoke_caveat method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- agent_registry 2>&1"
+fail_msg = "agent_registry tests must pass"
+
+acceptance = ["DelegationCaveat struct with delegatee, allowed_capabilities (u64 bitmask), expiry_block, max_spend, scope; add_caveat(passport_id, caller, caveat) validates caller is owner, caveat capabilities are subset of passport; revoke_caveat(passport_id, caller, delegatee); check_delegation(delegator, delegatee, capability, current_block) returns bool (true if valid, non-expired, capability in bitmask); test: add caveat with CAP_INFERENCE, check passes for inference, fails for trading, fails after expiry"]
+
+
+# ─── T03: Implement on-chain InsightStore (KnowledgeRegistry) ────────────────
+#
+# Per spec (22-REGISTRIES §4), implement a KnowledgeRegistry for on-chain
+# knowledge entries with lifecycle states and staleness. The pattern follows
+# ValidationRegistry (validation_registry.rs) which has config, records
+# HashMap, and submit/query methods.
+
+[[task]]
+id = "E39-T03"
+title = "Implement KnowledgeRegistry for on-chain InsightStore"
+description = """
+Per spec section 4 (Knowledge Registry / On-Chain InsightStore), implement a
+KnowledgeRegistry that manages published knowledge entries with:
+1. EntryState enum: Active, Challenged, Validated, Retracted, Stale.
+2. KnowledgeRegistryEntry struct with entry_id, publisher_id, content_hash,
+   hdc_fingerprint, tags, state, validation_count, challenge_count, timestamps.
+3. publish(), validate(), query_by_tag() methods.
+4. Staleness check: entries not refreshed within 90 days → Stale.
+Place in a new module crates/roko-chain/src/knowledge_registry.rs and
+wire into lib.rs.
+"""
+role = "implementer"
+status = "ready"
+tier = "integrative"
+files = [
+    "crates/roko-chain/src/knowledge_registry.rs",
+    "crates/roko-chain/src/lib.rs",
+]
+depends_on = []
+max_loc = 150
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/lib.rs", lines = "44-90", why = "Module declarations: agent_registry (line 46), marketplace (line 73), reputation_registry (line 80), validation_registry (line 87) — add 'pub mod knowledge_registry;' here" },
+    { path = "crates/roko-chain/src/validation_registry.rs", lines = "1-78", why = "Pattern: ValidationRegistryConfig (line 18), GateScore (line 40), ValidationRecord (line 51), ValidationRegistry struct (line 66) with config + records HashMap + records_by_passport HashMap" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "491-560", why = "ReputationRegistry (line 493) with records HashMap<u256, AgentReputation>, register_agent(), submit_feedback(), get_score() — pattern for new registry" },
+    { path = "crates/roko-chain/src/phase2.rs", lines = "30-50", why = "u256 (line 44), Address (line 32), B256/Hash (line 38-41) types to use" },
+]
+symbols = [
+    "ValidationRegistry — validation_registry.rs:66, pattern to follow (config + records HashMap)",
+    "ValidationRecord — validation_registry.rs:51, record with proof + gate_scores + accepted",
+    "ReputationRegistry — reputation_registry.rs:493, another registry pattern with register + submit + get",
+    "pub mod validation_registry — lib.rs:87, add similar declaration for knowledge_registry",
+]
+anti_patterns = [
+    "Do NOT duplicate the validation_registry — InsightStore has different lifecycle (publish/validate/challenge vs proof/verify)",
+    "Do NOT use real timestamps — use u64 unix seconds like the rest of roko-chain",
+    "Do NOT add network/chain dependencies — keep as in-memory registry with same patterns",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod knowledge_registry' crates/roko-chain/src/lib.rs && grep -q 'KnowledgeRegistry' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "knowledge_registry module must be declared and KnowledgeRegistry must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'EntryState' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "EntryState enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn publish' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "publish method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- knowledge_registry 2>&1"
+fail_msg = "knowledge_registry tests must pass"
+
+acceptance = ["EntryState enum: Active, Challenged, Validated, Retracted, Stale; KnowledgeRegistryEntry with entry_id: [u8;32], publisher_id: u256, content_hash: [u8;32], hdc_fingerprint: Option<Vec<u64>>, tags: Vec<String>, state: EntryState, validation_count: u32, challenge_count: u32, published_at: u64, last_refreshed: u64; KnowledgeRegistry with entries HashMap, publish(entry) -> entry_id, validate(entry_id, validator_id) increments count + transitions Active->Validated, query_by_tag(tag) -> Vec, check_staleness(now) transitions entries not refreshed within 90 days to Stale; tests cover publish, validate, staleness"]
+
+
+# ─── T04: Implement ChallengeResolution protocol ─────────────────────────────
+#
+# Per spec (22-REGISTRIES §4.3), extend KnowledgeRegistry with challenge
+# and resolution. marketplace.rs has DisputeResolution (imported from
+# phase2.rs at line 19) as a pattern for dispute handling.
+
+[[task]]
+id = "E39-T04"
+title = "Add challenge and resolution protocol to KnowledgeRegistry"
+description = """
+Per spec section 4.3 (Challenge Resolution Governance), extend KnowledgeRegistry with:
+1. Challenge struct (challenge_id, entry_id, challenger_id, evidence_hash, reason,
+   resolution_deadline, resolved, upheld).
+2. challenge() method that transitions entry to Challenged state.
+3. resolve_challenge() method that transitions to Validated or Retracted.
+4. ResolutionMode enum (Multisig, Arbitrator, ValidatorVote) — stored as config.
+5. Reputation effects: +0.2 on validation, -0.3 on successful challenge.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/knowledge_registry.rs"]
+depends_on = ["E39-T03"]
+max_loc = 70
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "100-140", why = "Marketplace struct (line 129) has disputes: HashMap<[u8;32], DisputeResolution> — pattern for challenge tracking" },
+    { path = "crates/roko-chain/src/phase2.rs", lines = "1-50", why = "DisputeLevel, DisputeOutcome, DisputeResolution types (imported by marketplace.rs:19) — pattern for resolution" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "510-545", why = "submit_feedback(passport_id, domain, quality, now) API — reputation effects from challenge resolution flow through this" },
+]
+symbols = [
+    "DisputeResolution — phase2.rs, imported by marketplace.rs:19, existing dispute pattern",
+    "ReputationRegistry::submit_feedback() — reputation_registry.rs:516, call after resolution for reputation effects",
+    "KnowledgeRegistry — knowledge_registry.rs (from E39-T03), registry to extend",
+    "EntryState::Challenged — knowledge_registry.rs (from E39-T03), target state for challenge",
+]
+anti_patterns = [
+    "Do NOT implement all 3 resolution modes inline — use an enum with match, default to Multisig",
+    "Do NOT call ReputationRegistry directly — return reputation effects as data for caller to apply",
+    "Do NOT add new dependencies — keep self-contained within knowledge_registry.rs",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn challenge' crates/roko-chain/src/knowledge_registry.rs && grep -q 'fn resolve_challenge' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "challenge() and resolve_challenge() methods must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ResolutionMode' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "ResolutionMode enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Challenge' crates/roko-chain/src/knowledge_registry.rs"
+fail_msg = "Challenge struct must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- knowledge_registry 2>&1"
+fail_msg = "knowledge_registry tests must pass"
+
+acceptance = ["Challenge struct with challenge_id, entry_id, challenger_id, evidence_hash, reason, resolution_deadline, resolved, upheld; ResolutionMode enum: Multisig, Arbitrator, ValidatorVote; challenge(entry_id, challenger_id, evidence_hash, reason, deadline) transitions entry to Challenged state; resolve_challenge(challenge_id, upheld: bool) transitions to Retracted if upheld, Validated if not; ReputationEffect struct returned with passport_id, domain, delta (+0.2/-0.3); tests cover challenge flow and reputation effect values"]
+
+
+# ─── T05: Integrate TraceRank composite scoring into ReputationRegistry ──────
+#
+# Per spec (22-REGISTRIES §3.2), the TraceRank model computes a 5-dimension
+# composite: consistency(0.25) + breadth(0.15) + depth(0.25) +
+# recency(0.20) + collaboration(0.15).
+#
+# ReputationRegistry (reputation_registry.rs:493) has records HashMap,
+# AgentReputation (line 415) with domains HashMap, DomainReputation
+# with effective_score(). REPUTATION_DOMAINS at line 51 lists 7 domains.
+# The existing trace_rank.rs (line 1) is PageRank over payments — this
+# task adds reputation-specific TraceRank scoring.
+
+[[task]]
+id = "E39-T05"
+title = "Integrate TraceRank composite scoring into ReputationRegistry"
+description = """
+Per spec section 3.2, the TraceRank model computes a 5-dimension composite:
+consistency(0.25) + breadth(0.15) + depth(0.25) + recency(0.20) + collaboration(0.15).
+The existing trace_rank.rs has the PageRank implementation but is not integrated
+with the ReputationRegistry. Wire it by:
+1. Add a ReputationTraceRank struct with the 5 dimensions + composite score.
+2. Add compute_trace_rank() method on ReputationRegistry that derives all 5
+   dimensions from existing DomainReputation data.
+3. Add get_trace_rank(passport_id, now) public method.
+Existing trace_rank.rs has different concerns (payment graph); this is reputation-specific.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/reputation_registry.rs"]
+depends_on = []
+max_loc = 70
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "413-500", why = "AgentReputation (line 415) with domains: HashMap<String, DomainReputation>, feedback_dilutions, recovery; discipline_state() at line 462" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "491-560", why = "ReputationRegistry (line 493) with records: HashMap<u256, AgentReputation>; register_agent (line 505), submit_feedback (line 516), get_score (line 547), get_all_scores (line 556)" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "40-58", why = "REPUTATION_DOMAINS (line 51) — 7 domains (coding, security, research, chain, knowledge, operations, strategy) for breadth calculation" },
+    { path = "crates/roko-chain/src/trace_rank.rs", lines = "1-40", why = "Existing TraceRank doc comment: payment graph, PageRank-style, NOT the same as reputation TraceRank" },
+]
+symbols = [
+    "AgentReputation — reputation_registry.rs:415, per-agent reputation with domains HashMap",
+    "DomainReputation — reputation_registry.rs, per-domain score with job_count, last_updated, effective_score(now)",
+    "ReputationRegistry — reputation_registry.rs:493, registry with records HashMap<u256, AgentReputation>",
+    "REPUTATION_DOMAINS — reputation_registry.rs:51, 7 domain names (for breadth calculation)",
+    "get_all_scores() — reputation_registry.rs:556, returns HashMap<String, f64> of decay-adjusted scores",
+]
+anti_patterns = [
+    "Do NOT modify trace_rank.rs — that is PageRank over payments, different from reputation TraceRank",
+    "Do NOT name the struct TraceRank (conflicts with trace_rank.rs) — use ReputationTraceRank",
+    "Do NOT add fields to DomainReputation — compute from existing data",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ReputationTraceRank' crates/roko-chain/src/reputation_registry.rs && grep -q 'get_trace_rank' crates/roko-chain/src/reputation_registry.rs"
+fail_msg = "ReputationTraceRank and get_trace_rank must exist in reputation_registry"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'compute_trace_rank' crates/roko-chain/src/reputation_registry.rs"
+fail_msg = "compute_trace_rank method must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- reputation_registry 2>&1"
+fail_msg = "reputation_registry tests must pass"
+
+acceptance = ["ReputationTraceRank struct with consistency: f64, breadth: f64, depth: f64, recency: f64, collaboration: f64, composite: f64; compute_trace_rank(agent: &AgentReputation, now: u64) derives: consistency from score variance across domains, breadth from count of domains with job_count>0, depth from max domain score, recency from time since last update, collaboration from feedback_weight; composite = 0.25*consistency + 0.15*breadth + 0.25*depth + 0.20*recency + 0.15*collaboration; get_trace_rank(passport_id, now) public API; test verifies computation with known inputs"]
+
+
+# ─── T06: Implement gossip peer discovery stub ────────────────────────────────
+#
+# Per spec (22-REGISTRIES §7), agents discover each other via gossip.
+# lib.rs (line 44-89) lists all modules — add gossip alongside.
+# Capability constants (CAP_INFERENCE..CAP_STRATEGY) at
+# agent_registry.rs:31-49 are used for peer filtering.
+
+[[task]]
+id = "E39-T06"
+title = "Add gossip peer discovery types and stub to roko-chain"
+description = """
+Per spec section 7 (Gossip Networking), agents discover each other via a gossip
+protocol. Implement the type layer:
+1. PeerInfo struct (passport_id: u256, endpoints: Vec<String>, capabilities: u64,
+   last_seen: u64, hdc_fingerprint: Option<Vec<u64>>).
+2. GossipMessage enum (Announce, Query, Response, Heartbeat).
+3. PeerRegistry (in-memory peer table with TTL-based expiry).
+4. register_peer(), query_peers_by_capability(), expire_stale() methods.
+This is the local peer discovery layer — no actual networking, just the data
+structures and in-memory registry that a networking layer would use.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = [
+    "crates/roko-chain/src/gossip.rs",
+    "crates/roko-chain/src/lib.rs",
+]
+depends_on = []
+max_loc = 70
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/lib.rs", lines = "44-90", why = "Module declarations — add 'pub mod gossip;' alongside agent_registry (line 46), marketplace (line 73), etc." },
+    { path = "crates/roko-chain/src/agent_registry.rs", lines = "30-50", why = "CAP_INFERENCE (1<<0) through CAP_STRATEGY (1<<9) — 10 capability bitmask constants for peer filtering" },
+    { path = "crates/roko-chain/src/phase2.rs", lines = "30-50", why = "u256 (line 44) passport_id type, Address (line 32)" },
+    { path = "crates/roko-chain/src/validation_registry.rs", lines = "60-78", why = "ValidationRegistry pattern: config + records HashMap + count fields — follow for PeerRegistry" },
+]
+symbols = [
+    "CAP_INFERENCE..CAP_STRATEGY — agent_registry.rs:31-49, capability bitmask for peer filtering",
+    "u256 — phase2.rs:44, passport_id type",
+    "ValidationRegistry — validation_registry.rs:66, pattern for registry with config + records",
+]
+anti_patterns = [
+    "Do NOT implement actual networking (libp2p, tokio sockets, etc.) — just the data structures",
+    "Do NOT add async code — keep synchronous like other registries",
+    "Do NOT duplicate capability constants — import from agent_registry",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod gossip' crates/roko-chain/src/lib.rs && grep -q 'PeerRegistry' crates/roko-chain/src/gossip.rs"
+fail_msg = "gossip module must be declared and PeerRegistry must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'GossipMessage' crates/roko-chain/src/gossip.rs"
+fail_msg = "GossipMessage enum must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PeerInfo' crates/roko-chain/src/gossip.rs"
+fail_msg = "PeerInfo struct must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- gossip 2>&1"
+fail_msg = "gossip tests must pass"
+
+acceptance = ["PeerInfo with passport_id, endpoints, capabilities (u64 bitmask), last_seen, hdc_fingerprint; GossipMessage enum: Announce{peer: PeerInfo}, Query{capability: u64}, Response{peers: Vec<PeerInfo>}, Heartbeat{passport_id, timestamp}; PeerRegistry with peers HashMap<u256, PeerInfo> and ttl_secs: u64 config; register_peer(info) upserts, query_peers_by_capability(cap) returns peers where cap & capabilities != 0, expire_stale(now) removes peers where now - last_seen > ttl_secs; tests verify register + query + expiry"]
+
+
+# ─── T07: Extend Marketplace with job lifecycle reputation effects ────────────
+#
+# Per spec (22-REGISTRIES §3.1), reputation deltas flow from marketplace
+# outcomes. settle_job() at marketplace.rs:448 returns SettlementResult
+# (line 738) with agent_payment, platform_fee, quality_score. expire_job()
+# at line 492 returns ExpirationResult (line 751). Neither includes
+# reputation effects.
+
+[[task]]
+id = "E39-T07"
+title = "Wire Marketplace settlement into ReputationRegistry feedback"
+description = """
+Per spec section 3.1, reputation deltas flow from marketplace outcomes:
+- Bounty success: +quality_score based delta
+- Bounty failure (expiry): -0.5 penalty for assigned agent
+- Settlement: +quality_score based delta for agent
+The existing Marketplace (marketplace.rs) has settle_job() (line 448) and
+expire_job() (line 492) but does not return reputation effects. Add:
+1. A ReputationEffect struct with passport_id, domain, delta.
+2. Update SettlementResult to include Vec<ReputationEffect>.
+3. Update ExpirationResult to include Vec<ReputationEffect>.
+Caller applies effects to ReputationRegistry.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/marketplace.rs"]
+depends_on = []
+max_loc = 50
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "440-482", why = "settle_job() at line 448: checks Submitted state, computes agent_payment/platform_fee, releases escrow, returns SettlementResult" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "486-510", why = "expire_job() at line 492: checks deadline, refunds escrow, returns ExpirationResult" },
+    { path = "crates/roko-chain/src/marketplace.rs", lines = "720-770", why = "SettlementResult (line 738) with agent_payment, platform_fee, agent_passport_id, quality_score; ExpirationResult (line 751) with refund, poster_passport_id" },
+    { path = "crates/roko-chain/src/reputation_registry.rs", lines = "510-545", why = "submit_feedback(passport_id, domain, quality, now) API — this is how effects are applied to reputation" },
+]
+symbols = [
+    "settle_job() — marketplace.rs:448, returns SettlementResult to extend",
+    "expire_job() — marketplace.rs:492, returns ExpirationResult to extend",
+    "SettlementResult — marketplace.rs:738, add reputation_effects: Vec<ReputationEffect>",
+    "ExpirationResult — marketplace.rs:751, add reputation_effects: Vec<ReputationEffect>",
+    "MarketplaceJob.domain — marketplace.rs:69, domain string for reputation domain mapping",
+    "MarketplaceJob.quality_score — marketplace.rs:75, quality score for delta computation",
+]
+anti_patterns = [
+    "Do NOT take ReputationRegistry as a parameter — return effects as data for caller to apply",
+    "Do NOT change settle_job/expire_job signatures beyond the return type — keep backward compatible",
+    "Do NOT add new error variants — reputation effects are always computed (can be empty vec)",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ReputationEffect' crates/roko-chain/src/marketplace.rs"
+fail_msg = "ReputationEffect must exist in marketplace"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'reputation_effects' crates/roko-chain/src/marketplace.rs"
+fail_msg = "reputation_effects field must exist in SettlementResult or ExpirationResult"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-chain -- marketplace 2>&1"
+fail_msg = "marketplace tests must pass"
+
+acceptance = ["ReputationEffect struct with passport_id: u256, domain: String, delta: f64; SettlementResult gains reputation_effects: Vec<ReputationEffect> (agent gets +quality_score based delta in job domain); ExpirationResult gains reputation_effects: Vec<ReputationEffect> (assigned agent if any gets -0.5 penalty in job domain); tests verify positive effect on settlement and negative on expiry"]
+
+
+# ─── T08: Add identity auto-registration to agent startup ────────────────────
+#
+# Per spec (22-REGISTRIES §2.4), when an agent starts and chain.network
+# is configured, it should check for a registered identity.
+# identity_economy_identity.rs has AgentId (line 18), DidDocument
+# (line 44), VerificationMethod (line 65), DidServiceEndpoint (line 78)
+# — all placeholder types. Add IdentityState for local state management.
+
+[[task]]
+id = "E39-T08"
+title = "Add identity state file and auto-registration check at agent startup"
+description = """
+Per spec section 2.4, when an agent starts and chain.network is configured, it
+should check for a registered identity. Implement:
+1. IdentityState struct (token_id: Option<u128>, wallet: Option<String>,
+   registered_at_block: Option<u64>, name: String) with serde.
+2. load_identity_state(roko_dir) / save_identity_state(roko_dir, state)
+   reading/writing .roko/state/identity.json.
+3. An ensure_identity(roko_dir) function that loads state, checks if token_id
+   is set, and returns IdentityCheckResult (Registered{token_id} or NeedsRegistration).
+Place in the existing identity_economy_identity.rs since it already has the
+identity types. This is the local (non-chain) half of the flow.
+"""
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["crates/roko-chain/src/identity_economy_identity.rs"]
+depends_on = ["E39-T01"]
+max_loc = 60
+
+[task.context]
+read_files = [
+    { path = "crates/roko-chain/src/identity_economy_identity.rs", lines = "1-80", why = "AgentId = u256 (line 18), Blake3Hash (line 21), Signature (line 24), DidDocument (line 44), VerificationMethod (line 65), DidServiceEndpoint (line 78) — existing identity types" },
+    { path = "crates/roko-chain/src/phase2.rs", lines = "30-50", why = "u256 (line 44), Address = String (line 32) — types used by identity" },
+    { path = "docs/v2/22-REGISTRIES.md", lines = "180-190", why = "Auto-registration flow: read config, hash capabilities, call register, store token_id in .roko/state/identity.json, verify on subsequent starts" },
+]
+symbols = [
+    "AgentId — identity_economy_identity.rs:18, u256 alias for passport IDs",
+    "DidDocument — identity_economy_identity.rs:44, placeholder DID document",
+    "Blake3Hash — identity_economy_identity.rs:21, [u8; 32] hash type",
+]
+anti_patterns = [
+    "Do NOT make chain calls — this is the local state management half only",
+    "Do NOT use async — keep synchronous file I/O with std::fs",
+    "Do NOT add new dependencies — use serde_json (already available) for JSON file I/O",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'IdentityState' crates/roko-chain/src/identity_economy_identity.rs && grep -q 'ensure_identity\\|load_identity_state' crates/roko-chain/src/identity_economy_identity.rs"
+fail_msg = "IdentityState and ensure_identity/load_identity_state must exist"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'IdentityCheckResult' crates/roko-chain/src/identity_economy_identity.rs"
+fail_msg = "IdentityCheckResult enum must exist"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-chain 2>&1"
+fail_msg = "roko-chain must compile"
+
+acceptance = ["IdentityState struct with token_id, wallet, registered_at_block, name (all Option except name) with Serialize/Deserialize; load_identity_state(roko_dir: &Path) reads .roko/state/identity.json, returns Ok(IdentityState) or default if missing; save_identity_state(roko_dir: &Path, state: &IdentityState) writes JSON; IdentityCheckResult enum: Registered{token_id: u128}, NeedsRegistration; ensure_identity(roko_dir: &Path) -> IdentityCheckResult loads and checks"]

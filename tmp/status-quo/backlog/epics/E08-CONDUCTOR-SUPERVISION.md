@@ -362,3 +362,15 @@ fail_msg = "existing runner tests must still pass with the conductor threaded th
   `runner/event_loop.rs` select! branches (1–6) → confirmed the ring/sink/tick insertion points.
 - `runtime_feedback/mod.rs` → `FeedbackSink` trait + `FeedbackFacade::with_sink` is the
   ready-made decoration point; no conductor sink exists today.
+
+## CTRL-08 ownership reconciliation
+
+The seven core conductor tasks remain distinct. T08 is an acceptance roll-up for
+E47-T08's `React`-based `DiskPressureWatcher`, intervention Engrams, and canonical
+`[resources]` thresholds; the retired `Watcher`/`WatcherOutput` and
+`[conductor.watchers.disk_space]` shapes are not parallel contracts. T09 is the
+distinct `React::decide` consumer of E47-T09's exact `Kind::Metric` Engrams tagged
+`name=worktree_count` and `value=WorktreeManager::active_count`. E47 emits the metric
+on both runner paths; E08 owns only the configurable warning watcher and must not
+define another disk-accounting, worktree-count producer, or serialization mechanism. See
+[`17-OPERATIONAL-OWNERSHIP.md`](../17-OPERATIONAL-OWNERSHIP.md).

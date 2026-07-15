@@ -1,0 +1,220 @@
+[meta]
+plan = "P26-hdc-similarity-lookup"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ── T1: Add HDC similarity query to EpisodeLogger ───────────────────────────
+#
+# Episodes store hdc_fingerprint as base64-encoded strings. The EpisodeLogger
+# has read_all/read_all_lossy but no method to find episodes similar to a
+# given fingerprint. Add a query_similar method that decodes stored
+# fingerprints and ranks by Hamming similarity.
+
+[[task]]
+id = "T1"
+title = "Add query_similar_episodes method to EpisodeLogger"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-learn/src/episode_logger.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "169-268", why = "Episode struct — hdc_fingerprint at line 251 is Option<String> (base64-encoded)" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "958-963", why = "EpisodeLogger struct — add the new method on this type" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "1064-1080", why = "EpisodeLogger::read_all — reference for how episodes are loaded from JSONL" },
+    { path = "crates/roko-learn/src/hdc_fingerprint.rs", lines = "14-18", why = "fingerprint_episode(prompt, outcome) -> HdcVector — computes the vector" },
+    { path = "crates/roko-learn/src/hdc_fingerprint.rs", lines = "52-105", why = "decode(encoded: &str) -> Result<HdcVector, String> — decodes base64 fingerprints" },
+    { path = "crates/roko-primitives/src/hdc.rs", lines = "83-88", why = "HdcVector::zeros() — for zero check" },
+]
+symbols = [
+    "EpisodeLogger — struct at episode_logger.rs:961",
+    "EpisodeLogger::read_all(path: impl AsRef<Path>) -> Result<Vec<Episode>, LoggerError> — at line 1064",
+    "Episode::hdc_fingerprint — Option<String> at line 251 (base64-encoded HdcVector)",
+    "roko_learn::hdc_fingerprint::decode(encoded: &str) -> Result<HdcVector, String>",
+    "HdcVector::similarity(&self, other: &Self) -> f64 — Hamming similarity in [0.0, 1.0]",
+]
+anti_patterns = [
+    "Do NOT load all episodes synchronously — use the existing async read_all_lossy to tolerate corrupt lines.",
+    "Do NOT return raw HdcVector in the result — return (Episode, f64) tuples sorted by descending similarity.",
+    "Do NOT panic on decode failure — skip episodes with invalid fingerprints silently.",
+]
+
+# Add a method `pub async fn query_similar_episodes(path: impl AsRef<Path>,
+#   fingerprint: &HdcVector, top_k: usize) -> Result<Vec<(Episode, f64)>, LoggerError>`
+# that:
+# 1. Calls read_all_lossy to load all episodes
+# 2. For each episode with a non-None hdc_fingerprint, decode it
+# 3. Compute HdcVector::similarity against the query fingerprint
+# 4. Collect into a Vec, sort by similarity descending, truncate to top_k
+# 5. Return the scored results
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn query_similar_episodes' crates/roko-learn/src/episode_logger.rs"
+fail_msg = "EpisodeLogger must have a query_similar_episodes method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-learn 2>&1"
+fail_msg = "roko-learn must compile after adding query_similar_episodes"
+
+# ── T2: Add unit test for query_similar_episodes ─────────────────────────────
+#
+# Verify that the new method correctly decodes fingerprints, ranks by
+# similarity, and respects top_k limits.
+
+[[task]]
+id = "T2"
+title = "Add test for query_similar_episodes method"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 35
+files = ["crates/roko-learn/src/episode_logger.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "1259-1265", why = "Existing test imports — use same pattern for hdc_fingerprint encode/decode" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "1335-1351", why = "Existing hdc_fingerprint_round_trips test — reference for creating test episodes with fingerprints" },
+]
+symbols = [
+    "roko_learn::hdc_fingerprint::fingerprint_episode(prompt: &str, outcome: &str) -> HdcVector",
+    "roko_learn::hdc_fingerprint::encode(vector: &HdcVector) -> String",
+    "EpisodeLogger::query_similar_episodes — new method from T1",
+    "fn sample(agent: &str, task: &str, success: bool) -> Episode — test helper at ~line 1280",
+]
+anti_patterns = [
+    "Do NOT duplicate the encode/decode logic — import from hdc_fingerprint module.",
+]
+
+# Add a #[tokio::test] that:
+# 1. Creates a temp dir + EpisodeLogger
+# 2. Creates 3 episodes with different fingerprints (different prompt/outcome pairs)
+# 3. Queries with one of the fingerprints, top_k=2
+# 4. Asserts the most similar episode is first and results are limited to 2
+# 5. Asserts episodes without fingerprints are excluded
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn query_similar_episodes_returns_ranked_results\\|fn test_query_similar' crates/roko-learn/src/episode_logger.rs"
+fail_msg = "Must have a test for query_similar_episodes"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-learn query_similar 2>&1"
+fail_msg = "query_similar_episodes test must pass"
+
+# ── T3: Wire similar-episode lookup into orchestrate.rs before dispatch ──────
+#
+# Before dispatching an agent, compute the task's HDC fingerprint and query
+# past episodes for similar tasks. If matches are found, format them as
+# context and inject into the system prompt via a PromptSection.
+
+[[task]]
+id = "T3"
+title = "Query similar episodes before dispatch in orchestrate.rs"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "116-125", why = "Import block — add EpisodeLogger and hdc_fingerprint imports (already has fingerprint_episode at 121)" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "3176-3179", why = "attach_episode_hdc_fingerprint — shows how fingerprint is computed from prompt+outcome" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15637-15672", why = "Pre-dispatch enrichment (playbook query + search) — add similar episode query here in parallel" },
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "10660-10668", why = "Post-dispatch: fingerprint is attached to completed episode — shows the data is already being stored" },
+]
+symbols = [
+    "PlanRunner::dispatch_agent_with — async method at orchestrate.rs:15070, calls enrichment before dispatch",
+    "EpisodeLogger::query_similar_episodes(path, fingerprint, top_k) — from T1",
+    "fingerprint_episode(prompt, outcome) -> HdcVector — at orchestrate.rs:121 (re-exported from roko_learn)",
+    "PromptSection::new(name: &str, content: String) — for injecting context into system prompt",
+]
+anti_patterns = [
+    "Do NOT block the dispatch loop — run the similarity query concurrently with the existing playbook_fut and search_fut using tokio::join!.",
+    "Do NOT inject more than 3 similar episodes — limit context to avoid prompt bloat.",
+    "Do NOT query if there is no episode log file — check existence first or handle empty results gracefully.",
+]
+
+# In dispatch_agent_with, around line 15640 where playbook_fut and search_fut
+# are created:
+# 1. Compute the task fingerprint early: `let task_fp = fingerprint_episode(&task_text, "");`
+# 2. Create a similar_episodes_fut that calls EpisodeLogger::query_similar_episodes
+#    with the episodes.jsonl path and the fingerprint, top_k=3
+# 3. Add it to the tokio::join! at line 15653
+# 4. If results are non-empty, format them as a PromptSection with priority Low
+#    containing task_id, model, success, and a summary of what similar tasks did.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'query_similar_episodes' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "orchestrate.rs must call query_similar_episodes before dispatch"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after wiring similar episode lookup"
+
+# ── T4: Format similar-episode context as a PromptSection ────────────────────
+#
+# The raw similar-episode results need to be formatted into a human-readable
+# prompt section that tells the agent what similar tasks succeeded or failed
+# at, and what model/approach was used.
+
+[[task]]
+id = "T4"
+title = "Format similar-episode results into a PromptSection"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/orchestrate.rs"]
+role = "implementer"
+depends_on = ["T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/orchestrate.rs", lines = "15663-15672", why = "Reference: how search_context_section is formatted as a PromptSection with priority/placement/cap" },
+    { path = "crates/roko-learn/src/episode_logger.rs", lines = "169-245", why = "Episode fields available for context: task_id, model, success, failure_reason, duration_secs" },
+]
+symbols = [
+    "PromptSection::new(name: &str, content: String) -> PromptSection",
+    "PromptSection::with_priority(self, SectionPriority) -> Self",
+    "PromptSection::with_placement(self, Placement) -> Self",
+    "PromptSection::with_hard_cap(self, usize) -> Self",
+    "Episode — struct with task_id, model, success, failure_reason, duration_secs fields",
+]
+anti_patterns = [
+    "Do NOT include raw prompt/outcome text — only include task_id, model, success/failure status, and similarity score.",
+    "Do NOT set priority higher than Low — this is supplementary context, not critical instructions.",
+]
+
+# Add a helper function `fn format_similar_episodes_section(episodes: &[(Episode, f64)]) -> Option<PromptSection>`
+# that:
+# 1. Returns None if episodes is empty
+# 2. Formats each episode as a bullet: "- Task {task_id} ({model}, {success/failed}, sim={score:.2})"
+#    Include failure_reason if present.
+# 3. Wraps in a section header: "## Similar Past Tasks\n\n{bullets}"
+# 4. Returns a PromptSection with priority Low, placement Middle, hard_cap 1024
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn format_similar_episodes_section' crates/roko-cli/src/orchestrate.rs"
+fail_msg = "Must have a format_similar_episodes_section helper function"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding similar episode formatter"

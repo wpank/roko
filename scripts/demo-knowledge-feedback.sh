@@ -1,162 +1,221 @@
 #!/usr/bin/env bash
-# demo-knowledge-feedback.sh — End-to-end knowledge-informed dispatch demo.
+# demo-knowledge-feedback.sh — deterministic knowledge-feedback illustration.
 #
-# This script demonstrates that roko's runner v2 queries prior episodes
-# and injects "Learned Patterns" into the agent's system prompt on
-# subsequent runs. It works in two modes:
+# The former --live mode targeted plans/live-demo-phase1 and
+# plans/live-demo-phase2. Those manifests were deleted in 7899494d and are not
+# current runnable roots. Live execution therefore fails closed; this script
+# never creates those roots or passes them to `roko plan run`.
 #
-#   Mode 1 (default): Uses simulated episodes to demonstrate the full loop
-#   Mode 2 (--live):  Uses real `roko plan run` with live Claude API calls
-#
-# Usage:
-#   bash scripts/demo-knowledge-feedback.sh          # Simulated (no API needed)
-#   bash scripts/demo-knowledge-feedback.sh --live   # Real agents (needs credits)
+# The default mode writes two fixed simulated episodes and demonstrates the
+# current keyword-overlap idea without network or model calls. It is an
+# illustration, not proof that a live runner completed either historical plan.
 
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
 
-LIVE_MODE=false
-[[ "${1:-}" == "--live" ]] && LIVE_MODE=true
+usage() {
+    cat <<'EOF'
+Usage:
+  bash scripts/demo-knowledge-feedback.sh          Run deterministic simulation
+  bash scripts/demo-knowledge-feedback.sh --help   Show this help
+  bash scripts/demo-knowledge-feedback.sh --live   Fail closed (historical mode removed)
 
-echo "=== Knowledge-Informed Dispatch Demo ==="
-echo "Mode: $(if $LIVE_MODE; then echo 'LIVE (real Claude API calls)'; else echo 'SIMULATED (no API needed)'; fi)"
-echo ""
+Environment:
+  ROKO_DEMO_STATE_DIR  State directory for simulated output (default: <repo>/.roko)
 
-# ─── Ensure roko builds ──────────────────────────────────────────────────
-
-echo "=== Step 1: Verify roko-cli compiles ==="
-cargo check -p roko-cli 2>/dev/null && echo "PASS: roko-cli compiles" || { echo "FAIL"; exit 1; }
-echo ""
-
-# ─── Ensure state dirs ───────────────────────────────────────────────────
-
-mkdir -p .roko/{state,learn,neuro,daimon}
-
-if $LIVE_MODE; then
-    # ─── LIVE MODE ────────────────────────────────────────────────────────
-
-    echo "=== Step 2: Run Phase 1 plan (creates real episodes) ==="
-    rm -f .roko/state/executor.json .roko/state/orchestrator.json
-    rm -f .roko/learn/episodes.jsonl
-
-    RUST_LOG=roko_cli::runner=info cargo run -p roko-cli --bin roko -- \
-        plan run plans/live-demo-phase1/ 2>&1 | tail -15
-    echo ""
-
-    echo "=== Step 3: Show episodes from Phase 1 ==="
-    if [ -f .roko/learn/episodes.jsonl ]; then
-        cat .roko/learn/episodes.jsonl | python3 -c "
-import sys, json
-for line in sys.stdin:
-    if not line.strip(): continue
-    ep = json.loads(line)
-    status = 'PASSED' if ep.get('success') else 'FAILED'
-    print(f\"  {ep.get('task_id','?')}: {status} (model: {ep.get('model','?')}, cost: \${ep.get('cost_usd',0):.4f})\")
-"
-    else
-        echo "  (no episodes yet — agent may have failed)"
-    fi
-    echo ""
-
-    echo "=== Step 4: Run Phase 2 plan (should use knowledge from Phase 1) ==="
-    rm -f .roko/state/executor.json .roko/state/orchestrator.json
-
-    RUST_LOG=roko_cli::runner=info,roko_cli::runner::agent_stream=debug cargo run -p roko-cli --bin roko -- \
-        plan run plans/live-demo-phase2/ 2>&1 | grep -E "knowledge|inject|episode|model_select" | head -10
-    echo ""
-
-else
-    # ─── SIMULATED MODE ──────────────────────────────────────────────────
-
-    echo "=== Step 2: Simulate Phase 1 episodes ==="
-    cat > .roko/learn/episodes.jsonl << 'EOF'
-{"kind":"agent_turn","id":"ep-001","timestamp":"2026-04-27T01:00:00Z","agent_id":"live-demo-phase1/T1-add-greeting","task_id":"live-demo-phase1/T1-add-greeting","model":"claude-sonnet-4-6","success":true,"turns":3,"tokens_used":4500,"cost_usd":0.0135,"duration_secs":12.5,"gate_verdicts":[{"gate":"compile","passed":true},{"gate":"clippy","passed":true}],"reasoning_summary":"Used targeted edit to add greeting.rs with pub mod in lib.rs. Kept diff to 2 files, ~15 lines.","failure_reason":null}
-{"kind":"agent_turn","id":"ep-002","timestamp":"2026-04-27T01:01:00Z","agent_id":"live-demo-phase1/T2-add-greeting-test","task_id":"live-demo-phase1/T2-add-greeting-test","model":"claude-sonnet-4-6","success":true,"turns":2,"tokens_used":3200,"cost_usd":0.0096,"duration_secs":8.0,"gate_verdicts":[{"gate":"compile","passed":true},{"gate":"clippy","passed":true},{"gate":"test","passed":true}],"reasoning_summary":"Added #[cfg(test)] mod tests with single assert_eq test. cargo test -p roko-std -- greeting passed.","failure_reason":null}
+The simulation performs no cargo build, API request, model dispatch, or plan run.
+Set ROKO_DEMO_STATE_DIR to a temporary directory to keep the checkout unchanged.
 EOF
-    echo "  Created 2 simulated episodes in .roko/learn/episodes.jsonl"
-    echo ""
+}
 
-    echo "=== Step 3: Show what Phase 1 produced ==="
-    cat .roko/learn/episodes.jsonl | python3 -c "
-import sys, json
-for line in sys.stdin:
-    if not line.strip(): continue
-    ep = json.loads(line)
-    status = 'PASSED' if ep.get('success') else 'FAILED'
-    model = ep.get('model', '?')
-    cost = ep.get('cost_usd', 0)
-    summary = ep.get('reasoning_summary', 'n/a')
-    print(f'  {ep[\"task_id\"]}: {status} (model: {model}, \${cost:.4f})')
-    print(f'    Insight: {summary}')
-    print()
-"
+case "${1:-}" in
+    "") ;;
+    --help|-h)
+        usage
+        exit 0
+        ;;
+    --live)
+        cat >&2 <<'EOF'
+ERROR: live knowledge-feedback demo is unavailable.
 
-    echo "=== Step 4: Query knowledge for a Phase 2 task ==="
-    echo ""
-    echo "Task: 'Add farewell helper function to roko-std greeting module'"
-    echo ""
-    echo "The runner calls query_knowledge_for_task() which:"
-    echo "  1. Reads .roko/learn/episodes.jsonl"
-    echo "  2. Extracts keywords: farewell, helper, function, roko-std, greeting, module"
-    echo "  3. Scores each episode by keyword overlap"
-    echo "  4. Prioritizes PASSED episodes (learn from success)"
-    echo "  5. Formats top matches as prompt section"
-    echo ""
+The historical live-demo-phase1 and live-demo-phase2 manifests were deleted in
+commit 7899494d and are not current runnable plan roots. This script will not
+recreate or execute them. Use the deterministic simulated mode, or author and
+review a new current live fixture before restoring live execution.
+EOF
+        exit 2
+        ;;
+    *)
+        echo "ERROR: unknown argument: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
 
-    # Demonstrate what the query would return
-    python3 << 'PYEOF'
-import json
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-task_title = "Add farewell helper function to roko-std greeting module"
-keywords = set(w.lower() for w in task_title.split() if len(w) > 2)
+command -v python3 >/dev/null
+if ! STATE_ROOT="$(python3 -c '
+import os
+import sys
 
-episodes = []
-with open(".roko/learn/episodes.jsonl") as f:
-    for line in f:
-        if not line.strip():
-            continue
-        episodes.append(json.loads(line))
+configured, repo_root = sys.argv[1:]
+repo_root = os.path.realpath(repo_root)
 
-print("=== Knowledge injected into system prompt: ===")
-print()
-print("## Learned Patterns from Prior Work")
-print()
-print("Based on similar tasks this system has completed before:")
-print()
+# Normalize `.` and `..` without following symlinks. Relative state paths are
+# intentionally rooted at the repository, matching the working directory used
+# by the simulation. This lexical form catches a removed root that is itself an outward
+# symlink; canonicalization alone would erase that forbidden prefix.
+if os.path.isabs(configured):
+    lexical = os.path.normpath(configured)
+else:
+    lexical = os.path.normpath(os.path.join(repo_root, configured))
+canonical = os.path.realpath(lexical)
 
-scored = []
-for ep in episodes:
-    text = f"{ep['task_id']} {ep.get('failure_reason', '')} {ep.get('reasoning_summary', '')}".lower()
-    overlap = sum(1 for kw in keywords if kw in text)
-    if overlap > 0:
-        scored.append((overlap, ep))
+removed_roots = (
+    os.path.join(repo_root, "plans", "live-demo-phase1"),
+    os.path.join(repo_root, "plans", "live-demo-phase2"),
+)
 
-scored.sort(key=lambda x: (-x[1].get('success', False), -x[0]))
 
-for i, (score, ep) in enumerate(scored[:5]):
-    gate = "passed" if ep.get("success") else "failed"
-    model = ep.get("model", "unknown")
-    insight = ep.get("reasoning_summary") or ep.get("failure_reason") or "No details."
-    print(f"{i+1}. **{ep['task_id']}** (gate: {gate}, model: {model})")
-    print(f"   Key insight: {insight}")
-    print()
-PYEOF
+def path_key(path: str) -> str:
+    # macOS path identity is commonly case-insensitive even though normcase does
+    # not fold case there. Be conservative for these two removed ASCII names so
+    # a differently cased, not-yet-existing leaf cannot become the same physical
+    # plan directory after mkdir.
+    return os.path.normpath(path).casefold()
 
+
+def is_within(path: str, root: str) -> bool:
+    try:
+        keyed_path = path_key(path)
+        keyed_root = path_key(root)
+        return os.path.commonpath((keyed_path, keyed_root)) == keyed_root
+    except ValueError:
+        return False
+
+
+checks = [
+    ("normalized lexical path", lexical),
+    ("canonical path", canonical),
+]
+
+# An absolute path may name this repository through a symlink alias. Project
+# the suffix after every prefix that resolves to the repository back onto the
+# physical repository root, but do not resolve symlinks in that suffix. This
+# retains the outward-root check even for `<repo-alias>/plans/live-demo-*`.
+drive, tail = os.path.splitdrive(lexical)
+parts = [part for part in tail.split(os.sep) if part]
+prefix = drive + os.sep
+prefixes = [(prefix, parts)]
+for index, part in enumerate(parts):
+    prefix = os.path.join(prefix, part)
+    prefixes.append((prefix, parts[index + 1 :]))
+
+for prefix, suffix in prefixes:
+    if path_key(os.path.realpath(prefix)) == path_key(repo_root):
+        checks.append(
+            (
+                "repository-alias lexical path",
+                os.path.normpath(os.path.join(repo_root, *suffix)),
+            )
+        )
+
+for label, path in checks:
+    for removed_root in removed_roots:
+        if is_within(path, removed_root):
+            print(
+                f"ERROR: refusing removed live-demo plan state via {label}: {path}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+print(canonical)
+' "${ROKO_DEMO_STATE_DIR:-$REPO_ROOT/.roko}" "$REPO_ROOT")"; then
+    exit 2
 fi
 
-echo "=== How the feedback loop works ==="
+cd "$REPO_ROOT"
+EPISODES_FILE="$STATE_ROOT/learn/episodes.jsonl"
+
+echo "=== Knowledge-Feedback Simulation ==="
+echo "Mode: SIMULATED (no network, model, build, or plan execution)"
+echo "State: $STATE_ROOT"
 echo ""
-echo "  Task runs → emit_feedback() writes Episode to .roko/learn/episodes.jsonl"
-echo "       ↓"
-echo "  Next similar task → query_knowledge_for_task() reads episodes"
-echo "       ↓"
-echo "  Matches found → injected as 'Learned Patterns' in system prompt"
-echo "       ↓"
-echo "  Agent sees what worked/failed → makes better decisions"
+
+echo "=== Step 1: Verify current source anchors ==="
+test -f crates/roko-cli/src/runtime_feedback/episodes.rs
+test -f crates/roko-cli/src/dispatch/prompt_builder.rs
+echo "PASS: current episode sink and prompt-builder sources exist"
 echo ""
-echo "  Code locations:"
-echo "    Write: crates/roko-cli/src/runner/event_loop.rs (emit_feedback)"
-echo "    Query: crates/roko-cli/src/runner/agent_stream.rs (query_knowledge_for_task)"
-echo "    Inject: crates/roko-cli/src/runner/event_loop.rs (dispatch_action, ~line 1577)"
+
+mkdir -p "$STATE_ROOT/learn"
+
+echo "=== Step 2: Write two fixed simulated episodes ==="
+cat > "$EPISODES_FILE" <<'EOF'
+{"kind":"agent_turn","id":"ep-001","timestamp":"2026-04-27T01:00:00Z","agent_id":"simulated-greeting/T1","task_id":"simulated-greeting/T1","model":"simulated-model","success":true,"turns":3,"tokens_used":4500,"cost_usd":0.0,"duration_secs":12.5,"gate_verdicts":[{"gate":"compile","passed":true}],"reasoning_summary":"Simulated prior work used a focused edit for a greeting helper.","failure_reason":null}
+{"kind":"agent_turn","id":"ep-002","timestamp":"2026-04-27T01:01:00Z","agent_id":"simulated-greeting/T2","task_id":"simulated-greeting/T2","model":"simulated-model","success":true,"turns":2,"tokens_used":3200,"cost_usd":0.0,"duration_secs":8.0,"gate_verdicts":[{"gate":"test","passed":true}],"reasoning_summary":"Simulated prior work added a focused greeting test.","failure_reason":null}
+EOF
+echo "  Created 2 simulated episodes in $EPISODES_FILE"
 echo ""
-echo "=== Demo complete ==="
+
+echo "=== Step 3: Show simulated prior episodes ==="
+EPISODES_FILE="$EPISODES_FILE" python3 <<'PYEOF'
+import json
+import os
+
+with open(os.environ["EPISODES_FILE"], encoding="utf-8") as stream:
+    for line in stream:
+        if not line.strip():
+            continue
+        episode = json.loads(line)
+        status = "PASSED" if episode.get("success") else "FAILED"
+        print(f"  {episode['task_id']}: {status} (model: {episode['model']})")
+        print(f"    Simulated insight: {episode['reasoning_summary']}")
+        print()
+PYEOF
+
+echo "=== Step 4: Demonstrate deterministic keyword matching ==="
+echo ""
+echo "Synthetic query: 'Add farewell helper function to greeting module'"
+echo ""
+
+EPISODES_FILE="$EPISODES_FILE" python3 <<'PYEOF'
+import json
+import os
+
+task_title = "Add farewell helper function to greeting module"
+keywords = {word.lower() for word in task_title.split() if len(word) > 2}
+
+with open(os.environ["EPISODES_FILE"], encoding="utf-8") as stream:
+    episodes = [json.loads(line) for line in stream if line.strip()]
+
+scored = []
+for episode in episodes:
+    text = " ".join(
+        [
+            episode["task_id"],
+            episode.get("failure_reason") or "",
+            episode.get("reasoning_summary") or "",
+        ]
+    ).lower()
+    overlap = sum(keyword in text for keyword in keywords)
+    if overlap:
+        scored.append((overlap, episode))
+
+scored.sort(key=lambda item: (-item[1].get("success", False), -item[0]))
+
+print("# Learned patterns from simulated prior episodes")
+print()
+for index, (_, episode) in enumerate(scored[:5], start=1):
+    outcome = "passed" if episode.get("success") else "failed"
+    print(f"{index}. {episode['task_id']} ({outcome}, {episode['model']})")
+    print(f"   {episode['reasoning_summary']}")
+PYEOF
+
+echo ""
+echo "=== Current production anchors (not exercised by this simulation) ==="
+echo "  Write: crates/roko-cli/src/runtime_feedback/episodes.rs (EpisodeSink)"
+echo "  Query/inject: crates/roko-cli/src/dispatch/prompt_builder.rs"
+echo "                (collect_episode_knowledge / episode_knowledge section)"
+echo ""
+echo "=== Simulation complete ==="

@@ -1,0 +1,133 @@
+[meta]
+plan = "P29-develop-command-wire"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Register /develop as ACP slash command definition
+# ─────────────────────────────────────────────────────────────────────────────
+# The `roko develop` CLI command exists and works (develop.rs is fully wired),
+# but it is NOT registered as an ACP slash command. This means users in Zed
+# cannot type `/develop "implement X"` — they must use `/do` instead, which
+# lacks the plan-approval workflow.
+#
+# Add a `slash_command("develop", ...)` entry to `build_slash_commands()` in
+# session.rs. Place it right after the "do" slash command (line 1614-1619)
+# since they are in the same category.
+#
+# Also add "develop" to the test at line 2368 `slash_commands_include_new_commands`.
+
+[[task]]
+id = "T1"
+title = "Acceptance roll-up: P10 owns develop registration"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "P10-slash-command-flags#T3"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["P10-slash-command-flags"]
+acceptance = [
+    "The ACP slash-command catalog registers develop exactly once, preserves its implementation category and pipeline hint, and keeps it out of bare mode.",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/P10-slash-command-flags/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "P10-slash-command-flags#T3 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"T3\"]; paths=[\"plans/P10-slash-command-flags/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-acp --lib -- slash_commands_include_new_commands"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T2"
+title = "Acceptance roll-up: P10 owns develop dispatch"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "P10-slash-command-flags#T4"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = []
+role = "quick-reviewer"
+depends_on = ["T1"]
+depends_on_plan = ["P10-slash-command-flags"]
+acceptance = [
+    "The sole develop dispatch mapping passes the selected model, --yes, and the user prompt to the CLI and appears once in help output.",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/P10-slash-command-flags/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "P10-slash-command-flags#T4 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"T4\"]; paths=[\"plans/P10-slash-command-flags/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo check -p roko-acp && cargo test -p roko-acp -- slash_commands"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T3"
+title = "Skip re-generation in develop interactive mode when plan exists"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 25
+files = ["crates/roko-cli/src/commands/develop.rs"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "95-151", why = "Interactive mode: preview dry-run then re-execute — double generation" },
+    { path = "crates/roko-cli/src/commands/develop.rs", lines = "117-126", why = "Plans dir check + approval screen" },
+]
+symbols = [
+    "pub(crate) async fn cmd_develop(cli, workdir, prompt_args, dry_run, yes, continue_work, provider) -> Result<i32>",
+    "fn show_plan_approval(plans: &[plan_loader::Plan]) -> bool",
+    "plan_loader::load_plans(plans_dir: &Path) -> Result<Vec<Plan>>",
+]
+anti_patterns = [
+    "Do NOT remove the dry-run preview call — the user still needs to see the plan before approving.",
+    "Do NOT break the --yes path — that path already works correctly (single cmd_do call).",
+    "Do NOT change cmd_do itself — the fix should be in develop.rs only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'cmd_do' crates/roko-cli/src/commands/develop.rs | xargs -I{} test {} -le 4"
+fail_msg = "develop.rs should have at most 4 cmd_do calls (continue, dry-run, yes, fallback) — not 5+"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile cleanly"

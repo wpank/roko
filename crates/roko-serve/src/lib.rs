@@ -267,6 +267,8 @@ impl ServerBuilder {
     /// `state.cancel.cancel()` was called).
     #[allow(clippy::missing_panics_doc)]
     pub async fn start_background(mut self) -> Result<(Arc<AppState>, JoinHandle<Result<()>>)> {
+        normalize_serve_dispatch_config(&mut self.config.roko_config)?;
+
         // -- PORT env var override (Railway / cloud platforms) -------------
         // The `PORT` env var lets the platform pick a port; it does NOT imply
         // the operator wants a public bind. Per T3-25 we override only the
@@ -780,13 +782,17 @@ pub fn validate_bind_safety(addr: &str, serve: &ServeConfig) -> Result<()> {
 /// Returns an error if the listener cannot bind to `bind:port` or if the
 /// Axum server exits with an error.
 pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) -> Result<()> {
+    // Validation is the first operation: an invalid caller-constructed state
+    // must not restore snapshots, start workers/watchers, or touch a listener.
+    let mut roko_config = state.load_roko_config().as_ref().clone();
+    normalize_serve_dispatch_config(&mut roko_config)?;
+    state.store_roko_config(roko_config.clone());
+
     let addr = format!("{bind}:{port}");
-    let roko_config = state.load_roko_config();
     validate_bind_safety(&addr, &roko_config.serve)?;
     if let Err(err) = state.restore_snapshot().await {
         warn!(error = %err, "failed to restore server state snapshot; starting fresh");
     }
-    let roko_config = roko_config.as_ref().clone();
     let _config_watcher = config_watcher::start_config_watcher(Arc::clone(&state));
     let _prd_publish_subscriber = start_prd_publish_orchestrator(Arc::clone(&state));
     // Both bridges share a BridgeDedup so they can run simultaneously without
@@ -826,6 +832,11 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
 
     info!("server stopped");
     Ok(())
+}
+
+fn normalize_serve_dispatch_config(config: &mut RokoConfig) -> Result<()> {
+    roko_core::config::loader::normalize_and_validate_dispatch_models(config)
+        .context("validate model configuration before server startup")
 }
 
 fn build_server_router(
@@ -2910,7 +2921,10 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_app_state, resolve_bind_with_port_env, serve_api_or_spa_fallback};
+    use super::{
+        ServerBuildConfig, ServerBuilder, build_app_state, resolve_bind_with_port_env,
+        run_server_with_state, serve_api_or_spa_fallback,
+    };
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
@@ -3067,6 +3081,135 @@ mod tests {
             vec!["claude-sonnet-4-6".to_string()],
         );
         assert_eq!(reloaded.total_observations(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_builder_rejects_ambiguous_models_before_startup() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        for key in ["first", "second"] {
+            config.models.insert(
+                key.to_string(),
+                roko_core::config::schema::ModelProfile {
+                    provider: "provider".to_string(),
+                    slug: "duplicate-slug".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        config.agent.default_model = "first".to_string();
+
+        let build = ServerBuildConfig::new(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Some("127.0.0.1".to_string()),
+            Some(0),
+        );
+        let error = match ServerBuilder::new(build).start_background().await {
+            Err(error) => error,
+            Ok((state, handle)) => {
+                state.shutdown().await;
+                let _ = handle.await;
+                panic!("ambiguous server config unexpectedly started");
+            }
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("validate model configuration before server startup"),
+            "unexpected error: {error:#}"
+        );
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("ambiguous model slug"),
+            "unexpected error chain: {error_chain}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_server_with_state_rejects_invalid_config_before_side_effects() {
+        fn snapshot_tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+            fn visit(
+                root: &std::path::Path,
+                path: &std::path::Path,
+                snapshot: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+            ) {
+                let mut entries = std::fs::read_dir(path)
+                    .expect("read test workdir")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("collect test workdir");
+                entries.sort_by_key(std::fs::DirEntry::path);
+                for entry in entries {
+                    let entry_path = entry.path();
+                    if entry_path.is_dir() {
+                        visit(root, &entry_path, snapshot);
+                    } else {
+                        snapshot.push((
+                            entry_path
+                                .strip_prefix(root)
+                                .expect("path under root")
+                                .to_path_buf(),
+                            std::fs::read(&entry_path).expect("read test file"),
+                        ));
+                    }
+                }
+            }
+
+            let mut snapshot = Vec::new();
+            visit(root, root, &mut snapshot);
+            snapshot
+        }
+
+        let dir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        for key in ["first", "second"] {
+            config.models.insert(
+                key.to_string(),
+                roko_core::config::schema::ModelProfile {
+                    provider: "provider".to_string(),
+                    slug: "duplicate-slug".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        config.agent.default_model = "first".to_string();
+        let state = Arc::new(
+            build_app_state(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                None,
+            )
+            .expect("build app state"),
+        );
+        let before = snapshot_tree(dir.path());
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve probe port");
+        let port = probe.local_addr().expect("probe address").port();
+        drop(probe);
+
+        let error = run_server_with_state(Arc::clone(&state), "127.0.0.1", port)
+            .await
+            .expect_err("invalid state must not start");
+        assert!(
+            format!("{error:#}").contains("ambiguous model slug"),
+            "unexpected error: {error:#}"
+        );
+
+        tokio::task::yield_now().await;
+        assert!(
+            !state.cancel.is_cancelled(),
+            "background shutdown was touched"
+        );
+        assert_eq!(state.supervisor.count().await, 0, "a process was started");
+        assert_eq!(snapshot_tree(dir.path()), before, "workdir was mutated");
+        let rebound = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("validation must happen before listener bind");
+        drop(rebound);
     }
 
     /// T3-25: a `PORT` env override must replace **only** the port, leaving

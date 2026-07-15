@@ -1,0 +1,211 @@
+[meta]
+plan = "P11-runner-v2-default"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T1: Add legacy-runner-v2 to default features in Cargo.toml
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The `legacy-runner-v2` feature is defined but NOT in `default = []`.
+# This means `roko plan run` routes to the Graph Engine (a stub that does
+# nothing). We need to add `legacy-runner-v2` to the default feature list
+# so that `cargo build` without explicit `--features` gets the working runner.
+#
+# In crates/roko-cli/Cargo.toml line 15, change:
+#   default = []
+# To:
+#   default = ["legacy-runner-v2"]
+#
+# That is the ONLY change. Do NOT modify any other line in Cargo.toml.
+#
+[[task]]
+id = "T1"
+title = "Acceptance roll-up: retire the legacy-runner-v2 feature facade"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E12-T03"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["E12-DEAD-CODE-CLEANUP"]
+acceptance = [
+    "The legacy-runner-v2 feature is absent from Cargo.toml and all formerly gated runner tests compile unconditionally; adding the retired feature back is forbidden.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E12-T03 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E12-T03\"]; paths=[\"tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli --no-run"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T2"
+title = "Acceptance roll-up: canonical runner-v2 default"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E01-T01"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = []
+role = "quick-reviewer"
+depends_on = ["T1"]
+depends_on_plan = ["E01-execution-engine"]
+acceptance = [
+    "RunnerV2 is the enum and clap default, a bare plan run enters the live runner, and explicit Graph selection remains available without fabricated success.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E01-T01 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E01-T01\"]; paths=[\"tmp/status-quo/backlog/plans/E01-execution-engine/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo check -p roko-cli"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T3"
+title = "Acceptance roll-up: remove the legacy-runner-v2 source facade"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E12-T03"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = []
+role = "quick-reviewer"
+depends_on = ["T1"]
+depends_on_plan = ["E12-DEAD-CODE-CLEANUP"]
+acceptance = [
+    "No source or test path is conditionally compiled by legacy-runner-v2; the feature definition is removed and the runner remains unconditionally available.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E12-T03 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E12-T03\"]; paths=[\"tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli --no-run"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T4"
+title = "Acceptance roll-up: compile formerly gated runner tests unconditionally"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E12-T03"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = []
+role = "quick-reviewer"
+depends_on = ["T2"]
+depends_on_plan = ["E12-DEAD-CODE-CLEANUP"]
+acceptance = [
+    "Every formerly legacy-runner-v2-gated test remains present, compiles without the feature, and runs under the normal roko-cli test suite.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E12-T03 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E12-T03\"]; paths=[\"tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-cli --no-run"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T5"
+title = "Add TOML validation after plan generate agent completes"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 35
+files = ["crates/roko-cli/src/commands/plan.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "878-896", why = "Generate handler — run_agent_logged call. Validation goes after this returns Ok." },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1003-1010", why = "Regenerate handler already validates — use as reference for TasksFile::parse pattern" },
+]
+symbols = [
+    "roko_cli::task_parser::TasksFile::parse — pub fn parse(path: &Path) -> Result<TasksFile>",
+    "run_agent_logged — async fn run_agent_logged(opts: AgentExecOpts, episode: AgentExecEpisode) -> Result<i32>",
+]
+anti_patterns = [
+    "Do NOT modify the regenerate handler — it already validates.",
+    "Do NOT validate before the agent runs — validate after it completes.",
+    "Do NOT abort on the first invalid file — check all files and report all errors.",
+    "Do NOT import TasksFile at the top of the file — use the full path roko_cli::task_parser::TasksFile.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'TasksFile::parse' crates/roko-cli/src/commands/plan.rs | head -1 && grep -A5 'PlanCmd::Generate' crates/roko-cli/src/commands/plan.rs | grep -q 'validation\\|validate\\|invalid' || grep -c 'validation_failed\\|invalid tasks' crates/roko-cli/src/commands/plan.rs | grep -qv '^0$'"
+fail_msg = "Generate handler must validate tasks.toml after agent completion"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"

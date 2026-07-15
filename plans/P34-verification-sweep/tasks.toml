@@ -1,0 +1,189 @@
+[meta]
+plan = "P34-verification-sweep"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+estimated_total_minutes = 120
+skip_enrichment = true
+
+# =============================================================================
+# P34 — Post-implementation verification sweep
+#
+# These tasks run the full workspace verification pipeline: compile, clippy,
+# test, and release build. They depend on no code changes themselves but
+# verify that the cumulative changes from P31-P33 (and prior plans) do not
+# introduce regressions.
+#
+# Already implemented (not included):
+#   H12 (do slug lookup) -> do_cmd.rs lines 42-57 (wired)
+#   L07 (AcpProgressSink) -> output_sink.rs line 767 (wired)
+#   L08 (ROKO_PROGRESS parse) -> bridge_events.rs line 3974 (wired)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# T1 — Full workspace compile check
+#
+# Verifies no cross-crate type mismatches or import errors exist across
+# the entire workspace after recent plan implementations.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T1"
+title = "Verify full workspace compiles with cargo check"
+description = """
+Run `cargo check --workspace` to verify everything compiles together.
+If there are errors, fix cross-crate type mismatches or import issues.
+
+Focus areas for potential breakage:
+- roko-core config/provider.rs changes (skip_serializing_if helpers)
+- roko-cli note_cluster.rs new module registration
+- roko-cli plan.rs Shorthand/external_subcommand changes
+- roko-agent codex_agent.rs retry logic
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 50
+files = ["Cargo.toml"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "Cargo.toml", lines = "1-30", why = "Workspace members list" },
+]
+symbols = [
+    "workspace.members — list of all crates in the workspace",
+]
+anti_patterns = [
+    "Do NOT add new dependencies unless strictly required to fix compile errors",
+    "Do NOT change public API signatures unless the error forces it",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check --workspace 2>&1 | tail -10"
+fail_msg = "Workspace must compile cleanly"
+timeout_ms = 300000
+
+# ---------------------------------------------------------------------------
+# T2 — Clippy lint sweep
+#
+# Ensures no new clippy warnings are introduced by recent changes.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T2"
+title = "Run clippy on workspace with zero warnings"
+description = """
+Run `cargo clippy --workspace --no-deps -- -D warnings` and fix any
+new warnings introduced by recent plan implementations.
+
+Common clippy issues from these change types:
+- Unused imports from new modules
+- Unnecessary clone() after retry logic refactor
+- Missing #[must_use] on new public functions
+- Redundant pattern matches in new match arms
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 50
+files = ["Cargo.toml"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "Cargo.toml", lines = "1-15", why = "Workspace structure" },
+]
+anti_patterns = [
+    "Do NOT add #[allow(clippy::...)] to suppress warnings — fix the code",
+    "Do NOT change existing behavior to satisfy clippy — only adjust style",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo clippy --workspace --no-deps -- -D warnings 2>&1 | tail -10"
+fail_msg = "No clippy warnings allowed"
+timeout_ms = 300000
+
+# ---------------------------------------------------------------------------
+# T3 — Run workspace test suite
+#
+# Full test suite to verify no regressions from recent changes.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T3"
+title = "Run workspace tests and fix any failures"
+description = """
+Run `cargo test --workspace` to verify no regressions.
+
+Likely areas of test sensitivity:
+- roko-core: ModelProfile serialization round-trip tests (after skip_serializing_if changes)
+- roko-agent: CodexAgent tests (after retry logic addition)
+- roko-cli: plan command tests (after Shorthand variant addition)
+"""
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_loc = 50
+files = ["Cargo.toml"]
+role = "implementer"
+depends_on = ["T2"]
+
+[task.context]
+read_files = [
+    { path = "Cargo.toml", lines = "1-15", why = "Workspace structure" },
+]
+anti_patterns = [
+    "Do NOT skip failing tests — fix the underlying issue",
+    "Do NOT modify test assertions to match wrong behavior — fix the code",
+]
+
+[[task.verify]]
+phase = "test"
+command = "tmp=$(mktemp /tmp/roko-p34-t3.XXXXXX); cargo test --workspace > \"$tmp\" 2>&1; code=$?; if [ \"$code\" -ne 0 ]; then echo \"full test log: $tmp\"; rg -n 'failures:|---- .* stdout ----|panicked at|FAILED|error:' \"$tmp\" | tail -120; tail -80 \"$tmp\"; exit \"$code\"; else tail -80 \"$tmp\"; rm -f \"$tmp\"; fi"
+fail_msg = "All workspace tests must pass"
+timeout_ms = 1800000
+
+# ---------------------------------------------------------------------------
+# T4 — Build release binary and smoke test
+#
+# Ensures the release binary builds and basic CLI commands work.
+# ---------------------------------------------------------------------------
+[[task]]
+id = "T4"
+title = "Build release binary and verify CLI starts"
+description = """
+Build the release binary and verify basic CLI functionality:
+
+1. `cargo build --release -p roko-cli` (must succeed)
+2. `./target/release/roko --version` (must print version)
+3. `./target/release/roko doctor` (should not crash)
+4. `./target/release/roko plan validate plans/ 2>&1` (should not crash)
+
+This catches linker errors, missing features, and startup crashes that
+unit tests don't cover.
+"""
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["Cargo.toml"]
+role = "implementer"
+depends_on = ["T3"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/Cargo.toml", lines = "1-20", why = "CLI crate metadata and binary name" },
+]
+anti_patterns = [
+    "Do NOT skip the release build — it catches different issues than debug builds",
+    "Do NOT accept a crash in doctor or validate as acceptable",
+]
+
+[[task.verify]]
+phase = "integration"
+command = "tmp=$(mktemp /tmp/roko-p34-t4.XXXXXX); cargo build --release -p roko-cli > \"$tmp\" 2>&1; code=$?; if [ \"$code\" -ne 0 ]; then echo \"release build log: $tmp\"; tail -120 \"$tmp\"; exit \"$code\"; else tail -20 \"$tmp\"; rm -f \"$tmp\"; fi"
+fail_msg = "Release build must succeed"
+timeout_ms = 1800000

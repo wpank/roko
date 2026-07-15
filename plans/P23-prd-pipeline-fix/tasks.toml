@@ -1,0 +1,342 @@
+[meta]
+plan = "P23-prd-pipeline-fix"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ────────────────────────────────────────────────────────────────────
+# T1: Give the draft agent read-only tools
+# ────────────────────────────────────────────────────────────────────
+# The draft-new agent has `allowed_tools: Some("none")` (line 468).
+# This means it generates PRDs from thin air without reading the codebase.
+# Change to `Some("Read,Grep,Glob")` matching the plan-generation agent
+# (prd.rs line 1203) so the draft agent can inspect existing code.
+
+[[task]]
+id = "T1"
+title = "Give prd draft-new agent read-only codebase tools"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 5
+files = ["crates/roko-cli/src/commands/prd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "459-470", why = "The AgentExecOpts block with allowed_tools: Some(\"none\") that must change" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "1194-1204", why = "Reference: plan-generation agent already uses Some(\"Read,Grep,Glob\")" },
+    { path = "crates/roko-cli/src/agent_exec.rs", lines = "44-46", why = "allowed_tools field docs: Some(\"none\") disables all, None uses defaults" },
+]
+symbols = ["AgentExecOpts.allowed_tools — pub allowed_tools: Option<&'a str>"]
+anti_patterns = [
+    "Do NOT set allowed_tools to None — that uses provider defaults which may include write tools. Use Some(\"Read,Grep,Glob\") for read-only access.",
+    "Do NOT add Write or Edit tools — the draft agent should NOT modify files directly, it returns markdown as text output.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'allowed_tools: Some(\"Read,Grep,Glob\")' crates/roko-cli/src/commands/prd.rs"
+fail_msg = "allowed_tools must be changed from Some(\"none\") to Some(\"Read,Grep,Glob\") in draft-new flow"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'allowed_tools: Some(\"none\")' crates/roko-cli/src/commands/prd.rs"
+fail_msg = "Old allowed_tools: Some(\"none\") must be removed from draft-new flow"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after changing allowed_tools"
+
+# ────────────────────────────────────────────────────────────────────
+# T2: Update draft-new prompt to use tools instead of forbidding them
+# ────────────────────────────────────────────────────────────────────
+# The system prompt (line 388-395) tells the agent:
+#   "Do NOT use file tools — they are not available."
+# Now that tools ARE available, update the prompt to instruct the agent
+# to use Read/Grep/Glob to inspect the codebase before drafting.
+
+[[task]]
+id = "T2"
+title = "Update draft-new system prompt to instruct tool usage"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/commands/prd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "386-396", why = "The prd_agent_prompt call with instructions saying 'Do NOT use file tools'" },
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "444-449", why = "The task_prompt that is sent to the agent" },
+]
+symbols = ["roko_cli::prd::prd_agent_prompt — fn prd_agent_prompt(workdir: &Path, task_description: &str) -> String"]
+anti_patterns = [
+    "Do NOT remove the instruction to output complete markdown — the agent should still return the PRD as text output, not write it to disk.",
+    "Do NOT tell the agent to write files — it should read codebase files for context but return the PRD as its text response.",
+]
+
+# Change the system prompt fragment from:
+#   "Do NOT use file tools — they are not available."
+# to:
+#   "Use Read, Grep, and Glob tools to inspect the codebase and ground your PRD in actual code. \
+#    Output the complete PRD markdown (with YAML frontmatter) as your response."
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'Do NOT use file tools' crates/roko-cli/src/commands/prd.rs"
+fail_msg = "Must remove the outdated 'Do NOT use file tools' instruction"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Read.*Grep.*Glob' crates/roko-cli/src/commands/prd.rs || grep -q 'inspect the codebase' crates/roko-cli/src/commands/prd.rs"
+fail_msg = "Must instruct the agent to use read-only tools for codebase inspection"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after prompt changes"
+
+# ────────────────────────────────────────────────────────────────────
+# T3: Make validation failure block the draft from being written
+# ────────────────────────────────────────────────────────────────────
+# Currently (lines 549-601), validation runs AFTER the draft is written.
+# If validation has errors (artifact_valid == false), the draft is kept
+# on disk and a message is printed but execution continues.
+# Change: when validation fails with errors, delete the draft file and
+# return exit code 1, so broken PRDs are not persisted.
+
+[[task]]
+id = "T3"
+title = "Block draft write when validation detects errors"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 25
+files = ["crates/roko-cli/src/commands/prd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "549-601", why = "Validation block: report is built, errors printed, but draft stays on disk" },
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "524-530", why = "artifact_success flag and exit code handling" },
+    { path = "crates/roko-cli/src/commands/prd.rs", lines = "632-638", why = "Return value: exit code 0 on success, 1 on empty output, exit_code on failure" },
+]
+symbols = [
+    "ArtifactValidationReport.artifact_valid — pub(crate) artifact_valid: bool",
+    "validate_prd_grounding — pub(crate) fn validate_prd_grounding(prd_content: &str, slug: &str, workspace_members: &[String]) -> ArtifactValidationReport",
+]
+anti_patterns = [
+    "Do NOT remove the validation sidecar write — the sidecar should still be written for debugging even if the draft is deleted.",
+    "Do NOT change the validation logic itself — only change what happens when validation fails (delete draft, return error).",
+    "Do NOT delete the draft if only warnings exist — only delete on errors (artifact_valid == false).",
+]
+
+# After the validation report is built and printed (around line 600),
+# add a check: if !report.artifact_valid, delete the draft file and
+# set artifact_success = false. The existing return logic (line 632-638)
+# will then return exit code 1.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'artifact_valid' crates/roko-cli/src/commands/prd.rs && grep -q 'remove_file' crates/roko-cli/src/commands/prd.rs"
+fail_msg = "Must check artifact_valid and delete draft on validation failure"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c 'remove_file.*target\\|target.*remove_file\\|fs::remove_file' crates/roko-cli/src/commands/prd.rs | grep -qv '^0$'"
+fail_msg = "Must call remove_file on the target path when validation fails"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after adding validation blocking"
+
+# ────────────────────────────────────────────────────────────────────
+# T4: Link plans to PRDs by slug in cmd_status
+# ────────────────────────────────────────────────────────────────────
+# cmd_status (prd.rs:795-801) always prints "—" for plans/tasks/done.
+# Fix: build a HashMap<plan_name, (task_count, done_count)> from the
+# plans directory, then match each PRD slug against the plan names.
+
+[[task]]
+id = "T4"
+title = "Link plans to PRDs by slug match in cmd_status"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-cli/src/prd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/prd.rs", lines = "752-819", why = "cmd_status: the full function that needs rewriting" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "625-647", why = "read_prd_entry: reads slug and status from PRD files" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "33-34", why = "Import: plans_dir as workspace_plans_dir from workspace_paths" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "773-774", why = "plans_root resolution already exists — reuse it" },
+]
+symbols = [
+    "cmd_status — pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()>",
+    "read_prd_entry — fn read_prd_entry(path: &Path) -> PrdEntry",
+    "PrdEntry — pub struct PrdEntry { pub slug, pub title, pub status, pub coverage }",
+    "workspace_plans_dir — plans_dir as workspace_plans_dir (re-export from plan.rs)",
+]
+anti_patterns = [
+    "Do NOT change the function signature — cmd_status(workdir, plans_dir) must stay the same.",
+    "Do NOT use regex for counting tasks — use string matching on 'status = ' like the existing code.",
+    "Do NOT remove the global totals line — keep it, but also add per-PRD breakdown and an unlinked plans list.",
+]
+
+# Implementation:
+# 1. Build HashMap<String, (u32, u32)> from plans_root entries (plan_name -> tasks, done)
+# 2. Track which plan names match a PRD slug
+# 3. In the per-PRD loop, look up plan_stats.get(&entry.slug)
+# 4. Print real numbers when found, "0  —  —" when no plan exists
+# 5. After the loop, print linked/unlinked summary and global totals
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q '\"—\", \"—\", \"—\"' crates/roko-cli/src/prd.rs"
+fail_msg = "Must replace the hardcoded dashes with real plan stats lookup"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'plan_stats' crates/roko-cli/src/prd.rs || grep -q 'HashMap' crates/roko-cli/src/prd.rs"
+fail_msg = "Must build a plan stats map to link PRD slugs to plan directories"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Linked\\|Unlinked\\|unlinked' crates/roko-cli/src/prd.rs"
+fail_msg = "Must show linked/unlinked plan counts in the status output"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after rewriting cmd_status"
+
+# ────────────────────────────────────────────────────────────────────
+# T5: Infer PRD status from directory when frontmatter is missing
+# ────────────────────────────────────────────────────────────────────
+# read_prd_entry (prd.rs:639-646) returns status "unknown" when
+# PrdMeta::parse returns None. Fix: infer "draft" if the file is in
+# the drafts/ directory, "published" if in published/.
+
+[[task]]
+id = "T5"
+title = "Infer PRD status from directory path when frontmatter is missing"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 15
+files = ["crates/roko-cli/src/prd.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/prd.rs", lines = "625-647", why = "read_prd_entry: the function to modify" },
+    { path = "crates/roko-cli/src/workspace_paths.rs", lines = "35-43", why = "drafts_dir and published_dir path structure: .roko/prd/drafts/ and .roko/prd/published/" },
+]
+symbols = [
+    "read_prd_entry — fn read_prd_entry(path: &Path) -> PrdEntry",
+    "PrdMeta::parse — returns Option with parsed YAML frontmatter",
+]
+anti_patterns = [
+    "Do NOT check for exact path strings — use path component matching (contains '/drafts/') not equals.",
+    "Do NOT change the Some(meta) branch — only change the None/else branch.",
+]
+
+# In the else branch (line 639-646), replace the hardcoded "unknown" with:
+#   let status = if path.to_string_lossy().contains("/published/") {
+#       "published"
+#   } else if path.to_string_lossy().contains("/drafts/") {
+#       "draft"
+#   } else {
+#       "unknown"
+#   };
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'contains.*published' crates/roko-cli/src/prd.rs && grep -q 'contains.*drafts' crates/roko-cli/src/prd.rs"
+fail_msg = "Must infer status from directory path containing /published/ or /drafts/"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -c '\"unknown\"' crates/roko-cli/src/prd.rs | grep -q '1'"
+fail_msg = "Should have exactly one 'unknown' fallback remaining (the else case)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile after changing read_prd_entry"
+
+# ────────────────────────────────────────────────────────────────────
+# T6: Add source_prd field to TaskMeta for explicit PRD linkage
+# ────────────────────────────────────────────────────────────────────
+# Currently cmd_status links plans to PRDs by name convention (the plan
+# directory name matches the PRD slug). Add an optional source_prd field
+# to TaskMeta so plans can explicitly declare their originating PRD.
+# The prd plan generator already sets meta.plan = slug, so also have it
+# set source_prd = slug. Then cmd_status can use source_prd as a
+# secondary lookup when the directory name doesn't match.
+
+[[task]]
+id = "T6"
+title = "Add source_prd field to TaskMeta and set it in plan generation"
+status = "ready"
+tier = "integrative"
+model_hint = "claude-sonnet-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/task_parser.rs", "crates/roko-cli/src/prd.rs"]
+role = "implementer"
+depends_on = ["T4"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/task_parser.rs", lines = "1-50", why = "TaskMeta struct definition — add source_prd field" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "1157-1184", why = "Plan generation task_prompt — add source_prd to the TOML quality checklist" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "1400-1410", why = "Where validated TOML is written — could inject source_prd before write" },
+    { path = "crates/roko-cli/src/prd.rs", lines = "752-773", why = "cmd_status — use source_prd as secondary lookup" },
+]
+symbols = [
+    "TaskMeta — struct in task_parser.rs with plan, total, done, status fields",
+    "cmd_status — pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()>",
+]
+anti_patterns = [
+    "Do NOT make source_prd required — it must be Option<String> with #[serde(default)] so existing plans without it still parse.",
+    "Do NOT break existing TOML parsing — the field must be optional with a default.",
+]
+
+# 1. Add `pub source_prd: Option<String>` with #[serde(default)] to TaskMeta
+# 2. In generate_plan_from_prd_with_outcome, after validating the TOML,
+#    inject `source_prd = "<slug>"` into the [meta] section before writing
+# 3. In cmd_status, when building the plan stats map, also parse TaskMeta
+#    to get source_prd and use it as an alternative lookup key
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'source_prd' crates/roko-cli/src/task_parser.rs"
+fail_msg = "Must add source_prd field to TaskMeta"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'source_prd' crates/roko-cli/src/prd.rs"
+fail_msg = "Must use source_prd in plan generation or cmd_status"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "Must compile with new source_prd field"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --lib task_parser 2>&1"
+fail_msg = "Task parser tests must pass with new optional field"

@@ -1,0 +1,151 @@
+[meta]
+plan = "P14-gate-rung-fix"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─────────────────────────────────────────────────────────────────────
+# T1: Push gate steps for advanced rungs when enable_advanced_rungs is true
+# ─────────────────────────────────────────────────────────────────────
+#
+# In `selected_gate_steps` (orchestrate.rs, line 17897), the match arm
+# for Symbol | PropertyTest | Integration at lines 17965-17980 has a bug:
+#
+#   Rung::Symbol | Rung::PropertyTest | Rung::Integration => {
+#       if !gate_config.enable_advanced_rungs {
+#           skipped_count += 1;             // correct: skip when disabled
+#       } else {
+#           tracing::debug!("advanced rung enabled via config");
+#           skipped_count += 1;             // BUG: skip even when enabled!
+#       }
+#   }
+#
+# Both branches increment skipped_count and neither pushes a gate step.
+# When `enable_advanced_rungs = true`, the else branch should construct
+# concrete gate instances and push them onto `steps`.
+#
+# The concrete gates are:
+# - Rung::Symbol → SymbolGate::new(source_roots) where source_roots
+#   comes from the exec_dir (e.g. [exec_dir.join("src"), exec_dir.join("crates")])
+# - Rung::PropertyTest → PropertyTestGate::new(build_system)
+# - Rung::Integration → IntegrationGate::build_test(build_system, "integration")
+#
+# These types are already defined in roko-gate and just need to be imported
+# and instantiated.
+
+[[task]]
+id = "T1"
+title = "Acceptance roll-up: execute advanced rungs on the live runner path"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T05 + E05-T07"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 40
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "Live runner gate dispatch builds real RungExecutionInputs for every available advanced rung, reports unavailable inputs as skipped or not wired, and does not revive the legacy enable_advanced_rungs branch.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E05-T05 \u2014 canonical implementation owner",
+    "E05-T07 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T05\", \"E05-T07\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-gate -- complex_pipeline_has_seven_canonical_rungs && cargo check -p roko-cli -p roko-gate"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T2"
+title = "Acceptance roll-up: remove legacy advanced-rung activation logging"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T07"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = []
+role = "quick-reviewer"
+depends_on = ["T1"]
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "The inert legacy enable_advanced_rungs toggle and its misleading activation log are removed; live gate telemetry reports actual selected rungs and outcomes.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E05-T07 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T07\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo check -p roko-cli -p roko-core"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."
+[[task]]
+id = "T3"
+title = "Acceptance roll-up: prove the canonical complex pipeline"
+status = "ready"
+ownership = "acceptance-roll-up"
+superseded_by = "E05-T05"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 30
+files = []
+role = "quick-reviewer"
+depends_on = []
+depends_on_plan = ["E05-gate-adaptivity-live"]
+acceptance = [
+    "The canonical complex pipeline contains all seven rungs and its test runs against the live-compatible gate configuration without treating unwired rungs as passes.",
+]
+
+[task.context]
+read_files = [
+    { path = "tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml", why = "Canonical implementation owner and acceptance contract" },
+]
+symbols = [
+    "E05-T05 \u2014 canonical implementation owner",
+]
+anti_patterns = [
+    "Do not add a second implementation or public API for this outcome; review the named owner.",
+    "Do not accept this roll-up before every scheduler dependency is complete and its integrated acceptance is green.",
+]
+
+[[task.verify]]
+phase = "ownership"
+command = "python3 -c 'import tomllib; ids=[\"E05-T05\"]; paths=[\"tmp/status-quo/backlog/plans/E05-gate-adaptivity-live/tasks.toml\"]; tasks={t[\"id\"]:t for p in paths for t in tomllib.load(open(p,\"rb\"))[\"task\"]}; assert all(i in tasks for i in ids)'"
+fail_msg = "Every named canonical implementation owner must exist."
+
+[[task.verify]]
+phase = "acceptance"
+command = "cargo test -p roko-gate -- complex_pipeline_has_seven_canonical_rungs"
+fail_msg = "Canonical owner acceptance tests must pass before this roll-up can be accepted."

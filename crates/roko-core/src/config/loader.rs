@@ -136,6 +136,19 @@ pub fn load_config_file(path: &Path, opts: &LoadOptions) -> Result<RokoConfig, L
     load_from_resolved_path(&Some(path.to_path_buf()), opts)
 }
 
+/// Resolve an already-parsed source config with the same runtime layers as a file load.
+///
+/// Transactional config editors use this to validate a prospective effective
+/// value before committing source bytes. Runtime-only layers are applied to
+/// the owned value returned here; the source representation remains separate.
+pub fn resolve_config_source(
+    source: RokoConfig,
+    source_path: &Path,
+    opts: &LoadOptions,
+) -> Result<RokoConfig, LoadConfigError> {
+    resolve_runtime_layers(source, &Some(source_path.to_path_buf()), opts)
+}
+
 /// Load config with full provenance tracking (for CLI `load_resolved_config` compatibility).
 ///
 /// Returns a [`ValidatedConfig`] with diagnostics and provenance info.
@@ -157,24 +170,9 @@ pub fn load_config_validated_with_options(
     // Parse + validate (no env overrides or secret resolution yet).
     let raw = parse_from_resolved_path(&path, opts)?;
 
-    // Apply runtime mutations (global merge, env overrides, secrets).
-    let mut migrated = raw.clone();
-    if opts.merge_global {
-        merge_global_into(&mut migrated);
-    }
-    if opts.apply_env_overrides {
-        migrated.apply_process_env();
-    }
-    if opts.apply_hierarchical_env {
-        apply_hierarchical_env_overrides(&mut migrated);
-    }
-    migrated.interpolate_env_vars();
-    migrated.resolve_file_secrets();
-
-    // Post-merge provider reference validation (same as load_from_resolved_path).
-    if !migrated.models.is_empty() {
-        validate_provider_references(&migrated, &path)?;
-    }
+    // Apply the same runtime layers as ordinary loading while retaining the
+    // parsed source value independently for provenance and safe editing.
+    let migrated = resolve_runtime_layers(raw.clone(), &path, opts)?;
 
     let diagnostics = collect_diagnostics(&migrated);
 
@@ -258,27 +256,8 @@ fn load_from_resolved_path(
     path: &Option<PathBuf>,
     opts: &LoadOptions,
 ) -> Result<RokoConfig, LoadConfigError> {
-    let mut config = parse_from_resolved_path(path, opts)?;
-
-    // Apply runtime mutations.
-    if opts.merge_global {
-        merge_global_into(&mut config);
-    }
-    if opts.apply_env_overrides {
-        config.apply_process_env();
-    }
-    if opts.apply_hierarchical_env {
-        apply_hierarchical_env_overrides(&mut config);
-    }
-    config.interpolate_env_vars();
-    config.resolve_file_secrets();
-
-    // Post-merge provider reference validation.
-    // When strict_validation is enabled in config, dangling model->provider
-    // references become hard errors instead of warnings.
-    if !config.models.is_empty() {
-        validate_provider_references(&config, path)?;
-    }
+    let source = parse_from_resolved_path(path, opts)?;
+    let config = resolve_runtime_layers(source, path, opts)?;
 
     // Emit diagnostics as warnings so callers don't need to opt into
     // load_config_validated() to see slug duplicates and orphaned models.
@@ -298,6 +277,37 @@ fn load_from_resolved_path(
                 );
             }
         }
+    }
+
+    Ok(config)
+}
+
+/// Apply runtime-only config layers to a parsed source value.
+///
+/// File loading, provenance loading, and pre-commit validation all delegate
+/// here so their precedence and validation semantics cannot drift.
+fn resolve_runtime_layers(
+    mut config: RokoConfig,
+    path: &Option<PathBuf>,
+    opts: &LoadOptions,
+) -> Result<RokoConfig, LoadConfigError> {
+    if opts.merge_global {
+        merge_global_into(&mut config);
+    }
+    if opts.apply_env_overrides {
+        config.apply_process_env();
+    }
+    if opts.apply_hierarchical_env {
+        apply_hierarchical_env_overrides(&mut config);
+    }
+    config.interpolate_env_vars();
+    config.resolve_file_secrets();
+
+    // Post-merge provider reference validation.
+    // When strict_validation is enabled in config, dangling model->provider
+    // references become hard errors instead of warnings.
+    if !config.models.is_empty() {
+        validate_provider_references(&config, path)?;
     }
 
     Ok(config)
@@ -342,56 +352,130 @@ fn validate_provider_references(
 pub fn normalize_and_validate_dispatch_models(
     config: &mut RokoConfig,
 ) -> Result<(), LoadConfigError> {
-    if config.models.is_empty() {
-        return Ok(());
-    }
+    let index = DispatchModelIndex::from_config(config)?;
+    normalize_dispatch_references(config, &index, true)
+}
 
-    let mut slug_owners = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for (key, profile) in &config.models {
-        slug_owners
-            .entry(profile.slug.trim().to_string())
-            .or_default()
-            .push(key.clone());
-    }
+/// Normalize source and effective dispatch references against one runtime namespace.
+///
+/// Config editors must derive `effective` through the complete runtime-layer
+/// pipeline before calling this helper. The effective model registry then
+/// governs both projections, so a runtime-layer exact key cannot be mistaken
+/// for a source-only slug alias. Only dispatch reference strings are changed in
+/// `source`; providers, models, secrets, and other runtime overlays are never
+/// copied into it. Source references masked by runtime field overrides remain
+/// verbatim when unresolved, because only the effective projection governs
+/// live dispatch validity.
+pub fn normalize_source_and_effective_dispatch_models(
+    source: &mut RokoConfig,
+    effective: &mut RokoConfig,
+) -> Result<(), LoadConfigError> {
+    let index = DispatchModelIndex::from_config(effective)?;
+    normalize_dispatch_references(effective, &index, true)?;
+    normalize_dispatch_references(source, &index, false)
+}
 
-    for (slug, owners) in &mut slug_owners {
-        owners.sort_unstable();
-        if owners.len() > 1 {
-            return Err(LoadConfigError::AmbiguousModelSlug {
-                slug: slug.clone(),
-                model_keys: owners.join(", "),
+struct DispatchModelIndex {
+    keys: HashSet<String>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+impl DispatchModelIndex {
+    fn from_config(config: &RokoConfig) -> Result<Self, LoadConfigError> {
+        if config.models.is_empty() {
+            return Ok(Self {
+                keys: HashSet::new(),
+                aliases: std::collections::HashMap::new(),
             });
         }
-    }
 
-    let aliases = slug_owners
-        .into_iter()
-        .filter_map(|(slug, owners)| owners.into_iter().next().map(|key| (slug, key)))
-        .collect::<std::collections::HashMap<_, _>>();
-    let keys = config.models.keys().cloned().collect::<HashSet<_>>();
+        let mut slug_owners = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for (key, profile) in &config.models {
+            slug_owners
+                .entry(profile.slug.trim().to_string())
+                .or_default()
+                .push(key.clone());
+        }
+
+        for (slug, owners) in &mut slug_owners {
+            owners.sort_unstable();
+            if owners.len() > 1 {
+                return Err(LoadConfigError::AmbiguousModelSlug {
+                    slug: slug.clone(),
+                    model_keys: owners.join(", "),
+                });
+            }
+        }
+
+        let aliases = slug_owners
+            .into_iter()
+            .filter_map(|(slug, owners)| owners.into_iter().next().map(|key| (slug, key)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let keys = config.models.keys().cloned().collect::<HashSet<_>>();
+
+        Ok(Self { keys, aliases })
+    }
+}
+
+fn normalize_dispatch_references(
+    config: &mut RokoConfig,
+    index: &DispatchModelIndex,
+    reject_unresolved: bool,
+) -> Result<(), LoadConfigError> {
+    if index.keys.is_empty() {
+        return Ok(());
+    }
 
     normalize_model_reference(
         &mut config.agent.default_model,
         "agent.default_model",
-        &keys,
-        &aliases,
+        &index.keys,
+        &index.aliases,
+        reject_unresolved,
     )?;
 
     if let Some(fallback) = config.agent.fallback_model.as_mut() {
-        normalize_model_reference(fallback, "agent.fallback_model", &keys, &aliases)?;
+        normalize_model_reference(
+            fallback,
+            "agent.fallback_model",
+            &index.keys,
+            &index.aliases,
+            reject_unresolved,
+        )?;
     }
 
-    for (tier, model) in &mut config.agent.tier_models {
-        normalize_model_reference(model, &format!("agent.tier_models.{tier}"), &keys, &aliases)?;
+    let mut tiers = config.agent.tier_models.keys().cloned().collect::<Vec<_>>();
+    tiers.sort_unstable();
+    for tier in tiers {
+        let model = config
+            .agent
+            .tier_models
+            .get_mut(&tier)
+            .expect("tier key was collected from the same map");
+        normalize_model_reference(
+            model,
+            &format!("agent.tier_models.{tier}"),
+            &index.keys,
+            &index.aliases,
+            reject_unresolved,
+        )?;
     }
 
-    for (role, role_config) in &mut config.agent.roles {
+    let mut roles = config.agent.roles.keys().cloned().collect::<Vec<_>>();
+    roles.sort_unstable();
+    for role in roles {
+        let role_config = config
+            .agent
+            .roles
+            .get_mut(&role)
+            .expect("role key was collected from the same map");
         if let Some(model) = role_config.model.as_mut() {
             normalize_model_reference(
                 model,
                 &format!("agent.roles.{role}.model"),
-                &keys,
-                &aliases,
+                &index.keys,
+                &index.aliases,
+                reject_unresolved,
             )?;
         }
     }
@@ -404,6 +488,7 @@ fn normalize_model_reference(
     field: &str,
     keys: &HashSet<String>,
     aliases: &std::collections::HashMap<String, String>,
+    reject_unresolved: bool,
 ) -> Result<(), LoadConfigError> {
     let reference = model.trim();
     if keys.contains(reference) {
@@ -414,6 +499,9 @@ fn normalize_model_reference(
     }
     if let Some(key) = aliases.get(reference) {
         *model = key.clone();
+        return Ok(());
+    }
+    if !reject_unresolved {
         return Ok(());
     }
     Err(LoadConfigError::UnresolvedModel {
@@ -872,6 +960,56 @@ base_url = "https://example.com/v1"
     }
 
     #[test]
+    fn in_memory_source_resolution_matches_explicit_file_loading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret_path = dir.path().join("authorization.secret");
+        std::fs::write(&secret_path, "resolved-secret\n").expect("write secret");
+        let config_path = dir.path().join("roko.toml");
+        let source_text = format!(
+            r#"config_version = 2
+
+[providers.test]
+kind = "openai_compat"
+base_url = "https://source.invalid/v1"
+
+[providers.test.extra_headers]
+authorization_file = "{}"
+"#,
+            secret_path.display()
+        );
+        std::fs::write(&config_path, &source_text).expect("write config");
+        let source: RokoConfig = toml::from_str(&source_text).expect("parse source");
+        let retained_source = source.clone();
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let from_file = load_config_file(&config_path, &opts).expect("load file");
+        let from_memory =
+            resolve_config_source(source, &config_path, &opts).expect("resolve source");
+
+        assert_eq!(from_memory, from_file);
+        assert_eq!(
+            from_memory.providers["test"]
+                .extra_headers
+                .as_ref()
+                .and_then(|headers| headers.get("authorization"))
+                .map(String::as_str),
+            Some("resolved-secret")
+        );
+        assert!(
+            retained_source.providers["test"]
+                .extra_headers
+                .as_ref()
+                .is_some_and(|headers| headers.contains_key("authorization_file")),
+            "resolving an owned clone must not mutate the retained source"
+        );
+    }
+
+    #[test]
     fn load_validated_detects_orphaned_models() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1010,6 +1148,244 @@ default_model = "missing"
         let error = normalize_and_validate_dispatch_models(&mut config).unwrap_err();
         assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
         assert!(error.to_string().contains("agent.default_model"));
+    }
+
+    fn dispatch_config_with_model(key: &str, slug: &str) -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            key.to_string(),
+            super::super::schema::ModelProfile {
+                provider: "provider".to_string(),
+                slug: slug.to_string(),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn canonical_model_key_wins_over_another_models_slug() {
+        let mut config = dispatch_config_with_model("stable-key", "provider-stable");
+        config.models.insert(
+            "alias-owner".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "provider".to_string(),
+                slug: "stable-key".to_string(),
+                ..Default::default()
+            },
+        );
+        config.agent.default_model = " stable-key ".to_string();
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config.agent.default_model, "stable-key");
+    }
+
+    #[test]
+    fn effective_exact_key_wins_when_normalizing_retained_source() {
+        let mut source = dispatch_config_with_model("local", "shared");
+        source.agent.default_model = " shared ".to_string();
+        let mut effective = source.clone();
+        effective.models.insert(
+            "shared".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "global-provider".to_string(),
+                slug: "global-model".to_string(),
+                ..Default::default()
+            },
+        );
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "shared");
+        assert_eq!(effective.agent.default_model, "shared");
+        assert_eq!(
+            source.models.len(),
+            1,
+            "effective models leaked into source"
+        );
+        assert!(!source.models.contains_key("shared"));
+    }
+
+    #[test]
+    fn effective_namespace_still_canonicalizes_unique_source_alias() {
+        let mut source = dispatch_config_with_model("local", "provider-model");
+        source.agent.default_model = " provider-model ".to_string();
+        let mut effective = source.clone();
+        effective.models.insert(
+            "global".to_string(),
+            super::super::schema::ModelProfile {
+                provider: "global-provider".to_string(),
+                slug: "global-model".to_string(),
+                ..Default::default()
+            },
+        );
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "local");
+        assert_eq!(effective.agent.default_model, "local");
+        assert!(!source.models.contains_key("global"));
+    }
+
+    #[test]
+    fn masked_unresolved_source_reference_is_retained_after_effective_validation() {
+        let mut source = dispatch_config_with_model("local", "local-model");
+        source.agent.default_model = "masked-source-model".to_string();
+        let mut effective = source.clone();
+        effective.agent.default_model = "local".to_string();
+
+        normalize_source_and_effective_dispatch_models(&mut source, &mut effective).unwrap();
+
+        assert_eq!(source.agent.default_model, "masked-source-model");
+        assert_eq!(effective.agent.default_model, "local");
+    }
+
+    #[test]
+    fn all_dispatch_model_references_normalize_to_canonical_keys() {
+        let mut config = dispatch_config_with_model("focused", "provider-model-v1");
+        config.agent.default_model = "provider-model-v1".to_string();
+        config.agent.fallback_model = Some(" provider-model-v1 ".to_string());
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "provider-model-v1".to_string());
+        config.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("provider-model-v1".to_string()),
+                ..Default::default()
+            },
+        );
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config.agent.default_model, "focused");
+        assert_eq!(config.agent.fallback_model.as_deref(), Some("focused"));
+        assert_eq!(
+            config
+                .agent
+                .tier_models
+                .get("mechanical")
+                .map(String::as_str),
+            Some("focused")
+        );
+        assert_eq!(
+            config
+                .agent
+                .roles
+                .get("reviewer")
+                .and_then(|role| role.model.as_deref()),
+            Some("focused")
+        );
+    }
+
+    #[test]
+    fn unresolved_nested_dispatch_models_report_their_fields() {
+        let mut fallback = dispatch_config_with_model("focused", "provider-model-v1");
+        fallback.agent.default_model = "focused".to_string();
+        fallback.agent.fallback_model = Some("missing".to_string());
+        let error = normalize_and_validate_dispatch_models(&mut fallback).unwrap_err();
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.fallback_model references unresolved model 'missing'"
+        );
+
+        let mut tier = dispatch_config_with_model("focused", "provider-model-v1");
+        tier.agent.default_model = "focused".to_string();
+        tier.agent
+            .tier_models
+            .insert("mechanical".to_string(), "missing".to_string());
+        let error = normalize_and_validate_dispatch_models(&mut tier).unwrap_err();
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.tier_models.mechanical references unresolved model 'missing'"
+        );
+
+        let mut role = dispatch_config_with_model("focused", "provider-model-v1");
+        role.agent.default_model = "focused".to_string();
+        role.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("missing".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let error = normalize_and_validate_dispatch_models(&mut role).unwrap_err();
+
+        assert!(matches!(error, LoadConfigError::UnresolvedModel { .. }));
+        assert_eq!(
+            error.to_string(),
+            "agent.roles.reviewer.model references unresolved model 'missing'"
+        );
+    }
+
+    #[test]
+    fn unresolved_nested_dispatch_models_have_deterministic_first_error() {
+        for reverse_insertion in [false, true] {
+            for _ in 0..64 {
+                let mut tier = dispatch_config_with_model("focused", "provider-model-v1");
+                tier.agent.default_model = "focused".to_string();
+                let entries = if reverse_insertion {
+                    [("zeta", "missing-z"), ("alpha", "missing-a")]
+                } else {
+                    [("alpha", "missing-a"), ("zeta", "missing-z")]
+                };
+                for (name, model) in entries {
+                    tier.agent
+                        .tier_models
+                        .insert(name.to_string(), model.to_string());
+                }
+                let error = normalize_and_validate_dispatch_models(&mut tier).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "agent.tier_models.alpha references unresolved model 'missing-a'"
+                );
+
+                let mut role = dispatch_config_with_model("focused", "provider-model-v1");
+                role.agent.default_model = "focused".to_string();
+                for (name, model) in entries {
+                    role.agent.roles.insert(
+                        name.to_string(),
+                        super::super::schema::RoleOverride {
+                            model: Some(model.to_string()),
+                            ..Default::default()
+                        },
+                    );
+                }
+                let error = normalize_and_validate_dispatch_models(&mut role).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "agent.roles.alpha.model references unresolved model 'missing-a'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_model_registry_preserves_legacy_dispatch_references() {
+        let mut config = RokoConfig::default();
+        config.agent.default_model = "legacy-default".to_string();
+        config.agent.fallback_model = Some("legacy-fallback".to_string());
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "legacy-tier".to_string());
+        config.agent.roles.insert(
+            "reviewer".to_string(),
+            super::super::schema::RoleOverride {
+                model: Some("legacy-role".to_string()),
+                ..Default::default()
+            },
+        );
+        let original = config.clone();
+
+        normalize_and_validate_dispatch_models(&mut config).unwrap();
+
+        assert_eq!(config, original);
     }
 
     #[test]

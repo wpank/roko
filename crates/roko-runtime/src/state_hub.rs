@@ -69,19 +69,47 @@ impl EventLogWriter {
 /// stream.
 ///
 /// Events are published once via [`publish`]. Each call:
-/// 1. Broadcasts the event to live subscribers (WebSocket, SSE).
-/// 2. Records the event in the replay ring for late joiners.
-/// 3. Applies the event to the materialized snapshot so the TUI can borrow it.
-/// 4. Optionally appends to the on-disk event log (`.roko/events.jsonl`).
-///    Shared event log handle that can be cloned into `StateHubSender`s.
+/// 1. Applies the event to the materialized snapshot so the TUI can borrow it.
+/// 2. Optionally appends to the on-disk event log (`.roko/events.jsonl`).
+/// 3. Records and broadcasts the sequenced event to live and replay consumers.
+///
+/// Snapshot commit, append, sequence assignment, and broadcast are serialized,
+/// so a consumer receiving event N can observe snapshot state including N.
+/// The JSONL append remains best-effort and is not a durable event-bus contract.
+/// Shared event log handle that can be cloned into `StateHubSender`s.
 type SharedEventLog = Arc<Mutex<EventLogWriter>>;
+
+/// An atomic cursor/snapshot read of a [`StateHub`].
+///
+/// `next_seq` is the first sequence not represented by `snapshot` at the time
+/// this value was captured. Snapshot-only mutations may also be present.
+pub struct StateHubCursorSnapshot {
+    /// Sequence that the next published event will receive.
+    pub next_seq: u64,
+    /// Materialized state after every event below `next_seq` was applied.
+    pub snapshot: DashboardSnapshot,
+}
+
+/// Race-free replay/live handoff for a StateHub event consumer.
+///
+/// The live receiver is installed before the replay ring and snapshot cursor
+/// are captured while publication is paused. Consequently, `replay` contains
+/// only events below `next_seq`, while `live` starts at `next_seq`.
+pub struct StateHubSubscription {
+    /// Retained events at or after the requested sequence.
+    pub replay: Vec<event_bus::Envelope<DashboardEvent>>,
+    /// Live receiver for events published after the atomic capture.
+    pub live: tokio::sync::broadcast::Receiver<event_bus::Envelope<DashboardEvent>>,
+    /// Cursor and snapshot captured with the replay/live boundary.
+    pub cursor: StateHubCursorSnapshot,
+}
 
 /// Central state management hub for dashboard snapshots, events, and projections.
 pub struct StateHub {
     snapshot_tx: watch::Sender<DashboardSnapshot>,
     snapshot_rx: watch::Receiver<DashboardSnapshot>,
     event_bus: EventBus<DashboardEvent>,
-    /// Serializes the snapshot commit, durable append, and sequence assignment
+    /// Serializes the snapshot commit, best-effort append, and sequence assignment
     /// so subscribers can never observe event N against state older than N.
     publish_lock: Arc<Mutex<()>>,
     /// Optional on-disk event log for persistence across restarts.
@@ -143,9 +171,8 @@ impl StateHub {
         }
     }
 
-    /// Publish an event: apply it to the snapshot, persist it, then broadcast
-    /// and record it in the replay ring.
-    /// optionally persist to the on-disk event log.
+    /// Publish an event: apply it to the snapshot, append it to the optional
+    /// best-effort log, then record and broadcast it on the replay bus.
     /// Returns the sequence number assigned on the internal event bus.
     pub fn publish(&self, event: DashboardEvent) -> u64 {
         let _publish = self
@@ -223,6 +250,42 @@ impl StateHub {
         self.event_bus.subscribe()
     }
 
+    /// Atomically install a live subscriber and capture retained replay state.
+    ///
+    /// This closes the reconnect race caused by calling [`replay_from`](Self::replay_from)
+    /// and [`subscribe_events`](Self::subscribe_events) separately: no publish
+    /// can occur between the two operations, and the returned live stream begins
+    /// exactly at `cursor.next_seq`.
+    pub fn subscribe_events_from(&self, next_seq: u64) -> StateHubSubscription {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live = self.event_bus.subscribe();
+        let replay = self.event_bus.replay_from(next_seq);
+        let cursor = StateHubCursorSnapshot {
+            next_seq: self.event_bus.total_emitted(),
+            snapshot: self.snapshot_rx.borrow().clone(),
+        };
+        StateHubSubscription {
+            replay,
+            live,
+            cursor,
+        }
+    }
+
+    /// Capture the materialized snapshot and its next event sequence atomically.
+    pub fn cursor_snapshot(&self) -> StateHubCursorSnapshot {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        StateHubCursorSnapshot {
+            next_seq: self.event_bus.total_emitted(),
+            snapshot: self.snapshot_rx.borrow().clone(),
+        }
+    }
+
     /// Replay events from the on-disk event log into the snapshot.
     ///
     /// Reads `.roko/events.jsonl`, deserializes each line as a
@@ -268,6 +331,10 @@ impl StateHub {
             Ok(c) => c,
             Err(_) => return 0,
         };
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut count = 0usize;
         self.snapshot_tx.send_modify(|snap| {
             for line in content.lines() {
@@ -466,6 +533,36 @@ mod tests {
         assert!(was_committed, "event was visible before its state commit");
     }
 
+    #[tokio::test]
+    async fn replay_live_handoff_has_no_missing_boundary_event() {
+        let hub = StateHub::new(8);
+        for plan_id in ["before-0", "before-1"] {
+            hub.publish(DashboardEvent::PlanStarted {
+                plan_id: plan_id.into(),
+            });
+        }
+
+        let subscription = hub.subscribe_events_from(1);
+        assert_eq!(subscription.cursor.next_seq, 2);
+        assert_eq!(
+            subscription
+                .replay
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(subscription.cursor.snapshot.plans.contains_key("before-1"));
+
+        let mut live = subscription.live;
+        hub.publish(DashboardEvent::PlanStarted {
+            plan_id: "live-2".into(),
+        });
+        let live_event = live.recv().await.unwrap();
+        assert_eq!(live_event.seq, 2);
+        assert!(hub.current_snapshot().plans.contains_key("live-2"));
+    }
+
     #[test]
     fn atomic_snapshot_update_preserves_published_state() {
         let hub = StateHub::default_capacity();
@@ -480,6 +577,43 @@ mod tests {
         let snapshot = hub.current_snapshot();
         assert!(snapshot.plans.contains_key("p1"));
         assert_eq!(snapshot.cascade_router_json, "router-state");
+    }
+
+    #[test]
+    fn concurrent_publish_and_snapshot_mutation_preserve_every_update() {
+        const OPERATIONS: usize = 32;
+        let hub = Arc::new(StateHub::default_capacity());
+        let barrier = Arc::new(std::sync::Barrier::new(OPERATIONS * 2));
+        let mut workers = Vec::with_capacity(OPERATIONS * 2);
+
+        for index in 0..OPERATIONS {
+            let publish_hub = Arc::clone(&hub);
+            let publish_barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                publish_barrier.wait();
+                publish_hub.publish(DashboardEvent::PlanStarted {
+                    plan_id: format!("plan-{index}"),
+                });
+            }));
+
+            let update_hub = Arc::clone(&hub);
+            let update_barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                update_barrier.wait();
+                update_hub.update_snapshot(|snapshot| {
+                    snapshot.cascade_router_json.push('x');
+                });
+            }));
+        }
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let cursor = hub.cursor_snapshot();
+        assert_eq!(cursor.next_seq, OPERATIONS as u64);
+        assert_eq!(cursor.snapshot.plans.len(), OPERATIONS);
+        assert_eq!(cursor.snapshot.cascade_router_json.len(), OPERATIONS);
     }
 
     #[test]

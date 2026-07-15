@@ -29,11 +29,12 @@ demo/.runtime/
 
 # roko-cli workspace state ---------------------------------------------------
 # Every `roko init` creates one of these; they belong per-workspace, not in git.
-.roko/
 **/.roko/
+!/.roko/
+/.roko/*
+!/.roko/GAPS.md
 
-# Plans (generated per-workspace, not committed) ----------------------------
-plans/
+# Root plans are canonical repository control-plane inputs and stay tracked.
 
 # LLM / sccache / misc caches ------------------------------------------------
 .fastembed_cache/

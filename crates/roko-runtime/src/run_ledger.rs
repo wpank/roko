@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use roko_core::RuntimeEvent;
 use roko_core::foundation::TokenUsage;
 use roko_core::runtime_event::RuntimeEventEnvelope;
+use serde::{Deserialize, Serialize};
 
 use crate::pipeline_state::{CommitOutcome, Phase, WorkflowConfig};
 use crate::workflow_engine::{GateOutcome, WorkflowRunReport};
@@ -36,6 +37,8 @@ pub struct RunLedger {
     pub commit: Option<CommitOutcome>,
     /// Idempotent terminal task attempt records.
     pub task_terminals: Vec<TaskTerminalOutcome>,
+    /// Idempotent typed timeout terminals keyed by exact run/task attempt.
+    pub timeout_terminals: TimeoutTerminalReplay,
     /// Cancellation outcome, when cancellation was requested.
     pub cancellation: Option<CancellationOutcome>,
     /// Event persistence health observed during the run.
@@ -63,6 +66,7 @@ impl RunLedger {
             artifacts: Vec::new(),
             commit: None,
             task_terminals: Vec::new(),
+            timeout_terminals: TimeoutTerminalReplay::default(),
             cancellation: None,
             event_persistence: EventPersistenceHealth::default(),
             checkpoint_path: None,
@@ -195,6 +199,20 @@ impl RunLedger {
         self.commit = Some(outcome.commit_outcome.clone());
         self.task_terminals.push(outcome);
         true
+    }
+
+    /// Record one exact timeout terminal, rejecting a conflicting duplicate.
+    pub fn record_timeout_terminal(
+        &mut self,
+        entry: TimeoutLedgerEntry,
+    ) -> Result<bool, TimeoutLedgerConflict> {
+        if entry.run_id() != self.run_id {
+            return Err(TimeoutLedgerConflict::RunMismatch {
+                ledger_run_id: self.run_id.clone(),
+                entry_run_id: entry.run_id().to_string(),
+            });
+        }
+        self.timeout_terminals.record(entry)
     }
 
     /// Record a cancellation request observed by the workflow owner.
@@ -432,6 +450,237 @@ pub struct TaskTerminalOutcome {
     pub timestamp_ms: u64,
 }
 
+/// CLI-independent identity of one task attempt in a timeout terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TimeoutTaskAttemptRef {
+    /// Plan containing the task.
+    pub plan_id: String,
+    /// Task identifier within the plan.
+    pub task_id: String,
+    /// Monotonic attempt number for the task.
+    pub attempt: u32,
+}
+
+/// CLI-independent gate-like effect kind retained in timeout audit records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutEffectKind {
+    /// Verification probe before agent dispatch.
+    Preflight,
+    /// Post-agent task gate.
+    Gate,
+    /// Plan-level verification.
+    PlanVerify,
+    /// Merge or post-merge verification.
+    Merge,
+}
+
+/// Exact asynchronous effect identity retained in a timeout terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeoutEffectRef {
+    /// Exact task attempt owning the effect.
+    pub attempt: TimeoutTaskAttemptRef,
+    /// Gate-like effect category.
+    pub kind: TimeoutEffectKind,
+    /// Gate rung, including canonical synthetic rungs.
+    pub rung: u32,
+    /// Dispatch generation distinguishing repeated effects.
+    pub generation: u64,
+}
+
+/// Cause of a durable timeout terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutTerminalKind {
+    /// Non-resetting run hard cap.
+    HardRun,
+    /// Whole task-attempt deadline.
+    TaskAttempt,
+    /// Gate-like effect deadline.
+    GateEffect,
+    /// Agent output-silence deadline.
+    AgentSilence,
+    /// Scheduler useful-progress deadline.
+    SchedulerNoProgress,
+    /// Owned producer ended without a matching completion.
+    LostEffect,
+}
+
+/// Durable terminal timeout for one exact task attempt.
+///
+/// The shape intentionally matches the historical runner `timeout` payload,
+/// allowing previously written exact-attempt records to deserialize without a
+/// CLI dependency. `observed_at_ms` is audit data only; deadline restoration
+/// uses the monotonic elapsed duration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTimeoutTerminal {
+    /// Cause of the timeout terminal.
+    pub kind: TimeoutTerminalKind,
+    /// Exact task attempt terminalized by the timeout.
+    pub attempt: TimeoutTaskAttemptRef,
+    /// Exact gate-like effect, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<TimeoutEffectRef>,
+    /// Generic ownership-effect generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_effect: Option<u64>,
+    /// Configured deadline duration.
+    pub limit_ms: u64,
+    /// Monotonic elapsed duration observed by the enforcing process.
+    pub monotonic_elapsed_ms: u64,
+    /// Unix timestamp retained only for audit display and event ordering.
+    pub observed_at_ms: u64,
+}
+
+/// Exact idempotency key for a task timeout terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TimeoutTerminalKey {
+    /// Stable runner invocation identifier.
+    pub run_id: String,
+    /// Plan containing the task.
+    pub plan_id: String,
+    /// Task identifier within the plan.
+    pub task_id: String,
+    /// Monotonic attempt number for the task.
+    pub attempt: u32,
+}
+
+/// Typed JSONL entry in the runtime run ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TimeoutLedgerEntry {
+    /// One exact terminal timeout record.
+    TimeoutRecorded {
+        /// Stable runner invocation identifier.
+        run_id: String,
+        /// Typed timeout terminal.
+        timeout: TaskTimeoutTerminal,
+    },
+}
+
+impl TimeoutLedgerEntry {
+    /// Construct an exact terminal-timeout entry.
+    pub fn timeout_recorded(run_id: impl Into<String>, timeout: TaskTimeoutTerminal) -> Self {
+        Self::TimeoutRecorded {
+            run_id: run_id.into(),
+            timeout,
+        }
+    }
+
+    /// Stable runner invocation identifier.
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::TimeoutRecorded { run_id, .. } => run_id,
+        }
+    }
+
+    /// Typed terminal timeout payload.
+    pub fn timeout(&self) -> &TaskTimeoutTerminal {
+        match self {
+            Self::TimeoutRecorded { timeout, .. } => timeout,
+        }
+    }
+
+    /// Compute the exact idempotency key.
+    pub fn key(&self) -> TimeoutTerminalKey {
+        let timeout = self.timeout();
+        TimeoutTerminalKey {
+            run_id: self.run_id().to_string(),
+            plan_id: timeout.attempt.plan_id.clone(),
+            task_id: timeout.attempt.task_id.clone(),
+            attempt: timeout.attempt.attempt,
+        }
+    }
+}
+
+/// Monotonic deadline data safe to restore in a new process.
+///
+/// Wall-clock audit timestamps are deliberately absent. A new monotonic
+/// baseline is derived only from elapsed duration, saturating at the new
+/// process origin rather than converting unix time into an `Instant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeoutDeadlineIntent {
+    /// Timeout cause whose deadline intent is restored.
+    pub kind: TimeoutTerminalKind,
+    /// Configured deadline duration.
+    pub limit_ms: u64,
+    /// Previously observed monotonic elapsed duration.
+    pub elapsed_ms: u64,
+}
+
+impl TaskTimeoutTerminal {
+    /// Return restart-safe monotonic deadline intent, excluding wall time.
+    pub fn deadline_intent(&self) -> TimeoutDeadlineIntent {
+        TimeoutDeadlineIntent {
+            kind: self.kind,
+            limit_ms: self.limit_ms,
+            elapsed_ms: self.monotonic_elapsed_ms,
+        }
+    }
+}
+
+impl TimeoutDeadlineIntent {
+    /// Remaining deadline budget after the persisted monotonic elapsed time.
+    pub fn remaining_ms(self) -> u64 {
+        self.limit_ms.saturating_sub(self.elapsed_ms)
+    }
+
+    /// Derive a baseline in the new process's monotonic domain.
+    pub fn resumed_baseline_ms(self, monotonic_now_ms: u64) -> u64 {
+        monotonic_now_ms.saturating_sub(self.elapsed_ms)
+    }
+}
+
+/// Ordered, idempotent replay of typed task timeout terminals.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TimeoutTerminalReplay {
+    entries: Vec<TimeoutLedgerEntry>,
+}
+
+impl TimeoutTerminalReplay {
+    /// Insert a terminal exactly once, rejecting a conflicting same-key fact.
+    pub fn record(&mut self, entry: TimeoutLedgerEntry) -> Result<bool, TimeoutLedgerConflict> {
+        let key = entry.key();
+        if let Some(existing) = self.entries.iter().find(|existing| existing.key() == key) {
+            if existing == &entry {
+                return Ok(false);
+            }
+            return Err(TimeoutLedgerConflict::ConflictingTerminal { key });
+        }
+        self.entries.push(entry);
+        Ok(true)
+    }
+
+    /// Ordered unique timeout terminals.
+    pub fn entries(&self) -> &[TimeoutLedgerEntry] {
+        &self.entries
+    }
+
+    /// Look up an exact timeout terminal.
+    pub fn get(&self, key: &TimeoutTerminalKey) -> Option<&TimeoutLedgerEntry> {
+        self.entries.iter().find(|entry| entry.key() == *key)
+    }
+}
+
+/// A duplicate timeout key carried a different terminal fact.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TimeoutLedgerConflict {
+    /// An exact key was already occupied by a different timeout fact.
+    #[error("timeout terminal conflicts with the existing exact key {key:?}")]
+    ConflictingTerminal {
+        /// Exact occupied key.
+        key: TimeoutTerminalKey,
+    },
+    /// An entry was offered to a run ledger with a different run identifier.
+    #[error("timeout entry run {entry_run_id} does not belong to ledger {ledger_run_id}")]
+    RunMismatch {
+        /// Run identifier owned by the in-memory ledger.
+        ledger_run_id: String,
+        /// Run identifier carried by the rejected entry.
+        entry_run_id: String,
+    },
+}
+
 impl GateRunOutcome {
     fn to_report_gate(&self) -> GateOutcome {
         GateOutcome {
@@ -561,6 +810,31 @@ fn non_empty(value: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    fn timeout_entry(observed_at_ms: u64) -> TimeoutLedgerEntry {
+        let attempt = TimeoutTaskAttemptRef {
+            plan_id: "plan".into(),
+            task_id: "T1".into(),
+            attempt: 2,
+        };
+        TimeoutLedgerEntry::timeout_recorded(
+            "run-1",
+            TaskTimeoutTerminal {
+                kind: TimeoutTerminalKind::LostEffect,
+                attempt: attempt.clone(),
+                effect: Some(TimeoutEffectRef {
+                    attempt,
+                    kind: TimeoutEffectKind::Gate,
+                    rung: 1,
+                    generation: 17,
+                }),
+                owner_effect: Some(17),
+                limit_ms: 500,
+                monotonic_elapsed_ms: 725,
+                observed_at_ms,
+            },
+        )
+    }
+
     #[test]
     fn run_ledger_report_compat_uses_agent_model_provider_and_usage() {
         let mut ledger = RunLedger::new(
@@ -656,5 +930,65 @@ mod tests {
                 hash: "abc123".into()
             })
         );
+    }
+
+    #[test]
+    fn typed_timeout_terminal_is_serde_stable_and_idempotent_on_replay() {
+        let entry = timeout_entry(123);
+        let encoded = serde_json::to_string(&entry).unwrap();
+        assert!(encoded.contains("\"kind\":\"timeout_recorded\""));
+        let decoded: TimeoutLedgerEntry = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, entry);
+
+        let mut replay = TimeoutTerminalReplay::default();
+        assert_eq!(replay.record(decoded.clone()), Ok(true));
+        assert_eq!(replay.record(decoded), Ok(false));
+        assert_eq!(replay.entries(), &[entry]);
+    }
+
+    #[test]
+    fn timeout_replay_rejects_conflicting_fact_for_same_exact_key() {
+        let first = timeout_entry(123);
+        let mut conflicting = timeout_entry(123);
+        let TimeoutLedgerEntry::TimeoutRecorded { timeout, .. } = &mut conflicting;
+        timeout.kind = TimeoutTerminalKind::GateEffect;
+
+        let mut replay = TimeoutTerminalReplay::default();
+        assert_eq!(replay.record(first), Ok(true));
+        assert!(matches!(
+            replay.record(conflicting),
+            Err(TimeoutLedgerConflict::ConflictingTerminal { .. })
+        ));
+        assert_eq!(replay.entries().len(), 1);
+    }
+
+    #[test]
+    fn run_ledger_keys_timeout_by_run_plan_task_and_attempt() {
+        let mut ledger = RunLedger::new("run-1", "prompt", WorkflowConfig::express(), 1);
+        let entry = timeout_entry(123);
+        let key = entry.key();
+        assert_eq!(ledger.record_timeout_terminal(entry.clone()), Ok(true));
+        assert_eq!(ledger.record_timeout_terminal(entry), Ok(false));
+        assert!(ledger.timeout_terminals.get(&key).is_some());
+
+        let wrong_run =
+            TimeoutLedgerEntry::timeout_recorded("run-2", timeout_entry(123).timeout().clone());
+        assert!(matches!(
+            ledger.record_timeout_terminal(wrong_run),
+            Err(TimeoutLedgerConflict::RunMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn resume_deadline_intent_never_converts_wall_clock_to_monotonic_time() {
+        let low_wall = timeout_entry(0);
+        let high_wall = timeout_entry(u64::MAX);
+        let low_intent = low_wall.timeout().deadline_intent();
+        let high_intent = high_wall.timeout().deadline_intent();
+
+        assert_eq!(low_intent, high_intent);
+        assert_eq!(low_intent.remaining_ms(), 0);
+        assert_eq!(low_intent.resumed_baseline_ms(1_000), 275);
+        assert_eq!(low_intent.resumed_baseline_ms(10), 0);
     }
 }

@@ -1,0 +1,338 @@
+[meta]
+plan = "P08-search-command-fix"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T1: Add recency_filter field to SearchQuery + rewrite search_batch to single-query
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The core bug: search_batch wraps queries in {"queries": [...]} but Perplexity
+# expects a flat {"query": "..."} at the top level. There is no batch endpoint.
+#
+# Steps:
+# 1. Add a `recency_filter: Option<String>` field to SearchQuery (line 42-54).
+#    It must be `#[serde(skip)]` like date_range since it's converted in query_to_wire.
+#
+# 2. Add recency_filter handling to query_to_wire (after line 131):
+#    ```rust
+#    if let Some(ref recency) = q.recency_filter {
+#        obj["search_recency_filter"] = json!(recency);
+#    }
+#    ```
+#
+# 3. Rewrite `search` method (lines 195-202) to do a DIRECT single-query POST:
+#    - Build wire body via query_to_wire (already returns the correct flat object)
+#    - Serialize body, POST to endpoint, parse response
+#    - Parse response.results as flat Vec<SearchResult> (NOT nested per-query)
+#    - Return SearchResponse { query: q.query.clone(), results }
+#
+# 4. Rewrite `search_batch` (lines 141-188) to loop over queries calling self.search():
+#    ```rust
+#    pub async fn search_batch(&self, queries: &[SearchQuery]) -> Result<Vec<SearchResponse>, SearchError> {
+#        let mut responses = Vec::with_capacity(queries.len());
+#        for q in queries {
+#            responses.push(self.search_single(q).await?);
+#        }
+#        Ok(responses)
+#    }
+#    ```
+#
+# 5. Remove MAX_BATCH_SIZE const (line 18) and TooManyQueries variant (lines 35-37).
+#    The old search() convenience method (lines 195-202) should delegate to search_single.
+#
+# 6. Update the module doc comment (line 7) to remove "Multi-query bundling" claim.
+
+[[task]]
+id = "T1"
+title = "Rewrite PerplexitySearchClient to use single-query API format"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 60
+files = ["crates/roko-agent/src/perplexity/search.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/perplexity/search.rs", lines = "1-203", why = "Full client impl: SearchQuery struct (42-54), query_to_wire (119-132), search_batch (141-188), search convenience (195-202)" },
+    { path = "crates/roko-agent/src/perplexity/types.rs", lines = "22-29", why = "SearchResult struct fields: url, title, content, date, last_updated — response parsing target" },
+    { path = "crates/roko-agent/src/perplexity/types.rs", lines = "39-54", why = "SearchOptions has search_recency_filter field — confirms the Perplexity wire field name" },
+]
+symbols = [
+    "SearchQuery — pub struct with query, domain_filter, date_range, region fields (line 42)",
+    "PerplexitySearchClient::query_to_wire — fn(q: &SearchQuery) -> Value (line 119)",
+    "PerplexitySearchClient::search_batch — pub async fn(&self, queries: &[SearchQuery]) -> Result<Vec<SearchResponse>, SearchError> (line 141)",
+    "PerplexitySearchClient::search — pub async fn(&self, query: &str) -> Result<SearchResponse, SearchError> (line 195)",
+    "SearchResult — pub struct { url, title, content, date, last_updated } (types.rs line 23)",
+    "SearchError::TooManyQueries — variant to remove (line 36)",
+]
+anti_patterns = [
+    "Do NOT wrap the query in {\"queries\": [...]} — Perplexity has no batch endpoint.",
+    "Do NOT parse response as nested per-query grouping — Perplexity returns flat {\"results\": [...]}.",
+    "Do NOT remove the search_batch method entirely — callers depend on it. Just make it loop over single queries.",
+    "Do NOT change the HttpPoster trait or its mock — tests depend on the current interface.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'recency_filter' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "SearchQuery must have a recency_filter field"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'MAX_BATCH_SIZE' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "MAX_BATCH_SIZE const must be removed (no batch endpoint)"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'TooManyQueries' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "TooManyQueries error variant must be removed"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'search_recency_filter' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "query_to_wire must handle search_recency_filter for the Perplexity API"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-agent 2>&1"
+fail_msg = "roko-agent crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T2: Fix date format in research.rs from ISO 8601 to MM/DD/YYYY
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The SearchQuery date_range is formatted as "2024-01-01" (ISO 8601) but
+# Perplexity expects "01/01/2024" (MM/DD/YYYY).
+#
+# Additionally, the better fix is to use Perplexity's native search_recency_filter
+# instead of computing date ranges. The recency_filter field was just added to
+# SearchQuery in T1.
+#
+# Steps:
+# 1. In ResearchCmd::Search handler (line 733-746), replace the date_range computation
+#    with setting recency_filter directly:
+#    ```rust
+#    let recency_filter = recency.as_deref().map(|r| match r {
+#        "hour" | "day" | "week" | "month" | "year" => r.to_string(),
+#        _ => "month".to_string(),
+#    });
+#    ```
+#
+# 2. Set it on the SearchQuery (around line 748-757):
+#    ```rust
+#    let search_query = SearchQuery {
+#        query: query_str.clone(),
+#        domain_filter: if domains.is_empty() { None } else { Some(domains) },
+#        date_range: None,
+#        recency_filter,
+#        ..Default::default()
+#    };
+#    ```
+#
+# 3. Remove the date_range computation block (lines 733-746) entirely.
+
+[[task]]
+id = "T2"
+title = "Replace date_range with native recency_filter in search command"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 20
+files = ["crates/roko-cli/src/commands/research.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/research.rs", lines = "718-765", why = "ResearchCmd::Search handler: date_range computation (733-746), SearchQuery construction (748-757), search_batch call (762-764)" },
+    { path = "crates/roko-agent/src/perplexity/search.rs", lines = "40-54", why = "SearchQuery struct with new recency_filter field from T1" },
+]
+symbols = [
+    "ResearchCmd::Search — enum variant handler at line 718",
+    "SearchQuery — struct { query, domain_filter, date_range, recency_filter, region }",
+    "PerplexitySearchClient::search_batch — pub async fn(&self, queries: &[SearchQuery]) -> Result<Vec<SearchResponse>, SearchError>",
+]
+anti_patterns = [
+    "Do NOT keep both date_range AND recency_filter — use only recency_filter for the /search command.",
+    "Do NOT remove the date_range field from SearchQuery itself — other callers may use it.",
+    "Do NOT change the --recency CLI arg name — only change how it's mapped to the API.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'format(\"%Y-%m-%d\")' crates/roko-cli/src/commands/research.rs"
+fail_msg = "ISO 8601 date format must be removed from search command"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'recency_filter' crates/roko-cli/src/commands/research.rs"
+fail_msg = "Search command must use native recency_filter"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli crate must compile"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T3: Update tests to match real Perplexity API response format
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# All existing tests use the fabricated batch format where the response is
+# {"results": [{"query": "...", "results": [...]}]}. The real API returns
+# {"results": [{"url": "...", "title": "...", "content": "..."}]}.
+#
+# Steps:
+# 1. Replace canned_results helper (lines 269-291) to return flat format:
+#    ```rust
+#    fn canned_results(results: &[(&str, &str, &str)]) -> String {
+#        let items: Vec<Value> = results.iter().map(|(url, title, content)| {
+#            json!({ "url": url, "title": title, "content": content, "date": null, "last_updated": null })
+#        }).collect();
+#        json!({ "results": items }).to_string()
+#    }
+#    ```
+#
+# 2. Remove canned_batch helper (lines 293-313) entirely — no batch endpoint.
+#
+# 3. Update perplexity_search_single_returns_results (line 318):
+#    - Use new canned_results (no query param)
+#    - Call client.search_single() or client.search() instead
+#
+# 4. Update perplexity_search_sends_correct_endpoint_and_body (line 345):
+#    - Assert body has top-level "query" field, NOT "queries" array
+#
+# 5. Update batch tests (lines 377-427):
+#    - perplexity_search_batch_returns_one_response_per_query: mock should
+#      be called twice (once per query), not once with batch body
+#    - perplexity_search_batch_sends_all_queries: verify sequential calls
+#    - Remove perplexity_search_batch_rejects_more_than_5_queries (line 430)
+#    - Remove perplexity_search_max_batch_5_succeeds (line 607)
+#
+# 6. Update filter tests (lines 449-498):
+#    - Body assertions should check top-level fields, not queries[0]
+#    - e.g. parsed["search_domain_filter"] instead of parsed["queries"][0]["search_domain_filter"]
+#
+# 7. Update perplexity_search_result_fields_are_populated (line 544):
+#    - Response is flat: {"results": [{url, title, content, date}]}
+
+[[task]]
+id = "T3"
+title = "Update search tests to match real Perplexity API response format"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-20250514"
+max_loc = 80
+files = ["crates/roko-agent/src/perplexity/search.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/perplexity/search.rs", lines = "205-627", why = "All test code: MockPoster (218-263), canned_results (269-291), canned_batch (293-313), single tests (317-342), body test (345-356), batch tests (377-445), filter tests (449-498), error tests (503-539), result field test (543-568), edge cases (572-626)" },
+    { path = "crates/roko-agent/src/perplexity/types.rs", lines = "22-29", why = "SearchResult fields for constructing mock responses" },
+]
+symbols = [
+    "canned_results — fn(query: &str, results: &[(&str, &str, &str)]) -> String (line 269) — REWRITE",
+    "canned_batch — fn(entries: &[(&str, &[(&str, &str, &str)])]) -> String (line 293) — REMOVE",
+    "MockPoster — struct + HttpPoster impl for test mocking (line 218)",
+    "PerplexitySearchClient::search — rewritten in T1 to do single-query POST",
+    "PerplexitySearchClient::search_batch — rewritten in T1 to loop over single queries",
+]
+anti_patterns = [
+    "Do NOT leave any test asserting queries[0] or queries array — batch format is gone.",
+    "Do NOT remove error handling tests (http error, api error, malformed json, missing results) — those are still valid.",
+    "Do NOT change MockPoster or HttpPoster trait — only change the mock responses and assertions.",
+    "Do NOT leave the TooManyQueries test — that error variant was removed in T1.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'canned_batch' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "canned_batch helper must be removed (no batch endpoint)"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'TooManyQueries' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "TooManyQueries test must be removed"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'queries.*array' crates/roko-agent/src/perplexity/search.rs"
+fail_msg = "No test should assert a queries array in the request body"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-agent -- perplexity_search 2>&1"
+fail_msg = "All perplexity search tests must pass"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4: Add serde(alias = "snippet") to SearchResult.content
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Perplexity's search API may return "snippet" instead of "content" in some
+# response modes. Adding a serde alias ensures both field names deserialize
+# correctly without breaking existing code that uses .content.
+#
+# Steps:
+# 1. In types.rs, add #[serde(alias = "snippet")] to the content field (line 26):
+#    ```rust
+#    #[serde(alias = "snippet")]
+#    pub content: String,
+#    ```
+#
+# 2. Add a test that verifies "snippet" deserializes into content:
+#    ```rust
+#    #[test]
+#    fn search_result_snippet_alias() {
+#        let json = json!({ "url": "https://x.com", "title": "T", "snippet": "S", "date": null, "last_updated": null });
+#        let result: SearchResult = serde_json::from_value(json).expect("snippet alias");
+#        assert_eq!(result.content, "S");
+#    }
+#    ```
+
+[[task]]
+id = "T4"
+title = "Add serde snippet alias to SearchResult.content field"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5-20250514"
+max_loc = 15
+files = ["crates/roko-agent/src/perplexity/types.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/perplexity/types.rs", lines = "22-29", why = "SearchResult struct definition — content field on line 26 needs alias" },
+    { path = "crates/roko-agent/src/perplexity/types.rs", lines = "129-170", why = "Existing tests section — add the snippet alias test here" },
+]
+symbols = [
+    "SearchResult — pub struct { url: String, title: String, content: String, date: Option<String>, last_updated: Option<String> } (line 23)",
+]
+anti_patterns = [
+    "Do NOT rename the field from content to snippet — existing code uses .content everywhere.",
+    "Do NOT add Default derive to SearchResult — it doesn't have one and shouldn't.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'alias.*snippet' crates/roko-agent/src/perplexity/types.rs"
+fail_msg = "SearchResult.content must have #[serde(alias = \"snippet\")]"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'snippet_alias\\|snippet.*alias' crates/roko-agent/src/perplexity/types.rs"
+fail_msg = "Must have a test for the snippet alias"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo test -p roko-agent -- search_result_snippet 2>&1"
+fail_msg = "Snippet alias test must pass"

@@ -2190,21 +2190,15 @@ impl TuiState {
 
                 // `task_outputs` is an authoritative ring, not an event delta.
                 // Re-appending it on every snapshot duplicates the same lines
-                // forever. Replace the cached ring when the snapshot has one,
-                // otherwise retain the previous row for sources that do not
-                // publish task output.
+                // forever, while retaining an absent or explicitly empty ring
+                // leaks output across task transitions. Replace the cached
+                // value on every connected snapshot, including with empty.
                 let output_lines = snap
                     .task_outputs
                     .get(&snap_current_task)
-                    .filter(|lines| !lines.is_empty())
                     .map(bounded_output_lines)
-                    .or_else(|| prev_row.map(|row| row.output_lines.clone()))
                     .unwrap_or_default();
-                let last_output_line = output_lines
-                    .last()
-                    .cloned()
-                    .or_else(|| prev_row.map(|row| row.last_output_line.clone()))
-                    .unwrap_or_default();
+                let last_output_line = output_lines.last().cloned().unwrap_or_default();
 
                 AgentRow {
                     id: agent.agent_id.clone(),
@@ -5086,6 +5080,43 @@ tier = "focused"
         assert_eq!(state.agents[0].output_lines.len(), MAX_AGENT_OUTPUT_LINES);
         assert_eq!(state.agents[0].output_lines[0], "line-50");
         assert_eq!(state.agents[0].output_lines[49], "line-99");
+    }
+
+    #[test]
+    fn connected_snapshot_empty_output_ring_clears_previous_task_output() {
+        let mut state = TuiState::default();
+        state.agents.push(AgentRow {
+            id: "agent-1".into(),
+            active: true,
+            current_task: "task-1".into(),
+            output_lines: vec!["output from task-1".into()],
+            last_output_line: "output from task-1".into(),
+            ..AgentRow::default()
+        });
+
+        let mut snap = roko_core::DashboardSnapshot::default();
+        snap.agents.insert(
+            "agent-1".into(),
+            roko_core::dashboard_snapshot::AgentState {
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                active: true,
+                output_bytes: 0,
+                model: "test-model".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+                current_task: "task-2".into(),
+                current_plan: "plan-1".into(),
+            },
+        );
+        snap.task_outputs.insert("task-2".into(), VecDeque::new());
+
+        state.update_from_dashboard_snapshot(&snap);
+
+        assert!(state.agents[0].output_lines.is_empty());
+        assert!(state.agents[0].last_output_line.is_empty());
+        assert_eq!(state.task_output_tails.get("task-2"), Some(&Vec::new()));
     }
 
     #[test]

@@ -1,0 +1,397 @@
+[meta]
+plan = "P17-cli-output-format"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+
+# ─── T1: Create CliOutput wrapper ──────────────────────────────────────
+
+[[task]]
+id = "T1"
+title = "Create CliOutput wrapper struct in cli_output.rs"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 60
+files = ["crates/roko-cli/src/cli_output.rs", "crates/roko-cli/src/lib.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/output_format.rs", lines = "1-50", why = "Understand the existing clack primitives (intro, step, bar, success, error, warning, divider, branch, end, note) to wrap" },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "198-235", why = "See the step/bar/success/error/warning/divider signatures" },
+    { path = "crates/roko-cli/src/inline/symbols.rs", lines = "1-57", why = "Symbol constants available (PASS, FAIL, WARN, ARROW, etc.)" },
+    { path = "crates/roko-cli/src/lib.rs", lines = "95-100", why = "Module declarations — add pub mod cli_output here" },
+]
+symbols = [
+    "output_format::intro(title: &str)",
+    "output_format::step(label: &str, value: &str)",
+    "output_format::bar(text: &str)",
+    "output_format::success(msg: &str)",
+    "output_format::error(msg: &str)",
+    "output_format::warning(msg: &str)",
+    "output_format::divider()",
+    "output_format::branch(text: &str)",
+    "output_format::end(text: &str)",
+    "output_format::note(text: &str)",
+    "output_format::dim(s: &str) -> String",
+    "output_format::cyan(s: &str) -> String",
+    "output_format::green(s: &str) -> String",
+    "output_format::red(s: &str) -> String",
+    "output_format::bold(s: &str) -> String",
+]
+anti_patterns = [
+    "Do NOT add new dependencies — wrap existing output_format functions only.",
+    "Do NOT use println! or eprintln! inside CliOutput — delegate to output_format.",
+    "Do NOT make quiet suppress error() — errors always show.",
+]
+
+# Create a new file crates/roko-cli/src/cli_output.rs with:
+#
+# pub struct CliOutput { quiet: bool }
+#
+# impl CliOutput {
+#     pub fn new(quiet: bool) -> Self { Self { quiet } }
+#     pub fn intro(&self, title: &str) { if !self.quiet { output_format::intro(title); } }
+#     pub fn step(&self, label: &str, value: &str) { if !self.quiet { output_format::step(label, value); } }
+#     pub fn bar(&self, text: &str) { if !self.quiet { output_format::bar(text); } }
+#     pub fn note(&self, text: &str) { if !self.quiet { output_format::note(text); } }
+#     pub fn success(&self, msg: &str) { if !self.quiet { output_format::success(msg); } }
+#     pub fn error(&self, msg: &str) { output_format::error(msg); }  // always show
+#     pub fn warning(&self, msg: &str) { if !self.quiet { output_format::warning(msg); } }
+#     pub fn divider(&self) { if !self.quiet { output_format::divider(); } }
+#     pub fn branch(&self, text: &str) { if !self.quiet { output_format::branch(text); } }
+#     pub fn end(&self, text: &str) { if !self.quiet { output_format::end(text); } }
+# }
+#
+# Then add `pub mod cli_output;` to lib.rs near line 98.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct CliOutput' crates/roko-cli/src/cli_output.rs"
+fail_msg = "CliOutput struct not found in cli_output.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub mod cli_output' crates/roko-cli/src/lib.rs"
+fail_msg = "cli_output module not declared in lib.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn error' crates/roko-cli/src/cli_output.rs"
+fail_msg = "CliOutput must have an error() method"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T2: Downgrade noisy config warnings to debug ─────────────────────
+
+[[task]]
+id = "T2"
+title = "Downgrade duplicate model slug warnings to debug level"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 10
+files = ["crates/roko-core/src/config/loader.rs"]
+role = "implementer"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/loader.rs", lines = "283-301", why = "Diagnostic emission loop — change tracing::warn! to tracing::debug! here" },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "522-542", why = "collect_diagnostics: duplicate slug detection — this generates the noisy warnings" },
+    { path = "crates/roko-core/src/config/loader.rs", lines = "835-845", why = "Test that checks for duplicate slug diagnostics — verify test still passes after change" },
+]
+symbols = [
+    "fn collect_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic>",
+    "tracing::warn!(config_key = %diag.key, \"config warning: {}\", diag.message)",
+]
+anti_patterns = [
+    "Do NOT remove the diagnostics — just lower them from warn! to debug!.",
+    "Do NOT change the dedup logic (emitted.insert) — it still deduplicates at debug level.",
+    "Do NOT modify the collect_diagnostics function itself.",
+]
+
+# In loader.rs around line 294, change:
+#   tracing::warn!(config_key = %diag.key, "config warning: {}", diag.message);
+# To:
+#   tracing::debug!(config_key = %diag.key, "config warning: {}", diag.message);
+#
+# This eliminates the 3-5 "duplicate model slug" warnings that fire on every
+# CLI command invocation. They still appear in .roko/roko.log at debug level.
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'tracing::debug!' crates/roko-core/src/config/loader.rs && ! grep -q 'tracing::warn!.*config warning' crates/roko-core/src/config/loader.rs"
+fail_msg = "Config diagnostic emission must use debug!, not warn!"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-core config::loader 2>&1"
+fail_msg = "Config loader tests must pass"
+
+# ─── T3: Migrate simple path eprintln! calls ──────────────────────────
+
+[[task]]
+id = "T3"
+title = "Replace eprintln! calls in run_simple_path with CliOutput"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 20
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "107-155", why = "run_simple_path function — contains 2 eprintln! calls at lines 117-121 to replace" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "14-28", why = "cmd_do entry point — see cli param for quiet flag" },
+    { path = "crates/roko-cli/src/cli_output.rs", lines = "1-30", why = "CliOutput API created in T1" },
+]
+symbols = [
+    "async fn run_simple_path(cli: &Cli, workdir: &Path, prompt: &str, complexity: PlanComplexity, no_cascade: bool, provider: Option<String>) -> Result<i32>",
+    "fn complexity_label(complexity: PlanComplexity) -> &'static str",
+    "CliOutput::new(quiet: bool) -> Self",
+    "CliOutput::step(&self, label: &str, value: &str)",
+]
+anti_patterns = [
+    "Do NOT change function signatures — CliOutput is constructed locally from cli.quiet.",
+    "Do NOT touch the tracing::debug! call — that stays as-is.",
+    "Do NOT modify handle_workflow_result — it already uses output_format via run.rs.",
+]
+
+# In run_simple_path (lines 117-121), replace:
+#   eprintln!("\u{25b8} Complexity: {} (auto-detected)", complexity_label(complexity));
+#   eprintln!("\u{25b8} Running single agent...");
+# With:
+#   let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+#   out.step("Complexity", &format!("{} (auto-detected)", complexity_label(complexity)));
+#   out.step("Running", "single agent...");
+# Add `use roko_cli::cli_output::CliOutput;` or use fully-qualified path.
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'eprintln.*Complexity.*auto-detected' crates/roko-cli/src/commands/do_cmd.rs | grep -q 'run_simple_path' || ! grep -n 'eprintln.*Running single agent' crates/roko-cli/src/commands/do_cmd.rs"
+fail_msg = "run_simple_path still has raw eprintln! calls"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'CliOutput' crates/roko-cli/src/commands/do_cmd.rs"
+fail_msg = "do_cmd.rs must use CliOutput"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T4: Migrate standard/complex path eprintln! calls ────────────────
+
+[[task]]
+id = "T4"
+title = "Replace eprintln! calls in standard and complex paths with CliOutput"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "159-269", why = "run_standard_path — 6 eprintln! calls (lines 170-171, 235, 245-248, 254, 259, 265) to replace with CliOutput" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "273-437", why = "run_complex_path — 8 eprintln! calls (lines 284, 295, 300, 401-403, 410, 414-415, 422, 433) to replace" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "690-749", why = "run_standard_path_inner — 2 eprintln! calls (lines 735, 744) to replace" },
+    { path = "crates/roko-cli/src/cli_output.rs", lines = "1-30", why = "CliOutput API — use step() for progress, error() for failures, warning() for fallbacks" },
+]
+symbols = [
+    "async fn run_standard_path(cli: &Cli, workdir: &Path, prompt: &str, no_cascade: bool, provider: Option<String>, context: &[PathBuf]) -> Result<i32>",
+    "async fn run_complex_path(cli: &Cli, workdir: &Path, prompt: &str, no_cascade: bool, provider: Option<String>, _context: &[PathBuf]) -> Result<i32>",
+    "async fn run_standard_path_inner(cli: &Cli, workdir: &Path, prompt: &str, no_cascade: bool, provider: Option<String>) -> Result<i32>",
+    "CliOutput::step(&self, label: &str, value: &str)",
+    "CliOutput::error(&self, msg: &str)",
+    "CliOutput::warning(&self, msg: &str)",
+]
+anti_patterns = [
+    "Do NOT touch lines inside if !output.is_empty() blocks that use eprint! for agent raw output — those are data, not progress.",
+    "Do NOT change the exit code logic (EXIT_SUCCESS, EXIT_AGENT_FAILURE).",
+    "Do NOT change function signatures.",
+    "Do NOT remove the cli.quiet checks that already exist (e.g., line 236).",
+]
+
+# Pattern: at the start of each function, create `let out = CliOutput::new(cli.quiet);`
+# Then replace each eprintln!("\u{25b8} ...") with the appropriate out.step/error/warning call.
+#
+# Standard path (lines 170-265):
+#   170: eprintln!("...standard...") -> out.step("Complexity", "standard (auto-detected, override with --complexity simple)")
+#   171: eprintln!("...Step 1/2...") -> out.step("Step 1/2", "Generating plan...")
+#   235: eprintln!("...failed...") -> out.error(&format!("Plan generation failed (exit {exit_code})"))
+#   245-248: eprintln!("...No plans...") -> out.error(...)
+#   254: eprintln!("...no executable...") -> out.error("Plan generation produced no executable plans")
+#   259: eprintln!("...Failed to load...") -> out.error(&format!("Failed to load generated plans: {err:#}"))
+#   265: eprintln!("...Step 2/2...") -> out.step("Step 2/2", &format!("Executing plan ({total_tasks} tasks)..."))
+#
+# Complex path (lines 284-433): same pattern for all 8 calls.
+# Inner fallback (lines 735, 744): same pattern for both calls.
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -c 'eprintln.*25b8.*Step' crates/roko-cli/src/commands/do_cmd.rs | grep -qv '^0$'"
+fail_msg = "Standard/complex paths still have raw step eprintln! calls"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli do_cmd 2>&1"
+fail_msg = "do_cmd tests must pass"
+
+# ─── T5: Migrate plan completion summary ───────────────────────────────
+
+[[task]]
+id = "T5"
+title = "Replace plan completion summary and failure details with output_format"
+status = "ready"
+tier = "focused"
+model_hint = "claude-sonnet-4-5"
+max_loc = 60
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "615-687", why = "Plan completion summary — the block after run_plan_execution returns v2_report. Lines 632-680 are all eprintln! to replace." },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "70-73", why = "intro() — use for 'Plan complete' header" },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "237-240", why = "branch() — use for per-plan status lines" },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "207-210", why = "bar() — use for cost table rows" },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "367-370", why = "end() — use for final run_id line" },
+    { path = "crates/roko-cli/src/output_format.rs", lines = "25-43", why = "Color helpers: green(), red(), dim(), cyan() for status coloring" },
+]
+symbols = [
+    "output_format::intro(title: &str)",
+    "output_format::branch(text: &str)",
+    "output_format::bar(text: &str)",
+    "output_format::end(text: &str)",
+    "output_format::divider()",
+    "output_format::green(s: &str) -> String",
+    "output_format::red(s: &str) -> String",
+    "output_format::dim(s: &str) -> String",
+    "output_format::cyan(s: &str) -> String",
+    "output_format::bold(s: &str) -> String",
+    "CliOutput::new(quiet: bool) -> Self",
+]
+anti_patterns = [
+    "Do NOT change the JSON output path (cli.json block at lines 618-631) — that stays as-is.",
+    "Do NOT change the exit code logic at lines 682-686.",
+    "Do NOT use emojis — use output_format symbols only.",
+]
+
+# Replace the block at lines 632-680:
+#
+# } else if !cli.quiet {
+#     let out = CliOutput::new(false);  // already inside !cli.quiet
+#     output_format::intro("Plan complete");
+#     output_format::branch(&format!("tasks    {}/{}", v2_report.tasks_completed, v2_report.total_tasks));
+#     output_format::branch(&format!("cost     {}", output_format::cyan(&format!("${:.2}", v2_report.total_cost_usd))));
+#     output_format::branch(&format!("duration {}s", v2_report.duration.as_secs()));
+#     output_format::divider();
+#     for p in &v2_report.plans {
+#         let icon = if p.completed { output_format::green(symbols::PASS) } else { output_format::red(symbols::FAIL) };
+#         output_format::branch(&format!("{icon} {} -- {}/{} tasks", p.plan_id, p.tasks_completed, p.tasks_total));
+#     }
+#     // Per-task cost table
+#     if !v2_report.task_costs.is_empty() { ... with output_format::bar() for rows }
+# }
+#
+# Replace failure details block at lines 668-680:
+#     output_format::divider();
+#     output_format::step("Failures", "");
+#     for (key, reason) in ... { output_format::branch() with red }
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'output_format::intro.*Plan complete' crates/roko-cli/src/commands/do_cmd.rs"
+fail_msg = "Plan complete summary not using output_format::intro"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -q 'eprintln.*Plan complete' crates/roko-cli/src/commands/do_cmd.rs && ! grep -q 'eprintln.*Failure details' crates/roko-cli/src/commands/do_cmd.rs"
+fail_msg = "Summary/failure blocks still using raw eprintln!"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+# ─── T6: Migrate remaining eprintln! calls in helper functions ─────────
+
+[[task]]
+id = "T6"
+title = "Replace remaining eprintln! calls in do_cmd helper functions"
+status = "ready"
+tier = "mechanical"
+model_hint = "claude-haiku-4-5"
+max_loc = 30
+files = ["crates/roko-cli/src/commands/do_cmd.rs"]
+role = "implementer"
+depends_on = ["T1"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "441-470", why = "run_plan_execution: eprintln! at lines 457 (No plans found) and 464-468 (Scaffolded crates)" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "753-788", why = "cmd_do_continue and cmd_do_resume_hint: eprintln! calls for resume status messages" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "54-56", why = "Single-word plan slug match: eprintln! at line 54" },
+    { path = "crates/roko-cli/src/commands/do_cmd.rs", lines = "840-867", why = "handle_workflow_result: eprintln! at line 862" },
+    { path = "crates/roko-cli/src/cli_output.rs", lines = "1-30", why = "CliOutput API for quiet-aware output" },
+]
+symbols = [
+    "async fn run_plan_execution(cli: &Cli, workdir: &Path, plans_dir: &Path, _no_cascade: bool, _provider: Option<String>) -> Result<i32>",
+    "async fn cmd_do_continue(workdir: &Path, work_id: Option<String>) -> Result<i32>",
+    "fn cmd_do_resume_hint(workdir: &Path) -> Result<i32>",
+    "fn handle_workflow_result(cli: &Cli, prompt: &str, workflow_template: &str, result: anyhow::Result<WorkflowRunReport>) -> Result<i32>",
+    "CliOutput::step(&self, label: &str, value: &str)",
+    "CliOutput::error(&self, msg: &str)",
+]
+anti_patterns = [
+    "Do NOT change the print_do_preview function (lines 798-829) — it uses println! intentionally for dry-run output.",
+    "Do NOT suppress the eprintln! calls in cmd_do_resume_hint — those are user-facing status that should always show. Use output_format::step/error directly since there is no cli.quiet available.",
+    "Do NOT change exit codes.",
+]
+
+# Replace:
+# Line 54: eprintln!("\u{25b8} Found existing plan: ...") -> output_format::step("Found plan", &plan_dir.display().to_string())
+# Line 457: eprintln!("\u{25b8} No plans found...") -> out.error(&format!("No plans found at {}", plans_dir.display()))
+# Lines 464-468: eprintln!("\u{25b8} Scaffolded...") -> out.step("Scaffolded", &format!("{} new crate(s): {}", ...))
+# Lines 766-773: cmd_do_continue eprintln! -> output_format::step/error (no cli available, always show)
+# Lines 780-786: cmd_do_resume_hint eprintln! -> output_format::step/error
+# Line 862: handle_workflow_result eprintln! -> out.error (cli.quiet already checked)
+
+[[task.verify]]
+phase = "structural"
+command = "test $(grep -c 'eprintln!' crates/roko-cli/src/commands/do_cmd.rs) -le 3"
+fail_msg = "More than 3 eprintln! calls remain in do_cmd.rs (some agent output eprint! are OK)"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli do_cmd 2>&1"
+fail_msg = "do_cmd tests must pass"

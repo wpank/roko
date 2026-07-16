@@ -78,18 +78,24 @@ use super::types::{
     GateEffectRef, GateVerdictSummary, OwnerEffectRef, PlanOutcome, PlanRunSummary,
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
     RunTotals, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
-    TaskAttemptStatus, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
+    TaskAttemptStatus, TaskStatusDetail, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
 
 // ─── RunReport ──────────────────────────────────────────────────────────
 
 /// Summary of a completed run.
+///
+/// Global totals are the exact sum of per-plan totals.
 #[derive(Debug, Clone)]
 pub struct RunReport {
     pub plans: Vec<PlanReport>,
     pub total_tasks: usize,
     pub tasks_completed: usize,
     pub tasks_failed: usize,
+    pub tasks_blocked: usize,
+    pub tasks_skipped: usize,
+    pub tasks_active: usize,
+    pub tasks_pending: usize,
     pub total_cost_usd: f64,
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
@@ -115,7 +121,10 @@ pub struct TaskCostReport {
     pub outcome: String,
 }
 
-/// Per-plan report.
+/// Per-plan report derived from the DAG's actual terminal state.
+///
+/// Each task belongs to exactly one category: completed, failed,
+/// blocked, skipped, active, or pending.
 #[derive(Debug, Clone)]
 pub struct PlanReport {
     pub plan_id: String,
@@ -123,6 +132,12 @@ pub struct PlanReport {
     pub tasks_total: usize,
     pub tasks_completed: usize,
     pub tasks_failed: usize,
+    pub tasks_blocked: usize,
+    pub tasks_skipped: usize,
+    pub tasks_active: usize,
+    pub tasks_pending: usize,
+    pub blocked_details: Vec<TaskStatusDetail>,
+    pub skipped_details: Vec<TaskStatusDetail>,
     pub gate_results: Vec<GateResult>,
 }
 
@@ -279,17 +294,32 @@ async fn forward_agent_events(
     }
 }
 
+/// Wraps an `OwnedSemaphorePermit` so that releasing the permit also
+/// notifies the spawn waker, allowing the select loop to immediately
+/// re-evaluate queued spawn candidates instead of waiting for the next
+/// 100 ms tick.
+struct NotifyPermit {
+    permit: tokio::sync::OwnedSemaphorePermit,
+    waker: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for NotifyPermit {
+    fn drop(&mut self) {
+        self.waker.notify_waiters();
+    }
+}
+
 enum AgentRuntimeResource {
-    Dispatching(tokio::sync::OwnedSemaphorePermit),
+    Dispatching(NotifyPermit),
     Cli {
         handle: AgentHandle,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: NotifyPermit,
     },
     Bridge {
         bridge: tokio::task::JoinHandle<()>,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: NotifyPermit,
     },
     AwaitingGate,
     Gate {
@@ -302,7 +332,7 @@ enum AgentRuntimeResource {
         resolution: Arc<std::sync::Mutex<Option<MergeResolution>>>,
     },
     CleanupFailed {
-        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        permit: Option<NotifyPermit>,
         gate_effect: Option<GateEffectRef>,
         errors: Vec<String>,
     },
@@ -619,6 +649,15 @@ struct RunContext<'a> {
     factory: &'a SharedAgentFactory,
     task_sem: Arc<tokio::sync::Semaphore>,
     gate_sem: Arc<tokio::sync::Semaphore>,
+    /// Per-plan concurrency limits derived from `tasks.toml` `max_parallel`.
+    plan_max_parallel: &'a HashMap<String, u32>,
+    /// Waker signalled when a task permit is released, allowing the
+    /// select loop to immediately re-evaluate spawn candidates instead
+    /// of waiting for the next 100 ms tick.
+    spawn_waker: Arc<tokio::sync::Notify>,
+    /// Tasks waiting for a permit. Prevents repeat logging (log storm)
+    /// when capacity is saturated — only the first attempt per task logs.
+    spawns_queued: &'a mut HashSet<String>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
@@ -951,11 +990,16 @@ pub async fn run(
     });
     let mut total_tasks = 0usize;
 
+    // Per-plan concurrency limits from tasks.toml `max_parallel`.
+    let mut plan_max_parallel: HashMap<String, u32> = HashMap::new();
+
     for plan in &plans {
         // add_plan is a no-op if plan already exists (from snapshot).
         let orc_state = OrcPlanState::new(&plan.id);
         executor.add_plan(orc_state);
         task_dag.plan_mut(&plan.id);
+
+        plan_max_parallel.insert(plan.id.clone(), plan.tasks.meta.max_parallel);
 
         let mut tasks_map = HashMap::new();
         for task in &plan.tasks.tasks {
@@ -1133,6 +1177,11 @@ pub async fn run(
         .map(|p| (p.id.clone(), p.tasks.meta.skip_enrichment))
         .collect();
 
+    // Waker signalled on permit release — select loop re-evaluates spawns
+    // immediately rather than waiting for the next 100 ms tick.
+    let spawn_waker = Arc::new(tokio::sync::Notify::new());
+    let mut spawns_queued: HashSet<String> = HashSet::new();
+
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
     let plan_timeout_duration = plan_total_timeout(&config);
@@ -1297,6 +1346,7 @@ pub async fn run(
         //   Branch 1 (agent_rx.recv): cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
+        //   Branch 3b (spawn_waker): cancel-safe — Notify::notified is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
@@ -2745,6 +2795,9 @@ pub async fn run(
                         factory: &factory,
                         task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
+                        plan_max_parallel: &plan_max_parallel,
+                        spawn_waker: spawn_waker.clone(),
+                        spawns_queued: &mut spawns_queued,
                         task_runtime_states: &mut task_runtime_states,
                         legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
@@ -2792,6 +2845,13 @@ pub async fn run(
                         debug!(action = %action_label, dispatch_ms, "action dispatched");
                     }
                 }
+            }
+
+            // ─── Branch 3b: Spawn capacity wakeup ─────────────────────
+            // When a task permit is released, immediately re-evaluate
+            // spawn candidates instead of waiting for the next 100 ms tick.
+            _ = spawn_waker.notified() => {
+                tick_interval.reset_immediately();
             }
 
             // ─── Branch 4: Periodic flush ───────────────────────────
@@ -2873,6 +2933,8 @@ pub async fn run(
                 total_tasks = final_report.total_tasks,
                 completed = final_report.tasks_completed,
                 failed = final_report.tasks_failed,
+                blocked = final_report.tasks_blocked,
+                skipped = final_report.tasks_skipped,
                 cost_usd = %cost_display,
                 tokens_in = final_report.total_tokens_in,
                 tokens_out = final_report.total_tokens_out,
@@ -4687,6 +4749,10 @@ fn build_run_completed_event(
             total_tasks: report.total_tasks,
             tasks_completed: report.tasks_completed,
             tasks_failed: report.tasks_failed,
+            tasks_blocked: report.tasks_blocked,
+            tasks_skipped: report.tasks_skipped,
+            tasks_active: report.tasks_active,
+            tasks_pending: report.tasks_pending,
             total_agent_calls: report.total_agent_calls,
             total_cost_usd: report.total_cost_usd,
             duration_ms: report.duration.as_millis() as u64,
@@ -4700,6 +4766,12 @@ fn build_run_completed_event(
                 tasks_total: plan.tasks_total,
                 tasks_completed: plan.tasks_completed,
                 tasks_failed: plan.tasks_failed,
+                tasks_blocked: plan.tasks_blocked,
+                tasks_skipped: plan.tasks_skipped,
+                tasks_active: plan.tasks_active,
+                tasks_pending: plan.tasks_pending,
+                blocked_details: plan.blocked_details,
+                skipped_details: plan.skipped_details,
             })
             .collect(),
     )
@@ -5546,6 +5618,27 @@ async fn dispatch_action(
                 return ActionDispatchOutcome::Noop;
             }
 
+            // Per-plan concurrency limit: max_parallel from tasks.toml.
+            // PlanDag.running spans preflight through commit/merge, so this
+            // check correctly counts all active phases of a task attempt.
+            let max_parallel = ctx
+                .plan_max_parallel
+                .get(plan_id.as_str())
+                .copied()
+                .unwrap_or(1) as usize;
+            if let Some(plan_dag) = ctx.task_dag.plan(plan_id) {
+                if plan_dag.active_count() >= max_parallel {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        active = plan_dag.active_count(),
+                        max_parallel,
+                        "per-plan concurrency limit reached — delaying spawn"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
+            }
+
             // Per-plan budget check.
             let max_plan_usd = ctx.config.max_plan_usd;
             let plan_spent = ctx.state.plan_cost(plan_id);
@@ -5593,14 +5686,24 @@ async fn dispatch_action(
             };
 
             let task_permit = match ctx.task_sem.clone().try_acquire_owned() {
-                Ok(task_permit) => task_permit,
+                Ok(raw_permit) => {
+                    // Clear queued state — task is now holding a permit.
+                    ctx.spawns_queued.remove(&active_task_key);
+                    NotifyPermit {
+                        permit: raw_permit,
+                        waker: ctx.spawn_waker.clone(),
+                    }
+                }
                 Err(_) => {
-                    debug!(
-                        plan_id = %plan_id,
-                        task = %task_id,
-                        max_concurrent_tasks = ctx.config.max_concurrent_tasks,
-                        "agent task permit unavailable — delaying spawn"
-                    );
+                    // Log only once per task when entering queued state.
+                    if ctx.spawns_queued.insert(active_task_key.clone()) {
+                        debug!(
+                            plan_id = %plan_id,
+                            task = %task_id,
+                            max_concurrent_tasks = ctx.config.max_concurrent_tasks,
+                            "task queued — waiting for capacity"
+                        );
+                    }
                     return ActionDispatchOutcome::Noop;
                 }
             };
@@ -9513,33 +9616,27 @@ fn lessons_from_post_gate_reflections(
 fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -> RunReport {
     let plan_reports: Vec<PlanReport> = plans
         .iter()
-        .map(|p| {
-            let orc_state = executor.plan_state(&p.id);
-            let completed = orc_state
-                .map(|s| matches!(s.current_phase, PlanPhase::Complete))
-                .unwrap_or(false);
-            PlanReport {
-                plan_id: p.id.clone(),
-                completed,
-                tasks_total: p.tasks.tasks.len(),
-                tasks_completed: if completed { p.tasks.tasks.len() } else { 0 },
-                tasks_failed: if !completed && orc_state.map_or(false, |s| s.is_terminal()) {
-                    1
-                } else {
-                    0
-                },
-                gate_results: orc_state
-                    .map(|state| state.gate_results.clone())
-                    .unwrap_or_default(),
-            }
-        })
+        .map(|p| build_plan_report(executor, p, state))
         .collect();
+
+    // Global totals are the exact sum of per-plan totals.
+    let total_tasks: usize = plan_reports.iter().map(|r| r.tasks_total).sum();
+    let tasks_completed: usize = plan_reports.iter().map(|r| r.tasks_completed).sum();
+    let tasks_failed: usize = plan_reports.iter().map(|r| r.tasks_failed).sum();
+    let tasks_blocked: usize = plan_reports.iter().map(|r| r.tasks_blocked).sum();
+    let tasks_skipped: usize = plan_reports.iter().map(|r| r.tasks_skipped).sum();
+    let tasks_active: usize = plan_reports.iter().map(|r| r.tasks_active).sum();
+    let tasks_pending: usize = plan_reports.iter().map(|r| r.tasks_pending).sum();
 
     RunReport {
         plans: plan_reports,
-        total_tasks: state.tasks_total,
-        tasks_completed: state.tasks_completed,
-        tasks_failed: state.tasks_failed,
+        total_tasks,
+        tasks_completed,
+        tasks_failed,
+        tasks_blocked,
+        tasks_skipped,
+        tasks_active,
+        tasks_pending,
         total_cost_usd: state.total_cost_usd,
         total_tokens_in: state.total_tokens_in,
         total_tokens_out: state.total_tokens_out,
@@ -9548,6 +9645,100 @@ fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -
         failure_reasons: state.failure_reasons.clone(),
         task_costs: Vec::new(),
     }
+}
+
+/// Build a per-plan report by classifying every task into exactly one
+/// terminal/nonterminal category from the actual run state.
+fn build_plan_report(
+    executor: &ParallelExecutor,
+    plan: &Plan,
+    state: &RunState,
+) -> PlanReport {
+    let orc_state = executor.plan_state(&plan.id);
+    let plan_completed = orc_state
+        .map(|s| matches!(s.current_phase, PlanPhase::Complete))
+        .unwrap_or(false);
+    let completed_set = state.plan_completed_tasks(&plan.id);
+    let failed_set = state.plan_failed_tasks(&plan.id);
+
+    let mut tasks_completed: usize = 0;
+    let mut tasks_failed: usize = 0;
+    let mut tasks_blocked: usize = 0;
+    let mut tasks_skipped: usize = 0;
+    let tasks_active: usize = 0;
+    let mut tasks_pending: usize = 0;
+    let mut blocked_details = Vec::new();
+    let mut skipped_details = Vec::new();
+
+    for task in &plan.tasks.tasks {
+        if completed_set.contains(&task.id) {
+            tasks_completed += 1;
+        } else if failed_set.contains(&task.id) {
+            tasks_failed += 1;
+        } else if task_status_is_terminal(&task.status) {
+            // Pre-completed in tasks.toml but not yet recorded in state
+            // (should be rare at terminal time).
+            tasks_completed += 1;
+        } else if let Some(reason) = blocked_by_failed_dep(task, completed_set, failed_set) {
+            // Downstream of a failed task — blocked/skipped with reason.
+            tasks_skipped += 1;
+            skipped_details.push(TaskStatusDetail {
+                task_id: task.id.clone(),
+                reason,
+            });
+        } else if !task.depends_on.iter().all(|dep| completed_set.contains(dep)) {
+            // Has unmet dependencies but none are failed — blocked or pending.
+            let reason = task
+                .depends_on
+                .iter()
+                .find(|dep| !completed_set.contains(*dep))
+                .map(|dep| format!("waiting on prerequisite {dep}"))
+                .unwrap_or_else(|| "waiting on prerequisite".to_string());
+            tasks_blocked += 1;
+            blocked_details.push(TaskStatusDetail {
+                task_id: task.id.clone(),
+                reason,
+            });
+        } else {
+            // Dependencies met but task never ran — pending or was active.
+            tasks_pending += 1;
+        }
+    }
+
+    PlanReport {
+        plan_id: plan.id.clone(),
+        completed: plan_completed,
+        tasks_total: plan.tasks.tasks.len(),
+        tasks_completed,
+        tasks_failed,
+        tasks_blocked,
+        tasks_skipped,
+        tasks_active,
+        tasks_pending,
+        blocked_details,
+        skipped_details,
+        gate_results: orc_state
+            .map(|s| s.gate_results.clone())
+            .unwrap_or_default(),
+    }
+}
+
+/// Check if a task is blocked because a dependency failed.
+fn blocked_by_failed_dep(
+    task: &crate::task_parser::TaskDef,
+    completed: &[String],
+    failed: &HashSet<String>,
+) -> Option<String> {
+    for dep in &task.depends_on {
+        if failed.contains(dep) {
+            return Some(format!("prerequisite {dep} failed"));
+        }
+    }
+    // Also check if a dependency is neither completed nor failed — it might
+    // have been skipped transitively. If a dep is not completed and not failed,
+    // we don't count it as "blocked by failed dep" here.
+    let _ = completed; // used by caller for other checks
+    None
 }
 
 #[cfg(test)]
@@ -9572,6 +9763,204 @@ mod tests {
             gate_timeout(&config, gate_dispatch::RUNG_PLAN_VERIFY),
             Duration::from_secs(303)
         );
+    }
+
+    #[test]
+    fn report_global_totals_equal_sum_of_plans() {
+        // 2 plans: plan-a has 3 tasks (2 done, 1 ready), plan-b has 2 tasks
+        // (1 done, 1 blocked by failed dep).
+        let tasks_a = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan-a"
+total = 3
+status = "ready"
+
+[[task]]
+id = "A1"
+title = "done"
+status = "done"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "A2"
+title = "also done"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["A1"]
+
+[[task]]
+id = "A3"
+title = "pending"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["A2"]
+"#,
+        )
+        .unwrap();
+        let tasks_b = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan-b"
+total = 2
+status = "ready"
+
+[[task]]
+id = "B1"
+title = "will fail"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "B2"
+title = "blocked by B1"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["B1"]
+"#,
+        )
+        .unwrap();
+
+        let plan_a = Plan {
+            id: "plan-a".to_string(),
+            dir: std::path::PathBuf::from("plans/plan-a"),
+            tasks: tasks_a,
+            prd_excerpt: String::new(),
+        };
+        let plan_b = Plan {
+            id: "plan-b".to_string(),
+            dir: std::path::PathBuf::from("plans/plan-b"),
+            tasks: tasks_b,
+            prd_excerpt: String::new(),
+        };
+        let plans = vec![plan_a, plan_b];
+
+        let mut state = RunState::new(5);
+        // A1 is pre-done, A2 completed at runtime
+        state.mark_task_completed("plan-a", "A1");
+        state.mark_task_completed("plan-a", "A2");
+        // B1 failed
+        state.failed_tasks
+            .entry("plan-b".to_string())
+            .or_default()
+            .insert("B1".to_string());
+
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan-a"));
+        executor.add_plan(OrcPlanState::new("plan-b"));
+
+        let report = build_report(&executor, &plans, &state);
+
+        // Plan-a: 2 completed (A1, A2), 0 failed, 1 pending (A3 deps met)
+        assert_eq!(report.plans[0].tasks_completed, 2, "plan-a completed");
+        assert_eq!(report.plans[0].tasks_failed, 0, "plan-a failed");
+        assert_eq!(report.plans[0].tasks_pending, 1, "plan-a pending");
+        assert_eq!(report.plans[0].tasks_skipped, 0, "plan-a skipped");
+        assert_eq!(report.plans[0].tasks_blocked, 0, "plan-a blocked");
+
+        // Plan-b: 0 completed, 1 failed (B1), 1 skipped (B2 blocked by failed B1)
+        assert_eq!(report.plans[1].tasks_completed, 0, "plan-b completed");
+        assert_eq!(report.plans[1].tasks_failed, 1, "plan-b failed");
+        assert_eq!(report.plans[1].tasks_skipped, 1, "plan-b skipped");
+        assert_eq!(report.plans[1].skipped_details.len(), 1);
+        assert_eq!(report.plans[1].skipped_details[0].task_id, "B2");
+        assert!(
+            report.plans[1].skipped_details[0].reason.contains("B1"),
+            "skipped reason should reference B1"
+        );
+
+        // Global totals must equal sum of plans
+        assert_eq!(report.total_tasks, 5);
+        assert_eq!(
+            report.tasks_completed,
+            report.plans.iter().map(|p| p.tasks_completed).sum::<usize>()
+        );
+        assert_eq!(
+            report.tasks_failed,
+            report.plans.iter().map(|p| p.tasks_failed).sum::<usize>()
+        );
+        assert_eq!(
+            report.tasks_blocked,
+            report.plans.iter().map(|p| p.tasks_blocked).sum::<usize>()
+        );
+        assert_eq!(
+            report.tasks_skipped,
+            report.plans.iter().map(|p| p.tasks_skipped).sum::<usize>()
+        );
+
+        // Every task belongs to exactly one category
+        for plan_report in &report.plans {
+            let sum = plan_report.tasks_completed
+                + plan_report.tasks_failed
+                + plan_report.tasks_blocked
+                + plan_report.tasks_skipped
+                + plan_report.tasks_active
+                + plan_report.tasks_pending;
+            assert_eq!(
+                sum, plan_report.tasks_total,
+                "plan {} categories must sum to total",
+                plan_report.plan_id
+            );
+        }
+    }
+
+    #[test]
+    fn report_all_done_plan_counts_all_completed() {
+        let tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "all-done"
+total = 2
+status = "ready"
+
+[[task]]
+id = "T1"
+title = "one"
+status = "done"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "T2"
+title = "two"
+status = "done"
+tier = "focused"
+role = "implementer"
+depends_on = []
+"#,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: "all-done".to_string(),
+            dir: std::path::PathBuf::from("plans/all-done"),
+            tasks,
+            prd_excerpt: String::new(),
+        };
+
+        let mut state = RunState::new(2);
+        state.mark_task_completed("all-done", "T1");
+        state.mark_task_completed("all-done", "T2");
+
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut orc = OrcPlanState::new("all-done");
+        orc.current_phase = PlanPhase::Complete;
+        executor.add_plan(orc);
+
+        let report = build_report(&executor, &[plan], &state);
+        assert_eq!(report.total_tasks, 2);
+        assert_eq!(report.tasks_completed, 2);
+        assert_eq!(report.tasks_failed, 0);
+        assert_eq!(report.tasks_blocked, 0);
+        assert_eq!(report.tasks_skipped, 0);
+        assert!(report.plans[0].completed);
     }
 
     #[test]
@@ -10346,7 +10735,12 @@ mod tests_post_gate_reflection_lessons {
     #[tokio::test]
     async fn bridge_join_failure_is_not_gateable_and_releases_permit() {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let raw_permit = semaphore.clone().acquire_owned().await.unwrap();
+        let waker = Arc::new(tokio::sync::Notify::new());
+        let permit = NotifyPermit {
+            permit: raw_permit,
+            waker,
+        };
         let bridge = tokio::spawn(async { panic!("bridge failed") });
         let forwarder = tokio::spawn(async {});
         let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {

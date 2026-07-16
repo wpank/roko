@@ -619,7 +619,7 @@ Keep max_parallel=1 until the full plan proves otherwise.
 
 Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 
-- [ ] SH02-T01 Enforce effective per-plan concurrency.
+- [x] SH02-T01 Enforce effective per-plan concurrency. (Per-plan active_count gate using PlanDag.running; plan_max_parallel index from tasks.toml.)
 - [ ] SH02-T02 Create task-owned worktrees and immutable gate inputs.
 - [ ] SH02-T05 Replace spawn polling with queued capacity wakeups.
 - [ ] SH02-T03 Require a durable task commit before success.

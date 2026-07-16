@@ -215,6 +215,12 @@ impl PlanDag {
         self.running.contains(task_id)
     }
 
+    /// Number of tasks currently dispatched but not yet finalised.
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.running.len()
+    }
+
     /// Whether this task is in any terminal state (completed, failed,
     /// or skipped).
     #[must_use]
@@ -1021,5 +1027,28 @@ mod tests {
         // After completing, retry_not_before should be cleared.
         dag.mark_complete("p1", "A");
         assert!(dag.retry_remaining("p1").is_none());
+    }
+
+    #[test]
+    fn active_count_tracks_running_tasks_per_plan() {
+        let mut dag = TaskDag::default();
+
+        // Initially zero.
+        assert_eq!(dag.plan("p1").map(|p| p.active_count()).unwrap_or(0), 0);
+
+        dag.mark_running("p1", "A");
+        assert_eq!(dag.plan("p1").unwrap().active_count(), 1);
+
+        dag.mark_running("p1", "B");
+        assert_eq!(dag.plan("p1").unwrap().active_count(), 2);
+
+        // Completing a task removes it from running.
+        dag.mark_complete("p1", "A");
+        assert_eq!(dag.plan("p1").unwrap().active_count(), 1);
+
+        // Different plan is independent.
+        dag.mark_running("p2", "X");
+        assert_eq!(dag.plan("p1").unwrap().active_count(), 1);
+        assert_eq!(dag.plan("p2").unwrap().active_count(), 1);
     }
 }

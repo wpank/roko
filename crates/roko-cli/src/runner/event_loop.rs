@@ -634,6 +634,8 @@ struct RunContext<'a> {
     factory: &'a SharedAgentFactory,
     task_sem: Arc<tokio::sync::Semaphore>,
     gate_sem: Arc<tokio::sync::Semaphore>,
+    /// Per-plan concurrency limits derived from `tasks.toml` `max_parallel`.
+    plan_max_parallel: &'a HashMap<String, u32>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
@@ -966,11 +968,16 @@ pub async fn run(
     });
     let mut total_tasks = 0usize;
 
+    // Per-plan concurrency limits from tasks.toml `max_parallel`.
+    let mut plan_max_parallel: HashMap<String, u32> = HashMap::new();
+
     for plan in &plans {
         // add_plan is a no-op if plan already exists (from snapshot).
         let orc_state = OrcPlanState::new(&plan.id);
         executor.add_plan(orc_state);
         task_dag.plan_mut(&plan.id);
+
+        plan_max_parallel.insert(plan.id.clone(), plan.tasks.meta.max_parallel);
 
         let mut tasks_map = HashMap::new();
         for task in &plan.tasks.tasks {
@@ -2760,6 +2767,7 @@ pub async fn run(
                         factory: &factory,
                         task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
+                        plan_max_parallel: &plan_max_parallel,
                         task_runtime_states: &mut task_runtime_states,
                         legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
@@ -5571,6 +5579,27 @@ async fn dispatch_action(
                     "retry backoff active — delaying spawn"
                 );
                 return ActionDispatchOutcome::Noop;
+            }
+
+            // Per-plan concurrency limit: max_parallel from tasks.toml.
+            // PlanDag.running spans preflight through commit/merge, so this
+            // check correctly counts all active phases of a task attempt.
+            let max_parallel = ctx
+                .plan_max_parallel
+                .get(plan_id.as_str())
+                .copied()
+                .unwrap_or(1) as usize;
+            if let Some(plan_dag) = ctx.task_dag.plan(plan_id) {
+                if plan_dag.active_count() >= max_parallel {
+                    debug!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        active = plan_dag.active_count(),
+                        max_parallel,
+                        "per-plan concurrency limit reached — delaying spawn"
+                    );
+                    return ActionDispatchOutcome::Noop;
+                }
             }
 
             // Per-plan budget check.

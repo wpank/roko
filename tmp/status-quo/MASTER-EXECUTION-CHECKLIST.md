@@ -621,7 +621,7 @@ Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 
 - [x] SH02-T01 Enforce effective per-plan concurrency. (Per-plan active_count gate using PlanDag.running; plan_max_parallel index from tasks.toml.)
 - [ ] SH02-T02 Create task-owned worktrees and immutable gate inputs.
-- [ ] SH02-T05 Replace spawn polling with queued capacity wakeups.
+- [x] SH02-T05 Replace spawn polling with queued capacity wakeups. (NotifyPermit wrapper notifies on drop; spawns_queued dedup prevents log storm; reset_immediately on waker.)
 - [ ] SH02-T03 Require a durable task commit before success.
 - [ ] SH02-T04 Make worktree resume/reacquisition idempotent.
 - [ ] SH02-T06 Clean crash locks and recover dirty worktrees.

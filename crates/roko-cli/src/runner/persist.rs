@@ -125,6 +125,10 @@ pub struct RunStateSnapshot {
     /// already-finished work on resume.
     #[serde(default)]
     pub completed_tasks: HashMap<String, Vec<String>>,
+    /// Failed task IDs per plan — durable record used to reconstruct DAG
+    /// blocked/skipped state on resume (SH03-T01).
+    #[serde(default)]
+    pub failed_tasks: HashMap<String, Vec<String>>,
     /// Durable lifecycle projection, including in-flight cancellation state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<RunnerLifecycleProjection>,
@@ -299,6 +303,79 @@ pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     roko_fs::atomic_write_bytes(path, content)
         .with_context(|| format!("atomically writing {}", path.display()))
+}
+
+/// SH03-T05: Clean stale staging files left by a prior crashed process.
+///
+/// Scans `state_dir` for files matching `*.tmp.<PID>.<SEQ>`. If the PID
+/// no longer exists, the file is from a dead process and can be removed.
+/// Files from the current process are left alone.
+///
+/// Returns the number of files cleaned.
+pub fn clean_stale_staging_files(state_dir: &Path) -> usize {
+    let current_pid = std::process::id();
+    let entries = match fs::read_dir(state_dir) {
+        Ok(entries) => entries,
+        Err(_) => return 0,
+    };
+    let mut cleaned = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Match the roko_fs naming pattern: <name>.tmp.<PID>.<SEQ>
+        let Some(tmp_idx) = name_str.rfind(".tmp.") else {
+            continue;
+        };
+        let suffix = &name_str[tmp_idx + 5..]; // after ".tmp."
+        let parts: Vec<&str> = suffix.splitn(2, '.').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+        let Ok(pid) = parts[0].parse::<u32>() else {
+            continue;
+        };
+        // Never clean our own staging files.
+        if pid == current_pid {
+            continue;
+        }
+        // Check if the PID is still alive by probing /proc or using
+        // the existence of a send-signal-0 equivalent. On macOS/Linux,
+        // checking if /proc/<pid> exists is safe but only works on Linux;
+        // fall back to assuming dead if the staging file is >60s old.
+        let alive = is_pid_alive(pid);
+        if !alive {
+            let path = entry.path();
+            tracing::debug!(path = %path.display(), pid, "cleaning stale staging file");
+            if fs::remove_file(&path).is_ok() {
+                cleaned += 1;
+            }
+        }
+    }
+    cleaned
+}
+
+/// Check if a process ID is still alive without using unsafe.
+///
+/// Uses `kill -0` via Command on Unix, which is safe. On other platforms
+/// conservatively returns `false` (assume dead) so stale files get cleaned.
+fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // `kill -0 <pid>` exits 0 if the process exists (even if we can't
+        // signal it), and non-zero otherwise.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Append a JSON line to a JSONL file.

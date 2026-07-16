@@ -294,17 +294,32 @@ async fn forward_agent_events(
     }
 }
 
+/// Wraps an `OwnedSemaphorePermit` so that releasing the permit also
+/// notifies the spawn waker, allowing the select loop to immediately
+/// re-evaluate queued spawn candidates instead of waiting for the next
+/// 100 ms tick.
+struct NotifyPermit {
+    permit: tokio::sync::OwnedSemaphorePermit,
+    waker: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for NotifyPermit {
+    fn drop(&mut self) {
+        self.waker.notify_waiters();
+    }
+}
+
 enum AgentRuntimeResource {
-    Dispatching(tokio::sync::OwnedSemaphorePermit),
+    Dispatching(NotifyPermit),
     Cli {
         handle: AgentHandle,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: NotifyPermit,
     },
     Bridge {
         bridge: tokio::task::JoinHandle<()>,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: NotifyPermit,
     },
     AwaitingGate,
     Gate {
@@ -317,7 +332,7 @@ enum AgentRuntimeResource {
         resolution: Arc<std::sync::Mutex<Option<MergeResolution>>>,
     },
     CleanupFailed {
-        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        permit: Option<NotifyPermit>,
         gate_effect: Option<GateEffectRef>,
         errors: Vec<String>,
     },
@@ -636,6 +651,13 @@ struct RunContext<'a> {
     gate_sem: Arc<tokio::sync::Semaphore>,
     /// Per-plan concurrency limits derived from `tasks.toml` `max_parallel`.
     plan_max_parallel: &'a HashMap<String, u32>,
+    /// Waker signalled when a task permit is released, allowing the
+    /// select loop to immediately re-evaluate spawn candidates instead
+    /// of waiting for the next 100 ms tick.
+    spawn_waker: Arc<tokio::sync::Notify>,
+    /// Tasks waiting for a permit. Prevents repeat logging (log storm)
+    /// when capacity is saturated — only the first attempt per task logs.
+    spawns_queued: &'a mut HashSet<String>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
@@ -1155,6 +1177,11 @@ pub async fn run(
         .map(|p| (p.id.clone(), p.tasks.meta.skip_enrichment))
         .collect();
 
+    // Waker signalled on permit release — select loop re-evaluates spawns
+    // immediately rather than waiting for the next 100 ms tick.
+    let spawn_waker = Arc::new(tokio::sync::Notify::new());
+    let mut spawns_queued: HashSet<String> = HashSet::new();
+
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
     let plan_timeout_duration = plan_total_timeout(&config);
@@ -1319,6 +1346,7 @@ pub async fn run(
         //   Branch 1 (agent_rx.recv): cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
+        //   Branch 3b (spawn_waker): cancel-safe — Notify::notified is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
@@ -2768,6 +2796,8 @@ pub async fn run(
                         task_sem: task_sem.clone(),
                         gate_sem: gate_sem.clone(),
                         plan_max_parallel: &plan_max_parallel,
+                        spawn_waker: spawn_waker.clone(),
+                        spawns_queued: &mut spawns_queued,
                         task_runtime_states: &mut task_runtime_states,
                         legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
@@ -2815,6 +2845,13 @@ pub async fn run(
                         debug!(action = %action_label, dispatch_ms, "action dispatched");
                     }
                 }
+            }
+
+            // ─── Branch 3b: Spawn capacity wakeup ─────────────────────
+            // When a task permit is released, immediately re-evaluate
+            // spawn candidates instead of waiting for the next 100 ms tick.
+            _ = spawn_waker.notified() => {
+                tick_interval.reset_immediately();
             }
 
             // ─── Branch 4: Periodic flush ───────────────────────────
@@ -5649,14 +5686,24 @@ async fn dispatch_action(
             };
 
             let task_permit = match ctx.task_sem.clone().try_acquire_owned() {
-                Ok(task_permit) => task_permit,
+                Ok(raw_permit) => {
+                    // Clear queued state — task is now holding a permit.
+                    ctx.spawns_queued.remove(&active_task_key);
+                    NotifyPermit {
+                        permit: raw_permit,
+                        waker: ctx.spawn_waker.clone(),
+                    }
+                }
                 Err(_) => {
-                    debug!(
-                        plan_id = %plan_id,
-                        task = %task_id,
-                        max_concurrent_tasks = ctx.config.max_concurrent_tasks,
-                        "agent task permit unavailable — delaying spawn"
-                    );
+                    // Log only once per task when entering queued state.
+                    if ctx.spawns_queued.insert(active_task_key.clone()) {
+                        debug!(
+                            plan_id = %plan_id,
+                            task = %task_id,
+                            max_concurrent_tasks = ctx.config.max_concurrent_tasks,
+                            "task queued — waiting for capacity"
+                        );
+                    }
                     return ActionDispatchOutcome::Noop;
                 }
             };
@@ -10688,7 +10735,12 @@ mod tests_post_gate_reflection_lessons {
     #[tokio::test]
     async fn bridge_join_failure_is_not_gateable_and_releases_permit() {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let raw_permit = semaphore.clone().acquire_owned().await.unwrap();
+        let waker = Arc::new(tokio::sync::Notify::new());
+        let permit = NotifyPermit {
+            permit: raw_permit,
+            waker,
+        };
         let bridge = tokio::spawn(async { panic!("bridge failed") });
         let forwarder = tokio::spawn(async {});
         let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {

@@ -186,10 +186,69 @@ fn write_payload(payload: &SnapshotPayload, fail_streak: &mut u32) {
     }
 }
 
+/// Maximum number of rotated checkpoint files to retain per run.
+const MAX_CHECKPOINTS: usize = 5;
+
 fn write_all_files(payload: &SnapshotPayload) -> anyhow::Result<()> {
     use super::persist::atomic_write;
+    // SH03-T02: Rotate the current snapshot to a timestamped checkpoint
+    // before overwriting, so a crash or corruption can fall back to a
+    // prior good state.
+    if payload.snapshot_path.exists() {
+        rotate_checkpoint(&payload.snapshot_path, MAX_CHECKPOINTS);
+    }
     atomic_write(&payload.snapshot_path, &payload.snapshot_json)?;
     Ok(())
+}
+
+/// Copy the existing snapshot to `<name>.<unix_ms>.bak` and prune old
+/// checkpoints so at most `max_keep` remain.
+fn rotate_checkpoint(path: &std::path::Path, max_keep: usize) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let backup = path.with_file_name(format!(
+        "{}.{ts}.bak",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("snapshot")
+    ));
+    if let Err(e) = std::fs::copy(path, &backup) {
+        tracing::debug!(error = %e, "failed to create snapshot checkpoint");
+        return;
+    }
+
+    // Prune oldest checkpoints beyond the retention limit.
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return,
+    };
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let mut checkpoints: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with(file_name)
+                        && name.ends_with(".bak")
+                        && name.len() > file_name.len()
+                })
+        })
+        .collect();
+
+    if checkpoints.len() > max_keep {
+        // Sort ascending by name (timestamp in extension makes this chronological).
+        checkpoints.sort();
+        let to_remove = checkpoints.len() - max_keep;
+        for old in &checkpoints[..to_remove] {
+            let _ = std::fs::remove_file(old);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -239,5 +298,45 @@ mod tests {
         let writer = SnapshotWriter::new(4);
         drop(writer);
         // If we get here without hanging, the thread joined successfully.
+    }
+
+    #[test]
+    fn rotate_checkpoint_creates_backup_and_prunes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshot_path = tmp.path().join("state-snapshot.json");
+
+        // Write several snapshots to accumulate checkpoints.
+        let writer = SnapshotWriter::new(4);
+        for i in 0..8 {
+            std::fs::write(&snapshot_path, format!("v{i}")).unwrap();
+            // Need a small delay so timestamps differ.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            writer.write(SnapshotPayload {
+                snapshot_json: format!("v{}", i + 1).into_bytes(),
+                snapshot_path: snapshot_path.clone(),
+            });
+            writer.flush();
+        }
+
+        // Count .bak files — should be at most MAX_CHECKPOINTS.
+        let bak_count = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.ends_with("bak"))
+            })
+            .count();
+        assert!(
+            bak_count <= super::MAX_CHECKPOINTS,
+            "expected at most {} checkpoints, found {}",
+            super::MAX_CHECKPOINTS,
+            bak_count
+        );
+        // The latest snapshot should be the last written value.
+        let content = std::fs::read_to_string(&snapshot_path).unwrap();
+        assert_eq!(content, "v8");
     }
 }

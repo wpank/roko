@@ -105,5 +105,5 @@ pub use runtime_snapshot::{
 pub use service_factory::{ServiceBundle, ServiceConfig, ServiceFactory};
 pub use worktree::{
     WorktreeConfig, WorktreeError, WorktreeHandle, WorktreeHealth, WorktreeIsolationStatus,
-    WorktreeManager, WorktreeSnapshot, format_branch_name,
+    WorktreeManager, WorktreeSnapshot, format_branch_name, format_task_branch_name,
 };

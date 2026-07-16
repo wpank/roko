@@ -745,6 +745,10 @@ pub struct ResumeMarker {
 }
 
 /// Compact per-plan summary embedded in `run.completed`.
+///
+/// Every task belongs to exactly one category. The invariant
+/// `tasks_completed + tasks_failed + tasks_blocked + tasks_skipped
+///  + tasks_active + tasks_pending == tasks_total` always holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanRunSummary {
     pub plan_id: String,
@@ -752,6 +756,27 @@ pub struct PlanRunSummary {
     pub tasks_total: usize,
     pub tasks_completed: usize,
     pub tasks_failed: usize,
+    #[serde(default)]
+    pub tasks_blocked: usize,
+    #[serde(default)]
+    pub tasks_skipped: usize,
+    #[serde(default)]
+    pub tasks_active: usize,
+    #[serde(default)]
+    pub tasks_pending: usize,
+    /// Task IDs and reasons for blocked tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_details: Vec<TaskStatusDetail>,
+    /// Task IDs and reasons for skipped tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_details: Vec<TaskStatusDetail>,
+}
+
+/// Detail entry for a blocked or skipped task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatusDetail {
+    pub task_id: String,
+    pub reason: String,
 }
 
 /// Per-attempt projection maintained by [`RunState`](super::state::RunState).
@@ -857,6 +882,14 @@ pub enum RunnerEvent {
         total_tasks: usize,
         tasks_completed: usize,
         tasks_failed: usize,
+        #[serde(default)]
+        tasks_blocked: usize,
+        #[serde(default)]
+        tasks_skipped: usize,
+        #[serde(default)]
+        tasks_active: usize,
+        #[serde(default)]
+        tasks_pending: usize,
         total_agent_calls: usize,
         total_cost_usd: f64,
         duration_ms: u64,
@@ -1121,6 +1154,10 @@ impl RunnerEvent {
             total_tasks: totals.total_tasks,
             tasks_completed: totals.tasks_completed,
             tasks_failed: totals.tasks_failed,
+            tasks_blocked: totals.tasks_blocked,
+            tasks_skipped: totals.tasks_skipped,
+            tasks_active: totals.tasks_active,
+            tasks_pending: totals.tasks_pending,
             total_agent_calls: totals.total_agent_calls,
             total_cost_usd: totals.total_cost_usd,
             duration_ms: totals.duration_ms,
@@ -1587,6 +1624,10 @@ pub struct RunTotals {
     pub total_tasks: usize,
     pub tasks_completed: usize,
     pub tasks_failed: usize,
+    pub tasks_blocked: usize,
+    pub tasks_skipped: usize,
+    pub tasks_active: usize,
+    pub tasks_pending: usize,
     pub total_agent_calls: usize,
     pub total_cost_usd: f64,
     pub duration_ms: u64,

@@ -528,7 +528,7 @@ These may use parallel analysis/implementation agents after the baseline is safe
 sealed.
 
 - [x] CTRL-01 Preserve and attribute the existing dirty checkout; establish BASE_SHA.
-- [ ] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work.
+- [x] CTRL-02 Review, test, split, commit, and integrate the 18-file July 14 precursor work. (Merged via integration branch 0f855c492; discover_existing + try_reattach wired.)
 - [x] CTRL-03 Canonicalize 36 invalid depends_on_plan names to exact meta.plan IDs.
 - [x] CTRL-04 Resolve 11 external dependencies on P08/P09/P16/P19/P22/P23/P25/P28.
 - [x] CTRL-05 Resolve E11’s absent architecture-core-queue prerequisite.
@@ -609,7 +609,7 @@ Single runner owner; do not parallelize these shared paths.
 Plan: tmp/status-quo/self-heal/plans/SH01-runner-lifecycle/tasks.toml
 
 - [x] SH01-T06C4 Expire lost effects and close timeout races.
-- [ ] SH01-T07 Reconcile truthful run and plan summaries.
+- [x] SH01-T07 Reconcile truthful run and plan summaries. (build_report rewritten to per-task classification; blocked/skipped details with reasons; global=sum(plans).)
 - [ ] SH01 reads 28/28 done after review, merge, and post-merge verification.
 - [ ] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence.
 
@@ -619,9 +619,9 @@ Keep max_parallel=1 until the full plan proves otherwise.
 
 Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 
-- [ ] SH02-T01 Enforce effective per-plan concurrency.
+- [x] SH02-T01 Enforce effective per-plan concurrency. (Per-plan active_count gate using PlanDag.running; plan_max_parallel index from tasks.toml.)
 - [ ] SH02-T02 Create task-owned worktrees and immutable gate inputs.
-- [ ] SH02-T05 Replace spawn polling with queued capacity wakeups.
+- [x] SH02-T05 Replace spawn polling with queued capacity wakeups. (NotifyPermit wrapper notifies on drop; spawns_queued dedup prevents log storm; reset_immediately on waker.)
 - [ ] SH02-T03 Require a durable task commit before success.
 - [ ] SH02-T04 Make worktree resume/reacquisition idempotent.
 - [ ] SH02-T06 Clean crash locks and recover dirty worktrees.

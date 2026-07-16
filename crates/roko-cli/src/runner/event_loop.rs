@@ -971,6 +971,14 @@ pub async fn run(
         }
     }
 
+    // SH03-T05: Clean stale staging files left by previous crashed runs.
+    if let Some(state_dir) = paths.state_snapshot_json.parent() {
+        let cleaned = persist::clean_stale_staging_files(state_dir);
+        if cleaned > 0 {
+            info!(cleaned, "cleaned stale atomic-write staging files");
+        }
+    }
+
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
     let gate_sem = Arc::new(tokio::sync::Semaphore::new(config.gate_concurrency.max(1)));
 
@@ -2324,6 +2332,24 @@ pub async fn run(
                         );
                         continue;
                     }
+
+                    // SH02-T02: Merge the task branch back into the plan
+                    // branch so the next task sees this task's changes in its
+                    // baseline.  Best-effort — if the merge fails (shouldn't
+                    // happen since max_parallel=1 prevents conflicts) the
+                    // commit already landed on the task branch.
+                    if let Err(err) = worktrees
+                        .merge_task_into_plan(&completion.plan_id, &completion.task_id)
+                        .await
+                    {
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            error = %err,
+                            "failed to merge task branch into plan branch"
+                        );
+                    }
+
                     let ready =
                         ready_tasks_for_plan(&task_dag, &executor, &task_index, &state, &completion.plan_id);
                     let has_more = !ready.is_empty();
@@ -2548,6 +2574,23 @@ pub async fn run(
                                     );
                                 }
 
+                                // SH02-T02: Discard failed task branch so the
+                                // next attempt starts from a clean plan branch.
+                                if let Err(err) = worktrees
+                                    .discard_task_branch(
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                    )
+                                    .await
+                                {
+                                    debug!(
+                                        plan_id = %completion.plan_id,
+                                        task_id = %completion.task_id,
+                                        error = %err,
+                                        "failed to discard task branch before retry"
+                                    );
+                                }
+
                                 // Refresh prompt cache after gate failure — the
                                 // agent may have written new episodes / knowledge
                                 // that should inform the retry prompt.
@@ -2578,6 +2621,18 @@ pub async fn run(
                         false
                     };
                     if !retry_started {
+                        // SH02-T02: Discard task branch on terminal failure.
+                        if let Err(err) = worktrees
+                            .discard_task_branch(&completion.plan_id, &completion.task_id)
+                            .await
+                        {
+                            debug!(
+                                plan_id = %completion.plan_id,
+                                task_id = %completion.task_id,
+                                error = %err,
+                                "failed to discard task branch on terminal failure"
+                            );
+                        }
                         state.task_failed();
                         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
                         let reason = decision.reason.clone();
@@ -4892,6 +4947,11 @@ fn save_snapshot(
         total_agent_calls: state.total_agent_calls,
         plan_costs: state.plan_costs.clone(),
         completed_tasks: state.completed_tasks.clone(),
+        failed_tasks: state
+            .failed_tasks
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+            .collect(),
         lifecycle: Some(state.lifecycle.clone()),
         snapshot_fail_streak: state.snapshot_fail_streak,
         fingerprints: state.task_fingerprints.clone(),
@@ -4956,6 +5016,13 @@ fn restore_state_from_resume_snapshot(
     state.plan_costs = snapshot.plan_costs.clone();
     state.snapshot_fail_streak = snapshot.snapshot_fail_streak;
     state.completed_tasks = snapshot.completed_tasks.clone();
+    // SH03-T01: Restore per-plan failed task IDs from snapshot so the DAG
+    // correctly marks dependents as blocked/skipped on resume.
+    state.failed_tasks = snapshot
+        .failed_tasks
+        .iter()
+        .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+        .collect();
     if let Some(lifecycle) = snapshot.lifecycle.clone() {
         state.lifecycle = lifecycle;
     }
@@ -5762,6 +5829,18 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
+
+            // SH02-T02: Create a task-specific branch so the agent works on
+            // an isolated snapshot.  The branch forks from the plan branch
+            // HEAD, making diffs attributable and gates immutable.
+            if let Err(err) = ctx.worktrees.checkout_task_branch(plan_id, &task_id).await {
+                warn!(
+                    plan_id = %plan_id,
+                    task = %task_id,
+                    error = %err,
+                    "failed to create task branch — agent will work on plan branch directly"
+                );
+            }
 
             let previous_gate_output = ctx.state.gate_output.clone();
             let attempt_num = ctx
@@ -8646,6 +8725,9 @@ fn append_ledger_entry(path: &std::path::Path, kind: &str, data: &serde_json::Va
             .append(true)
             .open(path)?;
         writeln!(f, "{}", line)?;
+        // SH03-T03: fsync terminal ledger entries so crash recovery can
+        // rely on the JSONL being durable up to the last written entry.
+        f.sync_all()?;
         Ok(())
     })() {
         warn!(error = %e, path = %path.display(), "failed to append to run ledger");
@@ -9649,11 +9731,7 @@ fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -
 
 /// Build a per-plan report by classifying every task into exactly one
 /// terminal/nonterminal category from the actual run state.
-fn build_plan_report(
-    executor: &ParallelExecutor,
-    plan: &Plan,
-    state: &RunState,
-) -> PlanReport {
+fn build_plan_report(executor: &ParallelExecutor, plan: &Plan, state: &RunState) -> PlanReport {
     let orc_state = executor.plan_state(&plan.id);
     let plan_completed = orc_state
         .map(|s| matches!(s.current_phase, PlanPhase::Complete))
@@ -9686,7 +9764,11 @@ fn build_plan_report(
                 task_id: task.id.clone(),
                 reason,
             });
-        } else if !task.depends_on.iter().all(|dep| completed_set.contains(dep)) {
+        } else if !task
+            .depends_on
+            .iter()
+            .all(|dep| completed_set.contains(dep))
+        {
             // Has unmet dependencies but none are failed — blocked or pending.
             let reason = task
                 .depends_on
@@ -9847,7 +9929,8 @@ depends_on = ["B1"]
         state.mark_task_completed("plan-a", "A1");
         state.mark_task_completed("plan-a", "A2");
         // B1 failed
-        state.failed_tasks
+        state
+            .failed_tasks
             .entry("plan-b".to_string())
             .or_default()
             .insert("B1".to_string());
@@ -9880,7 +9963,11 @@ depends_on = ["B1"]
         assert_eq!(report.total_tasks, 5);
         assert_eq!(
             report.tasks_completed,
-            report.plans.iter().map(|p| p.tasks_completed).sum::<usize>()
+            report
+                .plans
+                .iter()
+                .map(|p| p.tasks_completed)
+                .sum::<usize>()
         );
         assert_eq!(
             report.tasks_failed,
@@ -10961,6 +11048,7 @@ mod tests_post_gate_reflection_lessons {
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
             lifecycle: Some(source.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
@@ -11767,6 +11855,7 @@ depends_on = ["T1"]
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
             lifecycle: Some(persisted_state.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),

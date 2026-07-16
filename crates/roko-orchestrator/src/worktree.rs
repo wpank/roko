@@ -158,6 +158,16 @@ pub fn format_branch_name(plan_id: &str) -> String {
     format!("roko/plan/{plan_id}")
 }
 
+/// Derive the canonical branch name for a task attempt.
+///
+/// Convention: `roko/task/<plan_id>/<task_id>`. Each task gets its own
+/// branch forked from the plan branch so diffs are attributable and
+/// gates run against an isolated snapshot.
+#[must_use]
+pub fn format_task_branch_name(plan_id: &str, task_id: &str) -> String {
+    format!("roko/task/{plan_id}/{task_id}")
+}
+
 /// Manages the lifecycle of per-plan git worktrees.
 ///
 /// Clones of [`WorktreeManager`] share the same internal registry — the
@@ -379,6 +389,148 @@ impl WorktreeManager {
     #[must_use]
     pub fn plan_path(&self, plan_id: &str) -> Option<PathBuf> {
         self.get(plan_id).map(|h| h.path)
+    }
+
+    /// Create (or reset) a task branch in the plan's worktree and check it
+    /// out.  The task branch forks from the current plan branch HEAD so the
+    /// agent works on an isolated snapshot.  Returns the worktree path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::NotFound`] if the plan worktree is not
+    /// tracked, or [`WorktreeError::GitFailed`] if the git checkout fails.
+    pub async fn checkout_task_branch(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+    ) -> Result<PathBuf, WorktreeError> {
+        let handle = self
+            .get(plan_id)
+            .ok_or_else(|| WorktreeError::NotFound(plan_id.to_string()))?;
+        let task_branch = format_task_branch_name(plan_id, task_id);
+        let plan_branch = format_branch_name(plan_id);
+        // Create or reset the task branch from the plan branch tip, then
+        // check it out in the existing plan worktree.
+        let output = Command::new("git")
+            .current_dir(&handle.path)
+            .args(["checkout", "-B", &task_branch, &plan_branch])
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        self.touch(plan_id);
+        Ok(handle.path)
+    }
+
+    /// Merge the task branch into the plan branch using `--no-ff` and
+    /// return to the plan branch.  This makes the task's diff attributable
+    /// as a single merge commit on the plan branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::NotFound`] if the plan worktree is not
+    /// tracked, or [`WorktreeError::GitFailed`] if git merge/checkout fails.
+    pub async fn merge_task_into_plan(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+    ) -> Result<(), WorktreeError> {
+        let handle = self
+            .get(plan_id)
+            .ok_or_else(|| WorktreeError::NotFound(plan_id.to_string()))?;
+        let task_branch = format_task_branch_name(plan_id, task_id);
+        let plan_branch = format_branch_name(plan_id);
+
+        // Switch back to the plan branch.
+        let checkout = Command::new("git")
+            .current_dir(&handle.path)
+            .args(["checkout", &plan_branch])
+            .output()
+            .await?;
+        if !checkout.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&checkout.stderr).into_owned(),
+            });
+        }
+
+        // Merge the task branch with --no-ff so the merge commit is visible.
+        let merge = Command::new("git")
+            .current_dir(&handle.path)
+            .args([
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                &format!("[roko] merge task {task_id} into {plan_id}"),
+                &task_branch,
+            ])
+            .output()
+            .await?;
+        if !merge.status.success() {
+            // Abort the failed merge so the worktree stays clean.
+            let _ = Command::new("git")
+                .current_dir(&handle.path)
+                .args(["merge", "--abort"])
+                .output()
+                .await;
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&merge.stderr).into_owned(),
+            });
+        }
+
+        // Clean up the task branch ref — it's been merged.
+        let _ = Command::new("git")
+            .current_dir(&handle.path)
+            .args(["branch", "-d", &task_branch])
+            .output()
+            .await;
+
+        self.touch(plan_id);
+        Ok(())
+    }
+
+    /// Discard the task branch and return the plan worktree to the plan
+    /// branch.  Used when a task fails gates or the agent errors out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeError::NotFound`] if the plan worktree is not
+    /// tracked, or [`WorktreeError::GitFailed`] if git operations fail.
+    pub async fn discard_task_branch(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+    ) -> Result<(), WorktreeError> {
+        let handle = self
+            .get(plan_id)
+            .ok_or_else(|| WorktreeError::NotFound(plan_id.to_string()))?;
+        let task_branch = format_task_branch_name(plan_id, task_id);
+        let plan_branch = format_branch_name(plan_id);
+
+        // Force-checkout the plan branch (discards any uncommitted task work).
+        let checkout = Command::new("git")
+            .current_dir(&handle.path)
+            .args(["checkout", "-f", &plan_branch])
+            .output()
+            .await?;
+        if !checkout.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&checkout.stderr).into_owned(),
+            });
+        }
+
+        // Delete the task branch.
+        let _ = Command::new("git")
+            .current_dir(&handle.path)
+            .args(["branch", "-D", &task_branch])
+            .output()
+            .await;
+
+        self.touch(plan_id);
+        Ok(())
     }
 
     /// Remove the worktree tracked under `id`. Errors if `id` isn't
@@ -1433,5 +1585,94 @@ mod tests {
         };
         let result = mgr.prune().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn task_branch_lifecycle_checkout_merge_discard() {
+        let Some((_tmp, mgr)) = make_manager() else {
+            return;
+        };
+
+        // Create a plan worktree first.
+        let handle = mgr.create_for_plan("plan-a").await.unwrap();
+        let wt = &handle.path;
+
+        // Write a file on the plan branch so it has content.
+        std::fs::write(wt.join("base.txt"), "plan baseline").unwrap();
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["add", "base.txt"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["commit", "-m", "plan baseline", "--no-verify"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Checkout a task branch — should fork from plan HEAD.
+        let path = mgr.checkout_task_branch("plan-a", "task-1").await.unwrap();
+        assert_eq!(path, *wt);
+        let branch = git_stdout_sync(wt, &["symbolic-ref", "--short", "HEAD"]);
+        assert_eq!(branch, "roko/task/plan-a/task-1");
+
+        // Make a change on the task branch.
+        std::fs::write(wt.join("task.txt"), "task output").unwrap();
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["add", "task.txt"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["commit", "-m", "task work", "--no-verify"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Merge task → plan.
+        mgr.merge_task_into_plan("plan-a", "task-1").await.unwrap();
+        let branch = git_stdout_sync(wt, &["symbolic-ref", "--short", "HEAD"]);
+        assert_eq!(branch, "roko/plan/plan-a");
+        // Task file should be visible on the plan branch.
+        assert!(wt.join("task.txt").exists());
+
+        // Now test discard: create another task branch, change, then discard.
+        mgr.checkout_task_branch("plan-a", "task-2").await.unwrap();
+        std::fs::write(wt.join("discard.txt"), "should be gone").unwrap();
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["add", "discard.txt"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = StdCommand::new("git")
+            .current_dir(wt)
+            .args(["commit", "-m", "bad work", "--no-verify"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Discard — should go back to plan branch, task file gone.
+        mgr.discard_task_branch("plan-a", "task-2").await.unwrap();
+        let branch = git_stdout_sync(wt, &["symbolic-ref", "--short", "HEAD"]);
+        assert_eq!(branch, "roko/plan/plan-a");
+        assert!(
+            !wt.join("discard.txt").exists(),
+            "discarded file should not exist on plan branch"
+        );
+    }
+
+    fn git_stdout_sync(dir: &Path, args: &[&str]) -> String {
+        let output = StdCommand::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {:?} failed", args);
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 }

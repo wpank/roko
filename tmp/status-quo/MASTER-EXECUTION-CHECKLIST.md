@@ -620,12 +620,12 @@ Keep max_parallel=1 until the full plan proves otherwise.
 Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 
 - [x] SH02-T01 Enforce effective per-plan concurrency. (Per-plan active_count gate using PlanDag.running; plan_max_parallel index from tasks.toml.)
-- [ ] SH02-T02 Create task-owned worktrees and immutable gate inputs.
+- [x] SH02-T02 Create task-owned worktrees and immutable gate inputs. (Per-task branches via checkout_task_branch/merge_task_into_plan/discard_task_branch; agent spawns onto roko/task/<plan>/<task> branch, merged on pass, discarded on fail.)
 - [x] SH02-T05 Replace spawn polling with queued capacity wakeups. (NotifyPermit wrapper notifies on drop; spawns_queued dedup prevents log storm; reset_immediately on waker.)
-- [ ] SH02-T03 Require a durable task commit before success.
-- [ ] SH02-T04 Make worktree resume/reacquisition idempotent.
-- [ ] SH02-T06 Clean crash locks and recover dirty worktrees.
-- [ ] SH02 reads 6/6 done after integrated acceptance.
+- [x] SH02-T03 Require a durable task commit before success. (Already implemented: terminalize_passed_task commits via commit_task_changes with declared_files filter, CommitOutcome::Created{hash} recorded in TaskTerminalOutcome/RunLedger, failures terminalize as PersistenceFailed.)
+- [x] SH02-T04 Make worktree resume/reacquisition idempotent. (Already implemented: try_reattach validates path/branch/HEAD match, discover_existing at startup re-registers disk worktrees, ensure_for_plan falls back to try_reattach before create.)
+- [x] SH02-T06 Clean crash locks and recover dirty worktrees. (Already implemented: clear_stale_locks in create/remove/prune cleans dead locks > 60s; try_reattach preserves dirty work with ownership; discover_existing at startup re-registers without touching working tree.)
+- [x] SH02 reads 6/6 done after integrated acceptance.
 - [ ] Concurrency remains capped until the SH06 release gate passes.
 
 Parallel lane allowed: E04 relay/auth tasks confined to roko-serve. Do not overlap
@@ -635,13 +635,13 @@ agent-safety/runner files without explicit reservations.
 
 Plan: tmp/status-quo/self-heal/plans/SH03-persistence-integrity/tasks.toml
 
-- [ ] SH03-T01 Persist complete terminal snapshots after reconciliation.
-- [ ] SH03-T02 Add rotating transition checkpoints.
-- [ ] SH03-T03 Make the lifecycle ledger complete and idempotent.
-- [ ] SH03-T05 Recover and clean atomic-write debris after T02.
-- [ ] SH03-T04 Repair fresh-run seeded task semantics after T01/T03.
-- [ ] SH03-T06 Make StateHub publication ordered/recoverable after T03.
-- [ ] SH03 reads 6/6 done after integrated acceptance.
+- [x] SH03-T01 Persist complete terminal snapshots after reconciliation. (Added failed_tasks HashMap to RunStateSnapshot; saved from state.failed_tasks and restored on resume. Timeout snapshots already terminal via TimeoutLedgerEntry + lifecycle projection. Completed tasks already durable.)
+- [x] SH03-T02 Add rotating transition checkpoints. (Snapshot writer rotates current snapshot to <name>.<unix_ms>.bak before overwrite; bounded to MAX_CHECKPOINTS=5; old checkpoints pruned chronologically.)
+- [x] SH03-T03 Make the lifecycle ledger complete and idempotent. (Run ledger JSONL already writes task_started/completed/failed, gate_outcome, plan_revision, timeout_recorded, run_summary entries; RunLedger.record_task_terminal idempotent; added fsync to append_ledger_entry for durability.)
+- [x] SH03-T05 Recover and clean atomic-write debris after T02. (Added clean_stale_staging_files scanning *.tmp.<PID>.<SEQ> pattern; dead-PID detection via kill -0; called at event loop startup; atomic_write already uses create_new to preserve existing debris.)
+- [x] SH03-T04 Repair fresh-run seeded task semantics after T01/T03. (Already implemented: seed_completed_tasks_from_plan_status excludes done tasks from DAG selection; progress counts consistent; unit tested.)
+- [x] SH03-T06 Make StateHub publication ordered/recoverable after T03. (Already implemented: publish_lock serializes snapshot+broadcast; subscriber N observes state including N; lag sends gap+resync; concurrent publishers safe; comprehensive tests.)
+- [x] SH03 reads 6/6 done after integrated acceptance.
 
 T02/T03 and T04/T06 are logically parallel, but must serialize if persistence files
 or public event contracts overlap.

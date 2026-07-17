@@ -3637,7 +3637,7 @@ fn validate_workspace_file_kinds_with(
                         .map_err(std::io::Error::from)?
                         .st_mode;
                     match FileType::from_raw_mode(mode) {
-                        FileType::Directory => return Err(open_error.into()),
+                        FileType::Directory => return Err(open_error),
                         FileType::RegularFile | FileType::Symlink => {}
                         _ => return Err(Error::other("workspace contains a non-file input")),
                     }

@@ -1,3 +1,7 @@
+//! Phase-2 affect-engine stubs: contrarian retrieval, fatigue tracking,
+//! and somatic-marker integration points. These types are defined and
+//! tested but not yet wired into the runtime dispatch path.
+
 use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};

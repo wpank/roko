@@ -16,7 +16,6 @@ use roko_core::config::GatesConfig;
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
-use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
 use roko_core::{AgentRole, ContentHash, PhaseKind, PlanPhase};
 use roko_daimon::{
@@ -29,7 +28,7 @@ use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
     MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
     PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
-    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
+    TransitionError, WorktreeConfig, WorktreeManager,
 };
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::run_ledger::{
@@ -64,7 +63,9 @@ use super::agent_stream::{AgentHandle, AgentSpawnConfig, AgentTermination, Agent
 use super::attempt_ownership::{
     AttemptClaim, AttemptOwner, AttemptOwnership, AttemptPhase, EffectRef,
 };
-use super::deadlines::{DeadlinePolicy, DeadlineTracker, monotonic_now, owner_expiry};
+use super::deadlines::{
+    DeadlinePolicy, DeadlineTracker, OwnershipTiming, monotonic_now, owner_expiry,
+};
 use super::gate_dispatch;
 use super::merge::{MergeDispatch, MergeLaunch, MergeResolution, PlanMerger, PlanMergerConfig};
 use super::output_sink::RunOutputSink;
@@ -72,21 +73,22 @@ use super::persist::{self, GateThresholds, PersistPaths};
 use super::plan_loader::Plan;
 use super::snapshot_writer::{SnapshotPayload, SnapshotWriter};
 use super::state::RunState;
-use super::task_dag::{DagConfig, DagProgressSummary, TaskDag, task_status_is_terminal};
+use super::task_dag::{
+    DagConfig, DagProgressSummary, SkippedReason, TaskDag, task_status_is_terminal,
+};
 use super::tui_bridge::TuiBridge;
 use super::types::{
     AgentCompletionSummary, AgentDispatchOutcome, AgentEvent, GateCompletion, GateCompletionKind,
     GateEffectRef, GateVerdictSummary, OwnerEffectRef, PlanOutcome, PlanRunSummary,
     PromptAssemblyDiagnostics, ResumeMarker, ResumeOutcome, RetryDecision, RunConfig, RunOutcome,
     RunTotals, RunnerEvent, RunnerFailureKind, TaskAttemptOutcome, TaskAttemptRef,
-    TaskAttemptStatus, TaskStatusDetail, TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
+    TaskAttemptStatus, TaskLifecycleStatus, TaskPhaseDurations, TaskRunCategory, TaskRunSummary,
+    TimeoutEvent, TimeoutKind, effective_plan_timeout_secs,
 };
 
 // ─── RunReport ──────────────────────────────────────────────────────────
 
 /// Summary of a completed run.
-///
-/// Global totals are the exact sum of per-plan totals.
 #[derive(Debug, Clone)]
 pub struct RunReport {
     pub plans: Vec<PlanReport>,
@@ -95,8 +97,9 @@ pub struct RunReport {
     pub tasks_failed: usize,
     pub tasks_blocked: usize,
     pub tasks_skipped: usize,
-    pub tasks_active: usize,
-    pub tasks_pending: usize,
+    pub tasks_cancelled: usize,
+    pub tasks_orphaned: usize,
+    pub tasks_nonterminal: usize,
     pub total_cost_usd: f64,
     pub total_tokens_in: u64,
     pub total_tokens_out: u64,
@@ -106,6 +109,7 @@ pub struct RunReport {
     pub failure_reasons: HashMap<String, String>,
     /// Per-task cost breakdown.
     pub task_costs: Vec<TaskCostReport>,
+    pub tasks: Vec<TaskRunSummary>,
 }
 
 /// Per-task cost report for the RunLedger.
@@ -122,10 +126,7 @@ pub struct TaskCostReport {
     pub outcome: String,
 }
 
-/// Per-plan report derived from the DAG's actual terminal state.
-///
-/// Each task belongs to exactly one category: completed, failed,
-/// blocked, skipped, active, or pending.
+/// Per-plan report.
 #[derive(Debug, Clone)]
 pub struct PlanReport {
     pub plan_id: String,
@@ -135,16 +136,21 @@ pub struct PlanReport {
     pub tasks_failed: usize,
     pub tasks_blocked: usize,
     pub tasks_skipped: usize,
-    pub tasks_active: usize,
-    pub tasks_pending: usize,
-    pub blocked_details: Vec<TaskStatusDetail>,
-    pub skipped_details: Vec<TaskStatusDetail>,
+    pub tasks_cancelled: usize,
+    pub tasks_orphaned: usize,
+    pub tasks_nonterminal: usize,
+    pub tasks: Vec<TaskRunSummary>,
     pub gate_results: Vec<GateResult>,
 }
 
 impl RunReport {
     pub fn all_succeeded(&self) -> bool {
-        self.tasks_failed == 0 && self.plans.iter().all(|p| p.completed)
+        self.tasks_failed == 0
+            && self.tasks_blocked == 0
+            && self.tasks_cancelled == 0
+            && self.tasks_orphaned == 0
+            && self.tasks_nonterminal == 0
+            && self.plans.iter().all(|plan| plan.completed)
     }
 }
 
@@ -243,6 +249,7 @@ enum RoutedAgentEvent {
     },
     Fatal {
         attempt: TaskAttemptRef,
+        effect: EffectRef,
         message: String,
     },
 }
@@ -262,8 +269,12 @@ impl RoutedAgentEvent {
         }
     }
 
-    fn fatal(attempt: TaskAttemptRef, message: String) -> Self {
-        Self::Fatal { attempt, message }
+    fn fatal(attempt: TaskAttemptRef, effect: EffectRef, message: String) -> Self {
+        Self::Fatal {
+            attempt,
+            effect,
+            message,
+        }
     }
 }
 
@@ -295,48 +306,171 @@ async fn forward_agent_events(
     }
 }
 
-/// Wraps an `OwnedSemaphorePermit` so that releasing the permit also
-/// notifies the spawn waker, allowing the select loop to immediately
-/// re-evaluate queued spawn candidates instead of waiting for the next
-/// 100 ms tick.
-struct NotifyPermit {
-    permit: tokio::sync::OwnedSemaphorePermit,
-    waker: Arc<tokio::sync::Notify>,
-}
-
-impl Drop for NotifyPermit {
-    fn drop(&mut self) {
-        self.waker.notify_waiters();
-    }
-}
-
 enum AgentRuntimeResource {
-    Dispatching(NotifyPermit),
+    Dispatching(TaskConcurrencyPermit),
     Cli {
         handle: AgentHandle,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: NotifyPermit,
+        permit: TaskConcurrencyPermit,
     },
     Bridge {
         bridge: tokio::task::JoinHandle<()>,
         forwarder: tokio::task::JoinHandle<()>,
-        permit: NotifyPermit,
+        permit: TaskConcurrencyPermit,
     },
-    AwaitingGate,
+    AwaitingGate {
+        permit: Option<TaskConcurrencyPermit>,
+    },
     Gate {
         effect: GateEffectRef,
         handle: tokio::task::JoinHandle<()>,
+        permit: Option<TaskConcurrencyPermit>,
     },
     Merge {
         effect: GateEffectRef,
         handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
         resolution: Arc<std::sync::Mutex<Option<MergeResolution>>>,
+        permit: Option<TaskConcurrencyPermit>,
     },
     CleanupFailed {
-        permit: Option<NotifyPermit>,
+        permit: Option<TaskConcurrencyPermit>,
         gate_effect: Option<GateEffectRef>,
         errors: Vec<String>,
+        pending_terminal: Option<PendingTerminal>,
     },
+}
+
+#[derive(Clone)]
+enum PendingTerminal {
+    Attempt {
+        outcome: TaskAttemptOutcome,
+        failure_kind: Option<RunnerFailureKind>,
+        phase_durations: TaskPhaseDurations,
+        reason: Option<String>,
+        commit_outcome: Option<CommitOutcome>,
+        retry: Option<PendingRetryContinuation>,
+    },
+    Timeout {
+        timeout: TimeoutEvent,
+        phase_durations: TaskPhaseDurations,
+    },
+}
+
+#[derive(Clone)]
+enum PendingRetryContinuation {
+    Agent {
+        decision: RetryDecision,
+        replan_context: String,
+    },
+    Gate {
+        decision: RetryDecision,
+        replan_context: String,
+        output: String,
+        verdicts: Vec<GateVerdictSummary>,
+    },
+}
+
+impl PendingTerminal {
+    fn attempt(
+        outcome: TaskAttemptOutcome,
+        failure_kind: Option<RunnerFailureKind>,
+        phase_durations: TaskPhaseDurations,
+        reason: Option<&str>,
+        commit_outcome: Option<&CommitOutcome>,
+    ) -> Self {
+        Self::Attempt {
+            outcome,
+            failure_kind,
+            phase_durations,
+            reason: reason.map(str::to_owned),
+            commit_outcome: commit_outcome.cloned(),
+            retry: None,
+        }
+    }
+
+    fn with_retry(mut self, retry: Option<PendingRetryContinuation>) -> Self {
+        if let Self::Attempt {
+            retry: pending_retry,
+            ..
+        } = &mut self
+        {
+            *pending_retry = retry;
+        }
+        self
+    }
+
+    fn retry(&self) -> Option<&PendingRetryContinuation> {
+        match self {
+            Self::Attempt { retry, .. } => retry.as_ref(),
+            Self::Timeout { .. } => None,
+        }
+    }
+
+    fn outcome(&self) -> TaskAttemptOutcome {
+        match self {
+            Self::Attempt { outcome, .. } => *outcome,
+            Self::Timeout { .. } => TaskAttemptOutcome::TimedOut,
+        }
+    }
+
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Attempt { reason, .. } => reason.as_deref(),
+            Self::Timeout { .. } => Some("task attempt timed out"),
+        }
+    }
+}
+
+struct TaskConcurrencyPermit {
+    _global: tokio::sync::OwnedSemaphorePermit,
+    _plan: tokio::sync::OwnedSemaphorePermit,
+}
+
+struct TaskCapacity {
+    global: Arc<tokio::sync::Semaphore>,
+    plans: HashMap<String, Arc<tokio::sync::Semaphore>>,
+}
+
+impl TaskCapacity {
+    fn new<I, S>(global_capacity: usize, plans: I) -> Self
+    where
+        I: IntoIterator<Item = (S, u32)>,
+        S: Into<String>,
+    {
+        let global_capacity = global_capacity.max(1);
+        Self {
+            global: Arc::new(tokio::sync::Semaphore::new(global_capacity)),
+            plans: plans
+                .into_iter()
+                .map(|(plan_id, max_parallel)| {
+                    (
+                        plan_id.into(),
+                        Arc::new(tokio::sync::Semaphore::new(effective_plan_task_capacity(
+                            global_capacity,
+                            max_parallel,
+                        ))),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn try_acquire(&self, plan_id: &str) -> Option<TaskConcurrencyPermit> {
+        let plan = self.plans.get(plan_id)?.clone().try_acquire_owned().ok()?;
+        let global = self.global.clone().try_acquire_owned().ok()?;
+        Some(TaskConcurrencyPermit {
+            _global: global,
+            _plan: plan,
+        })
+    }
+}
+
+fn effective_plan_task_capacity(global_capacity: usize, plan_max_parallel: u32) -> usize {
+    let global_capacity = global_capacity.max(1);
+    let plan_capacity = usize::try_from(plan_max_parallel)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    global_capacity.min(plan_capacity)
 }
 
 async fn finish_merge_handle(
@@ -404,10 +538,109 @@ fn finish_gate_claim(
     }
 }
 
+fn continue_failed_preflight(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    claim: &mut Option<(AttemptClaim<AgentRuntimeResource>, EffectRef)>,
+) {
+    let Some((mut claim, _)) = claim.take() else {
+        return;
+    };
+    let AgentRuntimeResource::AwaitingGate { permit } =
+        claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+    else {
+        unreachable!("settled preflight must retain its capacity carrier")
+    };
+    claim.replace_resource(AgentRuntimeResource::Dispatching(
+        permit.expect("task preflight must own paired capacity"),
+    ));
+    ownership
+        .transition_claim(claim, AttemptPhase::Dispatching, EffectRef(0))
+        .expect("failed preflight must transfer exact ownership to agent dispatch");
+}
+
+fn retain_gate_claim_after_persistence_failure(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    claim: &mut Option<(AttemptClaim<AgentRuntimeResource>, EffectRef)>,
+    reason: String,
+    pending_terminal: PendingTerminal,
+) {
+    let Some((mut claim, effect)) = claim.take() else {
+        return;
+    };
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+    let permit = match resource {
+        AgentRuntimeResource::AwaitingGate { permit } => permit,
+        other => {
+            claim.replace_resource(other);
+            ownership
+                .transition_claim(claim, AttemptPhase::AwaitingGate, effect)
+                .expect("unconfirmed terminal persistence must restore exact ownership");
+            return;
+        }
+    };
+    claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+        permit,
+        gate_effect: None,
+        errors: vec![reason],
+        pending_terminal: Some(pending_terminal),
+    });
+    ownership
+        .transition_claim(claim, AttemptPhase::AwaitingGate, effect)
+        .expect("unconfirmed terminal persistence must retain paired capacity");
+}
+
+fn finish_agent_failure_claim(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    claim: &mut Option<(AttemptClaim<AgentRuntimeResource>, EffectRef)>,
+    terminal: &TerminalPersistence,
+    error: &str,
+) {
+    let Some((mut claim, effect)) = claim.take() else {
+        return;
+    };
+    if matches!(terminal, TerminalPersistence::Persisted) {
+        ownership
+            .complete_claim(claim)
+            .expect("durably terminal agent claim must complete");
+        return;
+    }
+
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+    let permit = match resource {
+        AgentRuntimeResource::AwaitingGate { permit } => permit,
+        other => {
+            claim.replace_resource(other);
+            ownership
+                .transition_claim(claim, AttemptPhase::AgentUnconfirmed, effect)
+                .expect("unpersisted agent terminal must restore exact ownership");
+            return;
+        }
+    };
+    claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+        permit,
+        gate_effect: None,
+        errors: vec![error.to_string()],
+        pending_terminal: match terminal {
+            TerminalPersistence::Pending(pending) => Some(pending.clone()),
+            TerminalPersistence::Persisted | TerminalPersistence::Unavailable => None,
+        },
+    });
+    ownership
+        .transition_claim(claim, AttemptPhase::AgentUnconfirmed, effect)
+        .expect("unpersisted agent terminal must retain paired capacity");
+}
+
+enum TerminalPersistence {
+    Persisted,
+    Pending(PendingTerminal),
+    Unavailable,
+}
+
 struct AgentSettlement {
     exit_code: Option<i32>,
     errors: Vec<String>,
     unconfirmed: Option<AgentRuntimeResource>,
+    permit: Option<TaskConcurrencyPermit>,
 }
 
 async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlement {
@@ -426,11 +659,11 @@ async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlemen
                 if let Err(err) = forwarder.await {
                     errors.push(format!("agent forwarder failed: {err}"));
                 }
-                drop(permit);
                 AgentSettlement {
                     exit_code,
                     errors,
                     unconfirmed: None,
+                    permit: Some(permit),
                 }
             }
             AgentWait::Unconfirmed { handle, errors } => AgentSettlement {
@@ -441,6 +674,7 @@ async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlemen
                     forwarder,
                     permit,
                 }),
+                permit: None,
             },
         },
         AgentRuntimeResource::Bridge {
@@ -455,17 +689,18 @@ async fn settle_agent_resource(resource: AgentRuntimeResource) -> AgentSettlemen
             if let Err(err) = forwarder.await {
                 errors.push(format!("agent forwarder failed: {err}"));
             }
-            drop(permit);
             AgentSettlement {
                 exit_code: Some(0),
                 errors,
                 unconfirmed: None,
+                permit: Some(permit),
             }
         }
         other => AgentSettlement {
             exit_code: None,
             errors: vec!["agent terminal event arrived outside the agent phase".to_string()],
             unconfirmed: Some(other),
+            permit: None,
         },
     }
 }
@@ -476,6 +711,14 @@ fn agent_terminal_failure(event: &AgentEvent, settlement: &AgentSettlement) -> O
     }
     if let Some(error) = settlement.errors.first() {
         return Some(error.clone());
+    }
+    if let AgentEvent::Exited { exit_code } = event
+        && *exit_code != settlement.exit_code
+    {
+        return Some(format!(
+            "agent exit status mismatch: event={exit_code:?}, process={:?}",
+            settlement.exit_code
+        ));
     }
     match settlement.exit_code {
         Some(0) => None,
@@ -505,7 +748,73 @@ struct TaskRuntimeState {
     gate_output: String,
     task_started_at: Instant,
     last_dispatch_ms: u64,
+    phase_clock: TaskPhaseClock,
     routing_context: Option<roko_learn::model_router::RoutingContext>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskTimingPhase {
+    Dispatch,
+    Agent,
+    Gate,
+    Cleanup,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaskPhaseClock {
+    attempt_started_at: Instant,
+    phase_started_at: Instant,
+    phase: TaskTimingPhase,
+    accumulated: TaskPhaseDurations,
+}
+
+impl TaskPhaseClock {
+    fn new(attempt_started_at: Instant) -> Self {
+        Self {
+            attempt_started_at,
+            phase_started_at: attempt_started_at,
+            phase: TaskTimingPhase::Dispatch,
+            accumulated: TaskPhaseDurations::default(),
+        }
+    }
+
+    fn transition_at(&mut self, phase: TaskTimingPhase, now: Instant) {
+        if self.phase == phase {
+            return;
+        }
+        self.accumulate_active(now);
+        self.phase = phase;
+        self.phase_started_at = now;
+    }
+
+    fn snapshot_at(self, now: Instant) -> TaskPhaseDurations {
+        let mut snapshot = self;
+        snapshot.accumulate_active(now);
+        let total_ms = now
+            .saturating_duration_since(snapshot.attempt_started_at)
+            .as_millis() as u64;
+        let rounding_residual = total_ms.saturating_sub(snapshot.accumulated.total_ms());
+        snapshot.add_to_active(rounding_residual);
+        snapshot.accumulated
+    }
+
+    fn accumulate_active(&mut self, now: Instant) {
+        let elapsed_ms = now
+            .saturating_duration_since(self.phase_started_at)
+            .as_millis() as u64;
+        self.add_to_active(elapsed_ms);
+        self.phase_started_at = now;
+    }
+
+    fn add_to_active(&mut self, elapsed_ms: u64) {
+        let destination = match self.phase {
+            TaskTimingPhase::Dispatch => &mut self.accumulated.dispatch_ms,
+            TaskTimingPhase::Agent => &mut self.accumulated.agent_ms,
+            TaskTimingPhase::Gate => &mut self.accumulated.gate_ms,
+            TaskTimingPhase::Cleanup => &mut self.accumulated.cleanup_ms,
+        };
+        *destination = destination.saturating_add(elapsed_ms);
+    }
 }
 
 impl TaskRuntimeState {
@@ -530,6 +839,7 @@ impl TaskRuntimeState {
             gate_output: state.gate_output.clone(),
             task_started_at: state.task_started_at,
             last_dispatch_ms: state.last_dispatch_ms,
+            phase_clock: TaskPhaseClock::new(state.task_started_at),
             routing_context: state.routing_context.clone(),
         }
     }
@@ -558,6 +868,45 @@ impl TaskRuntimeState {
         state.last_dispatch_ms = self.last_dispatch_ms;
         state.routing_context = self.routing_context.clone();
     }
+}
+
+fn capture_task_runtime(
+    runtimes: &mut HashMap<String, TaskRuntimeState>,
+    state: &RunState,
+    plan_id: &str,
+    task_id: &str,
+) {
+    let attempt = TaskAttemptRef::new(plan_id, task_id, state.iteration_for(plan_id, task_id));
+    let key = attempt.key();
+    let phase_clock = runtimes.get(&key).map(|runtime| runtime.phase_clock);
+    let mut runtime = TaskRuntimeState::capture(state);
+    if let Some(phase_clock) = phase_clock {
+        runtime.phase_clock = phase_clock;
+    }
+    runtimes.insert(key, runtime);
+}
+
+fn transition_task_runtime(
+    runtimes: &mut HashMap<String, TaskRuntimeState>,
+    attempt: &TaskAttemptRef,
+    phase: TaskTimingPhase,
+    now: Instant,
+) {
+    if let Some(runtime) = runtimes.get_mut(&attempt.key()) {
+        runtime.phase_clock.transition_at(phase, now);
+    }
+}
+
+fn runtime_task_phase_durations(
+    runtimes: &HashMap<String, TaskRuntimeState>,
+    attempt: &TaskAttemptRef,
+    now: Instant,
+) -> TaskPhaseDurations {
+    runtimes
+        .get(&attempt.key())
+        .map_or_else(TaskPhaseDurations::default, |runtime| {
+            runtime.phase_clock.snapshot_at(now)
+        })
 }
 
 fn task_key(plan_id: &str, task_id: &str) -> String {
@@ -609,20 +958,21 @@ fn cleanup_finished_task_gate(
     {
         plan.current_phase = PlanPhase::Gating;
     }
-    task_runtime_states.remove(&task_key(&completion.plan_id, &completion.task_id));
+    if let Some(attempt) = &completion.attempt {
+        task_runtime_states.remove(&attempt.key());
+    }
 }
 
 fn restore_task_runtime(
     state: &mut RunState,
     runtimes: &HashMap<String, TaskRuntimeState>,
-    plan_id: &str,
-    task_id: &str,
+    attempt: &TaskAttemptRef,
 ) {
-    if let Some(runtime) = runtimes.get(&task_key(plan_id, task_id)) {
-        runtime.restore(state, plan_id, task_id);
+    if let Some(runtime) = runtimes.get(&attempt.key()) {
+        runtime.restore(state, &attempt.plan_id, &attempt.task_id);
     } else {
-        state.plan_id = plan_id.to_string();
-        state.current_task = task_id.to_string();
+        state.plan_id = attempt.plan_id.clone();
+        state.current_task = attempt.task_id.clone();
     }
 }
 
@@ -648,20 +998,12 @@ struct RunContext<'a> {
     snapshot_writer: &'a SnapshotWriter,
     prompt_cache: &'a Arc<PromptCache>,
     factory: &'a SharedAgentFactory,
-    task_sem: Arc<tokio::sync::Semaphore>,
+    task_capacity: &'a TaskCapacity,
     gate_sem: Arc<tokio::sync::Semaphore>,
-    /// Per-plan concurrency limits derived from `tasks.toml` `max_parallel`.
-    plan_max_parallel: &'a HashMap<String, u32>,
-    /// Waker signalled when a task permit is released, allowing the
-    /// select loop to immediately re-evaluate spawn candidates instead
-    /// of waiting for the next 100 ms tick.
-    spawn_waker: Arc<tokio::sync::Notify>,
-    /// Tasks waiting for a permit. Prevents repeat logging (log storm)
-    /// when capacity is saturated — only the first attempt per task logs.
-    spawns_queued: &'a mut HashSet<String>,
     task_runtime_states: &'a mut HashMap<String, TaskRuntimeState>,
     legacy_gate_attempts: &'a mut HashMap<String, TaskAttemptRef>,
     preflight_attempted: &'a mut HashSet<TaskAttemptRef>,
+    baseline_gate_failures: &'a mut HashMap<TaskAttemptRef, Vec<String>>,
     /// Prompt section diagnostics per attempt key — populated at dispatch,
     /// consumed on gate completion to build SectionOutcomeRecords.
     section_diagnostics: &'a mut HashMap<String, PromptDiagnostics>,
@@ -680,22 +1022,38 @@ fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
     })
 }
 
-async fn ensure_plan_workdir(
+async fn ensure_attempt_workdir(
     worktrees: &WorktreeManager,
-    plan_id: &str,
+    attempt: &TaskAttemptRef,
 ) -> std::result::Result<PathBuf, String> {
-    let handle = worktrees
-        .ensure_for_plan(plan_id)
-        .await
-        .map_err(|err| format!("worktree unavailable for plan {plan_id}: {err}"))?;
-    worktrees.touch(plan_id);
+    let handle = match worktrees.get_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt) {
+        Some(handle) => handle,
+        None => worktrees
+            .create_for_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt)
+            .await
+            .map_err(|err| format!("worktree unavailable for attempt {}: {err}", attempt.key()))?,
+    };
+    worktrees.touch(&handle.id);
     Ok(handle.path)
 }
 
-fn tracked_plan_workdir(worktrees: &WorktreeManager, plan_id: &str) -> Option<PathBuf> {
-    worktrees.get(plan_id).map(|handle| {
-        worktrees.touch(plan_id);
-        handle.path
+fn tracked_attempt_workdir(
+    worktrees: &WorktreeManager,
+    attempt: &TaskAttemptRef,
+) -> Option<PathBuf> {
+    worktrees
+        .get_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt)
+        .map(|handle| {
+            worktrees.touch(&handle.id);
+            handle.path
+        })
+}
+fn accepted_plan_worktree(
+    worktrees: &WorktreeManager,
+    plan_id: &str,
+) -> Option<roko_orchestrator::worktree::AcceptedWorktree> {
+    worktrees.accepted_for_plan(plan_id).inspect(|accepted| {
+        worktrees.touch(&accepted.handle.id);
     })
 }
 
@@ -747,9 +1105,6 @@ pub async fn run(
     if config.http_event_sink.is_none() {
         config.http_event_sink = HttpEventSink::from_env();
     }
-
-    // ── Pre-flight budget ceiling validation ─────────────────────────────
-    validate_budget_ceilings(&config)?;
 
     let max_concurrent_tasks = config.max_concurrent_tasks.max(1);
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
@@ -958,30 +1313,16 @@ pub async fn run(
     // downstream helpers that expect `&RunConfig` work without extra `&`.
     let config = &config;
 
-    // Per-run task semaphore — limits concurrently dispatched agents.
-    let task_sem = Arc::new(tokio::sync::Semaphore::new(
-        config.max_concurrent_tasks.max(1),
-    ));
+    // Exact-attempt capacity is the intersection of the run-wide limit and
+    // each plan's declared limit. The paired lease stays owned until the
+    // attempt's Git and durable terminal settlement completes.
+    let task_capacity = TaskCapacity::new(
+        config.max_concurrent_tasks,
+        plans
+            .iter()
+            .map(|plan| (plan.id.clone(), plan.tasks.meta.max_parallel)),
+    );
     let worktrees = default_runner_worktree_manager(&config.workdir);
-
-    // Re-discover worktrees that already exist on disk (e.g. from a
-    // previous run). Without this, resumed plans would get Fatal because
-    // tracked_plan_workdir() returns None for unregistered worktrees.
-    {
-        let plan_id_refs: Vec<&str> = plans.iter().map(|p| p.id.as_str()).collect();
-        let discovered = worktrees.discover_existing(&plan_id_refs).await;
-        if !discovered.is_empty() {
-            info!(count = discovered.len(), plans = ?discovered, "re-discovered existing worktrees");
-        }
-    }
-
-    // SH03-T05: Clean stale staging files left by previous crashed runs.
-    if let Some(state_dir) = paths.state_snapshot_json.parent() {
-        let cleaned = persist::clean_stale_staging_files(state_dir);
-        if cleaned > 0 {
-            info!(cleaned, "cleaned stale atomic-write staging files");
-        }
-    }
 
     // Per-run gate semaphore — limits how many gate rungs execute concurrently.
     let gate_sem = Arc::new(tokio::sync::Semaphore::new(config.gate_concurrency.max(1)));
@@ -1002,16 +1343,11 @@ pub async fn run(
     });
     let mut total_tasks = 0usize;
 
-    // Per-plan concurrency limits from tasks.toml `max_parallel`.
-    let mut plan_max_parallel: HashMap<String, u32> = HashMap::new();
-
     for plan in &plans {
         // add_plan is a no-op if plan already exists (from snapshot).
         let orc_state = OrcPlanState::new(&plan.id);
         executor.add_plan(orc_state);
         task_dag.plan_mut(&plan.id);
-
-        plan_max_parallel.insert(plan.id.clone(), plan.tasks.meta.max_parallel);
 
         let mut tasks_map = HashMap::new();
         for task in &plan.tasks.tasks {
@@ -1161,6 +1497,7 @@ pub async fn run(
     let mut task_runtime_states: HashMap<String, TaskRuntimeState> = HashMap::new();
     let mut legacy_gate_attempts: HashMap<String, TaskAttemptRef> = HashMap::new();
     let mut preflight_attempted: HashSet<TaskAttemptRef> = HashSet::new();
+    let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<String>> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Track prompt section diagnostics per attempt so gate completions can
@@ -1188,11 +1525,6 @@ pub async fn run(
         .iter()
         .map(|p| (p.id.clone(), p.tasks.meta.skip_enrichment))
         .collect();
-
-    // Waker signalled on permit release — select loop re-evaluates spawns
-    // immediately rather than waiting for the next 100 ms tick.
-    let spawn_waker = Arc::new(tokio::sync::Notify::new());
-    let mut spawns_queued: HashSet<String> = HashSet::new();
 
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
@@ -1341,10 +1673,14 @@ pub async fn run(
             handle_global_timeout(
                 expiry,
                 deadline_now,
-                &executor,
+                &mut executor,
                 &plans,
+                &mut task_dag,
+                &mut task_index,
+                &mut pending_gate_tasks,
                 &mut state,
                 &mut attempt_ownership,
+                &mut task_runtime_states,
                 &paths,
                 &merge_queue,
                 &tui,
@@ -1358,7 +1694,6 @@ pub async fn run(
         //   Branch 1 (agent_rx.recv): cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
-        //   Branch 3b (spawn_waker): cancel-safe — Notify::notified is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
@@ -1371,28 +1706,76 @@ pub async fn run(
                     agent_id: event_agent_id,
                     event,
                 } = routed else {
-                    let RoutedAgentEvent::Fatal { attempt, message } = routed else {
+                    let RoutedAgentEvent::Fatal {
+                        attempt,
+                        effect,
+                        message,
+                    } = routed else {
                         unreachable!()
                     };
-                    let current = TaskAttemptRef::new(
-                        attempt.plan_id.clone(),
-                        attempt.task_id.clone(),
-                        state.iteration_for(&attempt.plan_id, &attempt.task_id),
-                    );
-                    if current != attempt || state.task_attempt_is_terminal(&attempt) {
+                    if state.task_attempt_is_terminal(&attempt) {
                         warn!(attempt = %attempt.key(), "ignoring stale fatal effect");
                         continue;
                     }
-                    restore_task_runtime(
-                        &mut state,
+                    let Ok(mut claim) = attempt_ownership.claim_phase(
+                        &attempt,
+                        AttemptPhase::Gate,
+                        effect,
+                    ) else {
+                        warn!(attempt = %attempt.key(), "ignoring fatal effect without exact gate ownership");
+                        continue;
+                    };
+                    let resource = claim.replace_resource(
+                        AgentRuntimeResource::AwaitingGate { permit: None },
+                    );
+                    let AgentRuntimeResource::Gate {
+                        effect: gate_effect,
+                        handle,
+                        permit,
+                    } = resource else {
+                        claim.replace_resource(resource);
+                        attempt_ownership
+                            .transition_claim(claim, AttemptPhase::Gate, effect)
+                            .expect("fatal resource mismatch must retain exact ownership");
+                        continue;
+                    };
+                    let mut message = message;
+                    if let Err(error) = handle.await {
+                        message.push_str(&format!("; gate producer join failed: {error}"));
+                    }
+                    state.clear_gate_active(&gate_effect_key(
+                        &gate_effect.attempt.plan_id,
+                        &gate_effect.attempt.task_id,
+                        gate_effect.rung,
+                        gate_effect.kind,
+                    ));
+                    claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit });
+                    let mut owned_fatal_claim = Some((claim, effect));
+                    transition_task_runtime(
+                        &mut task_runtime_states,
+                        &attempt,
+                        TaskTimingPhase::Cleanup,
+                        Instant::now(),
+                    );
+                    restore_task_runtime(&mut state, &task_runtime_states, &attempt);
+                    let phase_durations = runtime_task_phase_durations(
                         &task_runtime_states,
-                        &attempt.plan_id,
-                        &attempt.task_id,
+                        &attempt,
+                        Instant::now(),
                     );
-                    handle_agent_failure(
+                    let terminal_persistence = handle_agent_failure(
                         &mut executor, &mut task_dag, &task_index, &mut state, &paths,
-                        &tui, sink, config, message,
+                        &tui, sink, config, phase_durations, message,
                     );
+                    finish_agent_failure_claim(
+                        &mut attempt_ownership,
+                        &mut owned_fatal_claim,
+                        &terminal_persistence,
+                        "gate producer fatal terminal persistence unconfirmed",
+                    );
+                    if matches!(terminal_persistence, TerminalPersistence::Persisted) {
+                        task_runtime_states.remove(&attempt.key());
+                    }
                     continue;
                 };
                 let event_plan_id = event_attempt.plan_id.clone();
@@ -1412,7 +1795,14 @@ pub async fn run(
                 }
                 let mut settlement = None;
                 let mut terminal_failure = None;
+                let mut owned_agent_failure_claim = None;
                 if is_terminal {
+                    transition_task_runtime(
+                        &mut task_runtime_states,
+                        &event_attempt,
+                        TaskTimingPhase::Cleanup,
+                        Instant::now(),
+                    );
                     let mut claim = match attempt_ownership.claim_phase(
                         &event_attempt,
                         AttemptPhase::Agent,
@@ -1421,7 +1811,9 @@ pub async fn run(
                         Ok(claim) => claim,
                         Err(_) => continue,
                     };
-                    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+                    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                        permit: None,
+                    });
                     let mut result = settle_agent_resource(resource).await;
                     terminal_failure = agent_terminal_failure(&event, &result);
                     if let Some(resource) = result.unconfirmed.take() {
@@ -1430,29 +1822,39 @@ pub async fn run(
                             .transition_claim(claim, AttemptPhase::AgentUnconfirmed, event_effect)
                             .expect("unconfirmed agent ownership must be retained");
                     } else if terminal_failure.is_some() {
-                        attempt_ownership
-                            .complete_claim(claim)
-                            .expect("confirmed failed agent claim must complete");
+                        claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                            permit: result.permit.take(),
+                        });
+                        owned_agent_failure_claim = Some((claim, event_effect));
                     } else {
+                        claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                            permit: result.permit.take(),
+                        });
                         attempt_ownership
                             .transition_claim(claim, AttemptPhase::AwaitingGate, event_effect)
                             .expect("successful agent claim must await gate");
+                        transition_task_runtime(
+                            &mut task_runtime_states,
+                            &event_attempt,
+                            TaskTimingPhase::Gate,
+                            Instant::now(),
+                        );
                     }
                     settlement = Some(result);
                 }
-                restore_task_runtime(
-                    &mut state,
-                    &task_runtime_states,
-                    &event_plan_id,
-                    &event_task_id,
-                );
+                restore_task_runtime(&mut state, &task_runtime_states, &event_attempt);
                 let turn_completed_before_event = state.agent_turn_completed;
                 let turn_error = terminal_failure.is_some();
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
                 publish_learning_agent_event(&learning_event_bus, &event, &state);
-                task_runtime_states.insert(task_key(&event_plan_id, &event_task_id), TaskRuntimeState::capture(&state));
+                capture_task_runtime(
+                    &mut task_runtime_states,
+                    &state,
+                    &event_plan_id,
+                    &event_task_id,
+                );
 
                 // ── Forward progress-relevant agent events to RuntimeEvent ──
                 if let Some(http_sink) = config.http_event_sink.as_ref() {
@@ -1524,7 +1926,7 @@ pub async fn run(
                                     session_id: session_id.clone(),
                                     total_cost_usd: *total_cost_usd,
                                     turns: *num_turns,
-                                    exit_code: None,
+                                    exit_code: settlement.as_ref().and_then(|result| result.exit_code),
                                     message: terminal_failure.clone(),
                                 },
                             ),
@@ -1556,7 +1958,12 @@ pub async fn run(
                             let message = terminal_failure.clone().or_else(|| agent_failure_message(&state.agent_output))
                                 .unwrap_or_else(|| "agent reported an error result".to_string());
                             fire_on_error_hook(config, &message, "agent_turn", &tui, &state.plan_id, &state.current_task).await;
-                            handle_agent_failure(
+                            let phase_durations = runtime_task_phase_durations(
+                                &task_runtime_states,
+                                &event_attempt,
+                                Instant::now(),
+                            );
+                            let terminal_persistence = handle_agent_failure(
                                 &mut executor,
                                 &mut task_dag,
                                 &task_index,
@@ -1565,10 +1972,18 @@ pub async fn run(
                                 &tui,
                                 sink,
                                 config,
+                                phase_durations,
                                 message,
                             );
-                            task_runtime_states
-                                .remove(&task_key(&event_plan_id, &event_task_id));
+                            finish_agent_failure_claim(
+                                &mut attempt_ownership,
+                                &mut owned_agent_failure_claim,
+                                &terminal_persistence,
+                                "agent failure terminal persistence unconfirmed",
+                            );
+                            if matches!(terminal_persistence, TerminalPersistence::Persisted) {
+                                task_runtime_states.remove(&event_attempt.key());
+                            }
                         } else {
                             queue_pending_gate_task(
                                 &mut pending_gate_tasks,
@@ -1582,7 +1997,10 @@ pub async fn run(
                 }
 
                 if is_exited {
-                    let exit_code = settlement.as_ref().and_then(|result| result.exit_code);
+                    let exit_code = match &event {
+                        AgentEvent::Exited { exit_code } => *exit_code,
+                        _ => None,
+                    };
 
                     let plan_id = state.plan_id.clone();
                     if !turn_completed_before_event && !plan_id.is_empty() {
@@ -1636,7 +2054,12 @@ pub async fn run(
                                     },
                                 ),
                             );
-                            handle_agent_failure(
+                            let phase_durations = runtime_task_phase_durations(
+                                &task_runtime_states,
+                                &event_attempt,
+                                Instant::now(),
+                            );
+                            let terminal_persistence = handle_agent_failure(
                                 &mut executor,
                                 &mut task_dag,
                                 &task_index,
@@ -1645,10 +2068,18 @@ pub async fn run(
                                 &tui,
                                 sink,
                                 config,
+                                phase_durations,
                                 message,
                             );
-                            task_runtime_states
-                                .remove(&task_key(&event_plan_id, &event_task_id));
+                            finish_agent_failure_claim(
+                                &mut attempt_ownership,
+                                &mut owned_agent_failure_claim,
+                                &terminal_persistence,
+                                "agent exit terminal persistence unconfirmed",
+                            );
+                            if matches!(terminal_persistence, TerminalPersistence::Persisted) {
+                                task_runtime_states.remove(&event_attempt.key());
+                            }
                         }
                     }
 
@@ -1769,49 +2200,148 @@ pub async fn run(
                         warn!(attempt = %attempt.key(), "dropping stale or duplicate gate completion");
                         continue;
                     };
-                    let AgentRuntimeResource::Gate { effect, handle } = claim
-                        .replace_resource(AgentRuntimeResource::AwaitingGate)
-                    else {
-                        error!(attempt = %attempt.key(), "gate owner did not retain its join handle");
-                        attempt_ownership.complete_claim(claim).ok();
-                        state.clear_gate_active(&effect_key);
-                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
-                        cleanup_finished_task_gate(
-                            &mut pending_gate_tasks,
-                            &mut task_runtime_states,
-                            &mut executor,
-                            &completion,
-                        );
-                        continue;
+                    let resource = claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+                    let (effect, handle, permit) = match resource {
+                        AgentRuntimeResource::Gate {
+                            effect,
+                            handle,
+                            permit,
+                        } => (effect, handle, permit),
+                        other => {
+                            error!(attempt = %attempt.key(), "gate owner did not retain its join handle");
+                            claim.replace_resource(other);
+                            attempt_ownership
+                                .transition_claim(
+                                    claim,
+                                    AttemptPhase::Gate,
+                                    EffectRef(gate_effect.generation),
+                                )
+                                .expect("corrupt gate resource must retain exact ownership");
+                            continue;
+                        }
                     };
                     if effect != gate_effect {
                         error!(attempt = %attempt.key(), "gate effect identity mismatch");
                         handle.abort();
                         let _ = handle.await;
-                        attempt_ownership.complete_claim(claim).ok();
                         state.clear_gate_active(&effect_key);
-                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
-                        cleanup_finished_task_gate(
-                            &mut pending_gate_tasks,
-                            &mut task_runtime_states,
-                            &mut executor,
-                            &completion,
+                        let reason = "gate effect identity mismatch".to_string();
+                        let phase_durations = runtime_task_phase_durations(
+                            &task_runtime_states,
+                            &attempt,
+                            Instant::now(),
                         );
+                        let pending_terminal = PendingTerminal::attempt(
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Structural),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        );
+                        if persist_attempt_terminal(
+                            &paths,
+                            &mut state,
+                            &tui,
+                            config,
+                            &attempt,
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Structural),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        )
+                        .is_ok()
+                        {
+                            attempt_ownership.complete_claim(claim).ok();
+                            state.mark_task_failed(&attempt.plan_id, &attempt.task_id);
+                            task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                            cleanup_finished_task_gate(
+                                &mut pending_gate_tasks,
+                                &mut task_runtime_states,
+                                &mut executor,
+                                &completion,
+                            );
+                        } else {
+                            claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                                permit,
+                                gate_effect: Some(effect),
+                                errors: vec![reason],
+                                pending_terminal: Some(pending_terminal),
+                            });
+                            attempt_ownership
+                                .transition_claim(
+                                    claim,
+                                    AttemptPhase::Gate,
+                                    EffectRef(gate_effect.generation),
+                                )
+                                .expect("unpersisted gate mismatch must retain capacity");
+                        }
                         continue;
                     }
+                    transition_task_runtime(
+                        &mut task_runtime_states,
+                        &attempt,
+                        TaskTimingPhase::Cleanup,
+                        Instant::now(),
+                    );
                     if let Err(err) = handle.await {
                         error!(attempt = %attempt.key(), %err, "gate producer join failed");
-                        attempt_ownership.complete_claim(claim).ok();
                         state.clear_gate_active(&effect_key);
-                        task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
-                        cleanup_finished_task_gate(
-                            &mut pending_gate_tasks,
-                            &mut task_runtime_states,
-                            &mut executor,
-                            &completion,
+                        let reason = format!("gate producer join failed: {err}");
+                        let phase_durations = runtime_task_phase_durations(
+                            &task_runtime_states,
+                            &attempt,
+                            Instant::now(),
                         );
+                        let pending_terminal = PendingTerminal::attempt(
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Resource),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        );
+                        if persist_attempt_terminal(
+                            &paths,
+                            &mut state,
+                            &tui,
+                            config,
+                            &attempt,
+                            TaskAttemptOutcome::Failed,
+                            Some(RunnerFailureKind::Resource),
+                            phase_durations,
+                            Some(&reason),
+                            None,
+                        )
+                        .is_ok()
+                        {
+                            attempt_ownership.complete_claim(claim).ok();
+                            state.mark_task_failed(&attempt.plan_id, &attempt.task_id);
+                            task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+                            cleanup_finished_task_gate(
+                                &mut pending_gate_tasks,
+                                &mut task_runtime_states,
+                                &mut executor,
+                                &completion,
+                            );
+                        } else {
+                            claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                                permit,
+                                gate_effect: Some(effect),
+                                errors: vec![reason],
+                                pending_terminal: Some(pending_terminal),
+                            });
+                            attempt_ownership
+                                .transition_claim(
+                                    claim,
+                                    AttemptPhase::Gate,
+                                    EffectRef(gate_effect.generation),
+                                )
+                                .expect("unpersisted gate join failure must retain capacity");
+                        }
                         continue;
                     }
+                    claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit });
                     owned_gate_claim = Some((claim, EffectRef(gate_effect.generation)));
                     attempt
                 };
@@ -1833,40 +2363,33 @@ pub async fn run(
                     );
                     continue;
                 }
-                restore_task_runtime(
-                    &mut state,
-                    &task_runtime_states,
-                    &completion.plan_id,
-                    &completion.task_id,
+                transition_task_runtime(
+                    &mut task_runtime_states,
+                    &completion_attempt,
+                    TaskTimingPhase::Cleanup,
+                    Instant::now(),
                 );
+                restore_task_runtime(&mut state, &task_runtime_states, &completion_attempt);
                 state.clear_gate_active(&effect_key);
                 state.gate_output = completion.output.clone();
 
                 if completion.kind == GateCompletionKind::Preflight {
-                    // SH04-T04: Track preflight duration separately so
-                    // the dashboard can distinguish gate time from agent
-                    // dispatch time.
-                    tui.efficiency_event(
-                        &completion.plan_id,
-                        &completion.task_id,
-                        "preflight_ms",
-                        completion.duration_ms as f64,
-                    );
-
+                    let failures = completion
+                        .verdicts
+                        .iter()
+                        .filter(|verdict| !verdict.passed)
+                        .map(|verdict| verdict.gate_name.trim_start_matches("baseline:").into())
+                        .collect();
+                    baseline_gate_failures.insert(completion_attempt.clone(), failures);
                     if !completion.passed {
-                        finish_gate_claim(
+                        continue_failed_preflight(
                             &mut attempt_ownership,
                             &mut owned_gate_claim,
-                            false,
-                        );
-                        task_dag.clear_running(
-                            &completion_attempt.plan_id,
-                            &completion_attempt.task_id,
                         );
                         debug!(
                             attempt = %completion_attempt.key(),
                             duration_ms = completion.duration_ms,
-                            "preflight failed; exact attempt is eligible for agent dispatch"
+                            "preflight failed; exact owner and capacity transferred to agent dispatch"
                         );
                         save_snapshot(
                             config, &executor, &paths, &mut state, &merge_queue,
@@ -1916,16 +2439,60 @@ pub async fn run(
                         }
                         Err(err) => {
                             let message = format!("preflight transition failed: {err}");
-                            finish_gate_claim(
-                                &mut attempt_ownership,
-                                &mut owned_gate_claim,
-                                false,
+                            let phase_durations = runtime_task_phase_durations(
+                                &task_runtime_states,
+                                &completion_attempt,
+                                Instant::now(),
                             );
-                            let _ = executor.apply_event(
-                                &completion.plan_id,
-                                &ExecutorEvent::Fatal(message.clone()),
+                            let pending_terminal = PendingTerminal::attempt(
+                                TaskAttemptOutcome::Failed,
+                                Some(RunnerFailureKind::Structural),
+                                phase_durations,
+                                Some(&message),
+                                None,
                             );
-                            tui.error(&message);
+                            let terminal_result = persist_attempt_terminal(
+                                &paths,
+                                &mut state,
+                                &tui,
+                                config,
+                                &completion_attempt,
+                                TaskAttemptOutcome::Failed,
+                                Some(RunnerFailureKind::Structural),
+                                phase_durations,
+                                Some(&message),
+                                None,
+                            );
+                            match terminal_result {
+                                Ok(()) => {
+                                    finish_gate_claim(
+                                        &mut attempt_ownership,
+                                        &mut owned_gate_claim,
+                                        false,
+                                    );
+                                    task_dag.clear_running(
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                    );
+                                    state.mark_task_failed(
+                                        &completion.plan_id,
+                                        &completion.task_id,
+                                    );
+                                    let _ = executor.apply_event(
+                                        &completion.plan_id,
+                                        &ExecutorEvent::Fatal(message.clone()),
+                                    );
+                                    tui.error(&message);
+                                }
+                                Err(error) => {
+                                    retain_gate_claim_after_persistence_failure(
+                                        &mut attempt_ownership,
+                                        &mut owned_gate_claim,
+                                        error,
+                                        pending_terminal,
+                                    );
+                                }
+                            }
                             continue;
                         }
                     }
@@ -2010,7 +2577,7 @@ pub async fn run(
                             completion.duration_ms,
                         );
                     }
-                    append_ledger_entry(
+                    let _ = append_ledger_entry(
                         &paths.run_ledger_jsonl,
                         "gate_outcome",
                         &serde_json::json!({
@@ -2143,16 +2710,19 @@ pub async fn run(
                         &mut owned_gate_claim,
                         true,
                     );
+                    transition_task_runtime(
+                        &mut task_runtime_states,
+                        &completion_attempt,
+                        TaskTimingPhase::Gate,
+                        Instant::now(),
+                    );
                     continue;
                 }
 
-                // Final-rung pass, retry, and terminal failure all consume this
-                // attempt's exact claim before ledger, DAG, or terminal effects.
-                finish_gate_claim(
-                    &mut attempt_ownership,
-                    &mut owned_gate_claim,
-                    false,
-                );
+                // Final-rung pass, retry, and terminal failure retain the
+                // paired task capacity until Git, ledger, DAG, and terminal
+                // effects below have settled. Every exit then completes the
+                // exact claim explicitly or via the common cleanup tail.
 
                 // ── SectionOutcome recording ────────────────────────────
                 // Terminal gate result (final rung pass or any fail): join
@@ -2262,7 +2832,11 @@ pub async fn run(
                     }
                 } else if completion.passed {
                     state.clear_retry_backoff(&completion.plan_id);
-                    let task_workdir = tracked_plan_workdir(&worktrees, &completion.plan_id);
+                    let phase_clock = task_runtime_states
+                        .get(&completion_attempt.key())
+                        .map(|runtime| runtime.phase_clock)
+                        .unwrap_or_else(|| TaskPhaseClock::new(Instant::now()));
+                    let task_workdir = tracked_attempt_workdir(&worktrees, &completion_attempt);
                     let task_declared_files = task_index
                         .get(completion.plan_id.as_str())
                         .and_then(|tasks| tasks.get(completion.task_id.as_str()))
@@ -2279,9 +2853,12 @@ pub async fn run(
                         config,
                         &completion,
                         &completion_attempt,
+                        phase_clock,
                         task_workdir.as_deref(),
                         &task_declared_files,
-                    );
+                        Some(&worktrees),
+                    )
+                    .await;
                     if matches!(terminalized, TaskTerminalization::AlreadyRecorded) {
                         debug!(
                             plan_id = %completion.plan_id,
@@ -2302,12 +2879,31 @@ pub async fn run(
                         );
                         continue;
                     }
-                    if let TaskTerminalization::PersistenceFailed { reason } = terminalized {
+                    if let TaskTerminalization::PersistenceUnconfirmed {
+                        reason,
+                        pending_terminal,
+                    } = terminalized
+                    {
                         warn!(
                             plan_id = %completion.plan_id,
                             task_id = %completion.task_id,
                             reason = %reason,
-                            "task terminalized as failed because durable completion could not be recorded"
+                            "terminal persistence unconfirmed; retaining exact owner and capacity"
+                        );
+                        retain_gate_claim_after_persistence_failure(
+                            &mut attempt_ownership,
+                            &mut owned_gate_claim,
+                            reason,
+                            pending_terminal,
+                        );
+                        continue;
+                    }
+                    if let TaskTerminalization::Failed { reason } = terminalized {
+                        warn!(
+                            plan_id = %completion.plan_id,
+                            task_id = %completion.task_id,
+                            reason = %reason,
+                            "task terminalized as failed because task commit could not be recorded"
                         );
                         let has_runnable = !ready_tasks_for_plan(
                             &task_dag,
@@ -2346,24 +2942,6 @@ pub async fn run(
                         );
                         continue;
                     }
-
-                    // SH02-T02: Merge the task branch back into the plan
-                    // branch so the next task sees this task's changes in its
-                    // baseline.  Best-effort — if the merge fails (shouldn't
-                    // happen since max_parallel=1 prevents conflicts) the
-                    // commit already landed on the task branch.
-                    if let Err(err) = worktrees
-                        .merge_task_into_plan(&completion.plan_id, &completion.task_id)
-                        .await
-                    {
-                        warn!(
-                            plan_id = %completion.plan_id,
-                            task_id = %completion.task_id,
-                            error = %err,
-                            "failed to merge task branch into plan branch"
-                        );
-                    }
-
                     let ready =
                         ready_tasks_for_plan(&task_dag, &executor, &task_index, &state, &completion.plan_id);
                     let has_more = !ready.is_empty();
@@ -2479,31 +3057,65 @@ pub async fn run(
                         decision_budget,
                         decision_reason,
                     );
+                    let failure_phase_durations = runtime_task_phase_durations(
+                        &task_runtime_states,
+                        &completion_attempt,
+                        Instant::now(),
+                    );
+                    let failure_outcome = decision
+                        .terminal_outcome()
+                        .unwrap_or(TaskAttemptOutcome::Failed);
+                    let pending_terminal = PendingTerminal::attempt(
+                        failure_outcome,
+                        Some(failure_kind),
+                        failure_phase_durations,
+                        Some(&decision.reason),
+                        None,
+                    )
+                    .with_retry(decision.should_retry().then(|| {
+                        let next_attempt = decision.next_attempt.unwrap_or_else(|| {
+                            decision.current_attempt.saturating_add(1)
+                        });
+                        PendingRetryContinuation::Gate {
+                            decision: decision.clone(),
+                            replan_context: build_gate_retry_context(
+                                &completion.output,
+                                &state.agent_output,
+                                next_attempt,
+                            ),
+                            output: completion.output.clone(),
+                            verdicts: completion.verdicts.clone(),
+                        }
+                    }));
+                    if let Err(reason) = persist_attempt_terminal(
+                        &paths,
+                        &mut state,
+                        &tui,
+                        config,
+                        &completion_attempt,
+                        failure_outcome,
+                        Some(failure_kind),
+                        failure_phase_durations,
+                        Some(&decision.reason),
+                        None,
+                    ) {
+                        retain_gate_claim_after_persistence_failure(
+                            &mut attempt_ownership,
+                            &mut owned_gate_claim,
+                            reason,
+                            pending_terminal,
+                        );
+                        continue;
+                    }
                     let retry_started = if decision.should_retry() {
-                        match executor.apply_event(&completion.plan_id, &ExecutorEvent::GateFailed)
-                        {
-                            Ok(phase) => {
-                                let failed_attempt = decision.current_attempt;
-                                if let Some(ps) = executor.plan_state_mut(&completion.plan_id) {
-                                    ps.reset_for_retry();
-                                    task_dag.clear_running(
-                                        &completion.plan_id,
-                                        &completion.task_id,
-                                    );
-                                    let next_attempt = decision.next_attempt.unwrap_or_else(|| {
-                                        decision.current_attempt.saturating_add(1)
-                                    });
-                                    ps.iteration = next_attempt;
-                                    state.set_iteration(
-                                        &completion.plan_id,
-                                        &completion.task_id,
-                                        next_attempt,
-                                    );
-                                }
-                                state.set_retry_backoff_from_decision(
-                                    &completion.plan_id,
-                                    &decision,
-                                );
+                        match begin_gate_retry_rollover(
+                            &mut executor,
+                            &mut task_dag,
+                            &mut state,
+                            &completion,
+                            &decision,
+                        ) {
+                            Ok((phase, failed_attempt)) => {
                                 let run_id = state.run_id().to_string();
                                 emit_runner_event(
                                     &paths,
@@ -2533,16 +3145,6 @@ pub async fn run(
                                     failure_kind = ?failure_kind,
                                     next_attempt = ?decision.next_attempt,
                                     "gate failed — entering auto-fix"
-                                );
-
-                                // SH04-T04: Publish gate failure diagnosis to
-                                // the dashboard so operators see structured
-                                // failure context alongside gate verdict events.
-                                publish_gate_failure_diagnosis(
-                                    &tui,
-                                    &completion,
-                                    failure_kind,
-                                    false, // retrying, not terminal
                                 );
 
                                 // Enrich every retry prompt with failure context so the
@@ -2598,23 +3200,6 @@ pub async fn run(
                                     );
                                 }
 
-                                // SH02-T02: Discard failed task branch so the
-                                // next attempt starts from a clean plan branch.
-                                if let Err(err) = worktrees
-                                    .discard_task_branch(
-                                        &completion.plan_id,
-                                        &completion.task_id,
-                                    )
-                                    .await
-                                {
-                                    debug!(
-                                        plan_id = %completion.plan_id,
-                                        task_id = %completion.task_id,
-                                        error = %err,
-                                        "failed to discard task branch before retry"
-                                    );
-                                }
-
                                 // Refresh prompt cache after gate failure — the
                                 // agent may have written new episodes / knowledge
                                 // that should inform the retry prompt.
@@ -2645,54 +3230,16 @@ pub async fn run(
                         false
                     };
                     if !retry_started {
-                        // SH02-T02: Discard task branch on terminal failure.
-                        if let Err(err) = worktrees
-                            .discard_task_branch(&completion.plan_id, &completion.task_id)
-                            .await
-                        {
-                            debug!(
-                                plan_id = %completion.plan_id,
-                                task_id = %completion.task_id,
-                                error = %err,
-                                "failed to discard task branch on terminal failure"
-                            );
-                        }
+                        let phase_durations = failure_phase_durations;
                         state.task_failed();
                         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
-
-                        // SH04-T04: Publish terminal gate failure diagnosis
-                        // so the dashboard surfaces structured failure context.
-                        publish_gate_failure_diagnosis(
-                            &tui,
-                            &completion,
-                            failure_kind,
-                            true, // terminal failure
-                        );
-
                         let reason = decision.reason.clone();
                         state.record_task_failure(&completion.plan_id, &completion.task_id, &reason);
-                        // Record task failure in the run ledger.
                         if let Some(ref mut ledger) = run_ledger {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64;
                             ledger.record_agent_failed(
                                 "implementer",
                                 roko_runtime::EffectErrorKind::Unknown,
                                 &reason,
-                            );
-                            append_ledger_entry(
-                                &paths.run_ledger_jsonl,
-                                "task_failed",
-                                &serde_json::json!({
-                                    "plan_id": completion.plan_id,
-                                    "task_id": completion.task_id,
-                                    "passed": false,
-                                    "reason": reason,
-                                    "duration_ms": completion.duration_ms,
-                                    "timestamp_ms": now_ms,
-                                }),
                             );
                         }
 
@@ -2707,26 +3254,6 @@ pub async fn run(
                                 &run_id,
                                 completion_attempt.clone(),
                                 decision.clone(),
-                            ),
-                        );
-                        let run_id = state.run_id().to_string();
-                        let agent_model = state.agent_model.clone();
-                        let agent_provider = state.agent_provider.clone();
-                        emit_runner_event(
-                            &paths,
-                            &mut state,
-                            &tui,
-                            config,
-                            RunnerEvent::task_attempt_completed(
-                                &run_id,
-                                completion_attempt.clone(),
-                                decision
-                                    .terminal_outcome()
-                                    .unwrap_or(TaskAttemptOutcome::Failed),
-                                Some(failure_kind),
-                                completion.duration_ms,
-                                agent_model,
-                                agent_provider,
                             ),
                         );
                         record_daimon_task_outcome(
@@ -2841,6 +3368,21 @@ pub async fn run(
 
             // ─── Branch 3: Executor tick ────────────────────────────
             _ = tick_interval.tick() => {
+                let recovered = retry_pending_terminals(
+                    &mut attempt_ownership,
+                    &mut task_runtime_states,
+                    &mut task_dag,
+                    &mut task_index,
+                    &mut pending_gate_tasks,
+                    &mut executor,
+                    &paths,
+                    &mut state,
+                    &tui,
+                    config,
+                );
+                if recovered > 0 {
+                    info!(recovered, "recovered pending durable task terminals");
+                }
                 // Refresh prompt cache if stale (default 5 min).
                 if prompt_cache.is_stale() {
                     prompt_cache = Arc::new(PromptCache::load(&config.workdir));
@@ -2882,14 +3424,12 @@ pub async fn run(
                         snapshot_writer: &snapshot_writer,
                         prompt_cache: &prompt_cache,
                         factory: &factory,
-                        task_sem: task_sem.clone(),
+                        task_capacity: &task_capacity,
                         gate_sem: gate_sem.clone(),
-                        plan_max_parallel: &plan_max_parallel,
-                        spawn_waker: spawn_waker.clone(),
-                        spawns_queued: &mut spawns_queued,
                         task_runtime_states: &mut task_runtime_states,
                         legacy_gate_attempts: &mut legacy_gate_attempts,
                         preflight_attempted: &mut preflight_attempted,
+                        baseline_gate_failures: &mut baseline_gate_failures,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                     };
@@ -2897,9 +3437,14 @@ pub async fn run(
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
                     if let ActionDispatchOutcome::AgentStarted { plan_id, task_id } = dispatch_outcome {
                         ctx.state.last_dispatch_ms = dispatch_ms;
+                        let attempt = TaskAttemptRef::new(
+                            plan_id.clone(),
+                            task_id.clone(),
+                            ctx.state.iteration_for(&plan_id, &task_id),
+                        );
                         if let Some(runtime) = ctx
                             .task_runtime_states
-                            .get_mut(&task_key(&plan_id, &task_id))
+                            .get_mut(&attempt.key())
                         {
                             runtime.last_dispatch_ms = dispatch_ms;
                         }
@@ -2916,7 +3461,7 @@ pub async fn run(
                                 roko_runtime::Phase::Implementing,
                                 now_ms,
                             );
-                            append_ledger_entry(
+                            let _ = append_ledger_entry(
                                 &paths.run_ledger_jsonl,
                                 "task_started",
                                 &serde_json::json!({
@@ -2936,21 +3481,16 @@ pub async fn run(
                 }
             }
 
-            // ─── Branch 3b: Spawn capacity wakeup ─────────────────────
-            // When a task permit is released, immediately re-evaluate
-            // spawn candidates instead of waiting for the next 100 ms tick.
-            _ = spawn_waker.notified() => {
-                tick_interval.reset_immediately();
-            }
-
             // ─── Branch 4: Periodic flush ───────────────────────────
             _ = flush_interval.tick() => {
                 enforce_owned_deadlines(
                     &mut attempt_ownership,
+                    &mut task_runtime_states,
                     &mut state,
                     &mut executor,
                     &mut task_dag,
-                    &task_index,
+                    &mut task_index,
+                    &mut pending_gate_tasks,
                     &merge_queue,
                     &paths,
                     &tui,
@@ -2971,6 +3511,11 @@ pub async fn run(
                 loop {
                     let cancellation = stop_all_agents(
                         &mut attempt_ownership,
+                        &mut task_runtime_states,
+                        &mut task_dag,
+                        &mut task_index,
+                        &mut pending_gate_tasks,
+                        &mut executor,
                         &mut state,
                         &merge_queue,
                         &paths,
@@ -2987,8 +3532,8 @@ pub async fn run(
                     snapshot_writer.flush();
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
-                let event =
-                    build_run_completed_event(&executor, &plans, &state, RunOutcome::Cancelled);
+                let report = build_report(&executor, &plans, &state, &task_dag);
+                let event = build_run_completed_event(&state, &report, RunOutcome::Cancelled);
                 emit_runner_event(&paths, &mut state, &tui, config, event);
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 let _ = persist::save_agent_pids(&paths, &[]);
@@ -3008,13 +3553,13 @@ pub async fn run(
                 &gate_thresholds,
                 &snapshot_writer,
             );
-            let final_report = build_report(&executor, &plans, &state);
+            let final_report = build_report(&executor, &plans, &state, &task_dag);
             let outcome = if final_report.all_succeeded() {
                 RunOutcome::Succeeded
             } else {
                 RunOutcome::Failed
             };
-            let event = build_run_completed_event(&executor, &plans, &state, outcome);
+            let event = build_run_completed_event(&state, &final_report, outcome);
             emit_runner_event(&paths, &mut state, &tui, config, event);
             let cost_display = format!("{:.4}", final_report.total_cost_usd);
             info!(
@@ -3022,8 +3567,6 @@ pub async fn run(
                 total_tasks = final_report.total_tasks,
                 completed = final_report.tasks_completed,
                 failed = final_report.tasks_failed,
-                blocked = final_report.tasks_blocked,
-                skipped = final_report.tasks_skipped,
                 cost_usd = %cost_display,
                 tokens_in = final_report.total_tokens_in,
                 tokens_out = final_report.total_tokens_out,
@@ -3056,7 +3599,7 @@ pub async fn run(
     // Persist the run ledger (final write on the general exit path).
     persist_run_ledger(&run_ledger, &paths.run_ledger_jsonl);
 
-    let report = build_report(&executor, &plans, &state);
+    let report = build_report(&executor, &plans, &state, &task_dag);
 
     // Shut down the learning subscriber after the event bus is closed so
     // pending turn events are flushed to `.roko/learn/efficiency.jsonl`.
@@ -3180,20 +3723,6 @@ fn no_ready_spawn_event(phase_kind: PhaseKind, requested_task: &str) -> Option<E
     }
 }
 
-/// Validate budget ceilings before starting the run. Rejects negative,
-/// NaN, and infinite values. A value of 0.0 means "unlimited".
-fn validate_budget_ceilings(config: &RunConfig) -> Result<()> {
-    fn check(name: &str, value: f64) -> Result<()> {
-        if value.is_nan() || value.is_infinite() || value < 0.0 {
-            anyhow::bail!("invalid {name}: {value}");
-        }
-        Ok(())
-    }
-    check("max_plan_usd", config.max_plan_usd)?;
-    check("max_turn_usd", config.max_turn_usd)?;
-    Ok(())
-}
-
 fn turn_exceeds_budget(total_cost_usd: Option<f64>, max_turn_usd: f64) -> bool {
     max_turn_usd > 0.0 && total_cost_usd.is_some_and(|cost| cost > max_turn_usd)
 }
@@ -3235,13 +3764,14 @@ fn handle_agent_failure(
     tui: &TuiBridge,
     sink: &dyn RunOutputSink,
     config: &RunConfig,
+    phase_durations: TaskPhaseDurations,
     message: String,
-) {
+) -> TerminalPersistence {
     let plan_id = state.plan_id.clone();
     let task_id = state.current_task.clone();
     if plan_id.is_empty() || task_id.is_empty() {
         tui.error(&message);
-        return;
+        return TerminalPersistence::Unavailable;
     }
 
     let failure_text = format!("{message}\n{}", state.agent_output);
@@ -3269,6 +3799,40 @@ fn handle_agent_failure(
         decision_budget,
         decision_reason,
     );
+    let terminal_outcome = decision
+        .terminal_outcome()
+        .unwrap_or(TaskAttemptOutcome::Failed);
+    let pending_terminal = PendingTerminal::attempt(
+        terminal_outcome,
+        Some(failure_kind),
+        phase_durations,
+        Some(&decision.reason),
+        None,
+    )
+    .with_retry(decision.should_retry().then(|| {
+        let next_attempt = decision
+            .next_attempt
+            .unwrap_or_else(|| decision.current_attempt.saturating_add(1));
+        PendingRetryContinuation::Agent {
+            decision: decision.clone(),
+            replan_context: build_agent_retry_context(&message, &state.agent_output, next_attempt),
+        }
+    }));
+    if let Err(error) = persist_attempt_terminal(
+        paths,
+        state,
+        tui,
+        config,
+        &attempt,
+        terminal_outcome,
+        Some(failure_kind),
+        phase_durations,
+        Some(&decision.reason),
+        None,
+    ) {
+        warn!(attempt = %attempt.key(), %error, "agent failure terminal persistence unconfirmed");
+        return TerminalPersistence::Pending(pending_terminal);
+    }
 
     if decision.should_retry() {
         if let Some(ps) = executor.plan_state_mut(&plan_id) {
@@ -3309,7 +3873,7 @@ fn handle_agent_failure(
             "agent turn failed for {task_id}; retrying after {}s",
             decision.cooldown_ms / 1000
         ));
-        return;
+        return TerminalPersistence::Persisted;
     }
 
     state.task_failed();
@@ -3329,43 +3893,12 @@ fn handle_agent_failure(
     sink.task_failed(&plan_id, &task_id, &reason);
     tui.task_completed(&plan_id, &task_id, "failed");
 
-    append_ledger_entry(
-        &paths.run_ledger_jsonl,
-        "task_failed",
-        &serde_json::json!({
-            "plan_id": &plan_id,
-            "task_id": &task_id,
-            "passed": false,
-            "reason": &reason,
-            "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
-        }),
-    );
-
     emit_runner_event(
         paths,
         state,
         tui,
         config,
         RunnerEvent::retry_decision(&run_id, attempt.clone(), decision.clone()),
-    );
-    let agent_model = state.agent_model.clone();
-    let agent_provider = state.agent_provider.clone();
-    emit_runner_event(
-        paths,
-        state,
-        tui,
-        config,
-        RunnerEvent::task_attempt_completed(
-            &run_id,
-            attempt,
-            decision
-                .terminal_outcome()
-                .unwrap_or(TaskAttemptOutcome::Failed),
-            Some(failure_kind),
-            state.task_elapsed_ms(),
-            agent_model,
-            agent_provider,
-        ),
     );
     record_daimon_task_outcome(
         config,
@@ -3426,6 +3959,7 @@ fn handle_agent_failure(
             }
         }
     }
+    TerminalPersistence::Persisted
 }
 
 fn complete_plan_after_successful_verify(
@@ -3493,23 +4027,12 @@ fn complete_verified_plan_success(
     if !was_complete {
         tui.plan_completed(plan_id, true);
         let run_id = state.run_id().to_string();
-        let plan_cost = state.plan_cost(plan_id);
-        let tasks_completed = state.plan_completed_tasks(plan_id).len();
-        let tasks_failed = state.plan_failed_tasks(plan_id).len();
         emit_runner_event(
             paths,
             state,
             tui,
             config,
-            RunnerEvent::plan_completed(
-                &run_id,
-                plan_id,
-                PlanOutcome::Succeeded,
-                None,
-                plan_cost,
-                tasks_completed,
-                tasks_failed,
-            ),
+            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
         );
     }
     Ok(phase)
@@ -3635,6 +4158,21 @@ fn conflict_paths_from_merge_output(output: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn failed_terminal_intent(
+    runtimes: &HashMap<String, TaskRuntimeState>,
+    attempt: &TaskAttemptRef,
+    failure_kind: RunnerFailureKind,
+    reason: &str,
+) -> PendingTerminal {
+    PendingTerminal::attempt(
+        TaskAttemptOutcome::Failed,
+        Some(failure_kind),
+        runtime_task_phase_durations(runtimes, attempt, Instant::now()),
+        Some(reason),
+        None,
+    )
+}
+
 struct FailedMergeContext<'a> {
     executor: &'a mut ParallelExecutor,
     state: &'a mut RunState,
@@ -3679,9 +4217,6 @@ async fn handle_failed_merge_outcome(
                 ctx.tui.plan_completed(&plan_id, false);
                 ctx.tui.error(&reason);
                 let run_id = ctx.state.run_id().to_string();
-                let plan_cost = ctx.state.plan_cost(&plan_id);
-                let tasks_completed = ctx.state.plan_completed_tasks(&plan_id).len();
-                let tasks_failed = ctx.state.plan_failed_tasks(&plan_id).len();
                 emit_runner_event(
                     ctx.paths,
                     ctx.state,
@@ -3692,9 +4227,6 @@ async fn handle_failed_merge_outcome(
                         &plan_id,
                         PlanOutcome::Failed,
                         Some(reason.clone()),
-                        plan_cost,
-                        tasks_completed,
-                        tasks_failed,
                     ),
                 );
             }
@@ -3740,9 +4272,6 @@ async fn handle_merge_completion(
             Ok(phase) => {
                 tui.phase_transition(&completion.plan_id, "merging", &format!("{phase:?}"));
                 tui.plan_completed(&completion.plan_id, true);
-                let plan_cost = state.plan_cost(&completion.plan_id);
-                let tasks_completed = state.plan_completed_tasks(&completion.plan_id).len();
-                let tasks_failed = state.plan_failed_tasks(&completion.plan_id).len();
                 emit_runner_event(
                     paths,
                     state,
@@ -3753,9 +4282,6 @@ async fn handle_merge_completion(
                         &completion.plan_id,
                         PlanOutcome::Succeeded,
                         None,
-                        plan_cost,
-                        tasks_completed,
-                        tasks_failed,
                     ),
                 );
                 info!(
@@ -3786,9 +4312,6 @@ async fn handle_merge_completion(
                     .apply_event(&completion.plan_id, &ExecutorEvent::Fatal(reason.clone()));
             }
         }
-        let plan_cost = state.plan_cost(&completion.plan_id);
-        let tasks_completed = state.plan_completed_tasks(&completion.plan_id).len();
-        let tasks_failed = state.plan_failed_tasks(&completion.plan_id).len();
         emit_runner_event(
             paths,
             state,
@@ -3799,9 +4322,6 @@ async fn handle_merge_completion(
                 &completion.plan_id,
                 PlanOutcome::Failed,
                 Some(reason.clone()),
-                plan_cost,
-                tasks_completed,
-                tasks_failed,
             ),
         );
         tui.error(&reason);
@@ -3874,11 +4394,12 @@ async fn finish_owned_merge_completion(
                 "merge completion has no eligible owner: {err:?}"
             ))
         })?;
-    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
     let AgentRuntimeResource::Merge {
         effect: owned_effect,
         handle,
         resolution,
+        permit: _permit,
     } = resource
     else {
         complete_merge_claim(ownership, claim, &exact_attempt)
@@ -3997,7 +4518,7 @@ async fn start_owned_merge(
         .insert(
             attempt.clone(),
             AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
-            AgentRuntimeResource::AwaitingGate,
+            AgentRuntimeResource::AwaitingGate { permit: None },
         )
         .is_err()
     {
@@ -4038,12 +4559,13 @@ async fn start_owned_merge(
         effect: effect.clone(),
         handle: handle.clone(),
         resolution: resolution.clone(),
+        permit: None,
     });
     if let Err(failure) =
         ownership.transition_claim(claim, AttemptPhase::Gate, EffectRef(effect.generation))
     {
         let mut claim = failure.claim;
-        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
         drop(producer.start);
         let reason = if matches!(resource, AgentRuntimeResource::Merge { .. }) {
             "merge ownership transition failed"
@@ -4537,8 +5059,10 @@ fn runtime_workflow_outcome(outcome: RunOutcome) -> RuntimeWorkflowOutcome {
 }
 
 fn agent_completion_succeeded(outcome: AgentDispatchOutcome, exit_code: Option<i32>) -> bool {
-    matches!(outcome, AgentDispatchOutcome::Completed)
-        || (matches!(outcome, AgentDispatchOutcome::Exited) && exit_code.unwrap_or(0) == 0)
+    matches!(
+        outcome,
+        AgentDispatchOutcome::Completed | AgentDispatchOutcome::Exited
+    ) && exit_code == Some(0)
 }
 
 fn runtime_gate_name(kind: GateCompletionKind, attempt: &TaskAttemptRef) -> String {
@@ -4852,20 +5376,15 @@ fn runner_event_to_feedback(
             backoff_secs: cooldown_ms / 1000,
         }),
         RunnerEvent::PlanCompleted {
-            plan_id,
-            outcome,
-            cost_usd,
-            tasks_completed,
-            tasks_failed,
-            ..
+            plan_id, outcome, ..
         } => {
             let succeeded = matches!(outcome, PlanOutcome::Succeeded);
             Some(FeedbackEvent::PlanCompleted {
                 plan_id: plan_id.clone(),
                 succeeded,
-                tasks_completed: *tasks_completed,
-                tasks_failed: *tasks_failed,
-                total_cost_usd: *cost_usd,
+                tasks_completed: 0,
+                tasks_failed: 0,
+                total_cost_usd: 0.0,
             })
         }
         _ => None,
@@ -4873,12 +5392,10 @@ fn runner_event_to_feedback(
 }
 
 fn build_run_completed_event(
-    executor: &ParallelExecutor,
-    plans: &[Plan],
     state: &RunState,
+    report: &RunReport,
     outcome: RunOutcome,
 ) -> RunnerEvent {
-    let report = build_report(executor, plans, state);
     RunnerEvent::run_completed(
         state.run_id(),
         outcome,
@@ -4888,27 +5405,28 @@ fn build_run_completed_event(
             tasks_failed: report.tasks_failed,
             tasks_blocked: report.tasks_blocked,
             tasks_skipped: report.tasks_skipped,
-            tasks_active: report.tasks_active,
-            tasks_pending: report.tasks_pending,
+            tasks_cancelled: report.tasks_cancelled,
+            tasks_orphaned: report.tasks_orphaned,
+            tasks_nonterminal: report.tasks_nonterminal,
             total_agent_calls: report.total_agent_calls,
             total_cost_usd: report.total_cost_usd,
             duration_ms: report.duration.as_millis() as u64,
         },
         report
             .plans
-            .into_iter()
+            .iter()
             .map(|plan| PlanRunSummary {
-                plan_id: plan.plan_id,
+                plan_id: plan.plan_id.clone(),
                 completed: plan.completed,
                 tasks_total: plan.tasks_total,
                 tasks_completed: plan.tasks_completed,
                 tasks_failed: plan.tasks_failed,
                 tasks_blocked: plan.tasks_blocked,
                 tasks_skipped: plan.tasks_skipped,
-                tasks_active: plan.tasks_active,
-                tasks_pending: plan.tasks_pending,
-                blocked_details: plan.blocked_details,
-                skipped_details: plan.skipped_details,
+                tasks_cancelled: plan.tasks_cancelled,
+                tasks_orphaned: plan.tasks_orphaned,
+                tasks_nonterminal: plan.tasks_nonterminal,
+                tasks: plan.tasks.clone(),
             })
             .collect(),
     )
@@ -5029,11 +5547,6 @@ fn save_snapshot(
         total_agent_calls: state.total_agent_calls,
         plan_costs: state.plan_costs.clone(),
         completed_tasks: state.completed_tasks.clone(),
-        failed_tasks: state
-            .failed_tasks
-            .iter()
-            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
-            .collect(),
         lifecycle: Some(state.lifecycle.clone()),
         snapshot_fail_streak: state.snapshot_fail_streak,
         fingerprints: state.task_fingerprints.clone(),
@@ -5098,13 +5611,6 @@ fn restore_state_from_resume_snapshot(
     state.plan_costs = snapshot.plan_costs.clone();
     state.snapshot_fail_streak = snapshot.snapshot_fail_streak;
     state.completed_tasks = snapshot.completed_tasks.clone();
-    // SH03-T01: Restore per-plan failed task IDs from snapshot so the DAG
-    // correctly marks dependents as blocked/skipped on resume.
-    state.failed_tasks = snapshot
-        .failed_tasks
-        .iter()
-        .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
-        .collect();
     if let Some(lifecycle) = snapshot.lifecycle.clone() {
         state.lifecycle = lifecycle;
     }
@@ -5490,44 +5996,6 @@ fn load_legacy_executor_checkpoint(
 
 // ─── Action Dispatcher ──────────────────────────────────────────────────
 
-fn record_skipped_gate_rung(
-    ctx: &mut RunContext<'_>,
-    plan_id: &str,
-    task_id: &str,
-    rung: u32,
-    gate_name: &str,
-    summary: &str,
-) {
-    if let Some(plan_state) = ctx.executor.plan_state_mut(plan_id) {
-        plan_state.gate_results.push(GateResult {
-            gate_name: gate_name.to_string(),
-            rung,
-            passed: true,
-            summary: summary.to_string(),
-            duration_ms: 0,
-            test_count: None,
-        });
-    }
-    ctx.tui.gate_result(plan_id, task_id, gate_name, true);
-
-    if rung >= ctx.config.max_gate_rung {
-        if let Err(err) = ctx
-            .executor
-            .apply_event(plan_id, &ExecutorEvent::GatePassed)
-        {
-            warn!(plan_id = %plan_id, rung, error = %err, "failed to advance after skipped final gate");
-        }
-    } else {
-        debug!(
-            plan_id = %plan_id,
-            task_id = %task_id,
-            rung,
-            max_gate_rung = ctx.config.max_gate_rung,
-            "skipped gate rung recorded; advancing to next rung"
-        );
-    }
-}
-
 fn gates_config_for_run(config: &RunConfig) -> GatesConfig {
     let mut gates = config
         .roko_config
@@ -5559,7 +6027,15 @@ fn task_role_is_read_only(task_def: Option<&TaskDef>) -> bool {
         })
 }
 
-fn task_should_preflight_verify(task_def: &TaskDef, attempt_num: u32) -> bool {
+fn default_gate_pipeline_skipped(gates: &GatesConfig, workdir: &Path) -> bool {
+    !gates.has_custom_rungs() && std::fs::metadata(workdir.join("Cargo.toml")).is_err()
+}
+
+fn task_should_preflight_verify(
+    task_def: &TaskDef,
+    attempt_num: u32,
+    preflight_timeout: Duration,
+) -> bool {
     let preflight_disabled = std::env::var("ROKO_SKIP_PREFLIGHT").is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -5570,6 +6046,40 @@ fn task_should_preflight_verify(task_def: &TaskDef, attempt_num: u32) -> bool {
         && attempt_num == 1
         && !task_def.verify.is_empty()
         && !task_role_is_read_only(Some(task_def))
+        && Duration::from_secs(task_def.timeout_secs) > preflight_timeout
+}
+
+fn begin_task_capacity(
+    ctx: &mut RunContext<'_>,
+    plan_id: &str,
+    task_id: &str,
+    is_dag_task: bool,
+) -> Option<TaskConcurrencyPermit> {
+    let Some(permit) = ctx.task_capacity.try_acquire(plan_id) else {
+        debug!(
+            plan_id,
+            task_id, "global or plan task capacity unavailable — delaying spawn"
+        );
+        return None;
+    };
+    if is_dag_task && !ctx.task_dag.mark_running(plan_id, task_id) {
+        debug!(
+            plan_id,
+            task_id, "task already running in DAG — delaying spawn"
+        );
+        return None;
+    }
+    Some(permit)
+}
+
+fn retain_preflight_after_capacity<T>(
+    attempted: &mut HashSet<TaskAttemptRef>,
+    attempt: &TaskAttemptRef,
+    permit: Option<T>,
+) -> Option<T> {
+    let permit = permit?;
+    attempted.insert(attempt.clone());
+    Some(permit)
 }
 
 async fn dispatch_action(
@@ -5747,8 +6257,19 @@ async fn dispatch_action(
                 }
             };
 
+            let attempt_num = ctx
+                .executor
+                .plan_state(plan_id)
+                .map(|state| state.iteration)
+                .unwrap_or(1);
+            let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
+            let continuing_preflight = ctx.attempt_ownership.event_is_eligible(
+                &attempt_ref,
+                AttemptPhase::Dispatching,
+                EffectRef(0),
+            );
             let active_task_key = task_key(plan_id, &task_id);
-            if ctx.attempt_ownership.contains_task(plan_id, &task_id) {
+            if ctx.attempt_ownership.contains_task(plan_id, &task_id) && !continuing_preflight {
                 debug!(
                     plan_id = %plan_id,
                     task = %task_id,
@@ -5765,27 +6286,6 @@ async fn dispatch_action(
                     "retry backoff active — delaying spawn"
                 );
                 return ActionDispatchOutcome::Noop;
-            }
-
-            // Per-plan concurrency limit: max_parallel from tasks.toml.
-            // PlanDag.running spans preflight through commit/merge, so this
-            // check correctly counts all active phases of a task attempt.
-            let max_parallel = ctx
-                .plan_max_parallel
-                .get(plan_id.as_str())
-                .copied()
-                .unwrap_or(1) as usize;
-            if let Some(plan_dag) = ctx.task_dag.plan(plan_id) {
-                if plan_dag.active_count() >= max_parallel {
-                    debug!(
-                        plan_id = %plan_id,
-                        task = %task_id,
-                        active = plan_dag.active_count(),
-                        max_parallel,
-                        "per-plan concurrency limit reached — delaying spawn"
-                    );
-                    return ActionDispatchOutcome::Noop;
-                }
             }
 
             // Per-plan budget check.
@@ -5834,30 +6334,9 @@ async fn dispatch_action(
                 }
             };
 
-            let task_permit = match ctx.task_sem.clone().try_acquire_owned() {
-                Ok(raw_permit) => {
-                    // Clear queued state — task is now holding a permit.
-                    ctx.spawns_queued.remove(&active_task_key);
-                    NotifyPermit {
-                        permit: raw_permit,
-                        waker: ctx.spawn_waker.clone(),
-                    }
-                }
-                Err(_) => {
-                    // Log only once per task when entering queued state.
-                    if ctx.spawns_queued.insert(active_task_key.clone()) {
-                        debug!(
-                            plan_id = %plan_id,
-                            task = %task_id,
-                            max_concurrent_tasks = ctx.config.max_concurrent_tasks,
-                            "task queued — waiting for capacity"
-                        );
-                    }
-                    return ActionDispatchOutcome::Noop;
-                }
-            };
+            let mut task_permit = None;
 
-            if is_dag_task_spawn {
+            if is_dag_task_spawn && !continuing_preflight {
                 let completed = ctx.state.plan_completed_tasks(plan_id);
                 let completed_plans = completed_plan_ids(ctx.executor, ctx.task_index);
                 let plan_tasks = task_refs_for_plan(ctx.task_index, plan_id);
@@ -5875,30 +6354,19 @@ async fn dispatch_action(
                     );
                     return ActionDispatchOutcome::Noop;
                 }
-                if !ctx.task_dag.mark_running(plan_id, &task_id) {
-                    debug!(
-                        plan_id = %plan_id,
-                        task = %task_id,
-                        "task already running in DAG — suppressing duplicate spawn"
-                    );
-                    return ActionDispatchOutcome::Noop;
-                }
             }
 
             info!(plan_id = %plan_id, task = %task_id, "spawning agent");
 
-            let plan_workdir = match ensure_plan_workdir(ctx.worktrees, plan_id).await {
+            let plan_workdir = match ensure_attempt_workdir(ctx.worktrees, &attempt_ref).await {
                 Ok(path) => path,
                 Err(message) => {
                     error!(
                         plan_id = %plan_id,
                         task = %task_id,
                         error = %message,
-                        "failed to acquire isolated plan worktree"
+                        "failed to acquire isolated task-attempt worktree"
                     );
-                    if is_dag_task_spawn {
-                        ctx.task_dag.clear_running(plan_id, &task_id);
-                    }
                     if let Err(e) = ctx
                         .executor
                         .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -5912,35 +6380,29 @@ async fn dispatch_action(
                 }
             };
 
-            // SH02-T02: Create a task-specific branch so the agent works on
-            // an isolated snapshot.  The branch forks from the plan branch
-            // HEAD, making diffs attributable and gates immutable.
-            if let Err(err) = ctx.worktrees.checkout_task_branch(plan_id, &task_id).await {
-                warn!(
-                    plan_id = %plan_id,
-                    task = %task_id,
-                    error = %err,
-                    "failed to create task branch — agent will work on plan branch directly"
-                );
-            }
-
             let previous_gate_output = ctx.state.gate_output.clone();
-            let attempt_num = ctx
-                .executor
-                .plan_state(plan_id)
-                .map(|state| state.iteration)
-                .unwrap_or(1);
-            let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
-            ctx.state.reset_for_task(plan_id, &task_id);
+            if let Some(runtime) = ctx.task_runtime_states.get(&attempt_ref.key()) {
+                runtime.restore(ctx.state, plan_id, &task_id);
+            } else {
+                ctx.state.reset_for_task(plan_id, &task_id);
+            }
             ctx.state.set_iteration(plan_id, &task_id, attempt_num);
-            ctx.task_runtime_states.insert(
-                task_key(plan_id, &task_id),
-                TaskRuntimeState::capture(ctx.state),
+            capture_task_runtime(ctx.task_runtime_states, ctx.state, plan_id, &task_id);
+            transition_task_runtime(
+                ctx.task_runtime_states,
+                &attempt_ref,
+                TaskTimingPhase::Dispatch,
+                Instant::now(),
             );
             let role = task_def.role.as_deref().unwrap_or("implementer");
 
-            if task_should_preflight_verify(task_def, attempt_num)
-                && ctx.preflight_attempted.insert(attempt_ref.clone())
+            if !continuing_preflight
+                && task_should_preflight_verify(
+                    task_def,
+                    attempt_num,
+                    gate_timeout(ctx.config, ctx.config.max_gate_rung),
+                )
+                && !ctx.preflight_attempted.contains(&attempt_ref)
             {
                 let gates_config = gates_config_for_run(ctx.config);
                 let has_cargo_toml = std::fs::metadata(plan_workdir.join("Cargo.toml")).is_ok();
@@ -5957,17 +6419,6 @@ async fn dispatch_action(
                         GateCompletionKind::Preflight,
                         pipeline_rung,
                     );
-                    ctx.attempt_ownership
-                        .insert(
-                            attempt_ref.clone(),
-                            AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
-                            AgentRuntimeResource::AwaitingGate,
-                        )
-                        .expect("preflight owner must be unique");
-                    let mut gate_claim = ctx
-                        .attempt_ownership
-                        .claim_phase(&attempt_ref, AttemptPhase::AwaitingGate, EffectRef(0))
-                        .expect("preflight owner must be claimable");
                     let effect_key = gate_effect_key(
                         plan_id,
                         &task_id,
@@ -5975,11 +6426,30 @@ async fn dispatch_action(
                         GateCompletionKind::Preflight,
                     );
                     if !ctx.state.mark_gate_active(effect_key.clone()) {
-                        ctx.attempt_ownership
-                            .complete_claim(gate_claim)
-                            .expect("suppressed preflight must release owner");
                         return ActionDispatchOutcome::Noop;
                     }
+                    let capacity = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn);
+                    let Some(permit) = retain_preflight_after_capacity(
+                        ctx.preflight_attempted,
+                        &attempt_ref,
+                        capacity,
+                    ) else {
+                        ctx.state.clear_gate_active(&effect_key);
+                        return ActionDispatchOutcome::Noop;
+                    };
+                    ctx.attempt_ownership
+                        .insert(
+                            attempt_ref.clone(),
+                            AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                            AgentRuntimeResource::AwaitingGate {
+                                permit: Some(permit),
+                            },
+                        )
+                        .expect("preflight owner must be unique");
+                    let mut gate_claim = ctx
+                        .attempt_ownership
+                        .claim_phase(&attempt_ref, AttemptPhase::AwaitingGate, EffectRef(0))
+                        .expect("preflight owner must be claimable");
                     let run_id = ctx.state.run_id().to_string();
                     emit_runner_event(
                         ctx.paths,
@@ -6002,14 +6472,21 @@ async fn dispatch_action(
                         gates_config,
                         gate_plan_complexity_for_task(Some(task_def)),
                         task_def.verify.clone(),
+                        None,
                         duration_secs(gate_timeout(ctx.config, pipeline_rung)),
                         ctx.gate_tx.clone(),
                         ctx.gate_sem.clone(),
                         task_target_crates(Some(task_def)),
                     );
+                    let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+                    else {
+                        unreachable!("preflight owner must retain task capacity")
+                    };
                     gate_claim.replace_resource(AgentRuntimeResource::Gate {
                         effect: preflight_effect.clone(),
                         handle: gate_handle,
+                        permit,
                     });
                     ctx.attempt_ownership
                         .transition_claim(
@@ -6018,6 +6495,12 @@ async fn dispatch_action(
                             EffectRef(preflight_effect.generation),
                         )
                         .expect("preflight must retain exact owner");
+                    transition_task_runtime(
+                        ctx.task_runtime_states,
+                        &attempt_ref,
+                        TaskTimingPhase::Gate,
+                        Instant::now(),
+                    );
                     if start_tx.send(()).is_err() {
                         ctx.state.clear_gate_active(&effect_key);
                         if let Ok(mut claim) = ctx.attempt_ownership.claim_phase(
@@ -6025,21 +6508,72 @@ async fn dispatch_action(
                             AttemptPhase::Gate,
                             EffectRef(preflight_effect.generation),
                         ) {
-                            if let AgentRuntimeResource::Gate { handle, .. } =
-                                claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                            let resource =
+                                claim.replace_resource(AgentRuntimeResource::AwaitingGate {
+                                    permit: None,
+                                });
+                            if let AgentRuntimeResource::Gate {
+                                effect,
+                                handle,
+                                permit,
+                            } = resource
                             {
-                                let _ = handle.await;
+                                let cleanup = handle.await;
+                                let message = format!(
+                                    "preflight producer failed to start for {}",
+                                    attempt_ref.key()
+                                );
+                                let pending_terminal = failed_terminal_intent(
+                                    ctx.task_runtime_states,
+                                    &attempt_ref,
+                                    RunnerFailureKind::Resource,
+                                    &message,
+                                );
+                                if cleanup.is_ok()
+                                    && persist_pending_terminal(
+                                        ctx.paths,
+                                        ctx.state,
+                                        ctx.tui,
+                                        ctx.config,
+                                        &attempt_ref,
+                                        &pending_terminal,
+                                    )
+                                    .is_ok()
+                                {
+                                    ctx.attempt_ownership.complete_claim(claim).ok();
+                                    ctx.task_dag.clear_running(plan_id, &task_id);
+                                    ctx.state.mark_task_failed(plan_id, &task_id);
+                                    let _ = ctx.executor.apply_event(
+                                        plan_id,
+                                        &ExecutorEvent::Fatal(message.clone()),
+                                    );
+                                    ctx.tui.error(&message);
+                                } else {
+                                    claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                                        permit,
+                                        gate_effect: Some(effect),
+                                        errors: vec![message],
+                                        pending_terminal: Some(pending_terminal),
+                                    });
+                                    ctx.attempt_ownership
+                                        .transition_claim(
+                                            claim,
+                                            AttemptPhase::Gate,
+                                            EffectRef(preflight_effect.generation),
+                                        )
+                                        .expect("failed preflight start must retain capacity");
+                                }
+                            } else {
+                                claim.replace_resource(resource);
+                                ctx.attempt_ownership
+                                    .transition_claim(
+                                        claim,
+                                        AttemptPhase::Gate,
+                                        EffectRef(preflight_effect.generation),
+                                    )
+                                    .expect("preflight resource mismatch must retain ownership");
                             }
-                            ctx.attempt_ownership.complete_claim(claim).ok();
                         }
-                        let message = format!(
-                            "preflight producer failed to start for {}",
-                            attempt_ref.key()
-                        );
-                        let _ = ctx
-                            .executor
-                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
-                        ctx.tui.error(&message);
                     }
                     return ActionDispatchOutcome::Handled;
                 }
@@ -6132,7 +6666,7 @@ async fn dispatch_action(
                     if is_dag_task_spawn {
                         ctx.task_dag.clear_running(plan_id, &task_id);
                     }
-                    ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
+                    ctx.task_runtime_states.remove(&attempt_ref.key());
                     if let Err(e) = ctx
                         .executor
                         .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -6292,7 +6826,7 @@ async fn dispatch_action(
                             if is_dag_task_spawn {
                                 ctx.task_dag.clear_running(plan_id, &task_id);
                             }
-                            ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
+                            ctx.task_runtime_states.remove(&attempt_ref.key());
                             if let Err(e) = ctx
                                 .executor
                                 .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
@@ -6308,27 +6842,36 @@ async fn dispatch_action(
                 }
             };
 
+            if !continuing_preflight {
+                let Some(permit) = begin_task_capacity(ctx, plan_id, &task_id, is_dag_task_spawn)
+                else {
+                    return ActionDispatchOutcome::Noop;
+                };
+                task_permit = Some(permit);
+            }
+
             let agent_id = format!("{plan_id}/{task_id}");
-            let attempt_ref = TaskAttemptRef::new(plan_id.clone(), task_id.clone(), attempt_num);
             let agent_effect = EffectRef(
                 (u64::from(attempt_num) << 32) | u64::from(ctx.state.task_agent_calls + 1),
             );
-            if ctx
-                .attempt_ownership
-                .insert(
-                    attempt_ref.clone(),
-                    AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
-                    AgentRuntimeResource::Dispatching(task_permit),
-                )
-                .is_err()
-            {
-                error!(attempt = %attempt_ref.key(), "duplicate dispatch ownership suppressed");
-                return ActionDispatchOutcome::Noop;
-            }
-            let mut dispatch_claim = ctx
-                .attempt_ownership
-                .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
-                .expect("new dispatch ownership must be claimable");
+            let mut dispatch_claim = if continuing_preflight {
+                ctx.attempt_ownership
+                    .claim_phase(&attempt_ref, AttemptPhase::Dispatching, EffectRef(0))
+                    .expect("failed preflight continuation must remain claimable")
+            } else {
+                ctx.attempt_ownership
+                    .insert(
+                        attempt_ref.clone(),
+                        AttemptOwner::new(AttemptPhase::Dispatching, agent_effect),
+                        AgentRuntimeResource::Dispatching(
+                            task_permit.take().expect("new dispatch must own capacity"),
+                        ),
+                    )
+                    .expect("checked new dispatch owner must be unique");
+                ctx.attempt_ownership
+                    .claim_phase(&attempt_ref, AttemptPhase::Dispatching, agent_effect)
+                    .expect("new dispatch ownership must be claimable")
+            };
             let run_id = ctx.state.run_id().to_string();
             emit_runner_event(
                 ctx.paths,
@@ -6392,8 +6935,8 @@ async fn dispatch_action(
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
 
-                    let AgentRuntimeResource::Dispatching(permit) =
-                        dispatch_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
                     else {
                         unreachable!("dispatch claim must own permit")
                     };
@@ -6430,14 +6973,7 @@ async fn dispatch_action(
                                     None,
                                 ),
                             );
-                            ctx.tui.agent_spawned(
-                                &agent_id,
-                                plan_id,
-                                &task_id,
-                                attempt_num,
-                                role,
-                                &model_display,
-                            );
+                            ctx.tui.agent_spawned(&agent_id, role, &model_display);
                             ctx.tui.task_started(
                                 plan_id,
                                 &task_id,
@@ -6453,8 +6989,18 @@ async fn dispatch_action(
                             ctx.attempt_ownership
                                 .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
                                 .expect("CLI dispatch must transition ownership");
-                            ctx.task_runtime_states
-                                .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
+                            transition_task_runtime(
+                                ctx.task_runtime_states,
+                                &attempt_ref,
+                                TaskTimingPhase::Agent,
+                                Instant::now(),
+                            );
+                            capture_task_runtime(
+                                ctx.task_runtime_states,
+                                ctx.state,
+                                plan_id,
+                                &task_id,
+                            );
                             register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
                             return ActionDispatchOutcome::AgentStarted {
                                 plan_id: plan_id.clone(),
@@ -6462,20 +7008,76 @@ async fn dispatch_action(
                             };
                         }
                         Err(e) => {
+                            transition_task_runtime(
+                                ctx.task_runtime_states,
+                                &attempt_ref,
+                                TaskTimingPhase::Cleanup,
+                                Instant::now(),
+                            );
                             forwarder.abort();
-                            if let Err(err) = forwarder.await
-                                && !err.is_cancelled()
-                            {
-                                error!(%err, "spawn failure forwarder did not stop cleanly");
-                            }
-                            drop(permit);
+                            let cleanup_error = match forwarder.await {
+                                Err(err) if !err.is_cancelled() => Some(format!(
+                                    "spawn failure forwarder did not stop cleanly: {err}"
+                                )),
+                                _ => None,
+                            };
                             error!(err = %e, "failed to spawn agent");
                             let message = format!("agent spawn failed: {e}");
+                            let phase_durations = runtime_task_phase_durations(
+                                ctx.task_runtime_states,
+                                &attempt_ref,
+                                Instant::now(),
+                            );
+                            let pending_terminal = PendingTerminal::attempt(
+                                TaskAttemptOutcome::Failed,
+                                Some(RunnerFailureKind::Resource),
+                                phase_durations,
+                                Some(&message),
+                                None,
+                            );
+                            let terminal_result = if let Some(error) = cleanup_error.as_ref() {
+                                Err(error.clone())
+                            } else {
+                                persist_attempt_terminal(
+                                    ctx.paths,
+                                    ctx.state,
+                                    ctx.tui,
+                                    ctx.config,
+                                    &attempt_ref,
+                                    TaskAttemptOutcome::Failed,
+                                    Some(RunnerFailureKind::Resource),
+                                    phase_durations,
+                                    Some(&message),
+                                    None,
+                                )
+                            };
+                            if let Err(error) = terminal_result {
+                                dispatch_claim.replace_resource(
+                                    AgentRuntimeResource::CleanupFailed {
+                                        permit: Some(permit),
+                                        gate_effect: None,
+                                        errors: vec![error.clone()],
+                                        pending_terminal: Some(pending_terminal),
+                                    },
+                                );
+                                ctx.attempt_ownership
+                                    .transition_claim(
+                                        dispatch_claim,
+                                        AttemptPhase::AgentUnconfirmed,
+                                        agent_effect,
+                                    )
+                                    .expect(
+                                        "spawn failure must retain exact ownership and capacity",
+                                    );
+                                error!(attempt = %attempt_ref.key(), %error,
+                                    "spawn failure terminal persistence unconfirmed");
+                                ctx.tui.error(&format!("{message}; {error}"));
+                                return ActionDispatchOutcome::Noop;
+                            }
                             if is_dag_task_spawn {
                                 ctx.task_dag.clear_running(plan_id, &task_id);
                             }
-                            ctx.task_runtime_states.remove(&task_key(plan_id, &task_id));
-                            let agent_provider = ctx.state.agent_provider.clone();
+                            ctx.task_runtime_states.remove(&attempt_ref.key());
                             emit_runner_event(
                                 ctx.paths,
                                 ctx.state,
@@ -6489,21 +7091,6 @@ async fn dispatch_action(
                                     Some(model_display.clone()),
                                     None,
                                     Some(message.clone()),
-                                ),
-                            );
-                            emit_runner_event(
-                                ctx.paths,
-                                ctx.state,
-                                ctx.tui,
-                                ctx.config,
-                                RunnerEvent::task_attempt_completed(
-                                    &run_id,
-                                    attempt_ref.clone(),
-                                    TaskAttemptOutcome::Failed,
-                                    Some(RunnerFailureKind::Resource),
-                                    0,
-                                    model_display,
-                                    agent_provider,
                                 ),
                             );
                             record_daimon_task_outcome(
@@ -6556,8 +7143,8 @@ async fn dispatch_action(
                         bare_mode: false,
                         dangerously_skip_permissions: ctx.config.dangerously_skip_permissions,
                     };
-                    let AgentRuntimeResource::Dispatching(permit) =
-                        dispatch_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    let AgentRuntimeResource::Dispatching(permit) = dispatch_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
                     else {
                         unreachable!("dispatch claim must own permit")
                     };
@@ -6585,14 +7172,8 @@ async fn dispatch_action(
                             None,
                         ),
                     );
-                    ctx.tui.agent_spawned(
-                        &agent_id,
-                        plan_id,
-                        &task_id,
-                        attempt_num,
-                        role,
-                        &format!("{provider_id}:{model}"),
-                    );
+                    ctx.tui
+                        .agent_spawned(&agent_id, role, &format!("{provider_id}:{model}"));
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     dispatch_claim.set_agent(agent_id.clone(), None);
@@ -6604,8 +7185,13 @@ async fn dispatch_action(
                     ctx.attempt_ownership
                         .transition_claim(dispatch_claim, AttemptPhase::Agent, agent_effect)
                         .expect("bridge dispatch must transition ownership");
-                    ctx.task_runtime_states
-                        .insert(active_task_key, TaskRuntimeState::capture(ctx.state));
+                    transition_task_runtime(
+                        ctx.task_runtime_states,
+                        &attempt_ref,
+                        TaskTimingPhase::Agent,
+                        Instant::now(),
+                    );
+                    capture_task_runtime(ctx.task_runtime_states, ctx.state, plan_id, &task_id);
                     register_agent_feed(ctx.config, plan_id, &task_id, &agent_id, ctx.tui);
                     return ActionDispatchOutcome::AgentStarted {
                         plan_id: plan_id.clone(),
@@ -6622,11 +7208,26 @@ async fn dispatch_action(
                 .and_then(|pending| pending.first())
                 .cloned()
                 .unwrap_or_else(|| ctx.state.current_task.clone());
-            restore_task_runtime(ctx.state, ctx.task_runtime_states, plan_id, &task_id);
-            let plan_workdir = match tracked_plan_workdir(ctx.worktrees, plan_id) {
+            let attempt_ref = TaskAttemptRef::new(
+                plan_id.clone(),
+                task_id.clone(),
+                ctx.state.iteration_for(plan_id, &task_id),
+            );
+            restore_task_runtime(ctx.state, ctx.task_runtime_states, &attempt_ref);
+            capture_task_runtime(ctx.task_runtime_states, ctx.state, plan_id, &task_id);
+            transition_task_runtime(
+                ctx.task_runtime_states,
+                &attempt_ref,
+                TaskTimingPhase::Gate,
+                Instant::now(),
+            );
+            let plan_workdir = match tracked_attempt_workdir(ctx.worktrees, &attempt_ref) {
                 Some(path) => path,
                 None => {
-                    let message = format!("isolated worktree missing for plan {plan_id}");
+                    let message = format!(
+                        "isolated worktree missing for attempt {}",
+                        attempt_ref.key()
+                    );
                     error!(plan_id = %plan_id, task_id = %task_id, "{}", message);
                     if let Err(e) = ctx
                         .executor
@@ -6643,28 +7244,11 @@ async fn dispatch_action(
             let gates_config = gates_config_for_run(ctx.config);
             let pipeline_rung = ctx.config.max_gate_rung;
             // Default selected rungs are Cargo-oriented; custom rungs own their command semantics.
-            let has_cargo_toml = std::fs::metadata(plan_workdir.join("Cargo.toml")).is_ok();
-            if !gates_config.has_custom_rungs() && !has_cargo_toml {
-                info!(plan_id = %plan_id, rung = pipeline_rung, "skipping default gate pipeline (no Cargo.toml in workspace)");
-                record_skipped_gate_rung(
-                    ctx,
-                    plan_id,
-                    &task_id,
-                    pipeline_rung,
-                    "gate-pipeline:default",
-                    "skipped: no Cargo.toml in workspace",
-                );
-                return ActionDispatchOutcome::Handled;
-            }
+            let skip_default_gate = default_gate_pipeline_skipped(&gates_config, &plan_workdir);
 
             let effect_key =
                 gate_effect_key(plan_id, &task_id, pipeline_rung, GateCompletionKind::Gate);
             let run_id = ctx.state.run_id().to_string();
-            let attempt_ref = TaskAttemptRef::new(
-                plan_id.clone(),
-                task_id.clone(),
-                ctx.state.iteration_for(plan_id, &task_id),
-            );
             let gate_effect =
                 new_gate_effect(attempt_ref.clone(), GateCompletionKind::Gate, pipeline_rung);
             if !ctx.attempt_ownership.contains(&attempt_ref) {
@@ -6672,7 +7256,7 @@ async fn dispatch_action(
                     .insert(
                         attempt_ref.clone(),
                         AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
-                        AgentRuntimeResource::AwaitingGate,
+                        AgentRuntimeResource::AwaitingGate { permit: None },
                     )
                     .expect("new gate owner must be unique");
             }
@@ -6725,7 +7309,7 @@ async fn dispatch_action(
                 .and_then(|tasks| tasks.get(task_id.as_str()));
             let is_read_only_role = task_role_is_read_only(task_def);
 
-            let (gate_handle, start_tx) = if is_read_only_role {
+            let (gate_handle, start_tx) = if is_read_only_role || skip_default_gate {
                 // Read-only tasks don't produce artifacts — auto-pass the gate.
                 // Running cargo check / structural verify on a researcher task
                 // wastes time and fails on files not yet created.
@@ -6737,8 +7321,14 @@ async fn dispatch_action(
                     plan_id = %plan_id,
                     task_id = %task_id,
                     rung = pipeline_rung,
-                    "skipping gate for read-only role"
+                    skip_default_gate,
+                    "auto-passing gate without an external pipeline"
                 );
+                let output = if skip_default_gate {
+                    "skipped: no Cargo.toml in workspace"
+                } else {
+                    "skipped: read-only role"
+                };
                 let completion = GateCompletion {
                     plan_id: plan_id.clone(),
                     task_id: task_id.clone(),
@@ -6746,7 +7336,7 @@ async fn dispatch_action(
                     effect: Some(gate_effect.clone()),
                     rung: pipeline_rung,
                     passed: true,
-                    output: "skipped: read-only role".to_string(),
+                    output: output.to_string(),
                     failure_kind: None,
                     duration_ms: 0,
                     kind: GateCompletionKind::Gate,
@@ -6756,6 +7346,7 @@ async fn dispatch_action(
                 let fatal_tx = ctx.fatal_tx.clone();
                 let plan_id_fatal = plan_id.clone();
                 let fatal_attempt = attempt_ref.clone();
+                let fatal_effect = EffectRef(gate_effect.generation);
                 let (start_tx, start_rx) = tokio::sync::oneshot::channel();
                 let handle = tokio::spawn(async move {
                     if start_rx.await.is_err() {
@@ -6767,6 +7358,7 @@ async fn dispatch_action(
                         let _ = fatal_tx
                             .send(RoutedAgentEvent::fatal(
                                 fatal_attempt,
+                                fatal_effect,
                                 format!("gate channel closed for plan {plan_id_fatal}: {e}"),
                             ))
                             .await;
@@ -6780,21 +7372,28 @@ async fn dispatch_action(
                 gate_dispatch::spawn_gate(
                     gate_effect.clone(),
                     plan_id.clone(),
-                    task_id,
+                    task_id.clone(),
                     pipeline_rung,
                     plan_workdir,
                     gates_config,
                     complexity,
                     verify_steps,
+                    ctx.baseline_gate_failures.get(&attempt_ref).cloned(),
                     duration_secs(gate_timeout(ctx.config, pipeline_rung)),
                     ctx.gate_tx.clone(),
                     ctx.gate_sem.clone(),
                     target_crates,
                 )
             };
+            let AgentRuntimeResource::AwaitingGate { permit } =
+                gate_claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
+            else {
+                unreachable!("gate owner must retain its capacity carrier")
+            };
             gate_claim.replace_resource(AgentRuntimeResource::Gate {
                 effect: gate_effect.clone(),
                 handle: gate_handle,
+                permit,
             });
             ctx.attempt_ownership
                 .transition_claim(
@@ -6810,19 +7409,67 @@ async fn dispatch_action(
                     AttemptPhase::Gate,
                     EffectRef(gate_effect.generation),
                 ) {
-                    if let AgentRuntimeResource::Gate { handle, .. } =
-                        failed_claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    let resource = failed_claim
+                        .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+                    if let AgentRuntimeResource::Gate {
+                        effect,
+                        handle,
+                        permit,
+                    } = resource
                     {
-                        let _ = handle.await;
+                        let cleanup = handle.await;
+                        let message =
+                            format!("gate producer failed to start for {}", attempt_ref.key());
+                        let pending_terminal = failed_terminal_intent(
+                            ctx.task_runtime_states,
+                            &attempt_ref,
+                            RunnerFailureKind::Resource,
+                            &message,
+                        );
+                        if cleanup.is_ok()
+                            && persist_pending_terminal(
+                                ctx.paths,
+                                ctx.state,
+                                ctx.tui,
+                                ctx.config,
+                                &attempt_ref,
+                                &pending_terminal,
+                            )
+                            .is_ok()
+                        {
+                            ctx.attempt_ownership.complete_claim(failed_claim).ok();
+                            ctx.task_dag.clear_running(plan_id, &task_id);
+                            ctx.state.mark_task_failed(plan_id, &task_id);
+                            let _ = ctx
+                                .executor
+                                .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
+                            ctx.tui.error(&message);
+                        } else {
+                            failed_claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                                permit,
+                                gate_effect: Some(effect),
+                                errors: vec![message],
+                                pending_terminal: Some(pending_terminal),
+                            });
+                            ctx.attempt_ownership
+                                .transition_claim(
+                                    failed_claim,
+                                    AttemptPhase::Gate,
+                                    EffectRef(gate_effect.generation),
+                                )
+                                .expect("failed gate start must retain capacity");
+                        }
+                    } else {
+                        failed_claim.replace_resource(resource);
+                        ctx.attempt_ownership
+                            .transition_claim(
+                                failed_claim,
+                                AttemptPhase::Gate,
+                                EffectRef(gate_effect.generation),
+                            )
+                            .expect("gate resource mismatch must retain exact ownership");
                     }
-                    ctx.attempt_ownership.complete_claim(failed_claim).ok();
                 }
-                let message = format!("gate producer failed to start for {}", attempt_ref.key());
-                error!(attempt = %attempt_ref.key(), %message);
-                let _ = ctx
-                    .executor
-                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
-                ctx.tui.error(&message);
                 return ActionDispatchOutcome::Handled;
             }
             ActionDispatchOutcome::Handled
@@ -6847,27 +7494,21 @@ async fn dispatch_action(
                 info!(plan_id = %plan_id, "dispatching owned no-step plan verify");
             }
 
-            let plan_workdir = if verify_steps.is_empty() {
-                ctx.config.workdir.clone()
-            } else {
-                match tracked_plan_workdir(ctx.worktrees, plan_id) {
-                    Some(path) => path,
-                    None => {
-                        let message = format!("isolated worktree missing for plan {plan_id}");
-                        error!(plan_id = %plan_id, "{}", message);
-                        if let Err(e) = ctx
-                            .executor
-                            .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
-                        {
-                            error!(plan_id = %plan_id, error = %e,
-                            "failed to apply Fatal event -- forcing plan terminal");
-                            ctx.state.force_plan_terminal(plan_id);
-                        }
-                        ctx.tui.error(&message);
-                        return ActionDispatchOutcome::Noop;
-                    }
+            let Some(accepted) = accepted_plan_worktree(ctx.worktrees, plan_id) else {
+                let message = format!("accepted worktree missing for plan {plan_id}");
+                error!(plan_id = %plan_id, "{}", message);
+                if let Err(e) = ctx
+                    .executor
+                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                {
+                    error!(plan_id = %plan_id, error = %e,
+                        "failed to apply Fatal event -- forcing plan terminal");
+                    ctx.state.force_plan_terminal(plan_id);
                 }
+                ctx.tui.error(&message);
+                return ActionDispatchOutcome::Noop;
             };
+            let plan_workdir = accepted.handle.path;
 
             let plan_verify_rung = gate_dispatch::RUNG_PLAN_VERIFY;
             let effect_key = gate_effect_key(
@@ -6892,7 +7533,7 @@ async fn dispatch_action(
                     .insert(
                         attempt_ref.clone(),
                         AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
-                        AgentRuntimeResource::AwaitingGate,
+                        AgentRuntimeResource::AwaitingGate { permit: None },
                     )
                     .expect("plan verify owner must be unique");
             }
@@ -6936,6 +7577,7 @@ async fn dispatch_action(
                 gate_effect.clone(),
                 plan_id.clone(),
                 plan_workdir,
+                accepted.commit_oid,
                 verify_steps,
                 duration_secs(gate_timeout(ctx.config, plan_verify_rung)),
                 ctx.gate_tx.clone(),
@@ -6944,6 +7586,7 @@ async fn dispatch_action(
             gate_claim.replace_resource(AgentRuntimeResource::Gate {
                 effect: gate_effect.clone(),
                 handle: gate_handle,
+                permit: None,
             });
             ctx.attempt_ownership
                 .transition_claim(
@@ -6959,18 +7602,64 @@ async fn dispatch_action(
                     AttemptPhase::Gate,
                     EffectRef(gate_effect.generation),
                 ) {
-                    if let AgentRuntimeResource::Gate { handle, .. } =
-                        claim.replace_resource(AgentRuntimeResource::AwaitingGate)
+                    let resource =
+                        claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+                    if let AgentRuntimeResource::Gate {
+                        effect,
+                        handle,
+                        permit,
+                    } = resource
                     {
-                        let _ = handle.await;
+                        let cleanup = handle.await;
+                        let message = format!("plan verify producer failed to start for {plan_id}");
+                        let pending_terminal = failed_terminal_intent(
+                            ctx.task_runtime_states,
+                            &attempt_ref,
+                            RunnerFailureKind::Resource,
+                            &message,
+                        );
+                        if cleanup.is_ok()
+                            && persist_pending_terminal(
+                                ctx.paths,
+                                ctx.state,
+                                ctx.tui,
+                                ctx.config,
+                                &attempt_ref,
+                                &pending_terminal,
+                            )
+                            .is_ok()
+                        {
+                            ctx.attempt_ownership.complete_claim(claim).ok();
+                            let _ = ctx
+                                .executor
+                                .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
+                            ctx.tui.error(&message);
+                        } else {
+                            claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                                permit,
+                                gate_effect: Some(effect),
+                                errors: vec![message],
+                                pending_terminal: Some(pending_terminal),
+                            });
+                            ctx.attempt_ownership
+                                .transition_claim(
+                                    claim,
+                                    AttemptPhase::Gate,
+                                    EffectRef(gate_effect.generation),
+                                )
+                                .expect("failed plan verify start must retain exact ownership");
+                        }
+                    } else {
+                        claim.replace_resource(resource);
+                        ctx.attempt_ownership
+                            .transition_claim(
+                                claim,
+                                AttemptPhase::Gate,
+                                EffectRef(gate_effect.generation),
+                            )
+                            .expect("plan verify resource mismatch must retain exact ownership");
                     }
-                    ctx.attempt_ownership.complete_claim(claim).ok();
                 }
-                let message = format!("plan verify producer failed to start for {plan_id}");
-                let _ = ctx
-                    .executor
-                    .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()));
-                ctx.tui.error(&message);
             }
             ActionDispatchOutcome::Handled
         }
@@ -6979,23 +7668,12 @@ async fn dispatch_action(
             info!(plan_id = %plan_id, "plan completed");
             ctx.tui.plan_completed(plan_id, true);
             let run_id = ctx.state.run_id().to_string();
-            let plan_cost = ctx.state.plan_cost(plan_id);
-            let tasks_completed = ctx.state.plan_completed_tasks(plan_id).len();
-            let tasks_failed = ctx.state.plan_failed_tasks(plan_id).len();
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
                 ctx.tui,
                 ctx.config,
-                RunnerEvent::plan_completed(
-                    &run_id,
-                    plan_id,
-                    PlanOutcome::Succeeded,
-                    None,
-                    plan_cost,
-                    tasks_completed,
-                    tasks_failed,
-                ),
+                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
             );
             save_snapshot(
                 ctx.config,
@@ -7017,9 +7695,6 @@ async fn dispatch_action(
                 .task_completed(plan_id, &ctx.state.current_task, "failed");
             ctx.tui.plan_completed(plan_id, false);
             let run_id = ctx.state.run_id().to_string();
-            let plan_cost = ctx.state.plan_cost(plan_id);
-            let tasks_completed = ctx.state.plan_completed_tasks(plan_id).len();
-            let tasks_failed = ctx.state.plan_failed_tasks(plan_id).len();
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -7030,17 +7705,14 @@ async fn dispatch_action(
                     plan_id,
                     PlanOutcome::Failed,
                     Some(reason.clone()),
-                    plan_cost,
-                    tasks_completed,
-                    tasks_failed,
                 ),
             );
             ActionDispatchOutcome::Handled
         }
 
         ExecutorAction::MergeBranch { plan_id } => {
-            if tracked_plan_workdir(ctx.worktrees, plan_id).is_none() {
-                let message = format!("isolated worktree missing for plan {plan_id}");
+            let Some(accepted) = accepted_plan_worktree(ctx.worktrees, plan_id) else {
+                let message = format!("accepted task-attempt worktree missing for plan {plan_id}");
                 error!(plan_id = %plan_id, "{}", message);
                 if let Err(e) = ctx
                     .executor
@@ -7052,18 +7724,13 @@ async fn dispatch_action(
                 }
                 ctx.tui.error(&message);
                 return ActionDispatchOutcome::Noop;
-            }
+            };
             let files_changed = ctx
                 .executor
                 .plan_state(plan_id)
                 .map(|state| state.files_changed.clone())
                 .unwrap_or_default();
-            let request = MergeRequest::new(
-                plan_id.clone(),
-                format_branch_name(plan_id),
-                files_changed,
-                0,
-            );
+            let request = MergeRequest::new(plan_id.clone(), accepted.commit_oid, files_changed, 0);
             let merger = PlanMerger::new(
                 ctx.merge_queue.clone(),
                 PlanMergerConfig::new(ctx.config.workdir.clone(), gate_timeout(ctx.config, 0)),
@@ -7672,6 +8339,8 @@ fn timeout_runner_event(entry: &TimeoutLedgerEntry) -> Result<RunnerEvent> {
         timestamp_ms: timeout.observed_at_ms,
         run_id: entry.run_id().to_string(),
         timeout,
+        duration_ms: 0,
+        phase_durations: TaskPhaseDurations::default(),
     })
 }
 
@@ -7790,10 +8459,14 @@ fn replay_timeout_terminals(path: &std::path::Path, state: &mut RunState) -> Res
 async fn handle_global_timeout(
     expiry: crate::runner::deadlines::DeadlineExpiry,
     now: crate::runner::deadlines::MonotonicTime,
-    executor: &ParallelExecutor,
+    executor: &mut ParallelExecutor,
     plans: &[Plan],
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
     state: &mut RunState,
     attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
     paths: &PersistPaths,
     merge_queue: &MergeQueue,
     tui: &TuiBridge,
@@ -7847,6 +8520,11 @@ async fn handle_global_timeout(
     loop {
         let cancellation = stop_all_agents(
             attempt_ownership,
+            task_runtime_states,
+            task_dag,
+            task_index,
+            pending_gate_tasks,
+            executor,
             state,
             merge_queue,
             paths,
@@ -7872,7 +8550,8 @@ async fn handle_global_timeout(
         writer.flush();
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    let event = build_run_completed_event(executor, plans, state, RunOutcome::Failed);
+    let report = build_report(executor, plans, state, task_dag);
+    let event = build_run_completed_event(state, &report, RunOutcome::Failed);
     emit_runner_event(paths, state, tui, config, event);
     save_snapshot(
         config,
@@ -7916,10 +8595,12 @@ fn collect_in_flight_attempts(state: &RunState) -> Vec<String> {
 
 async fn enforce_owned_deadlines(
     ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
     state: &mut RunState,
     executor: &mut ParallelExecutor,
     task_dag: &mut TaskDag,
-    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
     merge_queue: &MergeQueue,
     paths: &PersistPaths,
     tui: &TuiBridge,
@@ -7928,10 +8609,12 @@ async fn enforce_owned_deadlines(
     enforce_owned_deadlines_at(
         monotonic_now(),
         ownership,
+        task_runtime_states,
         state,
         executor,
         task_dag,
         task_index,
+        pending_gate_tasks,
         merge_queue,
         paths,
         tui,
@@ -7940,13 +8623,32 @@ async fn enforce_owned_deadlines(
     .await
 }
 
+fn timeout_elapsed_baseline(
+    kind: TimeoutKind,
+    phase: AttemptPhase,
+    timing: OwnershipTiming,
+) -> Option<crate::runner::deadlines::MonotonicTime> {
+    match kind {
+        TimeoutKind::TaskAttempt => Some(timing.attempt_started_at),
+        TimeoutKind::GateEffect => Some(timing.phase_started_at),
+        TimeoutKind::AgentSilence => Some(timing.last_agent_activity_at),
+        TimeoutKind::LostEffect if phase == AttemptPhase::Agent => {
+            Some(timing.last_agent_activity_at)
+        }
+        TimeoutKind::LostEffect => Some(timing.phase_started_at),
+        TimeoutKind::HardRun | TimeoutKind::SchedulerNoProgress => None,
+    }
+}
+
 async fn enforce_owned_deadlines_at(
     now: crate::runner::deadlines::MonotonicTime,
     ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
     state: &mut RunState,
     executor: &mut ParallelExecutor,
     task_dag: &mut TaskDag,
-    task_index: &HashMap<String, HashMap<String, TaskDef>>,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
     merge_queue: &MergeQueue,
     paths: &PersistPaths,
     tui: &TuiBridge,
@@ -8005,15 +8707,10 @@ async fn enforce_owned_deadlines_at(
         if !ownership.event_is_eligible(&candidate.attempt, candidate.phase, candidate.effect) {
             continue;
         }
-        let baseline = match expiry.kind {
-            TimeoutKind::TaskAttempt => candidate.timing.attempt_started_at,
-            TimeoutKind::GateEffect => candidate.timing.phase_started_at,
-            TimeoutKind::AgentSilence => candidate.timing.last_agent_activity_at,
-            TimeoutKind::LostEffect if candidate.phase == AttemptPhase::Agent => {
-                candidate.timing.last_agent_activity_at
-            }
-            TimeoutKind::LostEffect => candidate.timing.phase_started_at,
-            _ => continue,
+        let Some(baseline) =
+            timeout_elapsed_baseline(expiry.kind, candidate.phase, candidate.timing)
+        else {
+            continue;
         };
         let timeout = TimeoutEvent {
             kind: expiry.kind,
@@ -8025,31 +8722,32 @@ async fn enforce_owned_deadlines_at(
                 .unwrap_or(u64::MAX),
             observed_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
         };
-        if matches!(
-            cancel_exact_attempt(
-                &candidate.attempt,
-                Some((candidate.phase, candidate.effect)),
-                AttemptCleanupTerminal::TimedOut(timeout),
-                ownership,
-                state,
-                merge_queue,
-                paths,
-                tui,
-                config,
-                Duration::from_secs(3),
-            )
-            .await,
-            CancelAttemptOutcome::Confirmed
-        ) {
+        let settled = cancel_exact_attempt(
+            &candidate.attempt,
+            Some((candidate.phase, candidate.effect)),
+            AttemptCleanupTerminal::TimedOut(timeout),
+            ownership,
+            task_runtime_states,
+            task_dag,
+            task_index,
+            pending_gate_tasks,
+            executor,
+            state,
+            merge_queue,
+            paths,
+            tui,
+            config,
+            Duration::from_secs(3),
+        )
+        .await;
+        if let CancelAttemptOutcome::Confirmed(outcome) = settled {
+            if outcome != TaskAttemptOutcome::TimedOut {
+                continue;
+            }
             expired += 1;
             let plan_id = &candidate.attempt.plan_id;
             let task_id = &candidate.attempt.task_id;
             let reason = format!("task timed out: {:?}", expiry.kind);
-            state.task_failed();
-            state.record_task_failure(plan_id, task_id, &reason);
-            state.mark_task_failed(plan_id, task_id);
-            let task_refs = task_refs_for_plan(task_index, plan_id);
-            task_dag.mark_failed_blocking_downstream(plan_id, task_id, &task_refs);
             if !ready_tasks_for_plan(task_dag, executor, task_index, state, plan_id).is_empty() {
                 if let Some(plan) = executor.plan_state_mut(plan_id) {
                     plan.current_phase = PlanPhase::Implementing;
@@ -8068,6 +8766,11 @@ async fn enforce_owned_deadlines_at(
                             Some((sibling.phase, sibling.effect)),
                             AttemptCleanupTerminal::Cancelled,
                             ownership,
+                            task_runtime_states,
+                            task_dag,
+                            task_index,
+                            pending_gate_tasks,
+                            executor,
                             state,
                             merge_queue,
                             paths,
@@ -8076,12 +8779,15 @@ async fn enforce_owned_deadlines_at(
                             Duration::from_secs(3),
                         )
                         .await,
-                        CancelAttemptOutcome::Confirmed
+                        CancelAttemptOutcome::Confirmed(_)
                     ) {
                         drained = false;
                     }
                 }
                 if drained
+                    && !executor
+                        .plan_state(plan_id)
+                        .is_some_and(|plan| plan.is_terminal())
                     && let Err(error) =
                         executor.apply_event(plan_id, &ExecutorEvent::Fatal(reason.clone()))
                 {
@@ -8131,18 +8837,13 @@ fn producer_is_gone_at_deadline(
 
 #[derive(Debug)]
 enum CancelAttemptOutcome {
-    Confirmed,
+    Confirmed(TaskAttemptOutcome),
     Unconfirmed(Vec<String>),
 }
 
 enum AttemptCleanupTerminal {
     Cancelled,
     TimedOut(TimeoutEvent),
-}
-
-enum PreparedAttemptTerminal {
-    Cancelled,
-    TimedOut(RunnerEvent),
 }
 
 #[derive(Debug)]
@@ -8163,7 +8864,7 @@ impl CancelAllSummary {
             && self
                 .attempts
                 .iter()
-                .all(|entry| matches!(entry.outcome, CancelAttemptOutcome::Confirmed))
+                .all(|entry| matches!(entry.outcome, CancelAttemptOutcome::Confirmed(_)))
     }
 }
 
@@ -8216,6 +8917,11 @@ async fn cancel_exact_attempt(
     expected_owner: Option<(AttemptPhase, EffectRef)>,
     terminal: AttemptCleanupTerminal,
     ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    executor: &mut ParallelExecutor,
     state: &mut RunState,
     merge_queue: &MergeQueue,
     paths: &PersistPaths,
@@ -8226,6 +8932,76 @@ async fn cancel_exact_attempt(
     let Ok(mut claim) = ownership.claim_cancellation_exact(attempt, expected_owner) else {
         return CancelAttemptOutcome::Unconfirmed(vec!["exact owner unavailable".to_string()]);
     };
+    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+    let resource = match resource {
+        AgentRuntimeResource::CleanupFailed {
+            permit,
+            gate_effect,
+            errors: _,
+            pending_terminal: Some(pending),
+        } => {
+            if let Err(error) =
+                persist_pending_terminal(paths, state, tui, config, attempt, &pending)
+            {
+                let errors = vec![error];
+                restore_failed_cancellation(
+                    ownership,
+                    claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit,
+                        gate_effect,
+                        errors: errors.clone(),
+                        pending_terminal: Some(pending),
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+            if let Some(effect) = gate_effect {
+                state.clear_gate_active(&gate_effect_key(
+                    &effect.attempt.plan_id,
+                    &effect.attempt.task_id,
+                    effect.rung,
+                    effect.kind,
+                ));
+            }
+            let outcome = settle_persisted_terminal(
+                attempt,
+                &pending,
+                task_runtime_states,
+                task_dag,
+                task_index,
+                pending_gate_tasks,
+                executor,
+                paths,
+                state,
+                tui,
+                config,
+            );
+            if let Err(failure) = ownership.complete_claim_recoverable(claim) {
+                let errors = vec![format!("owner cleanup failed: {:?}", failure.error)];
+                restore_failed_cancellation(
+                    ownership,
+                    failure.claim,
+                    AgentRuntimeResource::CleanupFailed {
+                        permit,
+                        gate_effect: None,
+                        errors: errors.clone(),
+                        pending_terminal: Some(pending),
+                    },
+                );
+                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+            }
+            drop(permit);
+            return CancelAttemptOutcome::Confirmed(outcome);
+        }
+        resource => resource,
+    };
+    transition_task_runtime(
+        task_runtime_states,
+        attempt,
+        TaskTimingPhase::Cleanup,
+        Instant::now(),
+    );
     let run_id = state.run_id().to_string();
     emit_runner_event(
         paths,
@@ -8234,7 +9010,7 @@ async fn cancel_exact_attempt(
         config,
         RunnerEvent::task_attempt_cancellation_requested(&run_id, attempt.clone()),
     );
-    let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate);
+    let mut retained_permit;
     match resource {
         AgentRuntimeResource::Cli {
             handle,
@@ -8254,11 +9030,12 @@ async fn cancel_exact_attempt(
                             permit: Some(permit),
                             gate_effect: None,
                             errors: errors.clone(),
+                            pending_terminal: None,
                         },
                     );
                     return record_cancellation_failure(attempt, errors, state, paths, tui, config);
                 }
-                drop(permit);
+                retained_permit = Some(permit);
             }
             AgentTermination::Failed {
                 handle,
@@ -8280,6 +9057,7 @@ async fn cancel_exact_attempt(
                             permit: Some(permit),
                             gate_effect: None,
                             errors: errors.clone(),
+                            pending_terminal: None,
                         },
                     );
                 } else {
@@ -8315,15 +9093,20 @@ async fn cancel_exact_attempt(
                         permit: Some(permit),
                         gate_effect: None,
                         errors: errors.clone(),
+                        pending_terminal: None,
                     },
                 );
                 return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
-            drop(permit);
+            retained_permit = Some(permit);
         }
-        AgentRuntimeResource::Dispatching(permit) => drop(permit),
-        AgentRuntimeResource::AwaitingGate => {}
-        AgentRuntimeResource::Gate { effect, handle } => {
+        AgentRuntimeResource::Dispatching(permit) => retained_permit = Some(permit),
+        AgentRuntimeResource::AwaitingGate { permit } => retained_permit = permit,
+        AgentRuntimeResource::Gate {
+            effect,
+            handle,
+            permit,
+        } => {
             handle.abort();
             let mut errors = Vec::new();
             unexpected_cancel_join("gate", handle.await, &mut errors);
@@ -8338,18 +9121,21 @@ async fn cancel_exact_attempt(
                     ownership,
                     claim,
                     AgentRuntimeResource::CleanupFailed {
-                        permit: None,
+                        permit,
                         gate_effect: Some(effect),
                         errors: errors.clone(),
+                        pending_terminal: None,
                     },
                 );
                 return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
+            retained_permit = permit;
         }
         AgentRuntimeResource::Merge {
             effect,
             handle,
             resolution,
+            permit,
         } => {
             let mut errors = Vec::new();
             if let Err(error) = finish_merge_handle(&handle, true).await {
@@ -8375,18 +9161,21 @@ async fn cancel_exact_attempt(
                     ownership,
                     claim,
                     AgentRuntimeResource::CleanupFailed {
-                        permit: None,
+                        permit,
                         gate_effect: None,
                         errors: errors.clone(),
+                        pending_terminal: None,
                     },
                 );
                 return record_cancellation_failure(attempt, errors, state, paths, tui, config);
             }
+            retained_permit = permit;
         }
         AgentRuntimeResource::CleanupFailed {
             permit,
             gate_effect,
             errors: _,
+            pending_terminal,
         } => {
             if let Some(effect) = gate_effect {
                 state.clear_gate_active(&gate_effect_key(
@@ -8396,81 +9185,125 @@ async fn cancel_exact_attempt(
                     effect.kind,
                 ));
             }
-            drop(permit);
+            if let Some(pending) = pending_terminal {
+                if let Err(error) =
+                    persist_pending_terminal(paths, state, tui, config, attempt, &pending)
+                {
+                    let errors = vec![error];
+                    restore_failed_cancellation(
+                        ownership,
+                        claim,
+                        AgentRuntimeResource::CleanupFailed {
+                            permit,
+                            gate_effect: None,
+                            errors: errors.clone(),
+                            pending_terminal: Some(pending),
+                        },
+                    );
+                    return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+                }
+                if let Err(failure) = ownership.complete_claim_recoverable(claim) {
+                    let errors = vec![format!("owner cleanup failed: {:?}", failure.error)];
+                    restore_failed_cancellation(
+                        ownership,
+                        failure.claim,
+                        AgentRuntimeResource::CleanupFailed {
+                            permit,
+                            gate_effect: None,
+                            errors: errors.clone(),
+                            pending_terminal: Some(pending),
+                        },
+                    );
+                    return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+                }
+                drop(permit);
+                let outcome = settle_persisted_terminal(
+                    attempt,
+                    &pending,
+                    task_runtime_states,
+                    task_dag,
+                    task_index,
+                    pending_gate_tasks,
+                    executor,
+                    paths,
+                    state,
+                    tui,
+                    config,
+                );
+                return CancelAttemptOutcome::Confirmed(outcome);
+            }
+            retained_permit = permit;
         }
     }
-    // A timeout ledger entry represents a terminal timeout. Persist it only
-    // after external-resource cleanup succeeds, while the exact claim remains
-    // held. Persistence failure can then restore that claim for retry instead
-    // of losing the owner or publishing a terminal timeout event.
-    let timeout_entry = if let AttemptCleanupTerminal::TimedOut(timeout) = &terminal {
-        match timeout_ledger_entry(&run_id, timeout).and_then(|entry| {
-            persist_timeout_terminal(&paths.run_ledger_jsonl, &entry).map(|_| entry)
-        }) {
-            Ok(entry) => Some(entry),
-            Err(error) => {
-                let errors = vec![format!("failed to persist timeout ledger entry: {error}")];
-                restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
-                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
-            }
-        }
-    } else {
-        None
-    };
-    let prepared_terminal = match (&terminal, timeout_entry.as_ref()) {
-        (AttemptCleanupTerminal::Cancelled, _) => PreparedAttemptTerminal::Cancelled,
-        (AttemptCleanupTerminal::TimedOut(_), Some(entry)) => match timeout_runner_event(entry) {
-            Ok(event) => PreparedAttemptTerminal::TimedOut(event),
-            Err(error) => {
-                let errors = vec![format!("failed to convert durable timeout entry: {error}")];
-                restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
-                return record_cancellation_failure(attempt, errors, state, paths, tui, config);
-            }
+    let phase_durations =
+        runtime_task_phase_durations(task_runtime_states, attempt, Instant::now());
+    let pending_terminal = match terminal {
+        AttemptCleanupTerminal::Cancelled => PendingTerminal::attempt(
+            TaskAttemptOutcome::Cancelled,
+            None,
+            phase_durations,
+            Some("attempt cancelled after confirmed resource cleanup"),
+            None,
+        ),
+        AttemptCleanupTerminal::TimedOut(timeout) => PendingTerminal::Timeout {
+            timeout,
+            phase_durations,
         },
-        (AttemptCleanupTerminal::TimedOut(_), None) => {
-            let errors = vec!["durable timeout entry was not prepared".to_string()];
-            restore_failed_cancellation(ownership, claim, AgentRuntimeResource::AwaitingGate);
-            return record_cancellation_failure(attempt, errors, state, paths, tui, config);
-        }
     };
+    if let Err(error) =
+        persist_pending_terminal(paths, state, tui, config, attempt, &pending_terminal)
+    {
+        let errors = vec![error];
+        restore_failed_cancellation(
+            ownership,
+            claim,
+            AgentRuntimeResource::CleanupFailed {
+                permit: retained_permit.take(),
+                gate_effect: None,
+                errors: errors.clone(),
+                pending_terminal: Some(pending_terminal),
+            },
+        );
+        return record_cancellation_failure(attempt, errors, state, paths, tui, config);
+    }
     if let Err(failure) = ownership.complete_claim_recoverable(claim) {
         let errors = vec![format!("owner cleanup failed: {:?}", failure.error)];
         restore_failed_cancellation(
             ownership,
             failure.claim,
             AgentRuntimeResource::CleanupFailed {
-                permit: None,
+                permit: retained_permit.take(),
                 gate_effect: None,
                 errors: errors.clone(),
+                pending_terminal: Some(pending_terminal),
             },
         );
         return record_cancellation_failure(attempt, errors, state, paths, tui, config);
     }
-    match prepared_terminal {
-        PreparedAttemptTerminal::Cancelled => emit_runner_event(
-            paths,
-            state,
-            tui,
-            config,
-            RunnerEvent::task_attempt_completed(
-                &run_id,
-                attempt.clone(),
-                TaskAttemptOutcome::Cancelled,
-                None,
-                0,
-                "",
-                "",
-            ),
-        ),
-        PreparedAttemptTerminal::TimedOut(event) => {
-            emit_runner_event(paths, state, tui, config, event)
-        }
-    };
-    CancelAttemptOutcome::Confirmed
+    let outcome = settle_persisted_terminal(
+        attempt,
+        &pending_terminal,
+        task_runtime_states,
+        task_dag,
+        task_index,
+        pending_gate_tasks,
+        executor,
+        paths,
+        state,
+        tui,
+        config,
+    );
+    drop(retained_permit);
+    CancelAttemptOutcome::Confirmed(outcome)
 }
 
 async fn stop_all_agents(
     ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    executor: &mut ParallelExecutor,
     state: &mut RunState,
     merge_queue: &MergeQueue,
     paths: &PersistPaths,
@@ -8486,6 +9319,11 @@ async fn stop_all_agents(
             None,
             AttemptCleanupTerminal::Cancelled,
             ownership,
+            task_runtime_states,
+            task_dag,
+            task_index,
+            pending_gate_tasks,
+            executor,
             state,
             merge_queue,
             paths,
@@ -8816,8 +9654,11 @@ async fn seed_playbooks_if_empty(layout: &RokoLayout) {
 // ─── Run Ledger Helpers ──────────────────────────────────────────────────
 
 /// Append a single typed entry to the run ledger JSONL file.
-/// Failures are logged but never propagated — the ledger is best-effort.
-fn append_ledger_entry(path: &std::path::Path, kind: &str, data: &serde_json::Value) {
+fn append_ledger_entry(
+    path: &std::path::Path,
+    kind: &str,
+    data: &serde_json::Value,
+) -> std::io::Result<()> {
     let entry = serde_json::json!({
         "kind": kind,
         "ts": chrono::Utc::now().to_rfc3339(),
@@ -8827,23 +9668,509 @@ fn append_ledger_entry(path: &std::path::Path, kind: &str, data: &serde_json::Va
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "failed to serialize ledger entry");
-            return;
+            return Err(std::io::Error::other(e));
         }
     };
-    if let Err(e) = (|| -> std::io::Result<()> {
+    (|| -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
         writeln!(f, "{}", line)?;
-        // SH03-T03: fsync terminal ledger entries so crash recovery can
-        // rely on the JSONL being durable up to the last written entry.
-        f.sync_all()?;
         Ok(())
-    })() {
-        warn!(error = %e, path = %path.display(), "failed to append to run ledger");
+    })()
+}
+
+fn terminal_ledger_entry_exists(
+    path: &Path,
+    kind: &str,
+    run_id: &str,
+    attempt: &TaskAttemptRef,
+) -> std::io::Result<bool> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(contents.lines().any(|line| {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        entry.get("kind").and_then(serde_json::Value::as_str) == Some(kind)
+            && entry
+                .pointer("/data/run_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(run_id)
+            && entry
+                .pointer("/data/plan_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(attempt.plan_id.as_str())
+            && entry
+                .pointer("/data/task_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(attempt.task_id.as_str())
+            && entry
+                .pointer("/data/attempt")
+                .and_then(serde_json::Value::as_u64)
+                == Some(u64::from(attempt.attempt))
+    }))
+}
+
+fn attempt_terminal_event_exists(
+    path: &std::path::Path,
+    attempt: &TaskAttemptRef,
+    outcome: TaskAttemptOutcome,
+) -> std::io::Result<bool> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(contents.lines().any(|line| {
+        serde_json::from_str::<RunnerEvent>(line).is_ok_and(|event| {
+            matches!(
+                event,
+                RunnerEvent::TaskAttemptCompleted {
+                    attempt: recorded_attempt,
+                    outcome: recorded_outcome,
+                    ..
+                } if recorded_attempt == *attempt && recorded_outcome == outcome
+            )
+        })
+    }))
+}
+
+fn persist_attempt_terminal(
+    paths: &PersistPaths,
+    state: &mut RunState,
+    tui: &TuiBridge,
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+    outcome: TaskAttemptOutcome,
+    failure_kind: Option<RunnerFailureKind>,
+    phase_durations: TaskPhaseDurations,
+    reason: Option<&str>,
+    commit_outcome: Option<&CommitOutcome>,
+) -> std::result::Result<(), String> {
+    let run_id = state.run_id().to_string();
+    let kind = if outcome == TaskAttemptOutcome::Passed {
+        "task_completed"
+    } else {
+        "task_failed"
+    };
+    let data = serde_json::json!({
+        "run_id": run_id,
+        "plan_id": attempt.plan_id,
+        "task_id": attempt.task_id,
+        "attempt": attempt.attempt,
+        "passed": outcome == TaskAttemptOutcome::Passed,
+        "reason": reason,
+        "duration_ms": phase_durations.total_ms(),
+        "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+        "commit_outcome": commit_outcome,
+    });
+    let already_persisted =
+        terminal_ledger_entry_exists(&paths.run_ledger_jsonl, kind, &run_id, attempt)
+            .map_err(|error| format!("failed to inspect terminal ledger: {error}"))?;
+    if !already_persisted {
+        append_ledger_entry(&paths.run_ledger_jsonl, kind, &data)
+            .map_err(|error| format!("failed to persist terminal ledger: {error}"))?;
     }
+
+    let event = RunnerEvent::task_attempt_completed_with_timing(
+        &run_id,
+        attempt.clone(),
+        outcome,
+        failure_kind,
+        phase_durations,
+        state.agent_model.clone(),
+        state.agent_provider.clone(),
+    );
+    let event_already_persisted =
+        attempt_terminal_event_exists(&paths.events_jsonl, attempt, outcome)
+            .map_err(|error| format!("failed to inspect terminal lifecycle events: {error}"))?;
+    if !event_already_persisted {
+        persist::append_runner_event(paths, &event)
+            .map_err(|error| format!("failed to persist terminal lifecycle event: {error}"))?;
+    }
+    let persisted = emit_runner_event_with_facades(
+        paths,
+        state,
+        tui,
+        config.projection.as_ref(),
+        config.feedback_facade.as_ref(),
+        config.http_event_sink.as_ref(),
+        event,
+        None,
+        true,
+    );
+    debug_assert!(persisted);
+    Ok(())
+}
+
+fn persist_pending_terminal(
+    paths: &PersistPaths,
+    state: &mut RunState,
+    tui: &TuiBridge,
+    config: &RunConfig,
+    attempt: &TaskAttemptRef,
+    pending: &PendingTerminal,
+) -> std::result::Result<(), String> {
+    match pending {
+        PendingTerminal::Attempt {
+            outcome,
+            failure_kind,
+            phase_durations,
+            reason,
+            commit_outcome,
+            ..
+        } => persist_attempt_terminal(
+            paths,
+            state,
+            tui,
+            config,
+            attempt,
+            *outcome,
+            *failure_kind,
+            *phase_durations,
+            reason.as_deref(),
+            commit_outcome.as_ref(),
+        ),
+        PendingTerminal::Timeout {
+            timeout,
+            phase_durations,
+        } => {
+            let run_id = state.run_id().to_string();
+            if !matches!(
+                state
+                    .lifecycle
+                    .task_attempts
+                    .get(&attempt.key())
+                    .map(|attempt| attempt.status),
+                Some(TaskAttemptStatus::Cancelling | TaskAttemptStatus::TimedOut)
+            ) {
+                let requested =
+                    RunnerEvent::task_attempt_cancellation_requested(&run_id, attempt.clone());
+                persist::append_runner_event(paths, &requested).map_err(|error| {
+                    format!("failed to persist timeout cancellation request: {error}")
+                })?;
+                emit_runner_event_with_facades(
+                    paths,
+                    state,
+                    tui,
+                    config.projection.as_ref(),
+                    config.feedback_facade.as_ref(),
+                    config.http_event_sink.as_ref(),
+                    requested,
+                    None,
+                    true,
+                );
+            }
+            let entry = timeout_ledger_entry(&run_id, timeout)
+                .map_err(|error| format!("failed to prepare timeout ledger entry: {error}"))?;
+            persist_timeout_terminal(&paths.run_ledger_jsonl, &entry)
+                .map_err(|error| format!("failed to persist timeout ledger entry: {error}"))?;
+            let mut event = timeout_runner_event(&entry)
+                .map_err(|error| format!("failed to convert durable timeout entry: {error}"))?;
+            if let RunnerEvent::TimeoutRecorded {
+                duration_ms,
+                phase_durations: recorded_phases,
+                ..
+            } = &mut event
+            {
+                *duration_ms = phase_durations.total_ms();
+                *recorded_phases = *phase_durations;
+            }
+            let exists = std::fs::read_to_string(&paths.events_jsonl)
+                .map(|contents| {
+                    contents.lines().any(|line| {
+                        serde_json::from_str::<RunnerEvent>(line).is_ok_and(|recorded| {
+                            matches!(recorded, RunnerEvent::TimeoutRecorded { timeout, .. }
+                                if timeout.attempt.as_ref() == Some(attempt))
+                        })
+                    })
+                })
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Ok(false)
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(|error| format!("failed to inspect timeout lifecycle events: {error}"))?;
+            if !exists {
+                persist::append_runner_event(paths, &event).map_err(|error| {
+                    format!("failed to persist timeout lifecycle event: {error}")
+                })?;
+            }
+            let persisted = emit_runner_event_with_facades(
+                paths,
+                state,
+                tui,
+                config.projection.as_ref(),
+                config.feedback_facade.as_ref(),
+                config.http_event_sink.as_ref(),
+                event,
+                None,
+                true,
+            );
+            debug_assert!(persisted);
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settle_persisted_terminal(
+    attempt: &TaskAttemptRef,
+    pending: &PendingTerminal,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    executor: &mut ParallelExecutor,
+    paths: &PersistPaths,
+    state: &mut RunState,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> TaskAttemptOutcome {
+    task_runtime_states.remove(&attempt.key());
+    task_dag.clear_running(&attempt.plan_id, &attempt.task_id);
+    pending_gate_tasks
+        .entry(attempt.plan_id.clone())
+        .and_modify(|tasks| tasks.retain(|task| task != &attempt.task_id));
+
+    if let Some(retry) = pending.retry() {
+        let (decision, replan_context) = match retry {
+            PendingRetryContinuation::Agent {
+                decision,
+                replan_context,
+            } => (decision, replan_context),
+            PendingRetryContinuation::Gate {
+                decision,
+                replan_context,
+                output,
+                verdicts,
+            } => {
+                let _ = executor.apply_event(&attempt.plan_id, &ExecutorEvent::GateFailed);
+                maybe_apply_gate_failure_plan_revision(
+                    config,
+                    paths,
+                    state,
+                    task_index,
+                    &attempt.plan_id,
+                    &attempt.task_id,
+                    decision.current_attempt,
+                    verdicts,
+                    output,
+                    replan_context,
+                );
+                (decision, replan_context)
+            }
+        };
+        if decision.should_retry() {
+            let next_attempt = decision
+                .next_attempt
+                .unwrap_or_else(|| decision.current_attempt.saturating_add(1));
+            if let Some(plan) = executor.plan_state_mut(&attempt.plan_id) {
+                plan.reset_for_retry();
+                plan.current_phase = PlanPhase::Implementing;
+                plan.iteration = next_attempt;
+            }
+            state.set_iteration(&attempt.plan_id, &attempt.task_id, next_attempt);
+            state.set_retry_backoff_from_decision(&attempt.plan_id, decision);
+            state.set_replan_context(&attempt.plan_id, &attempt.task_id, replan_context.clone());
+            let run_id = state.run_id().to_string();
+            emit_runner_event(
+                paths,
+                state,
+                tui,
+                config,
+                RunnerEvent::retry_decision(&run_id, attempt.clone(), decision.clone()),
+            );
+            return pending.outcome();
+        }
+    }
+
+    let outcome = pending.outcome();
+    let is_authored_task = task_index
+        .get(&attempt.plan_id)
+        .is_some_and(|tasks| tasks.contains_key(&attempt.task_id));
+    if !is_authored_task {
+        if outcome != TaskAttemptOutcome::Passed
+            && outcome != TaskAttemptOutcome::Cancelled
+            && let Err(error) = executor.apply_event(
+                &attempt.plan_id,
+                &ExecutorEvent::Fatal(
+                    pending
+                        .reason()
+                        .unwrap_or("recovered terminal failure")
+                        .to_string(),
+                ),
+            )
+        {
+            error!(attempt = %attempt.key(), %error,
+                "failed to apply recovered plan-operation terminal");
+            state.force_plan_terminal(&attempt.plan_id);
+        }
+        return outcome;
+    }
+
+    match outcome {
+        TaskAttemptOutcome::Passed => {
+            if state.mark_task_completed(&attempt.plan_id, &attempt.task_id) {
+                state.task_completed();
+            }
+            task_dag.mark_complete(&attempt.plan_id, &attempt.task_id);
+        }
+        TaskAttemptOutcome::Failed
+        | TaskAttemptOutcome::Exhausted
+        | TaskAttemptOutcome::TimedOut => {
+            let newly_failed = !state
+                .plan_failed_tasks(&attempt.plan_id)
+                .contains(&attempt.task_id);
+            if newly_failed {
+                state.task_failed();
+            }
+            let reason = match pending {
+                PendingTerminal::Timeout { timeout, .. } => {
+                    format!("task timed out: {:?}", timeout.kind)
+                }
+                _ => pending
+                    .reason()
+                    .unwrap_or("recovered terminal failure")
+                    .to_string(),
+            };
+            state.record_task_failure(&attempt.plan_id, &attempt.task_id, &reason);
+            state.mark_task_failed(&attempt.plan_id, &attempt.task_id);
+            let task_refs = task_refs_for_plan(task_index, &attempt.plan_id);
+            task_dag.mark_failed_blocking_downstream(
+                &attempt.plan_id,
+                &attempt.task_id,
+                &task_refs,
+            );
+        }
+        TaskAttemptOutcome::Cancelled => {}
+    }
+    if outcome == TaskAttemptOutcome::Cancelled {
+        return outcome;
+    }
+    let ready = ready_tasks_for_plan(task_dag, executor, task_index, state, &attempt.plan_id);
+    let progress = dag_progress_for_plan(task_dag, executor, task_index, state, &attempt.plan_id);
+    if !ready.is_empty() || progress.can_make_future_progress() {
+        if let Some(plan) = executor.plan_state_mut(&attempt.plan_id) {
+            plan.gate_results.clear();
+            plan.current_phase = PlanPhase::Implementing;
+        }
+    } else if dag_plan_has_failures(task_dag, state, &attempt.plan_id) || progress.blocked > 0 {
+        let reason = pending
+            .reason()
+            .unwrap_or("recovered terminal failure")
+            .to_string();
+        if !executor
+            .plan_state(&attempt.plan_id)
+            .is_some_and(|plan| plan.is_terminal())
+            && let Err(error) =
+                executor.apply_event(&attempt.plan_id, &ExecutorEvent::Fatal(reason))
+        {
+            error!(attempt = %attempt.key(), %error, "failed recovered terminal continuation");
+            state.force_plan_terminal(&attempt.plan_id);
+        }
+    } else {
+        let _ = executor.apply_event(&attempt.plan_id, &ExecutorEvent::GatePassed);
+    }
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_pending_terminals(
+    ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    executor: &mut ParallelExecutor,
+    paths: &PersistPaths,
+    state: &mut RunState,
+    tui: &TuiBridge,
+    config: &RunConfig,
+) -> usize {
+    let mut recovered = 0;
+    for candidate in ownership.deadline_candidates() {
+        if !candidate.eligible {
+            continue;
+        }
+        let Ok(mut claim) =
+            ownership.claim_phase(&candidate.attempt, candidate.phase, candidate.effect)
+        else {
+            continue;
+        };
+        let resource = claim.replace_resource(AgentRuntimeResource::AwaitingGate { permit: None });
+        let (permit, gate_effect, mut errors, pending_terminal) = match resource {
+            AgentRuntimeResource::CleanupFailed {
+                permit,
+                gate_effect,
+                errors,
+                pending_terminal: Some(pending_terminal),
+            } => (permit, gate_effect, errors, pending_terminal),
+            other => {
+                claim.replace_resource(other);
+                ownership
+                    .transition_claim(claim, candidate.phase, candidate.effect)
+                    .expect("non-pending owner must be restored after recovery scan");
+                continue;
+            }
+        };
+        if let Err(error) = persist_pending_terminal(
+            paths,
+            state,
+            tui,
+            config,
+            &candidate.attempt,
+            &pending_terminal,
+        ) {
+            errors.push(error);
+            claim.replace_resource(AgentRuntimeResource::CleanupFailed {
+                permit,
+                gate_effect,
+                errors,
+                pending_terminal: Some(pending_terminal),
+            });
+            ownership
+                .transition_claim(claim, candidate.phase, candidate.effect)
+                .expect("failed terminal retry must retain exact ownership");
+            continue;
+        }
+
+        settle_persisted_terminal(
+            &candidate.attempt,
+            &pending_terminal,
+            task_runtime_states,
+            task_dag,
+            task_index,
+            pending_gate_tasks,
+            executor,
+            paths,
+            state,
+            tui,
+            config,
+        );
+        ownership
+            .complete_claim(claim)
+            .expect("durably recovered terminal must release exact ownership");
+        drop(permit);
+        if let Some(effect) = gate_effect {
+            state.clear_gate_active(&gate_effect_key(
+                &effect.attempt.plan_id,
+                &effect.attempt.task_id,
+                effect.rung,
+                effect.kind,
+            ));
+        }
+        recovered += 1;
+    }
+    recovered
 }
 
 /// Persist a final summary entry for the run ledger at run completion.
@@ -9202,7 +10529,7 @@ fn maybe_apply_gate_failure_plan_revision(
     let required_next_action = revision.revision_request.disposition.to_string();
     let failure_key = revision.failure_key.clone();
     state.record_task_revision(failure_key.clone(), revision.clone());
-    append_ledger_entry(
+    let _ = append_ledger_entry(
         &paths.run_ledger_jsonl,
         "plan_revision",
         &serde_json::json!({
@@ -9450,78 +10777,45 @@ fn failure_class_label(class: &roko_gate::FailureClass) -> String {
         .unwrap_or_else(|| format!("{class:?}").to_ascii_lowercase())
 }
 
-/// Build and publish a `DiagnosisSummary` for a gate failure so the dashboard
-/// surfaces structured failure context alongside the existing gate verdict
-/// events.  Called from both the retry and terminal-failure gate paths.
-fn publish_gate_failure_diagnosis(
-    tui: &TuiBridge,
+/// Apply the state-machine and task-attempt rollover used by the live gate
+/// failure path. Keeping this transition atomic prevents the next dispatch
+/// from restoring the failed attempt's iteration or runtime clock.
+fn begin_gate_retry_rollover(
+    executor: &mut ParallelExecutor,
+    task_dag: &mut TaskDag,
+    state: &mut RunState,
     completion: &GateCompletion,
-    failure_kind: RunnerFailureKind,
-    is_terminal: bool,
-) {
-    let failing_gate = completion
-        .verdicts
-        .iter()
-        .find(|v| !v.passed)
-        .map(|v| v.gate_name.as_str())
-        .unwrap_or("gate");
-
-    let classification = classify_gate_failure(failing_gate, &completion.output);
-    let classification_detail = render_failure_classification(&classification);
-
-    let severity = if is_terminal {
-        DiagnosisSeverity::Alert
-    } else {
-        DiagnosisSeverity::Warn
-    };
-
-    let terminal_label = if is_terminal { "terminal" } else { "retrying" };
-
-    let suggested_action = if is_terminal {
-        Some("Review gate output and consider revising the task definition".into())
-    } else {
-        Some("Auto-retry in progress; monitor next attempt".into())
-    };
-
-    let intervention_taken = if is_terminal {
-        Some("Task marked failed; downstream tasks skipped".into())
-    } else {
-        Some("Scheduling retry with enriched failure context".into())
-    };
-
-    // Truncate classification detail for the diagnosis ring buffer so we
-    // don't blow up dashboard memory with multi-KB gate outputs.
-    let detail = if classification_detail.len() > 2000 {
-        format!("{}...", &classification_detail[..2000])
-    } else {
-        classification_detail
-    };
-
-    tui.diagnosis(DiagnosisSummary {
-        id: format!(
-            "gate-fail-{}-{}-{}",
-            completion.plan_id, completion.task_id, completion.rung
-        ),
-        ts: chrono::Utc::now(),
-        severity,
-        subject: format!(
-            "Gate '{}' failed for {}/{} ({}, {:?})",
-            failing_gate, completion.plan_id, completion.task_id, terminal_label, failure_kind
-        ),
-        detail,
-        suggested_action,
-        intervention_taken,
-    });
+    decision: &RetryDecision,
+) -> std::result::Result<(PlanPhase, u32), TransitionError> {
+    let phase = executor.apply_event(&completion.plan_id, &ExecutorEvent::GateFailed)?;
+    let failed_attempt = decision.current_attempt;
+    if let Some(plan) = executor.plan_state_mut(&completion.plan_id) {
+        plan.reset_for_retry();
+        task_dag.clear_running(&completion.plan_id, &completion.task_id);
+        let next_attempt = decision
+            .next_attempt
+            .unwrap_or_else(|| decision.current_attempt.saturating_add(1));
+        plan.iteration = next_attempt;
+        state.set_iteration(&completion.plan_id, &completion.task_id, next_attempt);
+    }
+    state.set_retry_backoff_from_decision(&completion.plan_id, decision);
+    Ok((phase, failed_attempt))
 }
 
 enum TaskTerminalization {
     Passed,
-    PersistenceFailed { reason: String },
+    Failed {
+        reason: String,
+    },
+    PersistenceUnconfirmed {
+        reason: String,
+        pending_terminal: PendingTerminal,
+    },
     AlreadyRecorded,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn terminalize_passed_task(
+async fn terminalize_passed_task(
     paths: &PersistPaths,
     state: &mut RunState,
     task_dag: &mut TaskDag,
@@ -9532,8 +10826,10 @@ fn terminalize_passed_task(
     config: &RunConfig,
     completion: &GateCompletion,
     attempt: &TaskAttemptRef,
+    phase_clock: TaskPhaseClock,
     task_workdir: Option<&Path>,
     declared_files: &[String],
+    worktrees: Option<&WorktreeManager>,
 ) -> TaskTerminalization {
     if state.task_attempt_is_terminal(attempt) {
         return TaskTerminalization::AlreadyRecorded;
@@ -9550,7 +10846,7 @@ fn terminalize_passed_task(
         .map(|entry| entry.path.clone())
         .collect::<Vec<_>>();
 
-    let commit_outcome = match task_workdir {
+    let mut commit_outcome = match task_workdir {
         Some(workdir) => commit_task_changes(
             workdir,
             &completion.plan_id,
@@ -9562,15 +10858,55 @@ fn terminalize_passed_task(
         },
     };
 
-    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    if matches!(
+        commit_outcome,
+        CommitOutcome::Created { .. } | CommitOutcome::NoChanges
+    ) && let Some(worktrees) = worktrees
+        && let Err(error) = worktrees
+            .accept_attempt(&attempt.plan_id, &attempt.task_id, attempt.attempt)
+            .await
+    {
+        commit_outcome = CommitOutcome::Rejected {
+            reason: format!("could not advance accepted attempt tip: {error}"),
+        };
+    }
     let durability_error = match &commit_outcome {
         CommitOutcome::Created { .. } | CommitOutcome::NoChanges => None,
         CommitOutcome::Rejected { reason } => Some(reason.clone()),
         CommitOutcome::Failed { error } => Some(error.clone()),
     };
+    // Git inspection/commit and terminal durability are cleanup. Take one exact
+    // snapshot only after Git has settled, then persist both canonical terminal
+    // records before mutating in-memory task/DAG state or releasing ownership.
+    let phase_durations = phase_clock.snapshot_at(Instant::now());
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
 
     if let Some(reason) = durability_error {
         let reason = format!("task passed gates but durable completion failed: {reason}");
+        let pending_terminal = PendingTerminal::attempt(
+            TaskAttemptOutcome::Failed,
+            Some(RunnerFailureKind::Permanent),
+            phase_durations,
+            Some(&reason),
+            Some(&commit_outcome),
+        );
+        if let Err(error) = persist_attempt_terminal(
+            paths,
+            state,
+            tui,
+            config,
+            attempt,
+            TaskAttemptOutcome::Failed,
+            Some(RunnerFailureKind::Permanent),
+            phase_durations,
+            Some(&reason),
+            Some(&commit_outcome),
+        ) {
+            return TaskTerminalization::PersistenceUnconfirmed {
+                reason: error,
+                pending_terminal,
+            };
+        }
         state.task_failed();
         state.record_task_failure(&completion.plan_id, &completion.task_id, &reason);
         state.mark_task_failed(&completion.plan_id, &completion.task_id);
@@ -9591,7 +10927,7 @@ fn terminalize_passed_task(
         sink.task_failed(&completion.plan_id, &completion.task_id, &reason);
         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
         if let Some(ledger) = run_ledger.as_mut() {
-            let inserted = ledger.record_task_terminal(TaskTerminalOutcome {
+            ledger.record_task_terminal(TaskTerminalOutcome {
                 plan_id: completion.plan_id.clone(),
                 task_id: completion.task_id.clone(),
                 attempt: attempt.attempt,
@@ -9599,45 +10935,10 @@ fn terminalize_passed_task(
                 reason: Some(reason.clone()),
                 output_files,
                 commit_outcome,
-                duration_ms: completion.duration_ms,
+                duration_ms: phase_durations.total_ms(),
                 timestamp_ms: now_ms,
             });
-            if inserted {
-                append_ledger_entry(
-                    &paths.run_ledger_jsonl,
-                    "task_failed",
-                    &serde_json::json!({
-                        "run_id": state.run_id(),
-                        "plan_id": completion.plan_id,
-                        "task_id": completion.task_id,
-                        "attempt": attempt.attempt,
-                        "passed": false,
-                        "reason": reason,
-                        "duration_ms": completion.duration_ms,
-                        "timestamp_ms": now_ms,
-                        "commit_outcome": ledger.commit.as_ref(),
-                    }),
-                );
-            }
         }
-        let run_id = state.run_id().to_string();
-        let agent_model = state.agent_model.clone();
-        let agent_provider = state.agent_provider.clone();
-        emit_runner_event(
-            paths,
-            state,
-            tui,
-            config,
-            RunnerEvent::task_attempt_completed(
-                &run_id,
-                attempt.clone(),
-                TaskAttemptOutcome::Failed,
-                Some(RunnerFailureKind::Permanent),
-                completion.duration_ms,
-                agent_model,
-                agent_provider,
-            ),
-        );
         record_daimon_task_outcome(
             config,
             state.current_daimon_strategy,
@@ -9646,9 +10947,33 @@ fn terminalize_passed_task(
             false,
             &reason,
         );
-        return TaskTerminalization::PersistenceFailed { reason };
+        return TaskTerminalization::Failed { reason };
     }
 
+    let pending_terminal = PendingTerminal::attempt(
+        TaskAttemptOutcome::Passed,
+        None,
+        phase_durations,
+        None,
+        Some(&commit_outcome),
+    );
+    if let Err(error) = persist_attempt_terminal(
+        paths,
+        state,
+        tui,
+        config,
+        attempt,
+        TaskAttemptOutcome::Passed,
+        None,
+        phase_durations,
+        None,
+        Some(&commit_outcome),
+    ) {
+        return TaskTerminalization::PersistenceUnconfirmed {
+            reason: error,
+            pending_terminal,
+        };
+    }
     state.record_task_outputs(
         &completion.plan_id,
         &completion.task_id,
@@ -9664,7 +10989,7 @@ fn terminalize_passed_task(
             roko_runtime::Phase::Complete,
             now_ms,
         );
-        let inserted = ledger.record_task_terminal(TaskTerminalOutcome {
+        ledger.record_task_terminal(TaskTerminalOutcome {
             plan_id: completion.plan_id.clone(),
             task_id: completion.task_id.clone(),
             attempt: attempt.attempt,
@@ -9672,45 +10997,10 @@ fn terminalize_passed_task(
             reason: None,
             output_files,
             commit_outcome,
-            duration_ms: completion.duration_ms,
+            duration_ms: phase_durations.total_ms(),
             timestamp_ms: now_ms,
         });
-        if inserted {
-            append_ledger_entry(
-                &paths.run_ledger_jsonl,
-                "task_completed",
-                &serde_json::json!({
-                    "run_id": state.run_id(),
-                    "plan_id": completion.plan_id,
-                    "task_id": completion.task_id,
-                    "attempt": attempt.attempt,
-                    "passed": true,
-                    "duration_ms": completion.duration_ms,
-                    "timestamp_ms": now_ms,
-                    "commit_outcome": ledger.commit.as_ref(),
-                }),
-            );
-        }
     }
-
-    let run_id = state.run_id().to_string();
-    let agent_model = state.agent_model.clone();
-    let agent_provider = state.agent_provider.clone();
-    emit_runner_event(
-        paths,
-        state,
-        tui,
-        config,
-        RunnerEvent::task_attempt_completed(
-            &run_id,
-            attempt.clone(),
-            TaskAttemptOutcome::Passed,
-            None,
-            completion.duration_ms,
-            agent_model,
-            agent_provider,
-        ),
-    );
     record_daimon_task_outcome(
         config,
         state.current_daimon_strategy,
@@ -9721,14 +11011,10 @@ fn terminalize_passed_task(
     );
     tui.task_completed(&completion.plan_id, &completion.task_id, "passed");
 
-    let total_task_ms = state.task_elapsed_ms();
-    let dispatch_ms = state.last_dispatch_ms;
-    let gate_ms = completion.duration_ms;
-    let agent_ms = if state.task_agent_calls == 0 {
-        0
-    } else {
-        total_task_ms.saturating_sub(dispatch_ms + gate_ms)
-    };
+    let total_task_ms = phase_durations.total_ms();
+    let dispatch_ms = phase_durations.dispatch_ms;
+    let gate_ms = phase_durations.gate_ms;
+    let agent_ms = phase_durations.agent_ms;
     sink.diff_block(&completion.plan_id, &completion.task_id, &output_diffs);
     sink.task_completed(
         &completion.plan_id,
@@ -9871,142 +11157,388 @@ fn lessons_from_post_gate_reflections(
     lessons
 }
 
-fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -> RunReport {
-    let plan_reports: Vec<PlanReport> = plans
+fn build_report(
+    executor: &ParallelExecutor,
+    plans: &[Plan],
+    state: &RunState,
+    task_dag: &TaskDag,
+) -> RunReport {
+    let completed_plans = plans
         .iter()
-        .map(|p| build_plan_report(executor, p, state))
-        .collect();
-
-    // Global totals are the exact sum of per-plan totals.
-    let total_tasks: usize = plan_reports.iter().map(|r| r.tasks_total).sum();
-    let tasks_completed: usize = plan_reports.iter().map(|r| r.tasks_completed).sum();
-    let tasks_failed: usize = plan_reports.iter().map(|r| r.tasks_failed).sum();
-    let tasks_blocked: usize = plan_reports.iter().map(|r| r.tasks_blocked).sum();
-    let tasks_skipped: usize = plan_reports.iter().map(|r| r.tasks_skipped).sum();
-    let tasks_active: usize = plan_reports.iter().map(|r| r.tasks_active).sum();
-    let tasks_pending: usize = plan_reports.iter().map(|r| r.tasks_pending).sum();
+        .filter(|plan| {
+            executor
+                .plan_state(&plan.id)
+                .is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete))
+        })
+        .map(|plan| plan.id.clone())
+        .collect::<Vec<_>>();
+    let failed_plans = plans
+        .iter()
+        .filter(|plan| {
+            executor.plan_state(&plan.id).is_some_and(|state| {
+                state.is_terminal() && !matches!(state.current_phase, PlanPhase::Complete)
+            })
+        })
+        .map(|plan| plan.id.clone())
+        .collect::<Vec<_>>();
+    let plan_reports = plans
+        .iter()
+        .map(|plan| {
+            build_plan_report(
+                executor,
+                plan,
+                state,
+                task_dag,
+                &completed_plans,
+                &failed_plans,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut tasks = plan_reports
+        .iter()
+        .flat_map(|plan| plan.tasks.iter().cloned())
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        left.plan_id
+            .cmp(&right.plan_id)
+            .then_with(|| left.task_id.cmp(&right.task_id))
+    });
+    let count = |category| {
+        tasks
+            .iter()
+            .filter(|task| task.category == category)
+            .count()
+    };
 
     RunReport {
+        total_tasks: tasks.len(),
+        tasks_completed: count(TaskRunCategory::Completed),
+        tasks_failed: count(TaskRunCategory::Failed),
+        tasks_blocked: count(TaskRunCategory::Blocked),
+        tasks_skipped: count(TaskRunCategory::Skipped),
+        tasks_cancelled: count(TaskRunCategory::Cancelled),
+        tasks_orphaned: count(TaskRunCategory::Orphaned),
+        tasks_nonterminal: count(TaskRunCategory::Nonterminal),
         plans: plan_reports,
-        total_tasks,
-        tasks_completed,
-        tasks_failed,
-        tasks_blocked,
-        tasks_skipped,
-        tasks_active,
-        tasks_pending,
         total_cost_usd: state.total_cost_usd,
         total_tokens_in: state.total_tokens_in,
         total_tokens_out: state.total_tokens_out,
         total_agent_calls: state.total_agent_calls,
         duration: state.elapsed(),
         failure_reasons: state.failure_reasons.clone(),
-        // TODO(SH05-T04): Per-task cost breakdown requires individual task-level
-        // cost tracking in RunState (currently only per-plan totals are tracked
-        // via `plan_costs`). Once per-task cost accumulation is added, build
-        // the vector from `state.task_cost_map` or equivalent.
         task_costs: Vec::new(),
+        tasks,
     }
 }
 
-/// Build a per-plan report by classifying every task into exactly one
-/// terminal/nonterminal category from the actual run state.
-fn build_plan_report(executor: &ParallelExecutor, plan: &Plan, state: &RunState) -> PlanReport {
+fn build_plan_report(
+    executor: &ParallelExecutor,
+    plan: &Plan,
+    state: &RunState,
+    task_dag: &TaskDag,
+    completed_plans: &[String],
+    failed_plans: &[String],
+) -> PlanReport {
     let orc_state = executor.plan_state(&plan.id);
-    let plan_completed = orc_state
-        .map(|s| matches!(s.current_phase, PlanPhase::Complete))
-        .unwrap_or(false);
-    let completed_set = state.plan_completed_tasks(&plan.id);
-    let failed_set = state.plan_failed_tasks(&plan.id);
-
-    let mut tasks_completed: usize = 0;
-    let mut tasks_failed: usize = 0;
-    let mut tasks_blocked: usize = 0;
-    let mut tasks_skipped: usize = 0;
-    let tasks_active: usize = 0;
-    let mut tasks_pending: usize = 0;
-    let mut blocked_details = Vec::new();
-    let mut skipped_details = Vec::new();
-
-    for task in &plan.tasks.tasks {
-        if completed_set.contains(&task.id) {
-            tasks_completed += 1;
-        } else if failed_set.contains(&task.id) {
-            tasks_failed += 1;
-        } else if task_status_is_terminal(&task.status) {
-            // Pre-completed in tasks.toml but not yet recorded in state
-            // (should be rare at terminal time).
-            tasks_completed += 1;
-        } else if let Some(reason) = blocked_by_failed_dep(task, completed_set, failed_set) {
-            // Downstream of a failed task — blocked/skipped with reason.
-            tasks_skipped += 1;
-            skipped_details.push(TaskStatusDetail {
-                task_id: task.id.clone(),
-                reason,
-            });
-        } else if !task
-            .depends_on
+    let completed =
+        orc_state.is_some_and(|state| matches!(state.current_phase, PlanPhase::Complete));
+    let terminal = orc_state.is_none_or(|state| state.is_terminal());
+    let task_refs = plan.tasks.tasks.iter().collect::<Vec<_>>();
+    let progress = task_dag.progress_summary(
+        &plan.id,
+        &task_refs,
+        state.plan_completed_tasks(&plan.id),
+        state.plan_failed_tasks(&plan.id),
+        completed_plans,
+        failed_plans,
+    );
+    let blocked = progress
+        .blocked_tasks
+        .into_iter()
+        .map(|task| (task.task_id, task.reason.describe()))
+        .collect::<HashMap<_, _>>();
+    let tasks = plan
+        .tasks
+        .tasks
+        .iter()
+        .map(|task| classify_report_task(plan, task, state, task_dag, &blocked, terminal))
+        .collect::<Vec<_>>();
+    let count = |category| {
+        tasks
             .iter()
-            .all(|dep| completed_set.contains(dep))
-        {
-            // Has unmet dependencies but none are failed — blocked or pending.
-            let reason = task
-                .depends_on
-                .iter()
-                .find(|dep| !completed_set.contains(*dep))
-                .map(|dep| format!("waiting on prerequisite {dep}"))
-                .unwrap_or_else(|| "waiting on prerequisite".to_string());
-            tasks_blocked += 1;
-            blocked_details.push(TaskStatusDetail {
-                task_id: task.id.clone(),
-                reason,
-            });
-        } else {
-            // Dependencies met but task never ran — pending or was active.
-            tasks_pending += 1;
-        }
-    }
-
+            .filter(|task| task.category == category)
+            .count()
+    };
     PlanReport {
         plan_id: plan.id.clone(),
-        completed: plan_completed,
-        tasks_total: plan.tasks.tasks.len(),
-        tasks_completed,
-        tasks_failed,
-        tasks_blocked,
-        tasks_skipped,
-        tasks_active,
-        tasks_pending,
-        blocked_details,
-        skipped_details,
+        completed,
+        tasks_total: tasks.len(),
+        tasks_completed: count(TaskRunCategory::Completed),
+        tasks_failed: count(TaskRunCategory::Failed),
+        tasks_blocked: count(TaskRunCategory::Blocked),
+        tasks_skipped: count(TaskRunCategory::Skipped),
+        tasks_cancelled: count(TaskRunCategory::Cancelled),
+        tasks_orphaned: count(TaskRunCategory::Orphaned),
+        tasks_nonterminal: count(TaskRunCategory::Nonterminal),
+        tasks,
         gate_results: orc_state
-            .map(|s| s.gate_results.clone())
+            .map(|state| state.gate_results.clone())
             .unwrap_or_default(),
     }
 }
 
-/// Check if a task is blocked because a dependency failed.
-fn blocked_by_failed_dep(
-    task: &crate::task_parser::TaskDef,
-    completed: &[String],
-    failed: &HashSet<String>,
-) -> Option<String> {
-    for dep in &task.depends_on {
-        if failed.contains(dep) {
-            return Some(format!("prerequisite {dep} failed"));
-        }
+fn classify_report_task(
+    plan: &Plan,
+    task: &TaskDef,
+    state: &RunState,
+    task_dag: &TaskDag,
+    blocked: &HashMap<String, String>,
+    plan_terminal: bool,
+) -> TaskRunSummary {
+    let task_key = task_key(&plan.id, &task.id);
+    let declared = task.status.trim().to_ascii_lowercase();
+    let lifecycle = state.lifecycle.tasks.get(&task_key).map(|task| task.status);
+    let (category, reason) = if declared == "skipped" {
+        (
+            TaskRunCategory::Skipped,
+            "declared skipped in plan".to_string(),
+        )
+    } else if task_status_is_terminal(&declared)
+        || state.plan_completed_tasks(&plan.id).contains(&task.id)
+        || matches!(lifecycle, Some(TaskLifecycleStatus::Passed))
+    {
+        (TaskRunCategory::Completed, "task completed".to_string())
+    } else if matches!(lifecycle, Some(TaskLifecycleStatus::Cancelled)) {
+        (
+            TaskRunCategory::Cancelled,
+            "task attempt cancelled".to_string(),
+        )
+    } else if matches!(
+        lifecycle,
+        Some(
+            TaskLifecycleStatus::Failed
+                | TaskLifecycleStatus::Exhausted
+                | TaskLifecycleStatus::TimedOut
+        )
+    ) || state.plan_failed_tasks(&plan.id).contains(&task.id)
+    {
+        (
+            TaskRunCategory::Failed,
+            state
+                .failure_reasons
+                .get(&task_key)
+                .cloned()
+                .unwrap_or_else(|| "task terminally failed".to_string()),
+        )
+    } else if let Some(reason) = task_dag
+        .plan(&plan.id)
+        .and_then(|dag| dag.skipped.get(&task.id))
+    {
+        let reason = match reason {
+            SkippedReason::PrerequisiteFailed { prerequisite } => {
+                format!("prerequisite {prerequisite} failed")
+            }
+            SkippedReason::PlanTimedOut => "plan timed out".to_string(),
+        };
+        (TaskRunCategory::Skipped, reason)
+    } else if let Some(reason) = blocked.get(&task.id) {
+        (TaskRunCategory::Blocked, reason.clone())
+    } else if plan_terminal {
+        (
+            TaskRunCategory::Orphaned,
+            "plan terminalized without a task outcome".to_string(),
+        )
+    } else {
+        (
+            TaskRunCategory::Nonterminal,
+            "task has not reached a terminal outcome".to_string(),
+        )
+    };
+    TaskRunSummary {
+        plan_id: plan.id.clone(),
+        task_id: task.id.clone(),
+        category,
+        reason,
     }
-    // Also check if a dependency is neither completed nor failed — it might
-    // have been skipped transitively. If a dep is not completed and not failed,
-    // we don't count it as "blocked by failed dep" here.
-    let _ = completed; // used by caller for other checks
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::task_parser::TasksFile;
+
+    #[test]
+    fn effective_plan_capacity_is_bounded_by_global_and_plan_limits() {
+        assert_eq!(effective_plan_task_capacity(4, 2), 2);
+        assert_eq!(effective_plan_task_capacity(2, 4), 2);
+        assert_eq!(effective_plan_task_capacity(0, 0), 1);
+    }
+
+    #[test]
+    fn max_parallel_one_excludes_a_second_same_plan_attempt() {
+        let capacity = TaskCapacity::new(2, [("plan", 1)]);
+        let first = capacity.try_acquire("plan").expect("first attempt");
+
+        assert!(capacity.try_acquire("plan").is_none());
+
+        drop(first);
+        assert!(capacity.try_acquire("plan").is_some());
+    }
+
+    #[test]
+    fn different_plans_share_remaining_global_capacity() {
+        let capacity = TaskCapacity::new(2, [("plan-a", 1), ("plan-b", 1)]);
+        let first = capacity.try_acquire("plan-a").expect("plan-a attempt");
+        let second = capacity.try_acquire("plan-b").expect("plan-b attempt");
+
+        assert!(capacity.try_acquire("plan-a").is_none());
+        assert!(capacity.try_acquire("plan-b").is_none());
+
+        drop((first, second));
+        assert!(capacity.try_acquire("plan-a").is_some());
+    }
+
+    #[tokio::test]
+    async fn no_cargo_gate_pass_terminalizes_exact_owner_before_next_task_capacity() {
+        fn git(workdir: &Path, args: &[&str]) {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(workdir)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(dir.path(), &["config", "user.name", "Roko Test"]);
+        git(dir.path(), &["commit", "--allow-empty", "-m", "initial"]);
+        assert!(default_gate_pipeline_skipped(
+            &GatesConfig::default(),
+            dir.path()
+        ));
+
+        let parsed = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan"
+total = 2
+status = "ready"
+
+[[task]]
+id = "first"
+title = "first"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+files = []
+verify = []
+
+[[task]]
+id = "second"
+title = "second"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+files = []
+verify = []
+"#,
+        )
+        .unwrap();
+        let task_index = HashMap::from([(
+            "plan".to_string(),
+            parsed
+                .tasks
+                .iter()
+                .cloned()
+                .map(|task| (task.id.clone(), task))
+                .collect(),
+        )]);
+        let attempt = TaskAttemptRef::new("plan", "first", 1);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(0)),
+                AgentRuntimeResource::AwaitingGate {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                },
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::AwaitingGate, EffectRef(0))
+            .unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "first",
+        ));
+        let completion = GateCompletion {
+            plan_id: "plan".into(),
+            task_id: "first".into(),
+            attempt: Some(attempt.clone()),
+            effect: None,
+            rung: 1,
+            passed: true,
+            output: "skipped: no Cargo.toml in workspace".into(),
+            failure_kind: None,
+            duration_ms: 0,
+            kind: GateCompletionKind::Gate,
+            verdicts: Vec::new(),
+        };
+        assert!(matches!(
+            terminalize_passed_task(
+                &paths,
+                &mut state,
+                &mut TaskDag::new(DagConfig::default()),
+                &task_index,
+                &mut None,
+                &tui,
+                &crate::runner::output_sink::NoopSink,
+                &config,
+                &completion,
+                &attempt,
+                TaskPhaseClock::new(Instant::now()),
+                Some(dir.path()),
+                &[],
+                None,
+            )
+            .await,
+            TaskTerminalization::Passed
+        ));
+        ownership.complete_claim(claim).unwrap();
+        assert!(!ownership.contains(&attempt));
+        assert!(
+            state
+                .plan_completed_tasks("plan")
+                .iter()
+                .any(|task| task == "first")
+        );
+        assert!(
+            capacity.try_acquire("plan").is_some(),
+            "second task must progress"
+        );
+    }
 
     #[test]
     fn plan_verify_uses_canonical_gate_test_timeout() {
@@ -10025,209 +11557,6 @@ mod tests {
             gate_timeout(&config, gate_dispatch::RUNG_PLAN_VERIFY),
             Duration::from_secs(303)
         );
-    }
-
-    #[test]
-    fn report_global_totals_equal_sum_of_plans() {
-        // 2 plans: plan-a has 3 tasks (2 done, 1 ready), plan-b has 2 tasks
-        // (1 done, 1 blocked by failed dep).
-        let tasks_a = TasksFile::parse_str(
-            r#"
-[meta]
-plan = "plan-a"
-total = 3
-status = "ready"
-
-[[task]]
-id = "A1"
-title = "done"
-status = "done"
-tier = "focused"
-role = "implementer"
-depends_on = []
-
-[[task]]
-id = "A2"
-title = "also done"
-status = "ready"
-tier = "focused"
-role = "implementer"
-depends_on = ["A1"]
-
-[[task]]
-id = "A3"
-title = "pending"
-status = "ready"
-tier = "focused"
-role = "implementer"
-depends_on = ["A2"]
-"#,
-        )
-        .unwrap();
-        let tasks_b = TasksFile::parse_str(
-            r#"
-[meta]
-plan = "plan-b"
-total = 2
-status = "ready"
-
-[[task]]
-id = "B1"
-title = "will fail"
-status = "ready"
-tier = "focused"
-role = "implementer"
-depends_on = []
-
-[[task]]
-id = "B2"
-title = "blocked by B1"
-status = "ready"
-tier = "focused"
-role = "implementer"
-depends_on = ["B1"]
-"#,
-        )
-        .unwrap();
-
-        let plan_a = Plan {
-            id: "plan-a".to_string(),
-            dir: std::path::PathBuf::from("plans/plan-a"),
-            tasks: tasks_a,
-            prd_excerpt: String::new(),
-        };
-        let plan_b = Plan {
-            id: "plan-b".to_string(),
-            dir: std::path::PathBuf::from("plans/plan-b"),
-            tasks: tasks_b,
-            prd_excerpt: String::new(),
-        };
-        let plans = vec![plan_a, plan_b];
-
-        let mut state = RunState::new(5);
-        // A1 is pre-done, A2 completed at runtime
-        state.mark_task_completed("plan-a", "A1");
-        state.mark_task_completed("plan-a", "A2");
-        // B1 failed
-        state
-            .failed_tasks
-            .entry("plan-b".to_string())
-            .or_default()
-            .insert("B1".to_string());
-
-        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
-        executor.add_plan(OrcPlanState::new("plan-a"));
-        executor.add_plan(OrcPlanState::new("plan-b"));
-
-        let report = build_report(&executor, &plans, &state);
-
-        // Plan-a: 2 completed (A1, A2), 0 failed, 1 pending (A3 deps met)
-        assert_eq!(report.plans[0].tasks_completed, 2, "plan-a completed");
-        assert_eq!(report.plans[0].tasks_failed, 0, "plan-a failed");
-        assert_eq!(report.plans[0].tasks_pending, 1, "plan-a pending");
-        assert_eq!(report.plans[0].tasks_skipped, 0, "plan-a skipped");
-        assert_eq!(report.plans[0].tasks_blocked, 0, "plan-a blocked");
-
-        // Plan-b: 0 completed, 1 failed (B1), 1 skipped (B2 blocked by failed B1)
-        assert_eq!(report.plans[1].tasks_completed, 0, "plan-b completed");
-        assert_eq!(report.plans[1].tasks_failed, 1, "plan-b failed");
-        assert_eq!(report.plans[1].tasks_skipped, 1, "plan-b skipped");
-        assert_eq!(report.plans[1].skipped_details.len(), 1);
-        assert_eq!(report.plans[1].skipped_details[0].task_id, "B2");
-        assert!(
-            report.plans[1].skipped_details[0].reason.contains("B1"),
-            "skipped reason should reference B1"
-        );
-
-        // Global totals must equal sum of plans
-        assert_eq!(report.total_tasks, 5);
-        assert_eq!(
-            report.tasks_completed,
-            report
-                .plans
-                .iter()
-                .map(|p| p.tasks_completed)
-                .sum::<usize>()
-        );
-        assert_eq!(
-            report.tasks_failed,
-            report.plans.iter().map(|p| p.tasks_failed).sum::<usize>()
-        );
-        assert_eq!(
-            report.tasks_blocked,
-            report.plans.iter().map(|p| p.tasks_blocked).sum::<usize>()
-        );
-        assert_eq!(
-            report.tasks_skipped,
-            report.plans.iter().map(|p| p.tasks_skipped).sum::<usize>()
-        );
-
-        // Every task belongs to exactly one category
-        for plan_report in &report.plans {
-            let sum = plan_report.tasks_completed
-                + plan_report.tasks_failed
-                + plan_report.tasks_blocked
-                + plan_report.tasks_skipped
-                + plan_report.tasks_active
-                + plan_report.tasks_pending;
-            assert_eq!(
-                sum, plan_report.tasks_total,
-                "plan {} categories must sum to total",
-                plan_report.plan_id
-            );
-        }
-    }
-
-    #[test]
-    fn report_all_done_plan_counts_all_completed() {
-        let tasks = TasksFile::parse_str(
-            r#"
-[meta]
-plan = "all-done"
-total = 2
-status = "ready"
-
-[[task]]
-id = "T1"
-title = "one"
-status = "done"
-tier = "focused"
-role = "implementer"
-depends_on = []
-
-[[task]]
-id = "T2"
-title = "two"
-status = "done"
-tier = "focused"
-role = "implementer"
-depends_on = []
-"#,
-        )
-        .unwrap();
-        let plan = Plan {
-            id: "all-done".to_string(),
-            dir: std::path::PathBuf::from("plans/all-done"),
-            tasks,
-            prd_excerpt: String::new(),
-        };
-
-        let mut state = RunState::new(2);
-        state.mark_task_completed("all-done", "T1");
-        state.mark_task_completed("all-done", "T2");
-
-        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
-        let mut orc = OrcPlanState::new("all-done");
-        orc.current_phase = PlanPhase::Complete;
-        executor.add_plan(orc);
-
-        let report = build_report(&executor, &[plan], &state);
-        assert_eq!(report.total_tasks, 2);
-        assert_eq!(report.tasks_completed, 2);
-        assert_eq!(report.tasks_failed, 0);
-        assert_eq!(report.tasks_blocked, 0);
-        assert_eq!(report.tasks_skipped, 0);
-        assert!(report.plans[0].completed);
     }
 
     #[test]
@@ -10323,6 +11652,554 @@ depends_on = []
 
         assert_eq!(state.tasks_completed, 2);
         assert_eq!(state.plan_completed_tasks("seed-test"), ["T1", "T3"]);
+    }
+
+    #[test]
+    fn report_counts_terminal_tasks_instead_of_plan_phase() {
+        let tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "summary"
+total = 2
+status = "ready"
+
+[[task]]
+id = "passed"
+title = "passed"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "failed"
+title = "failed"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+"#,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: "summary".to_string(),
+            dir: PathBuf::from("plans/summary"),
+            tasks,
+            prd_excerpt: String::new(),
+        };
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("summary"));
+        executor
+            .apply_event("summary", &ExecutorEvent::Start)
+            .unwrap();
+        executor
+            .apply_event("summary", &ExecutorEvent::Fatal("failed".into()))
+            .unwrap();
+        let mut state = RunState::new(2);
+        state.mark_task_completed("summary", "passed");
+        state.mark_task_failed("summary", "failed");
+        state.tasks_completed = 1;
+        state.tasks_failed = 1;
+
+        let report = build_report(&executor, &[plan], &state, &TaskDag::default());
+
+        assert_eq!(report.plans[0].tasks_completed, 1);
+        assert_eq!(report.plans[0].tasks_failed, 1);
+        assert_eq!(report.tasks_completed, report.plans[0].tasks_completed);
+        assert_eq!(report.tasks_failed, report.plans[0].tasks_failed);
+    }
+
+    #[test]
+    fn unknown_process_exit_is_not_success() {
+        assert!(!agent_completion_succeeded(
+            AgentDispatchOutcome::Exited,
+            None,
+        ));
+        assert!(!agent_completion_succeeded(
+            AgentDispatchOutcome::Completed,
+            None,
+        ));
+        assert!(!agent_completion_succeeded(
+            AgentDispatchOutcome::Completed,
+            Some(7),
+        ));
+        assert!(agent_completion_succeeded(
+            AgentDispatchOutcome::Completed,
+            Some(0),
+        ));
+    }
+
+    #[test]
+    fn raw_and_settled_exit_codes_must_agree_exactly() {
+        let cases = [
+            (None, None, false),
+            (None, Some(0), false),
+            (Some(0), None, false),
+            (Some(7), Some(0), false),
+            (Some(0), Some(7), false),
+            (Some(7), Some(7), false),
+            (Some(0), Some(0), true),
+        ];
+        for (raw, settled, succeeds) in cases {
+            let event = AgentEvent::Exited { exit_code: raw };
+            let settlement = AgentSettlement {
+                exit_code: settled,
+                errors: Vec::new(),
+                unconfirmed: None,
+                permit: None,
+            };
+            assert_eq!(
+                agent_terminal_failure(&event, &settlement).is_none(),
+                succeeds,
+                "raw={raw:?}, settled={settled:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn phase_clock_preserves_each_phase_and_exact_total() {
+        let start = Instant::now();
+        let mut clock = TaskPhaseClock::new(start);
+        clock.transition_at(TaskTimingPhase::Agent, start + Duration::from_millis(10));
+        clock.transition_at(TaskTimingPhase::Gate, start + Duration::from_millis(50));
+        clock.transition_at(TaskTimingPhase::Cleanup, start + Duration::from_millis(75));
+
+        let timing = clock.snapshot_at(start + Duration::from_millis(100));
+
+        assert_eq!(timing.dispatch_ms, 10);
+        assert_eq!(timing.agent_ms, 40);
+        assert_eq!(timing.gate_ms, 25);
+        assert_eq!(timing.cleanup_ms, 25);
+        assert_eq!(timing.total_ms(), 100);
+    }
+
+    #[test]
+    fn timeout_elapsed_baseline_is_kind_specific() {
+        let attempt_started_at = crate::runner::deadlines::MonotonicTime::from_millis(100);
+        let phase_started_at = crate::runner::deadlines::MonotonicTime::from_millis(500);
+        let last_agent_activity_at = crate::runner::deadlines::MonotonicTime::from_millis(700);
+        let timing = OwnershipTiming {
+            attempt_started_at,
+            phase_started_at,
+            last_agent_activity_at,
+        };
+
+        assert_eq!(
+            timeout_elapsed_baseline(TimeoutKind::TaskAttempt, AttemptPhase::Gate, timing),
+            Some(attempt_started_at)
+        );
+        assert_eq!(
+            timeout_elapsed_baseline(TimeoutKind::GateEffect, AttemptPhase::Gate, timing),
+            Some(phase_started_at)
+        );
+        assert_eq!(
+            timeout_elapsed_baseline(TimeoutKind::AgentSilence, AttemptPhase::Agent, timing),
+            Some(last_agent_activity_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_retry_rollover_then_cli_spawn_failure_uses_fresh_attempt_clock() {
+        fn git(workdir: &Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workdir)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?} failed");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(dir.path(), &["config", "user.name", "Roko Test"]);
+        std::fs::write(dir.path().join("README.md"), "fixture\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-m", "initial"]);
+
+        let parsed = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan"
+total = 1
+status = "ready"
+
+[[task]]
+id = "task"
+title = "task"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+files = []
+verify = []
+"#,
+        )
+        .unwrap();
+        let task_index = HashMap::from([(
+            "plan".to_string(),
+            HashMap::from([("task".to_string(), parsed.tasks[0].clone())]),
+        )]);
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        {
+            let plan = executor.plan_state_mut("plan").unwrap();
+            plan.current_phase = PlanPhase::Gating;
+            plan.iteration = 1;
+        }
+        let mut task_dag = TaskDag::new(DagConfig::default());
+        assert!(task_dag.mark_running("plan", "task"));
+        let mut state = RunState::new(1);
+        state.reset_for_task("plan", "task");
+        state.set_iteration("plan", "task", 1);
+        let mut runtimes = HashMap::new();
+        capture_task_runtime(&mut runtimes, &state, "plan", "task");
+        let first = TaskAttemptRef::new("plan", "task", 1);
+        transition_task_runtime(&mut runtimes, &first, TaskTimingPhase::Gate, Instant::now());
+        let completion = GateCompletion {
+            kind: GateCompletionKind::Gate,
+            attempt: Some(first.clone()),
+            effect: None,
+            plan_id: "plan".to_string(),
+            task_id: "task".to_string(),
+            rung: 1,
+            passed: false,
+            failure_kind: Some(RunnerFailureKind::Unknown),
+            verdicts: Vec::new(),
+            output: "retry fixture".to_string(),
+            duration_ms: 0,
+        };
+        let decision = RetryDecision::for_failure(RunnerFailureKind::Unknown, 1, 1, "retry");
+        let (phase, failed_attempt) = begin_gate_retry_rollover(
+            &mut executor,
+            &mut task_dag,
+            &mut state,
+            &completion,
+            &decision,
+        )
+        .unwrap();
+        assert_eq!(failed_attempt, 1);
+        assert_eq!(phase.kind(), PhaseKind::AutoFixing);
+        assert_eq!(state.iteration_for("plan", "task"), 2);
+        cleanup_finished_task_gate(
+            &mut HashMap::new(),
+            &mut runtimes,
+            &mut executor,
+            &completion,
+        );
+        assert!(!runtimes.contains_key(&first.key()));
+        state.clear_retry_backoff("plan");
+
+        let missing_cli = dir.path().join("definitely-missing-roko-agent");
+        let roko_config = roko_core::config::RokoConfig::from_toml(&format!(
+            r#"
+[agent]
+default_model = "fixture-model"
+command = "{}"
+
+[providers.fixture-cli]
+kind = "claude_cli"
+command = "{}"
+
+[models.fixture-model]
+provider = "fixture-cli"
+slug = "fixture-model"
+"#,
+            missing_cli.display(),
+            missing_cli.display(),
+        ))
+        .unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let prompt_cache = Arc::new(PromptCache::load(dir.path()));
+        let factory = SharedAgentFactory::new(
+            config.roko_config.clone().unwrap(),
+            None,
+            config.cascade_router.clone(),
+            Some(Arc::clone(&prompt_cache)),
+        )
+        .await;
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let sink = crate::runner::output_sink::NoopSink;
+        let worktrees = default_runner_worktree_manager(dir.path());
+        let merge_queue = MergeQueue::new();
+        let thresholds = GateThresholds::default();
+        let writer = SnapshotWriter::new(2);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        let (gate_tx, _gate_rx) = mpsc::channel(8);
+        let mut ownership = AttemptOwnership::default();
+        let mut pending = HashMap::new();
+        let mut legacy = HashMap::new();
+        let mut preflight = HashSet::new();
+        let mut baseline_gate_failures = HashMap::new();
+        let mut diagnostics = HashMap::new();
+        let mut playbooks = HashMap::new();
+        let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ctx = RunContext {
+            executor: &mut executor,
+            task_dag: &mut task_dag,
+            task_index: &task_index,
+            skip_enrichment: &HashMap::new(),
+            config: &config,
+            sink: &sink,
+            tui: &tui,
+            state: &mut state,
+            attempt_ownership: &mut ownership,
+            pending_gate_tasks: &mut pending,
+            agent_tx: &agent_tx,
+            gate_tx: &gate_tx,
+            fatal_tx: agent_tx.clone(),
+            paths: &paths,
+            merge_queue: &merge_queue,
+            worktrees: &worktrees,
+            gate_thresholds: &thresholds,
+            snapshot_writer: &writer,
+            prompt_cache: &prompt_cache,
+            factory: &factory,
+            task_capacity: &task_capacity,
+            gate_sem: Arc::new(tokio::sync::Semaphore::new(1)),
+            task_runtime_states: &mut runtimes,
+            legacy_gate_attempts: &mut legacy,
+            preflight_attempted: &mut preflight,
+            baseline_gate_failures: &mut baseline_gate_failures,
+            section_diagnostics: &mut diagnostics,
+            task_playbook_ids: &mut playbooks,
+        };
+        let action = ExecutorAction::SpawnAgent {
+            plan_id: "plan".to_string(),
+            role: AgentRole::Implementer,
+            task: "task".to_string(),
+        };
+        assert!(matches!(
+            dispatch_action(&action, &mut ctx).await,
+            ActionDispatchOutcome::Noop
+        ));
+
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        let events = events
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RunnerEvent::AgentDispatchCompleted {
+                outcome: AgentDispatchOutcome::SpawnFailed,
+                attempt,
+                ..
+            } if attempt.attempt == 2
+        )));
+        let timing = events
+            .iter()
+            .find_map(|event| match event {
+                RunnerEvent::TaskAttemptCompleted {
+                    attempt,
+                    phase_durations,
+                    ..
+                } if attempt.attempt == 2 => Some(*phase_durations),
+                _ => None,
+            })
+            .expect("attempt-2 spawn terminal");
+        assert!(timing.dispatch_ms > 0);
+        assert_eq!(timing.agent_ms, 0);
+        assert_eq!(timing.gate_ms, 0);
+        assert_eq!(timing.total_ms(), timing.dispatch_ms + timing.cleanup_ms);
+        assert!(!runtimes.contains_key(&TaskAttemptRef::new("plan", "task", 2).key()));
+    }
+
+    #[test]
+    fn report_partitions_every_plan_qualified_task_once() {
+        let terminal_tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "terminal"
+total = 6
+status = "ready"
+
+[[task]]
+id = "done"
+title = "done"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "failed"
+title = "failed"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "cancelled"
+title = "cancelled"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "skipped"
+title = "skipped"
+status = "skipped"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "shared"
+title = "orphaned"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+
+[[task]]
+id = "blocked"
+title = "blocked"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = ["shared"]
+"#,
+        )
+        .unwrap();
+        let open_tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "open"
+total = 1
+status = "ready"
+
+[[task]]
+id = "shared"
+title = "nonterminal duplicate id"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+"#,
+        )
+        .unwrap();
+        let plans = vec![
+            Plan {
+                id: "terminal".into(),
+                dir: PathBuf::from("plans/terminal"),
+                tasks: terminal_tasks,
+                prd_excerpt: String::new(),
+            },
+            Plan {
+                id: "open".into(),
+                dir: PathBuf::from("plans/open"),
+                tasks: open_tasks,
+                prd_excerpt: String::new(),
+            },
+        ];
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        for id in ["terminal", "open"] {
+            executor.add_plan(OrcPlanState::new(id));
+            executor.apply_event(id, &ExecutorEvent::Start).unwrap();
+        }
+        executor
+            .apply_event("terminal", &ExecutorEvent::Fatal("stop".into()))
+            .unwrap();
+        let mut state = RunState::new(7);
+        state.mark_task_completed("terminal", "done");
+        state.mark_task_failed("terminal", "failed");
+        let cancelled = TaskAttemptRef::new("terminal", "cancelled", 1);
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            state.run_id(),
+            cancelled.clone(),
+            "cancelled",
+        ));
+        state.apply_runner_event(&RunnerEvent::task_attempt_completed(
+            state.run_id(),
+            cancelled,
+            TaskAttemptOutcome::Cancelled,
+            None,
+            1,
+            "",
+            "",
+        ));
+
+        let report = build_report(&executor, &plans, &state, &TaskDag::default());
+        let counts = [
+            report.tasks_completed,
+            report.tasks_failed,
+            report.tasks_blocked,
+            report.tasks_skipped,
+            report.tasks_cancelled,
+            report.tasks_orphaned,
+            report.tasks_nonterminal,
+        ];
+        assert_eq!(counts, [1; 7]);
+        assert_eq!(counts.iter().sum::<usize>(), report.total_tasks);
+        assert!(report.tasks.iter().all(|task| !task.reason.is_empty()));
+        assert_eq!(
+            report
+                .tasks
+                .iter()
+                .map(|task| (task.plan_id.as_str(), task.task_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("open", "shared"),
+                ("terminal", "blocked"),
+                ("terminal", "cancelled"),
+                ("terminal", "done"),
+                ("terminal", "failed"),
+                ("terminal", "shared"),
+                ("terminal", "skipped"),
+            ],
+        );
+        for plan in &report.plans {
+            assert_eq!(
+                plan.tasks_total,
+                plan.tasks_completed
+                    + plan.tasks_failed
+                    + plan.tasks_blocked
+                    + plan.tasks_skipped
+                    + plan.tasks_cancelled
+                    + plan.tasks_orphaned
+                    + plan.tasks_nonterminal,
+            );
+        }
+        let event = build_run_completed_event(&state, &report, RunOutcome::Failed);
+        let RunnerEvent::RunCompleted {
+            total_tasks,
+            tasks_completed,
+            tasks_failed,
+            tasks_blocked,
+            tasks_skipped,
+            tasks_cancelled,
+            tasks_orphaned,
+            tasks_nonterminal,
+            ..
+        } = event
+        else {
+            panic!("expected run completion")
+        };
+        assert_eq!(total_tasks, 7);
+        assert_eq!(
+            [
+                tasks_completed,
+                tasks_failed,
+                tasks_blocked,
+                tasks_skipped,
+                tasks_cancelled,
+                tasks_orphaned,
+                tasks_nonterminal,
+            ],
+            [1; 7],
+        );
     }
 
     #[test]
@@ -10542,6 +12419,179 @@ depends_on = []
         assert!(!status.contains("declared.txt"));
     }
 
+    #[tokio::test]
+    async fn terminalization_snapshots_cleanup_after_real_git_and_durability_work() {
+        fn git(workdir: &Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workdir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fn terminal_event(paths: &PersistPaths) -> (TaskAttemptOutcome, TaskPhaseDurations) {
+            std::fs::read_to_string(&paths.events_jsonl)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+                .find_map(|event| match event {
+                    RunnerEvent::TaskAttemptCompleted {
+                        outcome,
+                        phase_durations,
+                        ..
+                    } => Some((outcome, phase_durations)),
+                    _ => None,
+                })
+                .expect("terminal task event")
+        }
+
+        let parsed = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "plan"
+total = 1
+status = "ready"
+
+[[task]]
+id = "task"
+title = "task"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+files = ["declared.txt"]
+"#,
+        )
+        .unwrap();
+        let task_index = HashMap::from([(
+            "plan".to_string(),
+            HashMap::from([("task".to_string(), parsed.tasks[0].clone())]),
+        )]);
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let completion = GateCompletion {
+            kind: GateCompletionKind::Gate,
+            attempt: Some(attempt.clone()),
+            effect: None,
+            plan_id: "plan".to_string(),
+            task_id: "task".to_string(),
+            rung: 1,
+            passed: true,
+            failure_kind: None,
+            verdicts: Vec::new(),
+            output: "passed".to_string(),
+            duration_ms: 0,
+        };
+
+        let success_dir = tempfile::tempdir().unwrap();
+        git(success_dir.path(), &["init"]);
+        git(
+            success_dir.path(),
+            &["config", "user.email", "roko@example.invalid"],
+        );
+        git(success_dir.path(), &["config", "user.name", "Roko Test"]);
+        std::fs::write(success_dir.path().join("declared.txt"), "before\n").unwrap();
+        git(success_dir.path(), &["add", "."]);
+        git(success_dir.path(), &["commit", "-m", "initial"]);
+        // A material change makes the production terminalizer execute status,
+        // add, commit, and rev-parse before it freezes the cleanup clock.
+        std::fs::write(
+            success_dir.path().join("declared.txt"),
+            "after\n".repeat(200_000),
+        )
+        .unwrap();
+        let success_paths = PersistPaths::from_workdir(success_dir.path()).unwrap();
+        let success_config = RunConfig::from_roko_config(
+            success_dir.path().to_path_buf(),
+            success_dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let success_hub = StateHub::default_capacity();
+        let success_tui = TuiBridge::new(success_hub.sender());
+        let mut success_state = RunState::new(1);
+        let run_id = success_state.run_id().to_string();
+        success_state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        let started = Instant::now();
+        let mut clock = TaskPhaseClock::new(started);
+        clock.transition_at(TaskTimingPhase::Cleanup, started);
+        assert!(matches!(
+            terminalize_passed_task(
+                &success_paths,
+                &mut success_state,
+                &mut TaskDag::new(DagConfig::default()),
+                &task_index,
+                &mut None,
+                &success_tui,
+                &crate::runner::output_sink::NoopSink,
+                &success_config,
+                &completion,
+                &attempt,
+                clock,
+                Some(success_dir.path()),
+                &["declared.txt".to_string()],
+                None,
+            )
+            .await,
+            TaskTerminalization::Passed
+        ));
+        let (outcome, timing) = terminal_event(&success_paths);
+        assert_eq!(outcome, TaskAttemptOutcome::Passed);
+        assert!(timing.cleanup_ms > 0, "real Git work must count as cleanup");
+        assert_eq!(timing.total_ms(), timing.cleanup_ms);
+
+        let failure_dir = tempfile::tempdir().unwrap();
+        let failure_paths = PersistPaths::from_workdir(failure_dir.path()).unwrap();
+        let failure_config = RunConfig::from_roko_config(
+            failure_dir.path().to_path_buf(),
+            failure_dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let failure_hub = StateHub::default_capacity();
+        let failure_tui = TuiBridge::new(failure_hub.sender());
+        let mut failure_state = RunState::new(1);
+        let run_id = failure_state.run_id().to_string();
+        failure_state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "task",
+        ));
+        let started = Instant::now() - Duration::from_millis(5);
+        let mut clock = TaskPhaseClock::new(started);
+        clock.transition_at(TaskTimingPhase::Cleanup, started);
+        assert!(matches!(
+            terminalize_passed_task(
+                &failure_paths,
+                &mut failure_state,
+                &mut TaskDag::new(DagConfig::default()),
+                &task_index,
+                &mut None,
+                &failure_tui,
+                &crate::runner::output_sink::NoopSink,
+                &failure_config,
+                &completion,
+                &attempt,
+                clock,
+                None,
+                &["declared.txt".to_string()],
+                None,
+            )
+            .await,
+            TaskTerminalization::Failed { .. }
+        ));
+        let (outcome, timing) = terminal_event(&failure_paths);
+        assert_eq!(outcome, TaskAttemptOutcome::Failed);
+        assert!(timing.cleanup_ms >= 5);
+        assert_eq!(timing.total_ms(), timing.cleanup_ms);
+    }
+
     #[test]
     fn build_gate_retry_context_compile_error_produces_analysis() {
         let gate_output = "error[E0433]: failed to resolve: use of undeclared crate or module `foo`\n\
@@ -10633,6 +12683,30 @@ mod tests_post_gate_reflection_lessons {
         ReflectionGateOutcome,
     };
     use tempfile::TempDir;
+
+    fn one_task_index(plan_id: &str, task_id: &str) -> HashMap<String, HashMap<String, TaskDef>> {
+        let tasks = crate::task_parser::TasksFile::parse_str(&format!(
+            r#"
+[meta]
+plan = "{plan_id}"
+total = 1
+status = "ready"
+
+[[task]]
+id = "{task_id}"
+title = "fixture"
+status = "ready"
+tier = "focused"
+role = "implementer"
+depends_on = []
+"#
+        ))
+        .unwrap();
+        HashMap::from([(
+            plan_id.to_string(),
+            HashMap::from([(task_id.to_string(), tasks.tasks[0].clone())]),
+        )])
+    }
 
     fn make_record(
         gate: &str,
@@ -10846,6 +12920,7 @@ mod tests_post_gate_reflection_lessons {
             exit_code: Some(0),
             errors: Vec::new(),
             unconfirmed: None,
+            permit: None,
         };
         assert_eq!(agent_terminal_failure(&turn_completed(false), &clean), None);
         assert_eq!(
@@ -10857,6 +12932,7 @@ mod tests_post_gate_reflection_lessons {
             exit_code: None,
             errors: Vec::new(),
             unconfirmed: None,
+            permit: None,
         };
         assert!(
             agent_terminal_failure(&turn_completed(false), &unknown)
@@ -10868,6 +12944,7 @@ mod tests_post_gate_reflection_lessons {
             exit_code: Some(7),
             errors: Vec::new(),
             unconfirmed: None,
+            permit: None,
         };
         assert!(
             agent_terminal_failure(&turn_completed(false), &nonzero)
@@ -10879,6 +12956,7 @@ mod tests_post_gate_reflection_lessons {
             exit_code: Some(0),
             errors: vec!["stdout reader failed".to_string()],
             unconfirmed: None,
+            permit: None,
         };
         assert_eq!(
             agent_terminal_failure(&turn_completed(false), &reader_failure),
@@ -11000,14 +13078,9 @@ mod tests_post_gate_reflection_lessons {
     }
 
     #[tokio::test]
-    async fn bridge_join_failure_is_not_gateable_and_releases_permit() {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-        let raw_permit = semaphore.clone().acquire_owned().await.unwrap();
-        let waker = Arc::new(tokio::sync::Notify::new());
-        let permit = NotifyPermit {
-            permit: raw_permit,
-            waker,
-        };
+    async fn bridge_join_failure_is_not_gateable_and_retains_permit_until_terminalized() {
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let permit = capacity.try_acquire("plan").unwrap();
         let bridge = tokio::spawn(async { panic!("bridge failed") });
         let forwarder = tokio::spawn(async {});
         let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {
@@ -11017,7 +13090,9 @@ mod tests_post_gate_reflection_lessons {
         })
         .await;
 
-        assert_eq!(semaphore.available_permits(), 1);
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
+        assert!(settlement.permit.is_some());
         assert!(settlement.unconfirmed.is_none());
         assert!(
             settlement
@@ -11026,6 +13101,27 @@ mod tests_post_gate_reflection_lessons {
                 .any(|error| error.contains("agent bridge failed"))
         );
         assert!(agent_terminal_failure(&turn_completed(false), &settlement).is_some());
+        drop(settlement);
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_agent_settlement_retains_capacity_for_gate() {
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let settlement = settle_agent_resource(AgentRuntimeResource::Bridge {
+            bridge: tokio::spawn(async {}),
+            forwarder: tokio::spawn(async {}),
+            permit: capacity.try_acquire("plan").unwrap(),
+        })
+        .await;
+
+        assert!(settlement.permit.is_some());
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
+        drop(settlement);
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
     }
 
     #[test]
@@ -11048,7 +13144,7 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(AttemptPhase::Gate, effect),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let claim = ownership
@@ -11068,6 +13164,426 @@ mod tests_post_gate_reflection_lessons {
     }
 
     #[test]
+    fn failed_preflight_transfers_exact_owner_and_paired_capacity_without_reacquire() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let effect = EffectRef(77);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, effect),
+                AgentRuntimeResource::AwaitingGate {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                },
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Gate, effect)
+            .unwrap();
+        let mut claim = Some((claim, effect));
+
+        continue_failed_preflight(&mut ownership, &mut claim);
+
+        assert!(claim.is_none());
+        assert!(ownership.event_is_eligible(&attempt, AttemptPhase::Dispatching, EffectRef(0)));
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
+        assert!(capacity.try_acquire("plan").is_none());
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Dispatching, EffectRef(0))
+            .unwrap();
+        ownership.complete_claim(claim).unwrap();
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
+    }
+
+    #[test]
+    fn capacity_denial_does_not_consume_preflight_and_retry_marks_it_once() {
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let competing = capacity.try_acquire("plan").unwrap();
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let mut attempted = HashSet::new();
+
+        assert!(retain_preflight_after_capacity(
+            &mut attempted,
+            &attempt,
+            capacity.try_acquire("plan"),
+        )
+        .is_none());
+        assert!(!attempted.contains(&attempt));
+
+        drop(competing);
+        let permit =
+            retain_preflight_after_capacity(&mut attempted, &attempt, capacity.try_acquire("plan"))
+                .expect("released capacity must still run preflight");
+        assert!(attempted.contains(&attempt));
+        drop(permit);
+    }
+
+    #[test]
+    fn ordinary_tick_recovers_original_partial_terminal_once_and_releases_capacity() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let effect = EffectRef(88);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, effect),
+                AgentRuntimeResource::AwaitingGate {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                },
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Gate, effect)
+            .unwrap();
+        let mut claim = Some((claim, effect));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        std::fs::create_dir_all(&paths.events_jsonl).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        let mut state = RunState::new(1);
+        let pending_terminal = PendingTerminal::attempt(
+            TaskAttemptOutcome::Failed,
+            Some(RunnerFailureKind::Resource),
+            TaskPhaseDurations::default(),
+            Some("deterministic event write failure"),
+            None,
+        );
+        let result = persist_pending_terminal(
+            &paths,
+            &mut state,
+            &tui,
+            &config,
+            &attempt,
+            &pending_terminal,
+        );
+        assert!(result.is_err());
+        retain_gate_claim_after_persistence_failure(
+            &mut ownership,
+            &mut claim,
+            result.unwrap_err(),
+            pending_terminal,
+        );
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
+        assert!(ownership.event_is_eligible(&attempt, AttemptPhase::AwaitingGate, effect));
+
+        std::fs::remove_dir(&paths.events_jsonl).unwrap();
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::new(DagConfig::default());
+        let mut runtimes = HashMap::new();
+        let mut pending_gates = HashMap::new();
+        assert_eq!(
+            retry_pending_terminals(
+                &mut ownership,
+                &mut runtimes,
+                &mut task_dag,
+                &mut HashMap::new(),
+                &mut pending_gates,
+                &mut executor,
+                &paths,
+                &mut state,
+                &tui,
+                &config,
+            ),
+            1
+        );
+        let ledger = std::fs::read_to_string(&paths.run_ledger_jsonl).unwrap();
+        assert_eq!(
+            ledger
+                .lines()
+                .filter(|line| line.contains("task_failed"))
+                .count(),
+            1
+        );
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        assert_eq!(
+            events
+                .lines()
+                .filter(|line| line.contains("task.attempt.completed"))
+                .count(),
+            1
+        );
+        assert!(!ownership.contains(&attempt));
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
+    }
+
+    #[test]
+    fn ordinary_tick_settles_every_partial_terminal_outcome_exactly_once() {
+        for outcome in [
+            TaskAttemptOutcome::Passed,
+            TaskAttemptOutcome::Failed,
+            TaskAttemptOutcome::Exhausted,
+            TaskAttemptOutcome::TimedOut,
+        ] {
+            let attempt = TaskAttemptRef::new("plan", "task", 1);
+            let pending = if outcome == TaskAttemptOutcome::TimedOut {
+                PendingTerminal::Timeout {
+                    timeout: TimeoutEvent {
+                        kind: TimeoutKind::LostEffect,
+                        attempt: Some(attempt.clone()),
+                        effect: None,
+                        owner_effect: Some(OwnerEffectRef(9)),
+                        limit_ms: 1,
+                        monotonic_elapsed_ms: 2,
+                        observed_at_ms: 3,
+                    },
+                    phase_durations: TaskPhaseDurations::default(),
+                }
+            } else {
+                PendingTerminal::attempt(
+                    outcome,
+                    match outcome {
+                        TaskAttemptOutcome::Failed => Some(RunnerFailureKind::Permanent),
+                        TaskAttemptOutcome::Exhausted => Some(RunnerFailureKind::Unknown),
+                        _ => None,
+                    },
+                    TaskPhaseDurations::default(),
+                    Some("partial terminal fixture"),
+                    None,
+                )
+            };
+            let capacity = TaskCapacity::new(1, [("plan", 1)]);
+            let mut ownership = AttemptOwnership::default();
+            ownership
+                .insert(
+                    attempt.clone(),
+                    AttemptOwner::new(AttemptPhase::AgentUnconfirmed, EffectRef(9)),
+                    AgentRuntimeResource::CleanupFailed {
+                        permit: Some(capacity.try_acquire("plan").unwrap()),
+                        gate_effect: None,
+                        errors: vec!["partial write".into()],
+                        pending_terminal: Some(pending),
+                    },
+                )
+                .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+            let config = RunConfig::from_roko_config(
+                dir.path().to_path_buf(),
+                dir.path().join("plan.md"),
+                roko_core::config::RokoConfig::default(),
+            );
+            let hub = StateHub::default_capacity();
+            let tui = TuiBridge::new(hub.sender());
+            let mut state = RunState::new(1);
+            let run_id = state.run_id().to_string();
+            state.apply_runner_event(&RunnerEvent::task_attempt_started(
+                &run_id,
+                attempt.clone(),
+                "fixture",
+            ));
+            if outcome == TaskAttemptOutcome::Exhausted {
+                state
+                    .lifecycle
+                    .task_attempts
+                    .get_mut(&attempt.key())
+                    .unwrap()
+                    .status = TaskAttemptStatus::GateFailed;
+            }
+            let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+            executor.add_plan(OrcPlanState::new("plan"));
+            let mut task_dag = TaskDag::default();
+            task_dag.mark_running("plan", "task");
+            let mut task_index = one_task_index("plan", "task");
+
+            assert_eq!(
+                retry_pending_terminals(
+                    &mut ownership,
+                    &mut HashMap::new(),
+                    &mut task_dag,
+                    &mut task_index,
+                    &mut HashMap::new(),
+                    &mut executor,
+                    &paths,
+                    &mut state,
+                    &tui,
+                    &config,
+                ),
+                1
+            );
+            let expected = match outcome {
+                TaskAttemptOutcome::Passed => TaskAttemptStatus::Passed,
+                TaskAttemptOutcome::Failed => TaskAttemptStatus::Failed,
+                TaskAttemptOutcome::Exhausted => TaskAttemptStatus::Exhausted,
+                TaskAttemptOutcome::TimedOut => TaskAttemptStatus::TimedOut,
+                TaskAttemptOutcome::Cancelled => unreachable!(),
+            };
+            assert_eq!(
+                state.lifecycle.task_attempts[&attempt.key()].status,
+                expected
+            );
+            assert_eq!(
+                state.tasks_completed,
+                if outcome == TaskAttemptOutcome::Passed {
+                    1
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                state.tasks_failed,
+                if outcome == TaskAttemptOutcome::Passed {
+                    0
+                } else {
+                    1
+                }
+            );
+            assert_eq!(capacity.global.available_permits(), 1);
+        }
+    }
+
+    #[test]
+    fn retryable_partial_failure_resumes_exact_retry_continuation() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let decision = RetryDecision::for_failure(RunnerFailureKind::Unknown, 1, 1, "retry");
+        let pending = PendingTerminal::attempt(
+            TaskAttemptOutcome::Failed,
+            Some(RunnerFailureKind::Unknown),
+            TaskPhaseDurations::default(),
+            Some(&decision.reason),
+            None,
+        )
+        .with_retry(Some(PendingRetryContinuation::Agent {
+            decision,
+            replan_context: "preserved retry context".into(),
+        }));
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::AgentUnconfirmed, EffectRef(10)),
+                AgentRuntimeResource::CleanupFailed {
+                    permit: None,
+                    gate_effect: None,
+                    errors: vec!["partial write".into()],
+                    pending_terminal: Some(pending),
+                },
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "fixture",
+        ));
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        executor.plan_state_mut("plan").unwrap().current_phase = PlanPhase::Implementing;
+        let mut task_dag = TaskDag::default();
+        task_dag.mark_running("plan", "task");
+
+        assert_eq!(
+            retry_pending_terminals(
+                &mut ownership,
+                &mut HashMap::new(),
+                &mut task_dag,
+                &mut one_task_index("plan", "task"),
+                &mut HashMap::new(),
+                &mut executor,
+                &paths,
+                &mut state,
+                &tui,
+                &config,
+            ),
+            1
+        );
+        assert_eq!(state.iteration_for("plan", "task"), 2);
+        assert!(state.plan_failed_tasks("plan").is_empty());
+        assert_eq!(
+            state.take_replan_context("plan", "task").as_deref(),
+            Some("preserved retry context")
+        );
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Retrying
+        );
+    }
+
+    #[test]
+    fn terminal_ledger_write_failure_keeps_exact_nonterminal_lease() {
+        let attempt = TaskAttemptRef::new("plan", "ledger-failure", 1);
+        let effect = EffectRef(89);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, effect),
+                AgentRuntimeResource::AwaitingGate {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                },
+            )
+            .unwrap();
+        let claim = ownership
+            .claim_phase(&attempt, AttemptPhase::Gate, effect)
+            .unwrap();
+        let mut claim = Some((claim, effect));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        std::fs::create_dir_all(&paths.run_ledger_jsonl).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        let mut state = RunState::new(1);
+        let error = persist_attempt_terminal(
+            &paths,
+            &mut state,
+            &tui,
+            &config,
+            &attempt,
+            TaskAttemptOutcome::Failed,
+            Some(RunnerFailureKind::Resource),
+            TaskPhaseDurations::default(),
+            Some("deterministic ledger write failure"),
+            None,
+        )
+        .unwrap_err();
+        retain_gate_claim_after_persistence_failure(
+            &mut ownership,
+            &mut claim,
+            error,
+            PendingTerminal::attempt(
+                TaskAttemptOutcome::Failed,
+                Some(RunnerFailureKind::Resource),
+                TaskPhaseDurations::default(),
+                Some("deterministic ledger write failure"),
+                None,
+            ),
+        );
+
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
+        assert!(ownership.event_is_eligible(&attempt, AttemptPhase::AwaitingGate, effect));
+        assert!(!paths.events_jsonl.exists());
+    }
+
+    #[test]
     fn completion_and_expiry_have_one_linear_winner_in_both_orderings() {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
         let phase = AttemptPhase::Gate;
@@ -11078,7 +13594,7 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(phase, effect),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let completion_claim = completion_first
@@ -11099,7 +13615,7 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(phase, effect),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let expiry_claim = expiry_first
@@ -11124,7 +13640,7 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(AttemptPhase::Gate, replacement_effect),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
 
@@ -11150,15 +13666,14 @@ mod tests_post_gate_reflection_lessons {
         )]);
         let state = RunState::new(2);
         let runtime = TaskRuntimeState::capture(&state);
-        let mut runtimes = HashMap::from([
-            (task_key("plan", "done"), runtime.clone()),
-            (task_key("plan", "sibling"), runtime),
-        ]);
+        let done = TaskAttemptRef::new("plan", "done", 1);
+        let sibling = TaskAttemptRef::new("plan", "sibling", 1);
+        let mut runtimes = HashMap::from([(done.key(), runtime.clone()), (sibling.key(), runtime)]);
         let mut executor = ParallelExecutor::new(ExecutorConfig::default());
         executor.add_plan(OrcPlanState::new("plan"));
         let completion = GateCompletion {
             kind: GateCompletionKind::Gate,
-            attempt: Some(TaskAttemptRef::new("plan", "done", 1)),
+            attempt: Some(done.clone()),
             effect: None,
             plan_id: "plan".to_string(),
             task_id: "done".to_string(),
@@ -11173,8 +13688,8 @@ mod tests_post_gate_reflection_lessons {
         cleanup_finished_task_gate(&mut pending, &mut runtimes, &mut executor, &completion);
 
         assert_eq!(pending.get("plan"), Some(&vec!["sibling".to_string()]));
-        assert!(!runtimes.contains_key(&task_key("plan", "done")));
-        assert!(runtimes.contains_key(&task_key("plan", "sibling")));
+        assert!(!runtimes.contains_key(&done.key()));
+        assert!(runtimes.contains_key(&sibling.key()));
         assert!(matches!(
             executor
                 .plan_state("plan")
@@ -11228,7 +13743,6 @@ mod tests_post_gate_reflection_lessons {
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
-            failed_tasks: HashMap::new(),
             lifecycle: Some(source.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
@@ -11254,7 +13768,7 @@ mod tests_post_gate_reflection_lessons {
         let attempt = TaskAttemptRef::new("plan", "task", 1);
         let confirmed = CancelAttemptSummary {
             attempt: attempt.clone(),
-            outcome: CancelAttemptOutcome::Confirmed,
+            outcome: CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled),
         };
         assert!(
             CancelAllSummary {
@@ -11373,14 +13887,14 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new_at(AttemptPhase::AwaitingGate, effect, started),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         ownership
             .insert(
                 sibling.clone(),
                 AttemptOwner::new_at(AttemptPhase::Agent, EffectRef(72), now),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let mut state = RunState::new(1);
@@ -11414,10 +13928,12 @@ mod tests_post_gate_reflection_lessons {
             enforce_owned_deadlines_at(
                 now,
                 &mut ownership,
+                &mut HashMap::new(),
                 &mut state,
                 &mut executor,
                 &mut task_dag,
-                &HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &MergeQueue::new(),
                 &paths,
                 &tui,
@@ -11459,10 +13975,12 @@ mod tests_post_gate_reflection_lessons {
             enforce_owned_deadlines_at(
                 now,
                 &mut ownership,
+                &mut HashMap::new(),
                 &mut state,
                 &mut executor,
                 &mut task_dag,
-                &HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &MergeQueue::new(),
                 &paths,
                 &tui,
@@ -11474,6 +13992,88 @@ mod tests_post_gate_reflection_lessons {
         );
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
         assert_eq!(events.matches("timeout.recorded").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn deadline_replays_pending_pass_before_requesting_timeout() {
+        let attempt = TaskAttemptRef::new("plan", "task", 1);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new_at(
+                    AttemptPhase::AgentUnconfirmed,
+                    EffectRef(73),
+                    crate::runner::deadlines::MonotonicTime::from_millis(1_000),
+                ),
+                AgentRuntimeResource::CleanupFailed {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                    gate_effect: None,
+                    errors: vec!["partial write".into()],
+                    pending_terminal: Some(PendingTerminal::attempt(
+                        TaskAttemptOutcome::Passed,
+                        None,
+                        TaskPhaseDurations::default(),
+                        None,
+                        None,
+                    )),
+                },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            "fixture",
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.task_attempt_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::default();
+        task_dag.mark_running("plan", "task");
+        let mut task_index = one_task_index("plan", "task");
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                crate::runner::deadlines::MonotonicTime::from_millis(3_000),
+                &mut ownership,
+                &mut HashMap::new(),
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &mut task_index,
+                &mut HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            state.lifecycle.task_attempts[&attempt.key()].status,
+            TaskAttemptStatus::Passed
+        );
+        assert_eq!(state.tasks_completed, 1);
+        assert_eq!(state.tasks_failed, 0);
+        assert!(!ownership.contains(&attempt));
+        assert_eq!(capacity.global.available_permits(), 1);
+        let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
+        assert!(!events.contains("task.attempt.cancellation_requested"));
+        assert!(!events.contains("timeout.recorded"));
     }
 
     #[test]
@@ -11544,10 +14144,11 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(AttemptPhase::Agent, EffectRef(9)),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
-        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut task_dag = TaskDag::default();
         let merge_queue = MergeQueue::new();
         let writer = SnapshotWriter::new(4);
         let expiry = crate::runner::deadlines::DeadlineExpiry {
@@ -11563,10 +14164,14 @@ mod tests_post_gate_reflection_lessons {
         let result = handle_global_timeout(
             expiry,
             crate::runner::deadlines::MonotonicTime::from_millis(20),
-            &executor,
+            &mut executor,
             &[],
+            &mut task_dag,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
             &mut state,
             &mut ownership,
+            &mut HashMap::new(),
             &paths,
             &merge_queue,
             &tui,
@@ -11609,10 +14214,11 @@ mod tests_post_gate_reflection_lessons {
             .insert(
                 attempt,
                 AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(91)),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
-        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut task_dag = TaskDag::default();
         let writer = SnapshotWriter::new(4);
         let expiry = crate::runner::deadlines::DeadlineExpiry {
             kind: TimeoutKind::HardRun,
@@ -11627,10 +14233,14 @@ mod tests_post_gate_reflection_lessons {
         let result = handle_global_timeout(
             expiry,
             crate::runner::deadlines::MonotonicTime::from_millis(20),
-            &executor,
+            &mut executor,
             &[],
+            &mut task_dag,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
             &mut state,
             &mut ownership,
+            &mut HashMap::new(),
             &paths,
             &MergeQueue::new(),
             &tui,
@@ -11663,7 +14273,8 @@ mod tests_post_gate_reflection_lessons {
         let tui = TuiBridge::new(state_hub.sender());
         let mut state = RunState::new(0);
         let mut ownership = AttemptOwnership::default();
-        let executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        let mut task_dag = TaskDag::default();
         let writer = SnapshotWriter::new(4);
         let expiry = crate::runner::deadlines::DeadlineExpiry {
             kind: TimeoutKind::HardRun,
@@ -11679,10 +14290,14 @@ mod tests_post_gate_reflection_lessons {
             handle_global_timeout(
                 expiry,
                 crate::runner::deadlines::MonotonicTime::from_millis(20),
-                &executor,
+                &mut executor,
                 &[],
+                &mut task_dag,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &mut state,
                 &mut ownership,
+                &mut HashMap::new(),
                 &paths,
                 &MergeQueue::new(),
                 &tui,
@@ -11717,17 +14332,22 @@ mod tests_post_gate_reflection_lessons {
             generation: 81,
         };
         let mut ownership = AttemptOwnership::default();
+        let mut owner = AttemptOwner::new_at(
+            AttemptPhase::Gate,
+            EffectRef(81),
+            crate::runner::deadlines::MonotonicTime::from_millis(100),
+        );
+        owner.timing.phase_started_at = crate::runner::deadlines::MonotonicTime::from_millis(1_000);
+        owner.timing.last_agent_activity_at =
+            crate::runner::deadlines::MonotonicTime::from_millis(1_500);
         ownership
             .insert(
                 attempt.clone(),
-                AttemptOwner::new_at(
-                    AttemptPhase::Gate,
-                    EffectRef(81),
-                    crate::runner::deadlines::MonotonicTime::from_millis(1_000),
-                ),
+                owner,
                 AgentRuntimeResource::Gate {
                     effect: gate_effect.clone(),
                     handle: tokio::spawn(std::future::pending()),
+                    permit: None,
                 },
             )
             .unwrap();
@@ -11757,10 +14377,12 @@ mod tests_post_gate_reflection_lessons {
             enforce_owned_deadlines_at(
                 crate::runner::deadlines::MonotonicTime::from_millis(2_000),
                 &mut ownership,
+                &mut HashMap::new(),
                 &mut state,
                 &mut executor,
                 &mut task_dag,
-                &HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &MergeQueue::new(),
                 &paths,
                 &tui,
@@ -11780,8 +14402,165 @@ mod tests_post_gate_reflection_lessons {
             })
             .expect("typed gate timeout");
         assert_eq!(timeout.kind, TimeoutKind::GateEffect);
+        assert_eq!(timeout.monotonic_elapsed_ms, 1_000);
         assert_eq!(timeout.effect, Some(gate_effect));
         assert_eq!(timeout.owner_effect, Some(OwnerEffectRef(81)));
+    }
+
+    #[tokio::test]
+    async fn agent_silence_timeout_uses_last_activity_in_production_scan() {
+        let attempt = TaskAttemptRef::new("plan", "silent-agent", 1);
+        let mut owner = AttemptOwner::new_at(
+            AttemptPhase::Agent,
+            EffectRef(84),
+            crate::runner::deadlines::MonotonicTime::from_millis(100),
+        );
+        owner.timing.phase_started_at = crate::runner::deadlines::MonotonicTime::from_millis(400);
+        owner.timing.last_agent_activity_at =
+            crate::runner::deadlines::MonotonicTime::from_millis(1_000);
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                owner,
+                AgentRuntimeResource::AwaitingGate { permit: None },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt,
+            "silent-agent",
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.agent_silence_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+        let mut task_dag = TaskDag::new(DagConfig::default());
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                crate::runner::deadlines::MonotonicTime::from_millis(2_000),
+                &mut ownership,
+                &mut HashMap::new(),
+                &mut state,
+                &mut executor,
+                &mut task_dag,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            1
+        );
+
+        let timeout = std::fs::read_to_string(&paths.events_jsonl)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .find_map(|event| match event {
+                RunnerEvent::TimeoutRecorded { timeout, .. } => Some(timeout),
+                _ => None,
+            })
+            .expect("typed agent-silence timeout");
+        assert_eq!(timeout.kind, TimeoutKind::AgentSilence);
+        assert_eq!(timeout.monotonic_elapsed_ms, 1_000);
+    }
+
+    #[tokio::test]
+    async fn finished_owned_agent_lost_effect_uses_last_activity_in_production_scan() {
+        let attempt = TaskAttemptRef::new("plan", "lost-agent", 1);
+        let mut owner = AttemptOwner::new_at(
+            AttemptPhase::Agent,
+            EffectRef(85),
+            crate::runner::deadlines::MonotonicTime::from_millis(100),
+        );
+        owner.timing.phase_started_at = crate::runner::deadlines::MonotonicTime::from_millis(400);
+        owner.timing.last_agent_activity_at =
+            crate::runner::deadlines::MonotonicTime::from_millis(1_000);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let permit = capacity.try_acquire("plan").unwrap();
+        let bridge = tokio::spawn(async {});
+        let forwarder = tokio::spawn(async {});
+        tokio::task::yield_now().await;
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                owner,
+                AgentRuntimeResource::Bridge {
+                    bridge,
+                    forwarder,
+                    permit,
+                },
+            )
+            .unwrap();
+        let mut state = RunState::new(1);
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt,
+            "lost-agent",
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let mut roko_config = roko_core::config::RokoConfig::default();
+        roko_config.timeouts.agent_silence_secs = Some(1);
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_config,
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let mut executor = ParallelExecutor::new(ExecutorConfig::default());
+        executor.add_plan(OrcPlanState::new("plan"));
+
+        assert_eq!(
+            enforce_owned_deadlines_at(
+                crate::runner::deadlines::MonotonicTime::from_millis(2_000),
+                &mut ownership,
+                &mut HashMap::new(),
+                &mut state,
+                &mut executor,
+                &mut TaskDag::new(DagConfig::default()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+            )
+            .await,
+            1
+        );
+
+        let timeout = std::fs::read_to_string(&paths.events_jsonl)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .find_map(|event| match event {
+                RunnerEvent::TimeoutRecorded { timeout, .. } => Some(timeout),
+                _ => None,
+            })
+            .expect("typed lost-agent timeout");
+        assert_eq!(timeout.kind, TimeoutKind::LostEffect);
+        assert_eq!(timeout.monotonic_elapsed_ms, 1_000);
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
     }
 
     #[tokio::test]
@@ -11796,21 +14575,29 @@ mod tests_post_gate_reflection_lessons {
         };
         let handle = tokio::spawn(async {});
         tokio::task::yield_now().await;
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
         let mut ownership = AttemptOwnership::default();
+        let mut owner = AttemptOwner::new_at(
+            AttemptPhase::Gate,
+            EffectRef(82),
+            crate::runner::deadlines::MonotonicTime::from_millis(100),
+        );
+        owner.timing.phase_started_at = crate::runner::deadlines::MonotonicTime::from_millis(1_000);
+        owner.timing.last_agent_activity_at =
+            crate::runner::deadlines::MonotonicTime::from_millis(1_500);
         ownership
             .insert(
                 attempt.clone(),
-                AttemptOwner::new_at(
-                    AttemptPhase::Gate,
-                    EffectRef(82),
-                    crate::runner::deadlines::MonotonicTime::from_millis(1_000),
-                ),
+                owner,
                 AgentRuntimeResource::Gate {
                     effect: gate_effect.clone(),
                     handle,
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
                 },
             )
             .unwrap();
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
         ownership
             .insert(
                 sibling.clone(),
@@ -11819,7 +14606,7 @@ mod tests_post_gate_reflection_lessons {
                     EffectRef(83),
                     crate::runner::deadlines::MonotonicTime::from_millis(2_000),
                 ),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let mut state = RunState::new(1);
@@ -11861,10 +14648,12 @@ mod tests_post_gate_reflection_lessons {
             enforce_owned_deadlines_at(
                 crate::runner::deadlines::MonotonicTime::from_millis(2_000),
                 &mut ownership,
+                &mut HashMap::new(),
                 &mut state,
                 &mut executor,
                 &mut task_dag,
-                &HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &MergeQueue::new(),
                 &paths,
                 &tui,
@@ -11874,6 +14663,8 @@ mod tests_post_gate_reflection_lessons {
             1
         );
         assert!(!ownership.contains(&attempt));
+        assert_eq!(capacity.global.available_permits(), 1);
+        assert_eq!(capacity.plans["plan"].available_permits(), 1);
         assert!(
             !ownership.contains(&sibling),
             "fatal lost-effect settlement must drain sibling runtime ownership"
@@ -11937,6 +14728,7 @@ mod tests_post_gate_reflection_lessons {
         );
         let persisted_timeout = timeout_event_from_ledger(&typed_entry).unwrap();
         assert_eq!(persisted_timeout.kind, TimeoutKind::LostEffect);
+        assert_eq!(persisted_timeout.monotonic_elapsed_ms, 1_000);
         assert_eq!(persisted_timeout.effect, Some(gate_effect));
 
         let live_timeout = persisted_events
@@ -12035,7 +14827,6 @@ depends_on = ["T1"]
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
-            failed_tasks: HashMap::new(),
             lifecycle: Some(persisted_state.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
@@ -12091,12 +14882,15 @@ depends_on = ["T1"]
     #[tokio::test]
     async fn timeout_ledger_failure_remains_nonterminal_and_owned() {
         let attempt = TaskAttemptRef::new("plan", "persist-failure", 1);
+        let capacity = TaskCapacity::new(1, [("plan", 1)]);
         let mut ownership = AttemptOwnership::default();
         ownership
             .insert(
                 attempt.clone(),
                 AttemptOwner::new(AttemptPhase::AwaitingGate, EffectRef(91)),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate {
+                    permit: Some(capacity.try_acquire("plan").unwrap()),
+                },
             )
             .unwrap();
         let mut state = RunState::new(1);
@@ -12131,6 +14925,11 @@ depends_on = ["T1"]
             Some((AttemptPhase::AwaitingGate, EffectRef(91))),
             AttemptCleanupTerminal::TimedOut(timeout),
             &mut ownership,
+            &mut HashMap::new(),
+            &mut TaskDag::new(DagConfig::default()),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut ParallelExecutor::new(ExecutorConfig::default()),
             &mut state,
             &MergeQueue::new(),
             &paths,
@@ -12141,6 +14940,8 @@ depends_on = ["T1"]
         .await;
 
         assert!(matches!(outcome, CancelAttemptOutcome::Unconfirmed(_)));
+        assert_eq!(capacity.global.available_permits(), 0);
+        assert_eq!(capacity.plans["plan"].available_permits(), 0);
         assert!(
             ownership.contains(&attempt),
             "ledger failure must restore the held exact claim for retry"
@@ -12151,6 +14952,290 @@ depends_on = ["T1"]
         );
         let events = std::fs::read_to_string(&paths.events_jsonl).unwrap();
         assert!(!events.contains("\"type\":\"timeout.recorded\""));
+    }
+
+    #[tokio::test]
+    async fn agent_phase_cancellation_preserves_prior_dispatch_timing() {
+        let attempt = TaskAttemptRef::new("plan", "agent-cancel", 1);
+        let mut state = RunState::new(1);
+        state.reset_for_task(&attempt.plan_id, &attempt.task_id);
+        state.set_iteration(&attempt.plan_id, &attempt.task_id, attempt.attempt);
+        let start = Instant::now() - Duration::from_millis(100);
+        state.task_started_at = start;
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            &attempt.task_id,
+        ));
+        let mut task_runtime_states = HashMap::new();
+        capture_task_runtime(
+            &mut task_runtime_states,
+            &state,
+            &attempt.plan_id,
+            &attempt.task_id,
+        );
+        transition_task_runtime(
+            &mut task_runtime_states,
+            &attempt,
+            TaskTimingPhase::Agent,
+            start + Duration::from_millis(10),
+        );
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Agent, EffectRef(201)),
+                AgentRuntimeResource::AwaitingGate { permit: None },
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+
+        assert!(matches!(
+            cancel_exact_attempt(
+                &attempt,
+                Some((AttemptPhase::Agent, EffectRef(201))),
+                AttemptCleanupTerminal::Cancelled,
+                &mut ownership,
+                &mut task_runtime_states,
+                &mut TaskDag::new(DagConfig::default()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut ParallelExecutor::new(ExecutorConfig::default()),
+                &mut state,
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+                Duration::from_millis(1),
+            )
+            .await,
+            CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled)
+        ));
+
+        let (duration_ms, phase_durations) = std::fs::read_to_string(&paths.events_jsonl)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .find_map(|event| match event {
+                RunnerEvent::TaskAttemptCompleted {
+                    attempt: terminal_attempt,
+                    duration_ms,
+                    phase_durations,
+                    ..
+                } if terminal_attempt == attempt => Some((duration_ms, phase_durations)),
+                _ => None,
+            })
+            .expect("timed cancellation terminal");
+        assert_eq!(phase_durations.dispatch_ms, 10);
+        assert!(phase_durations.agent_ms >= 90);
+        assert_eq!(phase_durations.gate_ms, 0);
+        assert_eq!(duration_ms, phase_durations.total_ms());
+        assert!(!task_runtime_states.contains_key(&attempt.key()));
+    }
+
+    #[tokio::test]
+    async fn gate_phase_cancellation_preserves_dispatch_and_agent_timing() {
+        let attempt = TaskAttemptRef::new("plan", "gate-cancel", 1);
+        let mut state = RunState::new(1);
+        state.reset_for_task(&attempt.plan_id, &attempt.task_id);
+        state.set_iteration(&attempt.plan_id, &attempt.task_id, attempt.attempt);
+        let start = Instant::now() - Duration::from_millis(100);
+        state.task_started_at = start;
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            &attempt.task_id,
+        ));
+        let mut runtimes = HashMap::new();
+        capture_task_runtime(&mut runtimes, &state, &attempt.plan_id, &attempt.task_id);
+        transition_task_runtime(
+            &mut runtimes,
+            &attempt,
+            TaskTimingPhase::Agent,
+            start + Duration::from_millis(10),
+        );
+        transition_task_runtime(
+            &mut runtimes,
+            &attempt,
+            TaskTimingPhase::Gate,
+            start + Duration::from_millis(50),
+        );
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, EffectRef(203)),
+                AgentRuntimeResource::AwaitingGate { permit: None },
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+
+        assert!(matches!(
+            cancel_exact_attempt(
+                &attempt,
+                Some((AttemptPhase::Gate, EffectRef(203))),
+                AttemptCleanupTerminal::Cancelled,
+                &mut ownership,
+                &mut runtimes,
+                &mut TaskDag::new(DagConfig::default()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut ParallelExecutor::new(ExecutorConfig::default()),
+                &mut state,
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+                Duration::from_millis(1),
+            )
+            .await,
+            CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::Cancelled)
+        ));
+
+        let (duration_ms, phases) = std::fs::read_to_string(&paths.events_jsonl)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+            .find_map(|event| match event {
+                RunnerEvent::TaskAttemptCompleted {
+                    attempt: terminal_attempt,
+                    duration_ms,
+                    phase_durations,
+                    ..
+                } if terminal_attempt == attempt => Some((duration_ms, phase_durations)),
+                _ => None,
+            })
+            .expect("gate cancellation terminal");
+        assert_eq!(phases.dispatch_ms, 10);
+        assert_eq!(phases.agent_ms, 40);
+        assert!(phases.gate_ms >= 50);
+        assert_eq!(duration_ms, phases.total_ms());
+    }
+
+    #[tokio::test]
+    async fn gate_timeout_preserves_all_prior_phases_and_separate_timeout_elapsed() {
+        let attempt = TaskAttemptRef::new("plan", "gate-timeout", 1);
+        let mut state = RunState::new(1);
+        state.reset_for_task(&attempt.plan_id, &attempt.task_id);
+        state.set_iteration(&attempt.plan_id, &attempt.task_id, attempt.attempt);
+        let start = Instant::now() - Duration::from_millis(100);
+        state.task_started_at = start;
+        let run_id = state.run_id().to_string();
+        state.apply_runner_event(&RunnerEvent::task_attempt_started(
+            &run_id,
+            attempt.clone(),
+            &attempt.task_id,
+        ));
+        let mut task_runtime_states = HashMap::new();
+        capture_task_runtime(
+            &mut task_runtime_states,
+            &state,
+            &attempt.plan_id,
+            &attempt.task_id,
+        );
+        transition_task_runtime(
+            &mut task_runtime_states,
+            &attempt,
+            TaskTimingPhase::Agent,
+            start + Duration::from_millis(10),
+        );
+        transition_task_runtime(
+            &mut task_runtime_states,
+            &attempt,
+            TaskTimingPhase::Gate,
+            start + Duration::from_millis(50),
+        );
+        let mut ownership = AttemptOwnership::default();
+        ownership
+            .insert(
+                attempt.clone(),
+                AttemptOwner::new(AttemptPhase::Gate, EffectRef(202)),
+                AgentRuntimeResource::AwaitingGate { permit: None },
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+        let config = RunConfig::from_roko_config(
+            dir.path().to_path_buf(),
+            dir.path().join("plan.md"),
+            roko_core::config::RokoConfig::default(),
+        );
+        let state_hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(state_hub.sender());
+        let timeout_elapsed_ms = 77;
+
+        assert!(matches!(
+            cancel_exact_attempt(
+                &attempt,
+                Some((AttemptPhase::Gate, EffectRef(202))),
+                AttemptCleanupTerminal::TimedOut(TimeoutEvent {
+                    kind: TimeoutKind::GateEffect,
+                    attempt: Some(attempt.clone()),
+                    effect: None,
+                    owner_effect: Some(OwnerEffectRef(202)),
+                    limit_ms: 50,
+                    monotonic_elapsed_ms: timeout_elapsed_ms,
+                    observed_at_ms: 1,
+                }),
+                &mut ownership,
+                &mut task_runtime_states,
+                &mut TaskDag::new(DagConfig::default()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut ParallelExecutor::new(ExecutorConfig::default()),
+                &mut state,
+                &MergeQueue::new(),
+                &paths,
+                &tui,
+                &config,
+                Duration::from_millis(1),
+            )
+            .await,
+            CancelAttemptOutcome::Confirmed(TaskAttemptOutcome::TimedOut)
+        ));
+
+        let (recorded_elapsed_ms, duration_ms, phase_durations) =
+            std::fs::read_to_string(&paths.events_jsonl)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<RunnerEvent>(line).unwrap())
+                .find_map(|event| match event {
+                    RunnerEvent::TimeoutRecorded {
+                        timeout,
+                        duration_ms,
+                        phase_durations,
+                        ..
+                    } if timeout.attempt.as_ref() == Some(&attempt) => {
+                        Some((timeout.monotonic_elapsed_ms, duration_ms, phase_durations))
+                    }
+                    _ => None,
+                })
+                .expect("timed timeout terminal");
+        assert_eq!(recorded_elapsed_ms, timeout_elapsed_ms);
+        assert_eq!(phase_durations.dispatch_ms, 10);
+        assert_eq!(phase_durations.agent_ms, 40);
+        assert!(phase_durations.gate_ms >= 50);
+        assert_eq!(duration_ms, phase_durations.total_ms());
+        assert_ne!(duration_ms, recorded_elapsed_ms);
+        assert!(!task_runtime_states.contains_key(&attempt.key()));
     }
 
     #[tokio::test]
@@ -12167,7 +15252,7 @@ depends_on = ["T1"]
                     EffectRef(101),
                     crate::runner::deadlines::MonotonicTime::from_millis(1_000),
                 ),
-                AgentRuntimeResource::AwaitingGate,
+                AgentRuntimeResource::AwaitingGate { permit: None },
             )
             .unwrap();
         let sibling_effect = GateEffectRef {
@@ -12185,6 +15270,7 @@ depends_on = ["T1"]
                 AgentRuntimeResource::Gate {
                     effect: sibling_effect,
                     handle: sibling_handle,
+                    permit: None,
                 },
             )
             .unwrap();
@@ -12217,10 +15303,12 @@ depends_on = ["T1"]
             enforce_owned_deadlines_at(
                 now,
                 &mut ownership,
+                &mut HashMap::new(),
                 &mut state,
                 &mut executor,
                 &mut task_dag,
-                &HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
                 &MergeQueue::new(),
                 &paths,
                 &tui,
@@ -12272,6 +15360,7 @@ depends_on = ["T1"]
                     effect,
                     handle: Arc::new(std::sync::Mutex::new(Some(producer.handle))),
                     resolution: Arc::new(std::sync::Mutex::new(Some(producer.resolution))),
+                    permit: None,
                 },
             )
             .unwrap();
@@ -12288,6 +15377,11 @@ depends_on = ["T1"]
 
         let summary = stop_all_agents(
             &mut ownership,
+            &mut HashMap::new(),
+            &mut TaskDag::new(DagConfig::default()),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut ParallelExecutor::new(ExecutorConfig::default()),
             &mut state,
             &queue,
             &paths,
@@ -12328,6 +15422,7 @@ depends_on = ["T1"]
                 AgentRuntimeResource::Gate {
                     effect: effect.clone(),
                     handle,
+                    permit: None,
                 },
             )
             .unwrap();
@@ -12358,6 +15453,11 @@ depends_on = ["T1"]
                     observed_at_ms: 1,
                 }),
                 &mut ownership,
+                &mut HashMap::new(),
+                &mut TaskDag::new(DagConfig::default()),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut ParallelExecutor::new(ExecutorConfig::default()),
                 &mut state,
                 &MergeQueue::new(),
                 &paths,

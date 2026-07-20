@@ -16,6 +16,7 @@ use roko_core::config::GatesConfig;
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
+use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
 use roko_core::{AgentRole, ContentHash, PhaseKind, PlanPhase};
 use roko_daimon::{
@@ -746,6 +747,9 @@ pub async fn run(
     if config.http_event_sink.is_none() {
         config.http_event_sink = HttpEventSink::from_env();
     }
+
+    // ── Pre-flight budget ceiling validation ─────────────────────────────
+    validate_budget_ceilings(&config)?;
 
     let max_concurrent_tasks = config.max_concurrent_tasks.max(1);
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
@@ -1839,6 +1843,16 @@ pub async fn run(
                 state.gate_output = completion.output.clone();
 
                 if completion.kind == GateCompletionKind::Preflight {
+                    // SH04-T04: Track preflight duration separately so
+                    // the dashboard can distinguish gate time from agent
+                    // dispatch time.
+                    tui.efficiency_event(
+                        &completion.plan_id,
+                        &completion.task_id,
+                        "preflight_ms",
+                        completion.duration_ms as f64,
+                    );
+
                     if !completion.passed {
                         finish_gate_claim(
                             &mut attempt_ownership,
@@ -2521,6 +2535,16 @@ pub async fn run(
                                     "gate failed — entering auto-fix"
                                 );
 
+                                // SH04-T04: Publish gate failure diagnosis to
+                                // the dashboard so operators see structured
+                                // failure context alongside gate verdict events.
+                                publish_gate_failure_diagnosis(
+                                    &tui,
+                                    &completion,
+                                    failure_kind,
+                                    false, // retrying, not terminal
+                                );
+
                                 // Enrich every retry prompt with failure context so the
                                 // agent understands what went wrong and can adjust.
                                 {
@@ -2635,6 +2659,16 @@ pub async fn run(
                         }
                         state.task_failed();
                         tui.task_completed(&completion.plan_id, &completion.task_id, "failed");
+
+                        // SH04-T04: Publish terminal gate failure diagnosis
+                        // so the dashboard surfaces structured failure context.
+                        publish_gate_failure_diagnosis(
+                            &tui,
+                            &completion,
+                            failure_kind,
+                            true, // terminal failure
+                        );
+
                         let reason = decision.reason.clone();
                         state.record_task_failure(&completion.plan_id, &completion.task_id, &reason);
                         // Record task failure in the run ledger.
@@ -3146,6 +3180,20 @@ fn no_ready_spawn_event(phase_kind: PhaseKind, requested_task: &str) -> Option<E
     }
 }
 
+/// Validate budget ceilings before starting the run. Rejects negative,
+/// NaN, and infinite values. A value of 0.0 means "unlimited".
+fn validate_budget_ceilings(config: &RunConfig) -> Result<()> {
+    fn check(name: &str, value: f64) -> Result<()> {
+        if value.is_nan() || value.is_infinite() || value < 0.0 {
+            anyhow::bail!("invalid {name}: {value}");
+        }
+        Ok(())
+    }
+    check("max_plan_usd", config.max_plan_usd)?;
+    check("max_turn_usd", config.max_turn_usd)?;
+    Ok(())
+}
+
 fn turn_exceeds_budget(total_cost_usd: Option<f64>, max_turn_usd: f64) -> bool {
     max_turn_usd > 0.0 && total_cost_usd.is_some_and(|cost| cost > max_turn_usd)
 }
@@ -3445,12 +3493,23 @@ fn complete_verified_plan_success(
     if !was_complete {
         tui.plan_completed(plan_id, true);
         let run_id = state.run_id().to_string();
+        let plan_cost = state.plan_cost(plan_id);
+        let tasks_completed = state.plan_completed_tasks(plan_id).len();
+        let tasks_failed = state.plan_failed_tasks(plan_id).len();
         emit_runner_event(
             paths,
             state,
             tui,
             config,
-            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
+            RunnerEvent::plan_completed(
+                &run_id,
+                plan_id,
+                PlanOutcome::Succeeded,
+                None,
+                plan_cost,
+                tasks_completed,
+                tasks_failed,
+            ),
         );
     }
     Ok(phase)
@@ -3620,6 +3679,9 @@ async fn handle_failed_merge_outcome(
                 ctx.tui.plan_completed(&plan_id, false);
                 ctx.tui.error(&reason);
                 let run_id = ctx.state.run_id().to_string();
+                let plan_cost = ctx.state.plan_cost(&plan_id);
+                let tasks_completed = ctx.state.plan_completed_tasks(&plan_id).len();
+                let tasks_failed = ctx.state.plan_failed_tasks(&plan_id).len();
                 emit_runner_event(
                     ctx.paths,
                     ctx.state,
@@ -3630,6 +3692,9 @@ async fn handle_failed_merge_outcome(
                         &plan_id,
                         PlanOutcome::Failed,
                         Some(reason.clone()),
+                        plan_cost,
+                        tasks_completed,
+                        tasks_failed,
                     ),
                 );
             }
@@ -3675,6 +3740,9 @@ async fn handle_merge_completion(
             Ok(phase) => {
                 tui.phase_transition(&completion.plan_id, "merging", &format!("{phase:?}"));
                 tui.plan_completed(&completion.plan_id, true);
+                let plan_cost = state.plan_cost(&completion.plan_id);
+                let tasks_completed = state.plan_completed_tasks(&completion.plan_id).len();
+                let tasks_failed = state.plan_failed_tasks(&completion.plan_id).len();
                 emit_runner_event(
                     paths,
                     state,
@@ -3685,6 +3753,9 @@ async fn handle_merge_completion(
                         &completion.plan_id,
                         PlanOutcome::Succeeded,
                         None,
+                        plan_cost,
+                        tasks_completed,
+                        tasks_failed,
                     ),
                 );
                 info!(
@@ -3715,6 +3786,9 @@ async fn handle_merge_completion(
                     .apply_event(&completion.plan_id, &ExecutorEvent::Fatal(reason.clone()));
             }
         }
+        let plan_cost = state.plan_cost(&completion.plan_id);
+        let tasks_completed = state.plan_completed_tasks(&completion.plan_id).len();
+        let tasks_failed = state.plan_failed_tasks(&completion.plan_id).len();
         emit_runner_event(
             paths,
             state,
@@ -3725,6 +3799,9 @@ async fn handle_merge_completion(
                 &completion.plan_id,
                 PlanOutcome::Failed,
                 Some(reason.clone()),
+                plan_cost,
+                tasks_completed,
+                tasks_failed,
             ),
         );
         tui.error(&reason);
@@ -4775,15 +4852,20 @@ fn runner_event_to_feedback(
             backoff_secs: cooldown_ms / 1000,
         }),
         RunnerEvent::PlanCompleted {
-            plan_id, outcome, ..
+            plan_id,
+            outcome,
+            cost_usd,
+            tasks_completed,
+            tasks_failed,
+            ..
         } => {
             let succeeded = matches!(outcome, PlanOutcome::Succeeded);
             Some(FeedbackEvent::PlanCompleted {
                 plan_id: plan_id.clone(),
                 succeeded,
-                tasks_completed: 0,
-                tasks_failed: 0,
-                total_cost_usd: 0.0,
+                tasks_completed: *tasks_completed,
+                tasks_failed: *tasks_failed,
+                total_cost_usd: *cost_usd,
             })
         }
         _ => None,
@@ -6348,7 +6430,14 @@ async fn dispatch_action(
                                     None,
                                 ),
                             );
-                            ctx.tui.agent_spawned(&agent_id, role, &model_display);
+                            ctx.tui.agent_spawned(
+                                &agent_id,
+                                plan_id,
+                                &task_id,
+                                attempt_num,
+                                role,
+                                &model_display,
+                            );
                             ctx.tui.task_started(
                                 plan_id,
                                 &task_id,
@@ -6496,8 +6585,14 @@ async fn dispatch_action(
                             None,
                         ),
                     );
-                    ctx.tui
-                        .agent_spawned(&agent_id, role, &format!("{provider_id}:{model}"));
+                    ctx.tui.agent_spawned(
+                        &agent_id,
+                        plan_id,
+                        &task_id,
+                        attempt_num,
+                        role,
+                        &format!("{provider_id}:{model}"),
+                    );
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     dispatch_claim.set_agent(agent_id.clone(), None);
@@ -6884,12 +6979,23 @@ async fn dispatch_action(
             info!(plan_id = %plan_id, "plan completed");
             ctx.tui.plan_completed(plan_id, true);
             let run_id = ctx.state.run_id().to_string();
+            let plan_cost = ctx.state.plan_cost(plan_id);
+            let tasks_completed = ctx.state.plan_completed_tasks(plan_id).len();
+            let tasks_failed = ctx.state.plan_failed_tasks(plan_id).len();
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
                 ctx.tui,
                 ctx.config,
-                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
+                RunnerEvent::plan_completed(
+                    &run_id,
+                    plan_id,
+                    PlanOutcome::Succeeded,
+                    None,
+                    plan_cost,
+                    tasks_completed,
+                    tasks_failed,
+                ),
             );
             save_snapshot(
                 ctx.config,
@@ -6911,6 +7017,9 @@ async fn dispatch_action(
                 .task_completed(plan_id, &ctx.state.current_task, "failed");
             ctx.tui.plan_completed(plan_id, false);
             let run_id = ctx.state.run_id().to_string();
+            let plan_cost = ctx.state.plan_cost(plan_id);
+            let tasks_completed = ctx.state.plan_completed_tasks(plan_id).len();
+            let tasks_failed = ctx.state.plan_failed_tasks(plan_id).len();
             emit_runner_event(
                 ctx.paths,
                 ctx.state,
@@ -6921,6 +7030,9 @@ async fn dispatch_action(
                     plan_id,
                     PlanOutcome::Failed,
                     Some(reason.clone()),
+                    plan_cost,
+                    tasks_completed,
+                    tasks_failed,
                 ),
             );
             ActionDispatchOutcome::Handled
@@ -9338,6 +9450,70 @@ fn failure_class_label(class: &roko_gate::FailureClass) -> String {
         .unwrap_or_else(|| format!("{class:?}").to_ascii_lowercase())
 }
 
+/// Build and publish a `DiagnosisSummary` for a gate failure so the dashboard
+/// surfaces structured failure context alongside the existing gate verdict
+/// events.  Called from both the retry and terminal-failure gate paths.
+fn publish_gate_failure_diagnosis(
+    tui: &TuiBridge,
+    completion: &GateCompletion,
+    failure_kind: RunnerFailureKind,
+    is_terminal: bool,
+) {
+    let failing_gate = completion
+        .verdicts
+        .iter()
+        .find(|v| !v.passed)
+        .map(|v| v.gate_name.as_str())
+        .unwrap_or("gate");
+
+    let classification = classify_gate_failure(failing_gate, &completion.output);
+    let classification_detail = render_failure_classification(&classification);
+
+    let severity = if is_terminal {
+        DiagnosisSeverity::Alert
+    } else {
+        DiagnosisSeverity::Warn
+    };
+
+    let terminal_label = if is_terminal { "terminal" } else { "retrying" };
+
+    let suggested_action = if is_terminal {
+        Some("Review gate output and consider revising the task definition".into())
+    } else {
+        Some("Auto-retry in progress; monitor next attempt".into())
+    };
+
+    let intervention_taken = if is_terminal {
+        Some("Task marked failed; downstream tasks skipped".into())
+    } else {
+        Some("Scheduling retry with enriched failure context".into())
+    };
+
+    // Truncate classification detail for the diagnosis ring buffer so we
+    // don't blow up dashboard memory with multi-KB gate outputs.
+    let detail = if classification_detail.len() > 2000 {
+        format!("{}...", &classification_detail[..2000])
+    } else {
+        classification_detail
+    };
+
+    tui.diagnosis(DiagnosisSummary {
+        id: format!(
+            "gate-fail-{}-{}-{}",
+            completion.plan_id, completion.task_id, completion.rung
+        ),
+        ts: chrono::Utc::now(),
+        severity,
+        subject: format!(
+            "Gate '{}' failed for {}/{} ({}, {:?})",
+            failing_gate, completion.plan_id, completion.task_id, terminal_label, failure_kind
+        ),
+        detail,
+        suggested_action,
+        intervention_taken,
+    });
+}
+
 enum TaskTerminalization {
     Passed,
     PersistenceFailed { reason: String },
@@ -9725,6 +9901,10 @@ fn build_report(executor: &ParallelExecutor, plans: &[Plan], state: &RunState) -
         total_agent_calls: state.total_agent_calls,
         duration: state.elapsed(),
         failure_reasons: state.failure_reasons.clone(),
+        // TODO(SH05-T04): Per-task cost breakdown requires individual task-level
+        // cost tracking in RunState (currently only per-plan totals are tracked
+        // via `plan_costs`). Once per-task cost accumulation is added, build
+        // the vector from `state.task_cost_map` or equivalent.
         task_costs: Vec::new(),
     }
 }

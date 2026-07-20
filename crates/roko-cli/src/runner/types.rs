@@ -911,6 +911,15 @@ pub enum RunnerEvent {
         outcome: PlanOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// Accumulated USD cost for this plan at completion time.
+        #[serde(default)]
+        cost_usd: f64,
+        /// Number of tasks completed within this plan.
+        #[serde(default)]
+        tasks_completed: usize,
+        /// Number of tasks that failed within this plan.
+        #[serde(default)]
+        tasks_failed: usize,
     },
     #[serde(rename = "task.attempt.started")]
     TaskAttemptStarted {
@@ -1180,6 +1189,9 @@ impl RunnerEvent {
         plan_id: &str,
         outcome: PlanOutcome,
         reason: Option<String>,
+        cost_usd: f64,
+        tasks_completed: usize,
+        tasks_failed: usize,
     ) -> Self {
         let stamp = EventStamp::now();
         Self::PlanCompleted {
@@ -1189,6 +1201,9 @@ impl RunnerEvent {
             plan_id: plan_id.to_string(),
             outcome,
             reason,
+            cost_usd,
+            tasks_completed,
+            tasks_failed,
         }
     }
 
@@ -1684,6 +1699,9 @@ pub struct RunConfig {
     pub plan_timeout_secs: u64,
     /// Maximum auto-fix retries per task.
     pub max_retries: u32,
+    /// Maximum dispatch retry attempts for transient errors (429, 529,
+    /// connection timeout). Sourced from `[runner].dispatch_max_retries`.
+    pub dispatch_max_retries: u32,
     /// Maximum number of tasks that may execute concurrently within a plan.
     pub max_concurrent_tasks: usize,
     /// Maximum number of gate rungs that may run concurrently across all tasks.
@@ -1825,6 +1843,7 @@ impl RunConfig {
             timeout_secs,
             plan_timeout_secs,
             max_retries: DEFAULT_RUNNER_CONFIG_MAX_RETRIES,
+            dispatch_max_retries: roko_config.runner.dispatch_max_retries,
             max_concurrent_tasks,
             gate_concurrency: max_concurrent_tasks,
             approval: false,
@@ -1880,6 +1899,7 @@ impl Default for RunConfig {
             timeout_secs: timeouts.agent_dispatch().as_secs(),
             plan_timeout_secs: timeouts.plan_total().as_secs(),
             max_retries: DEFAULT_MAX_AUTO_FIX_ITERATIONS,
+            dispatch_max_retries: roko_core::defaults::DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS,
             max_concurrent_tasks: DEFAULT_RUNNER_MAX_CONCURRENT_TASKS,
             gate_concurrency: DEFAULT_RUNNER_GATE_CONCURRENCY,
             approval: false,
@@ -1889,8 +1909,8 @@ impl Default for RunConfig {
             resume_session: None,
             max_gate_rung: 2,
             claude_program: PathBuf::from("claude"),
-            max_plan_usd: 25.0,
-            max_turn_usd: 3.0,
+            max_plan_usd: 0.0,
+            max_turn_usd: 0.0,
             clippy_enabled: true,
             skip_tests: false,
             roko_config: None,
@@ -1923,6 +1943,7 @@ impl std::fmt::Debug for RunConfig {
             .field("timeout_secs", &self.timeout_secs)
             .field("plan_timeout_secs", &self.plan_timeout_secs)
             .field("max_retries", &self.max_retries)
+            .field("dispatch_max_retries", &self.dispatch_max_retries)
             .field("max_concurrent_tasks", &self.max_concurrent_tasks)
             .field("max_gate_rung", &self.max_gate_rung)
             .field("max_plan_usd", &self.max_plan_usd)

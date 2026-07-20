@@ -88,8 +88,15 @@ async fn run_config_facades_receive_runner_events() {
         duration_ms: 4321,
     };
     let gate_completed = RunnerEvent::gate_completed("e2e-runner", attempt.clone(), &completion);
-    let plan_completed =
-        RunnerEvent::plan_completed("e2e-runner", "p-e2e", PlanOutcome::Succeeded, None);
+    let plan_completed = RunnerEvent::plan_completed(
+        "e2e-runner",
+        "p-e2e",
+        PlanOutcome::Succeeded,
+        None,
+        0.0,
+        1,
+        0,
+    );
 
     for event in [&task_completed, &gate_completed, &plan_completed] {
         projection

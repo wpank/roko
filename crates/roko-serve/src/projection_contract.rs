@@ -1692,7 +1692,7 @@ pub fn projection_accepts_event(
         "agent_state" => match event {
             DashboardEvent::AgentSpawned { agent_id, .. }
             | DashboardEvent::AgentOutput { agent_id, .. }
-            | DashboardEvent::AgentCompleted { agent_id } => {
+            | DashboardEvent::AgentCompleted { agent_id, .. } => {
                 agent_id_matches_filter(agent_id, query)
             }
             _ => false,

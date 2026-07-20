@@ -21,6 +21,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use super::inline_output::RunnerInlineTerminal;
+use super::types::StderrSeverity;
 use crate::inline::DiffEntry;
 
 /// Coarse gate verdict passed to the output sink.
@@ -117,7 +118,14 @@ pub trait RunOutputSink: Send + Sync + fmt::Debug {
     }
 
     /// Agent reported an error.
-    fn agent_error(&self, _plan_id: &str, _task_id: &str, _message: &str) {}
+    fn agent_error(
+        &self,
+        _plan_id: &str,
+        _task_id: &str,
+        _message: &str,
+        _severity: StderrSeverity,
+    ) {
+    }
 
     // ─── Gate events ────────────────────────────────────────────────────
 
@@ -310,7 +318,11 @@ impl RunOutputSink for StderrSink {
         );
     }
 
-    fn agent_error(&self, _plan_id: &str, _task_id: &str, message: &str) {
+    fn agent_error(&self, _plan_id: &str, _task_id: &str, message: &str, severity: StderrSeverity) {
+        // Skip infra-level noise (INFO banners, empty lines) entirely.
+        if severity == StderrSeverity::Infra {
+            return;
+        }
         // Flush any remaining buffered text.
         let lines = self.drain_lines(3, 120);
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -666,10 +678,22 @@ impl RunOutputSink for FormattedStderrSink {
         }
     }
 
-    fn agent_error(&self, plan_id: &str, task_id: &str, message: &str) {
+    fn agent_error(&self, plan_id: &str, task_id: &str, message: &str, severity: StderrSeverity) {
+        // Skip infra-level noise entirely.
+        if severity == StderrSeverity::Infra {
+            return;
+        }
         self.drain_text(plan_id, task_id);
         let msg = truncate_chars(message, 120);
-        self.emit_fail(plan_id, task_id, &format!("Agent error: {msg}"));
+        match severity {
+            StderrSeverity::Warning => {
+                self.emit_progress(plan_id, task_id, &format!("Agent warning: {msg}"));
+            }
+            StderrSeverity::Error => {
+                self.emit_fail(plan_id, task_id, &format!("Agent error: {msg}"));
+            }
+            StderrSeverity::Infra => unreachable!(),
+        }
     }
 
     fn gate_result(&self, plan_id: &str, task_id: &str, result: &GateResultSummary) {
@@ -993,12 +1017,15 @@ pub fn format_dashboard_event(
             agent_id,
             role,
             model,
+            ..
         } => (
             format!("[{agent_id}]"),
             ">",
             format!("Agent spawned: {role} ({model})"),
         ),
-        DashboardEvent::AgentOutput { agent_id, content } => {
+        DashboardEvent::AgentOutput {
+            agent_id, content, ..
+        } => {
             let preview = content.lines().next().unwrap_or("").trim();
             if preview.is_empty() {
                 return None;
@@ -1006,7 +1033,7 @@ pub fn format_dashboard_event(
             let trunc = truncate_chars(preview, 100);
             (format!("[{agent_id}]"), "|", trunc)
         }
-        DashboardEvent::AgentCompleted { agent_id } => {
+        DashboardEvent::AgentCompleted { agent_id, .. } => {
             (format!("[{agent_id}]"), "+", format!("Agent completed"))
         }
         DashboardEvent::GateResult {
@@ -1235,7 +1262,7 @@ mod tests {
             },
         );
         sink.agent_turn_completed("plan-1", "task-1", Some(0.01), false, "sonnet", 100, 50);
-        sink.agent_error("plan-1", "task-1", "test error");
+        sink.agent_error("plan-1", "task-1", "test error", StderrSeverity::Error);
         sink.gate_result(
             "plan-1",
             "task-1",

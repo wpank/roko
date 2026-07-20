@@ -207,6 +207,10 @@ fn render_agent_roster(
             Span::styled("tokens", Style::default().fg(theme.muted)),
             Span::styled("  ", Style::default()),
             Span::styled("cost", Style::default().fg(theme.muted)),
+            Span::styled("  ", Style::default()),
+            Span::styled("elapsed", Style::default().fg(theme.muted)),
+            Span::styled("  ", Style::default()),
+            Span::styled("last evt", Style::default().fg(theme.muted)),
         ]));
     }
 
@@ -272,6 +276,24 @@ fn render_agent_roster(
                 } else {
                     "-".to_string()
                 }
+            })
+            .unwrap_or_else(|| "-".to_string());
+
+        // Elapsed time and last-event age from AgentRow timing fields.
+        let agent_row = tui_state.agents.iter().find(|row| row.id == agent.id);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let elapsed_str = agent_row
+            .filter(|r| r.spawned_at_ms > 0)
+            .map(|r| format_uptime(now_ms.saturating_sub(r.spawned_at_ms)))
+            .unwrap_or_else(|| "-".to_string());
+        let last_evt_str = agent_row
+            .filter(|r| r.last_event_at_ms > 0)
+            .map(|r| {
+                let age = now_ms.saturating_sub(r.last_event_at_ms);
+                format!("{} ago", format_uptime(age))
             })
             .unwrap_or_else(|| "-".to_string());
 
@@ -351,6 +373,16 @@ fn render_agent_roster(
             Span::styled("  ", Style::default().bg(bg)),
             Span::styled(
                 format!("{:>6}", cost_str),
+                Style::default().fg(theme.muted).bg(bg),
+            ),
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(
+                format!("{:>7}", elapsed_str),
+                Style::default().fg(theme.foreground).bg(bg),
+            ),
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(
+                format!("{:>8}", last_evt_str),
                 Style::default().fg(theme.muted).bg(bg),
             ),
         ];

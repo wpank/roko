@@ -51,12 +51,33 @@ pub enum DashboardEvent {
     /// An agent was spawned.
     AgentSpawned {
         agent_id: String,
+        /// Plan this agent is working on.
+        #[serde(default)]
+        plan_id: String,
+        /// Task this agent is working on.
+        #[serde(default)]
+        task_id: String,
+        /// Dispatch attempt number (1-based).
+        #[serde(default)]
+        attempt: u32,
         role: String,
         #[serde(default)]
         model: String,
     },
     /// Incremental agent output.
-    AgentOutput { agent_id: String, content: String },
+    AgentOutput {
+        agent_id: String,
+        /// Plan this agent is working on.
+        #[serde(default)]
+        plan_id: String,
+        /// Task this agent is working on.
+        #[serde(default)]
+        task_id: String,
+        /// Dispatch attempt number (1-based).
+        #[serde(default)]
+        attempt: u32,
+        content: String,
+    },
     /// A gate check completed.
     GateResult {
         plan_id: String,
@@ -118,7 +139,18 @@ pub enum DashboardEvent {
     /// Adaptive gate thresholds updated (item 76e).
     GateThresholdsUpdated { snapshot_json: String },
     /// Agent completed execution (item 70).
-    AgentCompleted { agent_id: String },
+    AgentCompleted {
+        agent_id: String,
+        /// Plan this agent was working on.
+        #[serde(default)]
+        plan_id: String,
+        /// Task this agent was working on.
+        #[serde(default)]
+        task_id: String,
+        /// Dispatch attempt number (1-based).
+        #[serde(default)]
+        attempt: u32,
+    },
     /// Marketplace jobs were refreshed from disk.
     MarketplaceJobsUpdated {
         jobs: Vec<crate::job::MarketplaceJob>,
@@ -274,6 +306,12 @@ pub struct AgentState {
     /// Cumulative output tokens.
     #[serde(default)]
     pub output_tokens: u64,
+    /// Cumulative cache-read tokens.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Cumulative cache-write tokens.
+    #[serde(default)]
+    pub cache_write_tokens: u64,
     /// Cumulative cost in USD.
     #[serde(default)]
     pub cost_usd: f64,
@@ -283,6 +321,15 @@ pub struct AgentState {
     /// Current plan being worked on.
     #[serde(default)]
     pub current_plan: String,
+    /// Current dispatch attempt number (1-based).
+    #[serde(default)]
+    pub attempt: u32,
+    /// Timestamp (epoch ms) when agent was spawned.
+    #[serde(default)]
+    pub spawned_at_ms: u64,
+    /// Timestamp (epoch ms) of the last event received from this agent.
+    #[serde(default)]
+    pub last_event_at_ms: u64,
 }
 
 /// A single gate verdict.
@@ -949,14 +996,9 @@ impl DashboardSnapshot {
                 if let Some(plan) = self.plans.get_mut(plan_id) {
                     plan.tasks_total += 1;
                 }
-                // Set current_task / current_plan on the matching agent by plan_id prefix.
-                // Agent IDs are formatted as "{plan_id}:{task}" in orchestrate.rs.
-                for agent in self.agents.values_mut() {
-                    if agent.active && agent.agent_id.starts_with(&format!("{plan_id}:")) {
-                        agent.current_task = task_id.clone();
-                        agent.current_plan = plan_id.clone();
-                    }
-                }
+                // Note: current_task / current_plan are now set directly from
+                // the structured fields in AgentSpawned, so we don't need the
+                // stale heuristic that tried to match by prefix.
             }
             DashboardEvent::TaskCompleted {
                 plan_id,
@@ -995,6 +1037,9 @@ impl DashboardSnapshot {
             }
             DashboardEvent::AgentSpawned {
                 agent_id,
+                plan_id,
+                task_id,
+                attempt,
                 role,
                 model,
             } => {
@@ -1024,6 +1069,19 @@ impl DashboardSnapshot {
                         if !model.is_empty() {
                             agent.model.clone_from(model);
                         }
+                        // Re-stamp spawn time on reactivation; update liveness.
+                        agent.spawned_at_ms = ts;
+                        agent.last_event_at_ms = ts;
+                        // Set structured identity from the event fields.
+                        if !plan_id.is_empty() {
+                            agent.current_plan.clone_from(plan_id);
+                        }
+                        if !task_id.is_empty() {
+                            agent.current_task.clone_from(task_id);
+                        }
+                        if *attempt > 0 {
+                            agent.attempt = *attempt;
+                        }
                         // Preserve accumulated tokens/cost — don't reset.
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
@@ -1036,16 +1094,24 @@ impl DashboardSnapshot {
                             model: model.clone(),
                             input_tokens: 0,
                             output_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
                             cost_usd: 0.0,
-                            current_task: String::new(),
-                            current_plan: String::new(),
+                            current_task: task_id.clone(),
+                            current_plan: plan_id.clone(),
+                            attempt: *attempt,
+                            spawned_at_ms: ts,
+                            last_event_at_ms: ts,
                         });
                     }
                 }
             }
-            DashboardEvent::AgentOutput { agent_id, content } => {
+            DashboardEvent::AgentOutput {
+                agent_id, content, ..
+            } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
                     agent.output_bytes += content.len();
+                    agent.last_event_at_ms = ts;
                     let task_key = agent.current_task.clone();
                     if !task_key.is_empty() {
                         let ring = self.task_outputs.entry(task_key).or_default();
@@ -1114,6 +1180,7 @@ impl DashboardSnapshot {
                             agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
                         {
                             agent.input_tokens += *value as u64;
+                            agent.last_event_at_ms = ts;
                         }
                     }
                     "output_tokens" => {
@@ -1121,6 +1188,21 @@ impl DashboardSnapshot {
                             agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
                         {
                             agent.output_tokens += *value as u64;
+                            agent.last_event_at_ms = ts;
+                        }
+                    }
+                    "cache_read_tokens" => {
+                        if let Some(agent) =
+                            agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
+                        {
+                            agent.cache_read_tokens += *value as u64;
+                        }
+                    }
+                    "cache_write_tokens" => {
+                        if let Some(agent) =
+                            agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
+                        {
+                            agent.cache_write_tokens += *value as u64;
                         }
                     }
                     "cost_usd" => {
@@ -1128,6 +1210,7 @@ impl DashboardSnapshot {
                             agent_key.as_deref().and_then(|k| self.agents.get_mut(k))
                         {
                             agent.cost_usd += value;
+                            agent.last_event_at_ms = ts;
                         }
                         self.stats.cost_usd_total += value;
                     }
@@ -1194,9 +1277,10 @@ impl DashboardSnapshot {
             DashboardEvent::GateThresholdsUpdated { snapshot_json } => {
                 self.gate_thresholds_json = snapshot_json.clone();
             }
-            DashboardEvent::AgentCompleted { agent_id } => {
+            DashboardEvent::AgentCompleted { agent_id, .. } => {
                 if let Some(agent) = self.agents.get_mut(agent_id) {
                     agent.active = false;
+                    agent.last_event_at_ms = ts;
                 }
                 self.stats.agents_active = self.stats.agents_active.saturating_sub(1);
             }
@@ -1857,9 +1941,14 @@ fn bootstrap_plan_state(
                     model: String::new(),
                     input_tokens: 0,
                     output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
                     cost_usd: 0.0,
                     current_task: String::new(),
                     current_plan: String::new(),
+                    attempt: 0,
+                    spawned_at_ms: 0,
+                    last_event_at_ms: 0,
                 });
             if entry.role == "unknown" && role != "unknown" {
                 entry.role = role;
@@ -2761,11 +2850,17 @@ mod tests {
         let mut snap = DashboardSnapshot::default();
         snap.apply(&DashboardEvent::AgentSpawned {
             agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: "coder".into(),
             model: String::new(),
         });
         snap.apply(&DashboardEvent::AgentOutput {
             agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             content: "hello world".into(),
         });
         assert_eq!(snap.agents["a1"].output_bytes, 11);
@@ -2777,6 +2872,9 @@ mod tests {
         snap.apply_with_ts(
             &DashboardEvent::AgentSpawned {
                 agent_id: "a1".into(),
+                plan_id: String::new(),
+                task_id: String::new(),
+                attempt: 0,
                 role: "coder".into(),
                 model: String::new(),
             },

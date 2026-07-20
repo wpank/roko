@@ -693,9 +693,10 @@ impl DashboardData {
             generation_changed = true;
         }
 
-        let (git_diff, git_diff_is_staged) = load_dashboard_git_diff(&self.root);
-        self.git_diff = git_diff;
-        self.git_diff_is_staged = git_diff_is_staged;
+        // NOTE: load_dashboard_git_diff() was previously called
+        // unconditionally here on every tick, blocking the main thread with
+        // `git diff` subprocess calls.  Git diff data is now refreshed only
+        // via the watcher-driven background path in App::drain_background_channels().
 
         if state_changed || episodes_changed || task_outputs_changed {
             self.plans = load_plan_summaries(&self.root, &self.executor_state);

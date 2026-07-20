@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use super::output_sink::{RunOutputSink, TokenUsage};
 use super::state::RunState;
 use super::tui_bridge::TuiBridge;
-use super::types::AgentEvent;
+use super::types::{AgentEvent, StderrSeverity};
 
 /// Maximum bytes retained in `agent_output`. When exceeded, the buffer is
 /// trimmed to keep the tail (most recent output), which is what replan
@@ -68,7 +68,8 @@ pub(crate) fn handle_agent_event(
                 );
             }
             let agent_id = agent_id_for_state(state);
-            tui.agent_output(&agent_id, text);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.agent_output(&agent_id, plan_id, task_id, attempt, text);
 
             sink.agent_text_delta(plan_id, task_id, text);
         }
@@ -117,8 +118,14 @@ pub(crate) fn handle_agent_event(
                     cache_write_tokens: *cache_write_tokens,
                 },
             );
-            tui.efficiency_event(plan_id, task_id, "input_tokens", *input_tokens as f64);
-            tui.efficiency_event(plan_id, task_id, "output_tokens", *output_tokens as f64);
+            tui.token_usage(
+                plan_id,
+                task_id,
+                *input_tokens,
+                *output_tokens,
+                *cache_read_tokens,
+                *cache_write_tokens,
+            );
         }
 
         AgentEvent::TurnCompleted {
@@ -140,7 +147,8 @@ pub(crate) fn handle_agent_event(
                 state.agent_output.push_str("\n[agent error]\n");
             }
             let agent_id = agent_id_for_state(state);
-            tui.agent_completed(&agent_id);
+            let attempt = state.iteration_for(plan_id, task_id);
+            tui.agent_completed(&agent_id, plan_id, task_id, attempt);
             let cost_display = format!("{:.4}", state.cost_usd);
             info!(
                 task = %state.current_task,
@@ -168,12 +176,13 @@ pub(crate) fn handle_agent_event(
         }
 
         AgentEvent::Error { message } => {
+            let severity = StderrSeverity::from_message(message);
             state
                 .agent_output
                 .push_str(&format!("\n[error: {message}]\n"));
             tui.error(message);
 
-            sink.agent_error(plan_id, task_id, message);
+            sink.agent_error(plan_id, task_id, message, severity);
         }
 
         AgentEvent::Exited { exit_code } => {

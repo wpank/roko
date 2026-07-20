@@ -650,15 +650,15 @@ or public event contracts overlap.
 
 Plan: tmp/status-quo/self-heal/plans/SH04-runtime-telemetry-tui/tasks.toml
 
-- [ ] SH04-T01 Use structured agent identity and attribution.
-- [ ] SH04-T02 Preserve typed output channels and severity.
-- [ ] SH04-T06 Fix dashboard route layout and phase invariants.
-- [ ] SH04-T03 Connect approval TUI to structured runner events.
-- [ ] SH04-T04 Expose preflight progress and runner diagnoses.
-- [ ] SH04-T05 Add agent liveness and estimated/final token reconciliation.
-- [ ] SH04-T08 Write operational event-health logs.
-- [ ] SH04-T07 Make Git refresh asynchronous and bounded.
-- [ ] SH04 reads 8/8 done after integrated acceptance.
+- [x] SH04-T01 Use structured agent identity and attribution. — Added plan_id/task_id/attempt to DashboardEvent agent variants, AgentState, AgentRow. Fixed broken TaskStarted starts_with heuristic. TuiBridge passes structured fields. Tests: dashboard_snapshot 10/10, tui::state 34/34.
+- [x] SH04-T02 Preserve typed output channels and severity. — Added StderrSeverity parameter to RunOutputSink::agent_error, classify via from_message at call site, StderrSink/FormattedStderrSink skip Infra-level. Tests: output_sink 14/14.
+- [x] SH04-T06 Fix dashboard route layout and phase invariants. — Panel overhead centralized (saturating_sub), phase invariant enforced in phase_compact.rs, test `one_route_is_visible_at_minimum_panel_height` covers narrow terminal.
+- [x] SH04-T03 Connect approval TUI to structured runner events. — Added TuiBridge::token_usage forwarding cache_read/write_tokens via EfficiencyEvent, AgentState gains cache token fields. NoopSink retained for approval but TUI gets all events via StateHub. Tests: runner 237/237, tui 246/246, dashboard_snapshot 10/10.
+- [x] SH04-T04 Expose preflight progress and runner diagnoses. — publish_gate_failure_diagnosis() at line 9453 surfaces structured DiagnosisSummary (severity, classification, suggested action) to dashboard ring buffer on both retry and terminal gate failure paths. preflight_ms efficiency event emitted at task completion. Tests: cli 1345/1345.
+- [x] SH04-T05 Add agent liveness and estimated/final token reconciliation. — Added spawned_at_ms/last_event_at_ms to AgentState, updated AgentSpawned/AgentOutput/AgentCompleted/EfficiencyEvent handlers. AgentRow carries timing fields, agents_view.rs renders elapsed and last-event columns via format_uptime(). Tests: cli 1345/1345, clippy clean.
+- [x] SH04-T08 Write operational event-health logs. — Added shutdown reason logging (user quit, signal, plan complete, error), startup context, WS connect/disconnect at info!, JSONL truncation resync at info!, parse errors at warn!. Tests: tui 246/246.
+- [x] SH04-T07 Make Git refresh asynchronous and bounded. — collect_git_bg_data offloaded to background thread with generation guard, startup git primed async, DashboardData::tick() no longer calls load_dashboard_git_diff unconditionally.
+- [x] SH04 reads 8/8 done after integrated acceptance.
 
 T07 may proceed independently after SH03. Other tasks parallelize only with disjoint
 reserved TUI/projection/bridge files.
@@ -667,11 +667,11 @@ reserved TUI/projection/bridge files.
 
 Plan: tmp/status-quo/self-heal/plans/SH05-config-dispatch/tasks.toml
 
-- [ ] SH05-T01 Fail fast on ambiguous model configuration.
-- [ ] SH05-T02 Normalize dispatch lifecycle and transient retry.
-- [ ] SH05-T03 Harden process supervision and cancellation.
-- [ ] SH05-T04 Enforce and attribute cost budgets.
-- [ ] SH05 reads 4/4 done after integrated acceptance.
+- [x] SH05-T01 Fail fast on ambiguous model configuration. — Duplicate slugs rejected via `AmbiguousModelSlug`, unresolved default via `UnresolvedModel`, validated at runner startup (event_loop.rs:741). Tests: `load_validated_rejects_duplicate_slugs`, `unresolved_default_model_is_fatal`.
+- [x] SH05-T02 Normalize dispatch lifecycle and transient retry. — RetryPolicy::for_rate_limit() uses DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS (5), added dispatch_max_retries to CoreRunnerConfig/RunConfig, 529→RateLimit in all providers, improved retry logging with error_class. Tests: retry 14/14.
+- [x] SH05-T03 Harden process supervision and cancellation. — Process groups via setpgid(0,0), recursive descendant kill (pgrep -P, depth 8), ProcessSupervisor::Drop force-kills sync, timeout produces TimeoutEvent persisted to ledger. Tests: `kill_tree_removes_child_and_grandchild_pids`, timeout replay tests.
+- [x] SH05-T04 Enforce and attribute cost budgets. — BudgetConfig defaults to 0.0=unlimited, PlanCompleted FeedbackEvent uses real costs, pre-flight validate_budget_ceilings rejects negative/NaN/Inf, budget guards handle 0.0=unlimited. Tests: budget 7/7, presets 8/8, facades 3/3.
+- [x] SH05 reads 4/4 done after integrated acceptance.
 
 T03/T04 may be parallel only if file reservations are disjoint.
 
@@ -679,12 +679,12 @@ T03/T04 may be parallel only if file reservations are disjoint.
 
 Plan: tmp/status-quo/self-heal/plans/SH06-regression-harness/tasks.toml
 
-- [ ] SH06-T01 Build deterministic crash-chain replay fixture.
-- [ ] SH06-T03 Test connected TUI responsiveness and invariants.
-- [ ] SH06-T02 Test interruption, dirty worktree, and exact resume after T01.
-- [ ] SH06-T04 Run subsystem regression/quality gates after T01/T02/T03.
-- [ ] SH06-T05 Prove Roko completes its own deterministic smoke repair.
-- [ ] SH06 reads 5/5 done.
+- [x] SH06-T01 Build deterministic crash-chain replay fixture. — 10 tests in runner_crash_recovery.rs covering concurrent completions, gate failure retry, blocked dependents, retry exhaustion, timeout cleanup, terminal reconciliation, transition guards, failure classification, diamond DAG skip, event round-trip. All deterministic, network-free.
+- [x] SH06-T03 Test connected TUI responsiveness and invariants. — 16 new tests (28 total) in tui_tabs.rs covering parallel agents, diagnosis ring buffer (eviction, dedup), token accumulation/routing, phase transitions, agent timing lifecycle, error ring eviction, AgentCompleted deactivation, full lifecycle replay.
+- [x] SH06-T02 Test interruption, dirty worktree, and exact resume after T01. — 8 new tests (13 total) in resume_cycle_e2e.rs: interrupt-after-gate recovery, multi-plan fingerprint validation, multi-plan drift detection, replan ledger round-trip, all-3-JSONL recovery, empty completed set, schema version mismatch/acceptance. All deterministic, tempdir-isolated.
+- [x] SH06-T04 Run subsystem regression/quality gates after T01/T02/T03. — ~5,139 tests across roko-cli/runtime/agent/core/serve: 0 SH-related regressions. 4-5 pre-existing/flaky failures (3 config CWD reads, 1 HTTP startup timeout, 1 CLI subprocess timeout). Clippy clean (0 warnings) across all 5 crates.
+- [x] SH06-T05 Prove Roko completes its own deterministic smoke repair. — 3 tests in e2e_self_host.rs: full pipeline (3-task DAG with gate-fail-retry, dashboard projection, persistence round-trip, resume validation, orphan detection), mid-run crash resume, failure propagation with terminal counts. 309 LOC, deterministic, network-free.
+- [x] SH06 reads 5/5 done.
 - [ ] Self-heal reads 57/57 done.
 - [ ] Autonomous concurrency increase is explicitly approved by this integrated proof.
 

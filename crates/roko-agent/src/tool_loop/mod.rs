@@ -29,7 +29,7 @@ use crate::dispatcher::ToolDispatcher;
 use crate::introspection::{Intervention, MetacognitiveMonitor, Turn};
 use crate::lifecycle::{BudgetStatus, BudgetTracker, CognitiveTier, TurnCostRecord};
 use crate::provider::ProviderError;
-use crate::retry::RetryPolicy;
+use crate::retry::{ErrorClass, RetryPolicy};
 use crate::streaming::StreamChunk;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, Translator};
 use crate::usage::Usage;
@@ -1282,10 +1282,12 @@ impl ToolLoop {
                         .retry_policy
                         .delay_with_retry_after(attempt, error.retry_after_ms());
                     tracing::warn!(
-                        attempt,
+                        attempt = attempt + 1,
+                        max_attempts = self.retry_policy.max_attempts,
                         delay_ms = delay,
+                        error_class = %ErrorClass::from(error),
                         error = %error,
-                        "backing off before retry"
+                        "retrying after transient error"
                     );
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
@@ -1321,10 +1323,12 @@ impl ToolLoop {
                         .retry_policy
                         .delay_with_retry_after(attempt, error.retry_after_ms());
                     tracing::warn!(
-                        attempt,
+                        attempt = attempt + 1,
+                        max_attempts = self.retry_policy.max_attempts,
                         delay_ms = delay,
+                        error_class = %ErrorClass::from(error),
                         error = %error,
-                        "backing off streaming turn before retry"
+                        "retrying after transient streaming error"
                     );
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }

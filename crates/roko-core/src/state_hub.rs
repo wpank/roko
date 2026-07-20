@@ -402,6 +402,9 @@ mod tests {
 
         sender.publish(DashboardEvent::AgentSpawned {
             agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: "coder".into(),
             model: String::new(),
         });
@@ -503,6 +506,9 @@ mod tests {
         let hub = StateHub::with_event_log(16, &log_path);
         hub.publish(DashboardEvent::AgentSpawned {
             agent_id: "a1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: "coder".into(),
             model: String::new(),
         });
@@ -535,6 +541,9 @@ mod tests {
 
         sender.publish(DashboardEvent::AgentSpawned {
             agent_id: "s1".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: "auditor".into(),
             model: String::new(),
         });

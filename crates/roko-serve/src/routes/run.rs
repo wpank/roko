@@ -121,6 +121,9 @@ pub(crate) async fn spawn_background_run(
                     },
                     DashboardEvent::AgentSpawned {
                         agent_id: agent_label.to_string(),
+                        plan_id: plan_id.clone(),
+                        task_id: task_id.clone(),
+                        attempt: 0,
                         role: "run".into(),
                         model: agent_label.to_string(),
                     },
@@ -186,6 +189,9 @@ pub(crate) async fn spawn_background_run(
                             let preview: String = text.chars().take(200).collect();
                             events.push(DashboardEvent::AgentOutput {
                                 agent_id: agent_label.to_string(),
+                                plan_id: plan_id.clone(),
+                                task_id: task_id.clone(),
+                                attempt: 0,
                                 content: preview,
                             });
                             events.push(DashboardEvent::TaskOutputAppended {

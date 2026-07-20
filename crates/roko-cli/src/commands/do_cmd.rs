@@ -544,6 +544,7 @@ async fn run_plan_execution(
         timeout_secs: roko_config.timeouts.agent_dispatch_secs,
         plan_timeout_secs: roko_config.timeouts.plan_total_secs,
         max_retries: 2,
+        dispatch_max_retries: roko_config.runner.dispatch_max_retries,
         max_concurrent_tasks,
         gate_concurrency: max_concurrent_tasks,
         approval: false,

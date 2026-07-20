@@ -79,6 +79,11 @@ impl JsonlCursor {
         self.offset
     }
 
+    /// Path being tailed.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Count of committed lines read since the last reset.
     #[allow(dead_code)]
     pub fn last_line(&self) -> usize {

@@ -118,8 +118,14 @@ impl AnomalyDetector {
     }
 
     /// Check whether the accumulated session cost has exhausted a budget.
+    ///
+    /// A `limit_usd` of `0.0` (or negative) is treated as **unlimited** and
+    /// always returns `None`.
     #[must_use]
     pub fn check_budget(&self, limit_usd: f64) -> Option<Anomaly> {
+        if limit_usd <= 0.0 {
+            return None;
+        }
         if self.session_cost_usd >= limit_usd {
             Some(Anomaly::BudgetExhausted {
                 used: self.session_cost_usd,
@@ -537,12 +543,12 @@ mod tests {
     }
 
     #[test]
-    fn budget_zero_limit_triggers_on_any_cost() {
+    fn budget_zero_limit_means_unlimited() {
         let mut detector = AnomalyDetector::new(0);
         detector.check_cost(0.001);
         assert!(
-            detector.check_budget(0.0).is_some(),
-            "any positive cost should exceed a zero budget"
+            detector.check_budget(0.0).is_none(),
+            "zero limit means unlimited — should not trigger"
         );
     }
 

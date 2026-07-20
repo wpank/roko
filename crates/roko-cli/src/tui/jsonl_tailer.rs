@@ -95,6 +95,7 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
         if self.cursor.offset() < prev_offset && raw_lines.is_empty() {
             // File was truncated but no new lines yet — clear accumulator
             // and wait for the next tick to pick up fresh data.
+            tracing::info!(path = %self.cursor.path().display(), "JSONL file truncated — resync from beginning");
             self.items.clear();
             self.parse_errors = 0;
             return Ok(0);
@@ -108,6 +109,7 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
             // we detect it by checking if new offset < old offset + new bytes.
             let new_bytes: u64 = raw_lines.iter().map(|l| l.len() as u64 + 1).sum();
             if self.cursor.offset() == new_bytes && prev_offset > new_bytes {
+                tracing::info!(path = %self.cursor.path().display(), "JSONL file truncated — resync from beginning");
                 self.items.clear();
                 self.parse_errors = 0;
             }
@@ -125,10 +127,10 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
                 }
                 Err(_e) => {
                     self.parse_errors += 1;
-                    tracing::trace!(
-                        path = %self.cursor_path(),
-                        error = %_e,
-                        "skipping malformed JSONL line"
+                    tracing::warn!(
+                        path = %self.cursor.path().display(),
+                        errors = self.parse_errors,
+                        "JSONL parse errors detected"
                     );
                 }
             }
@@ -158,10 +160,8 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
     }
 
     /// Path being tailed (for diagnostics).
-    fn cursor_path(&self) -> String {
-        // JsonlCursor doesn't expose path directly, so we reconstruct
-        // from the debug repr. This is only used for trace logging.
-        format!("{:?}", self.cursor)
+    pub fn path(&self) -> &std::path::Path {
+        self.cursor.path()
     }
 }
 

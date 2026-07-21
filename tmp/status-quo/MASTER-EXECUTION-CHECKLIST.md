@@ -580,7 +580,7 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [ ] P19-cascade-router-acp (6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17.
 - [ ] P20-zero-config (5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18.
 - [ ] P21-acp-streaming (5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17.
-- [ ] P22-acp-tool-permission (5) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17.
+- [ ] P22-acp-tool-permission (1/5 done; 4 remaining) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 is merged at `9ee418a57` with independent acceptance at `6b4ace91f` and post-merge `cargo check -p roko-acp`.
 - [ ] P23-prd-pipeline-fix (6) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16.
 - [ ] P24-workspace-paths (4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43.
 - [ ] P25-mcp-acp-passthrough (4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17.

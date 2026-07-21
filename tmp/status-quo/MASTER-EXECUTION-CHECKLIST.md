@@ -685,7 +685,8 @@ Plan: tmp/status-quo/self-heal/plans/SH06-regression-harness/tasks.toml
 - [x] SH06-T04 Run subsystem regression/quality gates after T01/T02/T03. — ~5,139 tests across roko-cli/runtime/agent/core/serve: 0 SH-related regressions. 4-5 pre-existing/flaky failures (3 config CWD reads, 1 HTTP startup timeout, 1 CLI subprocess timeout). Clippy clean (0 warnings) across all 5 crates.
 - [x] SH06-T05 Prove Roko completes its own deterministic smoke repair. — 3 tests in e2e_self_host.rs: full pipeline (3-task DAG with gate-fail-retry, dashboard projection, persistence round-trip, resume validation, orphan detection), mid-run crash resume, failure propagation with terminal counts. 309 LOC, deterministic, network-free.
 - [x] SH06 reads 5/5 done.
-- [ ] Self-heal reads 57/57 done.
+- [ ] Self-heal reads 56/57 done; SH01-T07 remains pending its independent review,
+      integration, and post-merge verification.
 - [ ] Autonomous concurrency increase is explicitly approved by this integrated proof.
 
 Required suite includes the task manifest commands plus:

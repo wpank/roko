@@ -1,4 +1,10 @@
 //! Prompt composition strategy selection.
+//!
+//! At runtime, `Auto` (the default) resolves to `DensityGreedy` because
+//! no bidder observations have been registered yet (the learning bidder
+//! registry starts empty). VCG allocation activates only after all
+//! registered bidders reach [`DEFAULT_VCG_WARMUP_OBSERVATIONS`] (10).
+//! This is by design: cold-start prompt assembly stays deterministic.
 
 use std::collections::HashMap;
 

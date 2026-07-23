@@ -99,4 +99,39 @@ mod tests {
             CompositionStrategy::Vcg
         );
     }
+
+    #[test]
+    fn auto_selects_density_greedy_when_no_bidders() {
+        let observations = HashMap::new();
+        assert_eq!(
+            CompositionStrategy::auto_select(&observations, DEFAULT_VCG_WARMUP_OBSERVATIONS),
+            CompositionStrategy::DensityGreedy,
+        );
+    }
+
+    #[test]
+    fn resolve_normalizes_weighted_sum_to_density_greedy() {
+        let obs = HashMap::new();
+        assert_eq!(
+            CompositionStrategy::WeightedSum.resolve(&obs, DEFAULT_VCG_WARMUP_OBSERVATIONS),
+            CompositionStrategy::DensityGreedy,
+        );
+    }
+
+    #[test]
+    fn resolve_preserves_explicit_vcg() {
+        let obs = HashMap::new();
+        assert_eq!(
+            CompositionStrategy::Vcg.resolve(&obs, DEFAULT_VCG_WARMUP_OBSERVATIONS),
+            CompositionStrategy::Vcg,
+        );
+    }
+
+    #[test]
+    fn is_density_greedy_covers_both_aliases() {
+        assert!(CompositionStrategy::DensityGreedy.is_density_greedy());
+        assert!(CompositionStrategy::WeightedSum.is_density_greedy());
+        assert!(!CompositionStrategy::Vcg.is_density_greedy());
+        assert!(!CompositionStrategy::Auto.is_density_greedy());
+    }
 }

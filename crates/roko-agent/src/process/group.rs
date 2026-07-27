@@ -8,6 +8,79 @@
 
 use tokio::process::{Child, Command};
 
+/// Verify that this process can create a child whose descendants are prevented
+/// by the kernel. Privileged identities are rejected because they can bypass
+/// `RLIMIT_NPROC`.
+#[allow(unsafe_code)]
+pub fn validate_no_descendant_context() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        // SAFETY: these libc calls have no preconditions.
+        let real_uid = unsafe { libc::getuid() };
+        // SAFETY: these libc calls have no preconditions.
+        let effective_uid = unsafe { libc::geteuid() };
+        if real_uid == 0 || effective_uid == 0 || real_uid != effective_uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "no-descendant process containment requires an unprivileged matching identity",
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::fs::read_to_string("/proc/self/status")?;
+            for field in ["CapPrm:", "CapEff:", "CapAmb:"] {
+                let value = status
+                    .lines()
+                    .find_map(|line| line.strip_prefix(field))
+                    .ok_or_else(|| std::io::Error::other("cannot prove Linux capability state"))?
+                    .trim();
+                if u64::from_str_radix(value, 16)
+                    .map_err(|_| std::io::Error::other("invalid Linux capability state"))?
+                    != 0
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "no-descendant process containment rejects Linux capabilities",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "no-descendant process containment requires Unix",
+        ))
+    }
+}
+
+/// Configure a direct child so it cannot create descendants.
+#[allow(unsafe_code)]
+pub fn configure_no_descendant_process(cmd: &mut Command) -> std::io::Result<()> {
+    validate_no_descendant_context()?;
+    #[cfg(unix)]
+    // SAFETY: the post-fork closure uses only async-signal-safe libc calls.
+    unsafe {
+        cmd.pre_exec(|| {
+            #[cfg(target_os = "linux")]
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 /// Configure a [`Command`] to spawn its child in a new process group.
 ///
 /// On Unix this installs a `pre_exec` hook calling `libc::setpgid(0, 0)`.

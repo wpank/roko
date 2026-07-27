@@ -94,7 +94,7 @@ async fn run_direct(endpoint: String, tx: Sender<StreamChunk>) {
             let endpoint = endpoint.clone();
             async move {
                 let (socket, _) = connect_async(&endpoint).await.map_err(|error| {
-                    tracing::debug!(%error, %endpoint, "agent stream connect failed");
+                    tracing::warn!(%error, %endpoint, "agent stream connect failed");
                 })?;
                 Ok(socket)
             }
@@ -117,10 +117,10 @@ async fn run_event_bus(
             let auth_token = auth_token.clone();
             async move {
                 let request = build_request(&endpoint, auth_token.as_deref()).ok_or_else(|| {
-                    tracing::debug!(%endpoint, "failed to build event bus websocket request");
+                    tracing::warn!(%endpoint, "failed to build event bus websocket request");
                 })?;
                 let (mut socket, _) = connect_async(request).await.map_err(|error| {
-                    tracing::debug!(%error, %endpoint, "event bus connect failed");
+                    tracing::warn!(%error, %endpoint, "event bus connect failed");
                 })?;
                 let subscribe = json!({
                     "subscribe": ["agent_output"]
@@ -130,7 +130,7 @@ async fn run_event_bus(
                     .send(Message::Text(subscribe.into()))
                     .await
                     .map_err(|error| {
-                        tracing::debug!(%error, %endpoint, "failed to subscribe to agent output");
+                        tracing::warn!(%error, %endpoint, "failed to subscribe to agent output");
                     })?;
                 Ok(socket)
             }
@@ -157,6 +157,7 @@ where
         match connect().await {
             Ok(mut socket) => {
                 backoff_secs = INITIAL_BACKOFF_SECS;
+                tracing::info!("WebSocket connected to agent stream");
                 if send_chunk(&tx, StreamChunk::Connected).await.is_err() {
                     return;
                 }
@@ -190,11 +191,12 @@ async fn pump_socket<S, P>(
         let message = match socket.next().await {
             Some(Ok(message)) => message,
             Some(Err(error)) => {
-                tracing::debug!(%error, "agent stream receive failed");
+                tracing::info!(%error, "agent stream disconnected");
                 let _ = send_chunk(tx, StreamChunk::Disconnected).await;
                 return;
             }
             None => {
+                tracing::info!("agent stream disconnected");
                 let _ = send_chunk(tx, StreamChunk::Disconnected).await;
                 return;
             }
@@ -220,6 +222,7 @@ async fn pump_socket<S, P>(
                 }
             }
             Message::Close(_) => {
+                tracing::info!("agent stream disconnected");
                 let _ = send_chunk(tx, StreamChunk::Disconnected).await;
                 return;
             }

@@ -11716,7 +11716,7 @@ impl PlanRunner {
             .await;
 
         let plan_spent = self.plan_costs.get(plan_id).copied().unwrap_or(0.0);
-        if plan_spent >= self.config.budget.max_plan_usd {
+        if self.config.budget.max_plan_usd > 0.0 && plan_spent >= self.config.budget.max_plan_usd {
             return Err(anyhow!(
                 "plan {plan_id} budget exhausted: ${plan_spent:.2} >= ${:.2} max",
                 self.config.budget.max_plan_usd
@@ -11767,6 +11767,9 @@ impl PlanRunner {
         // Mark the agent as completed so the TUI can reflect inactivity.
         self.publish_dashboard_event(roko_core::DashboardEvent::AgentCompleted {
             agent_id: result.output.id.to_string(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
         });
 
         // Appraise task outcome for affect modulation.
@@ -15200,7 +15203,7 @@ impl PlanRunner {
         // ── Budget check before dispatch ─────────────────────────────
         self.ensure_task_budget_available(plan_id, task)?;
         let plan_spent = self.plan_costs.get(plan_id).copied().unwrap_or(0.0);
-        if plan_spent >= self.config.budget.max_plan_usd {
+        if self.config.budget.max_plan_usd > 0.0 && plan_spent >= self.config.budget.max_plan_usd {
             return Err(anyhow!(
                 "plan {plan_id} budget exhausted: ${plan_spent:.2} >= ${:.2} max",
                 self.config.budget.max_plan_usd
@@ -17135,7 +17138,7 @@ impl PlanRunner {
         self.add_task_spend(plan_id, task, task_cost);
         let plan_spent = self.plan_costs.get(plan_id).copied().unwrap_or(0.0);
         self.warn_plan_budget_pressure(plan_id, plan_spent);
-        if plan_spent >= self.config.budget.max_plan_usd {
+        if self.config.budget.max_plan_usd > 0.0 && plan_spent >= self.config.budget.max_plan_usd {
             return Err(anyhow!(
                 "plan {plan_id} budget exhausted: ${plan_spent:.2} >= ${:.2} max",
                 self.config.budget.max_plan_usd
@@ -19926,6 +19929,9 @@ fn server_event_to_dashboard(
             model,
         } => Some(DashboardEvent::AgentSpawned {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: role.clone(),
             model: model.clone(),
         }),
@@ -19933,6 +19939,9 @@ fn server_event_to_dashboard(
             agent_id, content, ..
         } => Some(DashboardEvent::AgentOutput {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             content: content.clone(),
         }),
         ServerEvent::GateResult {

@@ -604,6 +604,9 @@ impl EventConsumer for DashboardEventBridge {
                 ..
             } => vec![DashboardEvent::AgentSpawned {
                 agent_id: agent_id.clone(),
+                plan_id: String::new(),
+                task_id: String::new(),
+                attempt: 0,
                 role: role.clone(),
                 model: dashboard_model_label(model, agent_id),
             }],
@@ -611,11 +614,17 @@ impl EventConsumer for DashboardEventBridge {
                 agent_id, chunk, ..
             } => vec![DashboardEvent::AgentOutput {
                 agent_id: agent_id.clone(),
+                plan_id: String::new(),
+                task_id: String::new(),
+                attempt: 0,
                 content: chunk.clone(),
             }],
             RuntimeEvent::AgentCompleted { agent_id, .. } => {
                 vec![DashboardEvent::AgentCompleted {
                     agent_id: agent_id.clone(),
+                    plan_id: String::new(),
+                    task_id: String::new(),
+                    attempt: 0,
                 }]
             }
             RuntimeEvent::PhaseTransition { run_id, from, to } => {
@@ -1371,6 +1380,9 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             model,
         } => Some(DashboardEvent::AgentSpawned {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: role.clone(),
             model: dashboard_model_label(model, agent_id),
         }),
@@ -1378,6 +1390,9 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             agent_id, content, ..
         } => Some(DashboardEvent::AgentOutput {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             content: content.clone(),
         }),
         ServerEvent::GateResult {
@@ -1483,11 +1498,17 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
         // Map agent lifecycle events from the supervisor.
         ServerEvent::AgentStarted { agent_id, .. } => Some(DashboardEvent::AgentSpawned {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
             role: String::new(),
             model: dashboard_model_label("", agent_id),
         }),
         ServerEvent::AgentStopped { agent_id, .. } => Some(DashboardEvent::AgentCompleted {
             agent_id: agent_id.clone(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
         }),
         // Bridge bench events so the dashboard TUI / SSE clients see bench activity.
         ServerEvent::BenchRunStarted { bench_id, .. } => Some(DashboardEvent::PlanStarted {
@@ -1753,12 +1774,15 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
             agent_id,
             role,
             model,
+            ..
         } => Some(ServerEvent::AgentSpawned {
             agent_id: agent_id.clone(),
             role: role.clone(),
             model: model.clone(),
         }),
-        DashboardEvent::AgentOutput { agent_id, content } => Some(ServerEvent::AgentOutput {
+        DashboardEvent::AgentOutput {
+            agent_id, content, ..
+        } => Some(ServerEvent::AgentOutput {
             agent_id: agent_id.clone(),
             run_id: None,
             content: content.clone(),

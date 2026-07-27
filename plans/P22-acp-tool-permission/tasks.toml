@@ -1,7 +1,7 @@
 [meta]
 plan = "P22-acp-tool-permission"
 total = 5
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -14,7 +14,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Replace ToolContext::testing() with proper ToolContext in ACP dispatch"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 30

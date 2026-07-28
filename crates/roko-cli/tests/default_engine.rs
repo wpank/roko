@@ -38,4 +38,22 @@ fn default_engine_does_real_work() {
         ledger.lines().any(|line| line.contains("gate_outcome")),
         "bare default plan run did not run gates; ledger: {ledger}"
     );
+
+    let episodes_path = workdir.join(".roko/episodes.jsonl");
+    let episodes = fs::read_to_string(&episodes_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", episodes_path.display()));
+    assert!(
+        !episodes.trim().is_empty(),
+        "bare default plan run did not persist an episode"
+    );
+
+    for snapshot_name in ["executor.json", "state-snapshot.json"] {
+        let snapshot_path = workdir.join(".roko/state").join(snapshot_name);
+        let snapshot = fs::read_to_string(&snapshot_path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", snapshot_path.display()));
+        assert!(
+            !snapshot.trim().is_empty(),
+            "bare default plan run wrote an empty {snapshot_name}"
+        );
+    }
 }

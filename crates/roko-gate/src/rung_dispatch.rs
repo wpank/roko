@@ -288,11 +288,8 @@ pub async fn run_canonical_rung(
 }
 
 fn stub_verdict(gate: &str, detail: impl Into<String>) -> Verdict {
-    let message = format!("stub gate; {}", detail.into());
-    let mut verdict = Verdict::pass(gate.to_string());
-    verdict.reason.clone_from(&message);
-    verdict.detail = Some(message);
-    verdict
+    let message = format!("gate unavailable; {}", detail.into());
+    Verdict::fail(gate.to_string(), message.clone()).with_detail(message)
 }
 
 async fn run_symbol_gate(
@@ -570,4 +567,16 @@ fn render_rung_detail(verdicts: &[Verdict]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stub_verdict;
+
+    #[test]
+    fn unavailable_rung_is_a_failure() {
+        let verdict = stub_verdict("symbol", "no manifest");
+        assert!(!verdict.passed);
+        assert!(verdict.reason.contains("gate unavailable"));
+    }
 }

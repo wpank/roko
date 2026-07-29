@@ -1,7 +1,7 @@
 [meta]
 plan = "E01-execution-engine"
 total = 16
-done = 7
+done = 10
 status = "ready"
 max_parallel = 1
 
@@ -369,7 +369,7 @@ acceptance = [
 [[task]]
 id = "E01-T07"
 title = "Acceptance roll-up: SH02 task isolation plus E01 plan aggregation"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH02-T02 + E01-T14"
 tier = "integrative"
@@ -620,7 +620,7 @@ acceptance = [
 [[task]]
 id = "E01-T11"
 title = "Acceptance roll-up: SH05 resumable cost-budget enforcement"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH05-T04"
 tier = "focused"
@@ -681,7 +681,7 @@ fail_msg = "a test must assert that a zero or exhausted budget prevents agent di
 [[task]]
 id = "E01-T12"
 title = "Acceptance roll-up: SH05 symmetric transient-dispatch retry"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH05-T02"
 tier = "focused"

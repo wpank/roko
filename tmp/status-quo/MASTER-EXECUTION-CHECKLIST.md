@@ -703,8 +703,8 @@ reason to delete the gate.
 
 ### Wave 7 — reconcile E01 and finish security
 
-- [ ] Audit E01-T07–T16 against SH02/SH05 and E46–E48.
-- [ ] Complete or explicitly supersede every E01 task with equivalent proof.
+- [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
+- [ ] Complete or explicitly supersede every E01 task with equivalent proof. (10/16 done; T08 gate enrichment, T10 docs, T14 auto-branch remain; T13/T15/T16 deferred to E15/E47.)
 - [ ] E01-execution-engine reads 16/16 done or has reviewed supersession mappings.
 - [ ] Complete all 19 E04-security-perimeter tasks.
 - [ ] Relay HTTP and WS routes require authentication.

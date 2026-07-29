@@ -321,12 +321,12 @@ pub async fn run_gate_once(
 
     let workdir_for_run = workdir.clone();
     let run = async {
-        let inputs = RungExecutionInputs::default();
-        let config = RungExecutionConfig {
-            source_roots: Some(vec![workdir_for_run]),
-            timeout_ms: Some(timeout_secs.saturating_mul(1000)),
-            ..Default::default()
-        };
+        let inputs = build_rung_execution_inputs(&target_crates);
+        let config = build_rung_execution_config(
+            &workdir_for_run,
+            timeout_secs,
+            &verify_steps,
+        );
         let pipeline = if gates_config.has_custom_rungs() {
             GatePipelineBuilder::from_config(&gates_config, complexity)
         } else {
@@ -589,6 +589,50 @@ pub fn spawn_plan_verify(
         }
     });
     (handle, start_tx)
+}
+
+/// Build enriched [`RungExecutionInputs`] from available task context.
+///
+/// Populates `code_intel_hints` from target crate names so that symbol and
+/// LLM-judge gates can focus on relevant code. Signal fields (symbol,
+/// fact-check, llm-judge) remain `None` when no oracle is available — the
+/// rung dispatch already fails closed for unavailable rich rungs.
+fn build_rung_execution_inputs(target_crates: &[String]) -> RungExecutionInputs {
+    RungExecutionInputs {
+        code_intel_hints: target_crates.to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Build enriched [`RungExecutionConfig`] from task workdir and verify steps.
+///
+/// Populates `source_roots`, `timeout_ms`, `integration_test_pattern`, and
+/// `integration_build_system` from available task context. Oracle fields
+/// (fact-check, llm-judge) remain `None` — the rung dispatch fails closed
+/// when required oracles are absent.
+fn build_rung_execution_config(
+    workdir: &Path,
+    timeout_secs: u64,
+    verify_steps: &[VerifyStep],
+) -> RungExecutionConfig {
+    let integration_test_pattern = verify_steps
+        .iter()
+        .find(|v| v.phase.eq_ignore_ascii_case("integration"))
+        .map(|step| step.command.clone());
+
+    let integration_build_system = if integration_test_pattern.is_some() {
+        Some(roko_gate::BuildSystem::detect(workdir))
+    } else {
+        None
+    };
+
+    RungExecutionConfig {
+        source_roots: Some(vec![workdir.to_path_buf()]),
+        timeout_ms: Some(timeout_secs.saturating_mul(1000)),
+        integration_test_pattern,
+        integration_build_system,
+        ..Default::default()
+    }
 }
 
 fn gate_signal(

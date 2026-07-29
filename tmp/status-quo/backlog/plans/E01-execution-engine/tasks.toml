@@ -1,7 +1,7 @@
 [meta]
 plan = "E01-execution-engine"
 total = 16
-done = 10
+done = 11
 status = "ready"
 max_parallel = 1
 
@@ -441,7 +441,7 @@ fail_msg = "runner and worktree crates must compile together"
 [[task]]
 id = "E01-T08"
 title = "Wire enrich_rung_config into live gate dispatch"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 130

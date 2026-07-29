@@ -396,6 +396,15 @@ pub fn format_branch_name(plan_id: &str) -> String {
     format!("roko/plan/{plan_id}")
 }
 
+/// Derive the canonical branch name for a task within its plan.
+///
+/// Attempt-scoped branches use [`format_attempt_branch_name`], but this
+/// compatibility helper remains part of the public worktree API.
+#[must_use]
+pub fn format_task_branch_name(plan_id: &str, task_id: &str) -> String {
+    format!("roko/task/{plan_id}/{task_id}")
+}
+
 /// Collision-resistant manager ID for an exact task attempt.
 pub fn format_attempt_worktree_id(plan_id: &str, task_id: &str, attempt: u32) -> String {
     let digest = blake3::hash(format!("{plan_id}\0{task_id}\0{attempt}").as_bytes());

@@ -761,15 +761,14 @@ pub struct PlanRunSummary {
     #[serde(default)]
     pub tasks_skipped: usize,
     #[serde(default)]
-    pub tasks_active: usize,
+    pub tasks_cancelled: usize,
     #[serde(default)]
-    pub tasks_pending: usize,
-    /// Task IDs and reasons for blocked tasks.
+    pub tasks_orphaned: usize,
+    #[serde(default)]
+    pub tasks_nonterminal: usize,
+    /// Per-task classification details.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_details: Vec<TaskStatusDetail>,
-    /// Task IDs and reasons for skipped tasks.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skipped_details: Vec<TaskStatusDetail>,
+    pub tasks: Vec<TaskRunSummary>,
 }
 
 /// Detail entry for a blocked or skipped task.
@@ -777,6 +776,58 @@ pub struct PlanRunSummary {
 pub struct TaskStatusDetail {
     pub task_id: String,
     pub reason: String,
+}
+
+/// Mutually exclusive task outcome category for reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunCategory {
+    /// Task passed all gates and was committed.
+    Completed,
+    /// Task exhausted retries or terminally failed.
+    Failed,
+    /// Task could not start because a dependency was not met.
+    Blocked,
+    /// Task was transitively skipped (prerequisite failed or plan timed out).
+    Skipped,
+    /// Task attempt was cancelled before completion.
+    Cancelled,
+    /// Plan terminalized without producing an outcome for this task.
+    Orphaned,
+    /// Task has not reached a terminal outcome (still running or pending).
+    Nonterminal,
+}
+
+/// Per-task classification in a run report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRunSummary {
+    pub plan_id: String,
+    pub task_id: String,
+    pub category: TaskRunCategory,
+    pub reason: String,
+}
+
+/// Per-phase wall-clock durations for a single task attempt.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct TaskPhaseDurations {
+    /// Time spent setting up the dispatch (model routing, prompt assembly).
+    pub dispatch_ms: u64,
+    /// Time spent in the agent (LLM calls + tool execution).
+    pub agent_ms: u64,
+    /// Time spent running gate checks.
+    pub gate_ms: u64,
+    /// Time spent on post-gate cleanup (commit, worktree merge, etc.).
+    pub cleanup_ms: u64,
+}
+
+impl TaskPhaseDurations {
+    /// Total wall-clock time across all phases.
+    pub fn total_ms(&self) -> u64 {
+        self.dispatch_ms
+            .saturating_add(self.agent_ms)
+            .saturating_add(self.gate_ms)
+            .saturating_add(self.cleanup_ms)
+    }
 }
 
 /// Per-attempt projection maintained by [`RunState`](super::state::RunState).
@@ -890,6 +941,12 @@ pub enum RunnerEvent {
         tasks_active: usize,
         #[serde(default)]
         tasks_pending: usize,
+        #[serde(default)]
+        tasks_cancelled: usize,
+        #[serde(default)]
+        tasks_orphaned: usize,
+        #[serde(default)]
+        tasks_nonterminal: usize,
         total_agent_calls: usize,
         total_cost_usd: f64,
         duration_ms: u64,
@@ -942,6 +999,8 @@ pub enum RunnerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_kind: Option<RunnerFailureKind>,
         duration_ms: u64,
+        #[serde(default)]
+        phase_durations: TaskPhaseDurations,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         model: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -970,6 +1029,10 @@ pub enum RunnerEvent {
         timestamp_ms: u64,
         run_id: String,
         timeout: TimeoutEvent,
+        #[serde(default)]
+        duration_ms: u64,
+        #[serde(default)]
+        phase_durations: TaskPhaseDurations,
     },
     #[serde(rename = "agent.dispatch.started")]
     AgentDispatchStarted {
@@ -1167,6 +1230,9 @@ impl RunnerEvent {
             tasks_skipped: totals.tasks_skipped,
             tasks_active: totals.tasks_active,
             tasks_pending: totals.tasks_pending,
+            tasks_cancelled: totals.tasks_cancelled,
+            tasks_orphaned: totals.tasks_orphaned,
+            tasks_nonterminal: totals.tasks_nonterminal,
             total_agent_calls: totals.total_agent_calls,
             total_cost_usd: totals.total_cost_usd,
             duration_ms: totals.duration_ms,
@@ -1237,6 +1303,31 @@ impl RunnerEvent {
             outcome,
             failure_kind,
             duration_ms,
+            phase_durations: TaskPhaseDurations::default(),
+            model: model.into(),
+            provider: provider.into(),
+        }
+    }
+
+    pub fn task_attempt_completed_with_timing(
+        run_id: &str,
+        attempt: TaskAttemptRef,
+        outcome: TaskAttemptOutcome,
+        failure_kind: Option<RunnerFailureKind>,
+        phase_durations: TaskPhaseDurations,
+        model: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> Self {
+        let stamp = EventStamp::now();
+        Self::TaskAttemptCompleted {
+            timestamp: stamp.timestamp,
+            timestamp_ms: stamp.timestamp_ms,
+            run_id: run_id.to_string(),
+            attempt,
+            outcome,
+            failure_kind,
+            duration_ms: phase_durations.total_ms(),
+            phase_durations,
             model: model.into(),
             provider: provider.into(),
         }
@@ -1274,6 +1365,8 @@ impl RunnerEvent {
             timestamp_ms: stamp.timestamp_ms,
             run_id: run_id.to_string(),
             timeout,
+            duration_ms: 0,
+            phase_durations: TaskPhaseDurations::default(),
         }
     }
 
@@ -1643,6 +1736,9 @@ pub struct RunTotals {
     pub tasks_skipped: usize,
     pub tasks_active: usize,
     pub tasks_pending: usize,
+    pub tasks_cancelled: usize,
+    pub tasks_orphaned: usize,
+    pub tasks_nonterminal: usize,
     pub total_agent_calls: usize,
     pub total_cost_usd: f64,
     pub duration_ms: u64,

@@ -1374,6 +1374,9 @@ impl AppState {
         self.state_hub
             .publish(roko_core::DashboardEvent::AgentSpawned {
                 agent_id: stored.agent_id.clone(),
+                plan_id: String::new(),
+                task_id: String::new(),
+                attempt: 0,
                 role: stored
                     .label
                     .clone()

@@ -890,6 +890,9 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             if !agent_id.is_empty() {
                 events.push(DashboardEvent::AgentOutput {
                     agent_id: agent_id.clone(),
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    attempt: 0,
                     content: format!("▶ started work on: {}", job.title),
                 });
             }
@@ -923,6 +926,9 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             if !agent_id.is_empty() {
                 events.push(DashboardEvent::AgentOutput {
                     agent_id: agent_id.clone(),
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    attempt: 0,
                     content: format!("✓ submitted: {summary}"),
                 });
             }
@@ -1020,6 +1026,9 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
             if !agent_id.is_empty() {
                 events.push(DashboardEvent::AgentCompleted {
                     agent_id: agent_id.clone(),
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    attempt: 0,
                 });
                 events.push(DashboardEvent::EpisodeRecorded {
                     agent_id: agent_id.clone(),
@@ -1029,6 +1038,9 @@ fn publish_job_dashboard_events(state: &AppState, job: &JobRecord, prev_status: 
                 });
                 events.push(DashboardEvent::AgentOutput {
                     agent_id: agent_id.clone(),
+                    plan_id: plan_id.clone(),
+                    task_id: task_id.clone(),
+                    attempt: 0,
                     content: format!(
                         "{} {feedback}",
                         if accepted {

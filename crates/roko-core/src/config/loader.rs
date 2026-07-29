@@ -882,12 +882,8 @@ pub fn merge_global_into(config: &mut RokoConfig) {
         config.agent.default_effort = global.agent.default_effort.clone();
     }
 
-    // -- Budget defaults (fill when project uses default values) --
-    // BudgetConfig::default().max_plan_usd = 25.0
-    let default_max_plan_usd: f32 = 25.0;
-    if (config.budget.max_plan_usd - default_max_plan_usd).abs() < f32::EPSILON
-        && (global.budget.max_plan_usd - default_max_plan_usd).abs() > f32::EPSILON
-    {
+    // -- Budget defaults (fill when project uses default, i.e. 0.0 = unlimited) --
+    if config.budget.max_plan_usd == 0.0 && global.budget.max_plan_usd != 0.0 {
         tracing::debug!(
             max_plan_usd = global.budget.max_plan_usd,
             "merged global budget.max_plan_usd"

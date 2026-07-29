@@ -285,6 +285,12 @@ pub struct AgentRow {
     pub current_plan: String,
     /// Task this agent is working on.
     pub current_task: String,
+    /// Current dispatch attempt number (1-based).
+    pub attempt: u32,
+    /// Timestamp (epoch ms) when agent was spawned.
+    pub spawned_at_ms: u64,
+    /// Timestamp (epoch ms) of the last event received from this agent.
+    pub last_event_at_ms: u64,
     /// Accumulated output lines for the output pane.
     pub output_lines: Vec<String>,
     /// Last line of agent output (for the output pane).
@@ -1781,6 +1787,9 @@ impl TuiState {
                 context_limit: model_context_limit(latest.map(|e| e.model.as_str()).unwrap_or("")),
                 current_plan: current_plan.clone(),
                 current_task: current_task.clone(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
                 output_lines: Vec::new(),
                 last_output_line: String::new(),
             });
@@ -2200,6 +2209,12 @@ impl TuiState {
                     .unwrap_or_default();
                 let last_output_line = output_lines.last().cloned().unwrap_or_default();
 
+                let snap_attempt = if agent.attempt > 0 {
+                    agent.attempt
+                } else {
+                    prev_row.map(|row| row.attempt).unwrap_or(0)
+                };
+
                 AgentRow {
                     id: agent.agent_id.clone(),
                     active: agent.active,
@@ -2215,6 +2230,9 @@ impl TuiState {
                     context_limit,
                     current_plan: snap_current_plan,
                     current_task: snap_current_task,
+                    attempt: snap_attempt,
+                    spawned_at_ms: agent.spawned_at_ms,
+                    last_event_at_ms: agent.last_event_at_ms,
                     output_lines,
                     last_output_line,
                 }
@@ -4479,9 +4497,14 @@ tier = "focused"
                         model: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                         cost_usd: 0.0,
                         current_task: String::new(),
                         current_plan: String::new(),
+                        attempt: 0,
+                        spawned_at_ms: 0,
+                        last_event_at_ms: 0,
                     },
                 ),
                 (
@@ -4494,9 +4517,14 @@ tier = "focused"
                         model: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                         cost_usd: 0.0,
                         current_task: String::new(),
                         current_plan: String::new(),
+                        attempt: 0,
+                        spawned_at_ms: 0,
+                        last_event_at_ms: 0,
                     },
                 ),
             ]
@@ -4801,9 +4829,14 @@ tier = "focused"
                 model: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: String::new(),
                 current_plan: String::new(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.gates.push(roko_core::dashboard_snapshot::GateVerdict {
@@ -4975,9 +5008,14 @@ tier = "focused"
                 model: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: String::new(),
                 current_plan: String::new(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.agents.insert(
@@ -4990,9 +5028,14 @@ tier = "focused"
                 model: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: String::new(),
                 current_plan: String::new(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.stats.plans_active = 1;
@@ -5033,9 +5076,14 @@ tier = "focused"
                 model: "test-model".into(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: "task-1".into(),
                 current_plan: "plan-1".into(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.task_outputs.insert(
@@ -5064,9 +5112,14 @@ tier = "focused"
                 model: "test-model".into(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: "task-1".into(),
                 current_plan: "plan-1".into(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.task_outputs.insert(
@@ -5105,9 +5158,14 @@ tier = "focused"
                 model: "test-model".into(),
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 cost_usd: 0.0,
                 current_task: "task-2".into(),
                 current_plan: "plan-1".into(),
+                attempt: 0,
+                spawned_at_ms: 0,
+                last_event_at_ms: 0,
             },
         );
         snap.task_outputs.insert("task-2".into(), VecDeque::new());

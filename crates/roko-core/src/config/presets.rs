@@ -203,17 +203,26 @@ mod tests {
     fn minimal_is_cheapest() {
         let m = Preset::Minimal.to_config();
         let b = Preset::Balanced.to_config();
-        assert!(m.budget.max_plan_usd < b.budget.max_plan_usd);
+        // Minimal has an explicit cap; balanced defaults to 0.0 (unlimited).
+        assert!(
+            m.budget.max_plan_usd > 0.0,
+            "minimal should have a concrete cap"
+        );
+        assert!(
+            b.budget.max_plan_usd == 0.0,
+            "balanced should default to unlimited (0.0)"
+        );
         assert!(m.conductor.max_agents < b.conductor.max_agents);
         assert!(m.gates.skip_tests);
     }
 
     #[test]
     fn thorough_is_most_expensive() {
-        let b = Preset::Balanced.to_config();
         let t = Preset::Thorough.to_config();
-        assert!(t.budget.max_plan_usd > b.budget.max_plan_usd);
-        assert!(t.conductor.max_agents > b.conductor.max_agents);
+        // Thorough has an explicit cap that's higher than minimal's.
+        let m = Preset::Minimal.to_config();
+        assert!(t.budget.max_plan_usd > m.budget.max_plan_usd);
+        assert!(t.conductor.max_agents > m.conductor.max_agents);
         assert!(!t.gates.skip_tests);
         assert_eq!(t.conductor.max_parallel_plans, 4);
     }

@@ -32,7 +32,10 @@ pub mod stderr;
 
 // Re-export the primary public API surface for convenience.
 pub use env::{AgentEnv, apply_agent_env};
-pub use group::{collect_descendants, kill_process_group, set_process_group};
+pub use group::{
+    collect_descendants, configure_no_descendant_process, kill_process_group, set_process_group,
+    validate_no_descendant_context,
+};
 pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, kill_tree};
 pub use limits::{ResourceLimits, apply_resource_limits};
 pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch, write_mcp_config};

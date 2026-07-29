@@ -40,6 +40,21 @@ impl From<&ProviderError> for ErrorClass {
     }
 }
 
+impl std::fmt::Display for ErrorClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimit => f.write_str("rate_limit"),
+            Self::AuthFailure => f.write_str("auth_failure"),
+            Self::Timeout => f.write_str("timeout"),
+            Self::ServerError => f.write_str("server_error"),
+            Self::ContentPolicy => f.write_str("content_policy"),
+            Self::ContextOverflow => f.write_str("context_overflow"),
+            Self::ModelNotFound => f.write_str("model_not_found"),
+            Self::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
 /// Retry policy with AWS-style full-jitter exponential backoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -58,7 +73,7 @@ impl RetryPolicy {
     ///
     /// Uses the rate-limit-specific defaults from `roko_core::defaults`:
     /// - 2 s base delay (doubles each attempt: 2 s, 4 s, 8 s, ...)
-    /// - 3 max attempts
+    /// - 5 max attempts (`DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS`)
     /// - 60 s ceiling
     ///
     /// The delay always includes a guaranteed floor of `base_delay_ms / 2`
@@ -66,13 +81,18 @@ impl RetryPolicy {
     #[must_use]
     pub fn for_rate_limit() -> Self {
         use roko_core::defaults::{
-            DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS, DEFAULT_RATE_LIMIT_RETRY_MAX_BACKOFF_MS,
+            DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS, DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS,
+            DEFAULT_RATE_LIMIT_RETRY_MAX_BACKOFF_MS,
         };
         Self {
-            max_attempts: 3,
+            max_attempts: DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS, // 5
             base_delay_ms: DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS, // 2_000
             max_delay_ms: DEFAULT_RATE_LIMIT_RETRY_MAX_BACKOFF_MS, // 60_000
-            retryable_errors: vec![ErrorClass::RateLimit],
+            retryable_errors: vec![
+                ErrorClass::RateLimit,
+                ErrorClass::ServerError,
+                ErrorClass::Timeout,
+            ],
         }
     }
 
@@ -213,7 +233,7 @@ mod tests {
     fn for_rate_limit_uses_higher_base_delay() {
         let policy = RetryPolicy::for_rate_limit();
         assert_eq!(policy.base_delay_ms, 2_000);
-        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(policy.max_attempts, 5);
         // Verify that attempt 0 gives delay in [1000, 2000]
         let mut rng = StdRng::seed_from_u64(42);
         for _ in 0..50 {

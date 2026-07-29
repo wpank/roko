@@ -37,8 +37,8 @@ use roko_core::foundation::{
 };
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::tool::{
-    ToolCall, ToolContext, ToolDef, ToolError, ToolHandler, ToolPermission, ToolResult, ToolSource,
-    VecToolRegistry,
+    NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolCall, ToolContext, ToolDef, ToolError,
+    ToolHandler, ToolPermission, ToolResult, ToolSource, VecToolRegistry,
 };
 use roko_dreams::{load_dream_routing_advice, relevant_pattern_summaries};
 use roko_learn::{
@@ -1823,16 +1823,21 @@ async fn run_anthropic_builtin_tool_loop(
         event_sender.clone(),
     ));
 
-    let tool_context = ToolContext::testing(workdir)
-        .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
-    let mut tool_context = tool_context;
-    tool_context.capabilities = ToolPermission {
-        read: true,
-        write: true,
-        exec: true,
-        git: true,
-        network: true,
-    };
+    let tool_context = ToolContext::new(
+        workdir,
+        Duration::from_secs(120),
+        ToolPermission {
+            read: true,
+            write: true,
+            exec: true,
+            git: true,
+            network: true,
+        },
+        Arc::new(NoopAuditSink),
+        Arc::new(NoopTraceSink),
+        Arc::new(NoopMetricsSink),
+        Arc::new(AcpToolCancelToken(cancel_token.clone())),
+    );
 
     let output = tool_loop
         .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)
@@ -2354,16 +2359,21 @@ async fn run_openai_compat_mcp_tool_loop(
         chunk_receiver,
         event_sender.clone(),
     ));
-    let tool_context = ToolContext::testing(workdir)
-        .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
-    let mut tool_context = tool_context;
-    tool_context.capabilities = ToolPermission {
-        read: true,
-        write: true,
-        exec: true,
-        git: true,
-        network: true,
-    };
+    let tool_context = ToolContext::new(
+        workdir,
+        Duration::from_secs(120),
+        ToolPermission {
+            read: true,
+            write: true,
+            exec: true,
+            git: true,
+            network: true,
+        },
+        Arc::new(NoopAuditSink),
+        Arc::new(NoopTraceSink),
+        Arc::new(NoopMetricsSink),
+        Arc::new(AcpToolCancelToken(cancel_token.clone())),
+    );
 
     let output = tool_loop
         .run_messages_streaming(
@@ -2508,16 +2518,21 @@ async fn run_openai_compat_builtin_tool_loop(
         chunk_receiver,
         event_sender.clone(),
     ));
-    let tool_context = ToolContext::testing(workdir)
-        .with_cancel_token(Arc::new(AcpToolCancelToken(cancel_token.clone())));
-    let mut tool_context = tool_context;
-    tool_context.capabilities = ToolPermission {
-        read: true,
-        write: true,
-        exec: true,
-        git: true,
-        network: true,
-    };
+    let tool_context = ToolContext::new(
+        workdir,
+        Duration::from_secs(120),
+        ToolPermission {
+            read: true,
+            write: true,
+            exec: true,
+            git: true,
+            network: true,
+        },
+        Arc::new(NoopAuditSink),
+        Arc::new(NoopTraceSink),
+        Arc::new(NoopMetricsSink),
+        Arc::new(AcpToolCancelToken(cancel_token.clone())),
+    );
 
     let output = tool_loop
         .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)

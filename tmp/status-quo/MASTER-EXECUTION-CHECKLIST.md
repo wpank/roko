@@ -611,7 +611,7 @@ Plan: tmp/status-quo/self-heal/plans/SH01-runner-lifecycle/tasks.toml
 - [x] SH01-T06C4 Expire lost effects and close timeout races.
 - [x] SH01-T07 Reconcile truthful run and plan summaries. (build_report rewritten to per-task classification; blocked/skipped details with reasons; global=sum(plans). Review rejection fix merged at 88b3a31: TaskRunCategory/TaskRunSummary/TaskPhaseDurations added, phase_durations wired into TaskAttemptCompleted, 24 compile errors resolved.)
 - [x] SH01 reads 28/28 done after review, merge, and post-merge verification. (T07 fix merged to main at 88b3a31; 76 event_loop tests pass; manifest updated to done.)
-- [ ] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence.
+- [x] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence. (All 5 disposition files created in execution-evidence/; each maps to specific merged SH01 tasks.)
 
 ### Wave 2 — SH02 isolation, commits, and crash recovery
 

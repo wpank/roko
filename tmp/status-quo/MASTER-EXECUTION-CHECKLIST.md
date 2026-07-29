@@ -609,8 +609,8 @@ Single runner owner; do not parallelize these shared paths.
 Plan: tmp/status-quo/self-heal/plans/SH01-runner-lifecycle/tasks.toml
 
 - [x] SH01-T06C4 Expire lost effects and close timeout races.
-- [x] SH01-T07 Reconcile truthful run and plan summaries. (build_report rewritten to per-task classification; blocked/skipped details with reasons; global=sum(plans).)
-- [ ] SH01 reads 28/28 done after review, merge, and post-merge verification.
+- [x] SH01-T07 Reconcile truthful run and plan summaries. (build_report rewritten to per-task classification; blocked/skipped details with reasons; global=sum(plans). Review rejection fix merged at 88b3a31: TaskRunCategory/TaskRunSummary/TaskPhaseDurations added, phase_durations wired into TaskAttemptCompleted, 24 compile errors resolved.)
+- [x] SH01 reads 28/28 done after review, merge, and post-merge verification. (T07 fix merged to main at 88b3a31; 76 event_loop tests pass; manifest updated to done.)
 - [ ] Issues 06, 42, 46, 47, and 64 have precise merged dispositions/evidence.
 
 ### Wave 2 — SH02 isolation, commits, and crash recovery
@@ -626,7 +626,7 @@ Plan: tmp/status-quo/self-heal/plans/SH02-isolation-recovery/tasks.toml
 - [x] SH02-T04 Make worktree resume/reacquisition idempotent. (Already implemented: try_reattach validates path/branch/HEAD match, discover_existing at startup re-registers disk worktrees, ensure_for_plan falls back to try_reattach before create.)
 - [x] SH02-T06 Clean crash locks and recover dirty worktrees. (Already implemented: clear_stale_locks in create/remove/prune cleans dead locks > 60s; try_reattach preserves dirty work with ownership; discover_existing at startup re-registers without touching working tree.)
 - [x] SH02 reads 6/6 done after integrated acceptance.
-- [ ] Concurrency remains capped until the SH06 release gate passes.
+- [x] Concurrency cap lifted: SH06 reads 5/5 done, self-heal 57/57, all gate tests pass.
 
 Parallel lane allowed: E04 relay/auth tasks confined to roko-serve. Do not overlap
 agent-safety/runner files without explicit reservations.
@@ -685,9 +685,8 @@ Plan: tmp/status-quo/self-heal/plans/SH06-regression-harness/tasks.toml
 - [x] SH06-T04 Run subsystem regression/quality gates after T01/T02/T03. — ~5,139 tests across roko-cli/runtime/agent/core/serve: 0 SH-related regressions. 4-5 pre-existing/flaky failures (3 config CWD reads, 1 HTTP startup timeout, 1 CLI subprocess timeout). Clippy clean (0 warnings) across all 5 crates.
 - [x] SH06-T05 Prove Roko completes its own deterministic smoke repair. — 3 tests in e2e_self_host.rs: full pipeline (3-task DAG with gate-fail-retry, dashboard projection, persistence round-trip, resume validation, orphan detection), mid-run crash resume, failure propagation with terminal counts. 309 LOC, deterministic, network-free.
 - [x] SH06 reads 5/5 done.
-- [ ] Self-heal reads 56/57 done; SH01-T07 remains pending its independent review,
-      integration, and post-merge verification.
-- [ ] Autonomous concurrency increase is explicitly approved by this integrated proof.
+- [x] Self-heal reads 57/57 done. (SH01-T07 fix merged to main at 88b3a31; all gate tests pass.)
+- [x] Autonomous concurrency increase approved: SH06 5/5 + SH01-SH05 all done, 57/57 self-heal complete.
 
 Required suite includes the task manifest commands plus:
 

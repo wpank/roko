@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use roko_core::RuntimeEvent;
 use roko_core::agent::ModelSpec;
 use roko_core::config::GatesConfig;
+use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
@@ -97,6 +98,8 @@ pub struct RunReport {
     pub tasks_failed: usize,
     pub tasks_blocked: usize,
     pub tasks_skipped: usize,
+    pub tasks_active: usize,
+    pub tasks_pending: usize,
     pub tasks_cancelled: usize,
     pub tasks_orphaned: usize,
     pub tasks_nonterminal: usize,
@@ -4046,7 +4049,7 @@ fn complete_verified_plan_success(
             state,
             tui,
             config,
-            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
+            RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None, 0.0, 0, 0),
         );
     }
     Ok(phase)
@@ -4241,6 +4244,9 @@ async fn handle_failed_merge_outcome(
                         &plan_id,
                         PlanOutcome::Failed,
                         Some(reason.clone()),
+                        0.0,
+                        0,
+                        0,
                     ),
                 );
             }
@@ -4296,6 +4302,9 @@ async fn handle_merge_completion(
                         &completion.plan_id,
                         PlanOutcome::Succeeded,
                         None,
+                        0.0,
+                        0,
+                        0,
                     ),
                 );
                 info!(
@@ -4336,6 +4345,9 @@ async fn handle_merge_completion(
                 &completion.plan_id,
                 PlanOutcome::Failed,
                 Some(reason.clone()),
+                0.0,
+                0,
+                0,
             ),
         );
         tui.error(&reason);
@@ -5419,6 +5431,8 @@ fn build_run_completed_event(
             tasks_failed: report.tasks_failed,
             tasks_blocked: report.tasks_blocked,
             tasks_skipped: report.tasks_skipped,
+            tasks_active: report.tasks_active,
+            tasks_pending: report.tasks_pending,
             tasks_cancelled: report.tasks_cancelled,
             tasks_orphaned: report.tasks_orphaned,
             tasks_nonterminal: report.tasks_nonterminal,
@@ -5561,6 +5575,11 @@ fn save_snapshot(
         total_agent_calls: state.total_agent_calls,
         plan_costs: state.plan_costs.clone(),
         completed_tasks: state.completed_tasks.clone(),
+        failed_tasks: state
+            .failed_tasks
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+            .collect(),
         lifecycle: Some(state.lifecycle.clone()),
         snapshot_fail_streak: state.snapshot_fail_streak,
         fingerprints: state.task_fingerprints.clone(),
@@ -6987,7 +7006,7 @@ async fn dispatch_action(
                                     None,
                                 ),
                             );
-                            ctx.tui.agent_spawned(&agent_id, role, &model_display);
+                            ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &model_display);
                             ctx.tui.task_started(
                                 plan_id,
                                 &task_id,
@@ -7186,8 +7205,7 @@ async fn dispatch_action(
                             None,
                         ),
                     );
-                    ctx.tui
-                        .agent_spawned(&agent_id, role, &format!("{provider_id}:{model}"));
+                    ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &format!("{provider_id}:{model}"));
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     dispatch_claim.set_agent(agent_id.clone(), None);
@@ -7687,7 +7705,7 @@ async fn dispatch_action(
                 ctx.state,
                 ctx.tui,
                 ctx.config,
-                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None),
+                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None, 0.0, 0, 0),
             );
             save_snapshot(
                 ctx.config,
@@ -7719,6 +7737,9 @@ async fn dispatch_action(
                     plan_id,
                     PlanOutcome::Failed,
                     Some(reason.clone()),
+                    0.0,
+                    0,
+                    0,
                 ),
             );
             ActionDispatchOutcome::Handled
@@ -11280,6 +11301,8 @@ fn build_report(
         tasks_failed: count(TaskRunCategory::Failed),
         tasks_blocked: count(TaskRunCategory::Blocked),
         tasks_skipped: count(TaskRunCategory::Skipped),
+        tasks_active: 0,
+        tasks_pending: 0,
         tasks_cancelled: count(TaskRunCategory::Cancelled),
         tasks_orphaned: count(TaskRunCategory::Orphaned),
         tasks_nonterminal: count(TaskRunCategory::Nonterminal),
@@ -13807,6 +13830,7 @@ depends_on = []
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
+            failed_tasks: HashMap::new(),
             lifecycle: Some(source.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),
@@ -14891,6 +14915,11 @@ depends_on = ["T1"]
             total_agent_calls: 0,
             plan_costs: HashMap::new(),
             completed_tasks: HashMap::new(),
+            failed_tasks: persisted_state
+                .failed_tasks
+                .iter()
+                .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+                .collect(),
             lifecycle: Some(persisted_state.lifecycle.clone()),
             snapshot_fail_streak: 0,
             fingerprints: Vec::new(),

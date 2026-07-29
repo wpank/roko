@@ -29,7 +29,7 @@ use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
     MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
     PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
-    TransitionError, WorktreeConfig, WorktreeManager,
+    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
 };
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::run_ledger::{
@@ -6136,6 +6136,42 @@ async fn dispatch_action(
                 ctx.config,
                 RunnerEvent::plan_started(&run_id, plan_id),
             );
+
+            // Create a plan branch using the canonical naming convention.
+            // Non-fatal: if the branch already exists (resume) or git fails,
+            // log a warning and proceed — task isolation via SH02-T02 worktrees
+            // is the real safety boundary.
+            let branch = format_branch_name(plan_id);
+            let git_result = std::process::Command::new("git")
+                .args(["branch", "--no-track", &branch])
+                .current_dir(&ctx.config.workdir)
+                .output();
+            match git_result {
+                Ok(out) if out.status.success() => {
+                    info!(plan_id = %plan_id, branch = %branch, "created plan branch");
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if stderr.contains("already exists") {
+                        info!(plan_id = %plan_id, branch = %branch, "plan branch already exists");
+                    } else {
+                        tracing::warn!(
+                            plan_id = %plan_id,
+                            branch = %branch,
+                            stderr = %stderr.trim(),
+                            "plan branch creation failed (non-fatal)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plan_id = %plan_id,
+                        branch = %branch,
+                        err = %e,
+                        "git branch command failed (non-fatal)"
+                    );
+                }
+            }
 
             if ctx
                 .skip_enrichment

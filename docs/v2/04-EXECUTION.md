@@ -4,7 +4,7 @@
 
 **Kernel primitives used**: Signal (data between Cells), Cell (computation), Graph (composition being executed), Bus (lifecycle Pulses, inter-loop communication), Store (Activity records, snapshots, episodes), Protocol (all 9 — Score, Verify, Route, Compose, React, Observe, Store, Connect, Trigger — invoked from loop Cells).
 
-**Subsumes**: PlanRunner, DAG executor, orchestrate.rs, ProcessSupervisor.
+**Subsumes**: PlanRunner, DAG executor, runner/ event loop, ProcessSupervisor.
 
 ---
 

@@ -1,7 +1,7 @@
 [meta]
 plan = "E01-execution-engine"
 total = 16
-done = 11
+done = 13
 status = "ready"
 max_parallel = 1
 
@@ -556,7 +556,7 @@ acceptance = [
 [[task]]
 id = "E01-T10"
 title = "Reconcile CLAUDE.md, GAPS, and docs to the real runner engine"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 80
@@ -814,7 +814,7 @@ fail_msg = "a test must verify roko-mcp-github is included in the default MCP co
 id = "E01-T14"
 title = "Auto-create git branches per plan run using worktree.rs branch naming"
 ownership = "canonical-owner"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 100

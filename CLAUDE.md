@@ -13,19 +13,19 @@ control plane, per-agent sidecar, and interactive TUI:
 
 | Component | Status | Where |
 |---|---|---|
-| Plan discovery + DAG executor | **Wired** | `crates/roko-cli/src/orchestrate.rs` |
+| Plan discovery + DAG executor | **Wired** | `crates/roko-cli/src/runner/event_loop.rs` (runner-v2); `orchestrate.rs` legacy |
 | Agent dispatch (Claude CLI + ExecAgent) | **Wired** | `crates/roko-agent/src/dispatcher/mod.rs` |
 | Safety layer (role auth, pre/post checks) | **Wired** | Integrated into ToolDispatcher |
-| Gate pipeline (compile, test, clippy, diff) | **Wired** | Called from orchestrate.rs per-task |
+| Gate pipeline (compile, test, clippy, diff) | **Wired** | `runner/gate_dispatch.rs` with enriched rung inputs |
 | Session persistence (snapshot + resume) | **Wired** | `.roko/state/executor.json`, `--resume` |
 | PRD lifecycle (idea/draft/plan) | **Wired** | `roko prd` subcommands |
 | Research agent | **Wired** | `roko research` subcommands |
 | Plan generation from PRD | **Wired** | `roko prd plan <slug>` → agent generates tasks.toml |
-| SystemPromptBuilder (9-layer prompts) | **Wired** | `RoleSystemPromptSpec` in orchestrate.rs |
-| EpisodeLogger (agent turn recording) | **Wired** | `.roko/episodes.jsonl` via orchestrate.rs |
+| SystemPromptBuilder (9-layer prompts) | **Wired** | `RoleSystemPromptSpec` in runner/ |
+| EpisodeLogger (agent turn recording) | **Wired** | `.roko/episodes.jsonl` via runner/ |
 | ProcessSupervisor (lifecycle mgmt) | **Wired** | `PlanRunner` tracks + shuts down agents |
 | MCP config passthrough | **Wired** | `agent.mcp_config` in roko.toml → `--mcp-config` |
-| Efficiency events (per-turn) | **Wired** | `.roko/learn/efficiency.jsonl` via orchestrate.rs |
+| Efficiency events (per-turn) | **Wired** | `.roko/learn/efficiency.jsonl` via runner/ |
 | CascadeRouter (model routing) | **Wired** | Persists to `.roko/learn/cascade-router.json`, configurable models |
 | Prompt experiments (A/B) | **Wired** | `ExperimentStore` in `.roko/learn/experiments.json` |
 | Adaptive gate thresholds | **Wired** | EMA per rung in `.roko/learn/gate-thresholds.json` |
@@ -34,15 +34,15 @@ control plane, per-agent sidecar, and interactive TUI:
 | Per-agent sidecar (13 routes) | **Wired** | `crates/roko-agent-server/`, real LLM dispatch (T9) + integration tests (T19) |
 | Code-intelligence MCP | **Wired** | `crates/roko-mcp-code/` |
 | `roko chat` CLI | **Wired** | `crates/roko-cli/src/chat.rs` |
-| Gate rung oracles (4-6) | **Wired** | orchestrate.rs `enrich_rung_config` |
-| C-factor full metrics | **Wired** | orchestrate.rs `CFactorSummary` |
-| Enrichment in dispatch | **Wired** | orchestrate.rs `dispatch_agent_with` |
-| Gate failure replan | **Wired** | orchestrate.rs `build_gate_failure_plan_revision` |
+| Gate rung oracles (4-6) | **Wired** | `runner/gate_dispatch.rs` `build_rung_execution_inputs` |
+| C-factor full metrics | **Wired** | runner/ `CFactorSummary` |
+| Enrichment in dispatch | **Wired** | runner/ `dispatch_agent_with` |
+| Gate failure replan | **Wired** | runner/ `build_gate_failure_plan_revision` |
 | PRD auto-plan trigger | **Wired** | roko-serve `prd_publish_subscriber` |
 | HDC fingerprint per-episode | **Wired** | Episode `hdc_fingerprint` field, computed + stored |
 | Playbook store queries | **Wired** | Queried at dispatch time → system prompt |
 | VCG auction in composition | **Partial** | `vcg_allocate` built + exported but greedy path dominates at runtime |
-| Context bidders (Neuro/Task/Research) | **Wired** | `AttentionBidder` variants in orchestrate.rs |
+| Context bidders (Neuro/Task/Research) | **Wired** | `AttentionBidder` variants in runner/ |
 | Safety contracts enforcement | **Partial** | `AgentContract` wired but falls back to permissive default when YAML missing |
 | TUI file watcher | **Wired** | `notify::RecommendedWatcher` in `tui/fs_watch.rs` |
 
@@ -80,7 +80,7 @@ This is how roko develops itself. Each step is a CLI command that exists today:
 
 ```bash
 # 1. Capture a work item
-cargo run -p roko-cli -- prd idea "Wire SystemPromptBuilder into orchestrate.rs"
+cargo run -p roko-cli -- prd idea "Wire SystemPromptBuilder into runner"
 
 # 2. Draft a PRD from the idea (agent-driven)
 cargo run -p roko-cli -- prd draft new "system-prompt-wiring"
@@ -210,7 +210,7 @@ cargo run -p roko-cli -- status
 | roko-agent | `crates/roko-agent/` | 5+ LLM backends (Claude CLI, Claude API, Codex, Cursor, OpenAI-compat, Ollama, Gemini, Perplexity), pools, MCP, tool loop, safety | Dispatch wired, MCP passed |
 | roko-agent-server | `crates/roko-agent-server/` | Per-agent HTTP sidecar: `/message` (real LLM dispatch), `/stream` WS, `/predictions`, `/research`, `/tasks` | Wired |
 | roko-serve | `crates/roko-serve/` | HTTP control plane: ~85 REST routes + SSE + WebSocket on :6677 | Wired |
-| roko-orchestrator | `crates/roko-orchestrator/` | Plan DAG, parallel executor, merge queue, safety | Wired via orchestrate.rs |
+| roko-orchestrator | `crates/roko-orchestrator/` | Plan DAG, parallel executor, merge queue, safety | Wired via runner/ event loop |
 | roko-gate | `crates/roko-gate/` | 11 gates, 7-rung pipeline, adaptive thresholds | Wired, called per-task |
 | roko-compose | `crates/roko-compose/` | Prompt assembly, 9 templates, enrichment | Wired via RoleSystemPromptSpec |
 | roko-conductor | `crates/roko-conductor/` | 10 watchers, circuit breaker, diagnosis | Used by executor internals |
@@ -225,8 +225,8 @@ cargo run -p roko-cli -- status
 | roko-mcp-github / slack / scripts / stdio | `crates/roko-mcp-*/` | Additional MCP integrations | Partial; see `tmp/ux-followup/05-partially-wired-subsystems.md` |
 | roko-index | `crates/roko-index/` | Parser + graph + HDC indexing | Built |
 | roko-lang-rust / typescript / go | `crates/roko-lang-*/` | Language support | Built |
-| roko-dreams | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle) | Partial (used from orchestrate.rs but no runtime trigger/cron) |
-| roko-daimon | `crates/roko-daimon/` | Affect engine, somatic markers, dispatch modulation | Wired (DaimonState loaded + used per-task in orchestrate.rs) |
+| roko-dreams | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle) | Partial (used from runner/ but no runtime trigger/cron) |
+| roko-daimon | `crates/roko-daimon/` | Affect engine, somatic markers, dispatch modulation | Wired (DaimonState loaded + used per-task in runner/) |
 | roko-chain | `crates/roko-chain/` | Chain witness primitives | Phase 2+ |
 
 ## Absolute paths
@@ -236,7 +236,7 @@ cargo run -p roko-cli -- status
 | **Workspace root** | `/Users/will/dev/nunchi/roko/roko/` |
 | **All crates** | `/Users/will/dev/nunchi/roko/roko/crates/` |
 | **CLI source** | `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/` |
-| **Orchestrator** | `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/orchestrate.rs` |
+| **Runner (event loop)** | `/Users/will/dev/nunchi/roko/roko/crates/roko-cli/src/runner/event_loop.rs` |
 | **Agent dispatcher** | `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/dispatcher/mod.rs` |
 | **Safety layer** | `/Users/will/dev/nunchi/roko/roko/crates/roko-agent/src/safety/` |
 | **System prompt builder** | `/Users/will/dev/nunchi/roko/roko/crates/roko-compose/src/system_prompt_builder.rs` |

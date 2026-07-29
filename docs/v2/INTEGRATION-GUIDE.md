@@ -358,7 +358,7 @@ roko plan validate plans/knowledge-informed-routing/
 roko plan run plans/knowledge-informed-routing/
 ```
 
-This starts the main orchestration loop (`crates/roko-cli/src/orchestrate.rs`). For each task:
+This starts the runner-v2 event loop (`crates/roko-cli/src/runner/event_loop.rs`). For each task:
 
 1. Build the 9-layer system prompt via `PromptAssemblyService`
 2. Route to a model via `CascadeRouter`
@@ -2659,7 +2659,7 @@ let output = restored.step(PipelineInput::Start);
 | Directory layout | `crates/roko-fs/src/layout.rs` |
 | Foundation traits | `crates/roko-core/src/foundation.rs` |
 | RuntimeEvent types | `crates/roko-core/src/runtime_event.rs` |
-| Orchestrator | `crates/roko-cli/src/orchestrate.rs` |
+| Runner event loop | `crates/roko-cli/src/runner/event_loop.rs` |
 | HTTP routes | `crates/roko-serve/src/routes/` |
 | TUI | `crates/roko-cli/src/tui/` |
 | CascadeRouter | `crates/roko-learn/src/cascade_router.rs` |

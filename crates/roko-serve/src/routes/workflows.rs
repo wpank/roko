@@ -1376,7 +1376,7 @@ fn dashboard_event_matches_workflow(event: &DashboardEvent, workflow_id: Option<
         | DashboardEvent::EventLogEntry { plan_id, .. } => plan_id == workflow_id,
         DashboardEvent::AgentSpawned { agent_id, .. }
         | DashboardEvent::AgentOutput { agent_id, .. }
-        | DashboardEvent::AgentCompleted { agent_id } => {
+        | DashboardEvent::AgentCompleted { agent_id, .. } => {
             agent_id == workflow_id || agent_id.starts_with(&format!("{workflow_id}:"))
         }
         DashboardEvent::AtelierPrdsUpdated { prds, tasks } => {

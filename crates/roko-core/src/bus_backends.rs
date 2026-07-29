@@ -1,6 +1,6 @@
 //! Additional [`Bus`] backend implementations.
 //!
-//! These complement the primary [`PulseBus`](crate::PulseBus) with
+//! These complement the primary `PulseBus` (in `roko-runtime`) with
 //! alternative transport semantics:
 //!
 //! - [`BroadcastBus`] — minimal in-process broadcast, no replay

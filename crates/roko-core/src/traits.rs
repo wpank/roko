@@ -381,7 +381,7 @@ pub trait React: Send + Sync {
 ///
 /// # Implementations
 ///
-/// - `PulseBus` (roko-core) — wraps `EventBus<Pulse>` with topic filtering
+/// - `PulseBus` (roko-runtime) — wraps `EventBus<Pulse>` with topic filtering
 pub trait Bus: Send + Sync {
     /// The receiver type returned by [`subscribe`](Self::subscribe).
     type Receiver: Send;

@@ -4,7 +4,7 @@
 //! `DashboardEvent` variants for each significant runner event.
 
 use crate::state_hub::StateHubSender;
-use roko_core::dashboard_snapshot::DashboardEvent;
+use roko_core::dashboard_snapshot::{DashboardEvent, DiagnosisSummary};
 
 use super::types::RunnerEvent;
 
@@ -71,26 +71,50 @@ impl TuiBridge {
     }
 
     /// An agent has been spawned.
-    pub fn agent_spawned(&self, agent_id: &str, role: &str, model: &str) {
+    pub fn agent_spawned(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        role: &str,
+        model: &str,
+    ) {
         self.sender.publish(DashboardEvent::AgentSpawned {
             agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
             role: role.to_string(),
             model: model.to_string(),
         });
     }
 
     /// Agent produced text output (streamed).
-    pub fn agent_output(&self, agent_id: &str, content: &str) {
+    pub fn agent_output(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        content: &str,
+    ) {
         self.sender.publish(DashboardEvent::AgentOutput {
             agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
             content: content.to_string(),
         });
     }
 
     /// Agent has finished.
-    pub fn agent_completed(&self, agent_id: &str) {
+    pub fn agent_completed(&self, agent_id: &str, plan_id: &str, task_id: &str, attempt: u32) {
         self.sender.publish(DashboardEvent::AgentCompleted {
             agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
         });
     }
 
@@ -121,6 +145,36 @@ impl TuiBridge {
             metric: metric.to_string(),
             value,
         });
+    }
+
+    /// Forward token usage to the dashboard.
+    ///
+    /// Publishes all four token counters (input, output, cache-read,
+    /// cache-write) as individual `EfficiencyEvent`s so the snapshot
+    /// accumulates them even when the output sink is `NoopSink`.
+    pub fn token_usage(
+        &self,
+        plan_id: &str,
+        task_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+    ) {
+        self.efficiency_event(plan_id, task_id, "input_tokens", input_tokens as f64);
+        self.efficiency_event(plan_id, task_id, "output_tokens", output_tokens as f64);
+        self.efficiency_event(
+            plan_id,
+            task_id,
+            "cache_read_tokens",
+            cache_read_tokens as f64,
+        );
+        self.efficiency_event(
+            plan_id,
+            task_id,
+            "cache_write_tokens",
+            cache_write_tokens as f64,
+        );
     }
 
     /// Error event.
@@ -188,6 +242,11 @@ impl TuiBridge {
             task_id: task_id.to_string(),
             message: format!("model={model} source={source}"),
         });
+    }
+
+    /// Publish a conductor diagnosis to the dashboard ring buffer.
+    pub fn diagnosis(&self, summary: DiagnosisSummary) {
+        self.sender.publish(DashboardEvent::Diagnosis { summary });
     }
 
     /// Extension hook fired.

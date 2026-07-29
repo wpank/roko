@@ -1,234 +1,538 @@
-//! End-to-end self-hosting smoke test.
+//! SH06-T05: Deterministic e2e self-host smoke test.
+//!
+//! Proves the full state-machine pipeline without external dependencies:
+//! fresh execution, gate failure + retry, terminal snapshot, dashboard
+//! events, persistence round-trip, and resume equivalence.
+//! No network, no child processes, no LLM calls.
 
-use assert_cmd::Command;
-use roko_orchestrator::ExecutorSnapshot;
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+
+use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
-use tempfile::TempDir;
 
-const FIXTURE: &str = "mock-self-host-fixture";
-const IDEA_TEXT: &str = "Test: wire XYZ";
-const SLUG: &str = "test-wire-xyz";
+use roko_cli::runner::persist::{
+    PersistPaths, RUN_STATE_SCHEMA_VERSION, ReplanLedgerSnapshot, RunStateSnapshot,
+    TaskDefFingerprint, load_run_state, save_run_state,
+};
+use roko_cli::runner::projection::{Projection, RawRuntimeEvent};
+use roko_cli::runner::resume::prepare_resume;
+use roko_cli::runner::state::RunState;
+use roko_cli::runner::task_dag::{DagConfig, TaskDag};
+use roko_cli::runner::types::*;
+use roko_cli::task_parser::TaskDef;
+use tempfile::tempdir;
 
-#[test]
-#[ignore = "mock dispatcher plan-run path needs ROKO_DISPATCHER fixture; run manually"]
-fn self_hosting_workflow_with_mock_dispatcher() {
-    let tmp = TempDir::new().expect("tempdir");
-    let workdir = tmp.path();
+const RUN: &str = "sh-smoke";
 
-    Command::cargo_bin("roko")
-        .unwrap()
-        .arg("init")
-        .arg(workdir)
-        .assert()
-        .success();
-
-    seed_minimal_rust_project(workdir);
-    seed_git_repo(workdir);
-    fs::create_dir_all(workdir.join("plans")).expect("create top-level plans dir");
-    enable_auto_plan(workdir);
-
-    run_cli(workdir, &["prd", "idea", IDEA_TEXT]).success();
-    let ideas_path = workdir.join(".roko").join("prd").join("ideas.md");
-    let ideas = fs::read_to_string(&ideas_path).expect("read ideas");
-    assert!(
-        ideas.contains(IDEA_TEXT),
-        "ideas.md missing captured idea: {ideas}"
-    );
-
-    run_cli(workdir, &["prd", "draft", "new", SLUG]).success();
-    let draft_path = workdir
-        .join(".roko")
-        .join("prd")
-        .join("drafts")
-        .join(format!("{SLUG}.md"));
-    let draft = fs::read_to_string(&draft_path).expect("read draft");
-    assert!(
-        draft.contains("status: draft"),
-        "draft did not materialize: {draft}"
-    );
-    assert!(
-        draft.contains("REQ-001"),
-        "draft missing expected requirements: {draft}"
-    );
-
-    run_cli(workdir, &["research", "enhance-prd", SLUG]).success();
-
-    run_cli(workdir, &["prd", "draft", "promote", SLUG]).success();
-    let published_path = workdir
-        .join(".roko")
-        .join("prd")
-        .join("published")
-        .join(format!("{SLUG}.md"));
-    assert!(
-        published_path.exists(),
-        "published PRD missing at {}",
-        published_path.display()
-    );
-
-    let plan_dir = workdir.join("plans").join(SLUG);
-    let tasks_path = plan_dir.join("tasks.toml");
-    assert!(
-        tasks_path.exists(),
-        "tasks.toml missing at {}",
-        tasks_path.display()
-    );
-    assert!(
-        plan_dir.join("plan.md").exists(),
-        "plan.md missing at {}",
-        plan_dir.display()
-    );
-
-    run_cli(workdir, &["plan", "validate", "plans"]).success();
-    remove_index_plan_if_present(workdir);
-    commit_workspace_state(workdir, "prepare self-host smoke plan");
-    seed_plan_branch(workdir, SLUG);
-    run_cli(workdir, &["plan", "run", "plans"]).success();
-
-    let root_episodes_path = workdir.join(".roko").join("episodes.jsonl");
-    let root_episodes = fs::read_to_string(&root_episodes_path).expect("read root episodes");
-    assert!(
-        root_episodes
-            .lines()
-            .any(|line| line.contains(r#""kind":"prd_published""#)),
-        "root episodes.jsonl missing prd_published entry: {root_episodes}"
-    );
-
-    let memory_episodes_path = workdir.join(".roko").join("memory").join("episodes.jsonl");
-    let memory_episodes = fs::read_to_string(&memory_episodes_path).expect("read memory episodes");
-    assert!(
-        memory_episodes
-            .lines()
-            .any(|line| line.contains(r#""kind":"agent_turn""#)),
-        "memory episodes.jsonl missing agent_turn entry: {memory_episodes}"
-    );
-
-    let executor_path = workdir.join(".roko").join("state").join("executor.json");
-    let executor_json = fs::read_to_string(&executor_path).expect("read executor snapshot");
-    let snapshot = ExecutorSnapshot::from_json(&executor_json).expect("parse executor snapshot");
-    assert!(
-        snapshot.plan_count() >= 1,
-        "executor snapshot did not record any plans"
-    );
-
-    let signals_path = workdir.join(".roko").join("engrams.jsonl");
-    let signals = fs::read_to_string(&signals_path).expect("read signals");
-    assert!(
-        signals
-            .lines()
-            .any(|line| line.contains(r#""gate_verdict""#)),
-        "engrams.jsonl missing gate verdict: {signals}"
-    );
-
-    let status = run_cli(workdir, &["status"]).success();
-    let stdout = String::from_utf8_lossy(&status.get_output().stdout);
-    assert!(
-        stdout.contains("signal counts"),
-        "status output missing signal summary: {stdout}"
-    );
+fn td(id: &str, deps: &[&str]) -> TaskDef {
+    TaskDef {
+        id: id.into(),
+        title: format!("Task {id}"),
+        description: None,
+        role: Some("impl".into()),
+        status: "ready".into(),
+        tier: "focused".into(),
+        frequency: None,
+        model_hint: None,
+        replan_strategy: None,
+        max_loc: None,
+        files: vec![],
+        allowed_tools: None,
+        denied_tools: None,
+        mcp_servers: None,
+        depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        depends_on_plan: vec![],
+        split_into: None,
+        context: None,
+        verify: vec![],
+        timeout_secs: 60,
+        max_retries: 2,
+        acceptance: vec![],
+        acceptance_contract: None,
+        domain: None,
+        sequence: 0,
+    }
 }
-
-fn enable_auto_plan(workdir: &Path) {
-    let config_path = workdir.join("roko.toml");
-    let config = fs::read_to_string(&config_path).expect("read roko.toml");
-    let updated = config.replace("auto_plan = false", "auto_plan = true");
-    fs::write(&config_path, updated).expect("write roko.toml");
+fn ar(p: &str, t: &str, n: u32) -> TaskAttemptRef {
+    TaskAttemptRef::new(p, t, n)
 }
-
-fn seed_minimal_rust_project(workdir: &Path) {
-    fs::create_dir_all(workdir.join("src")).expect("create src dir");
-    fs::write(
-        workdir.join("Cargo.toml"),
-        r#"[package]
-name = "self-host-smoke"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-"#,
-    )
-    .expect("write Cargo.toml");
-    fs::write(
-        workdir.join("src").join("main.rs"),
-        "fn main() {\n    println!(\"self-host smoke\");\n}\n",
-    )
-    .expect("write src/main.rs");
+fn gc(p: &str, t: &str, ok: bool, n: u32) -> GateCompletion {
+    GateCompletion {
+        effect: None,
+        attempt: Some(ar(p, t, n)),
+        kind: GateCompletionKind::Gate,
+        plan_id: p.into(),
+        task_id: t.into(),
+        rung: 1,
+        passed: ok,
+        failure_kind: if ok {
+            None
+        } else {
+            Some(RunnerFailureKind::Transient)
+        },
+        verdicts: Vec::new(),
+        output: String::new(),
+        duration_ms: 100,
+    }
 }
-
-fn seed_git_repo(workdir: &Path) {
-    run_process(workdir, &["git", "init"]);
-    run_process(workdir, &["git", "config", "user.name", "Self Host Test"]);
-    run_process(
-        workdir,
-        &["git", "config", "user.email", "self-host@example.com"],
-    );
-    run_process(workdir, &["git", "add", "."]);
-    run_process(workdir, &["git", "commit", "-m", "seed"]);
+fn fresh(total: usize) -> RunState {
+    let mut s = RunState::new(total);
+    s.apply_runner_event(&RunnerEvent::run_started(
+        RUN,
+        vec!["p1".into()],
+        total,
+        false,
+        None,
+    ));
+    s.apply_runner_event(&RunnerEvent::plan_started(RUN, "p1"));
+    s
 }
-
-fn remove_index_plan_if_present(workdir: &Path) {
-    let index_path = workdir.join("plans").join("INDEX.md");
-    if index_path.exists() {
-        fs::remove_file(&index_path).expect("remove plans/INDEX.md");
+/// Apply event to both state and projection.
+fn emit(s: &mut RunState, p: &Projection, ev: RunnerEvent) {
+    s.apply_runner_event(&ev);
+    let _ = p.publish(RawRuntimeEvent::Runner(ev));
+}
+fn snap(
+    s: &RunState,
+    fps: Vec<TaskDefFingerprint>,
+    done: HashMap<String, Vec<String>>,
+    fail: HashMap<String, Vec<String>>,
+) -> RunStateSnapshot {
+    RunStateSnapshot {
+        schema_version: RUN_STATE_SCHEMA_VERSION,
+        run_id: RUN.into(),
+        started_at_ms: 0,
+        timestamp_ms: 100,
+        tasks_total: s.tasks_total,
+        tasks_completed: s.tasks_completed,
+        tasks_failed: s.tasks_failed,
+        total_tokens_in: s.total_tokens_in,
+        total_tokens_out: s.total_tokens_out,
+        total_cost_usd: s.total_cost_usd,
+        total_agent_calls: s.total_agent_calls,
+        plan_costs: s.plan_costs.clone(),
+        completed_tasks: done,
+        failed_tasks: fail,
+        lifecycle: Some(s.lifecycle.clone()),
+        snapshot_fail_streak: 0,
+        fingerprints: fps,
+        replan_ledger: ReplanLedgerSnapshot::default(),
+        revised_tasks: Vec::new(),
+        cascade_router_json: None,
     }
 }
 
-fn commit_workspace_state(workdir: &Path, message: &str) {
-    run_process(workdir, &["git", "add", "."]);
-    run_process(workdir, &["git", "commit", "-m", message]);
-}
+// ─── 1: Full pipeline — execute, gate-fail/retry, dashboard, persist, resume ─
 
-fn seed_plan_branch(workdir: &Path, plan_id: &str) {
-    let main_branch = git_stdout(workdir, &["git", "branch", "--show-current"]);
-    let branch = format!("roko/plan/{plan_id}");
-    run_process(workdir, &["git", "checkout", "-b", &branch]);
-    run_process(workdir, &["git", "checkout", &main_branch]);
-}
+#[test]
+fn self_host_smoke_full_pipeline() {
+    let (ta, tb, tc) = (td("A", &[]), td("B", &[]), td("C", &["A", "B"]));
+    let tasks: Vec<&TaskDef> = vec![&ta, &tb, &tc];
+    let mut st = fresh(3);
+    let mut dag = TaskDag::new(DagConfig::default());
+    let proj = Projection::new(RUN);
+    let _rx = proj.subscribe();
 
-fn run_process(workdir: &Path, args: &[&str]) {
-    let (program, rest) = args.split_first().expect("process command");
-    let status = ProcessCommand::new(program)
-        .current_dir(workdir)
-        .args(rest)
-        .status()
-        .unwrap_or_else(|err| panic!("spawn {program}: {err}"));
-    assert!(
-        status.success(),
-        "{program} {:?} failed with {status}",
-        rest
+    // Phase 1: dispatch A and B
+    dag.mark_running("p1", "A");
+    dag.mark_running("p1", "B");
+    let (a1, b1) = (ar("p1", "A", 1), ar("p1", "B", 1));
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_started(RUN, a1.clone(), "A"),
     );
-}
-
-fn git_stdout(workdir: &Path, args: &[&str]) -> String {
-    let (program, rest) = args.split_first().expect("process command");
-    let output = ProcessCommand::new(program)
-        .current_dir(workdir)
-        .args(rest)
-        .output()
-        .unwrap_or_else(|err| panic!("spawn {program}: {err}"));
-    assert!(
-        output.status.success(),
-        "{program} {:?} failed with {}",
-        rest,
-        output.status
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_started(RUN, b1.clone(), "B"),
     );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+
+    // A passes
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_completed(
+            RUN,
+            a1.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            1000,
+            "sa",
+            "m",
+        ),
+    );
+    dag.mark_complete("p1", "A");
+    assert_eq!(
+        st.lifecycle.tasks["p1:A"].status,
+        TaskLifecycleStatus::Passed
+    );
+
+    // B gate-fails, retries, then passes
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::gate_dispatch_started(RUN, b1.clone(), GateCompletionKind::Gate, 1),
+    );
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::gate_completed(RUN, b1.clone(), &gc("p1", "B", false, 1)),
+    );
+    assert_eq!(
+        st.lifecycle.task_attempts[&b1.key()].status,
+        TaskAttemptStatus::GateFailed
+    );
+
+    let rd = RetryDecision::for_failure(RunnerFailureKind::Transient, 1, 2, "gate");
+    assert!(rd.should_retry());
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::retry_decision(RUN, b1.clone(), rd),
+    );
+    assert_eq!(
+        st.lifecycle.tasks["p1:B"].status,
+        TaskLifecycleStatus::Retrying
+    );
+
+    let b2 = ar("p1", "B", 2);
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_started(RUN, b2.clone(), "B"),
+    );
+    assert_eq!(
+        st.lifecycle.task_attempts[&b1.key()].status,
+        TaskAttemptStatus::Superseded
+    );
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_completed(
+            RUN,
+            b2.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            2000,
+            "sb",
+            "m",
+        ),
+    );
+    dag.mark_complete("p1", "B");
+    assert_eq!(
+        st.lifecycle.tasks["p1:B"].status,
+        TaskLifecycleStatus::Passed
+    );
+
+    // C unblocks and passes
+    let ready = dag.ready_tasks("p1", &tasks, &["A".into(), "B".into()], &[]);
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].id, "C");
+    dag.mark_running("p1", "C");
+    let c1 = ar("p1", "C", 1);
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_started(RUN, c1.clone(), "C"),
+    );
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::task_attempt_completed(
+            RUN,
+            c1.clone(),
+            TaskAttemptOutcome::Passed,
+            None,
+            3000,
+            "sc",
+            "m",
+        ),
+    );
+    dag.mark_complete("p1", "C");
+
+    // Terminal events
+    let plan = dag.plan("p1").unwrap();
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::plan_completed(
+            RUN,
+            "p1",
+            PlanOutcome::Succeeded,
+            None,
+            0.15,
+            plan.completed.len(),
+            plan.failed.len(),
+        ),
+    );
+    emit(
+        &mut st,
+        &proj,
+        RunnerEvent::run_completed(
+            RUN,
+            RunOutcome::Succeeded,
+            RunTotals {
+                total_tasks: 3,
+                tasks_completed: 3,
+                tasks_failed: 0,
+                tasks_blocked: 0,
+                tasks_skipped: 0,
+                tasks_active: 0,
+                tasks_pending: 0,
+                total_agent_calls: 4,
+                total_cost_usd: 0.15,
+                duration_ms: 5000,
+            },
+            vec![],
+        ),
+    );
+
+    // Verify terminal state
+    assert_eq!(st.lifecycle.status, RunnerRunStatus::Completed);
+    for key in ["p1:A", "p1:B", "p1:C"] {
+        let t = st.lifecycle.tasks.get(key).unwrap();
+        assert_eq!(t.status, TaskLifecycleStatus::Passed, "{key}");
+        assert!(t.completed_at_ms.is_some(), "{key} completed_at_ms");
+    }
+    for (key, att) in &st.lifecycle.task_attempts {
+        assert!(
+            att.status == TaskAttemptStatus::Passed || att.status == TaskAttemptStatus::Superseded,
+            "stale attempt {key}: {:?}",
+            att.status,
+        );
+    }
+
+    // DAG progress
+    let done: Vec<String> = plan.completed.iter().cloned().collect();
+    let summary = dag.progress_summary("p1", &tasks, &done, &plan.failed, &[], &[]);
+    assert_eq!(
+        (
+            summary.terminal,
+            summary.ready,
+            summary.active,
+            summary.blocked
+        ),
+        (3, 0, 0, 0)
+    );
+
+    // Dashboard events
+    let dash = proj.dashboard_snapshot();
+    assert!(!dash.events.is_empty());
+    let types: Vec<&str> = dash.events.iter().map(|e| e.event_type.as_str()).collect();
+    for expected in [
+        "task.attempt.started",
+        "task.attempt.completed",
+        "gate.completed",
+        "retry.decision",
+        "run.completed",
+    ] {
+        assert!(types.contains(&expected), "missing {expected}");
+    }
+    for ev in &dash.events {
+        assert_eq!(ev.run_id, RUN);
+    }
+    assert_eq!(proj.counters().coerced, 0);
+
+    // Persistence round-trip
+    let dir = tempdir().unwrap();
+    let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+    let fps: Vec<_> = [&ta, &tb, &tc]
+        .iter()
+        .map(|t| TaskDefFingerprint::from_task(t, "p1"))
+        .collect();
+    let done_map = HashMap::from([("p1".into(), vec!["A".into(), "B".into(), "C".into()])]);
+    save_run_state(
+        &paths,
+        &snap(&st, fps.clone(), done_map.clone(), HashMap::new()),
+    )
+    .unwrap();
+
+    let ld = load_run_state(&paths).unwrap().unwrap();
+    assert_eq!(
+        (ld.schema_version, ld.run_id.as_str(), ld.tasks_total),
+        (RUN_STATE_SCHEMA_VERSION, RUN, 3)
+    );
+    assert_eq!(ld.completed_tasks, done_map);
+    let lc = ld.lifecycle.unwrap();
+    assert_eq!(lc.status, RunnerRunStatus::Completed);
+    for (key, task) in &st.lifecycle.tasks {
+        assert_eq!(lc.tasks[key].status, task.status, "round-trip {key}");
+    }
+
+    // Resume
+    let mut plans = HashMap::new();
+    plans.insert("p1".into(), vec![ta.clone(), tb.clone(), tc.clone()]);
+    let rpt = prepare_resume(&paths, &plans, &fps).unwrap();
+    assert!(rpt.resumed);
+    assert_eq!(rpt.prior_run_id.as_deref(), Some(RUN));
+    assert_eq!(rpt.validated_tasks, 3);
+    assert!(rpt.drifted_tasks.is_empty());
+
+    // No orphan attempts
+    for key in st.lifecycle.task_attempts.keys() {
+        let pt = &key[..key.rfind(':').unwrap()];
+        assert!(st.lifecycle.tasks.contains_key(pt), "orphan {key}");
+    }
 }
 
-fn run_cli(workdir: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
-    Command::cargo_bin("roko")
-        .unwrap()
-        .current_dir(workdir)
-        .args(args)
-        .env("ROKO_DISPATCHER", FIXTURE)
-        .env("ROKO_MOCK_STATE_PATH", mock_state_path(workdir))
-        .assert()
+// ─── 2: Resume from mid-run snapshot ────────────────────────────────────
+
+#[test]
+fn resume_from_mid_run_replays_remaining() {
+    let (ta, tb, tc) = (td("A", &[]), td("B", &["A"]), td("C", &["B"]));
+    let dir = tempdir().unwrap();
+    let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+    let fps: Vec<_> = [&ta, &tb, &tc]
+        .iter()
+        .map(|t| TaskDefFingerprint::from_task(t, "p1"))
+        .collect();
+
+    let mid = RunStateSnapshot {
+        schema_version: RUN_STATE_SCHEMA_VERSION,
+        run_id: RUN.into(),
+        started_at_ms: 0,
+        timestamp_ms: 50,
+        tasks_total: 3,
+        tasks_completed: 1,
+        tasks_failed: 0,
+        total_tokens_in: 200,
+        total_tokens_out: 100,
+        total_cost_usd: 0.05,
+        total_agent_calls: 1,
+        plan_costs: HashMap::new(),
+        completed_tasks: HashMap::from([("p1".into(), vec!["A".into()])]),
+        failed_tasks: HashMap::new(),
+        lifecycle: None,
+        snapshot_fail_streak: 0,
+        fingerprints: fps.clone(),
+        replan_ledger: ReplanLedgerSnapshot::default(),
+        revised_tasks: Vec::new(),
+        cascade_router_json: None,
+    };
+    save_run_state(&paths, &mid).unwrap();
+
+    // Crash: partial trailing line in events.jsonl
+    let valid = "{\"type\":\"task.started\",\"task_id\":\"A\"}\n";
+    fs::write(
+        &paths.events_jsonl,
+        format!("{valid}{{\"type\":\"task.compl"),
+    )
+    .unwrap();
+
+    let mut plans = HashMap::new();
+    plans.insert("p1".into(), vec![ta.clone(), tb.clone(), tc.clone()]);
+    let rpt = prepare_resume(&paths, &plans, &fps).unwrap();
+    assert!(rpt.resumed);
+    assert_eq!(rpt.validated_tasks, 3);
+    assert!(rpt.drifted_tasks.is_empty());
+    assert_eq!(fs::read_to_string(&paths.events_jsonl).unwrap(), valid);
+
+    let ld = load_run_state(&paths).unwrap().unwrap();
+    assert_eq!(ld.tasks_completed, 1);
+    assert_eq!(ld.completed_tasks["p1"], vec!["A".to_string()]);
+
+    // DAG: B ready, C blocked on B
+    let mut dag = TaskDag::new(DagConfig::default());
+    let refs: Vec<&TaskDef> = vec![&ta, &tb, &tc];
+    let r1 = dag.ready_tasks("p1", &refs, &["A".into()], &[]);
+    assert_eq!((r1.len(), r1[0].id.as_str()), (1, "B"));
+    dag.mark_running("p1", "B");
+    dag.mark_complete("p1", "B");
+    let r2 = dag.ready_tasks("p1", &refs, &["A".into(), "B".into()], &[]);
+    assert_eq!((r2.len(), r2[0].id.as_str()), (1, "C"));
 }
 
-fn mock_state_path(workdir: &Path) -> PathBuf {
-    workdir
-        .join(".roko")
-        .join("state")
-        .join("mock-dispatcher-turn.txt")
+// ─── 3: Failed task blocks dependents, terminal counts correct ──────────
+
+#[test]
+fn failed_task_blocks_dependent_terminal_counts() {
+    let (ta, tb, tc) = (td("A", &[]), td("B", &["A"]), td("C", &[]));
+    let tasks: Vec<&TaskDef> = vec![&ta, &tb, &tc];
+    let mut st = fresh(3);
+    let mut dag = TaskDag::new(DagConfig::default());
+
+    dag.mark_running("p1", "A");
+    dag.mark_running("p1", "C");
+    let (a1, c1) = (ar("p1", "A", 1), ar("p1", "C", 1));
+    st.apply_runner_event(&RunnerEvent::task_attempt_started(RUN, a1.clone(), "A"));
+    st.apply_runner_event(&RunnerEvent::task_attempt_started(RUN, c1.clone(), "C"));
+
+    // A fails permanently -> B skipped
+    st.apply_runner_event(&RunnerEvent::task_attempt_completed(
+        RUN,
+        a1,
+        TaskAttemptOutcome::Failed,
+        Some(RunnerFailureKind::Permanent),
+        500,
+        "s",
+        "c",
+    ));
+    assert_eq!(
+        dag.mark_failed_blocking_downstream("p1", "A", &tasks),
+        vec!["B".to_string()]
+    );
+
+    // C passes
+    st.apply_runner_event(&RunnerEvent::task_attempt_completed(
+        RUN,
+        c1,
+        TaskAttemptOutcome::Passed,
+        None,
+        1000,
+        "s",
+        "c",
+    ));
+    dag.mark_complete("p1", "C");
+
+    let plan = dag.plan("p1").unwrap();
+    assert!(
+        plan.failed.contains("A") && plan.skipped.contains_key("B") && plan.completed.contains("C")
+    );
+    let done: Vec<String> = plan.completed.iter().cloned().collect();
+    let summary = dag.progress_summary("p1", &tasks, &done, &plan.failed, &[], &[]);
+    assert_eq!(
+        (
+            summary.terminal,
+            summary.ready,
+            summary.active,
+            summary.blocked
+        ),
+        (3, 0, 0, 0)
+    );
+
+    // Persistence round-trip captures both completed and failed
+    let dir = tempdir().unwrap();
+    let paths = PersistPaths::from_workdir(dir.path()).unwrap();
+    let fps: Vec<_> = [&ta, &tb, &tc]
+        .iter()
+        .map(|t| TaskDefFingerprint::from_task(t, "p1"))
+        .collect();
+    let s = RunStateSnapshot {
+        schema_version: RUN_STATE_SCHEMA_VERSION,
+        run_id: RUN.into(),
+        started_at_ms: 0,
+        timestamp_ms: 50,
+        tasks_total: 3,
+        tasks_completed: 1,
+        tasks_failed: 1,
+        total_tokens_in: 0,
+        total_tokens_out: 0,
+        total_cost_usd: 0.0,
+        total_agent_calls: 2,
+        plan_costs: HashMap::new(),
+        completed_tasks: HashMap::from([("p1".into(), vec!["C".into()])]),
+        failed_tasks: HashMap::from([("p1".into(), vec!["A".into()])]),
+        lifecycle: Some(st.lifecycle.clone()),
+        snapshot_fail_streak: 0,
+        fingerprints: fps,
+        replan_ledger: ReplanLedgerSnapshot::default(),
+        revised_tasks: Vec::new(),
+        cascade_router_json: None,
+    };
+    save_run_state(&paths, &s).unwrap();
+    let ld = load_run_state(&paths).unwrap().unwrap();
+    assert_eq!((ld.tasks_completed, ld.tasks_failed), (1, 1));
+    assert!(ld.failed_tasks["p1"].contains(&"A".into()));
+    assert!(ld.completed_tasks["p1"].contains(&"C".into()));
 }

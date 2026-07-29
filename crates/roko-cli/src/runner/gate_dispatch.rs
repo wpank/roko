@@ -1,8 +1,10 @@
 //! Verify dispatch — runs gate rungs as background tokio tasks and sends
 //! results through a channel.
 
+use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,6 +15,7 @@ use roko_fs::RokoLayout;
 use roko_gate::classify_gate_failure;
 use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
+use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
@@ -30,6 +33,166 @@ pub const RUNG_PLAN_VERIFY: u32 = 1000;
 /// Sentinel rung value for post-merge regression gates.
 pub const RUNG_MERGE: u32 = 1001;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GateInputSnapshot(String, [u8; 32], bool);
+const MAX_UNTRACKED_FILES: usize = 1024;
+const MAX_UNTRACKED_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_GATE_INPUT_BYTES: u64 = 32 * 1024 * 1024;
+fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+#[cfg(unix)]
+fn metadata_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.file_type() == after.file_type()
+        && before.len() == after.len()
+        && before.modified().ok() == after.modified().ok()
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+}
+fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, String> {
+    #[cfg(not(unix))]
+    return Err("stable gate input identity is unavailable on this platform".into());
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    };
+    let base_commit = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"])?)
+        .trim()
+        .to_string();
+    let diff = git(&["diff", "--binary", "HEAD", "--"])?;
+    if diff.len() as u64 > MAX_GATE_INPUT_BYTES {
+        return Err("tracked diff exceeds gate input byte limit".into());
+    }
+    let status = git(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--ignored=matching",
+        "-uall",
+    ])?;
+    roko_orchestrator::worktree::validate_workspace_file_kinds(workdir, &status)
+        .map_err(|error| error.to_string())?;
+    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut hasher = Sha256::new();
+    hash_part(&mut hasher, base_commit.as_bytes());
+    hash_part(&mut hasher, &diff);
+    let mut total_bytes = diff.len() as u64;
+    for (index, raw_path) in untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .enumerate()
+    {
+        if index >= MAX_UNTRACKED_FILES {
+            return Err("untracked file count exceeds input limit".into());
+        }
+        let relative = std::str::from_utf8(raw_path).map_err(|error| error.to_string())?;
+        let path = workdir.join(relative);
+        let before = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        hash_part(&mut hasher, raw_path);
+        if before.file_type().is_symlink() {
+            let target_path = std::fs::read_link(&path).map_err(|error| error.to_string())?;
+            let target = target_path.as_os_str().as_encoded_bytes();
+            total_bytes = total_bytes.saturating_add(target.len() as u64);
+            if target.len() as u64 > MAX_UNTRACKED_FILE_BYTES || total_bytes > MAX_GATE_INPUT_BYTES
+            {
+                return Err("untracked symlink exceeds input limit".into());
+            }
+            hasher.update([b'l']);
+            hash_part(&mut hasher, target);
+            if std::fs::read_link(&path).ok().as_ref() != Some(&target_path) {
+                return Err("untracked symlink changed while hashing".into());
+            }
+        } else if before.is_file() {
+            if before.len() > MAX_UNTRACKED_FILE_BYTES
+                || total_bytes.saturating_add(before.len()) > MAX_GATE_INPUT_BYTES
+            {
+                return Err("untracked file exceeds input limit".into());
+            }
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            }
+            let mut file = options.open(&path).map_err(|error| error.to_string())?;
+            let opened = file.metadata().map_err(|error| error.to_string())?;
+            if !opened.is_file() || !metadata_unchanged(&before, &opened) {
+                return Err("untracked file changed before hashing".into());
+            }
+            hasher.update([b'f']);
+            hasher.update(before.len().to_le_bytes());
+            let read_bytes = std::io::copy(&mut (&mut file).take(before.len() + 1), &mut hasher)
+                .map_err(|error| error.to_string())?;
+            let after = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if read_bytes != before.len() || !metadata_unchanged(&before, &after) {
+                return Err("untracked file changed while hashing".into());
+            }
+            total_bytes += read_bytes;
+        } else {
+            return Err("untracked path is not a regular file or symlink".into());
+        }
+    }
+    let owned_diff: [u8; 32] = hasher.finalize().into();
+    let has_owned_diff = !diff.is_empty() || !untracked.is_empty();
+    Ok(GateInputSnapshot(base_commit, owned_diff, has_owned_diff))
+}
+async fn gate_input_snapshot(workdir: PathBuf) -> Result<GateInputSnapshot, String> {
+    tokio::task::spawn_blocking(move || gate_input_snapshot_blocking(&workdir))
+        .await
+        .map_err(|error| error.to_string())?
+}
+async fn accepted_input_snapshot(
+    workdir: PathBuf,
+    expected_oid: &str,
+) -> Result<GateInputSnapshot, String> {
+    let snapshot = gate_input_snapshot(workdir).await?;
+    (snapshot.0 == expected_oid && !snapshot.2)
+        .then_some(snapshot)
+        .ok_or_else(|| "accepted plan input differs from immutable commit".into())
+}
+fn raw_gate_name(name: &str) -> &str {
+    name.strip_prefix("baseline+owned:")
+        .or_else(|| name.strip_prefix("baseline:"))
+        .or_else(|| name.strip_prefix("owned-diff:"))
+        .or_else(|| name.strip_prefix("unattributed:"))
+        .unwrap_or(name)
+}
+fn gate_failure_input(
+    kind: GateCompletionKind,
+    before: &GateInputSnapshot,
+    baseline_failed_gates: Option<&[String]>,
+    gate: &str,
+) -> &'static str {
+    match (kind, before.2, baseline_failed_gates) {
+        (GateCompletionKind::Preflight, _, _) | (GateCompletionKind::Gate, false, _) => "baseline",
+        (GateCompletionKind::Gate, true, Some(failures))
+            if failures.iter().any(|name| name == raw_gate_name(gate)) =>
+        {
+            "baseline+owned"
+        }
+        (GateCompletionKind::Gate, true, Some(_)) => "owned-diff",
+        (GateCompletionKind::Gate, true, None) => "unattributed",
+        (GateCompletionKind::PlanVerify, _, _) => "accepted-plan",
+        (GateCompletionKind::Merge, _, _) => "post-merge",
+    }
+}
+macro_rules! proof_failure {
+    ($gate:expr, $reason:expr, $digest:expr $(,)?) => {
+        Verdict::fail($gate, $reason).with_error_digest($digest)
+    };
+}
 /// Spawn a gate rung as a background task. Sends `GateCompletion` when done.
 pub fn spawn_gate(
     effect: GateEffectRef,
@@ -40,6 +203,7 @@ pub fn spawn_gate(
     gates_config: GatesConfig,
     complexity: PlanComplexity,
     verify_steps: Vec<VerifyStep>,
+    baseline_failed_gates: Option<Vec<String>>,
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
@@ -74,6 +238,7 @@ pub fn spawn_gate(
                     gates_config,
                     complexity,
                     verify_steps,
+                    baseline_failed_gates,
                     timeout_secs,
                     target_crates,
                 )
@@ -136,6 +301,7 @@ pub async fn run_gate_once(
     gates_config: GatesConfig,
     complexity: PlanComplexity,
     verify_steps: Vec<VerifyStep>,
+    baseline_failed_gates: Option<Vec<String>>,
     timeout_secs: u64,
     target_crates: Vec<String>,
 ) -> GateCompletion {
@@ -187,18 +353,58 @@ pub async fn run_gate_once(
         verdicts
     };
 
-    let verdicts = match timeout(limit, run).await {
-        Ok(verdicts) => verdicts,
-        Err(_) => vec![
-            Verdict::fail(
-                format!("gate-timeout:rung-{rung}"),
-                format!("gate timed out after {timeout_secs}s"),
-            )
-            .with_error_digest(format!(
-                "timeout: gate rung {rung} exceeded {timeout_secs}s"
-            )),
-        ],
+    let checked = async {
+        let before = gate_input_snapshot(workdir.clone()).await?;
+        let verdicts = run.await;
+        let after = gate_input_snapshot(workdir.clone()).await?;
+        Ok::<_, String>((before, after, verdicts))
     };
+    let (input_before, mut verdicts) = match timeout(limit, checked).await {
+        Ok(Ok((before, after, mut verdicts))) => {
+            if before != after {
+                verdicts.push(proof_failure!(
+                    "unattributed:immutable-input",
+                    format!(
+                        "gate input changed during verification (base {} -> {})",
+                        before.0, after.0
+                    ),
+                    "gate input mutation invalidates attribution",
+                ));
+            }
+            (Some(before), verdicts)
+        }
+        Ok(Err(error)) => (
+            None,
+            vec![proof_failure!(
+                "unattributed:input-snapshot",
+                format!("could not prove immutable gate input: {error}"),
+                "gate input identity unavailable",
+            )],
+        ),
+        Err(_) => (
+            None,
+            vec![proof_failure!(
+                format!("unattributed:gate-timeout:rung-{rung}"),
+                format!("gate timed out after {timeout_secs}s"),
+                format!("timeout: gate rung {rung} exceeded {timeout_secs}s"),
+            )],
+        ),
+    };
+    if let Some(before) = input_before.as_ref() {
+        for verdict in verdicts
+            .iter_mut()
+            .filter(|verdict| !verdict.passed && !verdict.gate.starts_with("unattributed:"))
+        {
+            let input = gate_failure_input(
+                effect.kind,
+                before,
+                baseline_failed_gates.as_deref(),
+                &verdict.gate,
+            );
+            verdict.gate = format!("{input}:{}", verdict.gate);
+            verdict.reason = format!("{input} failure: {}", verdict.reason);
+        }
+    }
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let passed = verdicts.iter().all(|v| v.passed);
@@ -252,6 +458,7 @@ pub fn spawn_plan_verify(
     effect: GateEffectRef,
     plan_id: String,
     workdir: PathBuf,
+    expected_oid: String,
     verify_steps: Vec<(String, Vec<VerifyStep>)>,
     timeout_secs: u64,
     gate_tx: mpsc::Sender<GateCompletion>,
@@ -285,6 +492,11 @@ pub fn spawn_plan_verify(
             let workdir_for_run = workdir.clone();
 
             let run = async move {
+                let before =
+                    match accepted_input_snapshot(workdir_for_run.clone(), &expected_oid).await {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => return vec![Verdict::fail("accepted-plan:input", error)],
+                    };
                 let mut all = Vec::new();
                 for (task_id, steps) in verify_steps {
                     let signal = gate_signal(
@@ -295,6 +507,12 @@ pub fn spawn_plan_verify(
                         &[], // plan-level verify runs workspace-wide
                     );
                     all.extend(run_verify_steps(&signal, &ctx, &task_id, steps).await);
+                }
+                if accepted_input_snapshot(workdir_for_run, &expected_oid).await != Ok(before) {
+                    all.push(Verdict::fail(
+                        "accepted-plan:immutable-input",
+                        "accepted plan input changed during verification",
+                    ));
                 }
                 all
             };
@@ -550,6 +768,37 @@ fn classify_failure_kind(verdicts: &[Verdict], output: &str) -> RunnerFailureKin
 mod tests {
     use super::*;
 
+    fn git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "Roko Test"],
+            vec!["config", "user.email", "roko@example.invalid"],
+            vec!["commit", "--allow-empty", "-m", "base"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git setup failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        dir
+    }
+
+    fn gate_effect(kind: GateCompletionKind) -> GateEffectRef {
+        GateEffectRef {
+            attempt: TaskAttemptRef::new("plan", "task", 1),
+            kind,
+            rung: 1,
+            generation: 1,
+        }
+    }
+
     fn barrier_gate() -> (
         JoinHandle<()>,
         oneshot::Sender<()>,
@@ -573,6 +822,7 @@ mod tests {
             GatesConfig::default(),
             PlanComplexity::Trivial,
             Vec::new(),
+            None,
             1,
             tx,
             Arc::new(Semaphore::new(1)),
@@ -603,7 +853,19 @@ mod tests {
 
     #[tokio::test]
     async fn plan_verify_is_barriered_and_preserves_exact_effect() {
-        let dir = tempfile::tempdir().unwrap();
+        let shared_root = git_repo();
+        std::fs::write(shared_root.path().join("unrelated.txt"), b"dirty root\n").unwrap();
+        let dir = git_repo();
+        let expected_oid = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
         let effect = GateEffectRef {
             attempt: TaskAttemptRef::new("plan-a", "plan-verify", 1),
             kind: GateCompletionKind::PlanVerify,
@@ -615,6 +877,7 @@ mod tests {
             effect.clone(),
             "plan-a".to_string(),
             dir.path().to_path_buf(),
+            expected_oid,
             Vec::new(),
             1,
             tx,
@@ -630,6 +893,7 @@ mod tests {
         handle.await.unwrap();
         assert!(completion.passed);
         assert_eq!(completion.effect, Some(effect));
+        assert!(shared_root.path().join("unrelated.txt").exists());
     }
 
     #[tokio::test]
@@ -648,6 +912,7 @@ mod tests {
             effect.clone(),
             "plan-b".to_string(),
             dir.path().to_path_buf(),
+            "unused".to_string(),
             Vec::new(),
             1,
             tx,
@@ -682,6 +947,7 @@ mod tests {
             GatesConfig::default(),
             PlanComplexity::Trivial,
             Vec::new(),
+            None,
             1,
             tx,
             semaphore,
@@ -782,5 +1048,312 @@ mod tests {
         let verdicts = run_verify_steps(&signal, &ctx, "T01", vec![step]).await;
 
         assert_eq!(verdicts.first().map(|verdict| verdict.passed), Some(true));
+    }
+
+    #[tokio::test]
+    async fn failures_identify_actual_baseline_and_owned_diff_inputs() {
+        for (owned, expected) in [(false, "baseline:"), (true, "owned-diff:")] {
+            let dir = git_repo();
+            if owned {
+                std::fs::write(dir.path().join("candidate.txt"), b"owned\n").unwrap();
+            }
+            let completion = run_gate_once(
+                gate_effect(GateCompletionKind::Gate),
+                "plan".into(),
+                "task".into(),
+                1,
+                dir.path().to_path_buf(),
+                GatesConfig::default(),
+                PlanComplexity::Trivial,
+                vec![VerifyStep {
+                    phase: "test".into(),
+                    command: "false".into(),
+                    fail_msg: None,
+                    timeout_ms: 10_000,
+                }],
+                Some(Vec::new()),
+                10,
+                Vec::new(),
+            )
+            .await;
+            assert!(!completion.passed);
+            assert!(
+                completion
+                    .verdicts
+                    .iter()
+                    .filter(|verdict| !verdict.passed)
+                    .all(|verdict| verdict.gate_name.starts_with(expected))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_fails_closed_when_verification_mutates_owned_input() {
+        let dir = git_repo();
+        std::fs::write(dir.path().join("tracked.txt"), b"before\n").unwrap();
+        for args in [
+            vec!["add", "tracked.txt"],
+            vec!["commit", "-m", "tracked input"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let completion = run_gate_once(
+            gate_effect(GateCompletionKind::Gate),
+            "plan".into(),
+            "task".into(),
+            1,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            vec![VerifyStep {
+                phase: "test".into(),
+                command: "printf 'after\\n' > tracked.txt".into(),
+                fail_msg: None,
+                timeout_ms: 10_000,
+            }],
+            Some(Vec::new()),
+            10,
+            Vec::new(),
+        )
+        .await;
+
+        assert!(!completion.passed);
+        assert!(
+            completion
+                .verdicts
+                .iter()
+                .any(|verdict| verdict.gate_name == "unattributed:immutable-input")
+        );
+    }
+
+    #[tokio::test]
+    async fn failure_reproduced_on_baseline_retains_both_identities() {
+        let dir = git_repo();
+        let step = VerifyStep {
+            phase: "test".into(),
+            command: "false".into(),
+            fail_msg: None,
+            timeout_ms: 10_000,
+        };
+        let baseline = run_gate_once(
+            gate_effect(GateCompletionKind::Preflight),
+            "plan".into(),
+            "task".into(),
+            1,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            vec![step.clone()],
+            None,
+            10,
+            Vec::new(),
+        )
+        .await;
+        let baseline_failures = baseline
+            .verdicts
+            .iter()
+            .filter(|verdict| !verdict.passed)
+            .map(|verdict| raw_gate_name(&verdict.gate_name).to_string())
+            .collect();
+        std::fs::write(dir.path().join("candidate.txt"), b"owned\n").unwrap();
+        let candidate = run_gate_once(
+            gate_effect(GateCompletionKind::Gate),
+            "plan".into(),
+            "task".into(),
+            1,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            vec![step],
+            Some(baseline_failures),
+            10,
+            Vec::new(),
+        )
+        .await;
+        assert!(candidate.verdicts.iter().any(|verdict| {
+            !verdict.passed && verdict.gate_name.starts_with("baseline+owned:")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn equal_content_symlink_target_swap_invalidates_gate_input() {
+        use std::os::unix::fs::symlink;
+
+        let dir = git_repo();
+        std::fs::write(dir.path().join("a"), b"same\n").unwrap();
+        std::fs::write(dir.path().join("b"), b"same\n").unwrap();
+        symlink("a", dir.path().join("input")).unwrap();
+        let completion = run_gate_once(
+            gate_effect(GateCompletionKind::Gate),
+            "plan".into(),
+            "task".into(),
+            1,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            vec![VerifyStep {
+                phase: "test".into(),
+                command: "ln -sfn b input".into(),
+                fail_msg: None,
+                timeout_ms: 10_000,
+            }],
+            Some(Vec::new()),
+            10,
+            Vec::new(),
+        )
+        .await;
+        assert!(!completion.passed);
+        assert!(
+            completion
+                .verdicts
+                .iter()
+                .any(|verdict| { verdict.gate_name == "unattributed:immutable-input" })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_cycle_is_not_traversed() {
+        use std::os::unix::fs::symlink;
+
+        let dir = git_repo();
+        symlink(".", dir.path().join("cycle")).unwrap();
+        gate_input_snapshot_blocking(dir.path()).expect("symlink cycle remains a link input");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn equal_kind_len_mtime_inode_replacement_is_detected() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = git_repo();
+        let input = dir.path().join("input");
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&input, b"aaaa").unwrap();
+        std::fs::write(&replacement, b"bbbb").unwrap();
+        let before = std::fs::symlink_metadata(&input).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+            .unwrap();
+        std::fs::rename(&replacement, &input).unwrap();
+        let after = std::fs::symlink_metadata(&input).unwrap();
+
+        assert_eq!(before.file_type(), after.file_type());
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert_eq!(before.dev(), after.dev());
+        assert_ne!(before.ino(), after.ino());
+        assert!(!metadata_unchanged(&before, &after));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bare_fifo_is_rejected_without_scanning_ignored_build_artifacts() {
+        let dir = git_repo();
+        std::fs::write(dir.path().join(".gitignore"), "ignored-build/\n").unwrap();
+        std::fs::create_dir(dir.path().join("ignored-build")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg("ignored-build/cache.fifo")
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        gate_input_snapshot_blocking(dir.path()).expect("ignored artifacts are pruned");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg("input.fifo")
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            gate_input_snapshot_blocking(dir.path())
+                .unwrap_err()
+                .contains("non-file input")
+        );
+        let completion = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_gate_once(
+                gate_effect(GateCompletionKind::Gate),
+                "plan".into(),
+                "task".into(),
+                1,
+                dir.path().to_path_buf(),
+                GatesConfig::default(),
+                PlanComplexity::Trivial,
+                Vec::new(),
+                Some(Vec::new()),
+                1,
+                Vec::new(),
+            ),
+        )
+        .await
+        .expect("FIFO fingerprinting must not block");
+        assert!(!completion.passed);
+        assert!(completion.duration_ms < 2_000, "{completion:#?}");
+        assert!(completion.verdicts.iter().any(|verdict| {
+            verdict.gate_name == "unattributed:input-snapshot"
+                && verdict.summary.contains("non-file input")
+        }));
+    }
+
+    #[tokio::test]
+    async fn untracked_size_and_count_limits_are_deterministic() {
+        let oversized = git_repo();
+        File::create(oversized.path().join("large.bin"))
+            .unwrap()
+            .set_len(MAX_UNTRACKED_FILE_BYTES + 1)
+            .unwrap();
+        assert!(
+            gate_input_snapshot_blocking(oversized.path())
+                .unwrap_err()
+                .contains("exceeds input limit")
+        );
+        let completion = run_gate_once(
+            gate_effect(GateCompletionKind::Gate),
+            "plan".into(),
+            "task".into(),
+            1,
+            oversized.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            Vec::new(),
+            Some(Vec::new()),
+            1,
+            Vec::new(),
+        )
+        .await;
+        assert!(
+            completion
+                .verdicts
+                .iter()
+                .any(|verdict| { verdict.gate_name == "unattributed:input-snapshot" })
+        );
+
+        let counted = git_repo();
+        for index in 0..MAX_UNTRACKED_FILES {
+            File::create(counted.path().join(format!("item-{index:04}"))).unwrap();
+        }
+        gate_input_snapshot_blocking(counted.path()).expect("count boundary is accepted");
+        File::create(counted.path().join("one-too-many")).unwrap();
+        assert!(
+            gate_input_snapshot_blocking(counted.path())
+                .unwrap_err()
+                .contains("untracked file count")
+        );
     }
 }

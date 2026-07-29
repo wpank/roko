@@ -17,6 +17,13 @@
 //!       ↓
 //!   if passed: substrate.put(composed) + policy.decide(stream, ctx)
 //! ```
+//!
+//! # Runtime status
+//!
+//! The current plan executor (`runner/event_loop.rs`) reimplements these
+//! steps inline rather than calling [`loop_tick`] directly. The Graph
+//! engine in `roko-graph` uses cell-based composition instead. Wiring
+//! `loop_tick` as the single dispatch path is tracked under E01/E22.
 
 use serde::{Deserialize, Serialize};
 

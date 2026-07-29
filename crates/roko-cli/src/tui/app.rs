@@ -148,6 +148,12 @@ pub struct App {
     /// iteration (verdicts open/tick are async and cannot be called from sync
     /// dispatch_action).
     pending_refresh: bool,
+    /// Receiver for background git data collection results.
+    git_bg_rx: Option<std::sync::mpsc::Receiver<(u64, GitBgData)>>,
+    /// Monotonically increasing generation counter for spawned git jobs.
+    git_bg_generation: u64,
+    /// Highest generation that has been applied to the TUI state.
+    git_applied_generation: u64,
 }
 
 /// Bundle of git data collected by the watcher-driven git refresh path.
@@ -620,6 +626,9 @@ impl App {
             last_input: Instant::now(),
             terminal_size,
             pending_refresh: false,
+            git_bg_rx: None,
+            git_bg_generation: 0,
+            git_applied_generation: 0,
         };
         app.fx_config = EffectsConfig::load_from_root(&app.workdir);
         // Verdicts aggregator starts as None and is populated on the first
@@ -722,6 +731,11 @@ impl App {
             tui_log_dispatch(&self.workdir).context("initialize TUI file logging")?;
         let _log_guard = tracing::dispatcher::set_default(&log_dispatch);
         tracing::info!(path = %log_path.display(), "TUI file logging enabled");
+        tracing::info!(
+            connected = self._state_hub.is_some(),
+            exit_on_plan_completion = self.exit_on_plan_completion,
+            "TUI session started"
+        );
 
         let previous_hook: Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static> =
             Arc::from(std::panic::take_hook());
@@ -736,6 +750,9 @@ impl App {
         let mut terminal_guard = TerminalCleanupGuard::arm();
         let mut terminal = self.enter_terminal()?;
         let result = self.main_loop(&mut terminal);
+        if let Err(e) = &result {
+            tracing::info!(error = %e, "TUI exiting: error");
+        }
         let cleanup = terminal_guard.restore();
 
         match (result, cleanup) {
@@ -778,9 +795,24 @@ impl App {
         self.fs_watch = Some(fs_watch::watch_roko_dir_with_fallback(&self.workdir));
 
         // ---------------------------------------------------------------
-        // Prime git data once, then refresh only when git metadata changes.
+        // Prime git data once via background thread, then refresh only
+        // when git metadata changes.  The first drain_background_channels()
+        // call will pick up the result.
         // ---------------------------------------------------------------
-        self.apply_git_bg_data(collect_git_bg_data(&self.workdir));
+        {
+            self.git_bg_generation += 1;
+            let generation = self.git_bg_generation;
+            let workdir = self.workdir.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            self.git_bg_rx = Some(rx);
+            std::thread::Builder::new()
+                .name("tui-git-collect".into())
+                .spawn(move || {
+                    let data = collect_git_bg_data(&workdir);
+                    let _ = tx.send((generation, data));
+                })
+                .ok();
+        }
         self.git_watch = Some(git_watch::watch_git_repo_with_fallback(&self.workdir));
 
         // ---------------------------------------------------------------
@@ -987,6 +1019,7 @@ impl App {
                 }
             }
             TuiAction::QuitConfirmed => {
+                tracing::info!("TUI exiting: user quit");
                 self.running = false;
             }
             TuiAction::SwitchTab(tab) => {
@@ -2948,7 +2981,7 @@ impl App {
             }
         }
 
-        // -- git data --
+        // -- git data: spawn background collection when the watcher fires --
         if let Some(git_watch) = &self.git_watch {
             let mut got_refresh = false;
             let mut count = 0;
@@ -2959,8 +2992,32 @@ impl App {
                     break;
                 }
             }
-            if got_refresh {
-                self.apply_git_bg_data(collect_git_bg_data(&self.workdir));
+            // Only spawn a new job when the watcher fired AND no job is
+            // currently in flight. This bounds concurrency to one thread.
+            if got_refresh && self.git_bg_rx.is_none() {
+                self.git_bg_generation += 1;
+                let generation = self.git_bg_generation;
+                let workdir = self.workdir.clone();
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                self.git_bg_rx = Some(rx);
+                std::thread::Builder::new()
+                    .name("tui-git-collect".into())
+                    .spawn(move || {
+                        let data = collect_git_bg_data(&workdir);
+                        let _ = tx.send((generation, data));
+                    })
+                    .ok();
+            }
+        }
+
+        // -- git data: drain completed background result --
+        if let Some(rx) = &self.git_bg_rx {
+            if let Ok((completed_gen, data)) = rx.try_recv() {
+                if completed_gen >= self.git_applied_generation {
+                    self.git_applied_generation = completed_gen;
+                    self.apply_git_bg_data(data);
+                }
+                self.git_bg_rx = None; // channel consumed, allow new requests
             }
         }
     }
@@ -3002,6 +3059,7 @@ impl App {
 
         match rx.try_recv() {
             Ok(()) | Err(std_mpsc::TryRecvError::Disconnected) => {
+                tracing::info!("TUI exiting: shutdown signal received");
                 self.running = false;
             }
             Err(std_mpsc::TryRecvError::Empty) => {}
@@ -3025,6 +3083,7 @@ impl App {
         self.connected_plan_observed |= has_active_plan || has_finished_plan;
 
         if self.connected_plan_observed && !has_active_plan {
+            tracing::info!("TUI exiting: all plans completed");
             self.running = false;
         }
     }
@@ -3798,9 +3857,14 @@ mod tests {
                         model: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                         cost_usd: 0.0,
                         current_task: String::new(),
                         current_plan: String::new(),
+                        attempt: 0,
+                        spawned_at_ms: 0,
+                        last_event_at_ms: 0,
                     },
                 ),
                 (
@@ -3813,9 +3877,14 @@ mod tests {
                         model: String::new(),
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                         cost_usd: 0.0,
                         current_task: String::new(),
                         current_plan: String::new(),
+                        attempt: 0,
+                        spawned_at_ms: 0,
+                        last_event_at_ms: 0,
                     },
                 ),
             ]

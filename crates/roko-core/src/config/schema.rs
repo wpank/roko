@@ -12,7 +12,7 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use crate::agent::{AgentBackend, ProviderKind};
-use crate::defaults::DEFAULT_PLAN_TIMEOUT_SECS;
+use crate::defaults::{DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS};
 use crate::tool::{ToolFormat, profile_for_model};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -1648,6 +1648,10 @@ pub struct CoreRunnerConfig {
     /// production to require explicit tool approval.
     #[serde(default = "CoreRunnerConfig::default_dangerously_skip_permissions")]
     pub dangerously_skip_permissions: bool,
+    /// Maximum dispatch retry attempts for transient errors (429, 529,
+    /// connection timeout). Defaults to 5.
+    #[serde(default = "CoreRunnerConfig::default_dispatch_max_retries")]
+    pub dispatch_max_retries: u32,
 }
 
 impl CoreRunnerConfig {
@@ -1663,6 +1667,10 @@ impl CoreRunnerConfig {
     const fn default_dangerously_skip_permissions() -> bool {
         true
     }
+
+    const fn default_dispatch_max_retries() -> u32 {
+        DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS
+    }
 }
 
 impl Default for CoreRunnerConfig {
@@ -1672,6 +1680,7 @@ impl Default for CoreRunnerConfig {
             max_concurrent_plans: None,
             plan_timeout_secs: Self::default_plan_timeout_secs(),
             dangerously_skip_permissions: Self::default_dangerously_skip_permissions(),
+            dispatch_max_retries: Self::default_dispatch_max_retries(),
         }
     }
 }

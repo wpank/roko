@@ -1325,6 +1325,9 @@ pub async fn run_once(
     });
     event_hub.publish(DashboardEvent::AgentSpawned {
         agent_id: config.agent.command.clone(),
+        plan_id: run_plan_id.clone(),
+        task_id: String::new(),
+        attempt: 0,
         role: config.prompt.role.clone(),
         model: dashboard_agent_model(config),
     });
@@ -1332,6 +1335,9 @@ pub async fn run_once(
         let preview: String = text.chars().take(200).collect();
         event_hub.publish(DashboardEvent::AgentOutput {
             agent_id: config.agent.command.clone(),
+            plan_id: run_plan_id.clone(),
+            task_id: String::new(),
+            attempt: 0,
             content: preview,
         });
         event_hub.publish(DashboardEvent::TaskOutputAppended {

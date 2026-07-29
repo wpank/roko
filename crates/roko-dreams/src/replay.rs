@@ -294,6 +294,7 @@ pub fn select_replay_episodes_with_affect(
 struct ReplayCandidate {
     episode: Episode,
     utility: f64,
+    /// Retained for diagnostics/logging; not consumed by the selection loop.
     #[allow(dead_code)]
     mattar_daw: ReplayUtility,
     random_rank: u64,

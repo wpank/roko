@@ -78,6 +78,13 @@ impl ProviderAdapter for CursorAcpAdapter {
             401 | 403 => ProviderError::AuthFailure,
             404 => ProviderError::ModelNotFound,
             408 => ProviderError::Timeout,
+            // 529 (API overload) — treat as rate-limit for retry purposes.
+            529 => ProviderError::RateLimit {
+                retry_after_ms: body
+                    .pointer("/retry_after")
+                    .and_then(|value| value.as_u64())
+                    .map(|seconds| seconds * 1000),
+            },
             500..=599 => ProviderError::ServerError(status),
             _ => ProviderError::Other(format!("HTTP {}", status)),
         }

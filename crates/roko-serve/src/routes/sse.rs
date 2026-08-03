@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -16,7 +16,7 @@ use futures::stream::{self, StreamExt};
 use roko_core::dashboard_snapshot::DashboardSnapshot;
 use roko_runtime::event_bus::Envelope;
 use roko_runtime::state_hub::StateHubCursorSnapshot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -25,6 +25,19 @@ use roko_core::obs::LogScrubber;
 use crate::state::AppState;
 
 const MAX_REPLAY_EVENTS: usize = 256;
+
+/// Query parameters for SSE replay fallback.
+///
+/// Browser `EventSource` cannot set custom headers, so the frontend reconnect
+/// appends `?lastEventId=<id>` (or the legacy `?n=<id>`) as a query parameter.
+/// The `Last-Event-ID` header remains highest precedence when present.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ReplayQuery {
+    #[serde(alias = "lastEventId")]
+    last_event_id: Option<u64>,
+    n: Option<u64>,
+}
 
 #[derive(Serialize)]
 struct GapPayload {
@@ -53,8 +66,14 @@ pub(crate) fn sse_response_headers() -> HeaderMap {
 }
 
 /// `GET /api/events` and `GET /api/sse` — SSE stream of dashboard events.
-async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let requested_seq = replay_start(&headers);
+///
+/// Replay cursor precedence: `Last-Event-ID` header > `?lastEventId=` > `?n=` > 0.
+async fn sse_handler(
+    headers: HeaderMap,
+    Query(query): Query<ReplayQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let requested_seq = replay_start(&headers, &query);
     let subscription = state.state_hub.subscribe_events_from(requested_seq);
     let needs_snapshot = replay_requires_snapshot(
         requested_seq,
@@ -169,12 +188,19 @@ fn replay_requires_snapshot(
         .any(|pair| pair[0].seq.saturating_add(1) != pair[1].seq)
 }
 
-fn replay_start(headers: &HeaderMap) -> u64 {
-    headers
+/// Determine the replay start sequence.
+///
+/// Precedence: `Last-Event-ID` header > `?lastEventId=` > `?n=` > 0.
+/// Invalid or missing values silently fall back to 0.
+fn replay_start(headers: &HeaderMap, query: &ReplayQuery) -> u64 {
+    let last_seen = headers
         .get("Last-Event-ID")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map_or(0, |last_seen| last_seen.saturating_add(1))
+        .or(query.last_event_id)
+        .or(query.n);
+
+    last_seen.map_or(0, |id| id.saturating_add(1))
 }
 
 #[cfg(test)]
@@ -184,17 +210,66 @@ mod tests {
 
     #[test]
     fn replay_starts_after_last_acknowledged_event() {
+        let no_query = ReplayQuery::default();
+
         let mut headers = HeaderMap::new();
-        assert_eq!(replay_start(&headers), 0);
+        assert_eq!(replay_start(&headers, &no_query), 0);
 
         headers.insert("Last-Event-ID", HeaderValue::from_static("41"));
-        assert_eq!(replay_start(&headers), 42);
+        assert_eq!(replay_start(&headers, &no_query), 42);
 
         headers.insert(
             "Last-Event-ID",
             HeaderValue::from_static("18446744073709551615"),
         );
-        assert_eq!(replay_start(&headers), u64::MAX);
+        assert_eq!(replay_start(&headers, &no_query), u64::MAX);
+    }
+
+    #[test]
+    fn replay_falls_back_to_last_event_id_query_param() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: Some(41),
+            n: None,
+        };
+        assert_eq!(replay_start(&headers, &query), 42);
+    }
+
+    #[test]
+    fn replay_falls_back_to_n_query_param() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: None,
+            n: Some(99),
+        };
+        assert_eq!(replay_start(&headers, &query), 100);
+    }
+
+    #[test]
+    fn header_takes_precedence_over_query_params() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Last-Event-ID", HeaderValue::from_static("10"));
+
+        let query = ReplayQuery {
+            last_event_id: Some(50),
+            n: Some(99),
+        };
+        // Header value (10) wins → replay starts at 11
+        assert_eq!(replay_start(&headers, &query), 11);
+    }
+
+    #[test]
+    fn last_event_id_query_takes_precedence_over_n() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: Some(20),
+            n: Some(99),
+        };
+        // lastEventId (20) wins over n (99) → replay starts at 21
+        assert_eq!(replay_start(&headers, &query), 21);
     }
 
     #[test]

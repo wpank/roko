@@ -258,10 +258,7 @@ pub fn run_sample_plan(workdir: &Path) -> Value {
         .arg("plan")
         .arg("run")
         .arg("plans");
-    #[cfg(feature = "legacy-runner-v2")]
-    {
-        command.arg("--engine").arg("runner-v2");
-    }
+    command.arg("--engine").arg("runner-v2");
     let mut child = command
         // Isolate from user's global config / API keys so the mock
         // agent command from roko.toml is used.

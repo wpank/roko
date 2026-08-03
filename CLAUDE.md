@@ -227,7 +227,7 @@ cargo run -p roko-cli -- status
 | roko-lang-rust / typescript / go | `crates/roko-lang-*/` | Language support | Built |
 | roko-dreams | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle) | Partial (used from runner/ but no runtime trigger/cron) |
 | roko-daimon | `crates/roko-daimon/` | Affect engine, somatic markers, dispatch modulation | Wired (DaimonState loaded + used per-task in runner/) |
-| roko-chain | `crates/roko-chain/` | Chain witness primitives | Phase 2+ |
+| roko-chain | `crates/roko-chain/` | Chain client/runtime integration (alloy RPC, ISFR vertical wired, 16 shelf-ware modules). daeji devnet owns node/BFT/precompiles (separate repo). | ISFR wired; rest Phase 2+ |
 
 ## Absolute paths
 
@@ -312,4 +312,4 @@ learn from failures, and iterate. Remaining work:
 13. **Knowledge-informed agent routing** → neuro store not yet consulted for model selection in CascadeRouter.
 14. **Cold substrate archival** → built but not instantiated at runtime (no cron/trigger).
 15. **UX34: force_backend override learning** → cascade router doesn't learn from manual overrides.
-16. **Chain runtime integration** → Phase 2+ (needs blockchain backend for witness anchoring).
+16. **Chain runtime integration** → ISFR vertical is wired (sources/keeper/oracle/bootstrap/serve). 16 remaining chain modules (witness, x402, marketplace, registries, etc.) are shelved as Phase 2+ pending daeji devnet. daeji owns node/BFT/precompiles/consensus (separate repo, design-only docs at `tmp/agentchain-v2/02-daeji/`). See `.roko/GAPS.md` for per-module WIRE/SHELVE verdicts.

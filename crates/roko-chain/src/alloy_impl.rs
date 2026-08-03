@@ -10,7 +10,9 @@ use std::time::Duration;
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
-use alloy::rpc::types::eth::{BlockId, BlockNumberOrTag, TransactionRequest as AlloyTxRequest};
+use alloy::rpc::types::eth::{
+    BlockId, BlockNumberOrTag, Filter, TransactionRequest as AlloyTxRequest,
+};
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
 
@@ -146,14 +148,45 @@ impl ChainClient for AlloyChainClient {
 
     async fn get_logs(
         &self,
-        _from: BlockNumber,
-        _to: BlockNumber,
-        _addresses: &[String],
-        _topics: &[String],
+        from: BlockNumber,
+        to: BlockNumber,
+        addresses: &[String],
+        topics: &[String],
     ) -> ChainResult<Vec<LogEntry>> {
-        // Implemented via eth_getLogs when needed by scenarios; left as
-        // Unsupported until a concrete caller requires the full filter surface.
-        Err(ChainError::Unsupported("get_logs".into()))
+        let mut filter = Filter::new().from_block(from).to_block(to);
+
+        if !addresses.is_empty() {
+            let addrs: Vec<Address> = addresses
+                .iter()
+                .map(|a| parse_hex_address(a))
+                .collect::<ChainResult<Vec<_>>>()?;
+            filter = filter.address(addrs);
+        }
+
+        if !topics.is_empty() {
+            let topic0: Vec<B256> = topics
+                .iter()
+                .map(|t| parse_hex_b256(t))
+                .collect::<ChainResult<Vec<_>>>()?;
+            filter = filter.event_signature(topic0);
+        }
+
+        let logs = self.provider.get_logs(&filter).await.map_err(to_rpc_err)?;
+
+        Ok(logs
+            .into_iter()
+            .map(|l| LogEntry {
+                address: format!("{:#x}", l.inner.address),
+                topics: l
+                    .inner
+                    .data
+                    .topics()
+                    .iter()
+                    .map(|t| format!("{t:#x}"))
+                    .collect(),
+                data: l.inner.data.data.to_vec(),
+            })
+            .collect())
     }
 
     async fn get_storage_at(

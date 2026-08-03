@@ -605,6 +605,7 @@ async fn run_plan_execution(
         },
         warm_cache: true,
         metrics: None,
+        obs_sinks: None,
     };
 
     let cancel = tokio_util::sync::CancellationToken::new();

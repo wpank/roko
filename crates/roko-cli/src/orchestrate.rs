@@ -11201,6 +11201,16 @@ impl PlanRunner {
             .map(|tracker| tracker.last_context_knowledge_ids.clone())
             .unwrap_or_default();
 
+        // E07-T04: Reinforce knowledge entries through the KnowledgeStore
+        // balance API so the demurrage loop has positive income on the
+        // live path. Called before the telemetry write because
+        // record_knowledge_usage takes ownership of knowledge_ids.
+        crate::knowledge_helpers::reinforce_knowledge_on_completion(
+            &self.knowledge_store,
+            &knowledge_ids,
+            gate_passed,
+        );
+
         if let Err(err) = self.feedback_service.record_knowledge_usage(
             &format!("{plan_id}/{task_id}"),
             knowledge_ids,
@@ -12191,9 +12201,9 @@ impl PlanRunner {
         }
     }
 
-    /// Inspect a `LearningUpdate` for regression alerts and extracted skills,
-    /// logging them via tracing.
-    fn handle_learning_update(&self, update: &LearningUpdate, plan_id: &str) {
+    /// Inspect a `LearningUpdate` for regression alerts, extracted skills,
+    /// and incremental adaptive gate-threshold flushing.
+    fn handle_learning_update(&mut self, update: &LearningUpdate, plan_id: &str) {
         if let Some(ref report) = update.regression_report {
             if report.has_regressions {
                 for alert in report.regressions() {
@@ -12226,6 +12236,24 @@ impl PlanRunner {
             if !buckets.is_empty() {
                 self.publish_dashboard_event(roko_core::DashboardEvent::CFactorTrendUpdated {
                     buckets,
+                });
+            }
+        }
+
+        // ── Incremental adaptive gate-threshold flush ──────────────────
+        // Honour the gate_thresholds_every_n cadence so adaptive thresholds
+        // persist before graceful shutdown, not only during it.
+        if update.gate_thresholds_flush_due {
+            let thresholds_path = self
+                .workdir
+                .join(".roko")
+                .join("learn")
+                .join("gate-thresholds.json");
+            if let Err(e) = self.adaptive_thresholds.save(&thresholds_path) {
+                tracing::error!("[orchestrate] incremental adaptive threshold save: {e}");
+            } else if let Ok(json) = std::fs::read_to_string(&thresholds_path) {
+                self.publish_dashboard_event(roko_core::DashboardEvent::GateThresholdsUpdated {
+                    snapshot_json: json,
                 });
             }
         }

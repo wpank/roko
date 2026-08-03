@@ -568,7 +568,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
                     },
                     warm_cache: true,
-                    metrics: None,
+                    metrics: Some(metrics.clone()),
+                    obs_sinks: None,
                 };
 
                 // Optionally spawn the approval TUI.

@@ -14,8 +14,10 @@ pub(crate) struct KnowledgeHdcEncoder;
 /// `role XOR filler` creates a composite vector that preserves structure.
 /// Bundling multiple role-filler pairs produces a single vector that can be
 /// queried by unbinding any role to recover its filler.
+#[cfg(test)]
 pub(crate) struct RoleFillerEncoder;
 
+#[cfg(test)]
 impl RoleFillerEncoder {
     /// Encode a set of role-filler string pairs into a single composite HDC vector.
     ///
@@ -41,6 +43,7 @@ impl RoleFillerEncoder {
 
 /// A pair of knowledge entries from different domains whose HDC vectors
 /// are highly similar, indicating a structural analogy.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResonancePair {
     /// ID of the first entry.
@@ -61,6 +64,7 @@ pub(crate) struct ResonancePair {
 /// despite coming from different source domains. This is a cross-domain
 /// analogy detector: retry logic in networking is structurally similar
 /// to retry logic in a database crate.
+#[cfg(test)]
 pub(crate) struct ResonanceDetector {
     /// Minimum similarity to consider a pair resonant.
     min_similarity: f64,
@@ -68,6 +72,7 @@ pub(crate) struct ResonanceDetector {
     max_results: usize,
 }
 
+#[cfg(test)]
 impl Default for ResonanceDetector {
     fn default() -> Self {
         Self {
@@ -77,6 +82,7 @@ impl Default for ResonanceDetector {
     }
 }
 
+#[cfg(test)]
 impl ResonanceDetector {
     /// Create a detector with the given similarity threshold and result cap.
     pub(crate) fn new(min_similarity: f64, max_results: usize) -> Self {
@@ -141,6 +147,7 @@ impl ResonanceDetector {
 ///
 /// Looks for a `domain:X` structured tag first, falls back to `source`,
 /// then defaults to the knowledge kind as a domain label.
+#[cfg(test)]
 fn extract_domain(entry: &KnowledgeEntry) -> String {
     if let Some(domain) = first_structured_tag_value(&entry.tags, "domain") {
         return domain;
@@ -183,6 +190,7 @@ impl KnowledgeHdcEncoder {
     ///
     /// Use with `HdcVector::similarity()` against encoded entries to find
     /// entries where the given role is bound to the given filler.
+    #[cfg(test)]
     pub(crate) fn query_by_role(role: &str, filler: &str) -> HdcVector {
         role_hv(role).bind(&text_hv(filler))
     }
@@ -190,6 +198,7 @@ impl KnowledgeHdcEncoder {
     /// Extract the filler component for a given role from a composite vector.
     ///
     /// Since XOR is its own inverse, `unbind(composite, role) = bind(composite, role)`.
+    #[cfg(test)]
     pub(crate) fn unbind_role(composite: &HdcVector, role: &str) -> HdcVector {
         composite.bind(&role_hv(role))
     }
@@ -199,6 +208,7 @@ impl KnowledgeHdcEncoder {
     /// Unlike `encode_generic_entry` (which optimizes for content-dominant
     /// similarity), this produces a composite vector where each metadata
     /// role can be individually queried via `unbind_role`.
+    #[cfg(test)]
     pub(crate) fn encode_structured(entry: &KnowledgeEntry) -> HdcVector {
         let mut vectors = vec![
             role_hv("content").bind(&text_hv(&entry.content)),
@@ -468,6 +478,7 @@ mod tests {
             deprecated: false,
             balance: 1.0,
             frozen: false,
+            catalytic_score: 0,
         }
     }
 

@@ -42,21 +42,6 @@ pub(crate) fn cmd_explain(topic: &str, depth: u8) -> bool {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn cmd_repl(cli: &Cli) -> Result<i32> {
-    let session_id = cli
-        .resume
-        .clone()
-        .unwrap_or_else(|| format!("repl-{}", std::process::id()));
-    let mut repl = ReplMode::new(session_id);
-
-    let _commands = repl
-        .run(&mut std::io::stdin().lock(), &mut std::io::stdout().lock())
-        .map_err(|e| anyhow!("repl I/O error: {e}"))?;
-
-    Ok(EXIT_SUCCESS)
-}
-
 /// Read piped stdin and dispatch as a one-shot prompt.
 ///
 /// Routes through the v2 inline path, not the legacy `run_once()` stub.
@@ -1874,53 +1859,9 @@ pub(crate) async fn persist_capture_episode(
 ///
 /// Only providers that have at least one of `api_key_env` or `command` set are
 /// checked — providers with neither are silently skipped (local/mock providers).
-#[allow(dead_code)]
-pub(crate) fn preflight_providers(config: &RokoConfig) -> anyhow::Result<()> {
-    for (name, provider) in &config.providers {
-        if let Some(ref env_var) = provider.api_key_env {
-            // Skip providers that don't require a key (empty api_key_env = local/mock)
-            if env_var.trim().is_empty() {
-                continue;
-            }
-            match std::env::var(env_var) {
-                Ok(val) if val.is_empty() => {
-                    anyhow::bail!(
-                        "provider '{}' requires {} but it is empty.\n  hint: export {}=<your-key>",
-                        name,
-                        env_var,
-                        env_var
-                    );
-                }
-                Err(_) => {
-                    anyhow::bail!(
-                        "provider '{}' requires {} but it is not set.\n  hint: export {}=<your-key>",
-                        name,
-                        env_var,
-                        env_var
-                    );
-                }
-                Ok(_) => {} // valid
-            }
-        }
-
-        if let Some(ref binary) = provider.command {
-            if !binary_on_path(binary) {
-                anyhow::bail!(
-                    "provider '{}' requires '{}' on PATH but it was not found.\n  hint: install {} or change provider in roko.toml",
-                    name,
-                    binary,
-                    binary
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Check that the provider for a specific model has its API key set and CLI
 /// binary on PATH. Skips credential checks for local providers (empty
-/// `api_key_env`). Use this instead of `preflight_providers` when only one
-/// model will actually be called.
+/// `api_key_env`).
 pub(crate) fn preflight_provider_for_model(
     config: &RokoConfig,
     model_key: &str,

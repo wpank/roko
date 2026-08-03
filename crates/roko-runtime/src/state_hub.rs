@@ -65,6 +65,18 @@ impl EventLogWriter {
     }
 }
 
+/// Whether a [`DashboardEvent`] should be persisted to the on-disk event log.
+///
+/// High-volume heartbeat variants (`FeedTick`, `ChainBlock`) are broadcast to
+/// live SSE/WS subscribers and applied to the in-memory snapshot, but skipped
+/// for on-disk persistence to avoid unbounded growth of `.roko/events.jsonl`.
+fn should_persist(event: &DashboardEvent) -> bool {
+    !matches!(
+        event,
+        DashboardEvent::FeedTick { .. } | DashboardEvent::ChainBlock { .. }
+    )
+}
+
 /// Unified state hub driving all dashboard consumers from a single event
 /// stream.
 ///
@@ -174,15 +186,21 @@ impl StateHub {
     /// Publish an event: apply it to the snapshot, append it to the optional
     /// best-effort log, then record and broadcast it on the replay bus.
     /// Returns the sequence number assigned on the internal event bus.
+    ///
+    /// High-volume heartbeat variants (`FeedTick`, `ChainBlock`) are broadcast
+    /// to live subscribers and applied to the snapshot but **not** persisted to
+    /// the on-disk event log.
     pub fn publish(&self, event: DashboardEvent) -> u64 {
         let _publish = self
             .publish_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
-        if let Some(log) = &self.event_log {
-            if let Ok(mut writer) = log.lock() {
-                writer.append(&event);
+        if should_persist(&event) {
+            if let Some(log) = &self.event_log {
+                if let Ok(mut writer) = log.lock() {
+                    writer.append(&event);
+                }
             }
         }
         self.event_bus.emit(event)
@@ -202,9 +220,11 @@ impl StateHub {
             }
         });
         for event in events {
-            if let Some(log) = &self.event_log {
-                if let Ok(mut writer) = log.lock() {
-                    writer.append(&event);
+            if should_persist(&event) {
+                if let Some(log) = &self.event_log {
+                    if let Ok(mut writer) = log.lock() {
+                        writer.append(&event);
+                    }
                 }
             }
             self.event_bus.emit(event);
@@ -398,9 +418,11 @@ impl StateHubSender {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_tx.send_modify(|snap| snap.apply(&event));
-        if let Some(log) = &self.event_log {
-            if let Ok(mut writer) = log.lock() {
-                writer.append(&event);
+        if should_persist(&event) {
+            if let Some(log) = &self.event_log {
+                if let Ok(mut writer) = log.lock() {
+                    writer.append(&event);
+                }
             }
         }
         self.bus_sender.emit(event)
@@ -774,5 +796,208 @@ mod tests {
             content.contains("s1"),
             "sender should persist to event log: {content}"
         );
+    }
+
+    #[test]
+    fn feed_tick_not_persisted_but_broadcast() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let hub = StateHub::with_event_log(16, &log_path);
+        let mut event_rx = hub.subscribe_events();
+
+        // Publish a FeedTick -- should broadcast but NOT persist.
+        hub.publish(DashboardEvent::FeedTick {
+            agent_id: "feed-1".into(),
+            feed_id: "f1".into(),
+            topic: "price".into(),
+            payload: serde_json::json!({"usd": 42}),
+            timestamp_ms: 1000,
+        });
+
+        // Broadcast still receives the event.
+        let envelope = event_rx.try_recv().expect("feed tick should be broadcast");
+        assert!(matches!(envelope.payload, DashboardEvent::FeedTick { .. }));
+
+        // File should be empty (no persisted lines).
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert!(
+            lines.is_empty(),
+            "FeedTick should not be persisted, but found: {content}"
+        );
+    }
+
+    #[test]
+    fn chain_block_not_persisted_but_broadcast() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let hub = StateHub::with_event_log(16, &log_path);
+        let mut event_rx = hub.subscribe_events();
+
+        // Publish a ChainBlock -- should broadcast but NOT persist.
+        hub.publish(DashboardEvent::ChainBlock {
+            number: 12345,
+            hash: "0xabc".into(),
+            parent_hash: "0xdef".into(),
+            timestamp: 1700000000,
+            gas_used: 21000,
+            gas_limit: 30000000,
+            tx_count: 5,
+            base_fee_per_gas: Some(1000000000),
+        });
+
+        // Broadcast still receives the event.
+        let envelope = event_rx
+            .try_recv()
+            .expect("chain block should be broadcast");
+        assert!(matches!(
+            envelope.payload,
+            DashboardEvent::ChainBlock { .. }
+        ));
+
+        // File should be empty (no persisted lines).
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert!(
+            lines.is_empty(),
+            "ChainBlock should not be persisted, but found: {content}"
+        );
+    }
+
+    #[test]
+    fn resume_critical_events_still_persisted() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let hub = StateHub::with_event_log(16, &log_path);
+
+        // Publish a mix of noisy and resume-critical events.
+        hub.publish(DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+        });
+        hub.publish(DashboardEvent::FeedTick {
+            agent_id: "feed-1".into(),
+            feed_id: "f1".into(),
+            topic: "price".into(),
+            payload: serde_json::json!({}),
+            timestamp_ms: 1000,
+        });
+        hub.publish(DashboardEvent::ChainBlock {
+            number: 1,
+            hash: "0x1".into(),
+            parent_hash: "0x0".into(),
+            timestamp: 1700000000,
+            gas_used: 0,
+            gas_limit: 30000000,
+            tx_count: 0,
+            base_fee_per_gas: None,
+        });
+        hub.publish(DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            title: "Test task".into(),
+            phase: "compose".into(),
+        });
+
+        // Only the resume-critical events should be on disk.
+        let content = std::fs::read_to_string(&log_path).expect("read event log");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "only PlanStarted and TaskStarted should be persisted, got: {content}"
+        );
+        assert!(content.contains("plan_started"));
+        assert!(content.contains("task_started"));
+        assert!(!content.contains("feed_tick"));
+        assert!(!content.contains("chain_block"));
+
+        // All 4 events should still be in the snapshot.
+        let snap = hub.current_snapshot();
+        assert_eq!(snap.stats.plans_active, 1);
+        assert_eq!(snap.stats.tasks_active, 1);
+    }
+
+    #[test]
+    fn sender_skips_noise_on_disk() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let hub = StateHub::with_event_log(16, &log_path);
+        let sender = hub.sender();
+
+        sender.publish(DashboardEvent::FeedTick {
+            agent_id: "s-feed".into(),
+            feed_id: "f1".into(),
+            topic: "rates".into(),
+            payload: serde_json::json!({}),
+            timestamp_ms: 2000,
+        });
+        sender.publish(DashboardEvent::PlanStarted {
+            plan_id: "p2".into(),
+        });
+
+        let content = std::fs::read_to_string(&log_path).expect("read event log");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "only PlanStarted should be persisted via sender, got: {content}"
+        );
+        assert!(content.contains("plan_started"));
+        assert!(!content.contains("feed_tick"));
+    }
+
+    #[test]
+    fn batch_publish_skips_noise_on_disk() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let hub = StateHub::with_event_log(16, &log_path);
+        hub.publish_batch(vec![
+            DashboardEvent::PlanStarted {
+                plan_id: "p1".into(),
+            },
+            DashboardEvent::FeedTick {
+                agent_id: "feed-1".into(),
+                feed_id: "f1".into(),
+                topic: "price".into(),
+                payload: serde_json::json!({}),
+                timestamp_ms: 1000,
+            },
+            DashboardEvent::ChainBlock {
+                number: 1,
+                hash: "0x1".into(),
+                parent_hash: "0x0".into(),
+                timestamp: 1700000000,
+                gas_used: 0,
+                gas_limit: 30000000,
+                tx_count: 0,
+                base_fee_per_gas: None,
+            },
+            DashboardEvent::TaskStarted {
+                plan_id: "p1".into(),
+                task_id: "t1".into(),
+                title: String::new(),
+                phase: "compose".into(),
+            },
+        ]);
+
+        let content = std::fs::read_to_string(&log_path).expect("read event log");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "batch should persist only PlanStarted and TaskStarted, got: {content}"
+        );
+        assert!(!content.contains("feed_tick"));
+        assert!(!content.contains("chain_block"));
+
+        // All 4 events should still reach the snapshot.
+        let snap = hub.current_snapshot();
+        assert_eq!(snap.stats.plans_active, 1);
+        assert_eq!(snap.stats.tasks_active, 1);
     }
 }

@@ -42,6 +42,7 @@ use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS}
 use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, VecToolRegistry};
 use roko_std::StaticToolRegistry;
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -109,29 +110,29 @@ fn is_kimi_model(model: &ModelProfile) -> bool {
     model.slug.starts_with("kimi-")
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(dead_code)]
 pub(crate) struct ChatMessage {
     #[serde(default)]
     content: Vec<ContentBlock>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl ChatMessage {
     fn content_blocks(&self) -> Option<&[ContentBlock]> {
         (!self.content.is_empty()).then_some(self.content.as_slice())
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
 pub(crate) enum ContentBlock {
     Text { text: String },
     ImageUrl { image_url: ImageUrlBlock },
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl ContentBlock {
     fn is_image_url(&self) -> bool {
         matches!(self, Self::ImageUrl { .. })
@@ -147,13 +148,13 @@ impl ContentBlock {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(dead_code)]
 pub(crate) struct ImageUrlBlock {
     url: String,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn validate_vision_input(
     messages: &[ChatMessage],
     model: &ModelProfile,

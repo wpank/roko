@@ -27,6 +27,16 @@ pub(crate) fn serialize_generate_content_request(
     serde_json::to_vec(request)
 }
 
+/// Build the streaming endpoint URL for `streamGenerateContent`.
+#[must_use]
+pub(crate) fn stream_generate_content_endpoint(base_url: &str, model_slug: &str) -> String {
+    format!(
+        "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
+        base_url.trim_end_matches('/'),
+        model_slug
+    )
+}
+
 pub(crate) async fn send_generate_content_request(
     poster: &dyn HttpPoster,
     endpoint: &str,

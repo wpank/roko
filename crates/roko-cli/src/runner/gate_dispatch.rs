@@ -407,18 +407,25 @@ pub async fn run_gate_once(
     }
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let passed = verdicts.iter().all(|v| v.passed);
+    // E05-T03: Skipped verdicts are neutral — filter them out of the
+    // pass/fail decision. A gate run whose only verdicts are skipped stubs
+    // is considered passed (no real gate disagreed).
+    let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
+    let passed = real_verdicts.iter().all(|v| v.passed);
+    let all_skipped = real_verdicts.is_empty() && !verdicts.is_empty();
     let output = render_output(&verdicts);
-    let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
+    let failure_kind = (!passed && !all_skipped)
+        .then(|| classify_failure_kind(&verdicts, &output));
 
     let summaries: Vec<GateVerdictSummary> = verdicts
         .iter()
         .map(|v| GateVerdictSummary {
             gate_name: v.gate.clone(),
             passed: v.passed,
+            skipped: v.skipped,
             summary: v.reason.clone(),
             error_digest: v.error_digest.clone(),
-            failure_kind: (!v.passed)
+            failure_kind: (!v.passed && !v.skipped)
                 .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
         })
         .collect();
@@ -528,7 +535,8 @@ pub fn spawn_plan_verify(
                 ],
             };
             let duration_ms = start.elapsed().as_millis() as u64;
-            let passed = verdicts.iter().all(|v| v.passed);
+            let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
+            let passed = real_verdicts.iter().all(|v| v.passed);
             let output = render_output(&verdicts);
             let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
             let summaries = verdicts
@@ -536,9 +544,10 @@ pub fn spawn_plan_verify(
                 .map(|v| GateVerdictSummary {
                     gate_name: v.gate.clone(),
                     passed: v.passed,
+                    skipped: v.skipped,
                     summary: v.reason.clone(),
                     error_digest: v.error_digest.clone(),
-                    failure_kind: (!v.passed)
+                    failure_kind: (!v.passed && !v.skipped)
                         .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
                 })
                 .collect();
@@ -739,7 +748,13 @@ fn render_output(verdicts: &[Verdict]) -> String {
 }
 
 fn render_verdict_output(v: &Verdict) -> String {
-    let status = if v.passed { "pass" } else { "FAIL" };
+    let status = if v.skipped {
+        "SKIP"
+    } else if v.passed {
+        "pass"
+    } else {
+        "FAIL"
+    };
     let detail = v.detail.as_deref().unwrap_or("").trim();
     let digest = v.error_digest.as_deref().unwrap_or("").trim();
     let reason = v.reason.trim();

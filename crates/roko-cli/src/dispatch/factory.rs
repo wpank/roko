@@ -5,12 +5,14 @@
 //! `Dispatcher` / `PromptAssembler` / `WarmPool`.  `SharedAgentFactory`
 //! creates these once at run start and hands them to every dispatch call.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, discover_mcp_tools};
 use roko_agent::provider::ProviderSemaphores;
+use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
 use tokio::sync::mpsc;
@@ -113,6 +115,20 @@ impl SharedAgentFactory {
             PromptAssembler::with_cache(cache),
             WarmPool::new(0),
         );
+    }
+
+    /// Set persisted learning bidders on the prompt assembler.
+    ///
+    /// Called at run startup after loading from `.roko/learn/attention-bidders.json`.
+    /// The bidders are passed to `PromptComposer::with_learning_bidders` when the
+    /// runner-v2 prompt path is routed through the canonical compose surface.
+    pub fn set_learning_bidders(
+        &mut self,
+        bidders: HashMap<AttentionBidder, LearningBidder>,
+    ) {
+        let cascade = self.dispatcher.cascade_router_arc();
+        let assembler = PromptAssembler::new().with_learning_bidders(bidders);
+        self.dispatcher = Dispatcher::new(cascade, assembler, WarmPool::new(0));
     }
 
     /// Resolve the runtime for a model key.

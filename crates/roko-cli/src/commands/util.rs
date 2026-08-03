@@ -134,14 +134,57 @@ pub(crate) async fn cmd_init(
 
     let engrams_path = roko_dir.join("engrams.jsonl");
     if !engrams_path.exists() {
-        // Migrate from legacy name if present.
+        // Migrate from legacy name if present, but only rows that parse as
+        // Engram.  Non-Engram rows (e.g. GateVerdict) stay in signals.jsonl
+        // to avoid schema-mixing in the engram store.
         let legacy = roko_dir.join("signals.jsonl");
         if legacy.exists() {
-            tokio::fs::rename(&legacy, &engrams_path)
-                .await
-                .with_context(|| {
-                    format!("migrate {} -> {}", legacy.display(), engrams_path.display())
-                })?;
+            let content = tokio::fs::read_to_string(&legacy).await.with_context(|| {
+                format!("read legacy {}", legacy.display())
+            })?;
+
+            let mut engram_lines = Vec::new();
+            let mut kept_lines = Vec::new();
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if serde_json::from_str::<roko_core::Engram>(trimmed).is_ok() {
+                    engram_lines.push(line.to_string());
+                } else {
+                    kept_lines.push(line.to_string());
+                }
+            }
+
+            // Write valid engram rows to engrams.jsonl.
+            if engram_lines.is_empty() {
+                tokio::fs::write(&engrams_path, b"")
+                    .await
+                    .with_context(|| format!("create {}", engrams_path.display()))?;
+            } else {
+                let mut out = engram_lines.join("\n");
+                out.push('\n');
+                tokio::fs::write(&engrams_path, out.as_bytes())
+                    .await
+                    .with_context(|| {
+                        format!("write migrated engrams to {}", engrams_path.display())
+                    })?;
+            }
+
+            // If all rows migrated, remove the legacy file; otherwise leave
+            // the non-Engram rows in place for the gate-verdicts migration.
+            if kept_lines.is_empty() {
+                let _ = tokio::fs::remove_file(&legacy).await;
+            } else {
+                let mut remainder = kept_lines.join("\n");
+                remainder.push('\n');
+                tokio::fs::write(&legacy, remainder.as_bytes())
+                    .await
+                    .with_context(|| {
+                        format!("rewrite non-Engram rows to {}", legacy.display())
+                    })?;
+            }
         } else {
             tokio::fs::write(&engrams_path, b"")
                 .await

@@ -460,8 +460,7 @@ impl SystemPromptBuilder {
     ///
     /// Each layer becomes a separate section with appropriate priority,
     /// cache layer, and placement metadata. This is useful when feeding
-    /// directly into [`PromptComposer`](crate::PromptComposer) or
-    /// [`PromptAssembler`](crate::templates::assembly::PromptAssembler).
+    /// directly into [`PromptComposer`](crate::PromptComposer).
     #[must_use]
     pub fn build_sections(&self) -> Vec<PromptSection> {
         let mut sections = Vec::with_capacity(11);

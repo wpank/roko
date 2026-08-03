@@ -546,6 +546,7 @@ impl ChatAgentSession {
             "cursor_acp" => ProviderKind::CursorAcp,
             "perplexity_api" => ProviderKind::PerplexityApi,
             "gemini_api" => ProviderKind::GeminiApi,
+            "gemini_cli" => ProviderKind::GeminiCli,
             "cerebras_api" => ProviderKind::CerebrasApi,
             "openai_compat" => ProviderKind::OpenAiCompat,
             "cursor_cli" => ProviderKind::CursorCli,

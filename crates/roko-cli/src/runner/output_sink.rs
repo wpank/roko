@@ -344,6 +344,7 @@ impl RunOutputSink for StderrSink {
             verdicts: vec![GateVerdictSummary {
                 gate_name: result.gate_name.clone(),
                 passed: result.passed,
+                skipped: false,
                 summary: result.summary.clone(),
                 error_digest: None,
                 failure_kind: None,

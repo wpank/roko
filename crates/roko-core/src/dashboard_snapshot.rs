@@ -1364,8 +1364,20 @@ impl DashboardSnapshot {
                 (rd, sd, ld, ep)
             };
 
-        let state =
-            read_json_value(&state_dir.join("executor.json"))?.unwrap_or(serde_json::Value::Null);
+        // Read executor state from the unified state-snapshot.json, falling
+        // back to the legacy executor.json for old workspaces.
+        let state = {
+            let snapshot_path = state_dir.join("state-snapshot.json");
+            if let Ok(Some(snap)) = read_json_value(&snapshot_path) {
+                snap.get("executor_json")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                read_json_value(&state_dir.join("executor.json"))?
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        };
         let task_trackers = read_task_trackers(&state_dir.join("task-trackers.json"))?;
         let signal_gates = read_signal_gates(&engrams_path)?;
         let event_entries = read_event_entries(&state_dir.join("events.json"))?;

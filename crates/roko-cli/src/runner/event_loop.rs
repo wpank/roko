@@ -52,6 +52,7 @@ use crate::inline::DiffEntry;
 use crate::knowledge_helpers::{build_knowledge_routing_advice, neuro_prompt_task_category};
 use crate::task_helpers::task_target_crates;
 use crate::task_parser::TaskDef;
+use roko_agent::ViolationSeverity;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
 use roko_learn::section_outcome::{
@@ -1406,16 +1407,29 @@ pub async fn run(
     // Refreshed when stale (default 5 min) or after gate failures.
     let mut prompt_cache = Arc::new(PromptCache::load(&config.workdir));
 
-    // Shared agent factory — expensive components (semaphores, MCP tools,
+    // Shared agent factory -- expensive components (semaphores, MCP tools,
     // dispatcher, resolver) created once and reused for every task dispatch.
     let t_factory = Instant::now();
-    let factory = SharedAgentFactory::new(
+    let mut factory = SharedAgentFactory::new(
         config.roko_config.clone().unwrap_or_default(),
         config.mcp_config.as_ref(),
         config.cascade_router.clone(),
         Some(Arc::clone(&prompt_cache)),
     )
     .await;
+
+    // Load persisted learning bidders for prompt composition (E06-T06).
+    let attention_bidders_dir = config.layout.learn_dir();
+    let attention_bidders =
+        crate::dispatch::prompt_builder::load_attention_bidders(&attention_bidders_dir);
+    if !attention_bidders.is_empty() {
+        info!(
+            bidder_count = attention_bidders.len(),
+            "loaded persisted attention bidders"
+        );
+        factory.set_learning_bidders(attention_bidders);
+    }
+
     info!(
         factory_init_ms = t_factory.elapsed().as_millis() as u64,
         "agent factory initialized"
@@ -1847,7 +1861,7 @@ pub async fn run(
                 }
                 restore_task_runtime(&mut state, &task_runtime_states, &event_attempt);
                 let turn_completed_before_event = state.agent_turn_completed;
-                let turn_error = terminal_failure.is_some();
+                let mut turn_error = terminal_failure.is_some();
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
@@ -1954,6 +1968,45 @@ pub async fn run(
                         &tui,
                     )
                     .await;
+
+                    // ── E04-T06: Post-dispatch safety check ──────────────
+                    if let Some(ref safety) = config.safety_layer {
+                        let changed_files: Vec<String> = Vec::new();
+                        let violations = safety.post_dispatch_check(
+                            &state.plan_id,
+                            &state.current_task,
+                            task_role,
+                            &state.agent_output,
+                            &changed_files,
+                        );
+                        let has_block = violations
+                            .iter()
+                            .any(|v| v.severity == ViolationSeverity::Block);
+                        for violation in &violations {
+                            warn!(
+                                plan_id = %state.plan_id,
+                                task = %state.current_task,
+                                violation_type = %violation.violation_type,
+                                severity = ?violation.severity,
+                                "post-dispatch safety violation: {}",
+                                violation.message,
+                            );
+                        }
+                        if has_block && !turn_error {
+                            // Promote to a turn error so the task fails
+                            // instead of proceeding to gating.
+                            turn_error = true;
+                            let block_messages: Vec<String> = violations
+                                .iter()
+                                .filter(|v| v.severity == ViolationSeverity::Block)
+                                .map(|v| format!("{}: {}", v.violation_type, v.message))
+                                .collect();
+                            terminal_failure = Some(format!(
+                                "post-dispatch safety block: {}",
+                                block_messages.join("; ")
+                            ));
+                        }
+                    }
 
                     let plan_id = state.plan_id.clone();
                     if !plan_id.is_empty() {
@@ -2622,11 +2675,19 @@ pub async fn run(
                     .max_retries
                     .min(gate_thresholds.suggested_max_retries(completion.rung));
 
-                update_gate_thresholds(
-                    &mut gate_thresholds,
-                    completion.rung,
-                    completion.passed,
-                );
+                // E05-T03: Only observe the rung into the adaptive EMA when at
+                // least one non-skipped verdict exists. A rung whose verdicts
+                // are ALL stubs/not-wired carries no real signal and would
+                // inflate the pass rate toward 1.0 (F2/F3).
+                let all_skipped = !completion.verdicts.is_empty()
+                    && completion.verdicts.iter().all(|v| v.skipped);
+                if !all_skipped {
+                    update_gate_thresholds(
+                        &mut gate_thresholds,
+                        completion.rung,
+                        completion.passed,
+                    );
+                }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
 
                 // Publish gate result to the learning event bus so the
@@ -2641,7 +2702,7 @@ pub async fn run(
                     },
                 );
 
-                // Append gate verdict to signals.jsonl for audit / replay.
+                // Append gate verdict to gate-verdicts.jsonl for audit / replay.
                 {
                     let verdict_json = serde_json::json!({
                         "kind": "GateVerdict",
@@ -2653,11 +2714,11 @@ pub async fn run(
                         "duration_ms": completion.duration_ms,
                         "timestamp": chrono::Utc::now().to_rfc3339(),
                     });
-                    let signals_path = config.layout.signals_path();
+                    let verdicts_path = config.layout.gate_verdicts_path();
                     if let Ok(mut f) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(&signals_path)
+                        .open(&verdicts_path)
                     {
                         use std::io::Write;
                         let _ = writeln!(f, "{}", verdict_json);
@@ -3627,6 +3688,17 @@ pub async fn run(
 
     // Shutdown Phase 0 subsystems and persist learned state.
     shutdown_subsystems(config, &tui).await;
+
+    // Persist attention bidders learned during this run (E06-T06).
+    {
+        let bidders = factory.dispatcher().prompt_assembler().learning_bidders();
+        if !bidders.is_empty() {
+            crate::dispatch::prompt_builder::save_attention_bidders(
+                &attention_bidders_dir,
+                bidders,
+            );
+        }
+    }
 
     if dream_completion_pending && !cancel.is_cancelled() {
         run_dream_consolidation_if_enabled(config).await;
@@ -5628,6 +5700,13 @@ fn save_snapshot(
         snapshot_json,
         snapshot_path: paths.state_snapshot_json.clone(),
     });
+
+    // E05-T01: Also persist gate thresholds to the standalone learn file so
+    // `roko learn tune gates` and cross-run adaptation can read it without
+    // parsing the unified snapshot.  Best-effort: log and continue.
+    if let Err(e) = gate_thresholds.save(&paths.gate_thresholds_json) {
+        warn!(error = %e, "failed to persist gate thresholds to learn file");
+    }
 }
 
 fn restore_state_from_resume_snapshot(
@@ -6983,6 +7062,45 @@ async fn dispatch_action(
                     &requested_model,
                 ),
             );
+
+            // ── E04-T06: Pre-dispatch safety check ───────────────────
+            if let Some(ref safety) = ctx.config.safety_layer {
+                if let Err(violation) = safety.pre_dispatch_check(
+                    plan_id,
+                    &task_id,
+                    role,
+                    &plan_workdir,
+                ) {
+                    error!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        violation_type = %violation.violation_type,
+                        "pre-dispatch safety check blocked CLI dispatch: {}",
+                        violation.message,
+                    );
+                    let message = format!(
+                        "pre-dispatch safety violation: {}",
+                        violation.message
+                    );
+                    if is_dag_task_spawn {
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                    }
+                    ctx.task_runtime_states.remove(&attempt_ref.key());
+                    if let Err(e) = ctx.executor.apply_event(
+                        plan_id,
+                        &ExecutorEvent::Fatal(message.clone()),
+                    ) {
+                        error!(plan_id = %plan_id, error = %e,
+                            "failed to apply Fatal event -- forcing plan terminal");
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    ctx.tui.error(&message);
+                    ctx.attempt_ownership
+                        .complete_claim(dispatch_claim)
+                        .expect("safety rejection must release ownership");
+                    return ActionDispatchOutcome::Noop;
+                }
+            }
 
             match dispatch {
                 ResolvedAgentRuntime::Cli {

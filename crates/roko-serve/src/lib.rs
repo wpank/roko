@@ -1039,7 +1039,7 @@ fn build_app_state(
 ///
 /// Feeds registered:
 /// - **engrams**: `.roko/engrams.jsonl` — raw signal/engram log (`Raw` kind)
-/// - **episodes**: `.roko/memory/episodes.jsonl` — agent turn episodes (`Raw` kind)
+/// - **episodes**: `.roko/episodes.jsonl` — agent turn episodes (`Raw` kind)
 /// - **efficiency**: `.roko/learn/efficiency.jsonl` — per-turn metrics (`Derived` kind)
 /// - **knowledge**: neuro knowledge store entries (`Composite` kind)
 fn seed_default_registries(state: &AppState) {
@@ -1116,7 +1116,7 @@ fn seed_default_registries_inner(state: &AppState) {
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
-        description: "Agent turn episode log (.roko/memory/episodes.jsonl)".to_string(),
+        description: "Agent turn episode log (.roko/episodes.jsonl)".to_string(),
         schema: None,
         created_at: now,
     });

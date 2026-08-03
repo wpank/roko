@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useEventStreamContext } from '../contexts/EventStreamContext';
+import { useServerEventSubscription } from './useEventStream';
 import { useApi } from './useApi';
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,6 @@ const POLL_INTERVAL_MS = 10_000;
  * - Experiments (polled every 10s)
  */
 export function useLearningStats(): LearningStats {
-  const { manager } = useEventStreamContext();
   const { get } = useApi();
 
   const [routerConfidence, setRouterConfidence] = useState(0);
@@ -171,11 +170,10 @@ export function useLearningStats(): LearningStats {
   }, [fetchThresholds, fetchExperiments]);
 
   // -- Subscribe to SSE InferenceCompleted events --
-  useEffect(() => {
-    if (!manager) return;
-
-    const unsub = manager.subscribe(['InferenceCompleted'], (event: unknown) => {
-      const e = event as InferenceCompletedEvent;
+  useServerEventSubscription(
+    ['InferenceCompleted'],
+    useCallback((event: Record<string, unknown>) => {
+      const e = event as unknown as InferenceCompletedEvent;
       if (e.router_confidence != null) {
         const newConf = e.router_confidence;
         const delta = newConf - prevConfidence.current;
@@ -191,10 +189,8 @@ export function useLearningStats(): LearningStats {
         prevConfidence.current = newConf;
       }
       setTotalDecisions((prev) => prev + 1);
-    });
-
-    return unsub;
-  }, [manager]);
+    }, []),
+  );
 
   return {
     routerConfidence,

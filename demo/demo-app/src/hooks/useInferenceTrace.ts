@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
-import { useEventStreamContext } from '../contexts/EventStreamContext';
+import { useState, useCallback } from 'react';
+import { useServerEventSubscription } from './useEventStream';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -92,15 +92,14 @@ export function useInferenceTrace(): InferenceTraceState {
   const [calls, setCalls] = useState<InferenceCall[]>([]);
   const [costSeries, setCostSeries] = useState<number[]>([]);
 
-  const { subscribe } = useEventStreamContext();
-
   const reset = useCallback(() => {
     setCalls([]);
     setCostSeries([]);
   }, []);
 
-  useEffect(() => {
-    return subscribe(['*'], (event: unknown) => {
+  useServerEventSubscription(
+    ['inference_completed'],
+    useCallback((event: Record<string, unknown>) => {
       const type = eventType(event);
       if (type !== 'inference_completed') return;
       if (!isRecord(event)) return;
@@ -125,8 +124,8 @@ export function useInferenceTrace(): InferenceTraceState {
 
       setCalls((prev) => [...prev.slice(-(MAX_CALLS - 1)), call]);
       setCostSeries((prev) => [...prev.slice(-(MAX_SPARKLINE_POINTS - 1)), cost]);
-    });
-  }, [subscribe]);
+    }, []),
+  );
 
   // Derive totals from the calls buffer (not a separate accumulator)
   const totals: InferenceTraceTotals = {

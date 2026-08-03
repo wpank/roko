@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { hexToRgba } from '../../lib/color';
 import { ROLE_COLORS } from '../../lib/palette';
 import { useLiveApi } from '../../hooks/useLiveApi';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Pane from '../../components/Pane';
 import Mosaic, { MosaicCell } from '../../components/Mosaic';
@@ -426,7 +426,7 @@ export default function AgentFleet() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['agent_spawned', 'agent_started', 'agent_stopped'],
     debouncedRefetch,
   );

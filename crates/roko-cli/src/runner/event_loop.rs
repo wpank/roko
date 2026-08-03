@@ -1117,6 +1117,43 @@ pub async fn run(
         config.http_event_sink = HttpEventSink::from_env();
     }
 
+    // ── Wire the conductor ring into the feedback facade ──────────────────
+    //
+    // When a roko_conductor::Conductor is present in the config (constructed
+    // via Conductor::from_config from [conductor.watchers.*] in roko.toml),
+    // attach a ConductorRingSink to the feedback facade so watcher signals are
+    // fed into the bounded ring buffer. The conductor + ring are then available
+    // for the periodic supervision tick added in E08-T04.
+    //
+    // Guard on Option — None means conductor supervision is off (tests / smoke
+    // runs). We must not default the conductor on when config is absent.
+    if config.conductor.is_some() {
+        if let Some(ring) = config.conductor_ring.clone() {
+            use super::conductor_adapter::ConductorRingSink;
+            use crate::runtime_feedback::FeedbackFacade;
+
+            let ring_sink = Arc::new(ConductorRingSink::new(ring));
+            // Clone the existing facade (if any) to add the ring sink.
+            // Cloning resets per-sink delivery counters but preserves the
+            // same sink instances. If no facade exists, create a fresh one.
+            let base = config
+                .feedback_facade
+                .as_ref()
+                .map(|arc| arc.as_ref().clone())
+                .unwrap_or_default();
+            let augmented = base.with_sink(ring_sink);
+            config.feedback_facade = Some(Arc::new(augmented));
+            debug!(
+                conductor_ring_capacity = config
+                    .conductor_ring
+                    .as_ref()
+                    .map(|r| r.capacity())
+                    .unwrap_or(0),
+                "conductor ring sink registered on feedback facade"
+            );
+        }
+    }
+
     let max_concurrent_tasks = config.max_concurrent_tasks.max(1);
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
 
@@ -5865,6 +5902,14 @@ fn save_snapshot(
         }
     };
 
+    // Materialize the standalone .roko/learn/gate-thresholds.json file so
+    // serve, TUI, and ACP readers always have an up-to-date copy without
+    // needing to parse the full state-snapshot.json. The embedded field in
+    // the unified snapshot is still the authoritative resume source.
+    if let Err(e) = persist::save_gate_thresholds(paths, gate_thresholds) {
+        warn!(error = %e, "failed to materialize gate-thresholds.json");
+    }
+
     let unified = roko_runtime::StateSnapshot::new(
         timestamp_ms,
         executor_json,
@@ -7015,35 +7060,43 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
-            let baseline_model = dispatch_plan.model.slug.clone();
-            let baseline_score = knowledge_advice.score_for(&baseline_model);
             let mut selected_source = "dispatcher".to_string();
             let allow_learned_model_modulation =
                 task_def.model_hint.is_none() && !dispatch_plan.forced;
+            // ── Knowledge-aware cascade selection (E07-T09) ──────────────────
+            //
+            // Use the same `select_for_frequency_among_with_knowledge` path as
+            // the legacy orchestrate path instead of the manual post-selection
+            // score nudge.  The cascade router injects knowledge hints *during*
+            // model selection so the bandit and confidence-stage logic receive
+            // the advice in the right place rather than as a post-hoc override.
             if allow_learned_model_modulation {
-                if let Some(best_hint) = knowledge_advice
-                    .hints
-                    .iter()
-                    .filter(|hint| hint.model_slug != baseline_model)
-                    .max_by(|left, right| {
-                        left.score
-                            .total_cmp(&right.score)
-                            .then_with(|| left.model_slug.cmp(&right.model_slug))
-                    })
-                {
-                    if best_hint.score + bias_weight > baseline_score {
-                        debug!(
-                            from = %baseline_model,
-                            to = %best_hint.model_slug,
-                            baseline_score,
-                            hint_score = best_hint.score,
-                            bias_weight = bias_weight,
-                            reason = %best_hint.reason,
-                            supporting_entries = best_hint.supporting_entries,
-                            "knowledge store nudged model selection"
-                        );
-                        dispatch_plan.model = ModelSpec::from_slug(best_hint.model_slug.clone());
-                        selected_source = "dispatcher+knowledge".to_string();
+                if let Some(router) = ctx.config.cascade_router.as_deref() {
+                    let knowledge_ref = if knowledge_advice.has_signal {
+                        Some(&knowledge_advice)
+                    } else {
+                        None
+                    };
+                    if let Some(selected) = router.select_for_frequency_among_with_knowledge(
+                        roko_core::OperatingFrequency::Theta,
+                        dispatch_ctx.routing_context.as_ref(),
+                        None, // cfactor not threaded into runner-v2 dispatch
+                        Some(task_id.as_str()),
+                        &knowledge_candidates,
+                        knowledge_ref,
+                    ) {
+                        if selected.slug != dispatch_plan.model.slug {
+                            debug!(
+                                from = %dispatch_plan.model.slug,
+                                to = %selected.slug,
+                                knowledge_hints = knowledge_ref.map_or(0, |a| a.hints.len()),
+                                "knowledge-aware cascade selection changed model"
+                            );
+                            dispatch_plan.model = selected;
+                            selected_source = "cascade+knowledge".to_string();
+                        } else {
+                            selected_source = "cascade".to_string();
+                        }
                     }
                 }
             }
@@ -7069,8 +7122,8 @@ async fn dispatch_action(
                         "daimon modulated dispatch"
                     );
                     dispatch_plan.model = ModelSpec::from_slug(modulation.model.clone());
-                    selected_source = if selected_source == "dispatcher+knowledge" {
-                        "dispatcher+knowledge+daimon".to_string()
+                    selected_source = if selected_source == "cascade+knowledge" {
+                        "cascade+knowledge+daimon".to_string()
                     } else {
                         "dispatcher+daimon".to_string()
                     };

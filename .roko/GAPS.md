@@ -73,3 +73,17 @@ integration side only. Do NOT build node-side or consensus features in this repo
 self-hosting. The blocking dependency for most is the daeji devnet reaching a deployable state
 with real contracts. The ISFR vertical is the only chain feature needed for current runtime
 operation, and it is already wired.
+
+## E14-T10: Provider health degradation routing (2026-08-03)
+
+### What was implemented
+- `ProviderOutcomeRecorder` trait added to `roko-agent::model_call_service` (dependency-safe bridge).
+- `ProviderHealthRegistry` (in `roko-learn::provider_health`) implements the trait: `record_provider_success` → `record_success`, `record_provider_failure` (with label→ErrorClass mapping) → `record_failure`.
+- `ModelCallService` gains `with_provider_outcome_recorder` builder and records success/failure on every live provider call (rate-limit, timeout, generic, convergence, success paths).
+- 5 new tests: 3 in `roko-learn::provider_health` (`provider_outcome_recorder_*`), 2 in `roko-agent::model_call_service` (`provider_outcome_recorder_*`).
+
+### What remains (E48 supersedes this task)
+- `CascadeRouter::set_provider_health` method (static provider health injection into routing) — not yet added to cascade_router.rs. This is the E48-T05 responsibility.
+- `event_loop.rs` (runner-v2) does not yet pass a `ProviderOutcomeRecorder` to the `ModelCallService` or `ProviderCallCell` it creates. The circuit breaker is currently updated only via the event bus (AgentEvent::ProviderError) in `run_learning_subscriber`. Wiring through `ModelCallService` requires E48-T03 to construct the service with the recorder.
+- Legacy `orchestrate.rs` `run_task_plans_inner` dispatch also does not pass a recorder to `ModelCallService`. Tracked under E48-T03.
+- `force_backend` routing does not bypass circuit-breaker filtering — this is intentional per acceptance (explicit intent must remain selectable).

@@ -11,9 +11,15 @@ description = "The `roko` binary: minimal CLI that drives the universal loop (pr
 workspace = true
 
 [features]
-## Enable the legacy orchestrate.rs plan runner (the pre-WorkflowEngine path).
-default = []
+default = ["legacy-runner-v2"]
+## Retained so run.rs cfg gates compile without warnings. The module is deleted.
+## Removed in E12-T08.
 legacy-orchestrate = []
+## Guards integration tests that exercise the Runner v2 plan executor
+## (`--engine runner-v2`). The CLI binary itself uses a runtime flag,
+## not this feature gate, to select the engine. Runner v2 code is always
+## compiled; this only affects `tests/` cfg guards.
+legacy-runner-v2 = []
 
 [[bin]]
 name = "roko"
@@ -96,10 +102,3 @@ predicates = { workspace = true }
 
 [package.metadata.roko]
 layer = 4
-
-# `tests/snapshot.rs` uses `roko_cli::orchestrate`, which is only built with
-# `--features legacy-orchestrate`.
-[[test]]
-name = "snapshot"
-path = "tests/snapshot.rs"
-required-features = ["legacy-orchestrate"]

@@ -600,6 +600,13 @@ fn build_runner_config(
         .learn_dir()
         .join(roko_neuro::admission::DEFAULT_KNOWLEDGE_CANDIDATES_FILE);
     let _ = std::fs::create_dir_all(layout.learn_dir());
+    // Build the conductor from [conductor.watchers.*] config before roko_config
+    // is moved into the Arc. The ring is shared between the ConductorRingSink
+    // (registered on the feedback facade below) and the conductor stored in
+    // RunConfig for periodic supervision ticks (E08-T04).
+    let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+    let conductor_ring = crate::runner::conductor_adapter::ConductorRing::new();
+
     let feedback_facade = Arc::new(
         crate::runtime_feedback::FeedbackFacade::new()
             .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
@@ -614,6 +621,13 @@ fn build_runner_config(
                         KnowledgeStore::for_workdir(workdir),
                     )),
                 ),
+            ))
+            // Register the conductor ring sink so watcher signals from the
+            // feedback vocabulary flow into the bounded ring buffer. The
+            // conductor (stored in RunConfig below) reads from this ring during
+            // periodic supervision ticks added in E08-T04.
+            .with_sink(Arc::new(
+                crate::runner::conductor_adapter::ConductorRingSink::new(conductor_ring.clone()),
             )),
     );
 
@@ -657,6 +671,8 @@ fn build_runner_config(
         warm_cache: true,
         metrics,
         obs_sinks: None,
+        conductor: Some(Arc::new(conductor)),
+        conductor_ring: Some(conductor_ring),
     }
 }
 

@@ -502,6 +502,11 @@ async fn run_plan_execution(
         roko_learn::cascade_router::CascadeRouter::load_or_new(&router_path, model_slugs),
     );
 
+    // Build the conductor before feedback_facade so roko_config.conductor is
+    // accessible before it's moved into the RunConfig Arc.
+    let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+    let conductor_ring = roko_cli::runner::conductor_adapter::ConductorRing::new();
+
     // Feedback sinks.
     let episodes_path = layout.root_episodes_path();
     let knowledge_path = layout
@@ -523,6 +528,9 @@ async fn run_plan_execution(
                             roko_neuro::KnowledgeStore::for_workdir(workdir),
                         ),
                     )),
+            ))
+            .with_sink(std::sync::Arc::new(
+                roko_cli::runner::conductor_adapter::ConductorRingSink::new(conductor_ring.clone()),
             )),
     );
 
@@ -606,6 +614,8 @@ async fn run_plan_execution(
         warm_cache: true,
         metrics: None,
         obs_sinks: None,
+        conductor: Some(std::sync::Arc::new(conductor)),
+        conductor_ring: Some(conductor_ring),
     };
 
     let cancel = tokio_util::sync::CancellationToken::new();

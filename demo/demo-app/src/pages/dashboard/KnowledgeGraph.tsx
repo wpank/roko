@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useLiveApi } from '../../hooks/useLiveApi';
 import { DOMAIN_COLORS, domainColor } from '../../lib/palette';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Pane from '../../components/Pane';
 import Mosaic, { MosaicCell } from '../../components/Mosaic';
@@ -60,7 +60,7 @@ export default function KnowledgeGraph() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['knowledge_updated', 'knowledge_created', 'knowledge_deleted'],
     debouncedRefetch,
   );

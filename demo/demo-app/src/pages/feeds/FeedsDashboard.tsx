@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDataHub } from '../../app/DataHub';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import type { RelayFeed } from '../../app/DataHub';
 import Oscilloscope from '../../components/canvas/Oscilloscope';
@@ -192,7 +192,7 @@ export default function FeedsDashboard() {
   useEffect(() => { fetchFeedCatalog(); }, [fetchFeedCatalog]);
 
   const debouncedRefetch = useDebouncedRefetch(fetchFeedCatalog, 3000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['feed_agent_online', 'feed_agent_offline'],
     useCallback(() => { debouncedRefetch(); }, [debouncedRefetch]),
   );

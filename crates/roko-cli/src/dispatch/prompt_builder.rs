@@ -926,6 +926,11 @@ pub struct PromptAssembler {
     sources: Vec<Arc<dyn PromptSectionSource>>,
     /// Persisted learning bidders for prompt composition.
     learning_bidders: HashMap<AttentionBidder, LearningBidder>,
+    /// Learned section-effectiveness registry for the compose builder.
+    ///
+    /// When present, the canonical compose path adjusts section priorities
+    /// based on historical effectiveness data.
+    section_effectiveness: Option<roko_learn::section_effect::SectionEffectivenessRegistry>,
 }
 
 impl PromptAssembler {
@@ -940,6 +945,7 @@ impl PromptAssembler {
                 Arc::new(SectionEffectivenessSource { cache: None }),
             ],
             learning_bidders: HashMap::new(),
+            section_effectiveness: None,
         }
     }
 
@@ -949,6 +955,7 @@ impl PromptAssembler {
     /// reading from the filesystem, eliminating per-task I/O.
     #[must_use]
     pub fn with_cache(cache: Arc<PromptCache>) -> Self {
+        let effectiveness = cache.effectiveness.clone();
         Self {
             token_budget: DEFAULT_TOKEN_BUDGET,
             sources: vec![
@@ -961,6 +968,7 @@ impl PromptAssembler {
                 Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
             ],
             learning_bidders: HashMap::new(),
+            section_effectiveness: Some(effectiveness),
         }
     }
 
@@ -971,6 +979,7 @@ impl PromptAssembler {
             token_budget: 8_000,
             sources: Vec::new(),
             learning_bidders: HashMap::new(),
+            section_effectiveness: None,
         }
     }
 
@@ -1017,6 +1026,28 @@ impl PromptAssembler {
     #[must_use]
     pub fn with_vcg_warmup_observations(self, _observations: u32) -> Self {
         self
+    }
+
+    /// Resolve the section-effectiveness registry for the compose builder.
+    ///
+    /// If the assembler was constructed with a cache (via [`with_cache`]), the
+    /// cached registry is returned. Otherwise, loads it from disk using the
+    /// standard `.roko/learn/` path under `workdir`. Returns `None` for
+    /// minimal assemblers (no sources, no workdir lookup).
+    fn resolve_section_effectiveness(
+        &self,
+        workdir: &Path,
+    ) -> Option<roko_learn::section_effect::SectionEffectivenessRegistry> {
+        if let Some(ref registry) = self.section_effectiveness {
+            return Some(registry.clone());
+        }
+        // Fallback: load from disk (matches the non-cached SectionEffectivenessSource path).
+        // For minimal assemblers (no sources), skip the disk load entirely.
+        if self.sources.is_empty() {
+            return None;
+        }
+        let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
+        Some(roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path))
     }
 
     /// Assemble the prompt for `task` in the given context.
@@ -1101,9 +1132,16 @@ impl PromptAssembler {
             })
             .unwrap_or_default();
 
-        // Build PromptBuildOptions, threading knowledge/playbook context through.
+        // Build PromptBuildOptions, threading knowledge/playbook context and
+        // section-effectiveness through to the canonical compose builder.
+        //
+        // When the assembler has a section_effectiveness registry (loaded from
+        // the PromptCache or disk), the compose builder adjusts section
+        // priorities based on historical effectiveness data.
+        let section_effectiveness = self.resolve_section_effectiveness(&ctx.workdir);
         let options = PromptBuildOptions {
             code_context,
+            section_effectiveness,
             ..PromptBuildOptions::default()
         };
 
@@ -1187,93 +1225,6 @@ impl PromptAssembler {
             tool_allowlist: allowlist,
             diagnostics,
         })
-    }
-
-    /// Drop sections in priority order until the prompt fits the budget.
-    ///
-    /// Kept for backwards compatibility with callers that may still invoke it
-    /// via the old path. The canonical `assemble()` no longer calls this —
-    /// budget enforcement is now handled by [`RoleSystemPromptSpec`] via the
-    /// canonical 9-layer builder.
-    ///
-    /// Priorities (lower drop-priority = higher importance):
-    ///
-    /// 1: role / task          (never dropped)
-    /// 2: acceptance
-    /// 3: verify
-    /// 4: files
-    /// 5: retry feedback
-    /// 6: allowlist (covered by safety contract too — safe to drop)
-    ///
-    /// Knowledge / playbook sections (drop priority 7+) will land here
-    /// once those stores are wired through the assembler.
-    fn enforce_budget(
-        &self,
-        sections: &mut Vec<PromptSection>,
-        diagnostics: &mut PromptDiagnostics,
-    ) -> String {
-        // Sort by drop priority descending so high-priority sections drop first.
-        sections.sort_by(|a, b| b.drop_priority.cmp(&a.drop_priority));
-        let mut selected = sections.clone();
-        // Drop highest drop-priority first while we exceed budget.
-        loop {
-            let total = estimate_tokens(&selected);
-            diagnostics.estimated_tokens = total;
-            if total <= self.token_budget {
-                break;
-            }
-            // Section index 0 has the highest drop priority after the sort
-            if let Some(dropped) = selected.first().map(|section| section.name.clone()) {
-                diagnostics.dropped_sections.push(dropped);
-                selected.remove(0);
-            } else {
-                break;
-            }
-        }
-
-        // Restore canonical order (role, task, files, acceptance, verify, retry, allowlist, …)
-        let canonical: &[&str] = &[
-            "role",
-            "task",
-            "files",
-            "acceptance",
-            "verify",
-            "dependency_outputs",
-            "retry",
-            "allowlist",
-            "prd_excerpt",
-            "workspace_map",
-            "tasks_toml",
-            "workspace_context",
-            "cfactor_context",
-            "knowledge",
-            "episode_knowledge",
-            "playbooks",
-            "section_effectiveness",
-        ];
-        let mut ordered: Vec<&PromptSection> = selected.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|section| {
-            canonical
-                .iter()
-                .position(|name| *name == section.name.as_str())
-                .unwrap_or(99)
-        });
-        diagnostics.included_sections =
-            ordered.iter().map(|section| section.name.clone()).collect();
-        diagnostics.knowledge_ids = ordered
-            .iter()
-            .flat_map(|section| section.knowledge_ids.clone())
-            .collect();
-        diagnostics.playbook_ids = ordered
-            .iter()
-            .flat_map(|section| section.playbook_ids.clone())
-            .collect();
-
-        ordered
-            .into_iter()
-            .map(|section| section.body.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n")
     }
 }
 
@@ -1748,24 +1699,6 @@ fn collect_playbooks_cached(
     Some(PromptSection::new("playbooks", body, 7).with_playbook_ids(ids))
 }
 
-fn apply_section_effectiveness(workdir: &Path, role: &str, sections: &mut [PromptSection]) {
-    let path = workdir.join(roko_learn::section_effect::DEFAULT_SECTION_EFFECTS_PATH);
-    // load_or_new handles missing files gracefully (returns empty registry).
-    let registry = roko_learn::section_effect::SectionEffectivenessRegistry::load_or_new(&path);
-    for section in sections {
-        match registry.recommend_priority_change(&section.name, role) {
-            roko_learn::section_effect::PriorityChange::Increase => {
-                section.drop_priority = section.drop_priority.saturating_sub(1);
-            }
-            roko_learn::section_effect::PriorityChange::Decrease => {
-                section.drop_priority = section.drop_priority.saturating_add(1);
-            }
-            roko_learn::section_effect::PriorityChange::NoChange
-            | roko_learn::section_effect::PriorityChange::InsufficientData => {}
-        }
-    }
-}
-
 fn task_query_text(task: &TaskDef, ctx: &PromptContext) -> String {
     let mut parts = vec![task.id.clone(), task.title.clone(), ctx.role.clone()];
     if let Some(description) = &task.description {
@@ -1829,15 +1762,6 @@ impl Default for PromptAssembler {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn estimate_tokens(sections: &[PromptSection]) -> u32 {
-    // Coarse rule-of-thumb: 1 token ≈ 4 ASCII characters.
-    sections
-        .iter()
-        .map(|section| (section.body.len() / 4) as u32)
-        .sum::<u32>()
-        .max(1)
 }
 
 fn render_gate_feedback(feedback: &GateFeedback) -> String {

@@ -28,6 +28,12 @@ pub struct PromptBuildOptions {
     pub code_context: Vec<String>,
     /// Optional ambient pheromone signals injected into the system prompt.
     pub pheromones: Vec<ContextChunk>,
+    /// Optional learned section-effectiveness registry for priority adjustment.
+    ///
+    /// When present, the compose builder uses this to adjust section priorities
+    /// based on historical effectiveness data, promoting sections with positive
+    /// lift and demoting those with negative lift.
+    pub section_effectiveness: Option<SectionEffectivenessRegistry>,
 }
 
 fn build_spec(
@@ -67,6 +73,10 @@ fn build_spec(
 }
 
 /// Build a role-scoped system prompt from shared task context.
+///
+/// When `options.section_effectiveness` is set, the compose builder adjusts
+/// section priorities based on historical effectiveness data (positive-lift
+/// sections are promoted, negative-lift sections are demoted).
 #[must_use]
 pub fn build_role_system_prompt(
     role: AgentRole,
@@ -74,7 +84,13 @@ pub fn build_role_system_prompt(
     tools_csv: impl Into<String>,
     options: PromptBuildOptions,
 ) -> String {
-    build_spec(role, task_context, tools_csv, options).build()
+    let section_effectiveness = options.section_effectiveness.clone();
+    let spec = build_spec(role, task_context, tools_csv, options);
+    if let Some(ref registry) = section_effectiveness {
+        spec.build_with_section_effectiveness(registry)
+    } else {
+        spec.build()
+    }
 }
 
 /// Build a role-scoped system prompt and validate it against a context window.

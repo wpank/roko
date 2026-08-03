@@ -1789,10 +1789,7 @@ impl CascadeRouter {
                 .collect(),
             total_observations: self.linucb.total_observations(),
             stage_transitions,
-            // LinUCB export methods don't exist yet; populate None as
-            // forward-compatible placeholder. Wire actual export when
-            // LinUCBRouter exposes A/b matrices.
-            linucb_state: None,
+            linucb_state: Some(self.linucb.export_linucb_snapshot()),
         };
         tracing::debug!(
             total_observations = snapshot.total_observations,
@@ -1829,7 +1826,7 @@ impl CascadeRouter {
             total_observations,
             role_table,
             stage_transitions,
-            linucb_state: _linucb_state,
+            linucb_state,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -1886,6 +1883,11 @@ impl CascadeRouter {
             let mut stage_tracking = router.stage_tracking.lock();
             stage_tracking.current = stage_for_observations(total);
             stage_tracking.transitions = stage_transitions;
+        }
+
+        // Restore LinUCB A/b matrices from the persisted snapshot (if present).
+        if let Some(ref snap) = linucb_state {
+            router.linucb.import_linucb_snapshot(snap);
         }
 
         router

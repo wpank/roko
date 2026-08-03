@@ -4117,6 +4117,99 @@ struct GateRunOutcome {
     recorded_verdicts: Vec<RecordedEpisodeGateVerdict>,
 }
 
+/// Discover a roko MCP binary by name.
+///
+/// Search order:
+/// 1. `PATH` (using `std::process::Command` to probe `which <name>`)
+/// 2. Ancestor `target/{release,debug}/<name>` directories walking up from `workdir`
+///
+/// Returns the resolved command string (absolute path or bare name) on success.
+fn discover_mcp_binary(name: &str, workdir: &Path) -> Option<String> {
+    // 1. Check PATH via `which`.
+    if let Ok(output) = std::process::Command::new("which").arg(name).output() {
+        if output.status.success() {
+            if let Ok(path) = std::str::from_utf8(&output.stdout) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+
+    // 2. Walk ancestor directories for cargo target dirs.
+    for dir in workdir.ancestors() {
+        for profile in ["release", "debug"] {
+            let candidate = dir.join("target").join(profile).join(name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    None
+}
+
+/// Auto-discover well-known roko MCP server binaries and return
+/// [`McpServerConfig`] entries for each one found.
+///
+/// Currently discovers:
+/// - `roko-mcp-github` — registered as server name `"github"` with `GITHUB_TOKEN`
+///   forwarded from the process environment.
+/// - `roko-mcp-code` — registered as server name `"code"` with `--workspace <workdir>`.
+///
+/// Servers whose name already appears in `existing_names` are skipped so that
+/// user-configured entries always take precedence over auto-discovery.
+fn auto_discover_mcp_servers(
+    workdir: &Path,
+    existing_names: &std::collections::HashSet<String>,
+) -> Vec<McpServerConfig> {
+    let mut discovered = Vec::new();
+
+    // ── roko-mcp-github ──────────────────────────────────────────────
+    if !existing_names.contains("github") {
+        if let Some(command) = discover_mcp_binary("roko-mcp-github", workdir) {
+            let mut env = HashMap::new();
+            if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                if !token.is_empty() {
+                    env.insert("GITHUB_TOKEN".to_string(), token);
+                }
+            }
+            tracing::debug!(command = %command, "auto-discovered roko-mcp-github");
+            discovered.push(McpServerConfig {
+                name: "github".to_string(),
+                command,
+                args: vec![],
+                env,
+                ..Default::default()
+            });
+        } else {
+            tracing::debug!("roko-mcp-github binary not found; skipping auto-discovery");
+        }
+    }
+
+    // ── roko-mcp-code ────────────────────────────────────────────────
+    if !existing_names.contains("code") {
+        if let Some(command) = discover_mcp_binary("roko-mcp-code", workdir) {
+            tracing::debug!(command = %command, "auto-discovered roko-mcp-code");
+            discovered.push(McpServerConfig {
+                name: "code".to_string(),
+                command,
+                args: vec![
+                    "--workspace".to_string(),
+                    workdir.to_string_lossy().into_owned(),
+                ],
+                env: HashMap::new(),
+                ..Default::default()
+            });
+        } else {
+            tracing::debug!("roko-mcp-code binary not found; skipping auto-discovery");
+        }
+    }
+
+    discovered
+}
+
 /// Build the Claude CLI `{"mcpServers": {"<name>": {command, args, env}}}` shape
 /// from a list of roko [`McpServerConfig`] entries.
 ///
@@ -4191,9 +4284,28 @@ impl PlanRunner {
             })
         };
 
-        let mcp_config = match mcp_config {
-            Some(cfg) if !cfg.servers.is_empty() => cfg,
-            _ => return (HashMap::new(), None, Vec::new(), HashMap::new()),
+        // Augment the loaded config with auto-discovered MCP server binaries.
+        // User-configured servers always take precedence: auto-discovery only
+        // adds entries whose name is not already present in the config.
+        let mcp_config = {
+            let mut cfg = mcp_config.unwrap_or(roko_agent::mcp::McpConfig {
+                servers: Vec::new(),
+            });
+            let existing: std::collections::HashSet<String> =
+                cfg.servers.iter().map(|s| s.name.clone()).collect();
+            let discovered = auto_discover_mcp_servers(workdir, &existing);
+            if !discovered.is_empty() {
+                tracing::info!(
+                    count = discovered.len(),
+                    names = ?discovered.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                    "auto-discovered MCP server binaries"
+                );
+                cfg.servers.extend(discovered);
+            }
+            if cfg.servers.is_empty() {
+                return (HashMap::new(), None, Vec::new(), HashMap::new());
+            }
+            cfg
         };
 
         let selected_servers = selected_servers.filter(|names| !names.is_empty());
@@ -4260,13 +4372,16 @@ impl PlanRunner {
         let base = StaticToolRegistry::new();
         let mut registry =
             roko_agent::mcp::DynamicToolRegistry::with_preference(&base, config.tools.prefer_mcp);
-        // Group deduped tools by their server prefix (everything before `__`).
+        // Group deduped tools by their server prefix (everything before the
+        // first `.`).  Deduped tool names use `{server}.{tool}` — the same
+        // separator that `handler::split_prefixed_tool_name` and
+        // `to_tool_def::mcp_to_tool_def` use.
         let mut by_server: HashMap<String, Vec<roko_core::tool::ToolDef>> = HashMap::new();
         for tool in deduped {
             let server_name = tool
                 .name
-                .split("__")
-                .next()
+                .split_once('.')
+                .map(|(prefix, _)| prefix)
                 .unwrap_or("unknown")
                 .to_string();
             by_server.entry(server_name).or_default().push(tool);
@@ -10867,6 +10982,12 @@ impl PlanRunner {
             input = input.with_task_metric(metric);
         }
 
+        // E07-T10: Attach serialized adaptive gate thresholds so
+        // LearningRuntime can flush them incrementally at cadence.
+        if let Ok(json) = serde_json::to_string_pretty(&self.adaptive_thresholds) {
+            input = input.with_gate_thresholds(json);
+        }
+
         input
     }
 
@@ -12241,9 +12362,10 @@ impl PlanRunner {
         }
 
         // ── Incremental adaptive gate-threshold flush ──────────────────
-        // Honour the gate_thresholds_every_n cadence so adaptive thresholds
-        // persist before graceful shutdown, not only during it.
-        if update.gate_thresholds_flush_due {
+        // E07-T10: When gate_thresholds_snapshot was supplied in the input,
+        // LearningRuntime already wrote the file.  Only fall back to the
+        // orchestrator save when the runtime did not flush.
+        if update.gate_thresholds_flush_due && !update.gate_thresholds_flushed {
             let thresholds_path = self
                 .workdir
                 .join(".roko")
@@ -12252,6 +12374,18 @@ impl PlanRunner {
             if let Err(e) = self.adaptive_thresholds.save(&thresholds_path) {
                 tracing::error!("[orchestrate] incremental adaptive threshold save: {e}");
             } else if let Ok(json) = std::fs::read_to_string(&thresholds_path) {
+                self.publish_dashboard_event(roko_core::DashboardEvent::GateThresholdsUpdated {
+                    snapshot_json: json,
+                });
+            }
+        } else if update.gate_thresholds_flushed {
+            // Runtime flushed — still push dashboard event from the written file.
+            let thresholds_path = self
+                .workdir
+                .join(".roko")
+                .join("learn")
+                .join("gate-thresholds.json");
+            if let Ok(json) = std::fs::read_to_string(&thresholds_path) {
                 self.publish_dashboard_event(roko_core::DashboardEvent::GateThresholdsUpdated {
                     snapshot_json: json,
                 });
@@ -23814,6 +23948,118 @@ command = "cargo check -p roko-cli"
         assert!(
             code.get("auth_token").is_none(),
             "auth_token must not appear"
+        );
+    }
+
+    #[test]
+    fn mcp_github_discover_when_binary_on_path() {
+        // Create a temporary directory with a fake roko-mcp-github binary.
+        let tmp = TempDir::new().expect("tempdir");
+        let bin = tmp.path().join("target").join("release");
+        fs::create_dir_all(&bin).expect("create target/release");
+        let binary_path = bin.join("roko-mcp-github");
+        fs::write(&binary_path, "#!/bin/sh\nexit 0\n").expect("write fake binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        // Auto-discover with no existing servers configured.
+        let existing = std::collections::HashSet::new();
+        let discovered = auto_discover_mcp_servers(tmp.path(), &existing);
+        // At minimum, the github server should be discovered via target/release.
+        let github = discovered.iter().find(|s| s.name == "github");
+        assert!(
+            github.is_some(),
+            "roko-mcp-github should be auto-discovered from target/release"
+        );
+        let github = github.unwrap();
+        assert!(
+            github.command.contains("roko-mcp-github"),
+            "command should reference the binary: {}",
+            github.command
+        );
+    }
+
+    #[test]
+    fn mcp_github_discover_skipped_when_user_configured() {
+        // Create a temporary directory with a fake roko-mcp-github binary.
+        let tmp = TempDir::new().expect("tempdir");
+        let bin = tmp.path().join("target").join("release");
+        fs::create_dir_all(&bin).expect("create target/release");
+        let binary_path = bin.join("roko-mcp-github");
+        fs::write(&binary_path, "#!/bin/sh\nexit 0\n").expect("write fake binary");
+
+        // User already configured a "github" server -- auto-discovery must skip it.
+        let mut existing = std::collections::HashSet::new();
+        existing.insert("github".to_string());
+        let discovered = auto_discover_mcp_servers(tmp.path(), &existing);
+        let github = discovered.iter().find(|s| s.name == "github");
+        assert!(
+            github.is_none(),
+            "auto-discovery must not override user-configured 'github' server"
+        );
+    }
+
+    #[test]
+    fn mcp_github_discover_includes_github_token_env() {
+        // Create a temporary directory with a fake roko-mcp-github binary.
+        let tmp = TempDir::new().expect("tempdir");
+        let bin = tmp.path().join("target").join("debug");
+        fs::create_dir_all(&bin).expect("create target/debug");
+        let binary_path = bin.join("roko-mcp-github");
+        fs::write(&binary_path, "#!/bin/sh\nexit 0\n").expect("write fake binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        // Set GITHUB_TOKEN in the environment for this test.
+        std::env::set_var("GITHUB_TOKEN", "ghp_test_token_123");
+
+        let existing = std::collections::HashSet::new();
+        let discovered = auto_discover_mcp_servers(tmp.path(), &existing);
+        let github = discovered.iter().find(|s| s.name == "github");
+        assert!(github.is_some(), "github server should be discovered");
+        let github = github.unwrap();
+        assert_eq!(
+            github.env.get("GITHUB_TOKEN"),
+            Some(&"ghp_test_token_123".to_string()),
+            "GITHUB_TOKEN must be forwarded from the process environment"
+        );
+
+        // Clean up.
+        std::env::remove_var("GITHUB_TOKEN");
+    }
+
+    #[test]
+    fn discover_mcp_binary_finds_target_release() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bin_dir = tmp.path().join("target").join("release");
+        fs::create_dir_all(&bin_dir).expect("create target/release");
+        let binary_path = bin_dir.join("roko-mcp-github");
+        fs::write(&binary_path, "stub").expect("write stub binary");
+
+        let found = discover_mcp_binary("roko-mcp-github", tmp.path());
+        assert!(
+            found.is_some(),
+            "should find roko-mcp-github in target/release"
+        );
+        assert!(
+            found.unwrap().contains("roko-mcp-github"),
+            "resolved path should contain the binary name"
+        );
+    }
+
+    #[test]
+    fn discover_mcp_binary_returns_none_when_absent() {
+        let tmp = TempDir::new().expect("tempdir");
+        let found = discover_mcp_binary("roko-mcp-github", tmp.path());
+        assert!(
+            found.is_none(),
+            "should return None when binary is not found"
         );
     }
 }

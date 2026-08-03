@@ -178,7 +178,12 @@ async fn run_task(
     if let (Some(url), Some(dep_id)) = (&state.control_plane_url, &state.deployment_id) {
         let callback_url = format!("{url}/api/deployments/{dep_id}/callback");
         let client = reqwest::Client::new();
-        if let Err(e) = client.post(&callback_url).json(&result).send().await {
+        let mut req = client.post(&callback_url).json(&result);
+        // Attach the callback token so the control plane can verify this worker.
+        if let Some(token) = &state.callback_token {
+            req = req.header("X-Roko-Worker-Signature", token.as_str());
+        }
+        if let Err(e) = req.send().await {
             error!(%callback_url, error = %e, "callback to control plane failed");
         }
     }

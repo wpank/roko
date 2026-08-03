@@ -142,7 +142,6 @@ const TERMINAL_DISABLED_HINT: &str = "Set serve.terminal_enabled=true or use --e
 #[derive(Clone, Debug, Default)]
 struct PtyServerEnv {
     serve_url: Option<String>,
-    auth_token: Option<String>,
 }
 
 impl PtyServerEnv {
@@ -151,10 +150,6 @@ impl PtyServerEnv {
 
         if let Some(serve_url) = &self.serve_url {
             cmd.env("ROKO_SERVE_URL", serve_url.as_str());
-        }
-
-        if let Some(auth_token) = &self.auth_token {
-            cmd.env("ROKO_SERVER_AUTH_TOKEN", auth_token.as_str());
         }
     }
 }
@@ -166,19 +161,6 @@ fn non_empty_env_value(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
-}
-
-fn configured_auth_token(config: &RokoConfig) -> Option<String> {
-    std::env::var("ROKO_SERVER_AUTH_TOKEN")
-        .ok()
-        .and_then(|value| non_empty_env_value(&value))
-        .or_else(|| {
-            config
-                .server
-                .auth_token
-                .as_deref()
-                .and_then(non_empty_env_value)
-        })
 }
 
 fn effective_config_port(config: &RokoConfig) -> u16 {
@@ -674,20 +656,16 @@ impl SessionManager {
     pub(crate) fn configure_server_env_from_config(&self, config: &RokoConfig) {
         let serve_url =
             serve_url_from_bind_and_port(&config.server.bind, effective_config_port(config));
-        self.configure_server_env(serve_url, configured_auth_token(config));
+        self.configure_server_env(serve_url);
     }
 
-    pub(crate) fn configure_server_env_from_addr(&self, addr: SocketAddr, config: &RokoConfig) {
-        self.configure_server_env(
-            serve_url_from_socket_addr(addr),
-            configured_auth_token(config),
-        );
+    pub(crate) fn configure_server_env_from_addr(&self, addr: SocketAddr, _config: &RokoConfig) {
+        self.configure_server_env(serve_url_from_socket_addr(addr));
     }
 
-    fn configure_server_env(&self, serve_url: String, auth_token: Option<String>) {
+    fn configure_server_env(&self, serve_url: String) {
         *self.server_env.lock() = PtyServerEnv {
             serve_url: non_empty_env_value(serve_url.trim_end_matches('/')),
-            auth_token,
         };
     }
 

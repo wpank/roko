@@ -34,11 +34,12 @@
 //! neuro store and a tiny default budget — used by tests and CI smoke
 //! runs to keep prompt construction deterministic.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use roko_compose::{AttentionBidder, LearningBidder};
 use serde::{Deserialize, Serialize};
 
 use super::DispatchContext;
@@ -713,16 +714,98 @@ struct SectionEffectivenessSource {
 /// prompt suitable for tests and the smoke path. Wiring into the full
 /// 9-layer [`roko_compose::SystemPromptBuilder`] is exposed as a
 /// follow-up — see `.roko/GAPS.md`.
+/// The file name for the persisted attention bidders store under `.roko/learn/`.
+pub const ATTENTION_BIDDERS_FILENAME: &str = "attention-bidders.json";
+
+/// Load persisted learning bidders from `.roko/learn/attention-bidders.json`.
+///
+/// Returns an empty map (with a warning) if the file is missing or malformed,
+/// so prompt composition never fails hard on a missing store.
+pub fn load_attention_bidders(learn_dir: &Path) -> HashMap<AttentionBidder, LearningBidder> {
+    let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(bidders) => {
+                tracing::debug!(path = %path.display(), "loaded attention bidders");
+                bidders
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "malformed attention-bidders.json — starting with empty bidders"
+                );
+                HashMap::new()
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(path = %path.display(), "attention-bidders.json not found — starting fresh");
+            HashMap::new()
+        }
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to read attention-bidders.json — starting with empty bidders"
+            );
+            HashMap::new()
+        }
+    }
+}
+
+/// Save learning bidders to `.roko/learn/attention-bidders.json`.
+///
+/// Creates the learn directory if it does not exist. Errors are logged
+/// but do not propagate -- bidder persistence is best-effort.
+pub fn save_attention_bidders(
+    learn_dir: &Path,
+    bidders: &HashMap<AttentionBidder, LearningBidder>,
+) {
+    if let Err(err) = std::fs::create_dir_all(learn_dir) {
+        tracing::warn!(
+            path = %learn_dir.display(),
+            error = %err,
+            "failed to create learn directory for attention-bidders"
+        );
+        return;
+    }
+    let path = learn_dir.join(ATTENTION_BIDDERS_FILENAME);
+    match serde_json::to_string_pretty(bidders) {
+        Ok(json) => {
+            if let Err(err) = std::fs::write(&path, json) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "failed to write attention-bidders.json"
+                );
+            } else {
+                tracing::debug!(
+                    path = %path.display(),
+                    bidder_count = bidders.len(),
+                    "saved attention bidders"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to serialize attention bidders");
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptAssembler {
     /// Token budget cap.
     token_budget: u32,
     /// Optional prompt context sources. `minimal()` leaves this empty.
     sources: Vec<Arc<dyn PromptSectionSource>>,
+    /// Persisted learning bidders for prompt composition. When E06-T03 routes
+    /// the runner-v2 path through the canonical compose surface, these bidders
+    /// are passed to `PromptComposer::with_learning_bidders`.
+    learning_bidders: HashMap<AttentionBidder, LearningBidder>,
 }
 
 impl PromptAssembler {
-    /// Construct a production assembler (no cache — I/O per task).
+    /// Construct a production assembler (no cache -- I/O per task).
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -732,6 +815,7 @@ impl PromptAssembler {
                 Arc::new(WorkdirPlaybookSource { cache: None }),
                 Arc::new(SectionEffectivenessSource { cache: None }),
             ],
+            learning_bidders: HashMap::new(),
         }
     }
 
@@ -752,15 +836,17 @@ impl PromptAssembler {
                 }),
                 Arc::new(SectionEffectivenessSource { cache: Some(cache) }),
             ],
+            learning_bidders: HashMap::new(),
         }
     }
 
-    /// Test / smoke assembler — no knowledge stores, tiny budget.
+    /// Test / smoke assembler -- no knowledge stores, tiny budget.
     #[must_use]
     pub fn minimal() -> Self {
         Self {
             token_budget: 8_000,
             sources: Vec::new(),
+            learning_bidders: HashMap::new(),
         }
     }
 
@@ -768,6 +854,26 @@ impl PromptAssembler {
     pub fn with_token_budget(mut self, budget: u32) -> Self {
         self.token_budget = budget;
         self
+    }
+
+    /// Attach persisted learning bidders for prompt composition.
+    ///
+    /// When the runner-v2 prompt path is routed through the canonical
+    /// `PromptComposer` (E06-T03), these bidders are passed to
+    /// `PromptComposer::with_learning_bidders`.
+    #[must_use]
+    pub fn with_learning_bidders(
+        mut self,
+        bidders: HashMap<AttentionBidder, LearningBidder>,
+    ) -> Self {
+        self.learning_bidders = bidders;
+        self
+    }
+
+    /// Read-only access to the current learning bidders.
+    #[must_use]
+    pub fn learning_bidders(&self) -> &HashMap<AttentionBidder, LearningBidder> {
+        &self.learning_bidders
     }
 
     /// Assemble the prompt for `task` in the given context.

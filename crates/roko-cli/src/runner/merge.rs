@@ -597,6 +597,7 @@ impl PlanMerger {
             let summary = GateVerdictSummary {
                 gate_name: gate_name.to_string(),
                 passed,
+                skipped: false,
                 summary: outcome.summary.clone(),
                 error_digest: None,
                 failure_kind: outcome.failure_kind,

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use roko_agent::SafetyLayer;
 use roko_core::config::TimeoutConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_core::defaults::{
@@ -159,6 +160,10 @@ pub struct GateVerdictSummary {
     #[serde(rename = "gate", alias = "gate_name")]
     pub gate_name: String,
     pub passed: bool,
+    /// True when the gate did not run (stub / not wired). Skipped verdicts
+    /// are neutral: they count as neither pass nor fail.
+    #[serde(default)]
+    pub skipped: bool,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_digest: Option<String>,
@@ -1858,6 +1863,9 @@ pub struct RunConfig {
     /// Optional metric registry for emitting gate verdict counters.
     /// Populated when running under `roko serve`.
     pub metrics: Option<std::sync::Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
+    /// When `None`, safety checks are skipped (tests, bare smoke runs).
+    pub safety_layer: Option<SafetyLayer>,
 }
 
 impl RunConfig {
@@ -1929,6 +1937,7 @@ impl RunConfig {
         let timeout_secs = roko_config.timeouts.agent_dispatch().as_secs().max(1);
         let plan_timeout_secs = effective_plan_timeout_secs(&roko_config);
         let daimon_state = Self::daimon_state_for_workdir(&workdir);
+        let safety_layer = SafetyLayer::from_config(&roko_config);
 
         Self {
             layout,
@@ -1979,6 +1988,7 @@ impl RunConfig {
             projection: None,
             http_event_sink: None,
             metrics: None,
+            safety_layer: Some(safety_layer),
         }
     }
 }
@@ -2021,6 +2031,7 @@ impl Default for RunConfig {
             output_sink: Arc::new(super::output_sink::NoopSink),
             warm_cache: true,
             metrics: None,
+            safety_layer: None,
         }
     }
 }

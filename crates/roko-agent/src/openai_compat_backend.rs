@@ -516,11 +516,16 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     )
                     .observe(dur);
             }
+            let retry_after = crate::http::extract_retry_after_from_response(&response);
             let text = response
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("read error body failed: {e}"));
-            let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+            let raw_err = crate::http::HttpPostError::http_with_retry_after(
+                status.as_u16(),
+                text,
+                retry_after,
+            );
             return Err(LlmError::Network(self.decorate_error(&raw_err)));
         }
 
@@ -731,6 +736,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after = crate::http::extract_retry_after_from_response(&response);
             let text = match response.text().await {
                 Ok(text) => text,
                 Err(e) => {
@@ -739,7 +745,11 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                     return Err(LlmError::Network(message));
                 }
             };
-            let raw_err = crate::http::HttpPostError::http(status.as_u16(), text);
+            let raw_err = crate::http::HttpPostError::http_with_retry_after(
+                status.as_u16(),
+                text,
+                retry_after,
+            );
             let message = self.decorate_error(&raw_err);
             let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
             return Err(LlmError::Network(message));

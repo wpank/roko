@@ -220,6 +220,16 @@ impl RokoLayout {
         self.root.join("signals.jsonl")
     }
 
+    /// `.roko/gate-verdicts.jsonl` — typed gate verdict log.
+    ///
+    /// Gate verdicts are written here by the runner and read by
+    /// serve dashboard routes. This replaces the legacy practice
+    /// of appending flat verdict rows to `signals.jsonl`.
+    #[must_use]
+    pub fn gate_verdicts_path(&self) -> PathBuf {
+        self.root.join("gate-verdicts.jsonl")
+    }
+
     /// `.roko/episodes.jsonl` — legacy root episode log.
     ///
     /// New layout-native episode storage lives at [`Self::episodes_path`].
@@ -320,10 +330,15 @@ impl RokoLayout {
         self.run_dir(run_id).join("traces")
     }
 
-    /// `.roko/memory/episodes.jsonl` — the main episodes log.
+    /// `.roko/episodes.jsonl` — the canonical episodes log.
+    ///
+    /// Previously pointed at `.roko/memory/episodes.jsonl`. Converged to the
+    /// root log so that `FeedbackService`, the runner, and serve all agree on
+    /// a single episode sink. Legacy `memory/episodes.jsonl` is treated as
+    /// migration-only input.
     #[must_use]
     pub fn episodes_path(&self) -> PathBuf {
-        self.memory_dir().join("episodes.jsonl")
+        self.root_episodes_path()
     }
 
     /// `.roko/custody.jsonl` — append-only custody audit chain.
@@ -567,7 +582,7 @@ mod tests {
         let layout = RokoLayout::new("/x/.roko");
         assert_eq!(
             layout.episodes_path(),
-            PathBuf::from("/x/.roko/memory/episodes.jsonl")
+            PathBuf::from("/x/.roko/episodes.jsonl")
         );
         assert_eq!(
             layout.playbook_path(),

@@ -353,19 +353,35 @@ async fn get_workspace_state(
     let roko_dir = ws.path.join(".roko");
     let mut errors: Vec<String> = Vec::new();
 
-    // 1. Executor state: .roko/state/executor.json
-    let executor_state = match read_json_file(roko_dir.join("state").join("executor.json")).await {
-        Ok(v) => v,
-        Err(ReadFileError::NotFound) => Value::Null,
-        Err(ReadFileError::Io(e)) => {
-            errors.push(format!("executor.json: {e}"));
-            Value::Null
-        }
-        Err(ReadFileError::Parse(e)) => {
-            errors.push(format!("executor.json parse: {e}"));
-            Value::Null
-        }
-    };
+    // 1. Executor state: extract from state-snapshot.json (unified snapshot).
+    //    Runner v2 writes state-snapshot.json with an embedded executor_json
+    //    field; the old state/executor.json is no longer written.
+    let executor_state =
+        match read_json_file(roko_dir.join("state").join("state-snapshot.json")).await {
+            Ok(snapshot) => {
+                // Extract the embedded executor_json string and parse it.
+                snapshot
+                    .get("executor_json")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .unwrap_or(Value::Null)
+            }
+            Err(ReadFileError::NotFound) => {
+                // Fall back to legacy executor.json for old workspaces.
+                match read_json_file(roko_dir.join("state").join("executor.json")).await {
+                    Ok(v) => v,
+                    Err(_) => Value::Null,
+                }
+            }
+            Err(ReadFileError::Io(e)) => {
+                errors.push(format!("state-snapshot.json: {e}"));
+                Value::Null
+            }
+            Err(ReadFileError::Parse(e)) => {
+                errors.push(format!("state-snapshot.json parse: {e}"));
+                Value::Null
+            }
+        };
 
     // 2. Episodes: try canonical paths first, then legacy memory fallback.
     //    Order: .roko/episodes.jsonl -> .roko/learn/episodes.jsonl -> .roko/memory/episodes.jsonl

@@ -1232,6 +1232,55 @@ Production: indexer on Railway alongside control plane, connecting to Korai WebS
 
 ---
 
+## 11.3 daeji boundary and roko-chain module maturity
+
+### roko vs daeji: two halves of the chain stack
+
+`roko-chain` is the **client/runtime-integration half** of the chain stack:
+
+- Signs and submits transactions via alloy RPC.
+- Reads chain state (balances, logs, receipts).
+- Runs the ISFR keeper loop, submitting rates to `ISFROracle`.
+- Deploys contracts during bootstrap (`isfr_bootstrap.rs`).
+
+The **node/consensus/precompile half** lives in the **daeji devnet** (separate repository).
+daeji owns: BFT consensus, EVM precompiles, verified state (QMDB proofs + BLS), and the
+tokenomics for the KORAI demurrage token. Design-only docs for the daeji side are at
+`tmp/agentchain-v2/02-daeji/` in this repo — they are not runnable here.
+
+**Practical rule**: if a feature requires a daeji-side primitive (precompile, verified state,
+KORAI contract), it is Phase 2 in roko. Do not build daeji-side pieces in roko.
+
+### Module maturity — wire or shelve (E11-T05, 2026-08-03)
+
+The table below records the verdict for every `roko-chain` module with zero runtime callers.
+The **ISFR vertical** (isfr_sources, isfr_keeper, isfr_oracle_submit, isfr_bootstrap) is
+already wired and excluded from this table. Shelf-ware modules are intentionally isolated —
+their Rust logic is tested, but each awaits a daeji primitive or a dedicated follow-up epic.
+
+| Module | Verdict | Notes |
+|---|---|---|
+| `witness.rs` | **SHELVE** (Phase 2) | Needs on-chain WitnessRegistry (daeji). No deploy path today. |
+| `x402.rs` | **SHELVE** (Phase 2) | Needs 402 middleware on agent-server + daeji payment precompile (ERC-3009). |
+| `korai_token.rs` | **SHELVE** (Phase 2) | KORAI.sol not authored; deploys use MockERC20. KORAI token is daeji tokenomics. |
+| `marketplace.rs` | **SHELVE** (Phase 2) | Runtime jobs use `.roko/jobs/*.json`; on-chain escrow awaits daeji devnet. |
+| `agent_registry.rs` | **SHELVE** (Phase 2) | ERC-8004 Rust twin. `roko-serve` uses `sol!` ABI bindings instead. |
+| `reputation_registry.rs` | **SHELVE** (Phase 2) | Same as agent_registry. Reputation-informed routing is CLAUDE.md open item 13. |
+| `validation_registry.rs` | **SHELVE** (Phase 2) | ERC-8004 Rust twin. No runtime caller; serve uses ABI bindings. |
+| `isfr.rs` (IsfrRegistry clearing) | **SHELVE** (Phase 2) | Keeper submits rates but does NOT run on-chain clearing rounds (needs daeji finality). |
+| `trace_rank.rs` | **SHELVE** (Phase 2) | Awaits reputation_registry wiring + attestation data. CLAUDE.md open item 13. |
+| `collusion.rs` | **SHELVE** (Phase 2) | Phase 2 analytics. No attestation data source wired. |
+| `nelson_siegel.rs` | **SHELVE** (Phase 2) | Useful for multi-tenor ISFR rates; no rate source today. |
+| `futures_market.rs` | **SHELVE** (Phase 2) | No on-chain clearing house wired. Phase 2 DeFi. |
+| `gate/mev_gate.rs` | **SHELVE** (Phase 2) | Not in 7-rung pipeline. Add when mempool data source available. |
+| `gate/tx_sim_gate.rs` | **SHELVE** (Phase 2) | Same status as mev_gate. |
+| `gate/wallet_gate.rs` | **SHELVE** (Phase 2) | Same status as mev_gate. |
+| `heartbeat_ext.rs` | **SHELVE** (Phase 2) | No runtime caller. Wire when SleepwalkerConfig becomes a first-class policy. |
+
+See `.roko/GAPS.md` "E11-T05" section for extended rationale per module.
+
+---
+
 ## 12. Acceptance Criteria
 
 | Criterion | Verification |

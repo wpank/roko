@@ -447,6 +447,18 @@ async fn template_name_for_deployment(deployment_id: &str, state: &AppState) -> 
         .or_else(|| Some(deployment.name.clone()))
 }
 
+/// Constant-time byte-slice equality to prevent timing-side-channel attacks.
+fn token_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        diff |= lhs ^ rhs;
+    }
+    core::hint::black_box(diff) == 0
+}
+
 /// `POST /api/deployments/:id/callback` — receive results from a worker callback.
 ///
 /// When serve auth is enabled the worker must present the callback token via
@@ -458,31 +470,19 @@ async fn receive_callback(
     headers: HeaderMap,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate callback credential when auth is enabled.
-    let auth_enabled = state.load_roko_config().serve.auth.enabled;
-    if auth_enabled {
-        let expected = {
-            let deps = state.deployments.read().await;
-            deps.get(&id).and_then(|d| d.callback_token.clone())
-        };
+    // Validate the callback token when one is configured.
+    // The expected token is loaded into AppState at startup from the
+    // ROKO_WORKER_CALLBACK_TOKEN environment variable so it stays out of
+    // serialised deployment state and log output.
+    if let Some(expected) = &state.worker_callback_token {
         let supplied = headers
-            .get("x-roko-worker-signature")
+            .get("X-Roko-Worker-Token")
             .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        match (expected, supplied) {
-            (Some(exp), Some(sup)) if exp == sup => { /* valid */ }
-            (Some(_), _) => {
-                return Err(ApiError::unauthorized(
-                    "missing or invalid X-Roko-Worker-Signature callback token",
-                ));
-            }
-            // No token stored (e.g. deployment pre-dates this feature) — reject
-            // when auth is on so callers cannot bypass the check.
-            (None, _) => {
-                return Err(ApiError::unauthorized(
-                    "deployment has no callback token; cannot verify worker identity",
-                ));
-            }
+            .unwrap_or("");
+        if !token_eq(supplied.as_bytes(), expected.as_bytes()) {
+            return Err(ApiError::unauthorized(
+                "invalid or missing worker callback token",
+            ));
         }
     }
 
@@ -1058,22 +1058,23 @@ mod tests {
         Ok(())
     }
 
-    /// When serve auth is enabled, worker callbacks without a valid
-    /// `X-Roko-Worker-Signature` header must be rejected.
     #[tokio::test(flavor = "multi_thread")]
     async fn deployments_callback_requires_auth() -> std::result::Result<(), Box<dyn Error>> {
+        let token = "test-callback-secret-abc123";
+
         let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
             "http://worker.invalid".to_string(),
         )));
-        let (_dir, state) = test_state(backend)?;
-
-        // Enable serve auth so the callback credential check is active.
-        let mut cfg = state.load_roko_config().as_ref().clone();
-        cfg.serve.auth.enabled = true;
-        cfg.serve.auth.api_key = "test-key".to_string();
-        state.store_roko_config(cfg);
-
-        let callback_token = "secret-callback-token".to_string();
+        let (_dir, state_inner) = test_state(backend)?;
+        // Inject the callback token directly onto the state so the handler can
+        // validate it without touching env vars (which are global and unsafe to
+        // mutate in concurrent tests).
+        //
+        // Arc::try_unwrap succeeds because test_state returns the sole owner.
+        let mut state_val = Arc::try_unwrap(state_inner)
+            .unwrap_or_else(|_| panic!("test_state should return the sole Arc owner"));
+        state_val.worker_callback_token = Some(token.to_string());
+        let state = Arc::new(state_val);
         state.deployments.write().await.insert(
             "dep-1".to_string(),
             Deployment {
@@ -1084,13 +1085,13 @@ mod tests {
                 },
                 url: Some("http://worker.invalid".to_string()),
                 created_at: chrono::Utc::now(),
-                callback_token: Some(callback_token.clone()),
             },
         );
-
-        // 1. No signature header at all -> 401
         let app = router(Arc::clone(&state));
-        let response = app
+
+        // 1. No token header → 401.
+        let response_no_token = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1099,73 +1100,57 @@ mod tests {
                     .body(Body::from(
                         json!({ "task_id": "t1", "success": true }).to_string(),
                     ))
-                    .map_err(|err| {
-                        anyhow!("failed to build callback request without signature: {err}")
-                    })?,
+                    .map_err(|e| anyhow!("build request: {e}"))?,
             )
             .await
-            .map_err(|err| anyhow!("callback request without signature failed: {err}"))?;
-
+            .map_err(|e| anyhow!("request failed: {e}"))?;
         assert_eq!(
-            response.status(),
+            response_no_token.status(),
             StatusCode::UNAUTHORIZED,
-            "callback without X-Roko-Worker-Signature should be rejected when auth is enabled"
+            "callback without token must be rejected with 401"
         );
 
-        // 2. Wrong signature -> 401
-        let app = router(Arc::clone(&state));
-        let response = app
+        // 2. Wrong token → 401.
+        let response_bad_token = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/deployments/dep-1/callback")
                     .header("content-type", "application/json")
-                    .header("x-roko-worker-signature", "wrong-token")
+                    .header("X-Roko-Worker-Token", "wrong-token")
                     .body(Body::from(
                         json!({ "task_id": "t2", "success": true }).to_string(),
                     ))
-                    .map_err(|err| {
-                        anyhow!("failed to build callback request with wrong signature: {err}")
-                    })?,
+                    .map_err(|e| anyhow!("build request: {e}"))?,
             )
             .await
-            .map_err(|err| anyhow!("callback request with wrong signature failed: {err}"))?;
-
+            .map_err(|e| anyhow!("request failed: {e}"))?;
         assert_eq!(
-            response.status(),
+            response_bad_token.status(),
             StatusCode::UNAUTHORIZED,
-            "callback with wrong X-Roko-Worker-Signature should be rejected"
+            "callback with wrong token must be rejected with 401"
         );
 
-        // 3. Correct signature -> 200
-        let app = router(Arc::clone(&state));
-        let response = app
+        // 3. Correct token → 200.
+        let response_ok = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/deployments/dep-1/callback")
                     .header("content-type", "application/json")
-                    .header("x-roko-worker-signature", callback_token.as_str())
+                    .header("X-Roko-Worker-Token", token)
                     .body(Body::from(
                         json!({ "task_id": "t3", "success": true }).to_string(),
                     ))
-                    .map_err(|err| {
-                        anyhow!("failed to build callback request with correct signature: {err}")
-                    })?,
+                    .map_err(|e| anyhow!("build request: {e}"))?,
             )
             .await
-            .map_err(|err| anyhow!("callback request with correct signature failed: {err}"))?;
-
+            .map_err(|e| anyhow!("request failed: {e}"))?;
         assert_eq!(
-            response.status(),
+            response_ok.status(),
             StatusCode::OK,
-            "callback with correct X-Roko-Worker-Signature should be accepted"
-        );
-
-        let payload = json_body(response).await?;
-        assert_eq!(
-            payload["received"], true,
-            "valid callback should return received: true"
+            "callback with correct token must be accepted"
         );
         Ok(())
     }

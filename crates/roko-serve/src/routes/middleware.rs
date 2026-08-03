@@ -572,6 +572,10 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
+///
+/// `"write:unclassified"` is treated identically to `"write"` so that the
+/// fallback sentinel does not change runtime behaviour — it is only detectable
+/// by the regression test.
 fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if has == "admin" {
         return true;

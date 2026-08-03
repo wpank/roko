@@ -1870,6 +1870,16 @@ pub struct RunConfig {
     /// When `None`, the runner constructs sinks from `workdir` at startup.
     /// Set explicitly to share sinks across runs or inject test doubles.
     pub obs_sinks: Option<roko_fs::FsObservabilitySinks>,
+    /// Conductor (watcher supervision) built from `[conductor.watchers.*]` in
+    /// `roko.toml`. When `Some`, the event loop registers a
+    /// [`super::conductor_adapter::ConductorRingSink`] onto the feedback facade
+    /// so conductor watchers receive signals during plan execution.
+    /// `None` means conductor supervision is off (default in tests / smoke runs).
+    pub conductor: Option<Arc<roko_conductor::Conductor>>,
+    /// Shared ring buffer populated by [`super::conductor_adapter::ConductorRingSink`]
+    /// and consumed by [`self.conductor`] during periodic supervision ticks
+    /// (E08-T04). Must be `Some` when `conductor` is `Some`.
+    pub conductor_ring: Option<super::conductor_adapter::ConductorRing>,
 }
 
 impl RunConfig {
@@ -1943,6 +1953,13 @@ impl RunConfig {
         let daimon_state = Self::daimon_state_for_workdir(&workdir);
         let safety_layer = SafetyLayer::from_config(&roko_config);
 
+        // Build the conductor from the project's [conductor.watchers.*] config so
+        // that watcher thresholds are live at runtime (not dead config). A shared
+        // ConductorRing is created here and later passed into the ConductorRingSink
+        // registered on the feedback facade inside event_loop::run.
+        let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+        let conductor_ring = super::conductor_adapter::ConductorRing::new();
+
         Self {
             layout,
             workdir,
@@ -1994,6 +2011,8 @@ impl RunConfig {
             metrics: None,
             safety_layer: Some(safety_layer),
             obs_sinks: None,
+            conductor: Some(Arc::new(conductor)),
+            conductor_ring: Some(conductor_ring),
         }
     }
 }
@@ -2038,6 +2057,8 @@ impl Default for RunConfig {
             metrics: None,
             safety_layer: None,
             obs_sinks: None,
+            conductor: None,
+            conductor_ring: None,
         }
     }
 }
@@ -2082,6 +2103,11 @@ impl std::fmt::Debug for RunConfig {
             )
             .field("output_sink", &self.output_sink)
             .field("warm_cache", &self.warm_cache)
+            .field("conductor", &self.conductor.as_ref().map(|_| ".."))
+            .field(
+                "conductor_ring",
+                &self.conductor_ring.as_ref().map(|r| r.capacity()),
+            )
             .finish()
     }
 }

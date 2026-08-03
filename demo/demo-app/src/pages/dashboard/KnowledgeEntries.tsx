@@ -9,7 +9,7 @@ import {
 import { useLiveApi } from '../../hooks/useLiveApi';
 import { getCssVar } from '../../lib/color';
 import { domainColor } from '../../lib/palette';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import DataSurface from '../../components/design/DataSurface';
 import '../../styles/table.css';
@@ -263,7 +263,7 @@ export default function KnowledgeEntries() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchEntries, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['knowledge_ingested', 'knowledge_consumed'],
     debouncedRefetch,
   );

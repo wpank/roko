@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLiveApi } from '../../hooks/useLiveApi';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import { fmtUptime } from '../../lib/format';
 import { getCssVar } from '../../lib/color';
@@ -100,7 +100,7 @@ export default function Explorer() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(refresh, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['episode', 'task_completed', 'gate_result', 'agent_spawned'],
     debouncedRefetch,
   );

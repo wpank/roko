@@ -677,6 +677,15 @@ pub enum EditTarget {
 // Helpers
 // -----------------------------------------------------------------------
 
+/// Mask a secret string value for display.
+///
+/// Returns `****` when the value is non-empty, so that `config show` never
+/// emits literal secret bytes.  Empty strings are left as-is because they
+/// convey "not configured" rather than a real secret.
+fn redact_secret(value: &str) -> &str {
+    if value.is_empty() { value } else { "****" }
+}
+
 fn print_resolved(r: &ResolvedConfig) {
     println!("effective config:");
     println!(

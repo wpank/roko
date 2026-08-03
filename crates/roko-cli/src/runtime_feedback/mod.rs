@@ -179,6 +179,21 @@ impl Default for FeedbackFacade {
     }
 }
 
+impl Clone for FeedbackFacade {
+    /// Clone the facade, carrying over the same sink instances but
+    /// resetting per-sink delivery counters.  Used by [`super::runner::event_loop`]
+    /// when augmenting a pre-built facade with additional sinks (e.g. the
+    /// conductor ring sink) without mutating a shared `Arc<FeedbackFacade>`.
+    fn clone(&self) -> Self {
+        let sinks = self
+            .sinks
+            .iter()
+            .map(|(sink, _stats)| (Arc::clone(sink), Arc::new(SinkStats::default())))
+            .collect();
+        Self { sinks }
+    }
+}
+
 impl FeedbackFacade {
     /// Empty facade — sinks added via `with_sink`.
     #[must_use]

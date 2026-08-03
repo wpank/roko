@@ -5,7 +5,7 @@
 //! - `ROKO_TEMPLATE_JSON`: Base64-encoded [`AgentTemplate`] JSON
 //! - `ROKO_CONTROL_PLANE_URL`: Optional callback URL for result reporting
 //! - `ROKO_DEPLOYMENT_ID`: Deployment identifier for callbacks
-//! - `ROKO_WORKER_CALLBACK_TOKEN`: Callback credential sent as `X-Roko-Worker-Signature`
+//! - `ROKO_WORKER_CALLBACK_TOKEN`: Shared secret sent as `X-Roko-Worker-Token` on callbacks
 //! - `PORT`: Listen port (Railway injects this)
 
 pub mod cloud;
@@ -29,7 +29,8 @@ pub struct WorkerState {
     pub control_plane_url: Option<String>,
     /// Deployment ID for callback identification.
     pub deployment_id: Option<String>,
-    /// Callback credential sent as `X-Roko-Worker-Signature` on result callbacks.
+    /// Shared secret sent as `X-Roko-Worker-Token` with every callback request.
+    /// Validated by the control plane's `receive_callback` handler.
     pub callback_token: Option<String>,
     /// Server start time.
     pub started_at: std::time::Instant,

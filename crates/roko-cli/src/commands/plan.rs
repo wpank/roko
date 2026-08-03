@@ -468,6 +468,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 // Best-effort directory creation — the sinks' own
                 // `create_dir_all` will retry on first append.
                 let _ = std::fs::create_dir_all(layout.learn_dir());
+
+                // Build the conductor from [conductor.watchers.*] config before
+                // roko_config is moved into the RunConfig Arc. A shared ring is
+                // created here and registered on the feedback facade below so
+                // conductor supervision receives events during plan execution.
+                let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+                let conductor_ring = roko_cli::runner::conductor_adapter::ConductorRing::new();
+
                 let feedback_facade = std::sync::Arc::new(
                     roko_cli::runtime_feedback::FeedbackFacade::new()
                         .with_sink(std::sync::Arc::new(
@@ -485,6 +493,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                         roko_neuro::KnowledgeStore::for_workdir(&wd),
                                     ),
                                 )),
+                        ))
+                        .with_sink(std::sync::Arc::new(
+                            roko_cli::runner::conductor_adapter::ConductorRingSink::new(
+                                conductor_ring.clone(),
+                            ),
                         )),
                 );
 
@@ -570,6 +583,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     warm_cache: true,
                     metrics: Some(metrics.clone()),
                     obs_sinks: None,
+                    conductor: Some(std::sync::Arc::new(conductor)),
+                    conductor_ring: Some(conductor_ring),
                 };
 
                 // Optionally spawn the approval TUI.

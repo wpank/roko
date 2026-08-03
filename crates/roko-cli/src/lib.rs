@@ -87,12 +87,9 @@ pub mod layer_check;
 pub mod learning_helpers;
 pub mod model_selection;
 pub mod oneshot;
-// orchestrate.rs is the legacy 21K-line engine. It is retained on disk for
-// reference but no longer compiled by default. The v2 event_loop.rs in
-// runner/ is the sole execution engine. See task 056 for the convergence
-// rationale.
-#[cfg(feature = "legacy-orchestrate")]
-pub mod orchestrate;
+// orchestrate.rs was the legacy 21K-line engine. Deleted in E12-T07.
+// The v2 event_loop.rs in runner/ is the sole execution engine.
+// The feature flag is retained for cfg-gate compile compatibility (E12-T08 removes it).
 pub mod output_format;
 pub mod pipe;
 pub mod plan;
@@ -152,8 +149,7 @@ pub use episode::EpisodePolicy;
 pub use inject::{InjectKind, InjectRequest};
 pub use layer_check::LayerViolation;
 pub use oneshot::{OneshotMode, OneshotResult};
-#[cfg(feature = "legacy-orchestrate")]
-pub use orchestrate::{OrchestrationReport, PlanRunReport, PlanRunner};
+// orchestrate re-exports removed in E12-T07 (module deleted).
 pub use pipe::{PipeInput, PipeMode, stdin_is_tty};
 pub use plan::{Plan, PlanSummary, PlanTask};
 pub use repl::{ReplCommand, ReplMode, WorkspaceContext};

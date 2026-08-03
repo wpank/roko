@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useEventStreamContext } from '../contexts/EventStreamContext';
+import { useState, useMemo, useCallback } from 'react';
+import { useServerEventSubscription } from './useEventStream';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,75 +64,68 @@ const MAX_HANDOFFS = 20;
  * active, and AgentCompleted marks it done or error.
  */
 export function useAgentHandoffs(): UseAgentHandoffsResult {
-  const { manager } = useEventStreamContext();
   const [handoffs, setHandoffs] = useState<HandoffEntry[]>([]);
 
-  useEffect(() => {
-    if (!manager) return;
+  useServerEventSubscription(
+    ['AgentSpawned', 'AgentCompleted', 'TaskAssigned'],
+    useCallback((event: Record<string, unknown>) => {
+      const e = event as { type: string };
 
-    const unsub = manager.subscribe(
-      ['AgentSpawned', 'AgentCompleted', 'TaskAssigned'],
-      (event: unknown) => {
-        const e = event as { type: string };
+      if (e.type === 'AgentSpawned') {
+        const ev = event as unknown as AgentSpawnedEvent;
+        const entry: HandoffEntry = {
+          id: `handoff-${ev.agent_name}-${Date.now()}`,
+          from: { name: 'orchestrator', role: 'dispatcher', status: 'working' },
+          to: { name: ev.agent_name, role: ev.role, status: 'idle' },
+          status: 'pending',
+          label: `Spawning ${ev.agent_name}`,
+          taskId: ev.task_id,
+          timestamp: Date.now(),
+        };
+        setHandoffs((prev) => {
+          const next = [...prev, entry];
+          return next.length > MAX_HANDOFFS ? next.slice(-MAX_HANDOFFS) : next;
+        });
+      }
 
-        if (e.type === 'AgentSpawned') {
-          const ev = event as AgentSpawnedEvent;
-          const entry: HandoffEntry = {
-            id: `handoff-${ev.agent_name}-${Date.now()}`,
-            from: { name: 'orchestrator', role: 'dispatcher', status: 'working' },
-            to: { name: ev.agent_name, role: ev.role, status: 'idle' },
-            status: 'pending',
-            label: `Spawning ${ev.agent_name}`,
-            taskId: ev.task_id,
-            timestamp: Date.now(),
-          };
-          setHandoffs((prev) => {
-            const next = [...prev, entry];
-            return next.length > MAX_HANDOFFS ? next.slice(-MAX_HANDOFFS) : next;
-          });
-        }
+      if (e.type === 'TaskAssigned') {
+        const ev = event as unknown as TaskAssignedEvent;
+        setHandoffs((prev) =>
+          prev.map((h) => {
+            if (h.to.name === ev.agent_name && h.status === 'pending') {
+              return {
+                ...h,
+                status: 'active' as const,
+                label: ev.task_id,
+                to: { ...h.to, status: 'working' as const },
+              };
+            }
+            return h;
+          }),
+        );
+      }
 
-        if (e.type === 'TaskAssigned') {
-          const ev = event as TaskAssignedEvent;
-          setHandoffs((prev) =>
-            prev.map((h) => {
-              if (h.to.name === ev.agent_name && h.status === 'pending') {
-                return {
-                  ...h,
-                  status: 'active' as const,
-                  label: ev.task_id,
-                  to: { ...h.to, status: 'working' as const },
-                };
-              }
-              return h;
-            }),
-          );
-        }
-
-        if (e.type === 'AgentCompleted') {
-          const ev = event as AgentCompletedEvent;
-          setHandoffs((prev) =>
-            prev.map((h) => {
-              if (
-                h.to.name === ev.agent_name &&
-                (h.status === 'active' || h.status === 'pending')
-              ) {
-                return {
-                  ...h,
-                  status: ev.success ? ('done' as const) : ('error' as const),
-                  to: { ...h.to, status: 'done' as const },
-                  from: { ...h.from, status: 'idle' as const },
-                };
-              }
-              return h;
-            }),
-          );
-        }
-      },
-    );
-
-    return unsub;
-  }, [manager]);
+      if (e.type === 'AgentCompleted') {
+        const ev = event as unknown as AgentCompletedEvent;
+        setHandoffs((prev) =>
+          prev.map((h) => {
+            if (
+              h.to.name === ev.agent_name &&
+              (h.status === 'active' || h.status === 'pending')
+            ) {
+              return {
+                ...h,
+                status: ev.success ? ('done' as const) : ('error' as const),
+                to: { ...h.to, status: 'done' as const },
+                from: { ...h.from, status: 'idle' as const },
+              };
+            }
+            return h;
+          }),
+        );
+      }
+    }, []),
+  );
 
   const activeHandoff = useMemo(() => {
     for (let i = handoffs.length - 1; i >= 0; i--) {

@@ -100,7 +100,7 @@ export default function SharePage() {
     }
     (async () => {
       try {
-        const r = await get<Receipt>(`/api/share/${token}`);
+        const r = await get<Receipt>(`/api/shared/${token}`);
         setReceipt(r);
       } catch {
         setError(true);

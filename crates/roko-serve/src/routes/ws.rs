@@ -25,6 +25,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ws", get(ws_upgrade))
         .route("/roko-ws", get(ws_upgrade))
+        .route("/ws/agents", get(ws_upgrade))
 }
 
 /// Per-frame and per-message ceilings applied to every WebSocket upgrade.

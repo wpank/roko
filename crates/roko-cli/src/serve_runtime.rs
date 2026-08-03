@@ -628,6 +628,7 @@ fn build_runner_config(
         output_sink: Arc::new(crate::runner::output_sink::NoopSink),
         warm_cache: true,
         metrics: None,
+        obs_sinks: None,
     }
 }
 

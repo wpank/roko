@@ -1887,7 +1887,7 @@ fn normalize_entry_for_ingest(entry: KnowledgeEntry) -> KnowledgeEntry {
     let entry = normalize_entry_tier(entry);
     #[cfg(feature = "hdc")]
     {
-        return ensure_hdc_vector(entry);
+        ensure_hdc_vector(entry)
     }
     #[cfg(not(feature = "hdc"))]
     {

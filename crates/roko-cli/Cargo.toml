@@ -12,13 +12,8 @@ workspace = true
 
 [features]
 ## Enable the legacy orchestrate.rs plan runner (the pre-WorkflowEngine path).
-default = ["legacy-runner-v2"]
+default = []
 legacy-orchestrate = []
-## Guards integration tests that exercise the Runner v2 plan executor
-## (`--engine runner-v2`). The CLI binary itself uses a runtime flag,
-## not this feature gate, to select the engine. Runner v2 code is always
-## compiled; this only affects `tests/` cfg guards.
-legacy-runner-v2 = []
 
 [[bin]]
 name = "roko"
@@ -40,7 +35,7 @@ roko-gate = { path = "../roko-gate" }
 roko-orchestrator = { path = "../roko-orchestrator" }
 roko-dreams = { path = "../roko-dreams" }
 roko-daimon = { path = "../roko-daimon" }
-roko-neuro = { path = "../roko-neuro" }
+roko-neuro = { path = "../roko-neuro", features = ["hdc"] }
 roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-runtime = { path = "../roko-runtime" }
@@ -67,6 +62,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 tracing = { workspace = true }
+tracing-appender = "0.2"
 tracing-subscriber = { workspace = true, features = ["json", "env-filter"] }
 axum = { workspace = true }
 tower = { workspace = true }

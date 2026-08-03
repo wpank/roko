@@ -1866,6 +1866,10 @@ pub struct RunConfig {
     /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
     /// When `None`, safety checks are skipped (tests, bare smoke runs).
     pub safety_layer: Option<SafetyLayer>,
+    /// Filesystem-backed observability sinks (traces + tool metrics).
+    /// When `None`, the runner constructs sinks from `workdir` at startup.
+    /// Set explicitly to share sinks across runs or inject test doubles.
+    pub obs_sinks: Option<roko_fs::FsObservabilitySinks>,
 }
 
 impl RunConfig {
@@ -1989,6 +1993,7 @@ impl RunConfig {
             http_event_sink: None,
             metrics: None,
             safety_layer: Some(safety_layer),
+            obs_sinks: None,
         }
     }
 }
@@ -2032,6 +2037,7 @@ impl Default for RunConfig {
             warm_cache: true,
             metrics: None,
             safety_layer: None,
+            obs_sinks: None,
         }
     }
 }

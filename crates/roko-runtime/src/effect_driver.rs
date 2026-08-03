@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::event_bus::emit_runtime_event;
+use crate::pipeline_state::{CommitOutcome, PipelineInput};
 pub use roko_core::RuntimeEvent;
 pub use roko_core::foundation::{
     AffectPolicy, ChatMessage, DispatchModulation, GateReport, MessageRole, ModelCallRequest,
@@ -18,10 +20,6 @@ use roko_core::foundation::{
     CachePolicy, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict, ModelCaller,
     PromptAssembler, PromptSpec, ShellGateCommand, TokenBudget,
 };
-use roko_gate::GateRegistry;
-
-use crate::event_bus::emit_runtime_event;
-use crate::pipeline_state::{CommitOutcome, PipelineInput};
 
 /// Fallible result type used by the effect driver.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -696,13 +694,25 @@ async fn count_changed_files(workdir: &std::path::Path) -> u32 {
     }
 }
 
-/// Resolve a gate name to its rung index through the shared gate registry.
+/// Resolve a gate name to its rung index via a local static mapping.
+///
+/// This mirrors the canonical rung assignments from `roko_gate::GateRegistry`
+/// without pulling in the concrete `roko-gate` crate as a runtime dependency.
 ///
 /// Rungs 0-4 are deterministic (compile, clippy, test, diff, fmt).
 /// Rung 5 is heuristic (custom/shell). Rung 6 is judge (LLM-based).
 /// Returns u8::MAX for unknown gate names so they sort last and get heuristic confidence.
 fn rung_for_gate_name(name: &str) -> u8 {
-    GateRegistry::new().rung_for_name(name).unwrap_or(u8::MAX)
+    match name {
+        "compile" | "compile:cargo" => 0,
+        "clippy" | "clippy:cargo" => 1,
+        "test" | "test:cargo" => 2,
+        "diff" | "diff:git" => 3,
+        "fmt" | "fmt:cargo" | "format" => 4,
+        "custom" | "custom:shell" | "shell" => 5,
+        "judge" | "llm-judge" => 6,
+        _ => u8::MAX,
+    }
 }
 
 /// Generate a short unique ID for agent instances.

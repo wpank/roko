@@ -18,12 +18,14 @@ use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
+use roko_core::tool::MetricsSink as _;
+use roko_core::tool::trace::{ToolTraceEvent, TraceSink};
 use roko_core::{AgentRole, ContentHash, PhaseKind, PlanPhase};
 use roko_daimon::{
     AffectEngine as _, AffectEvent, DispatchParams, SomaticSignal, StrategyCoordinates,
     TaskStrategyObservation,
 };
-use roko_fs::RokoLayout;
+use roko_fs::{FsObservabilitySinks, RokoLayout};
 use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classification};
 use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
@@ -1014,6 +1016,9 @@ struct RunContext<'a> {
     /// Playbook IDs per attempt key — populated at dispatch, consumed on gate
     /// terminal to call `PlaybookStore::record_outcome`.
     task_playbook_ids: &'a mut HashMap<String, Vec<String>>,
+    /// E07-T04: Knowledge IDs per attempt key — populated at dispatch,
+    /// consumed on gate terminal to reinforce entries via KnowledgeStore.
+    task_knowledge_ids: &'a mut HashMap<String, Vec<String>>,
 }
 
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
@@ -1130,6 +1135,22 @@ pub async fn run(
     if let Err(err) = std::fs::create_dir_all(&neuro_dir) {
         warn!(error = %err, "failed to create neuro directory");
     }
+
+    // ── Filesystem observability sinks (traces + tool metrics) ────────────
+    //
+    // Reuse the sinks from RunConfig if the caller pre-built them (e.g.,
+    // serve shares its AppState sinks). Otherwise construct from workdir
+    // with best-effort directory initialization — a failed init must not
+    // abort the run.
+    let obs_sinks: Option<FsObservabilitySinks> = config.obs_sinks.clone().or_else(|| {
+        match FsObservabilitySinks::initialized_for_workdir(&config.workdir) {
+            Ok(sinks) => Some(sinks),
+            Err(err) => {
+                debug!(error = %err, "observability sinks init failed (best-effort)");
+                None
+            }
+        }
+    });
 
     // ── Strict resume validation + JSONL recovery ─────────────────────────
     //
@@ -1517,6 +1538,11 @@ pub async fn run(
     let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<String>> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
+    // Per-task trace IDs for the observability trace sink. Each
+    // plan_id/task_id combination gets one trace that spans the full
+    // agent dispatch. Keyed by the attempt key string.
+    let mut active_trace_ids: HashMap<String, roko_core::tool::trace::TraceId> = HashMap::new();
+
     // Track prompt section diagnostics per attempt so gate completions can
     // build SectionOutcomeRecords joining section presence to pass/fail.
     let mut section_diagnostics: HashMap<String, PromptDiagnostics> = HashMap::new();
@@ -1530,6 +1556,11 @@ pub async fn run(
     // "{plan_id}:{task_id}:{attempt}"). Populated at dispatch time from prompt
     // diagnostics so the gate terminal handler can call record_outcome.
     let mut task_playbook_ids: HashMap<String, Vec<String>> = HashMap::new();
+
+    // E07-T04: Knowledge IDs injected per task attempt (keyed by attempt key).
+    // Populated at dispatch time, consumed on gate terminal to reinforce
+    // entries via KnowledgeStore so the demurrage balance loop has positive income.
+    let mut task_knowledge_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     // skip_enrichment is a plan-level DAG phase control: when true, the plan
     // transitions directly from "started" to "implementing", bypassing the
@@ -1890,6 +1921,84 @@ pub async fn run(
                                 agent_id: format!("{}/{}", state.plan_id, state.current_task),
                                 chunk: text.clone(),
                             });
+                        }
+                        _ => {}
+                    }
+                }
+
+                // ── Filesystem observability sinks (trace + tool metrics) ──
+                if let Some(ref sinks) = obs_sinks {
+                    let attempt_key = event_attempt.key();
+                    match &event {
+                        AgentEvent::ToolCall { id: _, name } => {
+                            let trace_id = *active_trace_ids
+                                .entry(attempt_key)
+                                .or_insert_with(make_obs_trace_id);
+                            sinks.trace_sink.append(
+                                trace_id,
+                                ToolTraceEvent::Custom {
+                                    name: format!("tool_call:{name}"),
+                                    data: serde_json::json!({
+                                        "plan_id": event_plan_id,
+                                        "task_id": event_task_id,
+                                        "tool": name,
+                                    }),
+                                    at_ms: now_unix_ms(),
+                                },
+                            );
+                        }
+                        AgentEvent::ToolOutput { id: _, output } => {
+                            if let Some(&trace_id) = active_trace_ids.get(&attempt_key) {
+                                sinks.trace_sink.append(
+                                    trace_id,
+                                    ToolTraceEvent::Custom {
+                                        name: "tool_output".into(),
+                                        data: serde_json::json!({
+                                            "plan_id": event_plan_id,
+                                            "task_id": event_task_id,
+                                            "output_len": output.len(),
+                                        }),
+                                        at_ms: now_unix_ms(),
+                                    },
+                                );
+                            }
+                        }
+                        AgentEvent::TurnCompleted {
+                            total_cost_usd,
+                            num_turns,
+                            ..
+                        } => {
+                            // Record a per-task aggregate metrics snapshot.
+                            let key = roko_core::tool::MetricsKey {
+                                tool: "agent_turn".into(),
+                                model: state.agent_model.clone(),
+                                role: roko_core::agent::AgentRole::Implementer,
+                                format: roko_core::tool::ToolFormat::AnthropicBlocks,
+                            };
+                            let metrics = roko_core::tool::ToolMetrics {
+                                samples: num_turns.unwrap_or(1) as u32,
+                                ..Default::default()
+                            };
+                            sinks.metrics_sink.record(&key, &metrics);
+
+                            // Close the trace for this attempt.
+                            if let Some(trace_id) = active_trace_ids.remove(&attempt_key) {
+                                sinks.trace_sink.append(
+                                    trace_id,
+                                    ToolTraceEvent::Custom {
+                                        name: "turn_completed".into(),
+                                        data: serde_json::json!({
+                                            "plan_id": event_plan_id,
+                                            "task_id": event_task_id,
+                                            "cost_usd": total_cost_usd,
+                                            "num_turns": num_turns,
+                                            "tokens_in": state.tokens_in,
+                                            "tokens_out": state.tokens_out,
+                                        }),
+                                        at_ms: now_unix_ms(),
+                                    },
+                                );
+                            }
                         }
                         _ => {}
                     }
@@ -2866,6 +2975,27 @@ pub async fn run(
                     }
                 }
 
+                // ── E07-T04: Knowledge reinforcement ────────────────────────
+                // Reinforce knowledge entries that were surfaced in this
+                // task's prompt context. Gate pass gets a Gated signal;
+                // failure still records a Retrieved signal. Errors are
+                // logged and never fail the task.
+                {
+                    let attempt_key = completion_attempt.key();
+                    if let Some(k_ids) = task_knowledge_ids.remove(&attempt_key) {
+                        let workdir = config.workdir.clone();
+                        let gate_passed = completion.passed;
+                        feedback_tasks.spawn(async move {
+                            let store = KnowledgeStore::for_workdir(&workdir);
+                            crate::knowledge_helpers::reinforce_knowledge_on_completion(
+                                &store,
+                                &k_ids,
+                                gate_passed,
+                            );
+                        });
+                    }
+                }
+
                 if completion.passed && completion.task_id.is_empty() {
                     // The post-implementation gate is plan-level: it proves the
                     // current aggregate worktree, not an individual task. Do not
@@ -3510,6 +3640,7 @@ pub async fn run(
                         baseline_gate_failures: &mut baseline_gate_failures,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
+                        task_knowledge_ids: &mut task_knowledge_ids,
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
@@ -6898,6 +7029,13 @@ async fn dispatch_action(
                 if !prompt_diagnostics.playbook_ids.is_empty() {
                     ctx.task_playbook_ids
                         .insert(attempt_key.clone(), prompt_diagnostics.playbook_ids.clone());
+                }
+                // E07-T04: Store knowledge IDs so gate terminal can reinforce entries.
+                if !prompt_diagnostics.knowledge_ids.is_empty() {
+                    ctx.task_knowledge_ids.insert(
+                        attempt_key.clone(),
+                        prompt_diagnostics.knowledge_ids.clone(),
+                    );
                 }
                 ctx.section_diagnostics
                     .insert(attempt_key, prompt_diagnostics.clone());
@@ -11619,6 +11757,31 @@ fn classify_report_task(
     }
 }
 
+/// Generate a random trace ID for filesystem observability sinks.
+fn make_obs_trace_id() -> roko_core::tool::trace::TraceId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    let h1 = hasher.finish();
+    // Produce a second half by folding with a constant.
+    "roko-runner-trace".hash(&mut hasher);
+    let h2 = hasher.finish();
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&h1.to_le_bytes());
+    bytes[8..].copy_from_slice(&h2.to_le_bytes());
+    roko_core::tool::trace::TraceId::from_bytes(bytes)
+}
+
+/// Current UTC timestamp as milliseconds since epoch.
+#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0_i64, |d| d.as_millis() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12199,6 +12362,7 @@ slug = "fixture-model"
         let mut baseline_gate_failures = HashMap::new();
         let mut diagnostics = HashMap::new();
         let mut playbooks = HashMap::new();
+        let mut knowledge_ids = HashMap::new();
         let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
         let mut ctx = RunContext {
             executor: &mut executor,
@@ -12229,6 +12393,7 @@ slug = "fixture-model"
             baseline_gate_failures: &mut baseline_gate_failures,
             section_diagnostics: &mut diagnostics,
             task_playbook_ids: &mut playbooks,
+            task_knowledge_ids: &mut knowledge_ids,
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),

@@ -50,7 +50,6 @@ use roko_learn::{
     playbook::Playbook,
 };
 use roko_neuro::{KnowledgeKind, KnowledgeQueryHit, KnowledgeTier};
-use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite},
@@ -74,87 +73,6 @@ use crate::{
         ToolCallKind, ToolCallStatus, UsageInfo,
     },
 };
-
-// ── Claude CLI stream-json wire types (kept for claude_cli fallback) ──
-
-/// Top-level stream event from `claude --output-format stream-json`.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClaudeStreamEvent {
-    System(ClaudeSystemEvent),
-    Assistant(ClaudeAssistantEvent),
-    Tool(ClaudeToolEvent),
-    Result(ClaudeResultEvent),
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeSystemEvent {
-    #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
-    pub model: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeAssistantEvent {
-    pub message: ClaudeMessage,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeMessage {
-    #[serde(default)]
-    pub content: Vec<ClaudeContentBlock>,
-    #[serde(default)]
-    pub usage: Option<ClaudeUsage>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClaudeContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String },
-    Thinking { thinking: String },
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeToolEvent {
-    #[serde(default, rename = "tool_name")]
-    pub _tool_name: String,
-    #[serde(default)]
-    pub tool_use_id: String,
-    #[serde(default)]
-    pub content: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeResultEvent {
-    #[serde(default)]
-    pub total_cost_usd: Option<f64>,
-    #[serde(default, rename = "is_error")]
-    pub _is_error: bool,
-    #[serde(default)]
-    pub usage: Option<ClaudeUsage>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct ClaudeUsage {
-    #[serde(default)]
-    pub input_tokens: u64,
-    #[serde(default)]
-    pub output_tokens: u64,
-    #[serde(default)]
-    pub cache_creation_input_tokens: u64,
-    #[serde(default)]
-    pub cache_read_input_tokens: u64,
-}
 
 // ── Error types ──────────────────────────────────────────────────────
 
@@ -4274,7 +4192,7 @@ async fn run_shell_command(
 }
 
 /// Maps a Claude tool name to an ACP tool call kind.
-#[allow(dead_code)]
+#[cfg(test)]
 fn tool_name_to_kind(name: &str) -> ToolCallKind {
     match name {
         "Edit" | "MultiEdit" => ToolCallKind::Edit,

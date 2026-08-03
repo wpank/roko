@@ -39,7 +39,7 @@ struct Cli {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
+            EnvFilter::try_from_env("ROKO_LOG")
                 .unwrap_or_else(|_| EnvFilter::new("agent_relay=info,tower_http=info")),
         )
         .init();

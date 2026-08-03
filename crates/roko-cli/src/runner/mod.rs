@@ -32,6 +32,7 @@
 pub mod agent_events;
 pub mod agent_stream;
 pub mod attempt_ownership;
+pub mod conductor_adapter;
 pub mod deadlines;
 pub mod event_loop;
 pub mod extension_loader;

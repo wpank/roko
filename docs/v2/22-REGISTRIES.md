@@ -17,6 +17,30 @@
 
 ---
 
+### Implementation maturity and daeji boundary
+
+> **Read this before treating any section below as runtime-live.**
+>
+> The chain surface is split across two repositories:
+>
+> - **roko-chain** (`crates/roko-chain/`) is the **client/runtime integration side**: signs
+>   transactions, reads state via alloy RPC, deploys contracts. Only the **ISFR vertical**
+>   (isfr_keeper, isfr_sources, isfr_oracle_submit, isfr_bootstrap, alloy_impl, block_watcher)
+>   is wired into the runtime today.
+>
+> - **daeji** is a **separate devnet repo** that owns node software, BFT consensus,
+>   precompiles, and verified-state. Design-only docs live at `tmp/agentchain-v2/02-daeji/`
+>   in this repo. Do NOT build node-side or consensus features in roko.
+>
+> The registries, witness primitives, gossip, job market, and event indexer described below
+> are **spec-level designs**. Corresponding Rust modules exist in `roko-chain/src/` as tested
+> primitives, but they have **zero runtime callers** and are shelved as Phase 2+ pending
+> daeji devnet maturity. Solidity contracts are authored and forge-tested but only the ISFR
+> subset plus the 6-contract base set are deployed by any path today. See `.roko/GAPS.md`
+> for per-module WIRE/SHELVE verdicts.
+
+---
+
 ## 2. ERC-8004 Agent Identity
 
 A standard transferable NFT representing an agent's on-chain identity. Every agent participating in on-chain activities (arenas, bounties, clearing, knowledge publication) must have an ERC-8004 identity.
@@ -711,6 +735,12 @@ impl Cell for WitnessVerifyCell {
     }
 }
 ```
+
+> **Maturity note**: `witness.rs` in roko-chain contains the Rust implementation of
+> `ChainWitnessEngine`, `witness_on_chain`, and `verify_on_chain` as tested primitives.
+> These have **zero runtime callers** today and are **shelved as Phase 2+**. Witness
+> anchoring requires a daeji witness registry contract to be deployed. The `WitnessAnchorCell`
+> and `WitnessVerifyCell` shown above are spec-level designs, not wired cells.
 
 ---
 

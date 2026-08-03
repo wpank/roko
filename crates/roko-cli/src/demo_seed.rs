@@ -122,7 +122,6 @@ struct DemoKnowledgeEntrySpec {
     catalytic_score: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct SeedEnvelopeRef<'a, T> {
     source: &'static str,
@@ -130,7 +129,6 @@ struct SeedEnvelopeRef<'a, T> {
     item: &'a T,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct SeededCascadeObservation {
     source: &'static str,
@@ -143,14 +141,12 @@ struct SeededCascadeObservation {
     timestamp: DateTime<Utc>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct SeededCascadeModelStats {
     trials: u64,
     successes: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct SeededCascadeSnapshot {
     source: &'static str,

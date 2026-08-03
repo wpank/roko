@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 roko-core = { path = "../roko-core" }
+roko-primitives = { path = "../roko-primitives" }
 serde = { workspace = true, features = ["derive"] }
 regex = { workspace = true }
 roko-lang-go = { path = "../roko-lang-go" }

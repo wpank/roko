@@ -33,6 +33,12 @@ pub struct PrivyClaims {
     /// Audience claim.
     #[serde(default)]
     pub aud: Option<serde_json::Value>,
+    /// Workspace / organisation membership claim.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Role within the workspace (e.g. `"admin"`, `"member"`, `"viewer"`).
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// A single JWK from the JWKS response.

@@ -2657,6 +2657,8 @@ impl ServeAuthLayer {
             api_key: self.api_key.unwrap_or(defaults.api_key),
             api_keys: defaults.api_keys,
             privy_app_id: defaults.privy_app_id,
+            privy_workspace_id: defaults.privy_workspace_id,
+            privy_allowed_roles: defaults.privy_allowed_roles,
         }
     }
 }

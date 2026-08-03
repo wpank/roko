@@ -238,6 +238,73 @@ pub enum CognitiveEvent {
     Failure { message: String },
     /// Prompt execution stopped because the token budget was exhausted.
     MaxTokens,
+    /// A spawned tool loop is requesting permission from the parent session.
+    ///
+    /// The reply channel carries a [`PermissionDecision`]; the parent loop
+    /// should call [`PermissionReplyChannel::reply`] exactly once.  If the
+    /// channel is dropped without a reply, the tool loop should treat it as
+    /// `PermissionDecision::Reject` (fail-closed).
+    PermissionRequest {
+        /// What the tool loop wants to do and why.
+        payload: PermissionRequestPayload,
+        /// One-shot reply channel back to the requesting tool loop.
+        reply: PermissionReplyChannel,
+    },
+}
+
+/// Parameters describing what a tool loop wants permission to do.
+#[derive(Debug, Clone)]
+pub struct PermissionRequestPayload {
+    /// The kind of action that needs authorisation (e.g. `FileEdit`, `TerminalCommand`).
+    pub action: PermissionAction,
+    /// Short human-readable title for the permission dialog (e.g. "Edit src/main.rs").
+    pub title: String,
+    /// Longer description of why the action is needed.
+    pub detail: String,
+}
+
+/// Clone-safe wrapper around a `oneshot::Sender<PermissionDecision>`.
+///
+/// Because `oneshot::Sender` is not `Clone`, the sender is held behind
+/// `Arc<Mutex<Option<…>>>`.  The first call to [`reply`](Self::reply)
+/// takes the sender and sends the decision.  Subsequent calls (or calls
+/// after a clone) return `false`.
+#[derive(Debug, Clone)]
+pub struct PermissionReplyChannel {
+    inner: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PermissionDecision>>>>,
+}
+
+impl PermissionReplyChannel {
+    /// Create a new reply channel from a raw oneshot sender.
+    pub fn new(sender: tokio::sync::oneshot::Sender<PermissionDecision>) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(Some(sender))),
+        }
+    }
+
+    /// Send a decision back to the requesting tool loop.
+    ///
+    /// Returns `true` if the decision was delivered, `false` if the
+    /// channel was already consumed or the receiver was dropped.
+    pub fn reply(&self, decision: PermissionDecision) -> bool {
+        let sender = self
+            .inner
+            .lock()
+            .expect("PermissionReplyChannel mutex poisoned")
+            .take();
+        match sender {
+            Some(tx) => tx.send(decision).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Returns `true` if the reply channel has already been consumed.
+    pub fn is_consumed(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("PermissionReplyChannel mutex poisoned")
+            .is_none()
+    }
 }
 
 // ── Stream events → editor ───────────────────────────────────────────
@@ -4255,8 +4322,9 @@ fn map_event_to_update(event: CognitiveEvent) -> SessionUpdate {
         CognitiveEvent::McpStatus { statuses } => SessionUpdate::McpStatusUpdate { statuses },
         CognitiveEvent::Complete { .. }
         | CognitiveEvent::Failure { .. }
-        | CognitiveEvent::MaxTokens => {
-            unreachable!("terminal cognitive events are handled before update mapping")
+        | CognitiveEvent::MaxTokens
+        | CognitiveEvent::PermissionRequest { .. } => {
+            unreachable!("terminal/async cognitive events are handled before update mapping")
         }
     }
 }
@@ -5609,5 +5677,71 @@ mod tests {
 
         let chain = build_provenance(&knowledge_hits, &[], "small", workdir).await;
         assert!(chain.is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_request_event_carries_reply_channel() {
+        // Create a oneshot channel for the permission decision.
+        let (tx, rx) = tokio::sync::oneshot::channel::<PermissionDecision>();
+
+        // Build the PermissionRequest event.
+        let payload = PermissionRequestPayload {
+            action: PermissionAction::FileEdit,
+            title: "Edit src/main.rs".into(),
+            detail: "Replace println with tracing macro".into(),
+        };
+        let reply = PermissionReplyChannel::new(tx);
+        let event = CognitiveEvent::PermissionRequest {
+            payload: payload.clone(),
+            reply: reply.clone(),
+        };
+
+        // Verify the event carries the expected payload fields.
+        match &event {
+            CognitiveEvent::PermissionRequest {
+                payload: p,
+                reply: r,
+            } => {
+                assert_eq!(p.action, PermissionAction::FileEdit);
+                assert_eq!(p.title, "Edit src/main.rs");
+                assert_eq!(p.detail, "Replace println with tracing macro");
+                assert!(!r.is_consumed(), "reply channel should not be consumed yet");
+            }
+            _ => panic!("expected PermissionRequest variant"),
+        }
+
+        // Send the event through an mpsc channel (simulating the real flow).
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel::<CognitiveEvent>(4);
+        event_tx.send(event).await.expect("send event");
+        drop(event_tx);
+
+        let received = event_rx.recv().await.expect("receive event");
+        match received {
+            CognitiveEvent::PermissionRequest { reply, .. } => {
+                // Parent loop replies with Allow.
+                assert!(reply.reply(PermissionDecision::Allow));
+                // Second reply should fail (already consumed).
+                assert!(!reply.reply(PermissionDecision::Reject));
+                assert!(reply.is_consumed());
+            }
+            _ => panic!("expected PermissionRequest variant"),
+        }
+
+        // The tool loop receives the decision.
+        let decision = rx.await.expect("receive decision");
+        assert_eq!(decision, PermissionDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn permission_reply_channel_dropped_without_reply_gives_recv_error() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<PermissionDecision>();
+        let reply = PermissionReplyChannel::new(tx);
+
+        // Drop without replying — simulates parent loop crash / timeout.
+        drop(reply);
+
+        // The receiver should get an error (fail-closed).
+        assert!(rx.await.is_err(), "dropped reply channel must produce RecvError");
     }
 }

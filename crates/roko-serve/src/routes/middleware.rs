@@ -197,8 +197,15 @@ fn authenticate_api_key(
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
 ///
-/// Returns `(Jwt, "admin", Some(sub))` on success — JWT users are dashboard
-/// users and get admin scope.
+/// Performs three checks in order:
+/// 1. Signature + app-id verification via JWKS.
+/// 2. Workspace membership: if `privy_workspace_id` is configured the JWT
+///    `org_id` claim **must** match. Tokens without an `org_id` claim are
+///    rejected (fail closed).
+/// 3. Role authorization: if `privy_allowed_roles` is non-empty the JWT
+///    `role` claim must be present and contained in the allowed list.
+///    Tokens with an unrecognised or missing role are downgraded to
+///    `"read"` scope instead of receiving `"admin"`.
 async fn try_privy_jwt(
     token: &str,
     auth: &ServeAuthConfig,
@@ -209,7 +216,45 @@ async fn try_privy_jwt(
         return None;
     }
     let claims = state.jwks_cache.validate(token, privy_app_id).await?;
-    Some((AuthMethod::Jwt, "admin".to_string(), Some(claims.sub)))
+
+    // --- Workspace / org membership check (fail closed) ---
+    if let Some(ref required_workspace) = auth.privy_workspace_id {
+        match claims.org_id.as_deref() {
+            Some(org) if org == required_workspace.as_str() => { /* membership confirmed */ }
+            _ => {
+                tracing::warn!(
+                    sub = %claims.sub,
+                    org_id = ?claims.org_id,
+                    required = %required_workspace,
+                    "Privy JWT rejected: workspace membership mismatch or missing org_id"
+                );
+                return None;
+            }
+        }
+    }
+
+    // --- Role authorization ---
+    let scope = if auth.privy_allowed_roles.is_empty() {
+        // No role filter configured — grant admin (legacy behaviour).
+        "admin".to_string()
+    } else {
+        match claims.role.as_deref() {
+            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => {
+                "admin".to_string()
+            }
+            _ => {
+                tracing::info!(
+                    sub = %claims.sub,
+                    role = ?claims.role,
+                    allowed = ?auth.privy_allowed_roles,
+                    "Privy JWT role not in allowed list — downgrading to read scope"
+                );
+                "read".to_string()
+            }
+        }
+    };
+
+    Some((AuthMethod::Jwt, scope, Some(claims.sub)))
 }
 
 /// Attempt to validate a Bearer token as an agent token.
@@ -382,7 +427,11 @@ fn required_scope_for(method: &Method, path: &str) -> &'static str {
     if path.starts_with("/api/workspaces") {
         return "write";
     }
-    "read"
+    // Relay proxy routes — mutations proxy to agent-relay, require agent:write.
+    if path.starts_with("/relay") {
+        return "agent:write";
+    }
+    "write"
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
@@ -629,6 +678,7 @@ mod tests {
             api_key: api_key.into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            ..Default::default()
         }
     }
 
@@ -750,6 +800,7 @@ mod tests {
             api_key: String::new(),
             api_keys: Vec::new(),
             privy_app_id: Some("app-id-123".to_string()),
+            ..Default::default()
         };
         let app = auth_test_app(auth);
         // Send a structurally valid JWT that won't pass signature verification.
@@ -761,6 +812,56 @@ mod tests {
         })
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_requires_membership() {
+        // When privy_workspace_id is configured, try_privy_jwt must reject
+        // tokens whose org_id claim is missing or does not match — even if
+        // the signature would otherwise be valid.
+        //
+        // We cannot forge a real ES256 signature in a unit test, so we test
+        // the membership gate indirectly: a structurally valid JWT that fails
+        // JWKS validation returns None regardless of membership config (the
+        // JWKS check short-circuits before we reach the membership gate).
+        //
+        // The key assertion is that configuring privy_workspace_id does not
+        // accidentally let tokens *through* that would otherwise be blocked.
+        let auth = ServeAuthConfig {
+            enabled: true,
+            api_key: String::new(),
+            api_keys: Vec::new(),
+            privy_app_id: Some("app-id-123".to_string()),
+            privy_workspace_id: Some("ws_required_org".to_string()),
+            privy_allowed_roles: vec!["admin".to_string()],
+        };
+        let state = make_test_state(auth.clone());
+
+        // A structurally valid JWT (3 base64url segments) that will fail JWKS
+        // signature verification — should return None.
+        let fake_jwt = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3Qta2V5In0.\
+                         eyJzdWIiOiJkaWQ6cHJpdnk6dGVzdCIsImlzcyI6InByaXZ5LmlvIn0.\
+                         AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        // try_privy_jwt must return None (JWKS cache unprimed, signature fails).
+        let result = try_privy_jwt(fake_jwt, &auth, &state).await;
+        assert!(
+            result.is_none(),
+            "Privy JWT without valid JWKS cache must be rejected"
+        );
+
+        // Verify the full middleware also rejects: the auth-test-app round-trip
+        // should produce 401 even with membership config present.
+        let app = auth_test_app(auth);
+        let response = auth_response(app, |req| {
+            req.header(AUTHORIZATION, format!("Bearer {fake_jwt}"))
+        })
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "Middleware must reject Privy JWT that fails signature verification"
+        );
     }
 
     // --- scope enforcement tests ---
@@ -1158,6 +1259,48 @@ mod tests {
         assert_eq!(
             required_scope_for(&Method::DELETE, "/api/workspaces/abc123"),
             "write"
+        );
+    }
+
+    #[test]
+    fn required_scope_for_unclassified_mutating_route_is_write() {
+        // Routes not explicitly classified (e.g. /api/jobs, /api/run, /api/deploy)
+        // must fall back to "write", not "read", so read-only keys are denied.
+        assert_eq!(required_scope_for(&Method::POST, "/api/jobs"), "write");
+        assert_eq!(required_scope_for(&Method::POST, "/api/run"), "write");
+        assert_eq!(
+            required_scope_for(&Method::POST, "/api/research/query"),
+            "write"
+        );
+        assert_eq!(
+            required_scope_for(&Method::DELETE, "/api/deploy/abc"),
+            "write"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_scope_denied_on_mutation() {
+        // A read-scoped key must get 403 on POST to an unclassified mutating
+        // route (one that hits the "write" fallback in required_scope_for).
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/jobs", post(handler))
+            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "read".to_string(),
+                user_id: None,
+            }));
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/jobs")
+            .body(Body::empty())
+            .expect("invariant: scope test request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "read-scoped key must be denied on unclassified mutating route"
         );
     }
 

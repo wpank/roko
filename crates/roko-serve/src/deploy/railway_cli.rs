@@ -102,6 +102,7 @@ impl DeployBackend for RailwayCliBackend {
             status: DeploymentStatus::Creating,
             url: None,
             created_at: Utc::now(),
+            callback_token: None,
         })
     }
 

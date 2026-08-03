@@ -30,7 +30,7 @@ use roko_cli::serve_runtime::RokoCliRuntime;
 use roko_cli::tui::App;
 use roko_cli::{
     Config, DashboardScaffold, EditTarget, InjectKind, InjectRequest, PageId, PipeMode, Plan,
-    ReplMode, RepoRegistry, SessionStatus, Source, WizardInputs, config_cmd, load_resolved_config,
+    RepoRegistry, SessionStatus, Source, WizardInputs, config_cmd, load_resolved_config,
     run_init_wizard, run_once,
 };
 pub use roko_cli::{model_selection, repo_context};
@@ -2097,7 +2097,7 @@ fn main() {
         _ => resolve_workdir(&cli),
     };
 
-    // File layer: ALWAYS write to .roko/roko.log (append mode).
+    // File layer: write to .roko/roko.log with day-based rotation.
     // In TUI mode, use serve-tui.log to keep it separate from the main log.
     let log_dir = workdir.join(".roko");
     let log_file_name = if tui_mode {
@@ -2105,19 +2105,17 @@ fn main() {
     } else {
         "roko.log"
     };
-    let log_path = log_dir.join(log_file_name);
     let _ = std::fs::create_dir_all(&log_dir);
-    let file_layer = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .ok()
-        .map(|file| {
-            tracing_subscriber::fmt::layer()
-                .with_target(true)
-                .with_ansi(false)
-                .with_writer(std::sync::Mutex::new(file))
-        });
+    // Day-based rolling appender: writes roko.log.YYYY-MM-DD (or serve-tui.log.YYYY-MM-DD)
+    // so long-running sessions do not grow a single unbounded file.
+    let rolling_appender = tracing_appender::rolling::daily(&log_dir, log_file_name);
+    let (non_blocking_writer, _log_guard) = tracing_appender::non_blocking(rolling_appender);
+    let file_layer = Some(
+        tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_ansi(false)
+            .with_writer(non_blocking_writer),
+    );
 
     // Stderr layer: only when --verbose, RUST_LOG is set, or raw_logs mode.
     // In TUI mode, never write to stderr (would corrupt ratatui rendering).
@@ -2293,9 +2291,14 @@ fn tracing_log_directive() -> String {
     tracing_log_directive_from(env::var("RUST_LOG").ok(), env::var("ROKO_LOG").ok())
 }
 
+/// Resolve the tracing log directive from environment variables.
+///
+/// `ROKO_LOG` is the authoritative verbosity knob for all roko-owned binaries
+/// (roko-cli, roko-chain-watcher, agent-relay). `RUST_LOG` is accepted as a
+/// compatibility fallback when `ROKO_LOG` is not set.
 fn tracing_log_directive_from(rust_log: Option<String>, roko_log: Option<String>) -> String {
-    rust_log
-        .or(roko_log)
+    roko_log
+        .or(rust_log)
         .unwrap_or_else(|| "roko=info".to_string())
 }
 
@@ -2885,13 +2888,22 @@ fn resolve_plans_dir(workdir: &Path, explicit: Option<&Path>) -> PathBuf {
 /// environment variable is consulted. This runs once immediately after
 /// `Cli::parse()` so every downstream consumer sees the resolved value.
 ///
-/// | Env var          | CLI flag       | Behaviour                                  |
-/// |------------------|----------------|---------------------------------------------|
-/// | `ROKO_MODEL`     | `--model`      | Override when `--model` not given            |
-/// | `ROKO_EFFORT`    | `--effort`     | Override when `--effort` not given            |
-/// | `ROKO_ROLE`      | `--role`       | Override when `--role` not given              |
-/// | `ROKO_QUIET`     | `--quiet`      | Enable quiet if "1" or "true"                |
-/// | `ROKO_LOG_FORMAT` | `--log-format` | Override when default "text" is in effect     |
+/// ## Logging
+///
+/// `ROKO_LOG` is the authoritative verbosity variable for all roko-owned
+/// binaries (roko-cli, roko-chain-watcher, agent-relay). It uses
+/// `tracing_subscriber::EnvFilter` syntax (e.g. `ROKO_LOG=roko=debug`).
+/// `RUST_LOG` is accepted as a compatibility fallback when `ROKO_LOG` is
+/// not set, but standalone binaries read `ROKO_LOG` exclusively.
+///
+/// | Env var           | CLI flag       | Behaviour                                  |
+/// |-------------------|----------------|---------------------------------------------|
+/// | `ROKO_LOG`        | `--verbose`    | Authoritative log verbosity for all roko binaries |
+/// | `ROKO_MODEL`      | `--model`      | Override when `--model` not given            |
+/// | `ROKO_EFFORT`     | `--effort`     | Override when `--effort` not given            |
+/// | `ROKO_ROLE`       | `--role`       | Override when `--role` not given              |
+/// | `ROKO_QUIET`      | `--quiet`      | Enable quiet if "1" or "true"                |
+/// | `ROKO_LOG_FORMAT`  | `--log-format` | Override when default "text" is in effect     |
 fn apply_env_overrides(cli: &mut Cli) {
     if cli.model.is_none() {
         if let Ok(val) = env::var("ROKO_MODEL") {
@@ -5047,15 +5059,21 @@ mod tests {
     }
 
     #[test]
-    fn tracing_log_directive_prefers_rust_log() {
+    fn tracing_log_directive_prefers_roko_log() {
+        // ROKO_LOG is authoritative; when both are set, ROKO_LOG wins.
         let directive = tracing_log_directive_from(Some("roko=debug".into()), Some("info".into()));
-        assert_eq!(directive, "roko=debug");
+        assert_eq!(directive, "info");
     }
 
     #[test]
-    fn tracing_log_directive_falls_back_to_roko_log_and_default() {
-        let directive = tracing_log_directive_from(None, Some("roko=trace".into()));
+    fn tracing_log_directive_falls_back_to_rust_log_and_default() {
+        // Falls back to RUST_LOG when ROKO_LOG is absent.
+        let directive = tracing_log_directive_from(Some("roko=trace".into()), None);
         assert_eq!(directive, "roko=trace");
+
+        // Falls back to ROKO_LOG when present and RUST_LOG absent.
+        let directive2 = tracing_log_directive_from(None, Some("roko=trace".into()));
+        assert_eq!(directive2, "roko=trace");
 
         let default_directive = tracing_log_directive_from(None, None);
         assert_eq!(default_directive, "roko=info");

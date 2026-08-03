@@ -1007,7 +1007,7 @@ mod tests {
             if !episode.success {
                 episode
                     .gate_verdicts
-                    .push(roko_learn::episode_logger::GateVerdict::new(
+                    .push(roko_learn::episode_logger::EpisodeGateVerdict::new(
                         "compile", false,
                     ));
             }

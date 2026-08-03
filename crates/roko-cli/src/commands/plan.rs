@@ -468,6 +468,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 // Best-effort directory creation — the sinks' own
                 // `create_dir_all` will retry on first append.
                 let _ = std::fs::create_dir_all(layout.learn_dir());
+
+                // Build the conductor from [conductor.watchers.*] config before
+                // roko_config is moved into the RunConfig Arc. A shared ring is
+                // created here and registered on the feedback facade below so
+                // conductor supervision receives events during plan execution.
+                let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+                let conductor_ring = roko_cli::runner::conductor_adapter::ConductorRing::new();
+
                 let feedback_facade = std::sync::Arc::new(
                     roko_cli::runtime_feedback::FeedbackFacade::new()
                         .with_sink(std::sync::Arc::new(
@@ -485,6 +493,11 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                                         roko_neuro::KnowledgeStore::for_workdir(&wd),
                                     ),
                                 )),
+                        ))
+                        .with_sink(std::sync::Arc::new(
+                            roko_cli::runner::conductor_adapter::ConductorRingSink::new(
+                                conductor_ring.clone(),
+                            ),
                         )),
                 );
 
@@ -538,6 +551,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
                     clippy_enabled: roko_config.gates.clippy_enabled,
                     skip_tests: roko_config.gates.skip_tests,
+                    safety_layer: Some(roko_agent::SafetyLayer::from_config(&roko_config)),
                     roko_config: Some(std::sync::Arc::new(roko_config.clone())),
                     extension_chain: Some(extension_chain),
                     cascade_router: Some(cascade_router),
@@ -567,7 +581,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                             as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
                     },
                     warm_cache: true,
-                    metrics: None,
+                    metrics: Some(metrics.clone()),
+                    obs_sinks: None,
+                    conductor: Some(std::sync::Arc::new(conductor)),
+                    conductor_ring: Some(conductor_ring),
                 };
 
                 // Optionally spawn the approval TUI.
@@ -658,6 +675,21 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 }
                 join_approval_tui_thread(approval_tui_handle.take());
                 let v2_report = v2_result?;
+
+                // Dump the metric registry to Prometheus exposition format
+                // so post-mortem operators (or a scrape sidecar) can read it.
+                // Best-effort: a failed write must not fail the run.
+                {
+                    let metrics_dir = layout.root().join("metrics");
+                    let _ = std::fs::create_dir_all(&metrics_dir).map_err(|e| {
+                        tracing::debug!("create metrics dir: {e}");
+                    });
+                    let prom = metrics.render_prometheus();
+                    let _ =
+                        std::fs::write(metrics_dir.join("prometheus.txt"), &prom).map_err(|e| {
+                            tracing::debug!("write prometheus.txt: {e}");
+                        });
+                }
 
                 if cli.json {
                     println!(

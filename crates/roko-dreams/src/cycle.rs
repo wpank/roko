@@ -21,7 +21,7 @@ use roko_agent::{Agent, AgentResult, nl_to_format::NlToFormatConverter};
 use roko_core::{Body, Context as RokoContext, Engram, Kind};
 use roko_learn::{
     cfactor::{CFactor, CFactorRegression, detect_cfactor_regression},
-    episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage},
+    episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage},
     pattern_discovery::{CrossEpisodeConsolidationReport, CrossEpisodeConsolidator},
     playbook::{Playbook, PlaybookStep, PlaybookStore},
 };
@@ -1566,7 +1566,7 @@ struct DreamEpisodeRecord {
     tokens_used: u64,
     duration_secs: f64,
     failure_reason: Option<String>,
-    gate_verdicts: Vec<GateVerdict>,
+    gate_verdicts: Vec<EpisodeGateVerdict>,
     usage: Usage,
     external_actions: Vec<Value>,
     headline: bool,
@@ -2726,7 +2726,7 @@ mod tests {
         episode
             .extra
             .insert("task_category".to_string(), json!(task_type));
-        episode.gate_verdicts = vec![GateVerdict::new("compile", success)];
+        episode.gate_verdicts = vec![EpisodeGateVerdict::new("compile", success)];
         episode
     }
 

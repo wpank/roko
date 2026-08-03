@@ -13,14 +13,14 @@ use crate::gemini::types::{
 };
 use crate::gemini::wire::{
     generate_content_endpoint, generate_content_headers, send_generate_content_request,
-    serialize_generate_content_request,
+    serialize_generate_content_request, stream_generate_content_endpoint,
 };
 #[cfg(test)]
 use crate::http::HttpPostError;
 use crate::http::{HttpPoster, ReqwestPoster};
-use crate::provider::AgentOptions;
+use crate::provider::{AgentOptions, ProviderError};
 use crate::safety::SafetyLayer;
-use crate::tool_loop::{LlmBackend, LlmError};
+use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig};
 use crate::translate::{
     BackendResponse, GeminiTranslator, RenderedTools, SessionState, Translator,
 };
@@ -177,7 +177,17 @@ impl LlmBackend for GeminiNativeBackend {
             self.timeout_ms,
         )
         .await
-        .map_err(|err| LlmError::Network(err.to_string()))?;
+        .map_err(|err| {
+            if let Some(status) = err.status {
+                if status == 429 || status == 529 {
+                    let retry_ms = err.retry_after_secs.map(|s| s * 1000);
+                    return LlmError::Provider(ProviderError::RateLimit {
+                        retry_after_ms: retry_ms,
+                    });
+                }
+            }
+            LlmError::Network(err.to_string())
+        })?;
 
         let json: Value = serde_json::from_str(&raw)
             .map_err(|err| LlmError::Backend(format!("parse response: {err}")))?;
@@ -201,8 +211,210 @@ impl LlmBackend for GeminiNativeBackend {
         Ok(response)
     }
 
+    async fn stream_turn(
+        &self,
+        messages: &[Value],
+        tools: &RenderedTools,
+        _session: &SessionState,
+        config: &TurnConfig,
+    ) -> Result<futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>, LlmError> {
+        let request = self.build_request(messages, tools)?;
+        let body = serialize_generate_content_request(&request)
+            .map_err(|err| LlmError::Backend(format!("serialize request: {err}")))?;
+
+        let endpoint = stream_generate_content_endpoint(&self.base_url, &self.model.slug);
+        let headers = generate_content_headers(&self.api_key);
+
+        let client = crate::provider::shared_http_client();
+        let mut req = client.post(&endpoint).timeout(config.request_timeout);
+        for (k, v) in &headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        let response = req
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| LlmError::Network(format!("request failed: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = crate::http::extract_retry_after_from_response(&response);
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("read body: {e}"));
+            if status.as_u16() == 429 || status.as_u16() == 529 {
+                return Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: retry_after.map(|s| s * 1000),
+                }));
+            }
+            return Err(LlmError::Network(format!(
+                "http {}: {text}",
+                status.as_u16()
+            )));
+        }
+
+        // Spawn a task that reads SSE chunks and sends StreamEvents.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, LlmError>>(64);
+
+        tokio::spawn(async move {
+            let mut response = response;
+            let mut pending = String::new();
+            let mut sent_done = false;
+
+            loop {
+                match response.chunk().await {
+                    Ok(Some(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        pending.push_str(&text);
+
+                        // Process complete SSE lines.
+                        while let Some(newline_pos) = pending.find('\n') {
+                            let line = pending[..newline_pos].trim_end().to_string();
+                            pending = pending[newline_pos + 1..].to_string();
+
+                            if line.is_empty() || line.starts_with(':') {
+                                continue;
+                            }
+
+                            let data = if let Some(rest) = line.strip_prefix("data: ") {
+                                rest
+                            } else {
+                                continue;
+                            };
+
+                            if data == "[DONE]" {
+                                if !sent_done {
+                                    sent_done = true;
+                                    let _ = tx
+                                        .send(Ok(StreamEvent::now(StreamEventKind::Done {
+                                            finish_reason: "stop".to_string(),
+                                        })))
+                                        .await;
+                                }
+                                break;
+                            }
+
+                            let Ok(chunk_json) = serde_json::from_str::<Value>(data) else {
+                                continue;
+                            };
+
+                            // Check for finish reason.
+                            if let Some(finish) = chunk_json
+                                .pointer("/candidates/0/finishReason")
+                                .and_then(Value::as_str)
+                            {
+                                let reason = match finish {
+                                    "STOP" => "stop",
+                                    "MAX_TOKENS" => "length",
+                                    other => other,
+                                };
+
+                                // Extract any text or tool calls from this final chunk
+                                // before emitting Done.
+                                emit_gemini_content_events(&chunk_json, &tx).await;
+
+                                if !sent_done {
+                                    sent_done = true;
+                                    let _ = tx
+                                        .send(Ok(StreamEvent::now(StreamEventKind::Done {
+                                            finish_reason: reason.to_string(),
+                                        })))
+                                        .await;
+                                }
+                                continue;
+                            }
+
+                            // Extract text deltas and tool calls.
+                            emit_gemini_content_events(&chunk_json, &tx).await;
+                        }
+                    }
+                    Ok(None) => {
+                        // Stream ended.
+                        if !sent_done {
+                            let _ = tx
+                                .send(Ok(StreamEvent::now(StreamEventKind::Done {
+                                    finish_reason: "stop".to_string(),
+                                })))
+                                .await;
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(LlmError::Network(format!("stream read: {e}"))))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Convert tokio mpsc::Receiver into a futures::Stream without
+        // requiring the tokio-stream crate.
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        Ok(Box::pin(stream))
+    }
+
     fn backend_id(&self) -> &'static str {
         "gemini"
+    }
+}
+
+/// Extract text and function-call events from a Gemini SSE chunk and send them.
+async fn emit_gemini_content_events(
+    chunk: &Value,
+    tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, LlmError>>,
+) {
+    let Some(parts) = chunk
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            let _ = tx
+                .send(Ok(StreamEvent::now(StreamEventKind::TextDelta(
+                    text.to_string(),
+                ))))
+                .await;
+        }
+
+        if let Some(fc) = part.get("functionCall") {
+            let name = fc
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let args = fc
+                .get("args")
+                .cloned()
+                .unwrap_or(Value::Object(Default::default()));
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let id = format!("gemini-{name}-{ts}");
+
+            let _ = tx
+                .send(Ok(StreamEvent::now(StreamEventKind::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                })))
+                .await;
+            let _ = tx
+                .send(Ok(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                    id,
+                    name,
+                    args,
+                })))
+                .await;
+        }
     }
 }
 

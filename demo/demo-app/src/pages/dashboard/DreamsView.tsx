@@ -4,7 +4,7 @@ import Mosaic, { MosaicCell } from '../../components/Mosaic';
 import DreamPhaseViz from '../../components/DreamPhaseViz';
 import { useLiveApi } from '../../hooks/useLiveApi';
 import { domainColor } from '../../lib/palette';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import './dashboard.css';
 
@@ -68,7 +68,7 @@ export default function DreamsView() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['dream_started', 'dream_completed', 'dream_phase_changed', 'knowledge_ingested', 'knowledge_consumed'],
     debouncedRefetch,
   );

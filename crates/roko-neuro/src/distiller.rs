@@ -339,7 +339,7 @@ struct EpisodePromptRecord {
     duration_secs: f64,
     failure_reason: Option<String>,
     emotional_tag: Option<roko_core::EmotionalTag>,
-    gate_verdicts: Vec<roko_learn::episode_logger::GateVerdict>,
+    gate_verdicts: Vec<roko_learn::episode_logger::EpisodeGateVerdict>,
     usage: roko_learn::episode_logger::Usage,
     external_actions: Vec<Value>,
     headline: bool,

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use roko_learn::episode_logger::{Episode, GateVerdict};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict};
 use serde::{Deserialize, Serialize};
 
 use crate::admission::{
@@ -79,7 +79,7 @@ pub struct RuntimeEpisodeObservation {
     pub gate_passed: bool,
     /// Gate verdicts observed for the episode.
     #[serde(default)]
-    pub gate_verdicts: Vec<GateVerdict>,
+    pub gate_verdicts: Vec<EpisodeGateVerdict>,
     /// Compact gate output or failure summary.
     #[serde(default)]
     pub gate_output: String,
@@ -747,7 +747,7 @@ fn context_label(observation: &RuntimeEpisodeObservation) -> String {
     )
 }
 
-fn summarize_gates(verdicts: &[GateVerdict]) -> String {
+fn summarize_gates(verdicts: &[EpisodeGateVerdict]) -> String {
     if verdicts.is_empty() {
         return "the recorded outcome".to_string();
     }

@@ -90,6 +90,11 @@ pub struct Deployment {
     pub url: Option<String>,
     /// When the deployment was created.
     pub created_at: DateTime<Utc>,
+    /// Callback credential: the worker must present this token via
+    /// `X-Roko-Worker-Signature` when posting to the `/callback` endpoint.
+    /// Never serialized to disk or API responses.
+    #[serde(skip)]
+    pub callback_token: Option<String>,
 }
 
 /// Status of a deployment.

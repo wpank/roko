@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useDataHub } from '../../app/DataHub';
 import type { RelayFeed } from '../../app/DataHub';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Oscilloscope from '../../components/canvas/Oscilloscope';
 import './FeedsDashboard.css';
@@ -66,7 +66,7 @@ export default function FeedsDashboard() {
 
   // SSE subscription — refetch catalog on agent online/offline.
   const debouncedRefetch = useDebouncedRefetch(fetchFeedCatalog, 3000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['feed_agent_online', 'feed_agent_offline'],
     useCallback(() => {
       debouncedRefetch();
@@ -74,7 +74,7 @@ export default function FeedsDashboard() {
   );
 
   // Also subscribe to feed_tick so DataHub processes them.
-  useContextEventSubscription(['feed_tick'], useCallback(() => {}, []));
+  useServerEventSubscription(['feed_tick'], useCallback(() => {}, []));
 
   const liveCount = relayFeeds.filter((f) => f.status === 'live').length;
   const totalMsgCount = relayFeeds.reduce((sum, f) => sum + f.messageCount, 0);

@@ -67,6 +67,14 @@ pub struct Verdict {
     pub error_digest: Option<String>,
     /// Wall-clock duration the gate took, in milliseconds.
     pub duration_ms: u64,
+    /// True when the gate did not run (stub / not wired). Skipped verdicts
+    /// are neutral: they count as neither pass nor fail in aggregation and
+    /// must not feed the adaptive EMA.
+    #[serde(default)]
+    pub skipped: bool,
+    /// Why the gate did not run (only meaningful when `skipped` is true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
 }
 
 impl Verdict {
@@ -82,6 +90,8 @@ impl Verdict {
             test_count: None,
             error_digest: None,
             duration_ms: 0,
+            skipped: false,
+            skip_reason: None,
         }
     }
 
@@ -97,6 +107,29 @@ impl Verdict {
             test_count: None,
             error_digest: None,
             duration_ms: 0,
+            skipped: false,
+            skip_reason: None,
+        }
+    }
+
+    /// A neutral verdict for a gate that did not run (stub / not wired).
+    ///
+    /// Skipped verdicts are neither pass nor fail: they must be excluded from
+    /// aggregate pass/fail computation and from adaptive EMA observation.
+    #[must_use]
+    pub fn skip(gate: impl Into<String>, reason: impl Into<String>) -> Self {
+        let reason_str = reason.into();
+        Self {
+            passed: false,
+            reason: reason_str.clone(),
+            gate: gate.into(),
+            score: 0.0,
+            detail: None,
+            test_count: None,
+            error_digest: None,
+            duration_ms: 0,
+            skipped: true,
+            skip_reason: Some(reason_str),
         }
     }
 

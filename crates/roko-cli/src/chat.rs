@@ -44,8 +44,8 @@ struct RunStatusResponse {
 #[derive(Debug, Deserialize)]
 struct AgentEntry {
     name: String,
-    #[allow(dead_code)]
-    pid: u32,
+    #[serde(rename = "pid")]
+    _pid: u32,
     bind: String,
 }
 

@@ -12,7 +12,7 @@
 //!
 //! - `events` — `tokio::sync::broadcast` — backpressure handled by counting
 //!   dropped subscribers, never blocking the producer.
-//! - `dashboard` — `Mutex<DashboardSnapshot>` keeping the last N events with
+//! - `dashboard` — `Mutex<ProjectionSnapshot>` keeping the last N events with
 //!   tool output truncated to 4 KB so we never store megabyte-scale payloads.
 //! - `dropped` / `coerced` — `AtomicU64` counters exposed via [`Projection::counters`].
 
@@ -121,7 +121,7 @@ pub enum ProjectionError {
 /// Bounded snapshot of the most recent projection events, used by the TUI
 /// and dashboards that need a rolling window.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DashboardSnapshot {
+pub struct ProjectionSnapshot {
     /// Last N events in publish order (oldest first).
     pub events: VecDeque<ProjectionEvent>,
 }
@@ -147,7 +147,7 @@ pub struct Projection {
     dropped: AtomicU64,
     coerced: AtomicU64,
     published: AtomicU64,
-    dashboard: Mutex<DashboardSnapshot>,
+    dashboard: Mutex<ProjectionSnapshot>,
 }
 
 impl Projection {
@@ -160,7 +160,7 @@ impl Projection {
             dropped: AtomicU64::new(0),
             coerced: AtomicU64::new(0),
             published: AtomicU64::new(0),
-            dashboard: Mutex::new(DashboardSnapshot::default()),
+            dashboard: Mutex::new(ProjectionSnapshot::default()),
         }
     }
 
@@ -176,7 +176,7 @@ impl Projection {
     }
 
     /// Snapshot of the current bounded dashboard buffer.
-    pub fn dashboard_snapshot(&self) -> DashboardSnapshot {
+    pub fn dashboard_snapshot(&self) -> ProjectionSnapshot {
         self.dashboard.lock().map(|d| d.clone()).unwrap_or_default()
     }
 

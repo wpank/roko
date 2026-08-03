@@ -1,7 +1,7 @@
 //! Regression test for cache-stable prompt prefixes across same-plan tasks.
 
 use roko_compose::templates::{PlanSlice, TaskImplInput, TaskImplTemplate};
-use roko_compose::{ContextStrategy, PromptAssembler};
+use roko_compose::{PromptSection, RolePromptTemplate};
 
 fn repeated_block(heading: &str, line: &str, count: usize) -> String {
     let mut out = String::from(heading);
@@ -9,6 +9,22 @@ fn repeated_block(heading: &str, line: &str, count: usize) -> String {
     for _ in 0..count {
         out.push_str(line);
         out.push('\n');
+    }
+    out
+}
+
+/// Concatenate sections into a prompt string (reproduces the rendering
+/// that the deleted template-level prompt assembler performed).
+fn render_sections(role_identity: &str, sections: &[PromptSection]) -> String {
+    let mut out = String::from(role_identity);
+    if !role_identity.ends_with('\n') {
+        out.push('\n');
+    }
+    for section in sections {
+        out.push_str(&section.content);
+        if !section.content.ends_with('\n') {
+            out.push('\n');
+        }
     }
     out
 }
@@ -62,9 +78,8 @@ fn build_prompt(
         ..TaskImplInput::default()
     };
 
-    PromptAssembler::new()
-        .assemble_from(&template, &input, None, ContextStrategy::Full)
-        .prompt
+    let sections = template.sections(&input);
+    render_sections(template.role_identity(), &sections)
 }
 
 #[test]

@@ -171,7 +171,9 @@ pub use process_reward::{
     AggregateMethod, ProcessRewardModel, ReasoningStep, StepVerdict, TurnSnapshot,
 };
 pub use ratchet::GateRatchet;
-pub use registry::{GateKind, GateRegistry, GateSpec, GateStatus};
+pub use registry::{
+    GateKind, GateRegistry, GateSpec, GateStatus, is_deterministic_gate, rung_for_gate_name,
+};
 pub use review_verdict::{
     ParsedReviewVerdict, ReviewParseSource, ReviewVerdict, ReviewVerdictContext,
     parse_structured_review_verdict,

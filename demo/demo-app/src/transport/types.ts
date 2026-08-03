@@ -1,72 +1,71 @@
 // -- Execution sub-events (nested inside ServerEvent::Execution) ----
+// Field names match the server's serde(rename_all = "snake_case") contract.
 export type ExecutionEvent =
   | { type: 'plan_started' }
-  | { type: 'task_started'; taskId: string; title: string; phase: string }
-  | { type: 'task_phase_changed'; taskId: string; oldPhase: string; newPhase: string }
-  | { type: 'gate_result'; taskId: string; gate: string; passed: boolean; message: string }
-  | { type: 'task_completed'; taskId: string; outcome: string }
+  | { type: 'task_started'; task_id: string; title: string; phase: string }
+  | { type: 'task_phase_changed'; task_id: string; old_phase: string; new_phase: string }
+  | { type: 'gate_result'; task_id: string; gate: string; passed: boolean; message: string }
+  | { type: 'task_completed'; task_id: string; outcome: string }
   | { type: 'plan_completed'; outcome: string; stats: Record<string, unknown> }
-  | { type: 'replan_triggered'; taskId: string; strategy: string }
+  | { type: 'replan_triggered'; task_id: string; strategy: string }
   | { type: 'watcher_alert'; watcher: string; message: string };
 
 // -- Top-level ServerEvent discriminated union ----------------------
-// 50 variants. Field names are camelCase conversions of Rust snake_case.
-// Variants with #[serde(rename = "...")] use the RENAMED value as the type tag.
+// 50 variants. Field names use the server's snake_case wire shape verbatim.
+// PascalCase type tags (Bench*, Matrix*, Swe*) use serde(rename) on the server
+// and are preserved as-is.
 export type ServerEvent =
   // Plan execution
-  | { type: 'plan_started'; planId: string }
-  | { type: 'plan_completed'; planId: string; success: boolean }
-  | { type: 'phase_transition'; planId: string; from: string; to: string }
-  | { type: 'execution'; planId: string; event: ExecutionEvent }
-  | { type: 'episode'; planId: string; taskId: string; passed: boolean }
-  | { type: 'efficiency_event'; planId: string; taskId: string;
+  | { type: 'plan_started'; plan_id: string }
+  | { type: 'plan_completed'; plan_id: string; success: boolean }
+  | { type: 'phase_transition'; plan_id: string; from: string; to: string }
+  | { type: 'execution'; plan_id: string; event: ExecutionEvent }
+  | { type: 'episode'; plan_id: string; task_id: string; passed: boolean }
+  | { type: 'efficiency_event'; plan_id: string; task_id: string;
        metric: string; value: number }
   // Task lifecycle (dashboard-facing)
-  | { type: 'task_started'; planId: string; taskId: string;
+  | { type: 'task_started'; plan_id: string; task_id: string;
        description: string }
-  | { type: 'task_completed'; planId: string; taskId: string;
+  | { type: 'task_completed'; plan_id: string; task_id: string;
        success: boolean }
-  | { type: 'task_failed'; planId: string; taskId: string; error: string;
-       gateFailure: boolean }
+  | { type: 'task_failed'; plan_id: string; task_id: string; error: string }
   // Agent lifecycle
-  | { type: 'agent_spawned'; agentId: string; role: string; model: string }
-  | { type: 'agent_output'; agentId: string; runId?: string;
+  | { type: 'agent_spawned'; agent_id: string; role: string; model: string }
+  | { type: 'agent_output'; agent_id: string; run_id?: string;
        content: string; done: boolean;
        metadata?: Record<string, unknown> }
-  | { type: 'agent_trace'; agentId: string; runId?: string;
-       turn?: number; content?: string; toolCalls?: unknown[];
+  | { type: 'agent_trace'; agent_id: string; run_id?: string;
+       content: string; tool_calls?: unknown[];
        reasoning?: string; usage?: Record<string, unknown>; done?: boolean }
-  | { type: 'agent_started'; agentId: string }
-  | { type: 'agent_stopped'; agentId: string; reason: string }
+  | { type: 'agent_started'; agent_id: string }
+  | { type: 'agent_stopped'; agent_id: string; reason: string }
   // Gate results
-  | { type: 'gate_result'; planId: string; taskId: string;
+  | { type: 'gate_result'; plan_id: string; task_id: string;
        gate: string; rung: number; passed: boolean }
   // Inference tracking
-  | { type: 'inference_started'; runId: string; requestId: string; model: string;
-       agentId: string; autoRouted: boolean }
-  | { type: 'inference_completed'; runId: string; requestId: string; model: string;
-       agentId: string; inputTokens: number; outputTokens: number;
-       costUsd: number; durationMs: number }
-  | { type: 'inference_failed'; runId: string; requestId: string; model: string;
-       agentId: string; error: string }
+  | { type: 'inference_started'; request_id: string; model: string;
+       agent_id: string; auto_routed: boolean }
+  | { type: 'inference_completed'; request_id: string; model: string;
+       agent_id: string; input_tokens: number; output_tokens: number;
+       cost_usd: number; duration_ms: number }
+  | { type: 'inference_failed'; request_id: string; model: string;
+       agent_id: string; error: string }
   // One-shot runs
-  | { type: 'run_started'; runId: string; prompt: string;
-       complexity: string }
-  | { type: 'run_completed'; runId: string; success: boolean;
-       costUsd: number; durationMs: number }
+  | { type: 'run_started'; run_id: string; prompt_preview: string }
+  | { type: 'run_completed'; run_id: string; success: boolean }
   // Knowledge
-  | { type: 'knowledge_ingested'; runId: string; entryId: string; topic: string;
-       sourceAgent: string }
-  | { type: 'knowledge_consumed'; runId: string; entryId: string; topic: string;
-       consumingAgent: string }
+  | { type: 'knowledge_ingested'; run_id: string; entry_id: string; topic: string;
+       source_agent: string }
+  | { type: 'knowledge_consumed'; run_id: string; entry_id: string; topic: string;
+       consuming_agent: string }
   // Generic operations
-  | { type: 'operation_started'; opId: string; kind: string }
-  | { type: 'operation_completed'; opId: string; kind: string;
+  | { type: 'operation_started'; op_id: string; kind: string }
+  | { type: 'operation_completed'; op_id: string; kind: string;
        success: boolean }
   // Somatic / affect
-  | { type: 'somatic_marker_fired'; planId: string; taskId: string;
-       valence: number; intensity: number; sourceEpisodes: string[];
-       strategyParam: string }
+  | { type: 'somatic_marker_fired'; plan_id: string; task_id: string;
+       valence: number; intensity: number; source_episodes: string[];
+       strategy_param: string }
   // Deployment lifecycle
   | { type: 'deployment_created'; id: string; name: string }
   | { type: 'deployment_ready'; id: string; url: string }
@@ -74,130 +73,112 @@ export type ServerEvent =
   | { type: 'deployment_torn_down'; id: string }
   // Job marketplace
   | { type: 'job_created'; job: Record<string, unknown> }
-  | { type: 'job_posted_to_candidate'; jobId: string; agentId: string;
+  | { type: 'job_posted_to_candidate'; job_id: string; agent_id: string;
        reward: string }
   | { type: 'job_updated'; job: Record<string, unknown> }
-  | { type: 'job_transitioned'; jobId: string; from: string; to: string;
-       assignedTo?: string }
-  | { type: 'job_execution_started'; jobId: string; jobType: string;
-       agentId: string }
-  | { type: 'job_progress'; jobId: string; percent: number;
+  | { type: 'job_transitioned'; job_id: string; from: string; to: string;
+       assigned_to?: string }
+  | { type: 'job_execution_started'; job_id: string; job_type: string;
+       agent_id: string }
+  | { type: 'job_progress'; job_id: string; percent: number;
        message: string }
-  | { type: 'job_agent_output'; jobId: string; agentId: string;
+  | { type: 'job_agent_output'; job_id: string; agent_id: string;
        content: string; done: boolean }
-  | { type: 'job_submitted'; jobId: string; agentId: string }
-  | { type: 'job_evaluated'; jobId: string; accepted: boolean;
+  | { type: 'job_submitted'; job_id: string; agent_id: string }
+  | { type: 'job_evaluated'; job_id: string; accepted: boolean;
        feedback: string }
-  | { type: 'job_state_changed'; jobId: string; from: string;
+  | { type: 'job_state_changed'; job_id: string; from: string;
        to: string }
   // Worker
-  | { type: 'worker_task_started'; deploymentId: string;
-       taskId: string }
-  | { type: 'worker_task_completed'; deploymentId: string;
-       taskId: string; success: boolean }
+  | { type: 'worker_task_started'; deployment_id: string;
+       task_id: string }
+  | { type: 'worker_task_completed'; deployment_id: string;
+       task_id: string; success: boolean }
   // Chain triage
-  | { type: 'chain_triage_result'; jobId: string; eventCount: number;
-       anomalyCount: number; summary: string }
+  | { type: 'chain_triage_result'; job_id: string; event_count: number;
+       anomaly_count: number; summary: string }
   // Heartbeat
-  | { type: 'heartbeat_received'; senderId: string;
-       activeTasks: number; activeAgents: number }
-  | { type: 'heartbeat'; agentId: string; blockNumber?: number }
+  | { type: 'heartbeat_received'; sender_id: string;
+       active_tasks: number; active_agents: number }
+  | { type: 'heartbeat'; agent_id: string; block_number?: number }
   // Config / strategy reload
-  | { type: 'config_reloaded'; appliedSections: string[];
-       restartRequired: string[] }
-  | { type: 'strategy_reloaded'; goalsCount: number;
-       tacticsCount: number }
+  | { type: 'config_reloaded'; applied_sections: string[];
+       restart_required: string[] }
+  | { type: 'strategy_reloaded'; goals_count: number;
+       tactics_count: number }
   // Vision loop
-  | { type: 'vision_loop_iteration'; runId: string; iteration: number;
+  | { type: 'vision_loop_iteration'; run_id: string; iteration: number;
        score: number; notes: string }
-  | { type: 'vision_loop_completed'; runId: string; iterations: number;
-       bestScore: number; stopReason: string }
+  | { type: 'vision_loop_completed'; run_id: string; iterations: number;
+       best_score: number; stop_reason: string }
   // Webhook
   | { type: 'webhook_received'; signal: Record<string, unknown> }
   // Bench (PascalCase type tags -- server uses #[serde(rename)])
-  | { type: 'BenchRunStarted'; benchId: string; suiteId: string;
-       totalTasks: number }
-  | { type: 'BenchTaskStarted'; benchId: string; taskId: string;
-       taskName: string; taskIndex: number; totalTasks: number }
-  | { type: 'BenchTaskCompleted'; benchId: string; taskId: string;
+  | { type: 'BenchRunStarted'; bench_id: string; suite_id: string;
+       total_tasks: number }
+  | { type: 'BenchTaskStarted'; bench_id: string; task_id: string;
+       task_name: string; task_index: number; total_tasks: number }
+  | { type: 'BenchTaskCompleted'; bench_id: string; task_id: string;
        result: Record<string, unknown> }
-  | { type: 'BenchLearningEvent'; benchId: string; taskId: string;
-       playbooksCreated: number; antiPatternsCreated: number;
-       totalPlaybooks: number; totalAntiPatterns: number }
-  | { type: 'BenchProgress'; benchId: string; completed: number;
-       total: number; costSoFar: number }
-  | { type: 'BenchRunCompleted'; benchId: string;
+  | { type: 'BenchLearningEvent'; bench_id: string; task_id: string;
+       playbooks_created: number; anti_patterns_created: number;
+       total_playbooks: number; total_anti_patterns: number }
+  | { type: 'BenchProgress'; bench_id: string; completed: number;
+       total: number; cost_so_far: number }
+  | { type: 'BenchRunCompleted'; bench_id: string;
        summary: Record<string, unknown> }
-  | { type: 'BenchGateVerdict'; benchId: string; taskId: string;
+  | { type: 'BenchGateVerdict'; bench_id: string; task_id: string;
        gate: string; passed: boolean; message?: string;
-       durationMs: number }
-  | { type: 'BenchTokenVelocity'; benchId: string; taskId: string;
-       tokensPerSecond: number; tokensIn: number; tokensOut: number;
-       durationMs: number }
-  | { type: 'BenchAgentOutput'; benchId: string; taskId: string;
-       agentId: string; content: string; done: boolean;
-       toolCalls?: unknown[]; reasoning?: string }
+       duration_ms: number }
+  | { type: 'BenchTokenVelocity'; bench_id: string; task_id: string;
+       tokens_per_second: number; tokens_in: number; tokens_out: number;
+       duration_ms: number }
+  | { type: 'BenchAgentOutput'; bench_id: string; task_id: string;
+       agent_id: string; content: string; done: boolean;
+       tool_calls?: unknown[]; reasoning?: string }
   // Matrix bench
-  | { type: 'MatrixRunStarted'; matrixId: string; suiteId: string;
-       laneIds: string[]; totalLanes: number }
-  | { type: 'MatrixLaneCompleted'; matrixId: string; laneId: string;
-       passRate: number; costUsd: number }
-  | { type: 'MatrixRunCompleted'; matrixId: string;
+  | { type: 'MatrixRunStarted'; matrix_id: string; suite_id: string;
+       lane_ids: string[]; total_lanes: number }
+  | { type: 'MatrixLaneCompleted'; matrix_id: string; lane_id: string;
+       pass_rate: number; cost_usd: number }
+  | { type: 'MatrixRunCompleted'; matrix_id: string;
        summary: Record<string, unknown>[] }
   // SWE-bench
-  | { type: 'SweRunStarted'; runId: string; dataset: string;
-       totalInstances: number }
-  | { type: 'SweInstanceCompleted'; runId: string; instanceId: string;
-       resolved: boolean; durationMs: number }
-  | { type: 'SweRunCompleted'; runId: string; resolved: number;
-       total: number; passRate: number }
+  | { type: 'SweRunStarted'; run_id: string; dataset: string;
+       total_instances: number }
+  | { type: 'SweInstanceCompleted'; run_id: string; instance_id: string;
+       resolved: boolean; duration_ms: number }
+  | { type: 'SweRunCompleted'; run_id: string; resolved: number;
+       total: number; pass_rate: number }
   // ISFR (interest-free secured rate)
-  | { type: 'isfr_rate_computed'; compositeBps: number; lendingBps: number;
-       structuredBps: number; fundingBps: number; stakingBps: number;
-       confidenceBps: number; sourceCount: number; timestampMs: number }
-  | { type: 'isfr_source_health_changed'; sourceId: string;
-       health: 'live' | 'stale' | 'offline'; lastRateBps: number | null }
+  | { type: 'isfr_rate_computed'; composite_bps: number; lending_bps: number;
+       structured_bps: number; funding_bps: number; staking_bps: number;
+       confidence_bps: number; source_count: number; timestamp_ms: number }
+  | { type: 'isfr_source_health_changed'; source_id: string;
+       health: 'live' | 'stale' | 'offline'; last_rate_bps: number | null }
   | { type: 'isfr_keeper_state_changed'; running: boolean }
   // Chain (block watcher)
-  | { type: 'chain_block'; number: number; hash: string; parentHash: string;
-       timestamp: number; gasUsed: number; gasLimit: number; txCount: number;
-       baseFeePerGas: number | null }
-  | { type: 'chain_tx'; blockNumber: number; txHash: string; from: string;
-       to: string | null; valueWei: string; gasUsed: number;
-       methodSig: string | null; success: boolean }
-  | { type: 'chain_contract_event'; blockNumber: number; txHash: string;
-       logIndex: number; contract: string; eventName: string;
+  | { type: 'chain_block'; number: number; hash: string; parent_hash: string;
+       timestamp: number; gas_used: number; gas_limit: number; tx_count: number;
+       base_fee_per_gas: number | null }
+  | { type: 'chain_tx'; block_number: number; tx_hash: string; from: string;
+       to: string | null; value_wei: string; gas_used: number;
+       method_sig: string | null; success: boolean }
+  | { type: 'chain_contract_event'; block_number: number; tx_hash: string;
+       log_index: number; contract: string; event_name: string;
        decoded: Record<string, unknown> }
   // Feed agents
-  | { type: 'feed_tick'; agentId: string; feedId: string; topic: string;
-       payload: unknown; timestampMs: number }
-  | { type: 'feed_agent_online'; agentId: string; name: string; feedCount: number }
-  | { type: 'feed_agent_offline'; agentId: string }
+  | { type: 'feed_tick'; agent_id: string; feed_id: string; topic: string;
+       payload: unknown; timestamp_ms: number }
+  | { type: 'feed_agent_online'; agent_id: string; name: string; feed_count: number }
+  | { type: 'feed_agent_offline'; agent_id: string }
   // System
   | { type: 'server_shutdown' }
   | { type: 'error'; message: string };
 
 /**
- * Recursively convert snake_case keys to camelCase in a plain object.
- * Arrays are traversed element-wise; non-object values pass through.
- */
-function snakeToCamelObj(obj: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(obj)) {
-    const camel = key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
-    const val = obj[key];
-    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
-      out[camel] = snakeToCamelObj(val as Record<string, unknown>);
-    } else {
-      out[camel] = val;
-    }
-  }
-  return out;
-}
-
-/**
  * Parse a raw JSON object (from SSE `e.data`) into a typed ServerEvent.
- * Converts snake_case field names to camelCase.
+ * The wire shape is already snake_case — no casing conversion is performed.
  * Returns null if the `type` field is missing.
  */
 export function parseServerEvent(
@@ -210,13 +191,10 @@ export function parseServerEvent(
       : null;
   if (!type) return null;
 
-  const payload = raw.data !== null && typeof raw.data === 'object' && !Array.isArray(raw.data)
+  // Flatten nested `data` payload (some SSE frames wrap fields under `data`).
+  const nested = raw.data !== null && typeof raw.data === 'object' && !Array.isArray(raw.data)
     ? raw.data as Record<string, unknown>
     : {};
-  const converted = snakeToCamelObj({ ...payload, ...raw });
-  // Preserve the original `type` tag (do NOT camelCase it -- Bench events
-  // use PascalCase like `BenchRunStarted`, and snake_case events like
-  // `plan_started` must stay as-is).
-  converted.type = type;
-  return converted as unknown as ServerEvent;
+  const merged = { ...nested, ...raw, type };
+  return merged as unknown as ServerEvent;
 }

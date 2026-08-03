@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::command_events::{CommandEvent, CommandOutputStream};
 use crate::state::AppState;
 use roko_core::config::schema::RokoConfig;
+use roko_core::obs::LogScrubber;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -141,7 +142,6 @@ const TERMINAL_DISABLED_HINT: &str = "Set serve.terminal_enabled=true or use --e
 #[derive(Clone, Debug, Default)]
 struct PtyServerEnv {
     serve_url: Option<String>,
-    auth_token: Option<String>,
 }
 
 impl PtyServerEnv {
@@ -150,10 +150,6 @@ impl PtyServerEnv {
 
         if let Some(serve_url) = &self.serve_url {
             cmd.env("ROKO_SERVE_URL", serve_url.as_str());
-        }
-
-        if let Some(auth_token) = &self.auth_token {
-            cmd.env("ROKO_SERVER_AUTH_TOKEN", auth_token.as_str());
         }
     }
 }
@@ -165,19 +161,6 @@ fn non_empty_env_value(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
-}
-
-fn configured_auth_token(config: &RokoConfig) -> Option<String> {
-    std::env::var("ROKO_SERVER_AUTH_TOKEN")
-        .ok()
-        .and_then(|value| non_empty_env_value(&value))
-        .or_else(|| {
-            config
-                .server
-                .auth_token
-                .as_deref()
-                .and_then(non_empty_env_value)
-        })
 }
 
 fn effective_config_port(config: &RokoConfig) -> u16 {
@@ -673,20 +656,16 @@ impl SessionManager {
     pub(crate) fn configure_server_env_from_config(&self, config: &RokoConfig) {
         let serve_url =
             serve_url_from_bind_and_port(&config.server.bind, effective_config_port(config));
-        self.configure_server_env(serve_url, configured_auth_token(config));
+        self.configure_server_env(serve_url);
     }
 
-    pub(crate) fn configure_server_env_from_addr(&self, addr: SocketAddr, config: &RokoConfig) {
-        self.configure_server_env(
-            serve_url_from_socket_addr(addr),
-            configured_auth_token(config),
-        );
+    pub(crate) fn configure_server_env_from_addr(&self, addr: SocketAddr, _config: &RokoConfig) {
+        self.configure_server_env(serve_url_from_socket_addr(addr));
     }
 
-    fn configure_server_env(&self, serve_url: String, auth_token: Option<String>) {
+    fn configure_server_env(&self, serve_url: String) {
         *self.server_env.lock() = PtyServerEnv {
             serve_url: non_empty_env_value(serve_url.trim_end_matches('/')),
-            auth_token,
         };
     }
 
@@ -1035,6 +1014,15 @@ pub async fn ws_terminal(
         .on_upgrade(move |socket| handle_ws(socket, id, state, attach_result))
 }
 
+/// Scrub secrets from PTY output bytes. Only scrubs valid UTF-8 data to avoid
+/// corrupting binary terminal escape sequences.
+fn scrub_pty_output(data: Vec<u8>, scrubber: &LogScrubber) -> Vec<u8> {
+    match std::str::from_utf8(&data) {
+        Ok(text) => scrubber.scrub(text).into_bytes(),
+        Err(_) => data, // Not valid UTF-8 — pass through unchanged
+    }
+}
+
 async fn handle_ws(
     mut socket: WebSocket,
     id: String,
@@ -1059,10 +1047,12 @@ async fn handle_ws(
     };
 
     let (mut sink, mut stream) = socket.split();
+    let scrubber = Arc::clone(&state.scrubber);
 
     // Replay scrollback snapshot before live data on reattach
     if let Some(snapshot) = scrollback_snapshot {
         for chunk in snapshot {
+            let chunk = scrub_pty_output(chunk, &scrubber);
             if sink.send(Message::Binary(chunk.into())).await.is_err() {
                 state
                     .terminal_sessions
@@ -1076,6 +1066,7 @@ async fn handle_ws(
     loop {
         tokio::select! {
             Some(data) = pty_rx.recv() => {
+                let data = scrub_pty_output(data, &scrubber);
                 if sink.send(Message::Binary(data.into())).await.is_err() {
                     break;
                 }

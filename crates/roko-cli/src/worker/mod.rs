@@ -5,6 +5,7 @@
 //! - `ROKO_TEMPLATE_JSON`: Base64-encoded [`AgentTemplate`] JSON
 //! - `ROKO_CONTROL_PLANE_URL`: Optional callback URL for result reporting
 //! - `ROKO_DEPLOYMENT_ID`: Deployment identifier for callbacks
+//! - `ROKO_WORKER_CALLBACK_TOKEN`: Shared secret sent as `X-Roko-Worker-Token` on callbacks
 //! - `PORT`: Listen port (Railway injects this)
 
 pub mod cloud;
@@ -28,6 +29,9 @@ pub struct WorkerState {
     pub control_plane_url: Option<String>,
     /// Deployment ID for callback identification.
     pub deployment_id: Option<String>,
+    /// Shared secret sent as `X-Roko-Worker-Token` with every callback request.
+    /// Validated by the control plane's `receive_callback` handler.
+    pub callback_token: Option<String>,
     /// Server start time.
     pub started_at: std::time::Instant,
     /// Last task status (for /status endpoint).
@@ -49,11 +53,13 @@ pub async fn run_worker(port: u16) -> Result<()> {
 
     let control_plane_url = std::env::var("ROKO_CONTROL_PLANE_URL").ok();
     let deployment_id = std::env::var("ROKO_DEPLOYMENT_ID").ok();
+    let callback_token = std::env::var("ROKO_WORKER_CALLBACK_TOKEN").ok();
 
     let state = Arc::new(WorkerState {
         template,
         control_plane_url,
         deployment_id,
+        callback_token,
         started_at: std::time::Instant::now(),
         last_task: tokio::sync::RwLock::new(None),
     });

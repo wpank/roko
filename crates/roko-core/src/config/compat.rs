@@ -125,6 +125,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         validation: ValidationConfig::default(),
         graduation: crate::config::graduation::GraduationConfig::default(),
         cold_storage: ColdStorageConfig::default(),
+        prompt: crate::config::schema::PromptConfig::default(),
     }
 }
 
@@ -198,7 +199,6 @@ fn convert_gates(m: &MoriConfig) -> GatesConfig {
         max_iterations: m.max_iterations.unwrap_or(d.max_iterations),
         domain_gates: HashMap::new(),
         custom_rungs: Vec::new(),
-        enable_advanced_rungs: d.enable_advanced_rungs,
     }
 }
 

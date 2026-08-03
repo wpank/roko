@@ -126,6 +126,15 @@ fn check_single_provider(
                 }
             }
         }
+        ProviderKind::GeminiCli => {
+            let command = provider.command.as_deref().unwrap_or("gemini");
+            if !binary_on_path(command) {
+                issues.push(ProviderReadinessIssue {
+                    provider_name: provider_name.to_string(),
+                    message: format!("Gemini CLI command '{command}' not found on PATH."),
+                });
+            }
+        }
         ProviderKind::AnthropicApi
         | ProviderKind::OpenAiCompat
         | ProviderKind::PerplexityApi

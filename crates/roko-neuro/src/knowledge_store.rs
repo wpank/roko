@@ -28,6 +28,11 @@ pub const QUERY_SCORE_FLOOR: f64 = 0.0;
 const ANTI_KNOWLEDGE_CONFIDENCE_FLOOR: f64 = 0.3;
 /// Multiplier applied when a knowledge entry has multiple independent sources.
 const CONFIRMATION_BOOST: f64 = 1.5;
+/// Additive weight for the balance/freshness contribution to the query score.
+///
+/// Kept small (0.1) so it acts as a tie-breaker and lift for reinforced entries
+/// without overriding keyword relevance, which can range up to ~3.0 for a strong match.
+const BALANCE_FRESHNESS_WEIGHT: f64 = 0.1;
 
 /// Death threshold: when recency factor falls below 1% of initial weight,
 /// the entry is considered "dead" and eligible for pruning.
@@ -158,6 +163,12 @@ pub struct KnowledgeQueryBreakdown {
     pub recency_factor: f64,
     /// Retrieval multiplier derived from emotional congruence and intensity.
     pub emotional_boost: f64,
+    /// Additive boost from the entry's reinforcement balance and freshness decay.
+    ///
+    /// Derived as `BALANCE_FRESHNESS_WEIGHT * freshness(now).clamp(0, 1)`.
+    /// Zero for zero-balance entries; up to `BALANCE_FRESHNESS_WEIGHT` for fully
+    /// reinforced fresh entries. Acts as a tie-breaker rather than a dominant factor.
+    pub balance_freshness_boost: f64,
     /// Optional HDC similarity contribution when the `hdc` feature is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdc_similarity: Option<f64>,
@@ -1887,7 +1898,7 @@ fn normalize_entry_for_ingest(entry: KnowledgeEntry) -> KnowledgeEntry {
     let entry = normalize_entry_tier(entry);
     #[cfg(feature = "hdc")]
     {
-        return ensure_hdc_vector(entry);
+        ensure_hdc_vector(entry)
     }
     #[cfg(not(feature = "hdc"))]
     {
@@ -2117,6 +2128,11 @@ fn score_entry_for_query(
     let confidence = effective_confidence(&entry);
     let emotional = emotional_retrieval_boost(&entry);
 
+    // NEURO-10: Additive balance/freshness boost so reinforced entries rank above
+    // otherwise equivalent zero-balance entries.  Clamped to [0, BALANCE_FRESHNESS_WEIGHT]
+    // so it acts as a tie-breaker rather than overriding keyword relevance.
+    let balance_freshness_boost = BALANCE_FRESHNESS_WEIGHT * entry.freshness(now).clamp(0.0, 1.0);
+
     #[cfg(feature = "hdc")]
     let hdc = {
         let similarity = hdc_similarity(&entry, _topic);
@@ -2130,7 +2146,8 @@ fn score_entry_for_query(
     #[cfg(not(feature = "hdc"))]
     let hdc_contribution = 0.0;
 
-    let total = keyword * confidence * recency * emotional + hdc_contribution;
+    let total =
+        keyword * confidence * recency * emotional + balance_freshness_boost + hdc_contribution;
     (total > QUERY_SCORE_FLOOR).then_some(KnowledgeQueryHit {
         entry,
         total_score: total,
@@ -2139,6 +2156,7 @@ fn score_entry_for_query(
             effective_confidence: confidence,
             recency_factor: recency,
             emotional_boost: emotional,
+            balance_freshness_boost,
             hdc_similarity: hdc,
         },
     })
@@ -4497,6 +4515,55 @@ mod tests {
                 signal
             );
         }
+    }
+
+    /// NEURO-10 / E07-T05: score_entry_for_query must rank reinforced (high-balance)
+    /// entries above otherwise identical zero-balance entries.
+    #[test]
+    fn query_prefers_high_balance_entry() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let now = Utc::now();
+
+        // Two entries with identical content, tags, confidence, and creation time.
+        // The only difference is balance: `k-rich` has been reinforced (balance=3.0),
+        // `k-zero` has never been reinforced (balance=0.0).
+        let mut k_rich = entry(
+            KnowledgeKind::Insight,
+            "k-rich",
+            "Use the retry backoff strategy for transient failures",
+            &["retry", "backoff", "failure"],
+            0.8,
+            &["ep-a"],
+            now,
+        );
+        k_rich.balance = 3.0;
+
+        let mut k_zero = entry(
+            KnowledgeKind::Insight,
+            "k-zero",
+            "Use the retry backoff strategy for transient failures",
+            &["retry", "backoff", "failure"],
+            0.8,
+            &["ep-b"],
+            now,
+        );
+        k_zero.balance = 0.0;
+
+        store.add(k_rich).expect("add k-rich");
+        store.add(k_zero).expect("add k-zero");
+
+        let results = store
+            .query("retry backoff strategy transient failure", 2)
+            .expect("query");
+
+        // Both entries must be returned.
+        assert_eq!(results.len(), 2, "both entries must be returned");
+        // The reinforced (high-balance) entry must rank first.
+        assert_eq!(
+            results[0].id, "k-rich",
+            "reinforced high-balance entry must rank above zero-balance entry"
+        );
     }
 
     #[test]

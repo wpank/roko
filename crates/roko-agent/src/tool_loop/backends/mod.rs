@@ -146,9 +146,11 @@ pub fn create_openai_compat_backend(
             }
             Ok(Arc::new(backend))
         }
-        ProviderKind::GeminiApi => Err(AgentCreationError::MissingConfig(
-            "Gemini tool-loop backend is not implemented yet".into(),
-        )),
+        ProviderKind::GeminiApi | ProviderKind::GeminiCli => {
+            Err(AgentCreationError::MissingConfig(
+                "Gemini tool-loop backend is not implemented yet".into(),
+            ))
+        }
         ProviderKind::Hermes | ProviderKind::OpenClaw => {
             // Harness adapters use OpenAI-compat as their base HTTP transport.
             create_openai_compat_backend(provider, model, poster)
@@ -191,11 +193,12 @@ pub fn create_tool_loop_backend(
                 Box::new(SharedHttpPoster { inner: poster }),
             )
         }
-        ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => {
-            Err(AgentCreationError::MissingConfig(
-                "CLI/ACP backends don't use LlmBackend — they own the tool loop".into(),
-            ))
-        }
+        ProviderKind::ClaudeCli
+        | ProviderKind::CursorAcp
+        | ProviderKind::CursorCli
+        | ProviderKind::GeminiCli => Err(AgentCreationError::MissingConfig(
+            "CLI/ACP backends don't use LlmBackend — they own the tool loop".into(),
+        )),
         ProviderKind::PerplexityApi | ProviderKind::CerebrasApi => {
             create_openai_compat_backend(provider, model, poster)
         }

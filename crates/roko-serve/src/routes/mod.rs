@@ -69,6 +69,7 @@ use axum::{Json, Router};
 use futures::stream::{self, Stream};
 use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
+use governor::state::keyed::DefaultKeyedStateStore;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use roko_core::config::ServeAuthConfig;
@@ -89,8 +90,19 @@ pub(crate) const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 /// damage of a chatty / runaway client without per-endpoint configuration.
 pub(crate) const DEFAULT_GLOBAL_RATE_PER_SEC: u32 = 100;
 
+/// Default per-key rate limit (per API key hash or per client IP).
+///
+/// 30 req/s per caller keeps a single key from dominating the global budget
+/// while still allowing reasonable burst traffic from each caller.
+pub(crate) const DEFAULT_PER_KEY_RATE_PER_SEC: u32 = 30;
+
 /// In-memory single-bucket rate limiter shared across all requests.
 type GlobalRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+
+/// Per-caller keyed rate limiter. Each distinct key (API-key hash or client IP)
+/// gets its own independent token bucket.
+type KeyedRateLimiter =
+    RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock, NoOpMiddleware>;
 
 /// Build a non-keyed governor rate limiter with a fixed `req/s` budget.
 pub(crate) fn build_global_rate_limiter(per_second: u32) -> Arc<GlobalRateLimiter> {
@@ -99,7 +111,68 @@ pub(crate) fn build_global_rate_limiter(per_second: u32) -> Arc<GlobalRateLimite
     Arc::new(RateLimiter::direct(Quota::per_second(per_second)))
 }
 
-/// Middleware: reject requests once the shared bucket has been exhausted.
+/// Build a keyed governor rate limiter with a fixed `req/s` budget per key.
+pub(crate) fn build_keyed_rate_limiter(per_second: u32) -> Arc<KeyedRateLimiter> {
+    let per_second =
+        NonZeroU32::new(per_second.max(1)).expect("rate-limit must be non-zero (max(1) above)");
+    Arc::new(RateLimiter::keyed(Quota::per_second(per_second)))
+}
+
+/// Extract a stable rate-limit key from a request.
+///
+/// Priority: authenticated API key hash > client IP > fallback constant.
+/// Raw API keys are never stored or logged; we hash them with SHA-256 (using
+/// the same `hash_api_key` helper that the auth middleware uses).
+fn rate_limit_key(req: &Request<Body>) -> String {
+    use axum::http::header::AUTHORIZATION;
+
+    // 1. Check for API key in X-Api-Key header.
+    if let Some(value) = req.headers().get("X-Api-Key") {
+        if let Ok(key) = value.to_str() {
+            if !key.is_empty() {
+                return format!("api:{}", middleware::hash_api_key(key));
+            }
+        }
+    }
+
+    // 2. Check for bearer token in Authorization header.
+    if let Some(value) = req.headers().get(AUTHORIZATION) {
+        if let Ok(value) = value.to_str() {
+            if let Some(token) = middleware::extract_bearer_token(value) {
+                return format!("api:{}", middleware::hash_api_key(token));
+            }
+        }
+    }
+
+    // 3. Fall back to client IP from X-Forwarded-For or X-Real-Ip.
+    if let Some(value) = req
+        .headers()
+        .get("X-Forwarded-For")
+        .or_else(|| req.headers().get("X-Real-Ip"))
+    {
+        if let Ok(value) = value.to_str() {
+            // X-Forwarded-For may contain a comma-separated list; take the
+            // leftmost entry (closest to the client).
+            let client_ip = value.split(',').next().unwrap_or(value).trim();
+            if !client_ip.is_empty() {
+                return format!("ip:{client_ip}");
+            }
+        }
+    }
+
+    // 4. Fall back to connected peer address (requires `ConnectInfo`).
+    if let Some(addr) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        return format!("ip:{}", addr.0.ip());
+    }
+
+    // 5. Absolute fallback — treat as a single anonymous caller.
+    "anon".to_string()
+}
+
+/// Middleware: reject requests once the shared global bucket has been exhausted.
 ///
 /// Returns 429 with a stable `code = "rate_limited"` body so clients can
 /// distinguish throttling from auth/validation errors.
@@ -114,6 +187,30 @@ pub(crate) async fn rate_limit_middleware(
             code: "rate_limited".into(),
             message: format!(
                 "global rate limit exceeded ({DEFAULT_GLOBAL_RATE_PER_SEC} requests/sec)"
+            ),
+            details: None,
+        });
+    }
+    Ok(next.run(req).await)
+}
+
+/// Middleware: per-caller rate limit keyed by API-key hash or client IP.
+///
+/// Runs before the global backstop so a single noisy caller is throttled
+/// before the shared budget is affected. Returns 429 with
+/// `code = "rate_limited"` and a message that does **not** expose the raw key.
+pub(crate) async fn keyed_rate_limit_middleware(
+    State(limiter): State<Arc<KeyedRateLimiter>>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let key = rate_limit_key(&req);
+    if limiter.check_key(&key).is_err() {
+        return Err(ApiError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "rate_limited".into(),
+            message: format!(
+                "per-caller rate limit exceeded ({DEFAULT_PER_KEY_RATE_PER_SEC} requests/sec)"
             ),
             details: None,
         });
@@ -141,9 +238,6 @@ pub fn build_router(
     let roko_config = state.load_roko_config();
     let cors = middleware::cors_layer(cors_origins, roko_config.server.unsafe_public_cors);
     let terminal_enabled = roko_config.serve.terminal_enabled;
-    let terminal_requires_auth = terminal_enabled
-        && !bind_is_loopback(&roko_config.server.bind)
-        && !roko_config.serve.acknowledge_public_risk;
 
     let api = Router::new()
         .merge(crate::openapi::routes())
@@ -207,16 +301,14 @@ pub fn build_router(
         middleware::scrub_secrets,
     ));
 
+    // Terminal routes always require auth + scope when enabled, even on loopback.
     let terminal = if terminal_enabled {
-        let terminal = crate::terminal::routes();
-        if terminal_requires_auth {
-            terminal.layer(axum::middleware::from_fn_with_state(
+        crate::terminal::routes()
+            .layer(axum::middleware::from_fn(middleware::require_scope))
+            .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
                 middleware::require_api_key,
             ))
-        } else {
-            terminal
-        }
     } else {
         crate::terminal::disabled_routes()
     };
@@ -228,6 +320,17 @@ pub fn build_router(
         ))
     } else {
         ws::routes()
+    };
+
+    let relay = if api_auth.enabled {
+        relay_proxy::routes()
+            .layer(axum::middleware::from_fn(middleware::require_scope))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                middleware::require_api_key,
+            ))
+    } else {
+        relay_proxy::routes()
     };
 
     let router = Router::new()
@@ -245,17 +348,24 @@ pub fn build_router(
         .merge(terminal)
         .nest("/api", api)
         .merge(ws)
-        .merge(relay_proxy::routes())
+        .merge(relay)
         // SPA fallback — serves embedded React app for all unmatched routes
         .fallback(crate::embedded::serve_embedded);
 
     let rate_limiter = build_global_rate_limiter(DEFAULT_GLOBAL_RATE_PER_SEC);
+    let keyed_limiter = build_keyed_rate_limiter(DEFAULT_PER_KEY_RATE_PER_SEC);
 
     router
         .layer(DefaultBodyLimit::max(DEFAULT_REQUEST_BODY_LIMIT_BYTES))
+        // Global backstop runs outermost (checked second).
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter,
             rate_limit_middleware,
+        ))
+        // Per-caller keyed limit runs innermost (checked first).
+        .layer(axum::middleware::from_fn_with_state(
+            keyed_limiter,
+            keyed_rate_limit_middleware,
         ))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
@@ -424,6 +534,8 @@ mod tests {
             api_key: "health-secret".into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
         };
 
         let (_dir, app) = build_test_router(config);
@@ -455,15 +567,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_routes_allow_loopback_without_auth() {
+    async fn terminal_routes_require_auth_even_on_loopback() {
         let mut config = RokoConfig::default();
         config.serve.terminal_enabled = true;
+        // Loopback bind, no auth configured — terminal still requires auth.
 
         let (_dir, app) = build_test_router(config);
         let (status, body) = get_json(&app, "/api/terminal/sessions").await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "sessions": [] }));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
     }
 
     #[tokio::test]
@@ -476,6 +589,8 @@ mod tests {
             api_key: "terminal-secret".into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
         };
 
         let (_dir, app) = build_test_router(config);
@@ -483,6 +598,29 @@ mod tests {
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["code"], "unauthorized");
+    }
+
+    /// Terminal routes require `terminal:write` (or `write`/`admin`) scope.
+    #[tokio::test]
+    async fn terminal_requires_scope() {
+        use crate::routes::middleware::required_scope_for;
+        use axum::http::Method;
+
+        // POST to terminal sessions requires terminal:write scope.
+        let scope = required_scope_for(&Method::POST, "/api/terminal/sessions");
+        assert_eq!(scope, "terminal:write");
+
+        // GET is read-only — scope is "read".
+        let ws_scope = required_scope_for(&Method::GET, "/ws/terminal/abc-123");
+        assert_eq!(ws_scope, "read");
+
+        // DELETE (destroy session) requires terminal:write.
+        let del_scope = required_scope_for(&Method::DELETE, "/api/terminal/sessions/abc-123");
+        assert_eq!(del_scope, "terminal:write");
+
+        // POST to terminal input requires terminal:write.
+        let input_scope = required_scope_for(&Method::POST, "/api/terminal/sessions/abc-123/input");
+        assert_eq!(input_scope, "terminal:write");
     }
 
     /// Verify that `DefaultBodyLimit::max(4 MiB)` rejects a 4 MiB + 1 byte
@@ -560,5 +698,260 @@ mod tests {
             .to_bytes();
         let json: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(json["code"], "rate_limited");
+    }
+
+    /// With `auth.enabled = true`, unauthenticated requests to `/relay/*`
+    /// (both HTTP and the WS upgrade paths) must be rejected with 401.
+    #[tokio::test]
+    async fn relay_requires_auth_when_enabled() {
+        let mut config = RokoConfig::default();
+        config.serve.auth = ServeAuthConfig {
+            enabled: true,
+            api_key: "relay-secret".into(),
+            api_keys: Vec::new(),
+            privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
+        };
+
+        let (_dir, app) = build_test_router(config);
+
+        // GET /relay/health — unauthenticated → 401
+        let (status, body) = get_json(&app, "/relay/health").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "GET /relay/health");
+        assert_eq!(body["code"], "unauthorized");
+
+        // POST /relay/agents — unauthenticated → 401
+        let req = Request::builder()
+            .method("POST")
+            .uri("/relay/agents")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST /relay/agents"
+        );
+
+        // GET /relay/agents/ws (WS upgrade path) — unauthenticated → 401
+        let (status, body) = get_json(&app, "/relay/agents/ws").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "GET /relay/agents/ws");
+        assert_eq!(body["code"], "unauthorized");
+    }
+
+    /// With `auth.enabled = false`, relay routes are accessible without a key
+    /// (behavior unchanged from before the auth gating).
+    #[tokio::test]
+    async fn relay_requires_auth_skipped_when_disabled() {
+        let mut config = RokoConfig::default();
+        config.serve.auth = ServeAuthConfig {
+            enabled: false,
+            api_key: String::new(),
+            api_keys: Vec::new(),
+            privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
+        };
+
+        let (_dir, app) = build_test_router(config);
+
+        // Without a relay URL configured, we expect 503 (not 401),
+        // proving the auth layer was skipped.
+        let (status, body) = get_json(&app, "/relay/health").await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GET /relay/health without auth"
+        );
+        assert_eq!(body["code"], "agent_relay_not_configured");
+    }
+
+    /// Two callers with different API keys get independent rate-limit budgets.
+    /// Exhausting one key's budget must not affect the other.
+    #[tokio::test]
+    async fn rate_limit_is_keyed_per_api_key() {
+        // Budget of 2 req/s per key.
+        let limiter = build_keyed_rate_limiter(2);
+        let app = axum::Router::new()
+            .route("/ping", axum::routing::get(|| async { "pong" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                keyed_rate_limit_middleware,
+            ));
+
+        // Key A: exhaust its budget (2 requests succeed, 3rd is throttled).
+        for i in 0..2 {
+            let req = Request::builder()
+                .uri("/ping")
+                .header("X-Api-Key", "key-alpha")
+                .body(Body::empty())
+                .unwrap_or_else(|_| panic!("build request A-{i}"));
+            let resp = app.clone().oneshot(req).await.expect("oneshot A");
+            assert_eq!(resp.status(), StatusCode::OK, "key-alpha request {i}");
+        }
+
+        let req = Request::builder()
+            .uri("/ping")
+            .header("X-Api-Key", "key-alpha")
+            .body(Body::empty())
+            .expect("build request A-overflow");
+        let resp = app.clone().oneshot(req).await.expect("oneshot A-overflow");
+        assert_eq!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "key-alpha must be throttled after exhausting its budget"
+        );
+
+        // Key B: still has a full budget — requests must succeed.
+        for i in 0..2 {
+            let req = Request::builder()
+                .uri("/ping")
+                .header("X-Api-Key", "key-beta")
+                .body(Body::empty())
+                .unwrap_or_else(|_| panic!("build request B-{i}"));
+            let resp = app.clone().oneshot(req).await.expect("oneshot B");
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "key-beta request {i} must not be affected by key-alpha's exhaustion"
+            );
+        }
+
+        // Verify the response body carries the correct error code.
+        let req = Request::builder()
+            .uri("/ping")
+            .header("X-Api-Key", "key-beta")
+            .body(Body::empty())
+            .expect("build request B-overflow");
+        let resp = app.oneshot(req).await.expect("oneshot B-overflow");
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(json["code"], "rate_limited");
+    }
+
+    // --- E04-T19: route-to-scope manifest ------------------------------------
+
+    /// Every mutating route registered in `build_router` must be explicitly
+    /// classified by [`middleware::ROUTE_SCOPE_MANIFEST`].
+    #[test]
+    fn route_scope_manifest_matches_router() {
+        use axum::http::Method;
+        use middleware::{ROUTE_SCOPE_MANIFEST, required_scope_for};
+
+        let router_routes: &[(&str, &str)] = &[
+            // admin
+            ("/api/api-keys", "admin"),
+            ("/api/api-keys/test-key", "admin"),
+            ("/api/secrets/ns/key", "admin"),
+            ("/api/secrets/ns/key/test", "admin"),
+            ("/api/config", "admin"),
+            ("/api/config/reload", "admin"),
+            // agent:write
+            ("/api/agents/register", "agent:write"),
+            ("/api/agents/create", "agent:write"),
+            ("/api/agents/123/stop", "agent:write"),
+            ("/api/agents/123/message", "agent:write"),
+            ("/api/agents/123/start", "agent:write"),
+            ("/api/agents/123/restart", "agent:write"),
+            ("/api/agents/123/token", "agent:write"),
+            ("/api/events/ingest", "agent:write"),
+            ("/api/events/ingest/batch", "agent:write"),
+            ("/relay/agents", "agent:write"),
+            ("/relay/agents/123", "agent:write"),
+            // plan:write
+            ("/api/plans", "plan:write"),
+            ("/api/plans/generate", "plan:write"),
+            ("/api/plans/123/execute", "plan:write"),
+            ("/api/plans/123/pause", "plan:write"),
+            ("/api/plans/123/resume", "plan:write"),
+            ("/api/plans/123/chat", "plan:write"),
+            ("/api/plans/123/estimate", "plan:write"),
+            ("/api/plans/123/tasks/t1/review", "plan:write"),
+            ("/api/prds/ideas", "plan:write"),
+            ("/api/prd/consolidate", "plan:write"),
+            ("/api/prds/consolidate", "plan:write"),
+            ("/api/prds/my-slug/draft", "plan:write"),
+            ("/api/prds/my-slug/promote", "plan:write"),
+            ("/api/prds/my-slug/plan", "plan:write"),
+            // terminal:write
+            ("/api/terminal/sessions", "terminal:write"),
+            ("/ws/terminal/abc-123", "terminal:write"),
+            // write (explicit in manifest)
+            ("/api/workspaces", "write"),
+            ("/api/workspaces/abc", "write"),
+            ("/api/jobs", "write"),
+            ("/api/jobs/match", "write"),
+            ("/api/jobs/123/assign", "write"),
+            ("/api/jobs/123/execute", "write"),
+            ("/api/jobs/123/cancel", "write"),
+            ("/api/run", "write"),
+            ("/api/runs/123/share", "write"),
+            ("/api/dream/run", "write"),
+            ("/api/deployments", "write"),
+            ("/api/deployments/123/task", "write"),
+            ("/api/deployments/123/callback", "write"),
+            ("/api/research/topic", "write"),
+            ("/api/research/enhance-prd/my-slug", "write"),
+            ("/api/research/analyze", "write"),
+            ("/api/subscriptions", "write"),
+            ("/api/subscriptions/123/enable", "write"),
+            ("/api/subscriptions/123/disable", "write"),
+            ("/api/templates", "write"),
+            ("/api/templates/my-tmpl/deploy", "write"),
+            ("/api/heartbeats", "write"),
+            ("/api/neuro/query", "write"),
+            ("/api/inference/complete", "write"),
+            ("/api/inference/batch/submit", "write"),
+            ("/api/bench/run", "write"),
+            ("/api/bench/runs", "write"),
+            ("/api/bench/runs/123/cancel", "write"),
+            ("/api/bench/suites", "write"),
+            ("/api/bench/swe/run", "write"),
+            ("/api/connectors", "write"),
+            ("/api/feeds", "write"),
+            ("/api/feeds/123", "write"),
+            ("/api/rpc", "write"),
+            ("/api/vision-loop", "write"),
+            ("/api/vision-loop/run123/cancel", "write"),
+            ("/api/team/invite", "write"),
+            ("/api/team/members/did:test", "write"),
+            ("/api/webhooks/generic", "write"),
+            ("/api/providers/openai/test", "write"),
+        ];
+
+        for (path, expected_scope) in router_routes {
+            let got = required_scope_for(&Method::POST, path);
+            assert_eq!(
+                got, *expected_scope,
+                "POST {path}: expected scope '{expected_scope}', got '{got}'"
+            );
+        }
+
+        // Read-only methods must always return "read" regardless of path.
+        for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            for (path, _) in router_routes {
+                assert_eq!(
+                    required_scope_for(&method, path),
+                    "read",
+                    "{method} {path} must be 'read'"
+                );
+            }
+        }
+
+        // No duplicate prefixes in the manifest (structural guard).
+        let prefixes: Vec<&str> = ROUTE_SCOPE_MANIFEST.iter().map(|e| e.prefix).collect();
+        for (i, p) in prefixes.iter().enumerate() {
+            assert!(
+                !prefixes[i + 1..].contains(p),
+                "duplicate manifest prefix: {p}"
+            );
+        }
     }
 }

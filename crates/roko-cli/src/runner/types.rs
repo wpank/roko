@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use roko_agent::SafetyLayer;
 use roko_core::config::TimeoutConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_core::defaults::{
@@ -159,6 +160,10 @@ pub struct GateVerdictSummary {
     #[serde(rename = "gate", alias = "gate_name")]
     pub gate_name: String,
     pub passed: bool,
+    /// True when the gate did not run (stub / not wired). Skipped verdicts
+    /// are neutral: they count as neither pass nor fail.
+    #[serde(default)]
+    pub skipped: bool,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_digest: Option<String>,
@@ -1858,6 +1863,23 @@ pub struct RunConfig {
     /// Optional metric registry for emitting gate verdict counters.
     /// Populated when running under `roko serve`.
     pub metrics: Option<std::sync::Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// Safety layer for pre- and post-dispatch checks around CLI dispatch.
+    /// When `None`, safety checks are skipped (tests, bare smoke runs).
+    pub safety_layer: Option<SafetyLayer>,
+    /// Filesystem-backed observability sinks (traces + tool metrics).
+    /// When `None`, the runner constructs sinks from `workdir` at startup.
+    /// Set explicitly to share sinks across runs or inject test doubles.
+    pub obs_sinks: Option<roko_fs::FsObservabilitySinks>,
+    /// Conductor (watcher supervision) built from `[conductor.watchers.*]` in
+    /// `roko.toml`. When `Some`, the event loop registers a
+    /// [`super::conductor_adapter::ConductorRingSink`] onto the feedback facade
+    /// so conductor watchers receive signals during plan execution.
+    /// `None` means conductor supervision is off (default in tests / smoke runs).
+    pub conductor: Option<Arc<roko_conductor::Conductor>>,
+    /// Shared ring buffer populated by [`super::conductor_adapter::ConductorRingSink`]
+    /// and consumed by [`self.conductor`] during periodic supervision ticks
+    /// (E08-T04). Must be `Some` when `conductor` is `Some`.
+    pub conductor_ring: Option<super::conductor_adapter::ConductorRing>,
 }
 
 impl RunConfig {
@@ -1929,6 +1951,14 @@ impl RunConfig {
         let timeout_secs = roko_config.timeouts.agent_dispatch().as_secs().max(1);
         let plan_timeout_secs = effective_plan_timeout_secs(&roko_config);
         let daimon_state = Self::daimon_state_for_workdir(&workdir);
+        let safety_layer = SafetyLayer::from_config(&roko_config);
+
+        // Build the conductor from the project's [conductor.watchers.*] config so
+        // that watcher thresholds are live at runtime (not dead config). A shared
+        // ConductorRing is created here and later passed into the ConductorRingSink
+        // registered on the feedback facade inside event_loop::run.
+        let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
+        let conductor_ring = super::conductor_adapter::ConductorRing::new();
 
         Self {
             layout,
@@ -1979,6 +2009,10 @@ impl RunConfig {
             projection: None,
             http_event_sink: None,
             metrics: None,
+            safety_layer: Some(safety_layer),
+            obs_sinks: None,
+            conductor: Some(Arc::new(conductor)),
+            conductor_ring: Some(conductor_ring),
         }
     }
 }
@@ -2021,6 +2055,10 @@ impl Default for RunConfig {
             output_sink: Arc::new(super::output_sink::NoopSink),
             warm_cache: true,
             metrics: None,
+            safety_layer: None,
+            obs_sinks: None,
+            conductor: None,
+            conductor_ring: None,
         }
     }
 }
@@ -2065,6 +2103,11 @@ impl std::fmt::Debug for RunConfig {
             )
             .field("output_sink", &self.output_sink)
             .field("warm_cache", &self.warm_cache)
+            .field("conductor", &self.conductor.as_ref().map(|_| ".."))
+            .field(
+                "conductor_ring",
+                &self.conductor_ring.as_ref().map(|r| r.capacity()),
+            )
             .finish()
     }
 }

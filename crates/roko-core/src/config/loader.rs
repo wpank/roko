@@ -745,6 +745,103 @@ pub fn serialize_effective(config: &RokoConfig) -> Result<String, toml::ser::Err
     toml::to_string_pretty(config)
 }
 
+/// The redaction marker replacing secret values in serialized output.
+pub const REDACTED_MARKER: &str = "[REDACTED]";
+
+/// Key name fragments that identify secret-bearing fields.
+///
+/// Any TOML leaf whose key contains one of these substrings (case-insensitive)
+/// is replaced with [`REDACTED_MARKER`]. Non-secret fields (model names, URLs
+/// without credentials, booleans, numerics) are left intact.
+const SECRET_KEY_FRAGMENTS: &[&str] = &[
+    "api_key",
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "authorization",
+    "auth_token",
+    "private_key",
+    "passphrase",
+];
+
+/// Serialize the effective config as TOML with secret values redacted.
+///
+/// Identical to [`serialize_effective`] except that leaf values whose keys
+/// match [`SECRET_KEY_FRAGMENTS`] are replaced with `[REDACTED]` before the
+/// TOML is emitted.  This is the function used by `roko config show --effective`
+/// so that resolved secrets are never leaked to stdout or logs.
+pub fn serialize_effective_redacted(config: &RokoConfig) -> Result<String, toml::ser::Error> {
+    let mut value = toml::Value::try_from(config)?;
+    redact_secrets_in_toml(&mut value);
+    Ok(toml::to_string_pretty(&value)
+        .expect("re-serialization of a value that was already valid TOML cannot fail"))
+}
+
+/// Walk a [`toml::Value`] tree in-place, replacing secret-like string leaves
+/// with [`REDACTED_MARKER`].
+///
+/// A value is considered secret when its parent key contains any of the
+/// substrings listed in [`SECRET_KEY_FRAGMENTS`] (compared case-insensitively).
+/// Tables under `extra_headers` are treated as entirely secret — every string
+/// value inside is redacted regardless of key name, because header values
+/// frequently carry bearer tokens and API keys.
+fn redact_secrets_in_toml(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, child) in table.iter_mut() {
+                redact_secrets_in_toml_keyed(key, child);
+            }
+        }
+        toml::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                redact_secrets_in_toml(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursive inner helper that knows the current key name.
+fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
+    let key_lower = key.to_ascii_lowercase();
+    let is_secret_key = SECRET_KEY_FRAGMENTS
+        .iter()
+        .any(|frag| key_lower.contains(frag));
+    let is_extra_headers = key_lower == "extra_headers";
+
+    match value {
+        toml::Value::String(_) if is_secret_key => {
+            *value = toml::Value::String(REDACTED_MARKER.to_string());
+        }
+        toml::Value::Table(table) if is_extra_headers => {
+            // Redact all string values inside extra_headers unconditionally.
+            for (_k, child) in table.iter_mut() {
+                if child.is_str() {
+                    *child = toml::Value::String(REDACTED_MARKER.to_string());
+                }
+            }
+        }
+        toml::Value::Table(table) => {
+            for (child_key, child_val) in table.iter_mut() {
+                redact_secrets_in_toml_keyed(child_key, child_val);
+            }
+        }
+        toml::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                if is_secret_key {
+                    if item.is_str() {
+                        *item = toml::Value::String(REDACTED_MARKER.to_string());
+                    }
+                } else {
+                    redact_secrets_in_toml(item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 // ─── Path discovery ─────────────────────────────────────────────────────
 
 /// Find the config file to load. Checks, in order:
@@ -1390,6 +1487,72 @@ default_model = "missing"
         let toml_str = serialize_effective(&config).unwrap();
         let reparsed: RokoConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, reparsed);
+    }
+
+    #[test]
+    fn serialize_effective_redacts_secrets() {
+        use crate::agent::ProviderKind;
+        use crate::config::schema::ProviderConfig;
+        use std::collections::HashMap;
+
+        let mut config = RokoConfig::default();
+
+        // Seed a provider with secret-bearing fields.
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer sk-live-1234".to_string(),
+        );
+        headers.insert("x-custom-token".to_string(), "tok_secret_val".to_string());
+        headers.insert("x-trace-id".to_string(), "non-secret-value".to_string());
+        config.providers.insert(
+            "test".into(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("https://api.example.com/v1".into()),
+                api_key_env: Some("sk-ant-REAL_KEY_12345".into()),
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: Some(headers),
+                max_concurrent: None,
+            },
+        );
+
+        let redacted = serialize_effective_redacted(&config).unwrap();
+
+        // Secret values must be replaced.
+        assert!(
+            !redacted.contains("sk-live-1234"),
+            "authorization header value leaked: {redacted}"
+        );
+        assert!(
+            !redacted.contains("tok_secret_val"),
+            "extra_headers value leaked: {redacted}"
+        );
+        assert!(
+            !redacted.contains("sk-ant-REAL_KEY_12345"),
+            "api_key_env value leaked: {redacted}"
+        );
+
+        // The redaction marker must appear in place of secrets.
+        assert!(
+            redacted.contains(REDACTED_MARKER),
+            "redaction marker missing from output: {redacted}"
+        );
+
+        // Non-secret values must be preserved.
+        assert!(
+            redacted.contains("https://api.example.com/v1"),
+            "base_url should not be redacted: {redacted}"
+        );
+
+        // TOML structure is still valid.
+        let reparsed: toml::Value =
+            toml::from_str(&redacted).expect("redacted output must be valid TOML");
+        assert!(reparsed.is_table());
     }
 
     #[test]

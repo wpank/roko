@@ -71,6 +71,11 @@ fn check_layers(metadata: &cargo_metadata::Metadata) -> Vec<LayerViolation> {
         };
 
         for dep in &package.dependencies {
+            // Dev-dependencies and build-dependencies do not create runtime
+            // coupling, so they cannot violate layer boundaries.
+            if dep.kind != cargo_metadata::DependencyKind::Normal {
+                continue;
+            }
             let Some(&to_layer) = layers.get(dep.name.as_str()) else {
                 continue;
             };

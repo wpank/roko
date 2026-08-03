@@ -706,14 +706,14 @@ reason to delete the gate.
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
 - [ ] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 done; 3 remaining are cross-plan supersessions deferred to E15/E47.)
-- [ ] Complete all 19 E04-security-perimeter tasks.
-- [ ] Relay HTTP and WS routes require authentication.
-- [ ] Unknown mutating routes deny by default.
-- [ ] Route/scope manifest is generated and tested.
-- [ ] Default Claude CLI execution has a proved safety boundary.
-- [ ] ACP mutation tools fail closed pending permission.
-- [ ] Scrubbing blocks secrets without issue 66 false positives.
-- [ ] Custody records detect tampering.
+- [ ] Complete all 19 E04-security-perimeter tasks. (11/19 done: T01,T02,T04,T05,T07,T09,T10,T12,T15,T17,T18 merged. Remaining: T03,T06,T08,T11,T13,T14,T16,T19.)
+- [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
+- [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
+- [ ] Route/scope manifest is generated and tested. (T19 — depends on T02+T03.)
+- [ ] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
+- [ ] ACP mutation tools fail closed pending permission. (T13→T14 chain — T12 done.)
+- [x] Scrubbing blocks secrets without issue 66 false positives. (T15 — producer-side SSE/WS/terminal scrub. T04 — config show redaction.)
+- [x] Custody records detect tampering. (T07 — SHA-256 hash chain with tamper detection test.)
 - [ ] Security adversarial integration tests pass post-merge.
 
 Plans:

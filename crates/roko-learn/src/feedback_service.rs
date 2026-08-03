@@ -4,7 +4,7 @@
 //! existing learning infrastructure as append-only efficiency JSONL events.
 
 use crate::cascade_router::CascadeRouter;
-use crate::episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage};
+use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use crate::model_call_feedback::observe_model_call_on_router;
 use crate::section_effect::SectionEffectivenessRegistry;
 use async_trait::async_trait;
@@ -655,7 +655,7 @@ impl FeedbackService {
                                 passed,
                                 ..
                             } if gate_run_id == run_id => {
-                                Some(GateVerdict::new(gate_name.clone(), *passed))
+                                Some(EpisodeGateVerdict::new(gate_name.clone(), *passed))
                             }
                             _ => None,
                         })
@@ -789,7 +789,7 @@ fn build_episode_from_workflow(
     total_cost_usd: f64,
     total_tokens: u64,
     duration_ms: u64,
-    gate_verdicts: Vec<GateVerdict>,
+    gate_verdicts: Vec<EpisodeGateVerdict>,
 ) -> Episode {
     let mut episode = Episode::new("workflow", run_id);
     episode.kind = "workflow_complete".to_string();
@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(episode.extra.get("run_id"), Some(&serde_json::json!("r1")));
         assert_eq!(
             episode.gate_verdicts,
-            vec![GateVerdict::new("compile", true)]
+            vec![EpisodeGateVerdict::new("compile", true)]
         );
     }
 

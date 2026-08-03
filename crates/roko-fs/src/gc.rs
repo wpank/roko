@@ -12,7 +12,7 @@
 //! | Runs | 7 days | Delete runs older than N days |
 //! | Archive | 30 days | Delete archive entries older than N days |
 //!
-//! Policies are fully configurable via [`RetentionPolicy`]. The engine
+//! Policies are fully configurable via [`FsRetentionPolicy`]. The engine
 //! also supports a size-based trigger: when the `.roko/` directory exceeds
 //! a configurable threshold (MB), GC is recommended.
 //!
@@ -29,7 +29,7 @@ use crate::layout::RokoLayout;
 
 /// Configurable retention limits for `.roko/` data.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetentionPolicy {
+pub struct FsRetentionPolicy {
     /// Maximum number of episode records to keep. Oldest are removed first.
     pub max_episodes: usize,
     /// Maximum age of run directories in days. Older runs are removed.
@@ -42,7 +42,7 @@ pub struct RetentionPolicy {
     pub max_cache_entries: usize,
 }
 
-impl Default for RetentionPolicy {
+impl Default for FsRetentionPolicy {
     fn default() -> Self {
         Self {
             max_episodes: 200,
@@ -50,6 +50,18 @@ impl Default for RetentionPolicy {
             max_archive_age_days: 30,
             size_threshold_mb: 500,
             max_cache_entries: 2000,
+        }
+    }
+}
+
+impl From<roko_core::retention::RetentionPolicy> for FsRetentionPolicy {
+    fn from(p: roko_core::retention::RetentionPolicy) -> Self {
+        Self {
+            max_episodes: p.max_entries,
+            max_run_age_days: p.max_run_age_days,
+            max_archive_age_days: p.max_age_days,
+            size_threshold_mb: p.size_threshold_mb,
+            max_cache_entries: p.max_cache_entries,
         }
     }
 }
@@ -92,28 +104,28 @@ impl GcReport {
     }
 }
 
-/// The GC engine. Operates on a [`RokoLayout`] under a [`RetentionPolicy`].
+/// The GC engine. Operates on a [`RokoLayout`] under a [`FsRetentionPolicy`].
 #[derive(Debug, Clone)]
 pub struct GcEngine {
     layout: RokoLayout,
-    policy: RetentionPolicy,
+    policy: FsRetentionPolicy,
 }
 
 impl GcEngine {
     /// Create a new GC engine for the given layout and policy.
     #[must_use]
-    pub const fn new(layout: RokoLayout, policy: RetentionPolicy) -> Self {
+    pub const fn new(layout: RokoLayout, policy: FsRetentionPolicy) -> Self {
         Self { layout, policy }
     }
 
     /// Access the current retention policy.
     #[must_use]
-    pub const fn policy(&self) -> &RetentionPolicy {
+    pub const fn policy(&self) -> &FsRetentionPolicy {
         &self.policy
     }
 
     /// Update the retention policy.
-    pub const fn set_policy(&mut self, policy: RetentionPolicy) {
+    pub const fn set_policy(&mut self, policy: FsRetentionPolicy) {
         self.policy = policy;
     }
 
@@ -344,11 +356,11 @@ mod tests {
         (tmp, layout)
     }
 
-    // ── RetentionPolicy ──────────────────────────────────────────────────
+    // ── FsRetentionPolicy ──────────────────────────────────────────────────
 
     #[test]
     fn gc_default_policy_has_expected_values() {
-        let p = RetentionPolicy::default();
+        let p = FsRetentionPolicy::default();
         assert_eq!(p.max_episodes, 200);
         assert_eq!(p.max_run_age_days, 7);
         assert_eq!(p.max_archive_age_days, 30);
@@ -358,7 +370,7 @@ mod tests {
 
     #[test]
     fn gc_policy_is_configurable() {
-        let p = RetentionPolicy {
+        let p = FsRetentionPolicy {
             max_episodes: 50,
             max_run_age_days: 3,
             max_archive_age_days: 14,
@@ -374,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn gc_scan_empty_layout_finds_nothing() {
         let (_tmp, layout) = setup().await;
-        let engine = GcEngine::new(layout, RetentionPolicy::default());
+        let engine = GcEngine::new(layout, FsRetentionPolicy::default());
         let report = engine.scan().await.expect("scan");
         assert!(report.is_empty());
         assert_eq!(report.candidate_count(), 0);
@@ -384,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn gc_dry_run_is_alias_for_scan() {
         let (_tmp, layout) = setup().await;
-        let engine = GcEngine::new(layout, RetentionPolicy::default());
+        let engine = GcEngine::new(layout, FsRetentionPolicy::default());
         let scan_report = engine.scan().await.expect("scan");
         let dry_report = engine.dry_run().await.expect("dry_run");
         assert_eq!(scan_report, dry_report);
@@ -393,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn gc_collect_on_empty_layout_removes_nothing() {
         let (_tmp, layout) = setup().await;
-        let engine = GcEngine::new(layout, RetentionPolicy::default());
+        let engine = GcEngine::new(layout, FsRetentionPolicy::default());
         let report = engine.collect().await.expect("collect");
         assert_eq!(report.removed_count, 0);
         assert_eq!(report.failed_count, 0);
@@ -416,7 +428,7 @@ mod tests {
             .expect("write episodes");
 
         // React: max 5 episodes.
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_episodes: 5,
             ..Default::default()
         };
@@ -440,7 +452,7 @@ mod tests {
             .await
             .expect("write episodes");
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_episodes: 10,
             ..Default::default()
         };
@@ -470,7 +482,7 @@ mod tests {
         let mtime = filetime::FileTime::from_system_time(thirty_days_ago);
         filetime::set_file_mtime(&run_dir, mtime).expect("set mtime");
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_run_age_days: 7,
             ..Default::default()
         };
@@ -493,7 +505,7 @@ mod tests {
             .await
             .expect("write data");
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_run_age_days: 7,
             ..Default::default()
         };
@@ -523,7 +535,7 @@ mod tests {
         let mtime = filetime::FileTime::from_system_time(old_time);
         filetime::set_file_mtime(&run_dir, mtime).expect("set mtime");
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_run_age_days: 7,
             ..Default::default()
         };
@@ -552,7 +564,7 @@ mod tests {
                 .expect("write cache");
         }
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_cache_entries: 5,
             ..Default::default()
         };
@@ -582,7 +594,7 @@ mod tests {
                 .expect("write cache");
         }
 
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_cache_entries: 3,
             ..Default::default()
         };
@@ -605,7 +617,7 @@ mod tests {
     #[tokio::test]
     async fn gc_should_auto_gc_small_dir() {
         let (_tmp, layout) = setup().await;
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             size_threshold_mb: 100,
             ..Default::default()
         };
@@ -621,7 +633,7 @@ mod tests {
         tokio::fs::write(layout.memory_dir().join("test.txt"), "hello")
             .await
             .expect("write");
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             size_threshold_mb: 0,
             ..Default::default()
         };
@@ -647,7 +659,7 @@ mod tests {
     #[test]
     fn gc_engine_policy_is_accessible() {
         let layout = RokoLayout::new("/tmp/.roko");
-        let policy = RetentionPolicy {
+        let policy = FsRetentionPolicy {
             max_episodes: 42,
             ..Default::default()
         };
@@ -658,8 +670,8 @@ mod tests {
     #[test]
     fn gc_engine_set_policy() {
         let layout = RokoLayout::new("/tmp/.roko");
-        let mut engine = GcEngine::new(layout, RetentionPolicy::default());
-        let new_policy = RetentionPolicy {
+        let mut engine = GcEngine::new(layout, FsRetentionPolicy::default());
+        let new_policy = FsRetentionPolicy {
             max_episodes: 10,
             max_run_age_days: 2,
             ..Default::default()

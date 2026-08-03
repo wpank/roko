@@ -550,7 +550,7 @@ fn stable_hash<T: Hash>(value: &T) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::episode_logger::GateVerdict;
+    use crate::episode_logger::EpisodeGateVerdict;
     use crate::playbook_rules::{
         CandidateAdmissionConfig, CandidateAdmissionDecision, PlaybookRules,
     };
@@ -560,7 +560,7 @@ mod tests {
         let mut episode = Episode::new("agent", "task-1");
         episode
             .gate_verdicts
-            .push(GateVerdict::new("compile", false).with_signature("E0308:type_mismatch"));
+            .push(EpisodeGateVerdict::new("compile", false).with_signature("E0308:type_mismatch"));
         episode.reflection = Some(
             "Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string(),
         );

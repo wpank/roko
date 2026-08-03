@@ -107,7 +107,7 @@ export function fetchIsfrSources(
 /**
  * Returns the URL for the ISFR-filtered SSE stream (F2).
  * Use with SseAdapter or a raw EventSource for dedicated ISFR streaming
- * separate from the main /api/events stream.
+ * separate from the main dashboard SSE stream.
  */
 export function isfrStreamUrl(): string {
   return `${api.baseUrl}/api/isfr/stream`;

@@ -299,6 +299,16 @@ pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
     GateThresholds::load(&paths.gate_thresholds_json)
 }
 
+/// Atomically write the adaptive gate thresholds to the standalone
+/// `.roko/learn/gate-thresholds.json` file.
+///
+/// This is the canonical path read by serve, TUI, and ACP. The runner
+/// embeds the thresholds inside `state-snapshot.json` for resume, but
+/// the standalone file is what external readers depend on.
+pub fn save_gate_thresholds(paths: &PersistPaths, thresholds: &GateThresholds) -> Result<()> {
+    thresholds.save(&paths.gate_thresholds_json)
+}
+
 /// Atomically write `content` to `path` via a `.tmp` sibling.
 pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     roko_fs::atomic_write_bytes(path, content)

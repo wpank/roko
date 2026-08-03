@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -16,6 +17,7 @@ use tracing::{debug, error, warn};
 
 use roko_agent::process::{kill_tree, set_process_group};
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
+use roko_core::obs::LogScrubber;
 
 use crate::dispatch_v2::{CliDispatchProvider, CliDispatchRequest, CliProviderConfig};
 
@@ -337,11 +339,14 @@ pub async fn spawn_agent(
 
     let agent_id = config.agent_id.clone();
     let stdout_tx = event_tx.clone();
+    let scrubber = Arc::new(LogScrubber::new());
+    let stdout_scrubber = Arc::clone(&scrubber);
     let reader_task = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
+            let line = stdout_scrubber.scrub(&line);
             for event in parse_stream_line(&line) {
                 if stdout_tx.send(event).await.is_err() {
                     debug!(agent_id = %agent_id, "event channel closed, stopping reader");
@@ -358,17 +363,15 @@ pub async fn spawn_agent(
     // Spawn stderr reader and surface it as durable agent events.
     let stderr_reader_task = if let Some(stderr) = child.stderr.take() {
         let stderr_tx = event_tx.clone();
+        let stderr_scrubber = scrubber;
         Some(tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
+                    let line = stderr_scrubber.scrub(&line);
                     debug!(stderr = %line, "agent stderr");
-                    let _ = stderr_tx
-                        .send(AgentEvent::Error {
-                            message: line.to_string(),
-                        })
-                        .await;
+                    let _ = stderr_tx.send(AgentEvent::Error { message: line }).await;
                 }
             }
         }))

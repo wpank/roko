@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLiveApi } from './useLiveApi';
 import { useBenchSSE } from './useBenchSSE';
-import { useContextEventSubscription } from '../contexts/EventStreamContext';
+import { useServerEventSubscription } from './useEventStream';
 import { useDebouncedRefetch } from './useDebouncedRefetch';
 import type {
   AgentStrategy,
@@ -192,7 +192,7 @@ export function useBench() {
 
   // Auto-refresh history when a bench run completes (SSE from global stream)
   const debouncedHistoryRefetch = useDebouncedRefetch(refetchHistory, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['BenchRunCompleted'],
     debouncedHistoryRefetch,
   );

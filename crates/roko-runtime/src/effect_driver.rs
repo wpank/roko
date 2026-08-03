@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::event_bus::emit_runtime_event;
+use crate::pipeline_state::{CommitOutcome, PipelineInput};
 pub use roko_core::RuntimeEvent;
 pub use roko_core::foundation::{
     AffectPolicy, ChatMessage, DispatchModulation, GateReport, MessageRole, ModelCallRequest,
@@ -18,10 +20,6 @@ use roko_core::foundation::{
     CachePolicy, FeedbackEvent, FeedbackSink, GateConfig, GateRunner, GateVerdict, ModelCaller,
     PromptAssembler, PromptSpec, ShellGateCommand, TokenBudget,
 };
-use roko_gate::GateRegistry;
-
-use crate::event_bus::emit_runtime_event;
-use crate::pipeline_state::{CommitOutcome, PipelineInput};
 
 /// Fallible result type used by the effect driver.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -322,18 +320,18 @@ impl EffectDriver {
                 if let Some(ref affect) = self.services.affect_policy {
                     let mut policy = affect.lock().await;
                     for verdict in &report.verdicts {
-                        // Derive the rung from the gate name using the same mapping as
-                        // GateService::rung_for_name. GateVerdict does not carry rung/confidence
-                        // fields today; if those are added to GateVerdict, replace this with
-                        // verdict.rung and verdict.confidence directly.
-                        // TODO: add `rung: u8` and `confidence: f64` to GateVerdict in
-                        // roko-core/src/foundation.rs so callers don't need to re-derive them.
-                        let rung = rung_for_gate_name(&verdict.gate_name);
-                        // Deterministic gates (compile/clippy/test/fmt/diff) produce binary
-                        // pass/fail with no ambiguity → confidence 1.0.
-                        // Heuristic gates (custom shells, llm-judge) have uncertain confidence
-                        // → 0.5 as a neutral default.
-                        let confidence = if rung <= 4 { 1.0_f64 } else { 0.5_f64 };
+                        // E05-T06: Use the canonical rung_selector::Rung mapping
+                        // from roko-gate's registry instead of a local ad-hoc table.
+                        let canonical = roko_gate::rung_for_gate_name(&verdict.gate_name);
+                        let rung = canonical.map(|r| r.as_index() as u8).unwrap_or(u8::MAX);
+                        // Deterministic gates (those with a canonical rung in
+                        // Compile/Lint/Test) produce binary pass/fail with confidence 1.0.
+                        // Heuristic/standalone gates use lower confidence.
+                        let confidence = if roko_gate::is_deterministic_gate(&verdict.gate_name) {
+                            1.0_f64
+                        } else {
+                            0.5_f64
+                        };
                         policy.on_gate_result(&verdict.gate_name, verdict.passed, rung, confidence);
                     }
                 }
@@ -696,15 +694,6 @@ async fn count_changed_files(workdir: &std::path::Path) -> u32 {
     }
 }
 
-/// Resolve a gate name to its rung index through the shared gate registry.
-///
-/// Rungs 0-4 are deterministic (compile, clippy, test, diff, fmt).
-/// Rung 5 is heuristic (custom/shell). Rung 6 is judge (LLM-based).
-/// Returns u8::MAX for unknown gate names so they sort last and get heuristic confidence.
-fn rung_for_gate_name(name: &str) -> u8 {
-    GateRegistry::new().rung_for_name(name).unwrap_or(u8::MAX)
-}
-
 /// Generate a short unique ID for agent instances.
 fn uuid_short() -> String {
     let millis = SystemTime::now()
@@ -956,31 +945,65 @@ mod tests {
         ));
     }
 
+    /// E05-T06: effect driver uses the canonical rung_selector::Rung mapping
+    /// from roko-gate's registry, not a local ad-hoc match table.
     #[test]
-    fn gate_rung_uses_gate_registry_with_unknown_fallback() {
-        let cases = [
-            ("compile", 0),
-            ("compile:cargo", 0),
-            ("clippy", 1),
-            ("clippy:cargo", 1),
-            ("test", 2),
-            ("test:cargo", 2),
-            ("diff", 3),
-            ("diff:git", 3),
-            ("fmt", 4),
-            ("fmt:cargo", 4),
-            ("format", 4),
-            ("custom", 5),
-            ("custom:shell", 5),
-            ("shell", 5),
-            ("judge", 6),
-            ("llm-judge", 6),
-        ];
+    fn effect_driver_uses_canonical_rung_mapping() {
+        use roko_gate::rung_selector::Rung;
 
-        for (name, rung) in cases {
-            assert_eq!(rung_for_gate_name(name), rung, "unexpected rung for {name}");
+        // Gates with canonical rungs map to Rung enum values.
+        let canonical_cases: &[(&str, Rung)] = &[
+            ("compile", Rung::Compile),
+            ("compile:cargo", Rung::Compile),
+            ("clippy", Rung::Lint),
+            ("clippy:cargo", Rung::Lint),
+            ("test", Rung::Test),
+            ("test:cargo", Rung::Test),
+        ];
+        for (name, expected) in canonical_cases {
+            let resolved = roko_gate::rung_for_gate_name(name);
+            assert_eq!(
+                resolved,
+                Some(*expected),
+                "{name} should map to canonical {expected:?}"
+            );
+            // The u8 index matches the Rung enum's as_index().
+            let index = resolved.unwrap().as_index() as u8;
+            assert_eq!(index, expected.as_index() as u8, "{name} index mismatch");
         }
-        assert_eq!(rung_for_gate_name("nonexistent"), u8::MAX);
+
+        // Standalone gates (diff, fmt, custom, judge) have no canonical rung.
+        let standalone_cases = [
+            "diff",
+            "diff:git",
+            "fmt",
+            "fmt:cargo",
+            "format",
+            "custom",
+            "custom:shell",
+            "shell",
+            "judge",
+            "llm-judge",
+        ];
+        for name in standalone_cases {
+            assert_eq!(
+                roko_gate::rung_for_gate_name(name),
+                None,
+                "{name} is standalone and should have no canonical rung"
+            );
+        }
+
+        // Unknown gates also return None.
+        assert_eq!(roko_gate::rung_for_gate_name("nonexistent"), None);
+
+        // Deterministic-gate helper classifies correctly.
+        assert!(roko_gate::is_deterministic_gate("compile"));
+        assert!(roko_gate::is_deterministic_gate("clippy"));
+        assert!(roko_gate::is_deterministic_gate("test"));
+        assert!(!roko_gate::is_deterministic_gate("diff"));
+        assert!(!roko_gate::is_deterministic_gate("custom"));
+        assert!(!roko_gate::is_deterministic_gate("judge"));
+        assert!(!roko_gate::is_deterministic_gate("nonexistent"));
     }
 
     fn init_clean_git_workdir(workdir: &std::path::Path) {

@@ -2720,8 +2720,8 @@ mod tests {
         passing.episode_id = "ep-success-1".into();
         passing.reasoning_summary = Some("Patched the parser and reran tests".into());
         passing.gate_verdicts = vec![
-            crate::episode_logger::GateVerdict::new("compile", true),
-            crate::episode_logger::GateVerdict::new("test", true),
+            crate::episode_logger::EpisodeGateVerdict::new("compile", true),
+            crate::episode_logger::EpisodeGateVerdict::new("test", true),
         ];
         passing.extra.insert(
             "tool_calls".into(),
@@ -2734,7 +2734,9 @@ mod tests {
 
         let mut failing = make_episode("task-2", false, 1, "complex", &["rust"], "implementation");
         failing.episode_id = "ep-fail-1".into();
-        failing.gate_verdicts = vec![crate::episode_logger::GateVerdict::new("compile", false)];
+        failing.gate_verdicts = vec![crate::episode_logger::EpisodeGateVerdict::new(
+            "compile", false,
+        )];
 
         let candidates = extract_skill_candidates(&[passing, failing], &agent).await;
         assert_eq!(candidates.len(), 1);

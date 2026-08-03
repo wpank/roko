@@ -31,6 +31,32 @@ fn default_prefix() -> String {
     "roko-ws".to_string()
 }
 
+/// Validate that a workspace prefix is a safe directory name component.
+///
+/// Rejects prefixes containing path separators (`/`, `\`), parent-directory
+/// traversal (`..`), Windows drive letters (e.g. `C:`), and empty strings.
+/// This MUST be called before joining the prefix into a path to prevent
+/// directory traversal attacks.
+fn validate_workspace_prefix(prefix: &str) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("prefix must not be empty".into());
+    }
+    if prefix.contains('/') || prefix.contains('\\') {
+        return Err("prefix must not contain path separators ('/' or '\\')".into());
+    }
+    if prefix.contains("..") {
+        return Err("prefix must not contain '..'".into());
+    }
+    // Reject Windows drive letters like "C:" or "d:".
+    if prefix.len() >= 2
+        && prefix.as_bytes()[0].is_ascii_alphabetic()
+        && prefix.as_bytes()[1] == b':'
+    {
+        return Err("prefix must not contain a drive letter".into());
+    }
+    Ok(())
+}
+
 fn run_git(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -94,6 +120,14 @@ async fn create_workspace(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateWorkspaceRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    // Validate the prefix before joining it into a path to prevent traversal.
+    if let Err(reason) = validate_workspace_prefix(&body.prefix) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid workspace prefix: {reason}") })),
+        ));
+    }
+
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -119,11 +153,14 @@ async fn create_workspace(
         ));
     }
 
-    // Write the server's resolved config to the workspace so provider config,
-    // env-var overrides, and secret interpolation are all captured.
+    // Write an uninterpolated default config template to the workspace.
+    // We intentionally do NOT write the server's resolved config because it
+    // may contain secret values (API keys, tokens) that were expanded by
+    // `interpolate_env_vars` / `resolve_file_secrets`.  A fresh default
+    // config ensures no secrets leak into the workspace filesystem.
     {
-        let config = state.load_roko_config();
-        match toml::to_string_pretty(&*config) {
+        let template_config = roko_core::config::schema::RokoConfig::default();
+        match toml::to_string_pretty(&template_config) {
             Ok(text) => {
                 if let Err(e) = tokio::fs::write(dir.join("roko.toml"), text).await {
                     let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -319,19 +356,35 @@ async fn get_workspace_state(
     let roko_dir = ws.path.join(".roko");
     let mut errors: Vec<String> = Vec::new();
 
-    // 1. Executor state: .roko/state/executor.json
-    let executor_state = match read_json_file(roko_dir.join("state").join("executor.json")).await {
-        Ok(v) => v,
-        Err(ReadFileError::NotFound) => Value::Null,
-        Err(ReadFileError::Io(e)) => {
-            errors.push(format!("executor.json: {e}"));
-            Value::Null
-        }
-        Err(ReadFileError::Parse(e)) => {
-            errors.push(format!("executor.json parse: {e}"));
-            Value::Null
-        }
-    };
+    // 1. Executor state: extract from state-snapshot.json (unified snapshot).
+    //    Runner v2 writes state-snapshot.json with an embedded executor_json
+    //    field; the old state/executor.json is no longer written.
+    let executor_state =
+        match read_json_file(roko_dir.join("state").join("state-snapshot.json")).await {
+            Ok(snapshot) => {
+                // Extract the embedded executor_json string and parse it.
+                snapshot
+                    .get("executor_json")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .unwrap_or(Value::Null)
+            }
+            Err(ReadFileError::NotFound) => {
+                // Fall back to legacy executor.json for old workspaces.
+                match read_json_file(roko_dir.join("state").join("executor.json")).await {
+                    Ok(v) => v,
+                    Err(_) => Value::Null,
+                }
+            }
+            Err(ReadFileError::Io(e)) => {
+                errors.push(format!("state-snapshot.json: {e}"));
+                Value::Null
+            }
+            Err(ReadFileError::Parse(e)) => {
+                errors.push(format!("state-snapshot.json parse: {e}"));
+                Value::Null
+            }
+        };
 
     // 2. Episodes: try canonical paths first, then legacy memory fallback.
     //    Order: .roko/episodes.jsonl -> .roko/learn/episodes.jsonl -> .roko/memory/episodes.jsonl
@@ -506,4 +559,144 @@ async fn collect_plans(
     }
 
     Value::Object(plans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::deploy::manual::ManualBackend;
+    use crate::runtime::NoOpRuntime;
+    use roko_core::config::schema::RokoConfig;
+
+    fn test_state(workdir: std::path::PathBuf) -> Arc<AppState> {
+        Arc::new(
+            AppState::new(
+                workdir,
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        )
+    }
+
+    // -- validate_workspace_prefix unit tests --------------------------------
+
+    #[test]
+    fn workspace_prefix_rejects_traversal() {
+        // Parent-directory traversal
+        assert!(validate_workspace_prefix("..").is_err());
+        assert!(validate_workspace_prefix("foo..bar").is_err());
+        assert!(validate_workspace_prefix("../etc/passwd").is_err());
+
+        // Forward slash (Unix path separator)
+        assert!(validate_workspace_prefix("foo/bar").is_err());
+        assert!(validate_workspace_prefix("/absolute").is_err());
+
+        // Backslash (Windows path separator)
+        assert!(validate_workspace_prefix("foo\\bar").is_err());
+        assert!(validate_workspace_prefix("\\\\unc").is_err());
+
+        // Windows drive letters
+        assert!(validate_workspace_prefix("C:").is_err());
+        assert!(validate_workspace_prefix("D:foo").is_err());
+        assert!(validate_workspace_prefix("c:").is_err());
+
+        // Empty
+        assert!(validate_workspace_prefix("").is_err());
+
+        // Valid prefixes should pass
+        assert!(validate_workspace_prefix("roko-ws").is_ok());
+        assert!(validate_workspace_prefix("my-workspace").is_ok());
+        assert!(validate_workspace_prefix("demo_test.1").is_ok());
+    }
+
+    // -- config secret leakage test ------------------------------------------
+
+    #[tokio::test]
+    async fn workspace_config_does_not_write_resolved_secret() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let roko_dir = dir.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).expect("create .roko");
+
+        // Build a config with a resolved secret value that simulates what
+        // `interpolate_env_vars` / `resolve_file_secrets` would produce.
+        let mut config = RokoConfig::default();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer sk-ant-SUPER-SECRET-KEY-12345".to_string(),
+        );
+        config.providers.insert(
+            "anthropic".to_string(),
+            roko_core::config::provider::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::AnthropicApi,
+                base_url: None,
+                api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: Some(headers),
+                max_concurrent: None,
+            },
+        );
+
+        // Create app state with the secret-bearing config.
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config,
+                Arc::new(ManualBackend::default()),
+            )
+            .expect("AppState::new"),
+        );
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/workspaces")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"prefix":"secret-test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(response.status(), 200);
+
+        // Parse the response to get the workspace path.
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        let ws_path = json["path"].as_str().expect("path field");
+
+        // Read the generated roko.toml and verify it does NOT contain the secret.
+        let written =
+            std::fs::read_to_string(format!("{ws_path}/roko.toml")).expect("read roko.toml");
+
+        assert!(
+            !written.contains("sk-ant-SUPER-SECRET-KEY-12345"),
+            "workspace roko.toml must not contain resolved secret values; got:\n{written}"
+        );
+        assert!(
+            !written.contains("ANTHROPIC_API_KEY"),
+            "workspace roko.toml should use the default template, not the server config"
+        );
+
+        // Clean up the workspace directory.
+        let _ = std::fs::remove_dir_all(ws_path);
+    }
 }

@@ -5,12 +5,14 @@
 //! `Dispatcher` / `PromptAssembler` / `WarmPool`.  `SharedAgentFactory`
 //! creates these once at run start and hands them to every dispatch call.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, discover_mcp_tools};
 use roko_agent::provider::ProviderSemaphores;
+use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
 use tokio::sync::mpsc;
@@ -86,6 +88,10 @@ impl SharedAgentFactory {
             Some(cache) => PromptAssembler::with_cache(cache),
             None => PromptAssembler::new(),
         };
+        // Apply [prompt] config knobs from roko.toml.
+        let prompt_assembler = prompt_assembler
+            .with_composition_strategy(config.prompt.composition_strategy)
+            .with_vcg_warmup_observations(config.prompt.vcg_warmup_observations);
         let dispatcher = Dispatcher::new(cascade_router, prompt_assembler, WarmPool::new(0));
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
@@ -108,11 +114,28 @@ impl SharedAgentFactory {
     ///
     /// Called after gate failures or when the periodic staleness check fires.
     pub fn update_prompt_cache(&mut self, cache: Arc<PromptCache>) {
+        let assembler = PromptAssembler::with_cache(cache)
+            .with_composition_strategy(self.config.prompt.composition_strategy)
+            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations);
         self.dispatcher = Dispatcher::new(
             self.dispatcher.cascade_router_arc(),
-            PromptAssembler::with_cache(cache),
+            assembler,
             WarmPool::new(0),
         );
+    }
+
+    /// Set persisted learning bidders on the prompt assembler.
+    ///
+    /// Called at run startup after loading from `.roko/learn/attention-bidders.json`.
+    /// The bidders are passed to `PromptComposer::with_learning_bidders` when the
+    /// runner-v2 prompt path is routed through the canonical compose surface.
+    pub fn set_learning_bidders(&mut self, bidders: HashMap<AttentionBidder, LearningBidder>) {
+        let cascade = self.dispatcher.cascade_router_arc();
+        let assembler = PromptAssembler::new()
+            .with_composition_strategy(self.config.prompt.composition_strategy)
+            .with_vcg_warmup_observations(self.config.prompt.vcg_warmup_observations)
+            .with_learning_bidders(bidders);
+        self.dispatcher = Dispatcher::new(cascade, assembler, WarmPool::new(0));
     }
 
     /// Resolve the runtime for a model key.

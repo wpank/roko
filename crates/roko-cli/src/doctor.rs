@@ -192,6 +192,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_serve_health(options.serve_url.as_deref(), &loaded_config).await?);
     checks.push(check_v2_abstractions());
     checks.extend(check_harness_providers(&loaded_config));
+    checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
 
     let summary = DoctorSummary::from_checks(&checks);
     Ok(DoctorReport {
@@ -1006,6 +1007,158 @@ fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
     checks
 }
 
+/// Inspect configured MCP servers for command allowlist and sensitive env keys.
+///
+/// Returns one check per server plus a summary check. Missing MCP config is
+/// **not** treated as a failure (matches anti-pattern from E04-T17).
+fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
+    use roko_agent::mcp::{
+        McpTransportConfig, find_mcp_config, is_command_allowed, sensitive_env_keys,
+    };
+
+    // Resolve the MCP config: explicit path from roko.toml, or walk-up discovery.
+    let mcp_config = if let Some(ref cfg) = loaded_config.resolved {
+        if let Some(ref explicit) = cfg.agent.mcp_config {
+            roko_agent::mcp::McpConfig::load(explicit).ok()
+        } else {
+            find_mcp_config(workdir).and_then(|r| r.ok().map(|(_path, cfg)| cfg))
+        }
+    } else {
+        find_mcp_config(workdir).and_then(|r| r.ok().map(|(_path, cfg)| cfg))
+    };
+
+    let Some(mcp_config) = mcp_config else {
+        return vec![DoctorCheck {
+            id: "mcp_allowlist".to_string(),
+            status: DoctorStatus::Skipped,
+            message: "no MCP config found; skipping allowlist check".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        }];
+    };
+
+    if mcp_config.servers.is_empty() {
+        return vec![DoctorCheck {
+            id: "mcp_allowlist".to_string(),
+            status: DoctorStatus::Ok,
+            message: "MCP config present with no servers configured".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        }];
+    }
+
+    let mut checks = Vec::new();
+    let mut any_warn = false;
+
+    for server in &mcp_config.servers {
+        let name = if server.name.is_empty() {
+            "<unnamed>"
+        } else {
+            &server.name
+        };
+
+        // Skip command check for HTTP-transport servers (they have no local command).
+        let cmd_ok = server.transport == McpTransportConfig::Http
+            || server.command.is_empty()
+            || is_command_allowed(&server.command, &[]);
+
+        let sensitive = sensitive_env_keys(&server.env);
+
+        let status = if !cmd_ok {
+            any_warn = true;
+            DoctorStatus::Warn
+        } else if !sensitive.is_empty() {
+            any_warn = true;
+            DoctorStatus::Warn
+        } else {
+            DoctorStatus::Ok
+        };
+
+        let mut detail_parts = Vec::new();
+        if !cmd_ok {
+            detail_parts.push(format!(
+                "command `{}` is not on the approved allowlist",
+                server.command,
+            ));
+        }
+        if !sensitive.is_empty() {
+            detail_parts.push(format!(
+                "env keys that may contain secrets: {}",
+                sensitive.join(", "),
+            ));
+        }
+
+        let detail = if detail_parts.is_empty() {
+            None
+        } else {
+            Some(detail_parts.join("; "))
+        };
+
+        let fix = if !cmd_ok {
+            Some(format!(
+                "verify `{}` is intended; add to allowlist or use a known MCP server command",
+                server.command,
+            ))
+        } else if !sensitive.is_empty() {
+            Some(
+                "avoid passing secrets via MCP env; use auth_token or a secrets manager instead"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        checks.push(DoctorCheck {
+            id: format!("mcp_server_{name}"),
+            status,
+            message: if status == DoctorStatus::Ok {
+                format!("MCP server `{name}` passes allowlist checks")
+            } else {
+                format!("MCP server `{name}` has security warnings")
+            },
+            detail,
+            path: None,
+            url: None,
+            fix,
+        });
+    }
+
+    // Summary check.
+    checks.push(DoctorCheck {
+        id: "mcp_allowlist".to_string(),
+        status: if any_warn {
+            DoctorStatus::Warn
+        } else {
+            DoctorStatus::Ok
+        },
+        message: if any_warn {
+            format!(
+                "MCP allowlist: {} server(s) configured, some have warnings",
+                mcp_config.servers.len(),
+            )
+        } else {
+            format!(
+                "MCP allowlist: {} server(s) configured, all pass",
+                mcp_config.servers.len(),
+            )
+        },
+        detail: None,
+        path: None,
+        url: None,
+        fix: if any_warn {
+            Some("review per-server MCP warnings above".to_string())
+        } else {
+            None
+        },
+    });
+
+    checks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,5 +1462,139 @@ mod tests {
             rendered.contains("[ok] v2_abstractions"),
             "human output should show v2_abstractions as ok, got:\n{rendered}"
         );
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_mcp_allowlist_status() {
+        use std::collections::HashMap;
+
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+
+        // Write an .mcp.json with one safe server, one unknown command, and
+        // one server whose env includes a secret-like key.
+        let mcp_json = serde_json::json!({
+            "servers": [
+                {
+                    "name": "safe-fs",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "env": {}
+                },
+                {
+                    "name": "sketchy-bin",
+                    "command": "/opt/evil/do-stuff",
+                    "args": [],
+                    "env": {}
+                },
+                {
+                    "name": "leaky-env",
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {
+                        "DATABASE_URL": "postgres://localhost/db",
+                        "MY_SECRET_TOKEN": "hunter2"
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            temp.path().join(".mcp.json"),
+            serde_json::to_string_pretty(&mcp_json).unwrap(),
+        )
+        .unwrap();
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        // 1. The safe server should pass.
+        let safe = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_safe-fs")
+            .expect("safe-fs check present");
+        assert_eq!(safe.status, DoctorStatus::Ok);
+
+        // 2. The unknown-command server should warn.
+        let sketchy = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_sketchy-bin")
+            .expect("sketchy-bin check present");
+        assert_eq!(sketchy.status, DoctorStatus::Warn);
+        let detail = sketchy.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("not on the approved allowlist"),
+            "expected allowlist warning, got: {detail}"
+        );
+        // Must NOT contain the actual command value in the fix, but should
+        // reference the command name so the user can look it up.
+        assert!(sketchy.fix.is_some());
+
+        // 3. The leaky-env server should warn about secret-like keys.
+        let leaky = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_leaky-env")
+            .expect("leaky-env check present");
+        assert_eq!(leaky.status, DoctorStatus::Warn);
+        let detail = leaky.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("MY_SECRET_TOKEN"),
+            "should mention the secret-like key name, got: {detail}"
+        );
+        // Must NOT contain the actual secret value.
+        assert!(
+            !detail.contains("hunter2"),
+            "must not leak secret values in detail"
+        );
+
+        // 4. Summary check should warn because at least one server has issues.
+        let summary = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_allowlist")
+            .expect("mcp_allowlist summary check present");
+        assert_eq!(summary.status, DoctorStatus::Warn);
+        assert!(
+            summary.message.contains("3 server(s) configured"),
+            "summary should mention server count, got: {}",
+            summary.message
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_skips_mcp_allowlist_when_no_config() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+        // No .mcp.json written.
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        let mcp_check = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_allowlist")
+            .expect("mcp_allowlist check present");
+        assert_eq!(mcp_check.status, DoctorStatus::Skipped);
+        // Missing MCP config must NOT cause a failure.
+        assert!(report.healthy);
     }
 }

@@ -45,7 +45,9 @@ use roko_core::{
 };
 use roko_fs::FileSubstrate;
 use roko_gate::{BuildSystem, ClippyGate, CompileGate, GatePayload, ShellGate, TestGate};
-use roko_learn::episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage as EpisodeUsage};
+use roko_learn::episode_logger::{
+    Episode, EpisodeGateVerdict, EpisodeLogger, Usage as EpisodeUsage,
+};
 use roko_learn::playbook::Playbook;
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 use roko_learn::skill_library::{Skill, SkillQuery};
@@ -2719,7 +2721,7 @@ async fn append_episode_log(
     episode.output_signal_hash = final_output.id.to_hex();
     episode.gate_verdicts = verdicts
         .iter()
-        .map(|(gate, passed)| GateVerdict::new(gate.clone(), *passed))
+        .map(|(gate, passed)| EpisodeGateVerdict::new(gate.clone(), *passed))
         .collect();
     episode.success = agent_result.success && verdicts.iter().all(|(_, passed)| *passed);
     if !episode.success {
@@ -3264,7 +3266,7 @@ mod tests {
                 verdicts: config
                     .enabled_gates
                     .into_iter()
-                    .map(|gate_name| GateVerdict {
+                    .map(|gate_name| EpisodeGateVerdict {
                         gate_name,
                         passed: true,
                         skipped: false,

@@ -5,8 +5,6 @@
 //! gate failure so the run exercises the failure accounting path. That catches
 //! duplicate persistence for the same attempt.
 
-#![cfg(feature = "legacy-runner-v2")]
-
 mod common;
 
 use std::collections::HashSet;

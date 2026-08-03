@@ -19,8 +19,7 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct MemorySubstrate {
     store: RwLock<HashMap<ContentHash, Engram>>,
-    #[allow(dead_code)]
-    name: String,
+    _name: String,
 }
 
 impl MemorySubstrate {
@@ -35,7 +34,7 @@ impl MemorySubstrate {
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             store: RwLock::new(HashMap::new()),
-            name: name.into(),
+            _name: name.into(),
         }
     }
 

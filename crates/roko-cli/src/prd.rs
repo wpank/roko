@@ -637,10 +637,18 @@ fn read_prd_entry(path: &Path) -> PrdEntry {
             coverage: meta.coverage,
         }
     } else {
+        let path_str = path.to_string_lossy();
+        let status = if path_str.contains("/published/") {
+            "published"
+        } else if path_str.contains("/drafts/") {
+            "draft"
+        } else {
+            "unknown"
+        };
         PrdEntry {
             slug: slug.clone(),
             title: slug,
-            status: "unknown".into(),
+            status: status.into(),
             coverage: 0.0,
         }
     }
@@ -769,39 +777,132 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
         .chain(list_md_files(&drafts_dir(workdir)))
         .collect();
 
-    // Count tasks across all plans
+    // Build per-plan stats: (task_count, done_count, source_prd).
+    // Keys are the plan directory name; source_prd is the optional explicit link.
+    struct PlanStats {
+        tasks: u32,
+        done: u32,
+        source_prd: Option<String>,
+    }
     let plans_root = plans_dir.map_or_else(|| workspace_plans_dir(workdir), Path::to_path_buf);
-    let mut total_plans = 0u32;
-    let mut total_tasks = 0u32;
-    let mut total_done = 0u32;
+    let mut plan_stats: HashMap<String, PlanStats> = HashMap::new();
     if plans_root.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&plans_root) {
             for entry in entries.flatten() {
                 let toml_path = entry.path().join("tasks.toml");
-                if toml_path.exists() {
-                    total_plans += 1;
-                    let content = std::fs::read_to_string(&toml_path).unwrap_or_default();
-                    total_tasks = total_tasks.saturating_add(usize_to_u32_saturating(
-                        content.matches("status = ").count(),
-                    ));
-                    total_done = total_done.saturating_add(usize_to_u32_saturating(
-                        content.matches("status = \"done\"").count(),
-                    ));
+                if !toml_path.exists() {
+                    continue;
                 }
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                let content = std::fs::read_to_string(&toml_path).unwrap_or_default();
+                let task_count = usize_to_u32_saturating(content.matches("status = ").count());
+                let done_count =
+                    usize_to_u32_saturating(content.matches("status = \"done\"").count());
+                // Try to parse source_prd from the [meta] section.
+                let source_prd = TasksFile::parse(&toml_path)
+                    .ok()
+                    .and_then(|f| f.meta.source_prd);
+                plan_stats.insert(
+                    dir_name,
+                    PlanStats {
+                        tasks: task_count,
+                        done: done_count,
+                        source_prd,
+                    },
+                );
             }
         }
     }
 
+    // Build a reverse lookup: prd_slug -> Vec<plan_dir_name>.
+    // A plan links to a PRD if (a) its directory name matches, or
+    // (b) its source_prd field matches.
+    let prd_slugs: Vec<String> = all_prds
+        .iter()
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    let mut linked_plans: HashMap<String, Vec<String>> = HashMap::new();
+    let mut matched_plan_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for (plan_name, stats) in &plan_stats {
+        // Direct name match.
+        if prd_slugs.contains(plan_name) {
+            linked_plans
+                .entry(plan_name.clone())
+                .or_default()
+                .push(plan_name.clone());
+            matched_plan_names.insert(plan_name.clone());
+        }
+        // source_prd match (secondary lookup).
+        if let Some(ref src) = stats.source_prd {
+            if prd_slugs.contains(src) && !matched_plan_names.contains(plan_name) {
+                linked_plans
+                    .entry(src.clone())
+                    .or_default()
+                    .push(plan_name.clone());
+                matched_plan_names.insert(plan_name.clone());
+            }
+        }
+    }
+
+    let mut total_plans = 0u32;
+    let mut total_tasks = 0u32;
+    let mut total_done = 0u32;
+    for stats in plan_stats.values() {
+        total_plans += 1;
+        total_tasks = total_tasks.saturating_add(stats.tasks);
+        total_done = total_done.saturating_add(stats.done);
+    }
+
     for path in &all_prds {
         let entry = read_prd_entry(path);
-        println!(
-            "{:<35} {:<12} {:<6} {:<6} {:<8}",
-            entry.slug, entry.status, "—", "—", "—"
-        );
+        if let Some(plans) = linked_plans.get(&entry.slug) {
+            let mut slug_tasks = 0u32;
+            let mut slug_done = 0u32;
+            for pn in plans {
+                if let Some(s) = plan_stats.get(pn) {
+                    slug_tasks = slug_tasks.saturating_add(s.tasks);
+                    slug_done = slug_done.saturating_add(s.done);
+                }
+            }
+            println!(
+                "{:<35} {:<12} {:<6} {:<6} {:<8}",
+                entry.slug,
+                entry.status,
+                plans.len(),
+                slug_tasks,
+                slug_done,
+            );
+        } else {
+            println!(
+                "{:<35} {:<12} {:<6} {:<6} {:<8}",
+                entry.slug, entry.status, 0, "—", "—"
+            );
+        }
     }
 
     if all_prds.is_empty() {
         println!("  (no PRDs yet — run `roko prd draft new \"title\"`)");
+    }
+
+    // Unlinked plans: plans that have no matching PRD.
+    let unlinked: Vec<&String> = plan_stats
+        .keys()
+        .filter(|name| !matched_plan_names.contains(*name))
+        .collect();
+
+    println!();
+    println!(
+        "Linked: {}  Unlinked: {}",
+        matched_plan_names.len(),
+        unlinked.len()
+    );
+    if !unlinked.is_empty() {
+        let mut sorted = unlinked.clone();
+        sorted.sort();
+        for name in &sorted {
+            println!("  Unlinked plan: {name}");
+        }
     }
 
     println!();
@@ -1398,6 +1499,17 @@ async fn generate_plan_from_prd_with_outcome(
         }
 
         if let Ok(validated_toml) = validated_toml {
+            // Inject source_prd into the [meta] section so cmd_status can
+            // link plans back to their originating PRD by slug.
+            let validated_toml = if validated_toml.contains("source_prd") {
+                validated_toml
+            } else {
+                validated_toml.replacen(
+                    "[meta]",
+                    &format!("[meta]\nsource_prd = \"{slug}\""),
+                    1,
+                )
+            };
             let plan_dir = plans_root.join(slug);
             std::fs::create_dir_all(&plan_dir)
                 .with_context(|| format!("create plan dir {}", plan_dir.display()))?;

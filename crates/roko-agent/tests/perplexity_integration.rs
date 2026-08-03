@@ -388,14 +388,11 @@ async fn perplexity_search_single_query_uses_search_api() {
         200,
         json_body(json!({
             "results": [{
-                "query": "rust async patterns",
-                "results": [{
-                    "url": "https://example.com/rust-async",
-                    "title": "Rust Async Patterns",
-                    "content": "A guide to async Rust...",
-                    "date": "2025-01-01",
-                    "last_updated": null
-                }]
+                "url": "https://example.com/rust-async",
+                "title": "Rust Async Patterns",
+                "content": "A guide to async Rust...",
+                "date": "2025-01-01",
+                "last_updated": null
             }]
         })),
     )]);
@@ -414,41 +411,24 @@ async fn perplexity_search_single_query_uses_search_api() {
     assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[0].path, "/search");
     let body: Value = serde_json::from_str(&requests[0].body).expect("request json");
-    assert_eq!(body["queries"].as_array().expect("queries").len(), 1);
-    assert_eq!(body["queries"][0]["query"], "rust async patterns");
+    assert_eq!(body["query"], "rust async patterns");
+    assert!(body.get("queries").is_none());
 
     server.join();
 }
 
 #[tokio::test]
-async fn perplexity_search_batch_five_queries_are_sent_together() {
-    let server = spawn_scripted_server(vec![response(
-        200,
-        json_body(json!({
-            "results": [
-                {
-                    "query": "q1",
-                    "results": []
-                },
-                {
-                    "query": "q2",
-                    "results": []
-                },
-                {
-                    "query": "q3",
-                    "results": []
-                },
-                {
-                    "query": "q4",
-                    "results": []
-                },
-                {
-                    "query": "q5",
-                    "results": []
-                }
-            ]
-        })),
-    )]);
+async fn perplexity_search_batch_sends_sequential_single_queries() {
+    // search_batch now sends one request per query (no batch endpoint).
+    // Provide 5 scripted responses, one for each sequential call.
+    let empty_response = json_body(json!({ "results": [] }));
+    let server = spawn_scripted_server(vec![
+        response(200, empty_response.clone()),
+        response(200, empty_response.clone()),
+        response(200, empty_response.clone()),
+        response(200, empty_response.clone()),
+        response(200, empty_response),
+    ]);
 
     let client = PerplexitySearchClient::new("pplx-key").with_base_url(server.base_url());
     let queries = vec![
@@ -481,13 +461,14 @@ async fn perplexity_search_batch_five_queries_are_sent_together() {
     assert_eq!(responses.len(), 5);
     assert_eq!(responses[4].query, "q5");
 
+    // Verify 5 separate requests were made (one per query), each with a flat body.
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    let body: Value = serde_json::from_str(&requests[0].body).expect("request json");
-    let queries_json = body["queries"].as_array().expect("queries array");
-    assert_eq!(queries_json.len(), 5);
-    assert_eq!(queries_json[0]["query"], "q1");
-    assert_eq!(queries_json[4]["query"], "q5");
+    assert_eq!(requests.len(), 5);
+    let body0: Value = serde_json::from_str(&requests[0].body).expect("request 0 json");
+    assert_eq!(body0["query"], "q1");
+    assert!(body0.get("queries").is_none());
+    let body4: Value = serde_json::from_str(&requests[4].body).expect("request 4 json");
+    assert_eq!(body4["query"], "q5");
 
     server.join();
 }

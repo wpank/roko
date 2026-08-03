@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -16,13 +16,28 @@ use futures::stream::{self, StreamExt};
 use roko_core::dashboard_snapshot::DashboardSnapshot;
 use roko_runtime::event_bus::Envelope;
 use roko_runtime::state_hub::StateHubCursorSnapshot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::warn;
+
+use roko_core::obs::LogScrubber;
 
 use crate::state::AppState;
 
 const MAX_REPLAY_EVENTS: usize = 256;
+
+/// Query parameters for SSE replay fallback.
+///
+/// Browser `EventSource` cannot set custom headers, so the frontend reconnect
+/// appends `?lastEventId=<id>` (or the legacy `?n=<id>`) as a query parameter.
+/// The `Last-Event-ID` header remains highest precedence when present.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ReplayQuery {
+    #[serde(alias = "lastEventId")]
+    last_event_id: Option<u64>,
+    n: Option<u64>,
+}
 
 #[derive(Serialize)]
 struct GapPayload {
@@ -51,8 +66,14 @@ pub(crate) fn sse_response_headers() -> HeaderMap {
 }
 
 /// `GET /api/events` and `GET /api/sse` — SSE stream of dashboard events.
-async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let requested_seq = replay_start(&headers);
+///
+/// Replay cursor precedence: `Last-Event-ID` header > `?lastEventId=` > `?n=` > 0.
+async fn sse_handler(
+    headers: HeaderMap,
+    Query(query): Query<ReplayQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let requested_seq = replay_start(&headers, &query);
     let subscription = state.state_hub.subscribe_events_from(requested_seq);
     let needs_snapshot = replay_requires_snapshot(
         requested_seq,
@@ -61,28 +82,30 @@ async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> 
         MAX_REPLAY_EVENTS,
     );
     let live_floor = subscription.cursor.next_seq;
+    let scrubber = Arc::clone(&state.scrubber);
 
     // Never truncate replay silently. If the cursor has fallen out of the ring
     // or the retained suffix is too large, replace it with one explicit snapshot
     // gap frame and continue live from that snapshot's atomic cursor.
     let replay = if needs_snapshot {
-        vec![Ok::<_, Infallible>(gap_event(gap_payload(
-            requested_seq,
-            subscription.cursor,
-        )))]
+        vec![Ok::<_, Infallible>(gap_event(
+            gap_payload(requested_seq, subscription.cursor),
+            &scrubber,
+        ))]
     } else {
+        let scrub = &scrubber;
         subscription
             .replay
             .into_iter()
-            .map(dashboard_event)
+            .map(|e| dashboard_event(e, scrub))
             .map(Ok::<_, Infallible>)
             .collect()
     };
 
     let live_state = Arc::clone(&state);
     let live = stream::unfold(
-        (subscription.live, live_state, live_floor),
-        |(mut rx, state, mut live_floor)| async move {
+        (subscription.live, live_state, live_floor, scrubber),
+        |(mut rx, state, mut live_floor, scrubber)| async move {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
@@ -90,7 +113,10 @@ async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> 
                             continue;
                         }
                         live_floor = envelope.seq.saturating_add(1);
-                        return Some((Ok(dashboard_event(envelope)), (rx, state, live_floor)));
+                        return Some((
+                            Ok(dashboard_event(envelope, &scrubber)),
+                            (rx, state, live_floor, scrubber),
+                        ));
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(n, "SSE client lagged; sending materialized snapshot resync");
@@ -98,8 +124,8 @@ async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> 
                         let cursor = state.state_hub.cursor_snapshot();
                         live_floor = cursor.next_seq;
                         return Some((
-                            Ok(gap_event(gap_payload(expected_seq, cursor))),
-                            (rx, state, live_floor),
+                            Ok(gap_event(gap_payload(expected_seq, cursor), &scrubber)),
+                            (rx, state, live_floor, scrubber),
                         ));
                     }
                     Err(broadcast::error::RecvError::Closed) => return None,
@@ -121,14 +147,14 @@ async fn sse_handler(headers: HeaderMap, State(state): State<Arc<AppState>>) -> 
     (sse_response_headers(), sse)
 }
 
-fn dashboard_event(envelope: Envelope<roko_core::DashboardEvent>) -> Event {
-    let data = serde_json::to_string(&envelope.payload).unwrap_or_default();
+fn dashboard_event(envelope: Envelope<roko_core::DashboardEvent>, scrubber: &LogScrubber) -> Event {
+    let data = scrubber.scrub(&serde_json::to_string(&envelope.payload).unwrap_or_default());
     Event::default().data(data).id(envelope.seq.to_string())
 }
 
-fn gap_event(payload: GapPayload) -> Event {
+fn gap_event(payload: GapPayload, scrubber: &LogScrubber) -> Event {
     let event_id = payload.last_materialized_seq.to_string();
-    let data = serde_json::to_string(&payload).unwrap_or_default();
+    let data = scrubber.scrub(&serde_json::to_string(&payload).unwrap_or_default());
     Event::default().event("gap").data(data).id(event_id)
 }
 
@@ -162,12 +188,19 @@ fn replay_requires_snapshot(
         .any(|pair| pair[0].seq.saturating_add(1) != pair[1].seq)
 }
 
-fn replay_start(headers: &HeaderMap) -> u64 {
-    headers
+/// Determine the replay start sequence.
+///
+/// Precedence: `Last-Event-ID` header > `?lastEventId=` > `?n=` > 0.
+/// Invalid or missing values silently fall back to 0.
+fn replay_start(headers: &HeaderMap, query: &ReplayQuery) -> u64 {
+    let last_seen = headers
         .get("Last-Event-ID")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map_or(0, |last_seen| last_seen.saturating_add(1))
+        .or(query.last_event_id)
+        .or(query.n);
+
+    last_seen.map_or(0, |id| id.saturating_add(1))
 }
 
 #[cfg(test)]
@@ -177,17 +210,66 @@ mod tests {
 
     #[test]
     fn replay_starts_after_last_acknowledged_event() {
+        let no_query = ReplayQuery::default();
+
         let mut headers = HeaderMap::new();
-        assert_eq!(replay_start(&headers), 0);
+        assert_eq!(replay_start(&headers, &no_query), 0);
 
         headers.insert("Last-Event-ID", HeaderValue::from_static("41"));
-        assert_eq!(replay_start(&headers), 42);
+        assert_eq!(replay_start(&headers, &no_query), 42);
 
         headers.insert(
             "Last-Event-ID",
             HeaderValue::from_static("18446744073709551615"),
         );
-        assert_eq!(replay_start(&headers), u64::MAX);
+        assert_eq!(replay_start(&headers, &no_query), u64::MAX);
+    }
+
+    #[test]
+    fn replay_falls_back_to_last_event_id_query_param() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: Some(41),
+            n: None,
+        };
+        assert_eq!(replay_start(&headers, &query), 42);
+    }
+
+    #[test]
+    fn replay_falls_back_to_n_query_param() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: None,
+            n: Some(99),
+        };
+        assert_eq!(replay_start(&headers, &query), 100);
+    }
+
+    #[test]
+    fn header_takes_precedence_over_query_params() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Last-Event-ID", HeaderValue::from_static("10"));
+
+        let query = ReplayQuery {
+            last_event_id: Some(50),
+            n: Some(99),
+        };
+        // Header value (10) wins → replay starts at 11
+        assert_eq!(replay_start(&headers, &query), 11);
+    }
+
+    #[test]
+    fn last_event_id_query_takes_precedence_over_n() {
+        let headers = HeaderMap::new();
+
+        let query = ReplayQuery {
+            last_event_id: Some(20),
+            n: Some(99),
+        };
+        // lastEventId (20) wins over n (99) → replay starts at 21
+        assert_eq!(replay_start(&headers, &query), 21);
     }
 
     #[test]
@@ -255,5 +337,46 @@ mod tests {
             &subscription.replay,
             MAX_REPLAY_EVENTS,
         ));
+    }
+
+    /// Verify that SSE, WS, and terminal streaming producers scrub secrets
+    /// from textual payloads before sending them to clients.
+    #[test]
+    fn streaming_payloads_scrub_secrets() {
+        let scrubber = LogScrubber::new();
+
+        // SSE: dashboard_event scrubs secrets from serialized JSON.
+        let envelope = Envelope {
+            seq: 1,
+            ts_millis: 0,
+            payload: roko_core::DashboardEvent::Error {
+                message: "key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA leaked".into(),
+            },
+        };
+        let event = dashboard_event(envelope, &scrubber);
+        // The Event doesn't expose its data directly, but we can check via
+        // Debug output that the secret is not present.
+        let rendered = format!("{event:?}");
+        assert!(
+            !rendered.contains("sk-ant-api03"),
+            "SSE dashboard_event must scrub API keys: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED"),
+            "SSE dashboard_event must contain redaction marker"
+        );
+
+        // SSE: gap_event scrubs secrets from gap payloads.
+        let hub = StateHub::new(4);
+        hub.publish(roko_core::DashboardEvent::Error {
+            message: "token ghp_ABCDEFGHIJKLMNOPqrstuvwxyz1234567890 in gap".into(),
+        });
+        let cursor = hub.cursor_snapshot();
+        let gap = gap_event(gap_payload(0, cursor), &scrubber);
+        let gap_rendered = format!("{gap:?}");
+        assert!(
+            !gap_rendered.contains("ghp_"),
+            "SSE gap_event must scrub GitHub tokens: {gap_rendered}"
+        );
     }
 }

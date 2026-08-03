@@ -46,6 +46,8 @@ pub enum ProviderKind {
     PerplexityApi,
     /// Google Gemini API.
     GeminiApi,
+    /// Google `gemini` CLI subprocess.
+    GeminiCli,
     /// Cerebras Inference API (OpenAI-compatible, ultra-fast inference).
     CerebrasApi,
     /// Cursor `agent` CLI subprocess (ACP JSON-RPC over stdio).
@@ -69,6 +71,7 @@ impl ProviderKind {
             Self::CursorAcp => "cursor_acp",
             Self::PerplexityApi => "perplexity_api",
             Self::GeminiApi => "gemini_api",
+            Self::GeminiCli => "gemini_cli",
             Self::CerebrasApi => "cerebras_api",
             Self::CursorCli => "cursor_cli",
             Self::Hermes => "hermes",
@@ -88,7 +91,7 @@ impl ProviderKind {
             Self::OpenAiCompat => AgentBackend::OpenAi,
             Self::CursorAcp | Self::CursorCli => AgentBackend::Cursor,
             Self::PerplexityApi => AgentBackend::Perplexity,
-            Self::GeminiApi => AgentBackend::OpenAi,
+            Self::GeminiApi | Self::GeminiCli => AgentBackend::OpenAi,
             Self::CerebrasApi => AgentBackend::Cerebras,
             Self::Hermes => AgentBackend::Hermes,
             Self::OpenClaw => AgentBackend::OpenClaw,
@@ -1208,6 +1211,7 @@ mod tests {
             (ProviderKind::CursorAcp, "cursor_acp"),
             (ProviderKind::PerplexityApi, "perplexity_api"),
             (ProviderKind::GeminiApi, "gemini_api"),
+            (ProviderKind::GeminiCli, "gemini_cli"),
             (ProviderKind::Hermes, "hermes"),
         ];
 

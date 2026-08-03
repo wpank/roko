@@ -23,8 +23,8 @@ parking_lot = { workspace = true }
 reqwest = { workspace = true }
 roko-primitives = { path = "../roko-primitives" }
 roko-core = { path = "../roko-core" }
-sha2 = { workspace = true }
 roko-gate = { path = "../roko-gate" }
+sha2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }

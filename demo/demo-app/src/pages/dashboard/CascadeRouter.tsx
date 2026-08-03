@@ -9,7 +9,7 @@ import {
 import { useLiveApi } from '../../hooks/useLiveApi';
 import { getCssVar } from '../../lib/color';
 import { roleColor } from '../../lib/palette';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import DataSurface from '../../components/design/DataSurface';
 import '../../styles/table.css';
@@ -165,7 +165,7 @@ export default function CascadeRouter() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchState, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['inference_completed'],
     debouncedRefetch,
   );

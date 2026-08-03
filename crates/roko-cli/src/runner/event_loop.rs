@@ -18,12 +18,14 @@ use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
+use roko_core::tool::MetricsSink as _;
+use roko_core::tool::trace::{ToolTraceEvent, TraceSink};
 use roko_core::{AgentRole, ContentHash, PhaseKind, PlanPhase};
 use roko_daimon::{
     AffectEngine as _, AffectEvent, DispatchParams, SomaticSignal, StrategyCoordinates,
     TaskStrategyObservation,
 };
-use roko_fs::RokoLayout;
+use roko_fs::{FsObservabilitySinks, RokoLayout};
 use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classification};
 use roko_orchestrator::{
     ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
@@ -52,6 +54,7 @@ use crate::inline::DiffEntry;
 use crate::knowledge_helpers::{build_knowledge_routing_advice, neuro_prompt_task_category};
 use crate::task_helpers::task_target_crates;
 use crate::task_parser::TaskDef;
+use roko_agent::ViolationSeverity;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
 use roko_learn::section_outcome::{
@@ -1013,6 +1016,11 @@ struct RunContext<'a> {
     /// Playbook IDs per attempt key — populated at dispatch, consumed on gate
     /// terminal to call `PlaybookStore::record_outcome`.
     task_playbook_ids: &'a mut HashMap<String, Vec<String>>,
+    /// E07-T04: Knowledge IDs per attempt key — populated at dispatch,
+    /// consumed on gate terminal to reinforce entries via KnowledgeStore.
+    task_knowledge_ids: &'a mut HashMap<String, Vec<String>>,
+    /// E05-T08: Verdict publisher for emitting Kind::GateVerdict engrams.
+    verdict_publisher: &'a roko_gate::VerdictPublisher,
 }
 
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
@@ -1109,6 +1117,43 @@ pub async fn run(
         config.http_event_sink = HttpEventSink::from_env();
     }
 
+    // ── Wire the conductor ring into the feedback facade ──────────────────
+    //
+    // When a roko_conductor::Conductor is present in the config (constructed
+    // via Conductor::from_config from [conductor.watchers.*] in roko.toml),
+    // attach a ConductorRingSink to the feedback facade so watcher signals are
+    // fed into the bounded ring buffer. The conductor + ring are then available
+    // for the periodic supervision tick added in E08-T04.
+    //
+    // Guard on Option — None means conductor supervision is off (tests / smoke
+    // runs). We must not default the conductor on when config is absent.
+    if config.conductor.is_some() {
+        if let Some(ring) = config.conductor_ring.clone() {
+            use super::conductor_adapter::ConductorRingSink;
+            use crate::runtime_feedback::FeedbackFacade;
+
+            let ring_sink = Arc::new(ConductorRingSink::new(ring));
+            // Clone the existing facade (if any) to add the ring sink.
+            // Cloning resets per-sink delivery counters but preserves the
+            // same sink instances. If no facade exists, create a fresh one.
+            let base = config
+                .feedback_facade
+                .as_ref()
+                .map(|arc| arc.as_ref().clone())
+                .unwrap_or_default();
+            let augmented = base.with_sink(ring_sink);
+            config.feedback_facade = Some(Arc::new(augmented));
+            debug!(
+                conductor_ring_capacity = config
+                    .conductor_ring
+                    .as_ref()
+                    .map(|r| r.capacity())
+                    .unwrap_or(0),
+                "conductor ring sink registered on feedback facade"
+            );
+        }
+    }
+
     let max_concurrent_tasks = config.max_concurrent_tasks.max(1);
     let task_timeout_secs = duration_secs(agent_dispatch_timeout(&config));
 
@@ -1129,6 +1174,22 @@ pub async fn run(
     if let Err(err) = std::fs::create_dir_all(&neuro_dir) {
         warn!(error = %err, "failed to create neuro directory");
     }
+
+    // ── Filesystem observability sinks (traces + tool metrics) ────────────
+    //
+    // Reuse the sinks from RunConfig if the caller pre-built them (e.g.,
+    // serve shares its AppState sinks). Otherwise construct from workdir
+    // with best-effort directory initialization — a failed init must not
+    // abort the run.
+    let obs_sinks: Option<FsObservabilitySinks> = config.obs_sinks.clone().or_else(|| {
+        match FsObservabilitySinks::initialized_for_workdir(&config.workdir) {
+            Ok(sinks) => Some(sinks),
+            Err(err) => {
+                debug!(error = %err, "observability sinks init failed (best-effort)");
+                None
+            }
+        }
+    });
 
     // ── Strict resume validation + JSONL recovery ─────────────────────────
     //
@@ -1367,6 +1428,31 @@ pub async fn run(
     let (gate_tx, mut gate_rx) = mpsc::channel::<GateCompletion>(gate_buffer);
     let sink = config.output_sink.as_ref();
 
+    // E05-T08: Create a VerdictPublisher that graduates Pulse → Engram and
+    // appends the result to engrams.jsonl. This replaces the ad-hoc JSON
+    // append to gate-verdicts.jsonl with canonical Kind::GateVerdict engrams
+    // that dashboard and query paths can consume.
+    let engrams_path = config.layout.engrams_path();
+    let verdict_publisher = {
+        let path = engrams_path.clone();
+        roko_gate::VerdictPublisher::new(Arc::new(move |pulse: roko_core::Pulse| {
+            let engram = pulse.graduate(
+                roko_core::Provenance::trusted("runner/gate"),
+                roko_core::Score::default(),
+            );
+            if let Ok(line) = serde_json::to_string(&engram) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+        }))
+    };
+
     // -- Warm cargo cache -------------------------------------------------------
     // Run `cargo check --workspace` once before the main loop so that
     // subsequent per-task compile gates are incremental (2-5s vs 30-120s).
@@ -1406,16 +1492,29 @@ pub async fn run(
     // Refreshed when stale (default 5 min) or after gate failures.
     let mut prompt_cache = Arc::new(PromptCache::load(&config.workdir));
 
-    // Shared agent factory — expensive components (semaphores, MCP tools,
+    // Shared agent factory -- expensive components (semaphores, MCP tools,
     // dispatcher, resolver) created once and reused for every task dispatch.
     let t_factory = Instant::now();
-    let factory = SharedAgentFactory::new(
+    let mut factory = SharedAgentFactory::new(
         config.roko_config.clone().unwrap_or_default(),
         config.mcp_config.as_ref(),
         config.cascade_router.clone(),
         Some(Arc::clone(&prompt_cache)),
     )
     .await;
+
+    // Load persisted learning bidders for prompt composition (E06-T06).
+    let attention_bidders_dir = config.layout.learn_dir();
+    let attention_bidders =
+        crate::dispatch::prompt_builder::load_attention_bidders(&attention_bidders_dir);
+    if !attention_bidders.is_empty() {
+        info!(
+            bidder_count = attention_bidders.len(),
+            "loaded persisted attention bidders"
+        );
+        factory.set_learning_bidders(attention_bidders);
+    }
+
     info!(
         factory_init_ms = t_factory.elapsed().as_millis() as u64,
         "agent factory initialized"
@@ -1503,6 +1602,11 @@ pub async fn run(
     let mut baseline_gate_failures: HashMap<TaskAttemptRef, Vec<String>> = HashMap::new();
     let mut feedback_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
+    // Per-task trace IDs for the observability trace sink. Each
+    // plan_id/task_id combination gets one trace that spans the full
+    // agent dispatch. Keyed by the attempt key string.
+    let mut active_trace_ids: HashMap<String, roko_core::tool::trace::TraceId> = HashMap::new();
+
     // Track prompt section diagnostics per attempt so gate completions can
     // build SectionOutcomeRecords joining section presence to pass/fail.
     let mut section_diagnostics: HashMap<String, PromptDiagnostics> = HashMap::new();
@@ -1516,6 +1620,11 @@ pub async fn run(
     // "{plan_id}:{task_id}:{attempt}"). Populated at dispatch time from prompt
     // diagnostics so the gate terminal handler can call record_outcome.
     let mut task_playbook_ids: HashMap<String, Vec<String>> = HashMap::new();
+
+    // E07-T04: Knowledge IDs injected per task attempt (keyed by attempt key).
+    // Populated at dispatch time, consumed on gate terminal to reinforce
+    // entries via KnowledgeStore so the demurrage balance loop has positive income.
+    let mut task_knowledge_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     // skip_enrichment is a plan-level DAG phase control: when true, the plan
     // transitions directly from "started" to "implementing", bypassing the
@@ -1531,6 +1640,20 @@ pub async fn run(
 
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
+    let mut target_size_interval = interval(Duration::from_secs(60));
+    // Register a gauge for the target/ directory size if the metric
+    // registry is available. The gauge is updated on a slow interval
+    // (60 s) to avoid walking the potentially large directory tree on
+    // every tick.
+    let target_dir_size_gauge: Option<roko_core::obs::metrics::Gauge> =
+        config.metrics.as_ref().map(|m| {
+            m.register_gauge(
+                roko_core::obs::schema::ROKO_TARGET_DIR_SIZE_BYTES,
+                "Size of the Rust target/ directory in bytes",
+                roko_core::obs::metrics::LabelSet::new(),
+            )
+        });
+    let target_dir_path = config.workdir.join("target");
     let plan_timeout_duration = plan_total_timeout(&config);
     let agent_timeout_duration = agent_dispatch_timeout(&config);
     let timeout_config = config
@@ -1698,6 +1821,7 @@ pub async fn run(
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
+        //   Branch 4b (target_size_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
         tokio::select! {
@@ -1847,7 +1971,7 @@ pub async fn run(
                 }
                 restore_task_runtime(&mut state, &task_runtime_states, &event_attempt);
                 let turn_completed_before_event = state.agent_turn_completed;
-                let turn_error = terminal_failure.is_some();
+                let mut turn_error = terminal_failure.is_some();
 
                 handle_agent_event(&event, &mut state, &tui, sink);
                 append_agent_event(&paths, &event, &state);
@@ -1876,6 +2000,84 @@ pub async fn run(
                                 agent_id: format!("{}/{}", state.plan_id, state.current_task),
                                 chunk: text.clone(),
                             });
+                        }
+                        _ => {}
+                    }
+                }
+
+                // ── Filesystem observability sinks (trace + tool metrics) ──
+                if let Some(ref sinks) = obs_sinks {
+                    let attempt_key = event_attempt.key();
+                    match &event {
+                        AgentEvent::ToolCall { id: _, name } => {
+                            let trace_id = *active_trace_ids
+                                .entry(attempt_key)
+                                .or_insert_with(make_obs_trace_id);
+                            sinks.trace_sink.append(
+                                trace_id,
+                                ToolTraceEvent::Custom {
+                                    name: format!("tool_call:{name}"),
+                                    data: serde_json::json!({
+                                        "plan_id": event_plan_id,
+                                        "task_id": event_task_id,
+                                        "tool": name,
+                                    }),
+                                    at_ms: now_unix_ms(),
+                                },
+                            );
+                        }
+                        AgentEvent::ToolOutput { id: _, output } => {
+                            if let Some(&trace_id) = active_trace_ids.get(&attempt_key) {
+                                sinks.trace_sink.append(
+                                    trace_id,
+                                    ToolTraceEvent::Custom {
+                                        name: "tool_output".into(),
+                                        data: serde_json::json!({
+                                            "plan_id": event_plan_id,
+                                            "task_id": event_task_id,
+                                            "output_len": output.len(),
+                                        }),
+                                        at_ms: now_unix_ms(),
+                                    },
+                                );
+                            }
+                        }
+                        AgentEvent::TurnCompleted {
+                            total_cost_usd,
+                            num_turns,
+                            ..
+                        } => {
+                            // Record a per-task aggregate metrics snapshot.
+                            let key = roko_core::tool::MetricsKey {
+                                tool: "agent_turn".into(),
+                                model: state.agent_model.clone(),
+                                role: roko_core::agent::AgentRole::Implementer,
+                                format: roko_core::tool::ToolFormat::AnthropicBlocks,
+                            };
+                            let metrics = roko_core::tool::ToolMetrics {
+                                samples: num_turns.unwrap_or(1) as u32,
+                                ..Default::default()
+                            };
+                            sinks.metrics_sink.record(&key, &metrics);
+
+                            // Close the trace for this attempt.
+                            if let Some(trace_id) = active_trace_ids.remove(&attempt_key) {
+                                sinks.trace_sink.append(
+                                    trace_id,
+                                    ToolTraceEvent::Custom {
+                                        name: "turn_completed".into(),
+                                        data: serde_json::json!({
+                                            "plan_id": event_plan_id,
+                                            "task_id": event_task_id,
+                                            "cost_usd": total_cost_usd,
+                                            "num_turns": num_turns,
+                                            "tokens_in": state.tokens_in,
+                                            "tokens_out": state.tokens_out,
+                                        }),
+                                        at_ms: now_unix_ms(),
+                                    },
+                                );
+                            }
                         }
                         _ => {}
                     }
@@ -1954,6 +2156,45 @@ pub async fn run(
                         &tui,
                     )
                     .await;
+
+                    // ── E04-T06: Post-dispatch safety check ──────────────
+                    if let Some(ref safety) = config.safety_layer {
+                        let changed_files: Vec<String> = Vec::new();
+                        let violations = safety.post_dispatch_check(
+                            &state.plan_id,
+                            &state.current_task,
+                            task_role,
+                            &state.agent_output,
+                            &changed_files,
+                        );
+                        let has_block = violations
+                            .iter()
+                            .any(|v| v.severity == ViolationSeverity::Block);
+                        for violation in &violations {
+                            warn!(
+                                plan_id = %state.plan_id,
+                                task = %state.current_task,
+                                violation_type = %violation.violation_type,
+                                severity = ?violation.severity,
+                                "post-dispatch safety violation: {}",
+                                violation.message,
+                            );
+                        }
+                        if has_block && !turn_error {
+                            // Promote to a turn error so the task fails
+                            // instead of proceeding to gating.
+                            turn_error = true;
+                            let block_messages: Vec<String> = violations
+                                .iter()
+                                .filter(|v| v.severity == ViolationSeverity::Block)
+                                .map(|v| format!("{}: {}", v.violation_type, v.message))
+                                .collect();
+                            terminal_failure = Some(format!(
+                                "post-dispatch safety block: {}",
+                                block_messages.join("; ")
+                            ));
+                        }
+                    }
 
                     let plan_id = state.plan_id.clone();
                     if !plan_id.is_empty() {
@@ -2622,11 +2863,19 @@ pub async fn run(
                     .max_retries
                     .min(gate_thresholds.suggested_max_retries(completion.rung));
 
-                update_gate_thresholds(
-                    &mut gate_thresholds,
-                    completion.rung,
-                    completion.passed,
-                );
+                // E05-T03: Only observe the rung into the adaptive EMA when at
+                // least one non-skipped verdict exists. A rung whose verdicts
+                // are ALL stubs/not-wired carries no real signal and would
+                // inflate the pass rate toward 1.0 (F2/F3).
+                let all_skipped = !completion.verdicts.is_empty()
+                    && completion.verdicts.iter().all(|v| v.skipped);
+                if !all_skipped {
+                    update_gate_thresholds(
+                        &mut gate_thresholds,
+                        completion.rung,
+                        completion.passed,
+                    );
+                }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
 
                 // Publish gate result to the learning event bus so the
@@ -2641,7 +2890,11 @@ pub async fn run(
                     },
                 );
 
-                // Append gate verdict to signals.jsonl for audit / replay.
+                // E05-T08: Live gate verdicts are now published as
+                // Kind::GateVerdict engrams via VerdictPublisher (wired
+                // into gate_dispatch::run_gate_once). The canonical path
+                // is engrams.jsonl. Legacy gate-verdicts.jsonl retained
+                // for backward-compatible tooling.
                 {
                     let verdict_json = serde_json::json!({
                         "kind": "GateVerdict",
@@ -2653,11 +2906,11 @@ pub async fn run(
                         "duration_ms": completion.duration_ms,
                         "timestamp": chrono::Utc::now().to_rfc3339(),
                     });
-                    let signals_path = config.layout.signals_path();
+                    let verdicts_path = config.layout.gate_verdicts_path();
                     if let Ok(mut f) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(&signals_path)
+                        .open(&verdicts_path)
                     {
                         use std::io::Write;
                         let _ = writeln!(f, "{}", verdict_json);
@@ -2801,6 +3054,27 @@ pub async fn run(
                                     }
                                 }
                             }
+                        });
+                    }
+                }
+
+                // ── E07-T04: Knowledge reinforcement ────────────────────────
+                // Reinforce knowledge entries that were surfaced in this
+                // task's prompt context. Gate pass gets a Gated signal;
+                // failure still records a Retrieved signal. Errors are
+                // logged and never fail the task.
+                {
+                    let attempt_key = completion_attempt.key();
+                    if let Some(k_ids) = task_knowledge_ids.remove(&attempt_key) {
+                        let workdir = config.workdir.clone();
+                        let gate_passed = completion.passed;
+                        feedback_tasks.spawn(async move {
+                            let store = KnowledgeStore::for_workdir(&workdir);
+                            crate::knowledge_helpers::reinforce_knowledge_on_completion(
+                                &store,
+                                &k_ids,
+                                gate_passed,
+                            );
                         });
                     }
                 }
@@ -3449,6 +3723,8 @@ pub async fn run(
                         baseline_gate_failures: &mut baseline_gate_failures,
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
+                        task_knowledge_ids: &mut task_knowledge_ids,
+                        verdict_publisher: &verdict_publisher,
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
@@ -3519,6 +3795,14 @@ pub async fn run(
                     if !pids.is_empty() {
                         let _ = persist::save_agent_pids(&paths, &pids);
                     }
+                }
+            }
+
+            // ─── Branch 4b: Target directory size gauge ─────────────
+            _ = target_size_interval.tick() => {
+                if let Some(ref gauge) = target_dir_size_gauge {
+                    let size = compute_target_dir_size_bytes(&target_dir_path).await;
+                    gauge.set(size as i64);
                 }
             }
 
@@ -3627,6 +3911,17 @@ pub async fn run(
 
     // Shutdown Phase 0 subsystems and persist learned state.
     shutdown_subsystems(config, &tui).await;
+
+    // Persist attention bidders learned during this run (E06-T06).
+    {
+        let bidders = factory.dispatcher().prompt_assembler().learning_bidders();
+        if !bidders.is_empty() {
+            crate::dispatch::prompt_builder::save_attention_bidders(
+                &attention_bidders_dir,
+                bidders,
+            );
+        }
+    }
 
     if dream_completion_pending && !cancel.is_cancelled() {
         run_dream_consolidation_if_enabled(config).await;
@@ -5607,6 +5902,14 @@ fn save_snapshot(
         }
     };
 
+    // Materialize the standalone .roko/learn/gate-thresholds.json file so
+    // serve, TUI, and ACP readers always have an up-to-date copy without
+    // needing to parse the full state-snapshot.json. The embedded field in
+    // the unified snapshot is still the authoritative resume source.
+    if let Err(e) = persist::save_gate_thresholds(paths, gate_thresholds) {
+        warn!(error = %e, "failed to materialize gate-thresholds.json");
+    }
+
     let unified = roko_runtime::StateSnapshot::new(
         timestamp_ms,
         executor_json,
@@ -5628,6 +5931,13 @@ fn save_snapshot(
         snapshot_json,
         snapshot_path: paths.state_snapshot_json.clone(),
     });
+
+    // E05-T01: Also persist gate thresholds to the standalone learn file so
+    // `roko learn tune gates` and cross-run adaptation can read it without
+    // parsing the unified snapshot.  Best-effort: log and continue.
+    if let Err(e) = gate_thresholds.save(&paths.gate_thresholds_json) {
+        warn!(error = %e, "failed to persist gate thresholds to learn file");
+    }
 }
 
 fn restore_state_from_resume_snapshot(
@@ -6546,6 +6856,8 @@ async fn dispatch_action(
                         ctx.gate_tx.clone(),
                         ctx.gate_sem.clone(),
                         task_target_crates(Some(task_def)),
+                        Some(ctx.verdict_publisher.clone()),
+                        gate_dispatch::GateTaskContext::from_task_def(plan_id, Some(task_def)),
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -6748,35 +7060,43 @@ async fn dispatch_action(
                     return ActionDispatchOutcome::Noop;
                 }
             };
-            let baseline_model = dispatch_plan.model.slug.clone();
-            let baseline_score = knowledge_advice.score_for(&baseline_model);
             let mut selected_source = "dispatcher".to_string();
             let allow_learned_model_modulation =
                 task_def.model_hint.is_none() && !dispatch_plan.forced;
+            // ── Knowledge-aware cascade selection (E07-T09) ──────────────────
+            //
+            // Use the same `select_for_frequency_among_with_knowledge` path as
+            // the legacy orchestrate path instead of the manual post-selection
+            // score nudge.  The cascade router injects knowledge hints *during*
+            // model selection so the bandit and confidence-stage logic receive
+            // the advice in the right place rather than as a post-hoc override.
             if allow_learned_model_modulation {
-                if let Some(best_hint) = knowledge_advice
-                    .hints
-                    .iter()
-                    .filter(|hint| hint.model_slug != baseline_model)
-                    .max_by(|left, right| {
-                        left.score
-                            .total_cmp(&right.score)
-                            .then_with(|| left.model_slug.cmp(&right.model_slug))
-                    })
-                {
-                    if best_hint.score + bias_weight > baseline_score {
-                        debug!(
-                            from = %baseline_model,
-                            to = %best_hint.model_slug,
-                            baseline_score,
-                            hint_score = best_hint.score,
-                            bias_weight = bias_weight,
-                            reason = %best_hint.reason,
-                            supporting_entries = best_hint.supporting_entries,
-                            "knowledge store nudged model selection"
-                        );
-                        dispatch_plan.model = ModelSpec::from_slug(best_hint.model_slug.clone());
-                        selected_source = "dispatcher+knowledge".to_string();
+                if let Some(router) = ctx.config.cascade_router.as_deref() {
+                    let knowledge_ref = if knowledge_advice.has_signal {
+                        Some(&knowledge_advice)
+                    } else {
+                        None
+                    };
+                    if let Some(selected) = router.select_for_frequency_among_with_knowledge(
+                        roko_core::OperatingFrequency::Theta,
+                        dispatch_ctx.routing_context.as_ref(),
+                        None, // cfactor not threaded into runner-v2 dispatch
+                        Some(task_id.as_str()),
+                        &knowledge_candidates,
+                        knowledge_ref,
+                    ) {
+                        if selected.slug != dispatch_plan.model.slug {
+                            debug!(
+                                from = %dispatch_plan.model.slug,
+                                to = %selected.slug,
+                                knowledge_hints = knowledge_ref.map_or(0, |a| a.hints.len()),
+                                "knowledge-aware cascade selection changed model"
+                            );
+                            dispatch_plan.model = selected;
+                            selected_source = "cascade+knowledge".to_string();
+                        } else {
+                            selected_source = "cascade".to_string();
+                        }
                     }
                 }
             }
@@ -6802,8 +7122,8 @@ async fn dispatch_action(
                         "daimon modulated dispatch"
                     );
                     dispatch_plan.model = ModelSpec::from_slug(modulation.model.clone());
-                    selected_source = if selected_source == "dispatcher+knowledge" {
-                        "dispatcher+knowledge+daimon".to_string()
+                    selected_source = if selected_source == "cascade+knowledge" {
+                        "cascade+knowledge+daimon".to_string()
                     } else {
                         "dispatcher+daimon".to_string()
                     };
@@ -6819,6 +7139,13 @@ async fn dispatch_action(
                 if !prompt_diagnostics.playbook_ids.is_empty() {
                     ctx.task_playbook_ids
                         .insert(attempt_key.clone(), prompt_diagnostics.playbook_ids.clone());
+                }
+                // E07-T04: Store knowledge IDs so gate terminal can reinforce entries.
+                if !prompt_diagnostics.knowledge_ids.is_empty() {
+                    ctx.task_knowledge_ids.insert(
+                        attempt_key.clone(),
+                        prompt_diagnostics.knowledge_ids.clone(),
+                    );
                 }
                 ctx.section_diagnostics
                     .insert(attempt_key, prompt_diagnostics.clone());
@@ -6984,6 +7311,39 @@ async fn dispatch_action(
                 ),
             );
 
+            // ── E04-T06: Pre-dispatch safety check ───────────────────
+            if let Some(ref safety) = ctx.config.safety_layer {
+                if let Err(violation) =
+                    safety.pre_dispatch_check(plan_id, &task_id, role, &plan_workdir)
+                {
+                    error!(
+                        plan_id = %plan_id,
+                        task = %task_id,
+                        violation_type = %violation.violation_type,
+                        "pre-dispatch safety check blocked CLI dispatch: {}",
+                        violation.message,
+                    );
+                    let message = format!("pre-dispatch safety violation: {}", violation.message);
+                    if is_dag_task_spawn {
+                        ctx.task_dag.clear_running(plan_id, &task_id);
+                    }
+                    ctx.task_runtime_states.remove(&attempt_ref.key());
+                    if let Err(e) = ctx
+                        .executor
+                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                    {
+                        error!(plan_id = %plan_id, error = %e,
+                            "failed to apply Fatal event -- forcing plan terminal");
+                        ctx.state.force_plan_terminal(plan_id);
+                    }
+                    ctx.tui.error(&message);
+                    ctx.attempt_ownership
+                        .complete_claim(dispatch_claim)
+                        .expect("safety rejection must release ownership");
+                    return ActionDispatchOutcome::Noop;
+                }
+            }
+
             match dispatch {
                 ResolvedAgentRuntime::Cli {
                     model,
@@ -7042,7 +7402,14 @@ async fn dispatch_action(
                                     None,
                                 ),
                             );
-                            ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &model_display);
+                            ctx.tui.agent_spawned(
+                                &agent_id,
+                                plan_id,
+                                &task_id,
+                                attempt_ref.attempt,
+                                role,
+                                &model_display,
+                            );
                             ctx.tui.task_started(
                                 plan_id,
                                 &task_id,
@@ -7241,7 +7608,14 @@ async fn dispatch_action(
                             None,
                         ),
                     );
-                    ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &format!("{provider_id}:{model}"));
+                    ctx.tui.agent_spawned(
+                        &agent_id,
+                        plan_id,
+                        &task_id,
+                        attempt_ref.attempt,
+                        role,
+                        &format!("{provider_id}:{model}"),
+                    );
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     dispatch_claim.set_agent(agent_id.clone(), None);
@@ -7451,6 +7825,8 @@ async fn dispatch_action(
                     ctx.gate_tx.clone(),
                     ctx.gate_sem.clone(),
                     target_crates,
+                    Some(ctx.verdict_publisher.clone()),
+                    gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
                 )
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
@@ -7741,7 +8117,15 @@ async fn dispatch_action(
                 ctx.state,
                 ctx.tui,
                 ctx.config,
-                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None, 0.0, 0, 0),
+                RunnerEvent::plan_completed(
+                    &run_id,
+                    plan_id,
+                    PlanOutcome::Succeeded,
+                    None,
+                    0.0,
+                    0,
+                    0,
+                ),
             );
             save_snapshot(
                 ctx.config,
@@ -8246,10 +8630,10 @@ async fn shutdown_subsystems(config: &RunConfig, tui: &TuiBridge) {
 
 /// Compact the episode log if it exceeds the retention threshold.
 ///
-/// Uses the default [`RetentionPolicy`] (200 episodes, 90 days).
+/// Uses the default [`EpisodeRetentionPolicy`] (200 episodes, 90 days).
 /// Errors are logged but never propagated — compaction is best-effort.
 async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
-    use roko_learn::episode_logger::{EpisodeLogger, RetentionPolicy};
+    use roko_learn::episode_logger::{EpisodeLogger, EpisodeRetentionPolicy};
 
     // Use metadata probe instead of .exists() to avoid TOCTOU.
     // If the file doesn't exist, there's nothing to compact.
@@ -8263,7 +8647,7 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
     }
 
     let logger = EpisodeLogger::new(episodes_path.to_path_buf());
-    let policy = RetentionPolicy::default();
+    let policy = EpisodeRetentionPolicy::default();
     let now = chrono::Utc::now();
 
     match logger.compact(now, &policy).await {
@@ -11485,6 +11869,73 @@ fn classify_report_task(
     }
 }
 
+/// Generate a random trace ID for filesystem observability sinks.
+fn make_obs_trace_id() -> roko_core::tool::trace::TraceId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    let h1 = hasher.finish();
+    // Produce a second half by folding with a constant.
+    "roko-runner-trace".hash(&mut hasher);
+    let h2 = hasher.finish();
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&h1.to_le_bytes());
+    bytes[8..].copy_from_slice(&h2.to_le_bytes());
+    roko_core::tool::trace::TraceId::from_bytes(bytes)
+}
+
+/// Current UTC timestamp as milliseconds since epoch.
+#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0_i64, |d| d.as_millis() as i64)
+}
+
+/// Compute the total size of the `target/` directory in bytes.
+///
+/// Best-effort: returns 0 if the directory does not exist or cannot be
+/// read. Individual unreadable entries are silently skipped. This walks
+/// the full directory tree, so it should only be called on a slow
+/// interval (60 s+) — never on every event-loop tick.
+async fn compute_target_dir_size_bytes(target_dir: &Path) -> u64 {
+    let Ok(mut entries) = tokio::fs::read_dir(target_dir).await else {
+        return 0;
+    };
+    let mut total = 0u64;
+    let mut stack: Vec<PathBuf> = Vec::new();
+    // Seed with top-level entries.
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(meta) = entry.metadata().await else {
+            continue;
+        };
+        if meta.is_dir() {
+            stack.push(entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    // Walk subdirectories iteratively.
+    while let Some(dir) = stack.pop() {
+        let Ok(mut sub_entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = sub_entries.next_entry().await {
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12065,7 +12516,9 @@ slug = "fixture-model"
         let mut baseline_gate_failures = HashMap::new();
         let mut diagnostics = HashMap::new();
         let mut playbooks = HashMap::new();
+        let mut knowledge_ids = HashMap::new();
         let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let test_verdict_publisher = roko_gate::VerdictPublisher::new(Arc::new(|_pulse| {}));
         let mut ctx = RunContext {
             executor: &mut executor,
             task_dag: &mut task_dag,
@@ -12095,6 +12548,8 @@ slug = "fixture-model"
             baseline_gate_failures: &mut baseline_gate_failures,
             section_diagnostics: &mut diagnostics,
             task_playbook_ids: &mut playbooks,
+            task_knowledge_ids: &mut knowledge_ids,
+            verdict_publisher: &test_verdict_publisher,
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),

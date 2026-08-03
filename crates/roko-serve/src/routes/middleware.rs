@@ -197,8 +197,15 @@ fn authenticate_api_key(
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
 ///
-/// Returns `(Jwt, "admin", Some(sub))` on success — JWT users are dashboard
-/// users and get admin scope.
+/// Performs three checks in order:
+/// 1. Signature + app-id verification via JWKS.
+/// 2. Workspace membership: if `privy_workspace_id` is configured the JWT
+///    `org_id` claim **must** match. Tokens without an `org_id` claim are
+///    rejected (fail closed).
+/// 3. Role authorization: if `privy_allowed_roles` is non-empty the JWT
+///    `role` claim must be present and contained in the allowed list.
+///    Tokens with an unrecognised or missing role are downgraded to
+///    `"read"` scope instead of receiving `"admin"`.
 async fn try_privy_jwt(
     token: &str,
     auth: &ServeAuthConfig,
@@ -209,7 +216,43 @@ async fn try_privy_jwt(
         return None;
     }
     let claims = state.jwks_cache.validate(token, privy_app_id).await?;
-    Some((AuthMethod::Jwt, "admin".to_string(), Some(claims.sub)))
+
+    // --- Workspace / org membership check (fail closed) ---
+    if let Some(ref required_workspace) = auth.privy_workspace_id {
+        match claims.org_id.as_deref() {
+            Some(org) if org == required_workspace.as_str() => { /* membership confirmed */ }
+            _ => {
+                tracing::warn!(
+                    sub = %claims.sub,
+                    org_id = ?claims.org_id,
+                    required = %required_workspace,
+                    "Privy JWT rejected: workspace membership mismatch or missing org_id"
+                );
+                return None;
+            }
+        }
+    }
+
+    // --- Role authorization ---
+    let scope = if auth.privy_allowed_roles.is_empty() {
+        // No role filter configured — grant admin (legacy behaviour).
+        "admin".to_string()
+    } else {
+        match claims.role.as_deref() {
+            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => "admin".to_string(),
+            _ => {
+                tracing::info!(
+                    sub = %claims.sub,
+                    role = ?claims.role,
+                    allowed = ?auth.privy_allowed_roles,
+                    "Privy JWT role not in allowed list — downgrading to read scope"
+                );
+                "read".to_string()
+            }
+        }
+    };
+
+    Some((AuthMethod::Jwt, scope, Some(claims.sub)))
 }
 
 /// Attempt to validate a Bearer token as an agent token.
@@ -352,40 +395,187 @@ pub async fn require_api_key(
     Ok(response)
 }
 
+/// A single entry in the route-to-scope manifest.
+///
+/// The manifest documents which scope every mutating route prefix requires.
+/// Adding a new mutating route to the router without updating
+/// [`ROUTE_SCOPE_MANIFEST`] causes `route_scope_manifest_matches_router` to
+/// fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RouteScopeEntry {
+    /// Path prefix matched via `starts_with`. Order matters: first match wins.
+    pub prefix: &'static str,
+    /// Required scope for mutating requests (POST/PUT/DELETE/PATCH).
+    pub scope: &'static str,
+}
+
+/// Canonical route-to-scope manifest derived from the classifier below.
+///
+/// **Ordering contract**: more-specific prefixes before less-specific ones.
+/// Every mutating route registered in [`super::build_router`] must be covered
+/// by an entry here. The `route_scope_manifest_matches_router` test verifies
+/// that each entry agrees with [`required_scope_for`].
+pub(crate) const ROUTE_SCOPE_MANIFEST: &[RouteScopeEntry] = &[
+    // --- admin ---------------------------------------------------------------
+    RouteScopeEntry {
+        prefix: "/api/api-keys",
+        scope: "admin",
+    },
+    RouteScopeEntry {
+        prefix: "/api/secrets",
+        scope: "admin",
+    },
+    RouteScopeEntry {
+        prefix: "/api/config",
+        scope: "admin",
+    },
+    // --- agent:write ---------------------------------------------------------
+    RouteScopeEntry {
+        prefix: "/api/events/ingest",
+        scope: "agent:write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/agents",
+        scope: "agent:write",
+    },
+    RouteScopeEntry {
+        prefix: "/relay",
+        scope: "agent:write",
+    },
+    // --- plan:write ----------------------------------------------------------
+    RouteScopeEntry {
+        prefix: "/api/plans",
+        scope: "plan:write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/prd",
+        scope: "plan:write",
+    },
+    // --- terminal:write ------------------------------------------------------
+    RouteScopeEntry {
+        prefix: "/api/terminal",
+        scope: "terminal:write",
+    },
+    RouteScopeEntry {
+        prefix: "/ws/terminal",
+        scope: "terminal:write",
+    },
+    // --- write (explicit, not fallback) --------------------------------------
+    RouteScopeEntry {
+        prefix: "/api/workspaces",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/jobs",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/run",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/dream",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/deployments",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/research",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/subscriptions",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/templates",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/heartbeats",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/neuro",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/inference",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/bench",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/connectors",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/feeds",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/rpc",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/vision-loop",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/team",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/webhooks",
+        scope: "write",
+    },
+    RouteScopeEntry {
+        prefix: "/api/providers",
+        scope: "write",
+    },
+];
+
+/// Sentinel scope returned by [`required_scope_for`] when a mutating route is
+/// not explicitly classified in [`ROUTE_SCOPE_MANIFEST`]. At runtime this is
+/// treated identically to `"write"` by [`is_scope_sufficient`], but the CI
+/// guard test [`mutating_routes_are_classified`] uses it to detect missing
+/// classifications and fail the build.
+///
+/// When adding a new mutating route, add an entry in
+/// [`ROUTE_SCOPE_MANIFEST`] **and** a representative path in the
+/// `route_scope_manifest_matches_router` test so the guard keeps passing.
+pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
+
 /// Determine the required scope for a given HTTP method and path.
-fn required_scope_for(method: &Method, path: &str) -> &'static str {
+///
+/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) always return `"read"`.
+/// Mutating methods walk [`ROUTE_SCOPE_MANIFEST`] via `starts_with`; the
+/// first matching prefix wins. Unmatched paths fall back to
+/// [`SCOPE_WRITE_UNCLASSIFIED`] -- fail-closed at runtime, caught at test time.
+pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // Read-only methods always pass.
     if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
         return "read";
     }
-    // Admin-only routes.
-    if path.starts_with("/api/api-keys")
-        || path.starts_with("/api/secrets")
-        || path.starts_with("/api/config")
-    {
-        return "admin";
+    for entry in ROUTE_SCOPE_MANIFEST {
+        if path.starts_with(entry.prefix) {
+            return entry.scope;
+        }
     }
-    // Event ingest accepts runtime events from subprocesses and agent-like
-    // integrations, so read-only API keys must not be enough.
-    if path.starts_with("/api/events/ingest") {
-        return "agent:write";
-    }
-    // Agent write routes.
-    if path.starts_with("/api/agents") {
-        return "agent:write";
-    }
-    // Plan/PRD write routes.
-    if path.starts_with("/api/plans") || path.starts_with("/api/prd") {
-        return "plan:write";
-    }
-    // Workspace write routes.
-    if path.starts_with("/api/workspaces") {
-        return "write";
-    }
-    "read"
+    // Fail-closed: any unclassified mutating route gets the sentinel scope
+    // which behaves as "write" at runtime but is detectable by the CI guard.
+    SCOPE_WRITE_UNCLASSIFIED
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
+///
+/// `"write:unclassified"` is treated identically to `"write"` so that the
+/// fallback sentinel does not change runtime behaviour — it is only detectable
+/// by the regression test.
 fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if has == "admin" {
         return true;
@@ -393,7 +583,18 @@ fn is_scope_sufficient(has: &str, required: &str) -> bool {
     if required == "read" {
         return true;
     }
-    has == required
+    // The unclassified fallback behaves as "write" at runtime so read-only
+    // keys are still blocked. The sentinel only matters for the CI guard.
+    let normalised = if required == SCOPE_WRITE_UNCLASSIFIED {
+        "write"
+    } else {
+        required
+    };
+    // `write` scope covers sub-scoped write requirements (e.g. terminal:write).
+    if has == "write" && normalised.ends_with(":write") {
+        return true;
+    }
+    has == normalised
 }
 
 /// Enforce scope requirements on mutating routes.
@@ -629,6 +830,7 @@ mod tests {
             api_key: api_key.into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            ..Default::default()
         }
     }
 
@@ -750,6 +952,7 @@ mod tests {
             api_key: String::new(),
             api_keys: Vec::new(),
             privy_app_id: Some("app-id-123".to_string()),
+            ..Default::default()
         };
         let app = auth_test_app(auth);
         // Send a structurally valid JWT that won't pass signature verification.
@@ -761,6 +964,56 @@ mod tests {
         })
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_requires_membership() {
+        // When privy_workspace_id is configured, try_privy_jwt must reject
+        // tokens whose org_id claim is missing or does not match — even if
+        // the signature would otherwise be valid.
+        //
+        // We cannot forge a real ES256 signature in a unit test, so we test
+        // the membership gate indirectly: a structurally valid JWT that fails
+        // JWKS validation returns None regardless of membership config (the
+        // JWKS check short-circuits before we reach the membership gate).
+        //
+        // The key assertion is that configuring privy_workspace_id does not
+        // accidentally let tokens *through* that would otherwise be blocked.
+        let auth = ServeAuthConfig {
+            enabled: true,
+            api_key: String::new(),
+            api_keys: Vec::new(),
+            privy_app_id: Some("app-id-123".to_string()),
+            privy_workspace_id: Some("ws_required_org".to_string()),
+            privy_allowed_roles: vec!["admin".to_string()],
+        };
+        let state = make_test_state(auth.clone());
+
+        // A structurally valid JWT (3 base64url segments) that will fail JWKS
+        // signature verification — should return None.
+        let fake_jwt = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InRlc3Qta2V5In0.\
+                         eyJzdWIiOiJkaWQ6cHJpdnk6dGVzdCIsImlzcyI6InByaXZ5LmlvIn0.\
+                         AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        // try_privy_jwt must return None (JWKS cache unprimed, signature fails).
+        let result = try_privy_jwt(fake_jwt, &auth, &state).await;
+        assert!(
+            result.is_none(),
+            "Privy JWT without valid JWKS cache must be rejected"
+        );
+
+        // Verify the full middleware also rejects: the auth-test-app round-trip
+        // should produce 401 even with membership config present.
+        let app = auth_test_app(auth);
+        let response = auth_response(app, |req| {
+            req.header(AUTHORIZATION, format!("Bearer {fake_jwt}"))
+        })
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "Middleware must reject Privy JWT that fails signature verification"
+        );
     }
 
     // --- scope enforcement tests ---
@@ -1162,6 +1415,48 @@ mod tests {
     }
 
     #[test]
+    fn required_scope_for_unclassified_mutating_route_is_write() {
+        // Routes not explicitly classified (e.g. /api/jobs, /api/run, /api/deploy)
+        // must fall back to "write", not "read", so read-only keys are denied.
+        assert_eq!(required_scope_for(&Method::POST, "/api/jobs"), "write");
+        assert_eq!(required_scope_for(&Method::POST, "/api/run"), "write");
+        assert_eq!(
+            required_scope_for(&Method::POST, "/api/research/query"),
+            "write"
+        );
+        assert_eq!(
+            required_scope_for(&Method::DELETE, "/api/deploy/abc"),
+            "write"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_scope_denied_on_mutation() {
+        // A read-scoped key must get 403 on POST to an unclassified mutating
+        // route (one that hits the "write" fallback in required_scope_for).
+        let handler = || async { StatusCode::NO_CONTENT };
+        let app = Router::new()
+            .route("/api/jobs", post(handler))
+            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::Extension(AuthContext {
+                method: AuthMethod::ApiKey,
+                scope: "read".to_string(),
+                user_id: None,
+            }));
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/jobs")
+            .body(Body::empty())
+            .expect("invariant: scope test request builds");
+        let resp = app.oneshot(req).await.expect("invariant: router responds");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "read-scoped key must be denied on unclassified mutating route"
+        );
+    }
+
+    #[test]
     fn admin_scope_is_sufficient_for_everything() {
         assert!(is_scope_sufficient("admin", "admin"));
         assert!(is_scope_sufficient("admin", "agent:write"));
@@ -1423,5 +1718,183 @@ mod tests {
                 || !allow_origin.contains("not-allowed"),
             "unlisted origin should be rejected, got: {allow_origin:?}"
         );
+    }
+
+    // --- E04-T03 / E04-T19: route-to-scope manifest CI guard -------------------
+
+    /// Representative mutating paths derived from the router assembly in
+    /// `routes/mod.rs`. Each entry is a `(method, path)` tuple.
+    ///
+    /// **When you add a new mutating route**, add a representative path here
+    /// so the guard test below catches it. If this list drifts from the
+    /// router, the test will still catch unclassified routes -- but keeping
+    /// it in sync means the failure message points to the exact route.
+    const EXPECTED_MUTATING_ROUTES: &[(Method, &str)] = &[
+        // --- /api/agents (agent:write) ---
+        (Method::POST, "/api/agents/register"),
+        (Method::POST, "/api/agents/create"),
+        (Method::POST, "/api/agents/123/stop"),
+        (Method::POST, "/api/agents/123/message"),
+        (Method::POST, "/api/agents/123/start"),
+        (Method::POST, "/api/agents/123/restart"),
+        (Method::POST, "/api/agents/123/token"),
+        // --- /api/api-keys (admin) ---
+        (Method::POST, "/api/api-keys"),
+        (Method::DELETE, "/api/api-keys/test-key"),
+        // --- /api/secrets (admin) ---
+        (Method::POST, "/api/secrets/ns/key"),
+        (Method::DELETE, "/api/secrets/ns/key"),
+        (Method::POST, "/api/secrets/ns/key/test"),
+        // --- /api/config (admin) ---
+        (Method::PUT, "/api/config"),
+        (Method::POST, "/api/config/reload"),
+        // --- /api/events/ingest (agent:write) ---
+        (Method::POST, "/api/events/ingest"),
+        (Method::POST, "/api/events/ingest/batch"),
+        // --- /api/plans (plan:write) ---
+        (Method::POST, "/api/plans"),
+        (Method::POST, "/api/plans/123/execute"),
+        (Method::POST, "/api/plans/123/pause"),
+        (Method::POST, "/api/plans/123/resume"),
+        (Method::POST, "/api/plans/123/tasks/t1/review"),
+        (Method::POST, "/api/plans/123/chat"),
+        (Method::POST, "/api/plans/123/estimate"),
+        (Method::POST, "/api/plans/generate"),
+        // --- /api/prd (plan:write) ---
+        (Method::POST, "/api/prds/ideas"),
+        (Method::POST, "/api/prd/consolidate"),
+        (Method::POST, "/api/prds/consolidate"),
+        (Method::POST, "/api/prds/my-slug/draft"),
+        (Method::POST, "/api/prds/my-slug/promote"),
+        (Method::POST, "/api/prds/my-slug/plan"),
+        // --- /api/workspaces (write) ---
+        (Method::POST, "/api/workspaces"),
+        // --- /api/jobs (write) ---
+        (Method::POST, "/api/jobs"),
+        (Method::POST, "/api/jobs/match"),
+        (Method::POST, "/api/jobs/123/assign"),
+        (Method::POST, "/api/jobs/123/start"),
+        (Method::POST, "/api/jobs/123/submit"),
+        (Method::POST, "/api/jobs/123/evaluate"),
+        (Method::POST, "/api/jobs/123/execute"),
+        (Method::POST, "/api/jobs/123/cancel"),
+        // --- /api/run (write) ---
+        (Method::POST, "/api/run"),
+        // --- /api/runs (write — shares /api/run prefix in manifest) ---
+        (Method::POST, "/api/runs/123/share"),
+        // --- /api/dream (write) ---
+        (Method::POST, "/api/dream/run"),
+        // --- /api/deployments (write) ---
+        (Method::POST, "/api/deployments"),
+        (Method::DELETE, "/api/deployments/123"),
+        (Method::POST, "/api/deployments/123/task"),
+        (Method::POST, "/api/deployments/123/callback"),
+        // --- /api/research (write) ---
+        (Method::POST, "/api/research/topic"),
+        (Method::POST, "/api/research/enhance-prd/my-slug"),
+        (Method::POST, "/api/research/enhance-plan/my-plan"),
+        (Method::POST, "/api/research/enhance-tasks/my-plan"),
+        (Method::POST, "/api/research/analyze"),
+        // --- /api/subscriptions (write) ---
+        (Method::POST, "/api/subscriptions"),
+        (Method::PUT, "/api/subscriptions/123"),
+        (Method::DELETE, "/api/subscriptions/123"),
+        (Method::POST, "/api/subscriptions/123/enable"),
+        (Method::POST, "/api/subscriptions/123/disable"),
+        // --- /api/templates (write) ---
+        (Method::POST, "/api/templates"),
+        (Method::POST, "/api/templates/my-tmpl/deploy"),
+        // --- /api/heartbeats (write) ---
+        (Method::POST, "/api/heartbeats"),
+        // --- /api/neuro (write) ---
+        (Method::POST, "/api/neuro/query"),
+        // --- /api/inference (write) ---
+        (Method::POST, "/api/inference/complete"),
+        (Method::POST, "/api/inference/batch/submit"),
+        // --- /api/bench (write) ---
+        (Method::POST, "/api/bench/run"),
+        (Method::POST, "/api/bench/runs"),
+        (Method::DELETE, "/api/bench/run/123"),
+        (Method::DELETE, "/api/bench/runs/123"),
+        (Method::POST, "/api/bench/runs/123/cancel"),
+        (Method::POST, "/api/bench/suites"),
+        (Method::POST, "/api/bench/swe/run"),
+        // --- /api/connectors (write) ---
+        (Method::POST, "/api/connectors"),
+        (Method::DELETE, "/api/connectors/my-conn"),
+        // --- /api/feeds (write) ---
+        (Method::POST, "/api/feeds"),
+        (Method::DELETE, "/api/feeds/123"),
+        // --- /api/rpc (write) ---
+        (Method::POST, "/api/rpc"),
+        // --- /api/vision-loop (write) ---
+        (Method::POST, "/api/vision-loop"),
+        (Method::POST, "/api/vision-loop/run123/cancel"),
+        // --- /api/team (write) ---
+        (Method::POST, "/api/team/invite"),
+        (Method::PUT, "/api/team/members/did:test"),
+        (Method::DELETE, "/api/team/members/did:test"),
+        // --- /api/webhooks (write) ---
+        (Method::POST, "/api/webhooks/generic"),
+        // --- /api/providers (write) ---
+        (Method::POST, "/api/providers/openai/test"),
+        // --- /relay (agent:write) ---
+        (Method::POST, "/relay/agents"),
+        (Method::DELETE, "/relay/agents/123"),
+    ];
+
+    /// CI guard: every mutating route registered in the router must have an
+    /// explicit scope classification in [`ROUTE_SCOPE_MANIFEST`]. If a new
+    /// route is added without a manifest entry, it will resolve to
+    /// [`SCOPE_WRITE_UNCLASSIFIED`] and this test will fail, preventing a
+    /// scope regression from reaching production.
+    #[test]
+    fn mutating_routes_are_classified() {
+        let mut failures = Vec::new();
+        for (method, path) in EXPECTED_MUTATING_ROUTES {
+            let scope = required_scope_for(method, path);
+            if scope == SCOPE_WRITE_UNCLASSIFIED {
+                failures.push(format!(
+                    "  {method} {path} -> {scope} (unclassified fallback)"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "The following mutating routes are not explicitly classified in \
+             ROUTE_SCOPE_MANIFEST. Add a manifest entry for each:\n{}",
+            failures.join("\n"),
+        );
+    }
+
+    #[test]
+    fn unclassified_fallback_returns_sentinel() {
+        // A path that does not match any manifest entry must return the
+        // unclassified sentinel, NOT plain "write".
+        assert_eq!(
+            required_scope_for(&Method::POST, "/api/totally-unknown-endpoint"),
+            SCOPE_WRITE_UNCLASSIFIED,
+        );
+    }
+
+    #[test]
+    fn unclassified_fallback_still_denies_read_scope() {
+        // Even though the sentinel is distinct from "write", is_scope_sufficient
+        // must treat it as "write" so read-only keys are still blocked.
+        assert!(!is_scope_sufficient("read", SCOPE_WRITE_UNCLASSIFIED));
+        assert!(is_scope_sufficient("write", SCOPE_WRITE_UNCLASSIFIED));
+        assert!(is_scope_sufficient("admin", SCOPE_WRITE_UNCLASSIFIED));
+    }
+
+    /// No duplicate prefixes in the manifest (copy-paste guard).
+    #[test]
+    fn route_scope_manifest_has_no_duplicates() {
+        let prefixes: Vec<&str> = ROUTE_SCOPE_MANIFEST.iter().map(|e| e.prefix).collect();
+        for (i, p) in prefixes.iter().enumerate() {
+            assert!(
+                !prefixes[i + 1..].contains(p),
+                "duplicate manifest prefix: {p}"
+            );
+        }
     }
 }

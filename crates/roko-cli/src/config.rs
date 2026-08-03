@@ -2657,6 +2657,8 @@ impl ServeAuthLayer {
             api_key: self.api_key.unwrap_or(defaults.api_key),
             api_keys: defaults.api_keys,
             privy_app_id: defaults.privy_app_id,
+            privy_workspace_id: defaults.privy_workspace_id,
+            privy_allowed_roles: defaults.privy_allowed_roles,
         }
     }
 }
@@ -2871,6 +2873,83 @@ pub struct ConfigSources {
     pub runner_plan_timeout_secs: Source,
 }
 
+/// Top-level TOML keys recognised by either the core `RokoConfig` schema or the
+/// legacy CLI-only `ConfigLayer` schema.
+///
+/// Any key present in a `roko.toml` that is not in this set is silently dropped
+/// by serde; [`warn_dropped_toml_keys`] emits a diagnostic warning for such keys
+/// so users are informed rather than left wondering why their setting has no effect.
+const KNOWN_CONFIG_KEYS: &[&str] = &[
+    // Core RokoConfig top-level keys
+    "config_version",
+    "schema_version",
+    "project",
+    "prd",
+    "agent",
+    "providers",
+    "models",
+    "gates",
+    "graduation",
+    "routing",
+    "pipeline",
+    "budget",
+    "conductor",
+    "watcher",
+    "learning",
+    "tui",
+    "timeouts",
+    "serve",
+    "scheduler",
+    "webhooks",
+    "subscriptions",
+    "server",
+    "deploy",
+    "perplexity",
+    "gemini",
+    "tools",
+    "chain",
+    "relay",
+    "isfr",
+    "feed_agents",
+    "runner",
+    "agents",
+    "validation",
+    "cold_storage",
+    // CLI-only ConfigLayer keys (not in core schema)
+    "auto_plan",
+    "dreams",
+    "daimon",
+    "prompt",
+    "gate", // legacy [[gate]] array syntax (ConfigLayer renames from "gates")
+    "executor",
+    "runtime",
+    "repos", // legacy per-repo blocks
+];
+
+/// Emit a warning for each top-level TOML key in `text` that is not in
+/// [`KNOWN_CONFIG_KEYS`].  This surfaces keys that serde silently drops instead
+/// of hiding them from the user entirely.
+///
+/// Non-fatal: unrecognised keys do not prevent config loading.
+pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
+    let value: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return, // parse errors are reported elsewhere
+    };
+    let table = match value.as_table() {
+        Some(t) => t,
+        None => return,
+    };
+    for key in table.keys() {
+        if !KNOWN_CONFIG_KEYS.contains(&key.as_str()) {
+            eprintln!(
+                "warning: roko config ({source_label}): unknown key `{key}` will be ignored; \
+                 check for typos or a schema change"
+            );
+        }
+    }
+}
+
 /// Load config using the unified core loader and return a [`ResolvedConfig`].
 ///
 /// This is the primary config loading entry point for CLI code. It delegates to
@@ -2901,15 +2980,31 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     // This handles: ancestor walk, ROKO_CONFIG env, global merge, named env
     // overrides (ROKO_MODEL etc.), hierarchical ROKO__* overrides,
     // interpolation, and file secret resolution.
-    let _core_validated = roko_core::config::loader::load_config_validated_with_options(
+    //
+    // The result is consumed: diagnostics are surfaced as warnings so users
+    // learn about outdated config versions, orphaned model→provider references,
+    // and other semantic issues instead of having them silently dropped.
+    let core_validated = roko_core::config::loader::load_config_validated_with_options(
         workdir,
         &roko_core::config::loader::LoadOptions::default(),
     )
     .map_err(|e| anyhow!("core config loader: {e}"))?;
 
+    // Surface core validation diagnostics as warnings.
+    for diagnostic in &core_validated.diagnostics {
+        eprintln!(
+            "warning: roko config ({}): {}",
+            diagnostic.key, diagnostic.message
+        );
+    }
+
     // Build CLI config from the legacy layer system for compatibility fields.
     // The core-loaded config is authoritative for providers/models/agent/env.
     if let Some(env_path) = &paths.env_override {
+        // Warn on unknown keys in the env-override file before parsing it.
+        if let Ok(text) = std::fs::read_to_string(env_path) {
+            warn_dropped_toml_keys(&text, &env_path.display().to_string());
+        }
         let layer = ConfigLayer::from_file(env_path)?.merge(env_layer);
         let sources = sources_from_layer(&layer, Source::Env, Source::Default);
         let config = layer.resolve()?;
@@ -2923,8 +3018,11 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     }
 
     let global_layer = match std::fs::read_to_string(&paths.global) {
-        Ok(text) => ConfigLayer::parse_toml(&text)
-            .with_context(|| format!("parse config {}", paths.global.display()))?,
+        Ok(text) => {
+            warn_dropped_toml_keys(&text, &paths.global.display().to_string());
+            ConfigLayer::parse_toml(&text)
+                .with_context(|| format!("parse config {}", paths.global.display()))?
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ConfigLayer::default(),
         Err(e) => {
             return Err(
@@ -2933,7 +3031,12 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         }
     };
     let project_layer = match &paths.project {
-        Some(p) => ConfigLayer::from_file(p)?,
+        Some(p) => {
+            if let Ok(text) = std::fs::read_to_string(p) {
+                warn_dropped_toml_keys(&text, &p.display().to_string());
+            }
+            ConfigLayer::from_file(p)?
+        }
         None => ConfigLayer::default(),
     };
 

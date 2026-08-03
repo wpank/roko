@@ -219,10 +219,14 @@ pub fn cmd_show(workdir: &Path) -> Result<()> {
 }
 
 /// Print the fully-resolved config as TOML after global merge and env var overrides.
+///
+/// Secret values (API keys, tokens, credentials, extra headers) are redacted
+/// before display so that `roko config show --effective` never leaks secrets
+/// to stdout or logs.
 pub fn cmd_show_effective(workdir: &Path) -> Result<()> {
     let config = roko_core::config::loader::load_config_unified(workdir)
         .map_err(|e| anyhow::anyhow!("load config: {e}"))?;
-    let toml_str = roko_core::config::loader::serialize_effective(&config)
+    let toml_str = roko_core::config::loader::serialize_effective_redacted(&config)
         .map_err(|e| anyhow::anyhow!("serialize config: {e}"))?;
     print!("{toml_str}");
     Ok(())
@@ -672,6 +676,15 @@ pub enum EditTarget {
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
+
+/// Mask a secret string value for display.
+///
+/// Returns `****` when the value is non-empty, so that `config show` never
+/// emits literal secret bytes.  Empty strings are left as-is because they
+/// convey "not configured" rather than a real secret.
+fn redact_secret(value: &str) -> &str {
+    if value.is_empty() { value } else { "****" }
+}
 
 fn print_resolved(r: &ResolvedConfig) {
     println!("effective config:");
@@ -2083,5 +2096,60 @@ command = "claude"
         // is a valid configuration (user may rely on CLI agents or env vars).
         let current = RokoConfig::default();
         assert_eq!(legacy_layout_warning(&current).as_deref(), None);
+    }
+
+    /// Proves that `cmd_show_effective` uses the redacted serialization path
+    /// so that interpolated secrets never appear in stdout.
+    #[test]
+    fn config_show_effective_redacts_interpolated_secret() {
+        // Build a config with a secret-bearing provider, exactly as the
+        // loader would produce after `interpolate_env_vars` + `resolve_file_secrets`.
+        let mut config = RokoConfig::default();
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer sk-live-INTERPOLATED".to_string(),
+        );
+        config.providers.insert(
+            "acme".into(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: Some("https://acme.test/v1".into()),
+                api_key_env: Some("sk-ant-SECRET-KEY-9999".into()),
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: Some(headers),
+                max_concurrent: None,
+            },
+        );
+
+        // Serialize through the same redacted path used by cmd_show_effective.
+        let output = roko_core::config::loader::serialize_effective_redacted(&config)
+            .expect("redacted serialization");
+
+        // The literal secret values must NOT appear in the output.
+        assert!(
+            !output.contains("sk-live-INTERPOLATED"),
+            "interpolated header secret leaked in effective config output"
+        );
+        assert!(
+            !output.contains("sk-ant-SECRET-KEY-9999"),
+            "api_key_env secret leaked in effective config output"
+        );
+
+        // The redaction marker must be present.
+        assert!(
+            output.contains(roko_core::config::loader::REDACTED_MARKER),
+            "redaction marker absent from effective config output"
+        );
+
+        // Non-secret fields (base_url) must remain visible.
+        assert!(
+            output.contains("https://acme.test/v1"),
+            "base_url was incorrectly redacted"
+        );
     }
 }

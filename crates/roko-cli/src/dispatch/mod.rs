@@ -129,7 +129,14 @@ impl Dispatcher {
         }
     }
 
-    /// Read-only access to the warm pool — exposed for diagnostics and
+    /// Read-only access to the prompt assembler -- exposed for bidder
+    /// persistence and diagnostic endpoints.
+    #[must_use]
+    pub fn prompt_assembler(&self) -> &PromptAssembler {
+        &self.prompt_assembler
+    }
+
+    /// Read-only access to the warm pool -- exposed for diagnostics and
     /// admin endpoints (`/agents/warm-pool`) without leaking mutability.
     #[must_use]
     pub fn warm_pool(&self) -> &WarmPool {

@@ -119,6 +119,8 @@ pub mod obs {
     pub mod health;
     #[path = "../obs/histograms.rs"]
     pub mod histograms;
+    #[path = "../obs/lens.rs"]
+    pub mod lens;
     #[path = "../obs/metrics.rs"]
     pub mod metrics;
     #[path = "../obs/schema.rs"]
@@ -131,6 +133,7 @@ pub mod obs {
         ReadinessStatus,
     };
     pub use histograms::{Histogram, HistogramSnapshot, LLM_LATENCY_BUCKETS};
+    pub use lens::{CollectorLens, Lens, LensScope, LensSnapshot};
     pub use metrics::{
         Counter, Gauge, LabelSet, MetricKind, MetricRegistry, MetricSnapshot, MetricValue,
         STANDARD_METRICS, register_standard_metrics,
@@ -147,6 +150,8 @@ pub mod project;
 pub mod provenance;
 pub mod pulse;
 pub mod query;
+/// Shared retention policy type for all data-management subsystems.
+pub mod retention;
 pub mod runtime_event;
 pub mod score;
 pub mod secrets;

@@ -971,8 +971,9 @@ mod tests {
     fn failed_ep(id: &str, sig: &str, category: &str, failure_reason: &str) -> Episode {
         let mut ep = Episode::new("agent", id);
         ep.id = id.to_string();
-        ep.gate_verdicts
-            .push(crate::episode_logger::GateVerdict::new("compile", false).with_signature(sig));
+        ep.gate_verdicts.push(
+            crate::episode_logger::EpisodeGateVerdict::new("compile", false).with_signature(sig),
+        );
         ep.failure_reason = Some(failure_reason.to_string());
         ep.extra.insert(
             "category".to_string(),
@@ -986,8 +987,9 @@ mod tests {
     fn passing_ep(id: &str, sig: &str, category: &str) -> Episode {
         let mut ep = Episode::new("agent", id);
         ep.id = id.to_string();
-        ep.gate_verdicts
-            .push(crate::episode_logger::GateVerdict::new("compile", true).with_signature(sig));
+        ep.gate_verdicts.push(
+            crate::episode_logger::EpisodeGateVerdict::new("compile", true).with_signature(sig),
+        );
         ep.extra.insert(
             "category".to_string(),
             serde_json::Value::String(category.to_string()),

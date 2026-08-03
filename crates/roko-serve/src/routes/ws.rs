@@ -17,12 +17,15 @@ use futures::stream::StreamExt;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use roko_core::obs::LogScrubber;
+
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ws", get(ws_upgrade))
         .route("/roko-ws", get(ws_upgrade))
+        .route("/ws/agents", get(ws_upgrade))
 }
 
 /// Per-frame and per-message ceilings applied to every WebSocket upgrade.
@@ -82,12 +85,18 @@ struct ClientMsg {
     back_pressure: Option<BackPressureMode>,
 }
 
+/// Scrub a JSON payload through the shared [`LogScrubber`] before sending.
+fn scrub_json(json: &str, scrubber: &LogScrubber) -> String {
+    scrubber.scrub(json)
+}
+
 /// Main WebSocket handler — replay then stream.
 async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
     let mut filter: Vec<String> = Vec::new();
     let mut replay_cursor: u64 = 0;
     let mut back_pressure = BackPressureMode::AtMostOnce;
+    let scrubber = Arc::clone(&state.scrubber);
 
     // Wait for the first client message to get the cursor, or replay from 0.
     // We do an initial replay from 0; if the client sends a cursor later we
@@ -98,6 +107,7 @@ async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
         let Ok(payload) = serde_json::to_string(&envelope.payload) else {
             continue;
         };
+        let payload = scrub_json(&payload, &scrubber);
         if sink.send(Message::Text(payload.into())).await.is_err() {
             return;
         }
@@ -145,6 +155,7 @@ async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
                                     let Ok(json) = serde_json::to_string(&envelope.payload) else {
                                         continue;
                                     };
+                                    let json = scrub_json(&json, &scrubber);
                                     if sink.send(Message::Text(json.into())).await.is_err() {
                                         return;
                                     }
@@ -173,6 +184,7 @@ async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
                         }
                         match serde_json::to_string(&envelope.payload) {
                             Ok(json) => {
+                                let json = scrub_json(&json, &scrubber);
                                 if sink.send(Message::Text(json.into())).await.is_err() {
                                     break;
                                 }

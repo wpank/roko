@@ -153,6 +153,8 @@ mod tests {
             api_key: api_key.into(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
         }
     }
 

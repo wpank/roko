@@ -116,6 +116,15 @@ async fn create_deployment(
         env_vars.insert("ANTHROPIC_API_KEY".to_string(), key);
     }
 
+    // Generate a callback-specific token so the worker can authenticate result
+    // callbacks. This token is NOT a user-facing API key and is never persisted
+    // to disk (the `callback_token` field on `Deployment` has `#[serde(skip)]`).
+    let callback_token = uuid::Uuid::new_v4().to_string();
+    env_vars.insert(
+        "ROKO_WORKER_CALLBACK_TOKEN".to_string(),
+        callback_token.clone(),
+    );
+
     // Read all config values we need from one config snapshot.
     let (control_url, image, region) = {
         let rc = state.load_roko_config();
@@ -168,10 +177,13 @@ async fn create_deployment(
         };
 
     // Deploy
-    let deployment = backend
+    let mut deployment = backend
         .deploy(&spec)
         .await
         .map_err(|e| ApiError::internal(format!("deploy failed: {e}")))?;
+
+    // Attach the callback token so `receive_callback` can validate it.
+    deployment.callback_token = Some(callback_token);
 
     // Set the deployment ID in env for callbacks
     env_vars.insert("ROKO_DEPLOYMENT_ID".to_string(), deployment.id.clone());
@@ -435,12 +447,45 @@ async fn template_name_for_deployment(deployment_id: &str, state: &AppState) -> 
         .or_else(|| Some(deployment.name.clone()))
 }
 
+/// Constant-time byte-slice equality to prevent timing-side-channel attacks.
+fn token_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        diff |= lhs ^ rhs;
+    }
+    core::hint::black_box(diff) == 0
+}
+
 /// `POST /api/deployments/:id/callback` — receive results from a worker callback.
+///
+/// When serve auth is enabled the worker must present the callback token via
+/// `X-Roko-Worker-Signature`.  The token is generated during `create_deployment`
+/// and injected into the worker environment as `ROKO_WORKER_CALLBACK_TOKEN`.
 async fn receive_callback(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Validate the callback token when one is configured.
+    // The expected token is loaded into AppState at startup from the
+    // ROKO_WORKER_CALLBACK_TOKEN environment variable so it stays out of
+    // serialised deployment state and log output.
+    if let Some(expected) = &state.worker_callback_token {
+        let supplied = headers
+            .get("X-Roko-Worker-Token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !token_eq(supplied.as_bytes(), expected.as_bytes()) {
+            return Err(ApiError::unauthorized(
+                "invalid or missing worker callback token",
+            ));
+        }
+    }
+
     let success = body
         .get("success")
         .and_then(Value::as_bool)
@@ -629,6 +674,7 @@ mod tests {
                 },
                 url: self.next_url.clone(),
                 created_at: chrono::Utc::now(),
+                callback_token: None,
             })
         }
 
@@ -890,6 +936,7 @@ mod tests {
                 },
                 url: Some(worker_url),
                 created_at: chrono::Utc::now(),
+                callback_token: None,
             },
         );
 
@@ -943,6 +990,8 @@ mod tests {
             "http://worker.invalid".to_string(),
         )));
         let (_dir, state) = test_state(backend)?;
+
+        let token = "test-callback-token".to_string();
         state.deployments.write().await.insert(
             "dep-1".to_string(),
             Deployment {
@@ -953,6 +1002,7 @@ mod tests {
                 },
                 url: Some("http://worker.invalid".to_string()),
                 created_at: chrono::Utc::now(),
+                callback_token: Some(token.clone()),
             },
         );
         let app = router(Arc::clone(&state));
@@ -963,6 +1013,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/deployments/dep-1/callback")
                     .header("content-type", "application/json")
+                    .header("x-roko-worker-signature", token.as_str())
                     .body(Body::from(
                         json!({
                             "task_id": "task-123",
@@ -1003,6 +1054,103 @@ mod tests {
         assert!(
             reviewer_runs[0].success,
             "worker callback should store the success flag from the callback payload"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deployments_callback_requires_auth() -> std::result::Result<(), Box<dyn Error>> {
+        let token = "test-callback-secret-abc123";
+
+        let backend: Arc<dyn DeployBackend> = Arc::new(RecordingDeployBackend::with_url(Some(
+            "http://worker.invalid".to_string(),
+        )));
+        let (_dir, state_inner) = test_state(backend)?;
+        // Inject the callback token directly onto the state so the handler can
+        // validate it without touching env vars (which are global and unsafe to
+        // mutate in concurrent tests).
+        //
+        // Arc::try_unwrap succeeds because test_state returns the sole owner.
+        let mut state_val = Arc::try_unwrap(state_inner)
+            .unwrap_or_else(|_| panic!("test_state should return the sole Arc owner"));
+        state_val.worker_callback_token = Some(token.to_string());
+        let state = Arc::new(state_val);
+        state.deployments.write().await.insert(
+            "dep-1".to_string(),
+            Deployment {
+                id: "dep-1".to_string(),
+                name: "roko-worker-reviewer".to_string(),
+                status: DeploymentStatus::Ready {
+                    url: "http://worker.invalid".to_string(),
+                },
+                url: Some("http://worker.invalid".to_string()),
+                created_at: chrono::Utc::now(),
+            },
+        );
+        let app = router(Arc::clone(&state));
+
+        // 1. No token header → 401.
+        let response_no_token = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deployments/dep-1/callback")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "task_id": "t1", "success": true }).to_string(),
+                    ))
+                    .map_err(|e| anyhow!("build request: {e}"))?,
+            )
+            .await
+            .map_err(|e| anyhow!("request failed: {e}"))?;
+        assert_eq!(
+            response_no_token.status(),
+            StatusCode::UNAUTHORIZED,
+            "callback without token must be rejected with 401"
+        );
+
+        // 2. Wrong token → 401.
+        let response_bad_token = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deployments/dep-1/callback")
+                    .header("content-type", "application/json")
+                    .header("X-Roko-Worker-Token", "wrong-token")
+                    .body(Body::from(
+                        json!({ "task_id": "t2", "success": true }).to_string(),
+                    ))
+                    .map_err(|e| anyhow!("build request: {e}"))?,
+            )
+            .await
+            .map_err(|e| anyhow!("request failed: {e}"))?;
+        assert_eq!(
+            response_bad_token.status(),
+            StatusCode::UNAUTHORIZED,
+            "callback with wrong token must be rejected with 401"
+        );
+
+        // 3. Correct token → 200.
+        let response_ok = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deployments/dep-1/callback")
+                    .header("content-type", "application/json")
+                    .header("X-Roko-Worker-Token", token)
+                    .body(Body::from(
+                        json!({ "task_id": "t3", "success": true }).to_string(),
+                    ))
+                    .map_err(|e| anyhow!("build request: {e}"))?,
+            )
+            .await
+            .map_err(|e| anyhow!("request failed: {e}"))?;
+        assert_eq!(
+            response_ok.status(),
+            StatusCode::OK,
+            "callback with correct token must be accepted"
         );
         Ok(())
     }

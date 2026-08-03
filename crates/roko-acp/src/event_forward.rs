@@ -110,6 +110,9 @@ impl AcpEventForwarder {
                     reason: "max tokens reached".to_owned(),
                 },
             }),
+            // PermissionRequest events are handled by the parent session
+            // loop, not forwarded to the runtime event bus.
+            CognitiveEvent::PermissionRequest { .. } => None,
         }
     }
 

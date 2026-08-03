@@ -196,7 +196,6 @@ timeout_ms = 5000
 }
 
 #[test]
-#[cfg(feature = "legacy-runner-v2")]
 fn item_04_plan_runner_reports_non_zero_agent_calls() {
     let tmp = TempDir::new().expect("tempdir");
     setup_sample_plan_workspace(tmp.path());
@@ -308,7 +307,6 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
 }
 
 #[test]
-#[cfg(feature = "legacy-runner-v2")]
 fn item_06_plan_run_persists_learning_feedback() {
     let tmp = TempDir::new().expect("tempdir");
     setup_sample_plan_workspace(tmp.path());

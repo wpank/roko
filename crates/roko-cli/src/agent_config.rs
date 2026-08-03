@@ -97,6 +97,7 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
         ProviderKind::AnthropicApi => Some("ANTHROPIC_API_KEY".to_string()),
         ProviderKind::PerplexityApi => Some("PERPLEXITY_API_KEY".to_string()),
         ProviderKind::GeminiApi => Some("GEMINI_API_KEY".to_string()),
+        ProviderKind::GeminiCli => None,
         ProviderKind::CerebrasApi => Some("CEREBRAS_API_KEY".to_string()),
         ProviderKind::ClaudeCli | ProviderKind::CursorAcp | ProviderKind::CursorCli => None,
         // Harness adapters handle auth via their own probe mechanism.

@@ -98,7 +98,7 @@ pub use scorer::{ActiveInferenceScorer, GoalDirectedHeuristicScorer, SectionScor
 pub use strategy::{CompositionStrategy, DEFAULT_VCG_WARMUP_OBSERVATIONS};
 pub use system_prompt_builder::SystemPromptBuilder;
 pub use templates::{
-    ConductorTemplate, PlanSlice, PromptAssembler, PromptBudget, QuickFixInput, QuickFixTemplate,
+    ConductorTemplate, PlanSlice, PromptBudget, QuickFixInput, QuickFixTemplate,
     QuickReviewerInput, QuickReviewerTemplate, RefactorerTemplate, ResearcherTemplate, Reviewer,
     ReviewerInput, ReviewerTemplate, RolePromptTemplate, ScribeInput, ScribeTemplate, budget_for,
     scribe::ScribeVariant,

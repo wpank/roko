@@ -15,7 +15,7 @@ use roko_learn::cfactor::{
     AgentCFactorContribution, CFactor, CFactorComponents, CollectivePathology,
 };
 use roko_learn::efficiency::{AgentEfficiencyEvent, PromptSectionMeta, ToolCallMeta};
-use roko_learn::episode_logger::{Episode, GateVerdict, Usage};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, Usage};
 use roko_learn::runtime_feedback::{
     KnowledgeSeedEvidence, KnowledgeSeedRecord, LearningPaths, RUNTIME_FEEDBACK_SCHEMA_VERSION,
     project_episode_paths,
@@ -122,7 +122,6 @@ struct DemoKnowledgeEntrySpec {
     catalytic_score: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct SeedEnvelopeRef<'a, T> {
     source: &'static str,
@@ -130,7 +129,6 @@ struct SeedEnvelopeRef<'a, T> {
     item: &'a T,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct SeededCascadeObservation {
     source: &'static str,
@@ -143,14 +141,12 @@ struct SeededCascadeObservation {
     timestamp: DateTime<Utc>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct SeededCascadeModelStats {
     trials: u64,
     successes: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct SeededCascadeSnapshot {
     source: &'static str,
@@ -1614,13 +1610,13 @@ fn tool_calls_for_task(spec: &DemoTaskSpec, primary: bool) -> Vec<ToolCallMeta> 
     calls
 }
 
-fn episode_gate_verdicts(spec: &DemoTaskSpec) -> Vec<GateVerdict> {
-    let mut verdicts = vec![GateVerdict::new("compile", true)];
+fn episode_gate_verdicts(spec: &DemoTaskSpec) -> Vec<EpisodeGateVerdict> {
+    let mut verdicts = vec![EpisodeGateVerdict::new("compile", true)];
     if spec.success {
-        verdicts.push(GateVerdict::new(spec.gate, true));
+        verdicts.push(EpisodeGateVerdict::new(spec.gate, true));
     } else {
         verdicts.push(
-            GateVerdict::new(spec.gate, false)
+            EpisodeGateVerdict::new(spec.gate, false)
                 .with_signature(format!("seed-{}-{}", spec.task_id, spec.gate)),
         );
     }

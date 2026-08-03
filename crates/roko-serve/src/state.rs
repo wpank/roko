@@ -547,6 +547,14 @@ pub struct AppState {
     /// Runtime feed instances started at serve-time and queryable via
     /// `GET /api/feeds/runtime` and `GET /api/feeds/runtime/{id}`.
     pub runtime_feeds: ServeFeeds,
+
+    /// Optional shared secret that workers must present as the
+    /// `X-Roko-Worker-Token` header when posting to
+    /// `POST /api/deployments/:id/callback`. Populated at startup from the
+    /// `ROKO_WORKER_CALLBACK_TOKEN` environment variable and validated by the
+    /// `receive_callback` handler. When `None` (or empty) the check is skipped
+    /// so deployments without a configured token continue to work.
+    pub worker_callback_token: Option<String>,
 }
 
 // ── Runtime feeds ────────────────────────────────────────────────
@@ -1028,6 +1036,9 @@ impl AppState {
             isfr,
             chain: Arc::new(roko_chain::block_watcher::ChainState::default()),
             runtime_feeds,
+            worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 

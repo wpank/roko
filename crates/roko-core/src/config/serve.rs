@@ -89,6 +89,20 @@ pub struct ServeAuthConfig {
     /// Privy application ID for JWT validation (Phase 1b -- stub only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
+    /// Privy workspace / org ID that the JWT `org_id` claim must match.
+    ///
+    /// When set, only tokens whose `org_id` claim equals this value are
+    /// granted admin scope. When `None`, membership checks are skipped and
+    /// a valid signature + app-id is sufficient (legacy behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privy_workspace_id: Option<String>,
+    /// Allowed Privy roles (matched against the JWT `role` claim).
+    ///
+    /// When non-empty, only tokens whose `role` claim is in this list receive
+    /// admin scope; others are downgraded to `"read"`. An empty list disables
+    /// role filtering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privy_allowed_roles: Vec<String>,
 }
 
 impl Default for ServeAuthConfig {
@@ -101,6 +115,8 @@ impl Default for ServeAuthConfig {
             api_key: String::new(),
             api_keys: Vec::new(),
             privy_app_id: None,
+            privy_workspace_id: None,
+            privy_allowed_roles: Vec::new(),
         }
     }
 }

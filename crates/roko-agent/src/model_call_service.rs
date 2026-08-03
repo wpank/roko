@@ -36,6 +36,25 @@ pub trait ForceBackendOverrideRecorder: Send + Sync {
     fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool;
 }
 
+/// Records real LLM provider outcomes (success / failure) into the shared
+/// circuit-breaker registry.
+///
+/// This trait is the dependency-safe bridge between `roko-agent` (which
+/// executes provider calls) and `roko-learn` (which owns
+/// `ProviderHealthRegistry`). Implementing it in `roko-learn` avoids a
+/// production `roko-agent` → `roko-learn` dependency edge.
+pub trait ProviderOutcomeRecorder: Send + Sync {
+    /// Record that a live LLM request to `provider_id` succeeded.
+    fn record_provider_success(&self, provider_id: &str);
+
+    /// Record that a live LLM request to `provider_id` failed.
+    ///
+    /// `error_kind` is a short lowercase label (e.g. `"rate_limit"`,
+    /// `"timeout"`, `"server_error"`, `"unknown"`) that the registry uses to
+    /// choose a cooldown duration.
+    fn record_provider_failure(&self, provider_id: &str, error_kind: &str);
+}
+
 /// Predicted cost for a model call before it is executed.
 #[derive(Debug, Clone)]
 pub struct CostEstimate {
@@ -87,6 +106,13 @@ pub struct ModelCallService {
     /// `roko-learn` dependency edge; `CascadeRouter` implements the trait in
     /// `roko-learn`.
     cascade_router: Option<Arc<dyn ForceBackendOverrideRecorder>>,
+    /// Optional provider-health outcome recorder for the shared circuit-breaker
+    /// registry (`ProviderHealthRegistry` in `roko-learn` implements this).
+    ///
+    /// Every live LLM provider call records success or failure here so the
+    /// circuit breaker can deprioritize unhealthy providers in future routing
+    /// decisions.
+    provider_outcome_recorder: Option<Arc<dyn ProviderOutcomeRecorder>>,
     /// Ordered fallback model slugs derived from workspace model config.
     fallback_models: Vec<String>,
     /// Service-scoped environment entries passed into provider construction.
@@ -125,6 +151,7 @@ impl ModelCallService {
             knowledge_store: None,
             model_router: None,
             cascade_router: None,
+            provider_outcome_recorder: None,
             fallback_models: Vec::new(),
             env: Vec::new(),
             mcp_config: None,
@@ -211,6 +238,21 @@ impl ModelCallService {
         R: ForceBackendOverrideRecorder + 'static,
     {
         self.cascade_router = Some(router);
+        self
+    }
+
+    /// Attach a provider-health outcome recorder.
+    ///
+    /// Every live LLM call records success or failure so the circuit breaker
+    /// can deprioritize unhealthy providers in future routing decisions.
+    /// `roko_learn::provider_health::ProviderHealthRegistry` implements this
+    /// trait.
+    #[must_use]
+    pub fn with_provider_outcome_recorder<R>(mut self, recorder: Arc<R>) -> Self
+    where
+        R: ProviderOutcomeRecorder + 'static,
+    {
+        self.provider_outcome_recorder = Some(recorder);
         self
     }
 
@@ -548,6 +590,46 @@ impl ModelCallService {
                 "force_backend override outcome was not accepted by cascade router"
             );
         }
+    }
+
+    /// Record a real LLM provider outcome into the shared circuit-breaker.
+    ///
+    /// `provider_id` is typically the config key for the provider (e.g.
+    /// `"anthropic"`, `"openai"`, `"gemini"`). When no provider is configured
+    /// for the model, falls back to the model slug itself so the health registry
+    /// can still track failures.
+    fn record_provider_outcome(&self, provider_id: Option<&str>, model: &str, success: bool) {
+        let Some(recorder) = &self.provider_outcome_recorder else {
+            return;
+        };
+        let effective_provider = provider_id.filter(|p| !p.is_empty()).unwrap_or(model);
+        if success {
+            recorder.record_provider_success(effective_provider);
+        } else {
+            // Classify the failure kind from recent error context; at this
+            // point we only know it was a generic non-success, so use "unknown"
+            // as the fallback. Callers that have a typed error use the specific
+            // variant helpers below.
+            recorder.record_provider_failure(effective_provider, "unknown");
+        }
+    }
+
+    /// Record a rate-limit failure for the provider backing `model`.
+    fn record_provider_rate_limit(&self, provider_id: Option<&str>, model: &str) {
+        let Some(recorder) = &self.provider_outcome_recorder else {
+            return;
+        };
+        let effective_provider = provider_id.filter(|p| !p.is_empty()).unwrap_or(model);
+        recorder.record_provider_failure(effective_provider, "rate_limit");
+    }
+
+    /// Record a timeout failure for the provider backing `model`.
+    fn record_provider_timeout(&self, provider_id: Option<&str>, model: &str) {
+        let Some(recorder) = &self.provider_outcome_recorder else {
+            return;
+        };
+        let effective_provider = provider_id.filter(|p| !p.is_empty()).unwrap_or(model);
+        recorder.record_provider_failure(effective_provider, "timeout");
     }
 
     /// Emit metrics for a completed model call (success, cache hit, or error).
@@ -1884,6 +1966,16 @@ impl ModelCaller for ModelCallService {
                     Some(message.clone()),
                 )?;
                 self.record_force_backend_override(&req.model, &model, false);
+                // Classify rate-limit vs timeout vs generic for the circuit breaker.
+                if is_rate_limit_message(&message) {
+                    self.record_provider_rate_limit(provider.as_deref(), &model);
+                } else if message.to_ascii_lowercase().contains("timeout")
+                    || message.to_ascii_lowercase().contains("timed out")
+                {
+                    self.record_provider_timeout(provider.as_deref(), &model);
+                } else {
+                    self.record_provider_outcome(provider.as_deref(), &model, false);
+                }
                 self.record_feedback(
                     &req,
                     &request_id,
@@ -1927,6 +2019,9 @@ impl ModelCaller for ModelCallService {
             });
             self.record_force_backend_override(&req.model, &output.model_used, false);
             let output_provider = self.provider_for_model(&output.model_used);
+            // Convergence loop is a model-side failure, not a provider transport error;
+            // record as a generic provider outcome so the circuit breaker can track it.
+            self.record_provider_outcome(output_provider.as_deref(), &output.model_used, false);
             self.write_gateway_event(
                 &req,
                 &request_id,
@@ -1985,6 +2080,8 @@ impl ModelCaller for ModelCallService {
         });
         self.record_force_backend_override(&req.model, &output.model_used, true);
         let output_provider = self.provider_for_model(&output.model_used);
+        // Record provider success for the circuit breaker.
+        self.record_provider_outcome(output_provider.as_deref(), &output.model_used, true);
         self.write_gateway_event(
             &req,
             &request_id,
@@ -2727,6 +2824,96 @@ mod tests {
         assert!(
             output.contains("roko_llm_request_duration_seconds"),
             "should contain request duration: {output}"
+        );
+    }
+
+    // ─── ProviderOutcomeRecorder unit tests ───────────────────────────────────
+
+    /// `ProviderOutcomeRecorder` trait can be implemented and is callable.
+    ///
+    /// Verifies the trait definition: `record_provider_success` and
+    /// `record_provider_failure` are dispatch-able through the trait object.
+    #[test]
+    fn provider_outcome_recorder_trait_is_object_safe() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RecordingRecorder {
+            got_success: AtomicBool,
+            got_failure: AtomicBool,
+        }
+
+        impl ProviderOutcomeRecorder for RecordingRecorder {
+            fn record_provider_success(&self, _provider_id: &str) {
+                self.got_success.store(true, Ordering::Relaxed);
+            }
+            fn record_provider_failure(&self, _provider_id: &str, _error_kind: &str) {
+                self.got_failure.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let recorder = Arc::new(RecordingRecorder {
+            got_success: AtomicBool::new(false),
+            got_failure: AtomicBool::new(false),
+        });
+
+        let svc = ModelCallService::new("test-model".to_string())
+            .with_provider_outcome_recorder(Arc::clone(&recorder));
+
+        // The service must hold the recorder.
+        assert!(svc.provider_outcome_recorder.is_some());
+
+        // Call helpers directly to verify they dispatch through the trait.
+        svc.record_provider_outcome(Some("anthropic"), "test-model", true);
+        assert!(
+            recorder.got_success.load(Ordering::Relaxed),
+            "record_provider_success should have been called"
+        );
+
+        svc.record_provider_outcome(Some("anthropic"), "test-model", false);
+        assert!(
+            recorder.got_failure.load(Ordering::Relaxed),
+            "record_provider_failure should have been called"
+        );
+    }
+
+    /// `record_provider_outcome` falls back to the model slug when no provider is known.
+    #[test]
+    fn provider_outcome_recorder_uses_model_as_fallback() {
+        use std::sync::Mutex as StdMutex;
+
+        struct CaptureRecorder {
+            captured: StdMutex<Vec<(String, bool)>>,
+        }
+
+        impl ProviderOutcomeRecorder for CaptureRecorder {
+            fn record_provider_success(&self, provider_id: &str) {
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .push((provider_id.to_string(), true));
+            }
+            fn record_provider_failure(&self, provider_id: &str, _: &str) {
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .push((provider_id.to_string(), false));
+            }
+        }
+
+        let recorder = Arc::new(CaptureRecorder {
+            captured: StdMutex::new(Vec::new()),
+        });
+
+        let svc = ModelCallService::new("my-model".to_string())
+            .with_provider_outcome_recorder(Arc::clone(&recorder));
+
+        // None provider → model slug is the fallback.
+        svc.record_provider_outcome(None, "my-model", true);
+        let captured = recorder.captured.lock().unwrap().clone();
+        assert_eq!(
+            captured,
+            vec![("my-model".to_string(), true)],
+            "should use model slug when provider is None"
         );
     }
 }

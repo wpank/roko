@@ -6,7 +6,6 @@
 //! Anti-pattern #8: **no `std::fs` in this module tree**. All file content
 //! arrives via the `*Input` structs.
 
-pub mod assembly;
 pub mod common;
 pub mod conductor;
 pub mod implementer;
@@ -20,7 +19,6 @@ pub mod scribe;
 pub mod strategist;
 pub mod task_impl;
 
-pub use assembly::PromptAssembler;
 pub use common::{PromptBudget, REFERENCE_CONTEXT_WINDOW_TOKENS, budget_for};
 pub use conductor::ConductorTemplate;
 pub use implementer::{ImplementerInput, ImplementerTemplate};

@@ -140,6 +140,7 @@ pub(crate) fn build_system_prompt_with_context_validated(
             relevant_playbooks: relevant_playbooks.to_vec(),
             code_context,
             pheromones,
+            section_effectiveness: None,
         },
         context_window_tokens,
         section_effectiveness,

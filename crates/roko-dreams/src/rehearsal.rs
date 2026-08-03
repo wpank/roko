@@ -8,7 +8,7 @@
 use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
-use roko_learn::episode_logger::{Episode, GateVerdict};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict};
 use serde::{Deserialize, Serialize};
 
 use crate::threat::{ThreatScenario, enumerate_threats};
@@ -146,7 +146,7 @@ fn outcome_to_episode(outcome: &RehearsalOutcome, threat: &ThreatScenario) -> Ep
     }
 
     // Add a synthetic gate verdict representing the rehearsal assessment.
-    episode.gate_verdicts.push(GateVerdict {
+    episode.gate_verdicts.push(EpisodeGateVerdict {
         gate: "threat-rehearsal".to_string(),
         passed: outcome.recovery_succeeded,
         signature: Some(format!(

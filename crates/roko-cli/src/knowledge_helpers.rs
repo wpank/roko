@@ -138,6 +138,55 @@ pub(crate) fn query_anti_knowledge_patterns(
     }
 }
 
+// ─── Knowledge reinforcement on completion ──────────────────────────────
+
+/// E07-T04: Reinforce knowledge entries that were surfaced in the prompt
+/// context when a task or episode completes.
+///
+/// On gate success (`gate_passed == true`) we send a `Gated` reinforcement
+/// signal with a small positive novelty bump; on failure the entries still
+/// get a `Retrieved` signal (they were used but didn't help).
+///
+/// Empty `knowledge_ids` is a no-op. Store IO errors are logged but never
+/// propagate -- an otherwise successful task must not crash because the
+/// knowledge file is temporarily unavailable.
+pub(crate) fn reinforce_knowledge_on_completion(
+    knowledge_store: &KnowledgeStore,
+    knowledge_ids: &[String],
+    gate_passed: bool,
+) {
+    if knowledge_ids.is_empty() {
+        return;
+    }
+
+    let (signal, novelty) = if gate_passed {
+        (roko_neuro::ReinforcementSignal::Gated, 0.15)
+    } else {
+        (roko_neuro::ReinforcementSignal::Retrieved, 0.0)
+    };
+
+    let id_refs: Vec<&str> = knowledge_ids.iter().map(|id| id.as_str()).collect();
+    match knowledge_store.reinforce_batch(&id_refs, signal, novelty) {
+        Ok(count) => {
+            if count > 0 {
+                tracing::debug!(
+                    reinforced = count,
+                    total = knowledge_ids.len(),
+                    gate_passed,
+                    "E07-T04: reinforced knowledge entries on task completion"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                ids = knowledge_ids.len(),
+                "E07-T04: failed to reinforce knowledge entries (non-fatal)"
+            );
+        }
+    }
+}
+
 // ─── Knowledge routing boost ─────────────────────────────────────────────
 
 /// Query the knowledge store for routing-relevant entries about a model and return
@@ -197,7 +246,7 @@ pub(crate) fn knowledge_routing_boost(
 /// knowledge enables future sessions to learn from operational history (e.g.
 /// "agent X was degraded due to budget constraints 5 times last week").
 pub(crate) fn record_lifecycle_knowledge(
-    knowledge_store: &KnowledgeStore,
+    _knowledge_store: &KnowledgeStore,
     admission: Option<&roko_neuro::KnowledgeAdmissionStore>,
     transition: &LifecycleTransition,
 ) {
@@ -220,6 +269,11 @@ pub(crate) fn record_lifecycle_knowledge(
         return;
     }
 
+    let Some(admission) = admission else {
+        tracing::debug!("INT-20: no admission store; skipping lifecycle knowledge");
+        return;
+    };
+
     let content = format!(
         "Agent '{}' transitioned from {:?} to {:?} (reason: {:?}) at {}",
         transition.agent_id,
@@ -238,34 +292,64 @@ pub(crate) fn record_lifecycle_knowledge(
         KnowledgeKind::Heuristic
     };
 
-    let mut entry = KnowledgeEntry {
-        id: format!(
-            "lifecycle-{}-{}",
-            transition.agent_id,
-            transition.occurred_at.timestamp_millis()
-        ),
-        kind,
-        content,
-        tags: vec![
-            "lifecycle".to_string(),
-            format!("agent:{}", transition.agent_id),
-            format!("state:{:?}", transition.to),
-        ],
-        confidence: 1.0,
-        source_episodes: Vec::new(),
-        tier: roko_neuro::KnowledgeTier::Transient,
-        half_life_days: 30.0,
-        created_at: transition.occurred_at,
-        ..KnowledgeEntry::default()
-    };
-    entry.source = Some("lifecycle-monitor".to_string());
+    let candidate_id = format!(
+        "lifecycle-{}-{}",
+        transition.agent_id,
+        transition.occurred_at.timestamp_millis()
+    );
 
-    // Route through admission controller when available (A2).
-    let _ = admission; // Admission integration uses submit_candidate with full candidate records;
-    // lifecycle entries use direct write for now since building a full
-    // KnowledgeCandidateRecord from a KnowledgeEntry requires evidence chains.
-    if let Err(err) = knowledge_store.add(entry) {
-        tracing::debug!(error = %err, "INT-20: failed to record lifecycle knowledge");
+    let tags = vec![
+        "lifecycle".to_string(),
+        format!("agent:{}", transition.agent_id),
+        format!("state:{:?}", transition.to),
+    ];
+
+    // Build evidence from the lifecycle transition itself.
+    let is_negative = matches!(
+        &transition.to,
+        AgentLifecycleState::Degraded { .. } | AgentLifecycleState::Deleted
+    );
+    let evidence_summary = format!(
+        "{:?} -> {:?} ({:?})",
+        transition.from, transition.to, transition.reason
+    );
+    let evidence = if is_negative {
+        roko_neuro::KnowledgeEvidence::refuting(
+            format!("{candidate_id}:transition"),
+            roko_neuro::KnowledgeEvidenceSource::ExternalObservation,
+            "lifecycle-monitor",
+            0.95,
+            evidence_summary,
+        )
+    } else {
+        roko_neuro::KnowledgeEvidence::supporting(
+            format!("{candidate_id}:transition"),
+            roko_neuro::KnowledgeEvidenceSource::ExternalObservation,
+            "lifecycle-monitor",
+            0.95,
+            evidence_summary,
+        )
+    };
+
+    let candidate = roko_neuro::KnowledgeCandidateRecord::new(
+        candidate_id,
+        kind,
+        "lifecycle-monitor",
+        &content,
+        1.0,
+    )
+    .with_scope(roko_neuro::KnowledgeScope {
+        action_id: None,
+        role_id: Some(transition.agent_id.clone()),
+        task_type: None,
+        crate_path: None,
+        tags: tags.clone(),
+    })
+    .with_tags(tags)
+    .with_evidence(vec![evidence]);
+
+    if let Err(err) = admission.submit_candidate(candidate) {
+        tracing::debug!(error = %err, "INT-20: failed to submit lifecycle knowledge candidate");
     }
 }
 

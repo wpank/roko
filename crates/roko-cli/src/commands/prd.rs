@@ -387,8 +387,8 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     &workdir,
                     &format!(
                         "Fill in the draft PRD at {path}. \
+                         Use Read, Grep, and Glob tools to inspect the codebase and ground your PRD in actual code. \
                          Output the complete PRD markdown (with YAML frontmatter) as your response. \
-                         Do NOT use file tools — they are not available. \
                          Do NOT wrap in code fences. \
                          Follow the PRD quality standards in your system prompt exactly.",
                         path = target.display()
@@ -465,7 +465,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     resume_session,
                     env_vars: &gw.vars,
                     role: Some("scribe"),
-                    allowed_tools: Some("none"),
+                    allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await?;
                 if exit_code == 0 {
@@ -521,7 +521,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                     eprintln!("Agent returned empty output — no draft created.");
                 }
 
-                let artifact_success = draft_written && target.is_file();
+                let mut artifact_success = draft_written && target.is_file();
                 if artifact_success && exit_code != 0 {
                     eprintln!(
                         "Agent exited with {exit_code}, but the draft artifact was written; treating draft creation as successful."
@@ -596,6 +596,17 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                             println!(
                                 "Artifact validation: FAILED ({error_count} errors, {warning_count} warnings)"
                             );
+                            // Delete the draft when validation has errors so
+                            // broken PRDs are not persisted.
+                            if let Err(e) = std::fs::remove_file(&target) {
+                                eprintln!(
+                                    "WARNING: Failed to remove invalid draft {}: {e}",
+                                    target.display()
+                                );
+                            } else {
+                                eprintln!("Removed invalid draft: {}", target.display());
+                            }
+                            artifact_success = false;
                         }
                     }
                 }

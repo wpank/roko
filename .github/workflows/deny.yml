@@ -1,0 +1,16 @@
+name: cargo-deny
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  deny:
+    name: Supply-chain audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check

@@ -283,7 +283,18 @@ pub(crate) async fn cmd_deploy_railway(
     let repo_slug = git_remote_slug(&workdir)?;
     let branch =
         git_current_branch(&workdir).unwrap_or_else(|_| config.project.fresh_base_branch.clone());
-    let env_vars = collect_railway_env_vars();
+    let mut env_vars = collect_railway_env_vars();
+
+    // Generate a callback token shared between the control plane and all workers.
+    // It is sent as X-Roko-Worker-Token by each worker and validated by roko-serve
+    // before accepting POST /api/deployments/:id/callback requests.
+    // The token stays out of roko.toml and deployment state to avoid accidental leaks.
+    let callback_token = format!(
+        "rkcb_{}{}",
+        uuid::Uuid::new_v4().as_simple(),
+        uuid::Uuid::new_v4().as_simple()
+    );
+    env_vars.insert("ROKO_WORKER_CALLBACK_TOKEN".to_string(), callback_token);
 
     // Load persisted project context as fallback for config-level IDs.
     let saved_ctx = load_railway_context(&workdir);
@@ -373,6 +384,9 @@ pub(crate) async fn cmd_deploy_railway(
             "ROKO_CONTROL_PLANE_URL".to_string(),
             control_url.to_string(),
         );
+        // Generate a callback token so the control plane can verify worker callbacks.
+        let callback_token = uuid::Uuid::new_v4().to_string();
+        worker_env.insert("ROKO_WORKER_CALLBACK_TOKEN".to_string(), callback_token);
 
         let service_name = format!("roko-worker-{template_name}");
         let (_worker_dep, _) = backend

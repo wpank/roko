@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { SERVE_URL, TIMEOUTS } from '../lib/serve-url';
-import { useEventStreamContext } from '../contexts/EventStreamContext';
+import { useServerEventSubscription, useServerConnected } from './useEventStream';
 
 export type ServerStatus = 'connected' | 'disconnected' | 'checking';
 
@@ -15,7 +15,7 @@ export type ServerStatus = 'connected' | 'disconnected' | 'checking';
  */
 export function useServerHealth() {
   const [status, setStatus] = useState<ServerStatus>('checking');
-  const { subscribe, connected: sseConnected } = useEventStreamContext();
+  const sseConnected = useServerConnected();
 
   // When SSE itself connects/disconnects, that's a strong signal about server health
   useEffect(() => {
@@ -31,13 +31,6 @@ export function useServerHealth() {
       .then(r => { if (!ac.signal.aborted) setStatus(r.ok ? 'connected' : 'disconnected'); })
       .catch(() => { if (!ac.signal.aborted) setStatus('disconnected'); });
 
-    // SSE subscription for push updates (server:health or health event types)
-    const unsub = subscribe(['server:health', 'health'], (event) => {
-      const ok = (event as Record<string, unknown>)?.ok ??
-        (event as Record<string, unknown>)?.status === 'ok';
-      setStatus(ok ? 'connected' : 'disconnected');
-    });
-
     // Fallback: if no SSE health event within 10s, do a single re-check
     const fallback = setTimeout(() => {
       fetch(`${SERVE_URL}/health`, { signal: AbortSignal.timeout(TIMEOUTS.health) })
@@ -47,10 +40,16 @@ export function useServerHealth() {
 
     return () => {
       ac.abort();
-      unsub();
       clearTimeout(fallback);
     };
-  }, [subscribe]);
+  }, []);
+
+  // SSE subscription for push updates (server:health or health event types)
+  useServerEventSubscription(['server:health', 'health'], useCallback((event) => {
+    const ok = (event as Record<string, unknown>)?.ok ??
+      (event as Record<string, unknown>)?.status === 'ok';
+    setStatus(ok ? 'connected' : 'disconnected');
+  }, []));
 
   const checkNow = useCallback(async () => {
     try {

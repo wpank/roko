@@ -114,7 +114,7 @@ static DASHBOARD_GENERATION_COUNTERS: OnceLock<
 pub struct DashboardScaffold {
     pages: BTreeMap<PageId, PageScaffold>,
     active_page: PageId,
-    snapshot: DashboardSnapshot,
+    snapshot: TuiDashboardModel,
 }
 
 impl DashboardScaffold {
@@ -588,9 +588,9 @@ impl DashboardData {
     /// Advance cursor-backed dashboard artifacts and refresh stamp-backed files once.
     ///
     /// **Deprecated**: In connected mode the TUI is fully push-based via
-    /// `DashboardSnapshot`. This method is only used for standalone mode
+    /// `TuiDashboardModel`. This method is only used for standalone mode
     /// (`roko dashboard`) where no orchestrator is attached.
-    #[deprecated(note = "use push-based DashboardSnapshot instead; kept for standalone mode only")]
+    #[deprecated(note = "use push-based TuiDashboardModel instead; kept for standalone mode only")]
     pub fn tick(&mut self) -> Result<()> {
         let roko_dir = self.root.join(".roko");
         let state_path = roko_dir.join("state").join("executor.json");
@@ -3306,7 +3306,7 @@ impl fmt::Display for DashboardSummary {
 
 /// Best-effort learning snapshot for dashboard rendering.
 #[derive(Debug, Clone)]
-pub struct DashboardSnapshot {
+pub struct TuiDashboardModel {
     root: PathBuf,
     episode_count: usize,
     success_rate: Option<f64>,
@@ -3428,7 +3428,7 @@ struct LearningSubsystemRow {
     health: String,
 }
 
-impl DashboardSnapshot {
+impl TuiDashboardModel {
     /// Load the learning snapshot from a workspace root.
     pub async fn load(root: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let root = resolve_snapshot_root(root.as_ref());
@@ -3488,6 +3488,58 @@ impl DashboardSnapshot {
             cascade_snapshot,
             learning_artifacts,
         ))
+    }
+
+    /// Build a render projection from the core [`roko_core::dashboard_snapshot::DashboardSnapshot`]
+    /// delivered through StateHub in connected mode.
+    ///
+    /// Learning-specific fields (experiments, cascade router, efficiency events)
+    /// are left at their defaults since they are not carried in the core snapshot.
+    /// In connected mode those fields are populated separately when the TUI state
+    /// processes the snapshot via `update_from_dashboard_snapshot`.
+    pub fn from_core_snapshot(
+        snap: &roko_core::dashboard_snapshot::DashboardSnapshot,
+        root: PathBuf,
+    ) -> Self {
+        let gate_pass_rate = {
+            let total = snap.stats.gates_passed + snap.stats.gates_failed;
+            if total > 0 {
+                Some(snap.stats.gates_passed as f64 / total as f64)
+            } else {
+                None
+            }
+        };
+        let episode_count = snap.episodes.len();
+        let headlines = compute_headlines(&[]);
+
+        Self {
+            root,
+            episode_count,
+            success_rate: gate_pass_rate,
+            average_cost_usd: None,
+            average_wall_time_ms: None,
+            task_metric_count: 0,
+            haiku_share: None,
+            cache_hit_rate: None,
+            headlines,
+            efficiency_events: Vec::new(),
+            efficiency_trend: Vec::new(),
+            experiments: None,
+            adaptive_thresholds: None,
+            gate_results_page: GateResultsPageData::default(),
+            recent_signals: Vec::new(),
+            cascade_snapshot: None,
+            cascade_snapshot_stamp: FileStamp::default(),
+            experiments_stamp: FileStamp::default(),
+            adaptive_thresholds_stamp: FileStamp::default(),
+            skills: Vec::new(),
+            skills_stamp: FileStamp::default(),
+            provider_health: None,
+            provider_health_stamp: FileStamp::default(),
+            latency_stats: None,
+            knowledge_store: KnowledgeStoreSnapshot::default(),
+            episodes: Vec::new(),
+        }
     }
 
     fn empty(root: PathBuf) -> Self {
@@ -4972,18 +5024,18 @@ fn signal_parent_chain<'a>(
     chain
 }
 
-fn load_snapshot_best_effort(root: &Path) -> DashboardSnapshot {
-    load_snapshot_blocking(root).unwrap_or_else(|_| DashboardSnapshot::empty(root.to_path_buf()))
+fn load_snapshot_best_effort(root: &Path) -> TuiDashboardModel {
+    load_snapshot_blocking(root).unwrap_or_else(|_| TuiDashboardModel::empty(root.to_path_buf()))
 }
 
-fn load_snapshot_blocking(root: &Path) -> Result<DashboardSnapshot, std::io::Error> {
+fn load_snapshot_blocking(root: &Path) -> Result<TuiDashboardModel, std::io::Error> {
     let root = root.to_path_buf();
-    let load = move || -> Result<DashboardSnapshot, std::io::Error> {
+    let load = move || -> Result<TuiDashboardModel, std::io::Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(std::io::Error::other)?;
-        runtime.block_on(DashboardSnapshot::load(&root))
+        runtime.block_on(TuiDashboardModel::load(&root))
     };
 
     if tokio::runtime::Handle::try_current().is_ok() {

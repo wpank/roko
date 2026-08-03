@@ -116,6 +116,87 @@ fn load_config(path: &Path) -> Result<(PathBuf, McpConfig), ConfigError> {
     Ok((path.to_path_buf(), config))
 }
 
+/// Commands considered safe to spawn as MCP server processes.
+///
+/// Doctor checks warn when a configured MCP server command falls outside this
+/// list. Operators can extend the set via `[security.mcp_allowed_commands]` in
+/// `roko.toml` (not yet wired), but the defaults cover the common case.
+pub const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
+    "npx",
+    "node",
+    "deno",
+    "bun",
+    "python",
+    "python3",
+    "uvx",
+    "uv",
+    "cargo",
+    "docker",
+    "mcp-server-fetch",
+    "mcp-server-filesystem",
+    "mcp-server-git",
+    "mcp-server-github",
+    "mcp-server-slack",
+    "mcp-server-sqlite",
+    "mcp-server-postgres",
+    "mcp-server-memory",
+    "mcp-server-brave-search",
+    "mcp-server-puppeteer",
+    "mcp-server-sequential-thinking",
+];
+
+/// Environment variable key patterns that likely carry secrets.
+///
+/// Doctor warns (but does not print values) when MCP server env maps contain
+/// keys matching any of these substrings (case-insensitive).
+pub const SENSITIVE_ENV_PATTERNS: &[&str] = &[
+    "SECRET",
+    "TOKEN",
+    "KEY",
+    "PASSWORD",
+    "CREDENTIAL",
+    "AUTH",
+    "PRIVATE",
+    "API_KEY",
+    "APIKEY",
+];
+
+/// Check whether `command` is on the default allowlist.
+///
+/// Compares against the basename (last path component) so
+/// `/usr/local/bin/npx` still matches `npx`.
+#[must_use]
+pub fn is_command_allowed(command: &str, extra_allowed: &[&str]) -> bool {
+    if command.is_empty() {
+        return true; // HTTP-only servers have no command.
+    }
+    let basename = std::path::Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    DEFAULT_ALLOWED_COMMANDS
+        .iter()
+        .chain(extra_allowed.iter())
+        .any(|allowed| basename == *allowed)
+}
+
+/// Return the names of env keys that look like they carry secrets.
+///
+/// Values are **not** returned — only key names — to avoid leaking secrets
+/// into doctor output.
+#[must_use]
+pub fn sensitive_env_keys(env: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut hits = Vec::new();
+    for key in env.keys() {
+        let upper = key.to_ascii_uppercase();
+        if SENSITIVE_ENV_PATTERNS.iter().any(|pat| upper.contains(pat)) {
+            hits.push(key.clone());
+        }
+    }
+    hits.sort();
+    hits
+}
+
 /// Errors from MCP config loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

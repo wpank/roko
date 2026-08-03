@@ -439,47 +439,85 @@ impl ServerBuilder {
         info!("workdir: {}", self.config.workdir.display());
 
         // Spawn chain-watcher if chain.rpc_url is configured (best-effort).
-        // Redirect all subprocess output to .roko/chain-watcher.log to prevent
-        // flooding the terminal when serve runs in the background.
+        // Redirect all subprocess output through a day-based rolling writer
+        // under .roko/ so long-running serve sessions do not grow one unbounded file.
         if let Some(rpc_url) = self.config.roko_config.chain.rpc_url.as_deref() {
             let rpc = rpc_url.to_string();
-            let log_path = self.config.workdir.join(".roko").join("chain-watcher.log");
+            let log_dir = self.config.workdir.join(".roko");
             tokio::spawn(async move {
                 let watcher = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(|d| d.join("roko-chain-watcher")))
                     .unwrap_or_else(|| std::path::PathBuf::from("roko-chain-watcher"));
 
-                // Open log file for subprocess output (fall back to /dev/null).
-                let (stdout_target, stderr_target) = if let Ok(f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                {
-                    let stderr_file = match f.try_clone() {
-                        Ok(f2) => std::process::Stdio::from(f2),
-                        Err(e) => {
-                            warn!("failed to clone log file handle: {e}; stderr will be null");
-                            std::process::Stdio::null()
-                        }
-                    };
-                    (std::process::Stdio::from(f), stderr_file)
-                } else {
-                    (std::process::Stdio::null(), std::process::Stdio::null())
-                };
-
-                match tokio::process::Command::new(&watcher)
+                // Pipe subprocess output and relay through a daily rolling writer.
+                let mut child = match tokio::process::Command::new(&watcher)
                     .arg("--rpc-url")
                     .arg(&rpc)
                     .env("ROKO_LOG", "warn")
-                    .stdout(stdout_target)
-                    .stderr(stderr_target)
-                    .status()
-                    .await
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
                 {
+                    Ok(child) => child,
+                    Err(e) => {
+                        tracing::debug!(error = %e, path = ?watcher, "chain-watcher not available");
+                        return;
+                    }
+                };
+
+                // Day-based rolling writer: chain-watcher.log.YYYY-MM-DD
+                let rolling = tracing_appender::rolling::daily(&log_dir, "chain-watcher.log");
+                let rolling = std::sync::Arc::new(std::sync::Mutex::new(rolling));
+
+                // Relay stdout and stderr from the subprocess into the rolling log.
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                let relay = |pipe: Option<tokio::process::ChildStdout>,
+                             pipe_err: Option<tokio::process::ChildStderr>,
+                             writer: std::sync::Arc<
+                    std::sync::Mutex<tracing_appender::rolling::RollingFileAppender>,
+                >| async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut handles = Vec::new();
+                    if let Some(out) = pipe {
+                        let w = writer.clone();
+                        handles.push(tokio::spawn(async move {
+                            let reader = tokio::io::BufReader::new(out);
+                            let mut lines = reader.lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                if let Ok(mut w) = w.lock() {
+                                    use std::io::Write;
+                                    let _ = writeln!(w, "{line}");
+                                }
+                            }
+                        }));
+                    }
+                    if let Some(err) = pipe_err {
+                        let w = writer;
+                        handles.push(tokio::spawn(async move {
+                            let reader = tokio::io::BufReader::new(err);
+                            let mut lines = reader.lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                if let Ok(mut w) = w.lock() {
+                                    use std::io::Write;
+                                    let _ = writeln!(w, "{line}");
+                                }
+                            }
+                        }));
+                    }
+                    for h in handles {
+                        let _ = h.await;
+                    }
+                };
+
+                relay(stdout, stderr, rolling).await;
+
+                match child.wait().await {
                     Ok(s) => tracing::info!(exit = %s, "chain-watcher exited"),
                     Err(e) => {
-                        tracing::debug!(error = %e, path = ?watcher, "chain-watcher not available")
+                        tracing::debug!(error = %e, path = ?watcher, "chain-watcher wait failed")
                     }
                 }
             });
@@ -1039,7 +1077,7 @@ fn build_app_state(
 ///
 /// Feeds registered:
 /// - **engrams**: `.roko/engrams.jsonl` — raw signal/engram log (`Raw` kind)
-/// - **episodes**: `.roko/memory/episodes.jsonl` — agent turn episodes (`Raw` kind)
+/// - **episodes**: `.roko/episodes.jsonl` — agent turn episodes (`Raw` kind)
 /// - **efficiency**: `.roko/learn/efficiency.jsonl` — per-turn metrics (`Derived` kind)
 /// - **knowledge**: neuro knowledge store entries (`Composite` kind)
 fn seed_default_registries(state: &AppState) {
@@ -1116,7 +1154,7 @@ fn seed_default_registries_inner(state: &AppState) {
         kind: FeedKind::Raw,
         access: FeedAccess::Public,
         agent_id: "system".to_string(),
-        description: "Agent turn episode log (.roko/memory/episodes.jsonl)".to_string(),
+        description: "Agent turn episode log (.roko/episodes.jsonl)".to_string(),
         schema: None,
         created_at: now,
     });

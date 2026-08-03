@@ -10,7 +10,7 @@
 
 use crate::{
     identity_economy_identity::{
-        AgentId, Blake3Hash, GateType, GateVerdict, Signature, X402Receipt,
+        AgentId, Blake3Hash, ChainGateVerdict, GateType, Signature, X402Receipt,
     },
     phase2::{HiringModel, u256},
 };
@@ -455,7 +455,7 @@ pub struct FutureDelivery {
     /// Verify-verified quality score.
     pub quality_score: f64,
     /// Verify verdicts recorded during validation.
-    pub gate_verdicts: Vec<GateVerdict>,
+    pub gate_verdicts: Vec<ChainGateVerdict>,
     /// Delivery timestamp.
     pub delivered_at: u64,
     /// Whether the delivery beat the deadline.
@@ -646,115 +646,6 @@ pub enum DeliveryTiming {
     OnTime,
     /// Missed the deadline or defaulted.
     Default,
-}
-
-/// Content-addressed knowledge unit for forensic replay stubs.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Engram {
-    /// Content hash of the Engram.
-    pub hash: Blake3Hash,
-    /// Engram kind.
-    pub kind: Kind,
-    /// Raw content body.
-    pub body: Vec<u8>,
-    /// Authoring agent id.
-    pub author: AgentId,
-    /// Free-form tags.
-    pub tags: Vec<String>,
-    /// Parent hashes in the lineage DAG.
-    pub lineage: Vec<Blake3Hash>,
-    /// Seven-axis quality score.
-    pub score: [f64; 7],
-    /// Persistence tier.
-    pub tier: Tier,
-    /// Creation timestamp.
-    pub created_at: u64,
-    /// Provenance metadata.
-    pub provenance: Provenance,
-}
-
-/// Provenance metadata attached to an [`Engram`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Provenance {
-    /// Source of the Engram.
-    pub source: ProvenanceSource,
-    /// Optional original author.
-    pub original_author: Option<AgentId>,
-    /// Optional original timestamp.
-    pub original_timestamp: Option<u64>,
-    /// Chain-of-custody history.
-    pub chain_of_custody: Vec<CustodyEntry>,
-}
-
-/// Chain-of-custody event for an [`Engram`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CustodyEntry {
-    /// Agent responsible for the action.
-    pub agent: AgentId,
-    /// Custody action that occurred.
-    pub action: CustodyAction,
-    /// Timestamp of the action.
-    pub timestamp: u64,
-    /// Hash of the Engram at the time of the action.
-    pub hash_at_action: Blake3Hash,
-}
-
-/// High-level Engram kinds used by the compliance docs.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Kind {
-    /// Free-form task or work artifact.
-    #[default]
-    Task,
-    /// Analysis or insight artifact.
-    Insight,
-    /// Warning or anomaly artifact.
-    Warning,
-    /// React or compliance artifact.
-    React,
-    /// Any other named kind.
-    Custom(String),
-}
-
-/// Persistence tier for a forensic Engram.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Tier {
-    /// Short-lived transient artifact.
-    Transient,
-    /// Working-memory artifact.
-    #[default]
-    Working,
-    /// Reference-quality artifact.
-    Reference,
-    /// Permanent or canonical artifact.
-    Permanent,
-}
-
-/// Source classification for provenance records.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ProvenanceSource {
-    /// Produced from human input.
-    HumanInput,
-    /// Produced by another agent or workflow.
-    #[default]
-    AgentGenerated,
-    /// Restored from backup or history.
-    Restored,
-    /// Imported from an external system.
-    Imported,
-}
-
-/// Chain-of-custody actions tracked for an Engram.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum CustodyAction {
-    /// Created the Engram.
-    #[default]
-    Created,
-    /// Modified the content.
-    Modified,
-    /// Shared with another system.
-    Shared,
-    /// Restored from prior history.
-    Restored,
 }
 
 /// Template for SEC-compliant trading agents.

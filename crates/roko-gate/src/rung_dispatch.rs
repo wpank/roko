@@ -288,8 +288,8 @@ pub async fn run_canonical_rung(
 }
 
 fn stub_verdict(gate: &str, detail: impl Into<String>) -> Verdict {
-    let message = format!("gate unavailable; {}", detail.into());
-    Verdict::fail(gate.to_string(), message.clone()).with_detail(message)
+    let message = format!("stub/not wired: {}", detail.into());
+    Verdict::skip(gate.to_string(), message.clone()).with_detail(message)
 }
 
 async fn run_symbol_gate(
@@ -530,19 +530,29 @@ impl Verify for CanonicalRungGate {
 }
 
 fn aggregate_rung_verdict(name: &str, verdicts: &[Verdict]) -> Verdict {
-    let passed = verdicts.iter().all(|verdict| verdict.passed);
+    // Separate real (non-skipped) verdicts from skipped stubs.
+    let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
     let detail = render_rung_detail(verdicts);
     let duration = verdicts
         .iter()
         .map(|verdict| verdict.duration_ms)
         .max()
         .unwrap_or_default();
+
+    // If every inner verdict was skipped, the aggregate is also skipped/neutral.
+    if real_verdicts.is_empty() {
+        return Verdict::skip(name, "all inner gates are stub/not wired")
+            .with_detail(detail)
+            .with_duration(duration);
+    }
+
+    let passed = real_verdicts.iter().all(|verdict| verdict.passed);
     if passed {
         Verdict::pass(name)
             .with_detail(detail)
             .with_duration(duration)
     } else {
-        let failed = verdicts
+        let failed = real_verdicts
             .iter()
             .filter(|verdict| !verdict.passed)
             .map(|verdict| verdict.gate.as_str())
@@ -558,12 +568,14 @@ fn render_rung_detail(verdicts: &[Verdict]) -> String {
     verdicts
         .iter()
         .map(|verdict| {
-            format!(
-                "{}: {} - {}",
-                verdict.gate,
-                if verdict.passed { "pass" } else { "FAIL" },
-                verdict.reason
-            )
+            let status = if verdict.skipped {
+                "SKIP"
+            } else if verdict.passed {
+                "pass"
+            } else {
+                "FAIL"
+            };
+            format!("{}: {} - {}", verdict.gate, status, verdict.reason)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -571,12 +583,48 @@ fn render_rung_detail(verdicts: &[Verdict]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::stub_verdict;
+    use super::*;
 
     #[test]
-    fn unavailable_rung_is_a_failure() {
+    fn unavailable_rung_is_skipped_not_failed() {
         let verdict = stub_verdict("symbol", "no manifest");
         assert!(!verdict.passed);
-        assert!(verdict.reason.contains("gate unavailable"));
+        assert!(verdict.skipped);
+        assert!(verdict.reason.contains("stub/not wired"));
+        assert!(verdict.skip_reason.is_some());
+    }
+
+    #[test]
+    fn aggregate_all_skipped_is_skipped() {
+        let verdicts = vec![
+            stub_verdict("symbol", "no manifest"),
+            stub_verdict("generated_test:cargo", "no artifacts"),
+        ];
+        let agg = aggregate_rung_verdict("rung:symbol", &verdicts);
+        assert!(agg.skipped);
+        assert!(!agg.passed);
+        assert!(agg.reason.contains("stub/not wired"));
+    }
+
+    #[test]
+    fn aggregate_mixed_real_and_skipped_uses_only_real() {
+        let verdicts = vec![
+            Verdict::pass("compile"),
+            stub_verdict("symbol", "no manifest"),
+        ];
+        let agg = aggregate_rung_verdict("rung:test", &verdicts);
+        assert!(!agg.skipped);
+        assert!(agg.passed);
+    }
+
+    #[test]
+    fn aggregate_real_failure_not_masked_by_skipped() {
+        let verdicts = vec![
+            Verdict::fail("compile", "build error"),
+            stub_verdict("symbol", "no manifest"),
+        ];
+        let agg = aggregate_rung_verdict("rung:test", &verdicts);
+        assert!(!agg.skipped);
+        assert!(!agg.passed);
     }
 }

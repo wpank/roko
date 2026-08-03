@@ -36,7 +36,9 @@ use roko_daimon::{AffectEngine as _, AffectEvent};
 use roko_learn::anomaly::{Anomaly, AnomalyDetector};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::efficiency::AgentEfficiencyEvent;
-use roko_learn::episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage as EpisodeUsage};
+use roko_learn::episode_logger::{
+    Episode, EpisodeGateVerdict, EpisodeLogger, Usage as EpisodeUsage,
+};
 use roko_learn::events::{AgentEvent, EventBus as LearningEventBus};
 use roko_learn::model_call_feedback::{
     ModelCallFeedback, ModelCallFeedbackRecorder, observe_model_call_on_router,
@@ -180,7 +182,7 @@ pub struct TemplateAgentDispatcher {
 #[derive(Debug)]
 struct DispatchOutcome {
     result: AgentResult,
-    gate_verdicts: Vec<GateVerdict>,
+    gate_verdicts: Vec<EpisodeGateVerdict>,
     success: bool,
     model_used: String,
 }
@@ -1757,7 +1759,10 @@ async fn dispatch_template(
     let mut gate_verdicts = Vec::new();
     let gate_outputs = run_template_gates(&state, &template, &output).await;
     for verdict in gate_outputs {
-        gate_verdicts.push(GateVerdict::new(verdict.gate.clone(), verdict.passed));
+        gate_verdicts.push(EpisodeGateVerdict::new(
+            verdict.gate.clone(),
+            verdict.passed,
+        ));
     }
 
     let success = dispatch_result.success && gate_verdicts.iter().all(|verdict| verdict.passed);

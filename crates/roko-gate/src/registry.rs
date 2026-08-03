@@ -1,3 +1,4 @@
+use crate::rung_selector::Rung;
 use roko_core::foundation::GateVerdict;
 use serde::{Deserialize, Serialize};
 
@@ -90,8 +91,19 @@ pub struct GateSpec {
     pub id: &'static str,
     /// Accepted legacy/config aliases for the gate.
     pub aliases: &'static [&'static str],
-    /// Canonical rung index for ordering.
+    /// Canonical rung index for ordering within the gate service pipeline.
+    ///
+    /// This is the **gate-service ordering** (compile=0, clippy=1, test=2,
+    /// diff=3, fmt=4, custom=5, judge=6). For the canonical rung-selector
+    /// pipeline ordering, use [`canonical_rung`](Self::canonical_rung).
     pub rung: u8,
+    /// Canonical pipeline rung from [`rung_selector::Rung`](crate::rung_selector::Rung).
+    ///
+    /// `Some(rung)` for gates that map to a canonical pipeline rung
+    /// (compile, clippy/lint, test). `None` for standalone gates
+    /// (diff, fmt, custom, judge) that execute outside the canonical
+    /// rung pipeline.
+    pub canonical_rung: Option<Rung>,
     /// Gate family.
     pub kind: GateKind,
     /// Inputs required before this gate can execute.
@@ -123,19 +135,54 @@ impl GateRegistry {
             .find(|spec| spec.id == name || spec.aliases.contains(&name))
     }
 
-    /// Resolve a canonical id or alias to its rung index.
+    /// Resolve a canonical id or alias to its gate-service rung index.
     #[must_use]
     pub fn rung_for_name(&self, name: &str) -> Option<u8> {
         self.resolve(name).map(|spec| spec.rung)
     }
+
+    /// Resolve a canonical id or alias to its canonical pipeline [`Rung`].
+    ///
+    /// Returns `Some(rung)` for gates that participate in the canonical
+    /// rung-selector pipeline, `None` for standalone gates.
+    #[must_use]
+    pub fn canonical_rung_for_name(&self, name: &str) -> Option<Rung> {
+        self.resolve(name).and_then(|spec| spec.canonical_rung)
+    }
+}
+
+/// Resolve a gate name (canonical id or alias) to its canonical pipeline
+/// [`Rung`], or `None` if the gate is standalone / unknown.
+///
+/// This is the single source of truth for gate-name-to-canonical-rung mapping.
+/// Use this instead of maintaining ad-hoc match tables elsewhere.
+#[must_use]
+pub fn rung_for_gate_name(name: &str) -> Option<Rung> {
+    GateRegistry::new().canonical_rung_for_name(name)
+}
+
+/// Whether the gate maps to a deterministic canonical rung.
+///
+/// Deterministic rungs (Compile, Lint, Test) produce binary pass/fail with
+/// confidence 1.0; non-deterministic or standalone gates use lower confidence.
+#[must_use]
+pub fn is_deterministic_gate(name: &str) -> bool {
+    rung_for_gate_name(name).is_some_and(|r| matches!(r, Rung::Compile | Rung::Lint | Rung::Test))
 }
 
 /// Static registry of the currently known gate aliases and rungs.
+///
+/// Gates that participate in the canonical rung pipeline have
+/// `canonical_rung: Some(Rung::*)` derived from [`CANONICAL_ORDER`].
+/// Standalone gates (diff, fmt, custom, judge) have `canonical_rung: None`.
+///
+/// [`CANONICAL_ORDER`]: crate::rung_selector::CANONICAL_ORDER
 pub const GATE_SPECS: &[GateSpec] = &[
     GateSpec {
         id: "compile",
         aliases: &["compile:cargo"],
         rung: 0,
+        canonical_rung: Some(Rung::Compile),
         kind: GateKind::Compile,
         required_inputs: &["workdir"],
     },
@@ -143,6 +190,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "clippy",
         aliases: &["clippy:cargo"],
         rung: 1,
+        canonical_rung: Some(Rung::Lint),
         kind: GateKind::Lint,
         required_inputs: &["workdir"],
     },
@@ -150,6 +198,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "test",
         aliases: &["test:cargo"],
         rung: 2,
+        canonical_rung: Some(Rung::Test),
         kind: GateKind::Test,
         required_inputs: &["workdir"],
     },
@@ -157,6 +206,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "diff",
         aliases: &["diff:git"],
         rung: 3,
+        canonical_rung: None,
         kind: GateKind::Diff,
         required_inputs: &["workdir"],
     },
@@ -164,6 +214,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "fmt",
         aliases: &["fmt:cargo", "format"],
         rung: 4,
+        canonical_rung: None,
         kind: GateKind::Format,
         required_inputs: &["workdir"],
     },
@@ -171,6 +222,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "custom",
         aliases: &["custom:shell", "shell"],
         rung: 5,
+        canonical_rung: None,
         kind: GateKind::Shell,
         required_inputs: &["workdir", "shell_command"],
     },
@@ -178,6 +230,7 @@ pub const GATE_SPECS: &[GateSpec] = &[
         id: "judge",
         aliases: &["llm-judge"],
         rung: 6,
+        canonical_rung: None,
         kind: GateKind::Judge,
         required_inputs: &["workdir", "judge_payload"],
     },
@@ -252,5 +305,77 @@ mod tests {
         let registry = GateRegistry::new();
         assert_eq!(registry.resolve("nonexistent"), None);
         assert_eq!(registry.rung_for_name("nonexistent"), None);
+    }
+
+    /// E05-T06: registry metadata derives rung order from canonical
+    /// `rung_selector::Rung`, not an independent numbering.
+    #[test]
+    fn registry_uses_canonical_rung_order() {
+        use crate::rung_selector::{CANONICAL_ORDER, Rung};
+
+        let registry = GateRegistry::new();
+
+        // Gates with canonical rungs must match the Rung enum's index.
+        let canonical_cases: &[(&str, Rung)] = &[
+            ("compile", Rung::Compile),
+            ("compile:cargo", Rung::Compile),
+            ("clippy", Rung::Lint),
+            ("clippy:cargo", Rung::Lint),
+            ("test", Rung::Test),
+            ("test:cargo", Rung::Test),
+        ];
+        for (name, expected_rung) in canonical_cases {
+            let spec = registry.resolve(name).expect("gate should resolve");
+            assert_eq!(
+                spec.canonical_rung,
+                Some(*expected_rung),
+                "{name} should map to canonical {expected_rung:?}"
+            );
+        }
+
+        // Standalone gates should have canonical_rung = None.
+        let standalone_cases = [
+            "diff",
+            "diff:git",
+            "fmt",
+            "format",
+            "custom",
+            "shell",
+            "judge",
+            "llm-judge",
+        ];
+        for name in standalone_cases {
+            let spec = registry.resolve(name).expect("gate should resolve");
+            assert_eq!(
+                spec.canonical_rung, None,
+                "{name} is standalone and should have no canonical rung"
+            );
+        }
+
+        // The rung_for_gate_name function returns the canonical rung.
+        assert_eq!(rung_for_gate_name("compile"), Some(Rung::Compile));
+        assert_eq!(rung_for_gate_name("clippy"), Some(Rung::Lint));
+        assert_eq!(rung_for_gate_name("test"), Some(Rung::Test));
+        assert_eq!(rung_for_gate_name("diff"), None);
+        assert_eq!(rung_for_gate_name("nonexistent"), None);
+
+        // Canonical rung indices match CANONICAL_ORDER positions.
+        for (i, rung) in CANONICAL_ORDER.iter().enumerate() {
+            assert_eq!(
+                rung.as_index() as usize,
+                i,
+                "CANONICAL_ORDER[{i}] = {rung:?} has wrong index"
+            );
+        }
+
+        // is_deterministic_gate covers compile/lint/test only.
+        assert!(is_deterministic_gate("compile"));
+        assert!(is_deterministic_gate("clippy"));
+        assert!(is_deterministic_gate("test"));
+        assert!(!is_deterministic_gate("diff"));
+        assert!(!is_deterministic_gate("fmt"));
+        assert!(!is_deterministic_gate("custom"));
+        assert!(!is_deterministic_gate("judge"));
+        assert!(!is_deterministic_gate("nonexistent"));
     }
 }

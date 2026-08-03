@@ -87,7 +87,7 @@ pub enum LoggerError {
 
 /// Verdict produced by a single gate run on behalf of an agent turn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GateVerdict {
+pub struct EpisodeGateVerdict {
     /// Verify identifier ("compile", "test", "lint", …).
     #[serde(default)]
     pub gate: String,
@@ -99,7 +99,7 @@ pub struct GateVerdict {
     pub signature: Option<String>,
 }
 
-impl GateVerdict {
+impl EpisodeGateVerdict {
     /// Construct a new verdict.
     #[must_use]
     pub fn new(gate: impl Into<String>, passed: bool) -> Self {
@@ -115,6 +115,25 @@ impl GateVerdict {
     pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
         self.signature = Some(signature.into());
         self
+    }
+}
+
+impl From<&roko_core::foundation::GateVerdict> for EpisodeGateVerdict {
+    fn from(v: &roko_core::foundation::GateVerdict) -> Self {
+        // Hash the raw output to produce a stable signature (never store raw gate output).
+        let signature = if v.output.is_empty() {
+            None
+        } else {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            v.output.hash(&mut hasher);
+            Some(format!("{:016x}", hasher.finish()))
+        };
+        Self {
+            gate: v.gate_name.clone(),
+            passed: v.passed,
+            signature,
+        }
     }
 }
 
@@ -221,7 +240,7 @@ pub struct Episode {
     pub duration_secs: f64,
     /// Individual gate verdicts observed for the turn.
     #[serde(default)]
-    pub gate_verdicts: Vec<GateVerdict>,
+    pub gate_verdicts: Vec<EpisodeGateVerdict>,
     /// Token / cost / latency accounting.
     #[serde(default)]
     pub usage: Usage,
@@ -1144,7 +1163,7 @@ impl EpisodeLogger {
     pub async fn compact(
         &self,
         now: DateTime<Utc>,
-        policy: &RetentionPolicy,
+        policy: &EpisodeRetentionPolicy,
     ) -> Result<CompactStats, LoggerError> {
         let _gate = self.inner.write_gate.lock().await;
 
@@ -1226,7 +1245,7 @@ impl EpisodeLogger {
 ///
 /// Used by [`EpisodeLogger::compact`] to decide which episodes to keep.
 #[derive(Debug, Clone)]
-pub struct RetentionPolicy {
+pub struct EpisodeRetentionPolicy {
     /// Maximum number of episodes retained after compaction.
     pub max_episodes: usize,
     /// Maximum age in days — episodes older than this are pruned (unless
@@ -1234,11 +1253,20 @@ pub struct RetentionPolicy {
     pub max_age_days: u32,
 }
 
-impl Default for RetentionPolicy {
+impl Default for EpisodeRetentionPolicy {
     fn default() -> Self {
         Self {
             max_episodes: 200,
             max_age_days: 90,
+        }
+    }
+}
+
+impl From<roko_core::retention::RetentionPolicy> for EpisodeRetentionPolicy {
+    fn from(p: roko_core::retention::RetentionPolicy) -> Self {
+        Self {
+            max_episodes: p.max_entries,
+            max_age_days: p.max_age_days,
         }
     }
 }
@@ -1275,7 +1303,8 @@ mod tests {
         let mut ep = Episode::new(agent, task);
         ep.success = success;
         ep.usage = Usage::tokens(100, 50);
-        ep.gate_verdicts.push(GateVerdict::new("compile", success));
+        ep.gate_verdicts
+            .push(EpisodeGateVerdict::new("compile", success));
         ep
     }
 
@@ -1726,7 +1755,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 5,
             max_age_days: 365,
         };
@@ -1752,7 +1781,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 5,
             max_age_days: 365,
         };
@@ -1782,7 +1811,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 5,
             max_age_days: 365,
         };
@@ -1805,7 +1834,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 1000,
             max_age_days: 30,
         };
@@ -1839,7 +1868,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 2,
             max_age_days: 10,
         };
@@ -1874,7 +1903,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 3,
             max_age_days: 30,
         };
@@ -1915,7 +1944,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy::default();
+        let policy = EpisodeRetentionPolicy::default();
         // Compact on a non-existent file should succeed gracefully.
         let stats = logger.compact(now, &policy).await.unwrap();
         assert_eq!(stats.before, 0);
@@ -1928,7 +1957,7 @@ mod tests {
         let (_dir, path) = tmp_log();
         let logger = EpisodeLogger::new(&path);
         let now = Utc::now();
-        let policy = RetentionPolicy {
+        let policy = EpisodeRetentionPolicy {
             max_episodes: 3,
             max_age_days: 365,
         };
@@ -1952,7 +1981,7 @@ mod tests {
 
     #[tokio::test]
     async fn retention_policy_defaults() {
-        let policy = RetentionPolicy::default();
+        let policy = EpisodeRetentionPolicy::default();
         assert_eq!(policy.max_episodes, 200);
         assert_eq!(policy.max_age_days, 90);
     }
@@ -1963,8 +1992,8 @@ mod tests {
         ep1.model = "claude-3.5-sonnet".to_string();
         ep1.success = true;
         ep1.gate_verdicts = vec![
-            GateVerdict::new("compile", true),
-            GateVerdict::new("test", true),
+            EpisodeGateVerdict::new("compile", true),
+            EpisodeGateVerdict::new("test", true),
         ];
         ep1.attach_metadata_fingerprint();
 
@@ -1972,8 +2001,8 @@ mod tests {
         ep2.model = "claude-3.5-sonnet".to_string();
         ep2.success = true;
         ep2.gate_verdicts = vec![
-            GateVerdict::new("compile", true),
-            GateVerdict::new("test", true),
+            EpisodeGateVerdict::new("compile", true),
+            EpisodeGateVerdict::new("test", true),
         ];
         ep2.attach_metadata_fingerprint();
 
@@ -2032,7 +2061,7 @@ mod tests {
         ep.agent_template = "template-a".to_string();
         ep.model = "claude-3.5-sonnet".to_string();
         ep.success = true;
-        ep.gate_verdicts = vec![GateVerdict::new("compile", true)];
+        ep.gate_verdicts = vec![EpisodeGateVerdict::new("compile", true)];
 
         ep.attach_all_fingerprints();
 
@@ -2099,8 +2128,8 @@ mod tests {
         novel.usage.output_tokens = 900;
         novel.duration_secs = 240.0;
         novel.gate_verdicts = vec![
-            GateVerdict::new("compile", false),
-            GateVerdict::new("test", false),
+            EpisodeGateVerdict::new("compile", false),
+            EpisodeGateVerdict::new("test", false),
         ];
         novel.attach_metadata_fingerprint();
 
@@ -2128,7 +2157,7 @@ mod tests {
         high.usage.input_tokens = 2_000;
         high.usage.output_tokens = 1_200;
         high.duration_secs = 420.0;
-        high.gate_verdicts = vec![GateVerdict::new("compile", false)];
+        high.gate_verdicts = vec![EpisodeGateVerdict::new("compile", false)];
         high.attach_metadata_fingerprint();
 
         let episodes = [low.clone(), high.clone()];

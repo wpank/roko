@@ -1,7 +1,7 @@
 import { createContext, createElement, useContext, useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLiveApi } from './useLiveApi';
-import { useContextEventSubscription } from '../contexts/EventStreamContext';
+import { useServerEventSubscription } from './useEventStream';
 import {
   providerForModelKey,
   rawModelsToOptions,
@@ -130,7 +130,7 @@ export function useRokoConfigState(): RokoConfigState {
   }, [fetchConfig]);
 
   // Subscribe to SSE `config_reloaded` events for live updates
-  useContextEventSubscription(['config_reloaded'], () => {
+  useServerEventSubscription(['config_reloaded'], () => {
     fetchConfig();
   });
 

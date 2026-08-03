@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useDataHub } from '../../app/DataHub';
 import type { IsfrEventEntry } from '../../app/DataHub';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import { useCountUp } from '../../hooks/useCountUp';
 import { useCanvasSetup } from '../../hooks/useCanvasSetup';
@@ -109,7 +109,7 @@ export default function IsfrDashboard() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['isfr_rate_computed', 'isfr_source_health_changed', 'isfr_keeper_state_changed'],
     useCallback(() => {
       debouncedRefetch();
@@ -1200,7 +1200,7 @@ function AgentsTab() {
     })();
   }, [get]);
 
-  useContextEventSubscription(
+  useServerEventSubscription(
     AGENT_EVENT_TYPES as unknown as string[],
     useCallback((event: unknown) => {
       if (!event || typeof event !== 'object') return;

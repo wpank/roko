@@ -168,7 +168,7 @@ pub fn adapter_for_kind(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::CursorAcp => &CURSOR_ACP_ADAPTER,
         ProviderKind::CursorCli => &CURSOR_CLI_ADAPTER,
         ProviderKind::PerplexityApi => &PERPLEXITY_ADAPTER,
-        ProviderKind::GeminiApi => &GEMINI_ADAPTER,
+        ProviderKind::GeminiApi | ProviderKind::GeminiCli => &GEMINI_ADAPTER,
         ProviderKind::CerebrasApi => &CEREBRAS_ADAPTER,
         ProviderKind::Hermes => &HERMES_ADAPTER,
         ProviderKind::OpenClaw => &OPENCLAW_ADAPTER,

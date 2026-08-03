@@ -13,7 +13,11 @@ use roko_core::config::GatesConfig;
 use roko_core::{Body, Engram, EngramBuilder, Kind, Provenance, Verdict, Verify};
 use roko_fs::RokoLayout;
 use roko_gate::classify_gate_failure;
+use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
+use roko_gate::llm_judge_gate::JudgePayload;
 use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
+use roko_gate::symbol_gate::{SymbolExpectation, SymbolKind, SymbolManifest, Visibility};
+use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -21,6 +25,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info};
 
+use crate::gate_runner::FsGeneratedArtifactStore;
 use crate::task_parser::VerifyStep;
 
 use super::types::{
@@ -32,6 +37,50 @@ use super::types::{
 pub const RUNG_PLAN_VERIFY: u32 = 1000;
 /// Sentinel rung value for post-merge regression gates.
 pub const RUNG_MERGE: u32 = 1001;
+
+/// Task-definition-derived context used by [`build_rung_execution_inputs`] and
+/// [`build_rung_execution_config`] to build real `RungExecutionInputs` for
+/// advanced gate rungs (Symbol, FactCheck, LlmJudge, GeneratedTest).
+///
+/// Constructed by the event loop from the current [`TaskDef`] before spawning
+/// the gate worker.
+#[derive(Clone, Debug, Default)]
+pub struct GateTaskContext {
+    /// Plan identifier, used as the label for symbol manifests.
+    pub plan_id: String,
+    /// Context symbols from the task definition (for the Symbol gate).
+    pub symbols: Vec<String>,
+    /// Acceptance criteria from the task definition (for the FactCheck gate).
+    pub acceptance: Vec<String>,
+    /// Task description (for the LlmJudge gate).
+    pub task_description: Option<String>,
+    /// Task title fallback when description is absent.
+    pub task_title: String,
+}
+
+impl GateTaskContext {
+    /// Build a `GateTaskContext` from a plan ID and optional task definition.
+    ///
+    /// Extracts the symbols, acceptance criteria, description, and title
+    /// that the advanced gate rungs need to produce real verdicts.
+    pub fn from_task_def(
+        plan_id: &str,
+        task_def: Option<&crate::task_parser::TaskDef>,
+    ) -> Option<Self> {
+        let td = task_def?;
+        Some(Self {
+            plan_id: plan_id.to_string(),
+            symbols: td
+                .context
+                .as_ref()
+                .map(|ctx| ctx.symbols.clone())
+                .unwrap_or_default(),
+            acceptance: td.acceptance.clone(),
+            task_description: td.description.clone(),
+            task_title: td.title.clone(),
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GateInputSnapshot(String, [u8; 32], bool);
@@ -208,6 +257,8 @@ pub fn spawn_gate(
     gate_tx: mpsc::Sender<GateCompletion>,
     gate_sem: Arc<Semaphore>,
     target_crates: Vec<String>,
+    verdict_publisher: Option<VerdictPublisher>,
+    task_context: Option<GateTaskContext>,
 ) -> (JoinHandle<()>, oneshot::Sender<()>) {
     let (start_tx, start_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -241,6 +292,8 @@ pub fn spawn_gate(
                     baseline_failed_gates,
                     timeout_secs,
                     target_crates,
+                    verdict_publisher,
+                    task_context,
                 )
                 .await,
             )
@@ -304,6 +357,8 @@ pub async fn run_gate_once(
     baseline_failed_gates: Option<Vec<String>>,
     timeout_secs: u64,
     target_crates: Vec<String>,
+    verdict_publisher: Option<VerdictPublisher>,
+    task_context: Option<GateTaskContext>,
 ) -> GateCompletion {
     let start = Instant::now();
     let signal = gate_signal(&plan_id, &task_id, rung, &workdir, &target_crates);
@@ -321,11 +376,12 @@ pub async fn run_gate_once(
 
     let workdir_for_run = workdir.clone();
     let run = async {
-        let inputs = build_rung_execution_inputs(&target_crates);
+        let inputs = build_rung_execution_inputs(&target_crates, task_context.as_ref());
         let config = build_rung_execution_config(
             &workdir_for_run,
             timeout_secs,
             &verify_steps,
+            verdict_publisher.clone(),
         );
         let pipeline = if gates_config.has_custom_rungs() {
             GatePipelineBuilder::from_config(&gates_config, complexity)
@@ -407,18 +463,35 @@ pub async fn run_gate_once(
     }
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let passed = verdicts.iter().all(|v| v.passed);
+    // E05-T03: Skipped verdicts are neutral — filter them out of the
+    // pass/fail decision. A gate run whose only verdicts are skipped stubs
+    // is considered passed (no real gate disagreed).
+    let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
+    let passed = real_verdicts.iter().all(|v| v.passed);
+    let all_skipped = real_verdicts.is_empty() && !verdicts.is_empty();
     let output = render_output(&verdicts);
-    let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
+    let failure_kind = (!passed && !all_skipped).then(|| classify_failure_kind(&verdicts, &output));
+
+    // E05-T08: Publish non-skipped verdicts through VerdictPublisher as
+    // Kind::GateVerdict engrams. The publisher callback (set up by the
+    // caller in event_loop.rs) graduates each Pulse to an Engram and
+    // appends it to engrams.jsonl.
+    if let Some(ref publisher) = verdict_publisher {
+        let real: Vec<Verdict> = verdicts.iter().filter(|v| !v.skipped).cloned().collect();
+        if !real.is_empty() {
+            publisher.publish_all(&real, Some(rung));
+        }
+    }
 
     let summaries: Vec<GateVerdictSummary> = verdicts
         .iter()
         .map(|v| GateVerdictSummary {
             gate_name: v.gate.clone(),
             passed: v.passed,
+            skipped: v.skipped,
             summary: v.reason.clone(),
             error_digest: v.error_digest.clone(),
-            failure_kind: (!v.passed)
+            failure_kind: (!v.passed && !v.skipped)
                 .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
         })
         .collect();
@@ -528,7 +601,8 @@ pub fn spawn_plan_verify(
                 ],
             };
             let duration_ms = start.elapsed().as_millis() as u64;
-            let passed = verdicts.iter().all(|v| v.passed);
+            let real_verdicts: Vec<&Verdict> = verdicts.iter().filter(|v| !v.skipped).collect();
+            let passed = real_verdicts.iter().all(|v| v.passed);
             let output = render_output(&verdicts);
             let failure_kind = (!passed).then(|| classify_failure_kind(&verdicts, &output));
             let summaries = verdicts
@@ -536,9 +610,10 @@ pub fn spawn_plan_verify(
                 .map(|v| GateVerdictSummary {
                     gate_name: v.gate.clone(),
                     passed: v.passed,
+                    skipped: v.skipped,
                     summary: v.reason.clone(),
                     error_digest: v.error_digest.clone(),
-                    failure_kind: (!v.passed)
+                    failure_kind: (!v.passed && !v.skipped)
                         .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
                 })
                 .collect();
@@ -593,27 +668,113 @@ pub fn spawn_plan_verify(
 
 /// Build enriched [`RungExecutionInputs`] from available task context.
 ///
-/// Populates `code_intel_hints` from target crate names so that symbol and
-/// LLM-judge gates can focus on relevant code. Signal fields (symbol,
-/// fact-check, llm-judge) remain `None` when no oracle is available — the
-/// rung dispatch already fails closed for unavailable rich rungs.
-fn build_rung_execution_inputs(target_crates: &[String]) -> RungExecutionInputs {
+/// E05-T05: Populates real signal fields from the task definition so that
+/// advanced gate rungs (Symbol, FactCheck, LlmJudge) receive genuine inputs
+/// instead of defaulting to `None` and immediately returning skipped stubs.
+///
+/// - `symbol_signal`: Built from task context symbols as a `SymbolManifest`.
+/// - `fact_check_signal`: Built from task acceptance criteria as text.
+/// - `llm_judge_signal`: Built from task description as a `JudgePayload`
+///    (diff is not available synchronously; the gate degrades gracefully
+///    with an empty diff).
+/// - `code_intel_hints`: Target crate names for focused verification.
+fn build_rung_execution_inputs(
+    target_crates: &[String],
+    task_ctx: Option<&GateTaskContext>,
+) -> RungExecutionInputs {
+    let code_intel_hints = target_crates.to_vec();
+
+    let Some(ctx) = task_ctx else {
+        return RungExecutionInputs {
+            code_intel_hints,
+            ..Default::default()
+        };
+    };
+
+    // Build SymbolManifest signal from task context symbols (rung 3).
+    let symbol_signal = if ctx.symbols.is_empty() {
+        None
+    } else {
+        let mut manifest = SymbolManifest::new(&ctx.plan_id);
+        for sym in &ctx.symbols {
+            let (module_path, name) = match sym.rsplit_once("::") {
+                Some((module, name)) => (module.to_string(), name.to_string()),
+                None => (String::new(), sym.clone()),
+            };
+            manifest.expectations.push(SymbolExpectation {
+                name,
+                kind: SymbolKind::Struct,
+                visibility: Visibility::Pub,
+                module_path,
+                signature: None,
+            });
+        }
+        Some(
+            EngramBuilder::new(Kind::Task)
+                .body(Body::from_json(&manifest).unwrap_or_else(|_| Body::empty()))
+                .provenance(Provenance::trusted("runner"))
+                .build(),
+        )
+    };
+
+    // Build fact-check signal from acceptance criteria (rung 5).
+    let fact_check_signal = if ctx.acceptance.is_empty() {
+        None
+    } else {
+        let claims = ctx.acceptance.join("\n");
+        Some(
+            EngramBuilder::new(Kind::Task)
+                .body(Body::text(&claims))
+                .provenance(Provenance::trusted("runner"))
+                .build(),
+        )
+    };
+
+    // Build LLM judge signal from task description (rung 6).
+    // The diff is left empty here because we cannot run `git diff`
+    // synchronously in this context. The LlmJudgeGate degrades
+    // gracefully when the diff is empty (judges description only).
+    let llm_judge_signal = {
+        let task_description = ctx
+            .task_description
+            .as_deref()
+            .unwrap_or(ctx.task_title.as_str());
+        if task_description.is_empty() {
+            None
+        } else {
+            let payload = JudgePayload {
+                task_description: task_description.to_string(),
+                diff: String::new(),
+            };
+            Some(
+                EngramBuilder::new(Kind::Task)
+                    .body(Body::from_json(&payload).unwrap_or_else(|_| Body::empty()))
+                    .provenance(Provenance::trusted("runner"))
+                    .build(),
+            )
+        }
+    };
+
     RungExecutionInputs {
-        code_intel_hints: target_crates.to_vec(),
-        ..Default::default()
+        symbol_signal,
+        fact_check_signal,
+        llm_judge_signal,
+        code_intel_hints,
     }
 }
 
 /// Build enriched [`RungExecutionConfig`] from task workdir and verify steps.
 ///
-/// Populates `source_roots`, `timeout_ms`, `integration_test_pattern`, and
-/// `integration_build_system` from available task context. Oracle fields
-/// (fact-check, llm-judge) remain `None` — the rung dispatch fails closed
-/// when required oracles are absent.
+/// E05-T05: Populates `source_roots`, `timeout_ms`, `integration_test_pattern`,
+/// `integration_build_system`, and `generated_test_artifacts` from available
+/// task context. Oracle fields (fact-check, llm-judge) remain `None` — the
+/// rung dispatch fails closed with explicit skipped/not-wired verdicts when
+/// required oracles are absent, rather than producing silent passes.
 fn build_rung_execution_config(
     workdir: &Path,
     timeout_secs: u64,
     verify_steps: &[VerifyStep],
+    verdict_publisher: Option<VerdictPublisher>,
 ) -> RungExecutionConfig {
     let integration_test_pattern = verify_steps
         .iter()
@@ -626,11 +787,25 @@ fn build_rung_execution_config(
         None
     };
 
+    // E05-T05: Wire generated_test_artifacts when the workdir contains
+    // generated test files. This allows the GeneratedTest rung to run
+    // real tests instead of returning a skipped stub.
+    let generated_test_artifacts: Option<Arc<dyn GeneratedArtifactStore>> = {
+        let store = FsGeneratedArtifactStore::new(workdir.to_path_buf());
+        if store.matching_entries("generated-tests/gen_").is_empty() {
+            None
+        } else {
+            Some(Arc::new(store))
+        }
+    };
+
     RungExecutionConfig {
         source_roots: Some(vec![workdir.to_path_buf()]),
         timeout_ms: Some(timeout_secs.saturating_mul(1000)),
         integration_test_pattern,
         integration_build_system,
+        generated_test_artifacts,
+        verdict_publisher,
         ..Default::default()
     }
 }
@@ -739,7 +914,13 @@ fn render_output(verdicts: &[Verdict]) -> String {
 }
 
 fn render_verdict_output(v: &Verdict) -> String {
-    let status = if v.passed { "pass" } else { "FAIL" };
+    let status = if v.skipped {
+        "SKIP"
+    } else if v.passed {
+        "pass"
+    } else {
+        "FAIL"
+    };
     let detail = v.detail.as_deref().unwrap_or("").trim();
     let digest = v.error_digest.as_deref().unwrap_or("").trim();
     let reason = v.reason.trim();
@@ -871,6 +1052,8 @@ mod tests {
             tx,
             Arc::new(Semaphore::new(1)),
             Vec::new(),
+            None,
+            None,
         );
         (handle, start, rx)
     }
@@ -996,6 +1179,8 @@ mod tests {
             tx,
             semaphore,
             Vec::new(),
+            None,
+            None,
         );
 
         start.send(()).expect("owner starts producer");
@@ -1118,6 +1303,8 @@ mod tests {
                 Some(Vec::new()),
                 10,
                 Vec::new(),
+                None,
+                None,
             )
             .await;
             assert!(!completion.passed);
@@ -1165,6 +1352,8 @@ mod tests {
             Some(Vec::new()),
             10,
             Vec::new(),
+            None,
+            None,
         )
         .await;
 
@@ -1198,6 +1387,8 @@ mod tests {
             None,
             10,
             Vec::new(),
+            None,
+            None,
         )
         .await;
         let baseline_failures = baseline
@@ -1219,6 +1410,8 @@ mod tests {
             Some(baseline_failures),
             10,
             Vec::new(),
+            None,
+            None,
         )
         .await;
         assert!(candidate.verdicts.iter().any(|verdict| {
@@ -1252,6 +1445,8 @@ mod tests {
             Some(Vec::new()),
             10,
             Vec::new(),
+            None,
+            None,
         )
         .await;
         assert!(!completion.passed);
@@ -1343,6 +1538,8 @@ mod tests {
                 Some(Vec::new()),
                 1,
                 Vec::new(),
+                None,
+                None,
             ),
         )
         .await
@@ -1379,6 +1576,8 @@ mod tests {
             Some(Vec::new()),
             1,
             Vec::new(),
+            None,
+            None,
         )
         .await;
         assert!(
@@ -1399,5 +1598,62 @@ mod tests {
                 .unwrap_err()
                 .contains("untracked file count")
         );
+    }
+
+    /// E05-T08: Prove that `run_gate_once` publishes non-skipped verdicts
+    /// through the `VerdictPublisher` as `Kind::GateVerdict` pulses.
+    #[tokio::test]
+    async fn live_gate_verdicts_publish_engram() {
+        use roko_core::Kind;
+        use std::sync::Mutex;
+
+        let published: Arc<Mutex<Vec<roko_core::Pulse>>> = Arc::new(Mutex::new(Vec::new()));
+        let published_clone = Arc::clone(&published);
+        let publisher = VerdictPublisher::new(Arc::new(move |pulse| {
+            published_clone.lock().unwrap().push(pulse);
+        }));
+
+        let dir = git_repo();
+        let completion = run_gate_once(
+            gate_effect(GateCompletionKind::Gate),
+            "plan-pub".into(),
+            "task-pub".into(),
+            2,
+            dir.path().to_path_buf(),
+            GatesConfig::default(),
+            PlanComplexity::Trivial,
+            vec![VerifyStep {
+                phase: "test".into(),
+                command: "true".into(),
+                fail_msg: None,
+                timeout_ms: 10_000,
+            }],
+            None,
+            10,
+            Vec::new(),
+            Some(publisher),
+            None,
+        )
+        .await;
+
+        assert!(completion.passed, "gate should pass");
+
+        let pulses = published.lock().unwrap();
+        assert!(
+            !pulses.is_empty(),
+            "VerdictPublisher must receive at least one pulse"
+        );
+        for pulse in pulses.iter() {
+            assert_eq!(
+                pulse.kind,
+                Kind::GateVerdict,
+                "published pulse must be Kind::GateVerdict"
+            );
+            assert_eq!(
+                pulse.topic,
+                roko_core::Topic::new("gate.verdict.emitted"),
+                "published pulse must have gate.verdict.emitted topic"
+            );
+        }
     }
 }

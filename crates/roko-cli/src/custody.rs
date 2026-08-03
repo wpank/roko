@@ -2,12 +2,72 @@
 //!
 //! Provides `list`, `show`, and `verify` commands for operators to inspect
 //! and validate the append-only custody record chain.
+//!
+//! Records are hash-chained: each entry carries a SHA-256 digest of its
+//! canonical payload plus a `prev_hash` linking to the preceding record.
+//! `cmd_custody_verify` recomputes the chain so edited or reordered rows
+//! are detected.
 
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use roko_agent::safety::provenance::{Custody, CustodyLogger};
 use roko_fs::RokoLayout;
+use sha2::{Digest, Sha256};
+
+// ─── Hash-chain helpers ────────────────────────────────────────────
+
+/// Produce the canonical payload bytes for hashing.
+///
+/// The canonical form is the JSON serialization of every field *except*
+/// `prev_hash` and `hash` — those are the chain metadata and must not
+/// feed back into themselves. We serialize a temporary clone with those
+/// fields cleared so the digest is stable regardless of their current
+/// values.
+fn canonical_payload(record: &Custody) -> Vec<u8> {
+    let mut canon = record.clone();
+    canon.prev_hash = None;
+    canon.hash = None;
+    // serde_json::to_vec produces deterministic output for the same struct
+    // layout (field order follows declaration order with derive(Serialize)).
+    serde_json::to_vec(&canon).expect("Custody serialization cannot fail")
+}
+
+/// Compute the SHA-256 hash for a record given the previous record's hash.
+///
+/// `hash = sha256(prev_hash_hex || canonical_payload_bytes)`
+///
+/// For the first record in the chain `prev_hash` is the empty string.
+fn compute_hash(prev_hash: &str, record: &Custody) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(&canonical_payload(record));
+    format!("{:x}", hasher.finalize())
+}
+
+/// Append a custody record to the log with hash-chain fields populated.
+///
+/// Reads the last record's `hash` (if any) to derive `prev_hash`, computes
+/// the new record's `hash`, then delegates to [`CustodyLogger::log`].
+pub fn log_chained(logger: &CustodyLogger, mut record: Custody) -> std::io::Result<()> {
+    let existing = logger.read_all()?;
+    let prev = existing
+        .last()
+        .and_then(|r| r.hash.as_deref())
+        .unwrap_or("");
+    record.prev_hash = if prev.is_empty() {
+        None
+    } else {
+        Some(prev.to_string())
+    };
+    record.hash = Some(compute_hash(
+        record.prev_hash.as_deref().unwrap_or(""),
+        &record,
+    ));
+    logger.log(&record)
+}
+
+// ─── CLI commands ──────────────────────────────────────────────────
 
 /// List recent custody records, optionally limited to `limit` entries.
 pub fn cmd_custody_list(workdir: &Path, limit: Option<usize>) -> Result<()> {
@@ -141,6 +201,11 @@ pub fn cmd_custody_show(workdir: &Path, index: usize) -> Result<()> {
         "Simulation:  {}",
         record.simulation.as_deref().unwrap_or("none")
     );
+    println!("Hash:        {}", record.hash.as_deref().unwrap_or("none"));
+    println!(
+        "Prev hash:   {}",
+        record.prev_hash.as_deref().unwrap_or("none")
+    );
 
     if !record.gates_passed.is_empty() {
         println!("\nGates passed:");
@@ -180,6 +245,7 @@ pub fn cmd_custody_show(workdir: &Path, index: usize) -> Result<()> {
 /// - Parse errors (corrupted lines)
 /// - Monotonic timestamps
 /// - Missing required fields
+/// - Hash chain integrity (prev_hash links + recomputed sha256 digests)
 pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
     let layout = RokoLayout::for_project(workdir);
     let log_path = layout.custody_log();
@@ -202,6 +268,8 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
     let mut prev_when: Option<i64> = None;
     let mut valid_count = 0usize;
     let mut parse_errors = 0usize;
+    let mut prev_hash_expected: Option<String> = None;
+    let mut chain_checked = false;
 
     for (idx, line) in lines.iter().enumerate() {
         match serde_json::from_str::<Custody>(line) {
@@ -226,6 +294,52 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
                 if record.principal.is_empty() {
                     violations.push(format!("line {idx}: empty principal field"));
                 }
+
+                // ── Hash chain verification ──────────────────────────
+                // Legacy records without hash fields are allowed but we
+                // skip chain verification for those.
+                if let Some(ref stored_hash) = record.hash {
+                    chain_checked = true;
+
+                    // Verify prev_hash links to the previous record's hash.
+                    match (&record.prev_hash, &prev_hash_expected) {
+                        (None, None) => { /* first chained record, OK */ }
+                        (Some(prev), Some(expected)) if prev == expected => { /* link OK */ }
+                        (None, Some(expected)) => {
+                            violations.push(format!(
+                                "line {idx}: chain break — prev_hash is missing, expected {:.16}...",
+                                expected
+                            ));
+                        }
+                        (Some(prev), None) => {
+                            violations.push(format!(
+                                "line {idx}: chain break — prev_hash is {:.16}... but no prior hash exists",
+                                prev
+                            ));
+                        }
+                        (Some(prev), Some(expected)) => {
+                            violations.push(format!(
+                                "line {idx}: chain break — prev_hash {:.16}... != expected {:.16}...",
+                                prev, expected
+                            ));
+                        }
+                    }
+
+                    // Recompute the hash and compare.
+                    let recomputed =
+                        compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
+                    if *stored_hash != recomputed {
+                        violations.push(format!(
+                            "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
+                            stored_hash, recomputed
+                        ));
+                    }
+
+                    prev_hash_expected = Some(stored_hash.clone());
+                } else {
+                    // Legacy record without hash — reset chain expectation.
+                    prev_hash_expected = None;
+                }
             }
             Err(e) => {
                 parse_errors += 1;
@@ -239,6 +353,14 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
     println!("Total lines:    {}", lines.len());
     println!("Valid records:  {valid_count}");
     println!("Parse errors:   {parse_errors}");
+    println!(
+        "Hash chain:     {}",
+        if chain_checked {
+            "verified"
+        } else {
+            "not present (legacy)"
+        }
+    );
     println!("Violations:     {}", violations.len());
 
     if violations.is_empty() {
@@ -288,8 +410,7 @@ mod tests {
 
     fn setup_custody_log(tmp: &TempDir) -> CustodyLogger {
         let layout = RokoLayout::for_project(tmp.path());
-        let logger = CustodyLogger::new(layout.custody_log());
-        logger
+        CustodyLogger::new(layout.custody_log())
     }
 
     #[test]
@@ -303,12 +424,12 @@ mod tests {
     fn list_with_records() {
         let tmp = TempDir::new().unwrap();
         let logger = setup_custody_log(&tmp);
-        logger
-            .log(&Custody::new("write_file", "agent-1", 1000, vec![]))
-            .unwrap();
-        logger
-            .log(&Custody::new("bash", "agent-2", 2000, vec![]).with_taint(Taint::UserInput))
-            .unwrap();
+        log_chained(&logger, Custody::new("write_file", "agent-1", 1000, vec![])).unwrap();
+        log_chained(
+            &logger,
+            Custody::new("bash", "agent-2", 2000, vec![]).with_taint(Taint::UserInput),
+        )
+        .unwrap();
 
         assert!(cmd_custody_list(tmp.path(), None).is_ok());
         assert!(cmd_custody_list(tmp.path(), Some(1)).is_ok());
@@ -318,13 +439,13 @@ mod tests {
     fn show_record_by_index() {
         let tmp = TempDir::new().unwrap();
         let logger = setup_custody_log(&tmp);
-        logger
-            .log(
-                &Custody::new("edit_file", "agent-3", 3000, vec![])
-                    .with_attestation(AttestationLevel::LocalAgent)
-                    .with_gates_passed(vec!["compile".into(), "test".into()]),
-            )
-            .unwrap();
+        log_chained(
+            &logger,
+            Custody::new("edit_file", "agent-3", 3000, vec![])
+                .with_attestation(AttestationLevel::LocalAgent)
+                .with_gates_passed(vec!["compile".into(), "test".into()]),
+        )
+        .unwrap();
 
         assert!(cmd_custody_show(tmp.path(), 0).is_ok());
     }
@@ -333,7 +454,7 @@ mod tests {
     fn show_out_of_range_fails() {
         let tmp = TempDir::new().unwrap();
         let logger = setup_custody_log(&tmp);
-        logger.log(&Custody::new("test", "p", 100, vec![])).unwrap();
+        log_chained(&logger, Custody::new("test", "p", 100, vec![])).unwrap();
 
         assert!(cmd_custody_show(tmp.path(), 99).is_err());
     }
@@ -342,12 +463,8 @@ mod tests {
     fn verify_valid_chain_succeeds() {
         let tmp = TempDir::new().unwrap();
         let logger = setup_custody_log(&tmp);
-        logger
-            .log(&Custody::new("action1", "agent-1", 1000, vec![]))
-            .unwrap();
-        logger
-            .log(&Custody::new("action2", "agent-1", 2000, vec![]))
-            .unwrap();
+        log_chained(&logger, Custody::new("action1", "agent-1", 1000, vec![])).unwrap();
+        log_chained(&logger, Custody::new("action2", "agent-1", 2000, vec![])).unwrap();
 
         assert!(cmd_custody_verify(tmp.path()).is_ok());
     }
@@ -357,14 +474,74 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let logger = setup_custody_log(&tmp);
         // Second record has an earlier timestamp.
-        logger
-            .log(&Custody::new("action1", "agent-1", 2000, vec![]))
-            .unwrap();
-        logger
-            .log(&Custody::new("action2", "agent-1", 1000, vec![]))
-            .unwrap();
+        log_chained(&logger, Custody::new("action1", "agent-1", 2000, vec![])).unwrap();
+        log_chained(&logger, Custody::new("action2", "agent-1", 1000, vec![])).unwrap();
 
         assert!(cmd_custody_verify(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn custody_verify_detects_tampered_chain() {
+        let tmp = TempDir::new().unwrap();
+        let logger = setup_custody_log(&tmp);
+
+        // Write two properly chained records.
+        log_chained(&logger, Custody::new("action1", "agent-1", 1000, vec![])).unwrap();
+        log_chained(&logger, Custody::new("action2", "agent-1", 2000, vec![])).unwrap();
+
+        // Sanity: chain is valid before tampering.
+        assert!(cmd_custody_verify(tmp.path()).is_ok());
+
+        // ── Tamper with the first record's action field ──
+        let log_path = logger.path().to_path_buf();
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let tampered = content.replacen("action1", "HACKED!", 1);
+        assert_ne!(content, tampered, "sanity: replacement happened");
+        std::fs::write(&log_path, &tampered).unwrap();
+
+        // Verify must now fail: the first record's hash won't match the
+        // recomputed digest, and the second record's prev_hash will also
+        // be wrong since it was computed from the original first record.
+        let result = cmd_custody_verify(tmp.path());
+        assert!(result.is_err(), "tampered chain must fail verification");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("integrity violation"),
+            "error should mention integrity violation, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn chained_records_carry_hashes() {
+        let tmp = TempDir::new().unwrap();
+        let logger = setup_custody_log(&tmp);
+
+        log_chained(&logger, Custody::new("a1", "p1", 100, vec![])).unwrap();
+        log_chained(&logger, Custody::new("a2", "p2", 200, vec![])).unwrap();
+
+        let records = logger.read_all().unwrap();
+        assert_eq!(records.len(), 2);
+
+        // First record has hash but no prev_hash.
+        assert!(records[0].hash.is_some(), "first record should have hash");
+        assert!(
+            records[0].prev_hash.is_none(),
+            "first record should have no prev_hash"
+        );
+
+        // Second record has both hash and prev_hash.
+        assert!(records[1].hash.is_some(), "second record should have hash");
+        assert!(
+            records[1].prev_hash.is_some(),
+            "second record should have prev_hash"
+        );
+
+        // Second record's prev_hash should match first record's hash.
+        assert_eq!(
+            records[1].prev_hash.as_deref(),
+            records[0].hash.as_deref(),
+            "prev_hash chain link mismatch"
+        );
     }
 
     #[test]

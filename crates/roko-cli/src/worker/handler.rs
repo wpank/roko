@@ -174,11 +174,17 @@ async fn run_task(
 
     *state.last_task.write().await = Some(result.clone());
 
-    // Callback to control plane if configured
+    // Callback to control plane if configured.
+    // The X-Roko-Worker-Token header is included when a callback token is set so
+    // the control plane can validate the request before accepting it.
     if let (Some(url), Some(dep_id)) = (&state.control_plane_url, &state.deployment_id) {
         let callback_url = format!("{url}/api/deployments/{dep_id}/callback");
         let client = reqwest::Client::new();
-        if let Err(e) = client.post(&callback_url).json(&result).send().await {
+        let mut request = client.post(&callback_url).json(&result);
+        if let Some(token) = &state.callback_token {
+            request = request.header("X-Roko-Worker-Token", token);
+        }
+        if let Err(e) = request.send().await {
             error!(%callback_url, error = %e, "callback to control plane failed");
         }
     }

@@ -29,6 +29,9 @@ pub struct HttpPostError {
     pub status: Option<u16>,
     /// Human-readable message describing the failure.
     pub message: String,
+    /// Parsed `Retry-After` header value in seconds, if present in the
+    /// response. Only populated for 429 and 529 responses.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl HttpPostError {
@@ -38,6 +41,7 @@ impl HttpPostError {
         Self {
             status: None,
             message: message.into(),
+            retry_after_secs: None,
         }
     }
 
@@ -47,8 +51,75 @@ impl HttpPostError {
         Self {
             status: Some(status),
             message: message.into(),
+            retry_after_secs: None,
         }
     }
+
+    /// Build an error from an HTTP status, response body, and optional
+    /// `Retry-After` duration in seconds.
+    #[must_use]
+    pub fn http_with_retry_after(
+        status: u16,
+        message: impl Into<String>,
+        retry_after_secs: Option<u64>,
+    ) -> Self {
+        Self {
+            status: Some(status),
+            message: message.into(),
+            retry_after_secs,
+        }
+    }
+}
+
+/// Parse a `Retry-After` header value into a duration in seconds.
+///
+/// Supports two formats per RFC 7231 section 7.1.3:
+/// - Integer seconds (e.g. `"30"`)
+/// - HTTP-date (e.g. `"Sun, 06 Nov 1994 08:49:37 GMT"`)
+///
+/// Returns `None` if the header is absent, unparseable, or represents a
+/// date in the past.
+#[must_use]
+pub fn parse_retry_after(header_value: &str) -> Option<u64> {
+    let trimmed = header_value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Try integer seconds first (most common).
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(seconds);
+    }
+
+    // Try HTTP-date (RFC 7231): e.g. "Sun, 06 Nov 1994 08:49:37 GMT"
+    if let Ok(date) = httpdate::parse_http_date(trimmed) {
+        let now = std::time::SystemTime::now();
+        return date
+            .duration_since(now)
+            .ok()
+            .map(|dur| dur.as_secs().max(1));
+    }
+
+    tracing::warn!(
+        retry_after = trimmed,
+        "failed to parse Retry-After header value; falling back to default backoff"
+    );
+    None
+}
+
+/// Extract a `Retry-After` value from a reqwest response (public for use
+/// by streaming backends that handle the HTTP response directly).
+#[must_use]
+pub fn extract_retry_after_from_response(response: &reqwest::Response) -> Option<u64> {
+    let status = response.status().as_u16();
+    if status != 429 && status != 529 && status != 503 {
+        return None;
+    }
+    let header_value = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())?;
+    parse_retry_after(header_value)
 }
 
 impl std::fmt::Display for HttpPostError {
@@ -159,6 +230,7 @@ impl HttpPoster for ReqwestPoster {
             .await
             .map_err(|e| HttpPostError::transport(format!("request failed: {e}")))?;
         let status = resp.status();
+        let retry_after = extract_retry_after_from_response(&resp);
         let text = resp
             .text()
             .await
@@ -166,7 +238,11 @@ impl HttpPoster for ReqwestPoster {
         if status.is_success() {
             Ok(text)
         } else {
-            Err(HttpPostError::http(status.as_u16(), text))
+            Err(HttpPostError::http_with_retry_after(
+                status.as_u16(),
+                text,
+                retry_after,
+            ))
         }
     }
 
@@ -188,6 +264,7 @@ impl HttpPoster for ReqwestPoster {
             .await
             .map_err(|e| HttpPostError::transport(format!("request failed: {e}")))?;
         let status = resp.status();
+        let retry_after = extract_retry_after_from_response(&resp);
         let text = resp
             .text()
             .await
@@ -195,7 +272,11 @@ impl HttpPoster for ReqwestPoster {
         if status.is_success() {
             Ok(text)
         } else {
-            Err(HttpPostError::http(status.as_u16(), text))
+            Err(HttpPostError::http_with_retry_after(
+                status.as_u16(),
+                text,
+                retry_after,
+            ))
         }
     }
 
@@ -217,6 +298,7 @@ impl HttpPoster for ReqwestPoster {
             .await
             .map_err(|e| HttpPostError::transport(format!("request failed: {e}")))?;
         let status = resp.status();
+        let retry_after = extract_retry_after_from_response(&resp);
         let text = resp
             .text()
             .await
@@ -224,7 +306,11 @@ impl HttpPoster for ReqwestPoster {
         if status.is_success() {
             Ok(text)
         } else {
-            Err(HttpPostError::http(status.as_u16(), text))
+            Err(HttpPostError::http_with_retry_after(
+                status.as_u16(),
+                text,
+                retry_after,
+            ))
         }
     }
 }
@@ -253,6 +339,7 @@ mod tests {
         let e = HttpPostError::transport("dns");
         assert!(e.status.is_none());
         assert_eq!(e.message, "dns");
+        assert!(e.retry_after_secs.is_none());
         assert_eq!(e.to_string(), "transport error: dns");
     }
 
@@ -260,7 +347,40 @@ mod tests {
     fn http_error_carries_status() {
         let e = HttpPostError::http(429, "rate limited");
         assert_eq!(e.status, Some(429));
+        assert!(e.retry_after_secs.is_none());
         assert_eq!(e.to_string(), "http 429: rate limited");
+    }
+
+    #[test]
+    fn http_error_with_retry_after() {
+        let e = HttpPostError::http_with_retry_after(429, "rate limited", Some(30));
+        assert_eq!(e.status, Some(429));
+        assert_eq!(e.retry_after_secs, Some(30));
+    }
+
+    #[test]
+    fn retry_after_parse_integer_seconds() {
+        assert_eq!(parse_retry_after("30"), Some(30));
+        assert_eq!(parse_retry_after("0"), Some(0));
+        assert_eq!(parse_retry_after("120"), Some(120));
+    }
+
+    #[test]
+    fn retry_after_parse_empty_and_invalid() {
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("   "), None);
+        assert_eq!(parse_retry_after("not-a-number"), None);
+    }
+
+    #[test]
+    fn retry_after_parse_http_date() {
+        let future_date = "Sat, 06 Nov 2094 08:49:37 GMT";
+        let result = parse_retry_after(future_date);
+        assert!(result.is_some(), "should parse valid future HTTP date");
+        assert!(
+            result.unwrap() > 0,
+            "future date should produce positive seconds"
+        );
     }
 
     #[test]

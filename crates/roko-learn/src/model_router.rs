@@ -43,6 +43,7 @@
 //! concurrent read-side routing.
 
 use crate::bandits::EwcRegularizer;
+use crate::cascade::persistence::LinUCBSnapshot;
 use crate::cost_table::CostTable;
 use crate::provider_health::ProviderHealthTracker;
 use parking_lot::RwLock;
@@ -1350,6 +1351,80 @@ impl LinUCBRouter {
             .iter()
             .map(|a| a.slug.clone())
             .collect()
+    }
+
+    // ─── LinUCB snapshot export / import ─────────────────────────────────
+
+    /// Export the current LinUCB arm parameters as a [`LinUCBSnapshot`].
+    ///
+    /// Each arm's `a_matrix` (dim x dim) is flattened row-major into a single
+    /// `Vec<f64>`. The snapshot can later be restored via
+    /// [`import_linucb_snapshot`](Self::import_linucb_snapshot).
+    pub(crate) fn export_linucb_snapshot(&self) -> LinUCBSnapshot {
+        let state = self.state.read();
+        let mut a_matrices = Vec::with_capacity(state.arms.len());
+        let mut b_vectors = Vec::with_capacity(state.arms.len());
+        let mut total_obs: usize = 0;
+
+        for arm in &state.arms {
+            // Flatten row-major: concat each row into one Vec<f64>.
+            let flat: Vec<f64> = arm
+                .a_matrix
+                .iter()
+                .flat_map(|row| row.iter().copied())
+                .collect();
+            a_matrices.push(flat);
+            b_vectors.push(arm.b_vector.clone());
+            total_obs = total_obs.saturating_add(arm.observations as usize);
+        }
+
+        LinUCBSnapshot {
+            a_matrices,
+            b_vectors,
+            dim: CONTEXT_DIM,
+            observations: total_obs,
+        }
+    }
+
+    /// Import a previously exported [`LinUCBSnapshot`], restoring arm A/b
+    /// parameters in place.
+    ///
+    /// Arms are matched by index. If the snapshot has fewer arms, a different
+    /// dimensionality, or a mismatched row length, the affected arm is left
+    /// at its constructed default (identity A, zero b).
+    pub(crate) fn import_linucb_snapshot(&self, snap: &LinUCBSnapshot) {
+        if snap.dim != CONTEXT_DIM {
+            // Dimensionality mismatch — leave all arms at their defaults.
+            return;
+        }
+
+        let mut state = self.state.write();
+        let expected_flat_len = CONTEXT_DIM * CONTEXT_DIM;
+
+        for (i, arm) in state.arms.iter_mut().enumerate() {
+            let Some(flat_a) = snap.a_matrices.get(i) else {
+                // Snapshot has fewer arms than the current router — skip.
+                continue;
+            };
+            let Some(b) = snap.b_vectors.get(i) else {
+                continue;
+            };
+
+            // Validate lengths before un-flattening.
+            if flat_a.len() != expected_flat_len || b.len() != CONTEXT_DIM {
+                continue;
+            }
+
+            // Un-flatten row-major into dim x dim matrix.
+            let mut matrix = vec![vec![0.0; CONTEXT_DIM]; CONTEXT_DIM];
+            for (row_idx, row) in matrix.iter_mut().enumerate() {
+                let start = row_idx * CONTEXT_DIM;
+                row.copy_from_slice(&flat_a[start..start + CONTEXT_DIM]);
+            }
+
+            arm.a_matrix = matrix;
+            arm.b_vector = b.clone();
+        }
     }
 }
 

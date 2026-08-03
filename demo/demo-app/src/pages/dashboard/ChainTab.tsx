@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { useDataHub } from '../../app/DataHub';
 import type { ChainBlockEntry, ChainTxEntry, ChainEventEntry } from '../../app/DataHub';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import Oscilloscope from '../../components/canvas/Oscilloscope';
 import './ChainTab.css';
 
@@ -36,7 +36,7 @@ export default function ChainTab() {
   }, [fetchChainBlocks, fetchChainTxs, fetchChainEvents, fetchChainStatus]);
 
   // SSE activity tracking
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['chain_block', 'chain_tx', 'chain_contract_event'],
     useCallback(() => {
       setSseActive(true);

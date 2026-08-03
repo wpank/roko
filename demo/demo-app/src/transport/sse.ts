@@ -34,7 +34,7 @@ const KNOWN_SSE_EVENT_TYPES = [
 ] as const;
 
 export interface SseAdapterConfig {
-  /** Full URL to SSE endpoint, e.g. `${SERVE_URL}/api/events` */
+  /** Full URL to SSE endpoint. */
   url: string;
   /** Called on every parsed SSE event. Receives the JSON-parsed object. */
   onEvent: (event: Record<string, unknown>) => void;

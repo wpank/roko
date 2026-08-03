@@ -113,6 +113,12 @@ pub struct Custody {
     pub witness: Option<String>,
     /// Optional attestation tier for the record.
     pub attestation: Option<AttestationLevel>,
+    /// SHA-256 hash of the previous record in the chain (`None` for the first record).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_hash: Option<String>,
+    /// SHA-256 hash of this record's canonical payload (all fields except `prev_hash` and `hash`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
 }
 
 impl Custody {
@@ -137,6 +143,8 @@ impl Custody {
             result: None,
             witness: None,
             attestation: None,
+            prev_hash: None,
+            hash: None,
         }
     }
 

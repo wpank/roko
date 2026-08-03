@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLiveApi } from '../../hooks/useLiveApi';
 import { fmtUptime } from '../../lib/format';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import Pane from '../../components/Pane';
 import Mosaic, { MosaicCell } from '../../components/Mosaic';
@@ -152,7 +152,7 @@ export default function CostDashboard() {
 
   // SSE-triggered refetch
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['efficiency_event', 'gate_result', 'episode', 'inference_completed', 'plan_started', 'plan_completed', 'task_completed'],
     debouncedRefetch,
   );

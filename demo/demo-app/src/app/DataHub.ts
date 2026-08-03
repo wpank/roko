@@ -430,10 +430,13 @@ export const useDataHub = create<DataHub>()((set, get) => ({
   // -- Event handling -----------------------------------------------
 
   handleServerEvent: (event: ServerEvent) => {
+    // Wire events arrive with snake_case field names matching the server
+    // serde contract. This handler is the single adapter boundary: it maps
+    // snake_case wire fields to the camelCase shapes used by the UI store.
     switch (event.type) {
       case 'plan_started':
         set({
-          activePlanId: event.planId,
+          activePlanId: event.plan_id,
           activePhase: 'started',
           planCompleted: false,
         });
@@ -452,7 +455,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
           agents: [
             ...s.agents,
             {
-              agentId: event.agentId,
+              agentId: event.agent_id,
               role: event.role,
               model: event.model,
               status: 'running' as const,
@@ -464,7 +467,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
       case 'agent_stopped':
         set((s) => ({
           agents: s.agents.map((a) =>
-            a.agentId === event.agentId
+            a.agentId === event.agent_id
               ? { ...a, status: 'stopped' as const }
               : a,
           ),
@@ -476,8 +479,8 @@ export const useDataHub = create<DataHub>()((set, get) => ({
           episodes: [
             ...s.episodes.slice(-(MAX_EPISODES - 1)),
             {
-              planId: event.planId,
-              taskId: event.taskId,
+              planId: event.plan_id,
+              taskId: event.task_id,
               passed: event.passed,
               timestamp: Date.now(),
             },
@@ -487,19 +490,19 @@ export const useDataHub = create<DataHub>()((set, get) => ({
 
       case 'inference_completed':
         set((s) => ({
-          totalCost: s.totalCost + event.costUsd,
+          totalCost: s.totalCost + event.cost_usd,
           totalTokens:
-            s.totalTokens + event.inputTokens + event.outputTokens,
+            s.totalTokens + event.input_tokens + event.output_tokens,
           recentInferences: [
             ...s.recentInferences.slice(-(MAX_INFERENCES - 1)),
             {
-              requestId: event.requestId,
+              requestId: event.request_id,
               model: event.model,
-              agentId: event.agentId,
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              costUsd: event.costUsd,
-              durationMs: event.durationMs,
+              agentId: event.agent_id,
+              inputTokens: event.input_tokens,
+              outputTokens: event.output_tokens,
+              costUsd: event.cost_usd,
+              durationMs: event.duration_ms,
             },
           ],
         }));
@@ -522,41 +525,41 @@ export const useDataHub = create<DataHub>()((set, get) => ({
           [...arr.slice(-(MAX_FIELD_HISTORY - 1)), v];
         set((s) => ({
           isfrCurrentRate: {
-            compositeBps: event.compositeBps,
-            lendingBps: event.lendingBps,
-            structuredBps: event.structuredBps,
-            fundingBps: event.fundingBps,
-            stakingBps: event.stakingBps,
-            confidenceBps: event.confidenceBps,
-            sourceCount: event.sourceCount,
-            timestampMs: event.timestampMs,
+            compositeBps: event.composite_bps,
+            lendingBps: event.lending_bps,
+            structuredBps: event.structured_bps,
+            fundingBps: event.funding_bps,
+            stakingBps: event.staking_bps,
+            confidenceBps: event.confidence_bps,
+            sourceCount: event.source_count,
+            timestampMs: event.timestamp_ms,
           },
           isfrHistory: [
             ...s.isfrHistory.slice(-(MAX_ISFR_HISTORY - 1)),
             {
-              compositeBps: event.compositeBps,
-              lendingBps: event.lendingBps,
-              structuredBps: event.structuredBps,
-              fundingBps: event.fundingBps,
-              stakingBps: event.stakingBps,
-              confidenceBps: event.confidenceBps,
-              sourceCount: event.sourceCount,
-              timestampMs: event.timestampMs,
+              compositeBps: event.composite_bps,
+              lendingBps: event.lending_bps,
+              structuredBps: event.structured_bps,
+              fundingBps: event.funding_bps,
+              stakingBps: event.staking_bps,
+              confidenceBps: event.confidence_bps,
+              sourceCount: event.source_count,
+              timestampMs: event.timestamp_ms,
             },
           ],
           isfrFieldHistory: {
-            composite: capField(s.isfrFieldHistory.composite, event.compositeBps),
-            lending: capField(s.isfrFieldHistory.lending, event.lendingBps),
-            structured: capField(s.isfrFieldHistory.structured, event.structuredBps),
-            funding: capField(s.isfrFieldHistory.funding, event.fundingBps),
-            staking: capField(s.isfrFieldHistory.staking, event.stakingBps),
-            confidence: capField(s.isfrFieldHistory.confidence, event.confidenceBps),
+            composite: capField(s.isfrFieldHistory.composite, event.composite_bps),
+            lending: capField(s.isfrFieldHistory.lending, event.lending_bps),
+            structured: capField(s.isfrFieldHistory.structured, event.structured_bps),
+            funding: capField(s.isfrFieldHistory.funding, event.funding_bps),
+            staking: capField(s.isfrFieldHistory.staking, event.staking_bps),
+            confidence: capField(s.isfrFieldHistory.confidence, event.confidence_bps),
           },
           isfrEventLog: [
             {
-              ts: event.timestampMs,
+              ts: event.timestamp_ms,
               type: 'rate' as const,
-              message: `Composite ${event.compositeBps} bps \u00b7 ${event.sourceCount} sources \u00b7 ${(event.confidenceBps / 100).toFixed(1)}% conf`,
+              message: `Composite ${event.composite_bps} bps \u00b7 ${event.source_count} sources \u00b7 ${(event.confidence_bps / 100).toFixed(1)}% conf`,
             },
             ...s.isfrEventLog.slice(0, MAX_EVENT_LOG - 1),
           ],
@@ -567,21 +570,21 @@ export const useDataHub = create<DataHub>()((set, get) => ({
 
       case 'isfr_source_health_changed':
         set((s) => ({
-          isfrSources: s.isfrSources.some((src) => src.id === event.sourceId)
+          isfrSources: s.isfrSources.some((src) => src.id === event.source_id)
             ? s.isfrSources.map((src) =>
-                src.id === event.sourceId
-                  ? { ...src, health: event.health, lastRateBps: event.lastRateBps }
+                src.id === event.source_id
+                  ? { ...src, health: event.health, lastRateBps: event.last_rate_bps }
                   : src,
               )
             : [
                 ...s.isfrSources,
                 {
-                  id: event.sourceId,
-                  name: event.sourceId,
+                  id: event.source_id,
+                  name: event.source_id,
                   class: 'unknown',
                   weight: 0,
                   health: event.health,
-                  lastRateBps: event.lastRateBps,
+                  lastRateBps: event.last_rate_bps,
                   lastPollMs: null,
                 },
               ],
@@ -589,7 +592,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
             {
               ts: Date.now(),
               type: 'source' as const,
-              message: `${event.sourceId} \u2192 ${event.health}${event.lastRateBps != null ? ` (${event.lastRateBps} bps)` : ''}`,
+              message: `${event.source_id} \u2192 ${event.health}${event.last_rate_bps != null ? ` (${event.last_rate_bps} bps)` : ''}`,
             },
             ...s.isfrEventLog.slice(0, MAX_EVENT_LOG - 1),
           ],
@@ -617,29 +620,29 @@ export const useDataHub = create<DataHub>()((set, get) => ({
           chainLatestBlock: {
             number: event.number,
             hash: event.hash,
-            parentHash: event.parentHash,
+            parentHash: event.parent_hash,
             timestamp: event.timestamp,
-            gasUsed: event.gasUsed,
-            gasLimit: event.gasLimit,
-            txCount: event.txCount,
-            baseFeePerGas: event.baseFeePerGas,
+            gasUsed: event.gas_used,
+            gasLimit: event.gas_limit,
+            txCount: event.tx_count,
+            baseFeePerGas: event.base_fee_per_gas,
           },
           chainBlocks: [
             {
               number: event.number,
               hash: event.hash,
-              parentHash: event.parentHash,
+              parentHash: event.parent_hash,
               timestamp: event.timestamp,
-              gasUsed: event.gasUsed,
-              gasLimit: event.gasLimit,
-              txCount: event.txCount,
-              baseFeePerGas: event.baseFeePerGas,
+              gasUsed: event.gas_used,
+              gasLimit: event.gas_limit,
+              txCount: event.tx_count,
+              baseFeePerGas: event.base_fee_per_gas,
             },
             ...s.chainBlocks.slice(0, MAX_CHAIN_BLOCKS - 1),
           ],
           chainGasHistory: [
             ...s.chainGasHistory.slice(-(MAX_CHAIN_GAS_HISTORY - 1)),
-            event.gasUsed,
+            event.gas_used,
           ],
         }));
         break;
@@ -648,13 +651,13 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         set((s) => ({
           chainTxs: [
             {
-              blockNumber: event.blockNumber,
-              txHash: event.txHash,
+              blockNumber: event.block_number,
+              txHash: event.tx_hash,
               from: event.from,
               to: event.to,
-              valueWei: event.valueWei,
-              gasUsed: event.gasUsed,
-              methodSig: event.methodSig,
+              valueWei: event.value_wei,
+              gasUsed: event.gas_used,
+              methodSig: event.method_sig,
               success: event.success,
             },
             ...s.chainTxs.slice(0, MAX_CHAIN_TXS - 1),
@@ -666,11 +669,11 @@ export const useDataHub = create<DataHub>()((set, get) => ({
         set((s) => ({
           chainEvents: [
             {
-              blockNumber: event.blockNumber,
-              txHash: event.txHash,
-              logIndex: event.logIndex,
+              blockNumber: event.block_number,
+              txHash: event.tx_hash,
+              logIndex: event.log_index,
               contract: event.contract,
-              eventName: event.eventName,
+              eventName: event.event_name,
               decoded: event.decoded,
             },
             ...s.chainEvents.slice(0, MAX_CHAIN_EVENTS - 1),
@@ -681,14 +684,15 @@ export const useDataHub = create<DataHub>()((set, get) => ({
       case 'feed_tick':
         set((s) => {
           // Find and update the matching feed.
-          const feedIdx = s.relayFeeds.findIndex((f) => f.feedId === event.feedId);
+          const feedIdx = s.relayFeeds.findIndex((f) => f.feedId === event.feed_id);
           const now = Date.now();
 
           // Extract a numeric value for sparkline (try common keys).
+          // Feed payloads arrive as raw server JSON — keys are snake_case.
           const numericValue = (() => {
             if (typeof event.payload === 'object' && event.payload !== null) {
               const p = event.payload as Record<string, unknown>;
-              for (const key of ['compositeBps', 'emaGwei', 'rateBps', 'spreadBps', 'stddevBps', 'confidencePct', 'blockNumber', 'epoch', 'number', 'currentEpoch', 'maxSpreadBps', 'relayAgentCount', 'totalFeeds']) {
+              for (const key of ['composite_bps', 'ema_gwei', 'rate_bps', 'spread_bps', 'stddev_bps', 'confidence_pct', 'block_number', 'epoch', 'number', 'current_epoch', 'max_spread_bps', 'relay_agent_count', 'total_feeds']) {
                 if (typeof p[key] === 'number') return p[key] as number;
               }
             }
@@ -717,7 +721,7 @@ export const useDataHub = create<DataHub>()((set, get) => ({
           return {
             relayFeeds: updatedFeeds,
             feedLog: [
-              { ts: now, agentId: event.agentId, topic: event.topic, preview },
+              { ts: now, agentId: event.agent_id, topic: event.topic, preview },
               ...s.feedLog.slice(0, MAX_FEED_LOG - 1),
             ],
           };
@@ -726,12 +730,12 @@ export const useDataHub = create<DataHub>()((set, get) => ({
 
       case 'feed_agent_online':
         set((s) => {
-          const exists = s.relayAgents.findIndex((a) => a.agentId === event.agentId);
+          const exists = s.relayAgents.findIndex((a) => a.agentId === event.agent_id);
           const entry: RelayAgentEntry = {
-            agentId: event.agentId,
+            agentId: event.agent_id,
             name: event.name,
             capabilities: [],
-            feedCount: event.feedCount,
+            feedCount: event.feed_count,
             connectedAtMs: Date.now(),
             online: true,
           };
@@ -749,10 +753,10 @@ export const useDataHub = create<DataHub>()((set, get) => ({
       case 'feed_agent_offline':
         set((s) => ({
           relayAgents: s.relayAgents.map((a) =>
-            a.agentId === event.agentId ? { ...a, online: false } : a,
+            a.agentId === event.agent_id ? { ...a, online: false } : a,
           ),
           relayFeeds: s.relayFeeds.map((f) =>
-            f.agentId === event.agentId ? { ...f, status: 'offline' as const } : f,
+            f.agentId === event.agent_id ? { ...f, status: 'offline' as const } : f,
           ),
         }));
         break;

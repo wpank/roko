@@ -72,9 +72,11 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 
 COPY docker/start-railway.sh /usr/local/bin/start-railway
-# Railway config is injected via ROKO_* env vars (see: roko config export --env railway).
-# A default roko.toml is generated at startup by start-railway if absent.
-COPY roko.toml /workspace/roko.toml
+# A committed Docker default is baked into the image for clean-checkout builds.
+# The start-railway script can still generate a fresh default if the file is absent
+# at runtime (e.g. when a mounted workspace omits roko.toml).
+# Runtime behavior is configured via ROKO_* environment variables.
+COPY docker/roko.toml /workspace/roko.toml
 
 RUN chmod +x /usr/local/bin/start-railway \
     && useradd --create-home --shell /bin/bash --uid 1000 roko \

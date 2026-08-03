@@ -20,11 +20,12 @@ use serde_json::{Value, json};
 
 use crate::bench::{
     self, BenchConfigOverrides, BenchRun, BenchRunIndexEntry, BenchRunKind, BenchRunStatus,
-    BenchRunSummary, BenchStrategy, BenchSuite, BenchTaskResult,
+    BenchRunSummary, BenchStrategy, BenchSuite, BenchTaskResult, MatrixLaneConfig, MatrixRun,
+    MatrixRunStatus,
 };
 use crate::error::ApiError;
 use crate::events::ServerEvent;
-use crate::state::{AppState, BenchRunHandle};
+use crate::state::{AppState, BenchRunHandle, MatrixRunHandle};
 use roko_agent::CostTable;
 use roko_core::Usage as CoreUsage;
 use roko_learn::playbook::PlaybookStore;
@@ -49,6 +50,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/bench/suites", post(upload_suite))
         .route("/bench/models", get(list_models))
         .route("/bench/pareto", get(pareto_frontier))
+        .route("/bench/matrix", post(start_matrix_run))
         .route("/bench/export/{id}", get(export_bench_run))
         .route("/bench/events", get(bench_events_sse))
 }
@@ -98,6 +100,27 @@ fn default_limit() -> usize {
 #[derive(Deserialize)]
 struct CompareQuery {
     ids: String,
+}
+
+/// A single lane in a matrix run request from the frontend.
+#[derive(Deserialize)]
+struct MatrixLaneRequest {
+    model: String,
+    #[serde(default)]
+    backend: Option<String>,
+    #[serde(default)]
+    strategy: BenchStrategy,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    overrides: BenchConfigOverrides,
+}
+
+/// `POST /api/bench/matrix` request body.
+#[derive(Deserialize)]
+struct StartMatrixRequest {
+    suite_id: String,
+    lanes: Vec<MatrixLaneRequest>,
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +546,238 @@ async fn execute_bench_run(
     state.active_bench_runs.write().await.remove(&run_id);
 }
 
+/// `POST /api/bench/matrix` -- start a matrix (model x strategy) bench run.
+///
+/// Creates one bench run per lane and orchestrates them concurrently.
+/// Emits `MatrixRunStarted` immediately and `MatrixLaneCompleted` /
+/// `MatrixRunCompleted` as lanes finish.
+async fn start_matrix_run(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<StartMatrixRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if body.lanes.is_empty() {
+        return Err(ApiError::bad_request("matrix must have at least one lane"));
+    }
+
+    // Ensure built-in suites exist and load the requested suite.
+    bench::ensure_builtin_suites(&state.workdir).await;
+    let suite = bench::load_suite(&state.workdir, &body.suite_id)
+        .await
+        .ok_or_else(|| ApiError::not_found("suite not found"))?;
+
+    let matrix_id = uuid::Uuid::new_v4().to_string();
+    let started_at = now_secs();
+
+    // Build lane configs and assign lane IDs.
+    let mut lane_configs = Vec::with_capacity(body.lanes.len());
+    let mut lane_ids = Vec::with_capacity(body.lanes.len());
+
+    for lane_req in &body.lanes {
+        let lane_id = uuid::Uuid::new_v4().to_string();
+        lane_ids.push(lane_id.clone());
+
+        let mut overrides = lane_req.overrides.clone();
+        // Ensure model/backend/strategy from the top-level lane fields are
+        // reflected in the overrides so `execute_bench_run` picks them up.
+        if overrides.model.is_none() && !lane_req.model.is_empty() {
+            overrides.model = Some(lane_req.model.clone());
+        }
+        if overrides.backend.is_none() {
+            overrides.backend = lane_req.backend.clone();
+        }
+        overrides.strategy = lane_req.strategy.clone();
+
+        lane_configs.push(MatrixLaneConfig {
+            model: lane_req.model.clone(),
+            backend: lane_req.backend.clone(),
+            strategy: lane_req.strategy.clone(),
+            label: lane_req.label.clone(),
+            overrides,
+        });
+    }
+
+    // Persist the matrix run.
+    let matrix_run = MatrixRun {
+        id: matrix_id.clone(),
+        suite_id: suite.id.clone(),
+        suite_name: suite.name.clone(),
+        lane_ids: lane_ids.clone(),
+        lanes: lane_configs.clone(),
+        status: MatrixRunStatus::Running,
+        started_at,
+        finished_at: None,
+        label: None,
+    };
+    if let Err(e) = bench::save_matrix_run(&state.workdir, &matrix_run).await {
+        tracing::warn!(error = %e, matrix_id = %matrix_id, "failed to save initial matrix run");
+    }
+
+    // Publish MatrixRunStarted event on the event bus.
+    state.event_bus.publish(ServerEvent::MatrixRunStarted {
+        matrix_id: matrix_id.clone(),
+        suite_id: suite.id.clone(),
+        lane_ids: lane_ids.clone(),
+        total_lanes: lane_ids.len(),
+    });
+
+    // Spawn each lane as an independent bench run.
+    let mut lane_handles = Vec::with_capacity(lane_ids.len());
+    for (idx, lane_id) in lane_ids.iter().enumerate() {
+        let lane_config = &lane_configs[idx];
+        let run_id = lane_id.clone();
+        let lane_started_at = now_secs();
+
+        // Create a per-lane BenchRun.
+        let run = BenchRun {
+            id: run_id.clone(),
+            suite_id: suite.id.clone(),
+            suite_name: suite.name.clone(),
+            kind: BenchRunKind::Manual,
+            overrides: lane_config.overrides.clone(),
+            label: lane_config.label.clone(),
+            status: BenchRunStatus::Running,
+            started_at: lane_started_at,
+            finished_at: None,
+            results: Vec::new(),
+            summary: None,
+            current_task_index: 0,
+            total_tasks: suite.tasks.len(),
+        };
+        if let Err(e) = bench::save_bench_run(&state.workdir, &run).await {
+            tracing::warn!(error = %e, lane_id = %run_id, "failed to save initial lane bench run");
+        }
+
+        // Add index entry for this lane.
+        let index_entry = BenchRunIndexEntry {
+            id: run_id.clone(),
+            suite_id: suite.id.clone(),
+            suite_name: suite.name.clone(),
+            status: BenchRunStatus::Running,
+            started_at: lane_started_at,
+            finished_at: None,
+            label: lane_config.label.clone(),
+            model: lane_config.overrides.model.clone(),
+            pass_rate: None,
+            total_cost_usd: None,
+        };
+        if let Err(err) = bench::append_index_entry(&state.workdir, &index_entry).await {
+            tracing::warn!(error = %err, lane_id = %run_id, "failed to append lane index entry");
+        }
+
+        // Publish per-lane start event.
+        state.event_bus.publish(ServerEvent::BenchRunStarted {
+            bench_id: run_id.clone(),
+            suite_id: suite.id.clone(),
+            total_tasks: suite.tasks.len(),
+        });
+
+        // Spawn the lane's bench run.
+        let handle = tokio::spawn(execute_bench_run(
+            Arc::clone(&state),
+            run_id.clone(),
+            suite.clone(),
+            lane_config.overrides.clone(),
+            lane_config.label.clone(),
+            lane_started_at,
+        ));
+
+        lane_handles.push(handle);
+    }
+
+    // Spawn a supervisor task that waits for all lanes to finish, then
+    // emits MatrixLaneCompleted per lane and MatrixRunCompleted at the end.
+    let monitor_matrix_id = matrix_id.clone();
+    let monitor_lane_ids = lane_ids.clone();
+    let monitor_state = Arc::clone(&state);
+
+    let monitor_handle = tokio::spawn(async move {
+        // Wait for all lane handles to finish.
+        for handle in lane_handles {
+            let _ = handle.await;
+        }
+
+        // Collect per-lane summaries and emit MatrixLaneCompleted events.
+        let mut lane_summaries = Vec::new();
+        for lane_id in &monitor_lane_ids {
+            let (pass_rate, cost_usd) =
+                match bench::load_bench_run(&monitor_state.workdir, lane_id).await {
+                    Ok(Some(run)) => {
+                        let pr = run.summary.as_ref().map(|s| s.pass_rate).unwrap_or(0.0);
+                        let cu = run
+                            .summary
+                            .as_ref()
+                            .map(|s| s.total_cost_usd)
+                            .unwrap_or(0.0);
+                        (pr, cu)
+                    }
+                    _ => (0.0, 0.0),
+                };
+
+            monitor_state
+                .event_bus
+                .publish(ServerEvent::MatrixLaneCompleted {
+                    matrix_id: monitor_matrix_id.clone(),
+                    lane_id: lane_id.clone(),
+                    pass_rate,
+                    cost_usd,
+                });
+
+            lane_summaries.push(serde_json::json!({
+                "lane_id": lane_id,
+                "pass_rate": pass_rate,
+                "cost_usd": cost_usd,
+            }));
+        }
+
+        // Update the matrix run on disk.
+        if let Ok(Some(mut matrix_run)) =
+            bench::load_matrix_run(&monitor_state.workdir, &monitor_matrix_id).await
+        {
+            matrix_run.status = MatrixRunStatus::Completed;
+            matrix_run.finished_at = Some(now_secs());
+            if let Err(e) = bench::save_matrix_run(&monitor_state.workdir, &matrix_run).await {
+                tracing::warn!(
+                    error = %e,
+                    matrix_id = %monitor_matrix_id,
+                    "failed to save completed matrix run"
+                );
+            }
+        }
+
+        // Emit MatrixRunCompleted.
+        monitor_state
+            .event_bus
+            .publish(ServerEvent::MatrixRunCompleted {
+                matrix_id: monitor_matrix_id.clone(),
+                summary: lane_summaries,
+            });
+
+        // Clean up the matrix handle.
+        monitor_state
+            .active_matrix_runs
+            .write()
+            .await
+            .remove(&monitor_matrix_id);
+    });
+
+    // Register the matrix supervisor handle.
+    state.active_matrix_runs.write().await.insert(
+        matrix_id.clone(),
+        MatrixRunHandle {
+            id: matrix_id.clone(),
+            lane_handles: vec![monitor_handle],
+        },
+    );
+
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({
+            "matrix_id": matrix_id,
+            "lane_ids": lane_ids,
+        })),
+    ))
+}
+
 /// `GET /api/bench/run/:id` -- get full bench run details.
 async fn get_bench_run(
     State(state): State<Arc<AppState>>,
@@ -804,6 +1059,9 @@ async fn bench_events_sse(State(state): State<Arc<AppState>>) -> impl IntoRespon
                             | ServerEvent::BenchTokenVelocity { .. }
                             | ServerEvent::BenchAgentOutput { .. }
                             | ServerEvent::BenchRegressionReport { .. }
+                            | ServerEvent::MatrixRunStarted { .. }
+                            | ServerEvent::MatrixLaneCompleted { .. }
+                            | ServerEvent::MatrixRunCompleted { .. }
                     );
                     if !is_bench {
                         continue;
@@ -1176,166 +1434,11 @@ impl CountUp {
         self.limit
     }
 }
-
-// ── Regression detection ───────────────────────────────────────────────────
-
-/// Convert bench results to `TaskMetric` records and compare against a baseline
-/// built from prior completed runs of the same suite.
-fn run_bench_regression(
-    state: &AppState,
-    run_id: &str,
-    suite_id: &str,
-    results: &[BenchTaskResult],
-    overrides: &BenchConfigOverrides,
-) {
-    use roko_core::metric::{ConfigHash, TaskMetric};
-    use roko_learn::baseline::compute_baseline;
-    use roko_learn::regression::{RegressionThresholds, detect_regressions};
-
-    let model = overrides.model.as_deref().unwrap_or("unknown");
-    let config_hash = ConfigHash(format!("bench-{suite_id}"));
-    let now = chrono::Utc::now().to_rfc3339();
-
-    // Convert current results to TaskMetric records.
-    let current: Vec<TaskMetric> = results
-        .iter()
-        .map(|r| TaskMetric {
-            timestamp: now.clone(),
-            run_id: run_id.to_string(),
-            config_hash: config_hash.clone(),
-            plan_id: suite_id.to_string(),
-            task_id: r.task_id.clone(),
-            iteration: 1,
-            role: "bench".to_string(),
-            backend: "bench".to_string(),
-            model: model.to_string(),
-            complexity_band: "standard".to_string(),
-            gate: "bench".to_string(),
-            gate_passed: r.passed(),
-            wall_time_ms: r.duration_ms,
-            input_tokens: r.tokens_in,
-            output_tokens: r.tokens_out,
-            cached_tokens: 0,
-            cost_usd: r.cost_usd,
-            sections_included: 0,
-            sections_dropped: 0,
-            context_tokens: 0,
-            cache_hit_rate: 0.0,
-        })
-        .collect();
-
-    if current.len() < 5 {
-        // Not enough data for regression detection.
-        return;
-    }
-
-    // Load prior runs for the same suite as baseline.
-    let bench_dir = state.workdir.join(".roko").join("bench");
-    let mut baseline_metrics = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(&bench_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
-                continue;
-            }
-            // Skip the current run.
-            if path
-                .file_stem()
-                .is_some_and(|s| s.to_string_lossy().contains(run_id))
-            {
-                continue;
-            }
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let run: BenchRun = match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if run.suite_id != suite_id
-                || run.status != BenchRunStatus::Completed
-                || run.results.is_empty()
-            {
-                continue;
-            }
-            let run_model = run
-                .overrides
-                .model
-                .as_deref()
-                .unwrap_or("unknown");
-            for r in &run.results {
-                baseline_metrics.push(TaskMetric {
-                    timestamp: String::new(),
-                    run_id: run.id.clone(),
-                    config_hash: config_hash.clone(),
-                    plan_id: suite_id.to_string(),
-                    task_id: r.task_id.clone(),
-                    iteration: 1,
-                    role: "bench".to_string(),
-                    backend: "bench".to_string(),
-                    model: run_model.to_string(),
-                    complexity_band: "standard".to_string(),
-                    gate: "bench".to_string(),
-                    gate_passed: r.passed(),
-                    wall_time_ms: r.duration_ms,
-                    input_tokens: r.tokens_in,
-                    output_tokens: r.tokens_out,
-                    cached_tokens: 0,
-                    cost_usd: r.cost_usd,
-                    sections_included: 0,
-                    sections_dropped: 0,
-                    context_tokens: 0,
-                    cache_hit_rate: 0.0,
-                });
-            }
-        }
-    }
-
-    let thresholds = RegressionThresholds::default();
-
-    if baseline_metrics.len() < thresholds.min_records {
-        tracing::debug!(
-            run_id,
-            baseline_count = baseline_metrics.len(),
-            "not enough baseline data for bench regression detection"
-        );
-        return;
-    }
-
-    let baseline = compute_baseline(&baseline_metrics, thresholds.min_records);
-    let report = detect_regressions(&baseline, &current, &thresholds);
-
-    if report.has_regressions {
-        tracing::warn!(
-            run_id,
-            alerts = report.alerts.len(),
-            "bench regression detected"
-        );
-    } else {
-        tracing::info!(run_id, "no bench regression detected");
-    }
-
-    state.event_bus.publish(ServerEvent::BenchRegressionReport {
-        bench_id: run_id.to_string(),
-        has_regressions: report.has_regressions,
-        report: serde_json::to_value(&report).unwrap_or_default(),
-    });
+"#
 }
+
+// NOTE: A duplicate `run_bench_regression` was removed here — the canonical
+// version lives above (near the end of `execute_bench_run`).
 
 #[cfg(test)]
 mod tests {}
-
-#[cfg(test)]
-mod import_checks {
-    // Intentional wrong path for task 3: fix `helper` -> `helpers`.
-    use crate::helper::MissingType;
-
-    #[allow(dead_code)]
-    fn _touch_missing_type() -> &'static str {
-        core::any::type_name::<MissingType>()
-    }
-}
-"#
-}

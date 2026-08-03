@@ -1789,10 +1789,7 @@ impl CascadeRouter {
                 .collect(),
             total_observations: self.linucb.total_observations(),
             stage_transitions,
-            // LinUCB export methods don't exist yet; populate None as
-            // forward-compatible placeholder. Wire actual export when
-            // LinUCBRouter exposes A/b matrices.
-            linucb_state: None,
+            linucb_state: Some(self.linucb.export_linucb_snapshot()),
         };
         tracing::debug!(
             total_observations = snapshot.total_observations,
@@ -1829,7 +1826,7 @@ impl CascadeRouter {
             total_observations,
             role_table,
             stage_transitions,
-            linucb_state: _linucb_state,
+            linucb_state,
         } = snapshot;
 
         let slugs = if model_slugs.is_empty() {
@@ -1876,6 +1873,9 @@ impl CascadeRouter {
             confidence_stats.values().map(|s| s.trials).sum()
         };
         router.linucb.set_total_observations(total);
+        if let Some(state) = linucb_state {
+            router.linucb.import_linucb_snapshot(&state);
+        }
         if !role_table.is_empty() {
             let mut rt = router.role_table.lock();
             for (role, slug) in role_table {
@@ -2553,5 +2553,114 @@ mod cascade_router_tests {
         let entry = stats.get("claude-sonnet-4-5").expect("stats should exist");
         assert_eq!(entry.trials, 1);
         assert_eq!(entry.successes, 1);
+    }
+
+    // ── Cross-restart LinUCB persistence ────────────────────────────────
+    //
+    // Proves that LinUCB A/b matrix weights survive a save → load cycle.
+    // After training past CONFIDENCE_TO_UCB_THRESHOLD (200 obs) the router
+    // enters UCB stage and the A matrices are no longer identity.  Saving
+    // and then loading must restore those weights so that:
+    //   (a) the reloaded router is still in UCB stage, and
+    //   (b) a representative arm's A[0][0] differs from the identity value 1.0,
+    //   (c) routing the same context vector yields the same primary slug.
+
+    #[test]
+    fn linucb_persists_across_restart() {
+        use crate::cascade::types::{CONFIDENCE_TO_UCB_THRESHOLD, CascadeStage};
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("cascade-router.json");
+
+        let slugs = vec![
+            "claude-sonnet-4-5".to_string(),
+            "claude-haiku-4-5".to_string(),
+            "claude-opus-4-6".to_string(),
+        ];
+
+        // ── Phase 1: train a fresh router past the UCB threshold ────────
+        let router = CascadeRouter::new(slugs.clone());
+        // Construct a context vector that mirrors a real RoutingContext so that
+        // A matrix elements actually change during training.
+        // Layout (CONTEXT_DIM=18):
+        //   [0..8]  = task category one-hot (Implementation → x[1]=1)
+        //   [8]     = complexity scalar (Standard → 0.5)
+        //   [9]     = iteration (0 → 0.0)
+        //   [10..14]= role hash (4 floats; use 0.25 each)
+        //   [14]    = crate familiarity (0.5)
+        //   [15]    = has_prior_failure (0.0)
+        //   [16]    = bias (1.0)
+        //   [17]    = cache affinity (0.0)
+        let ctx_vec: Vec<f64> = {
+            let mut v = vec![0.0; crate::model_router::CONTEXT_DIM];
+            v[1] = 1.0; // Implementation one-hot
+            v[8] = 0.5; // Standard complexity
+            v[10] = 0.25;
+            v[11] = 0.25;
+            v[12] = 0.25;
+            v[13] = 0.25;
+            v[14] = 0.5; // crate familiarity
+            v[16] = 1.0; // bias term
+            v
+        };
+
+        // Feed one more observation than required to cross into UCB stage.
+        // Alternate rewards so the A matrix accumulates a non-trivial value.
+        let n = CONFIDENCE_TO_UCB_THRESHOLD as usize + 1;
+        for i in 0..n {
+            let model_idx = i % slugs.len();
+            let reward = if model_idx == 0 { 1.0 } else { 0.2 };
+            router.observe(ctx_vec.clone(), model_idx, reward);
+        }
+
+        assert_eq!(
+            router.current_stage(),
+            CascadeStage::Ucb,
+            "router must enter UCB stage after {} observations",
+            n
+        );
+
+        // Capture the A[1][1] value for the first arm before saving.
+        // Index 1 is the Implementation one-hot feature (x[1]=1.0 in ctx_vec),
+        // so A[1][1] accumulates the number of times arm 0 was updated.
+        let pre_a11 = router.linucb().arm_stats()[0].a_matrix[1][1];
+        assert!(
+            (pre_a11 - 1.0).abs() > 1e-6,
+            "after training, A[1][1] should differ from the identity value 1.0 (got {pre_a11})"
+        );
+
+        // Route with the training context before saving.
+        let pre_slug = router.select(ctx_vec.clone()).model.slug;
+
+        // ── Phase 2: persist ────────────────────────────────────────────
+        router.save(&path).expect("save should succeed");
+
+        // ── Phase 3: reload (simulated restart) ─────────────────────────
+        let reloaded = CascadeRouter::load_or_new(&path, slugs.clone());
+
+        assert_eq!(
+            reloaded.current_stage(),
+            CascadeStage::Ucb,
+            "reloaded router must still be in UCB stage"
+        );
+
+        // Verify A[1][1] survived the round-trip.
+        let post_a11 = reloaded.linucb().arm_stats()[0].a_matrix[1][1];
+        assert!(
+            (post_a11 - pre_a11).abs() < 1e-9,
+            "A[1][1] must be identical after reload (pre={pre_a11}, post={post_a11})"
+        );
+        assert!(
+            (post_a11 - 1.0).abs() > 1e-6,
+            "reloaded A[1][1] must still differ from identity (got {post_a11})"
+        );
+
+        // Verify routing is stable across the restart.
+        let post_slug = reloaded.select(ctx_vec).model.slug;
+        assert_eq!(
+            pre_slug, post_slug,
+            "routing the same context must yield the same primary slug after reload"
+        );
     }
 }

@@ -546,6 +546,85 @@ fn extract_reasoning_from_stream_event(event: &serde_json::Value) -> Option<Stri
     None
 }
 
+// ─── Image format conversion helpers (E14-T06) ───────────────────────
+
+/// Convert Anthropic-format image blocks in a message content array to
+/// OpenAI-compatible `image_url` blocks.
+///
+/// When `supports_vision` is `false`, image blocks are silently dropped
+/// and only text blocks pass through. Non-image, non-text blocks pass
+/// through unchanged.
+#[must_use]
+pub fn convert_images_for_openai(
+    content: &[serde_json::Value],
+    supports_vision: bool,
+) -> Vec<serde_json::Value> {
+    content
+        .iter()
+        .filter_map(|block| {
+            let block_type = block.get("type").and_then(serde_json::Value::as_str);
+            match block_type {
+                Some("image") => {
+                    if !supports_vision {
+                        return None;
+                    }
+                    // Anthropic format: {"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
+                    let source = block.get("source")?;
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(serde_json::Value::as_str)?;
+                    let data = source.get("data").and_then(serde_json::Value::as_str)?;
+                    Some(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{media_type};base64,{data}")
+                        }
+                    }))
+                }
+                _ => Some(block.clone()),
+            }
+        })
+        .collect()
+}
+
+/// Convert Anthropic-format image blocks in a message content array to
+/// Gemini `inlineData` parts.
+///
+/// When `supports_vision` is `false`, image blocks are silently dropped
+/// and only text blocks pass through. Non-image, non-text blocks pass
+/// through unchanged.
+#[must_use]
+pub fn convert_images_for_gemini(
+    content: &[serde_json::Value],
+    supports_vision: bool,
+) -> Vec<serde_json::Value> {
+    content
+        .iter()
+        .filter_map(|block| {
+            let block_type = block.get("type").and_then(serde_json::Value::as_str);
+            match block_type {
+                Some("image") => {
+                    if !supports_vision {
+                        return None;
+                    }
+                    let source = block.get("source")?;
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(serde_json::Value::as_str)?;
+                    let data = source.get("data").and_then(serde_json::Value::as_str)?;
+                    Some(serde_json::json!({
+                        "inlineData": {
+                            "mimeType": media_type,
+                            "data": data
+                        }
+                    }))
+                }
+                _ => Some(block.clone()),
+            }
+        })
+        .collect()
+}
+
 /// Errors a [`Translator`] may produce.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TranslatorError {
@@ -1004,5 +1083,106 @@ mod tests {
             serde_json::json!({"type": "content_block_delta", "delta": {"text": "hi"}}),
         ]);
         assert_eq!(r.extract_finish_reason_raw(), None);
+    }
+
+    // ── Image conversion tests (E14-T06) ─────────────────────────────
+
+    #[test]
+    fn convert_images_for_openai_converts_base64() {
+        let content = vec![
+            serde_json::json!({"type": "text", "text": "Look at this:"}),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            }),
+        ];
+        let result = super::convert_images_for_openai(&content, true);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["type"], "text");
+        assert_eq!(result[1]["type"], "image_url");
+        assert_eq!(
+            result[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+    }
+
+    #[test]
+    fn convert_images_for_openai_drops_when_no_vision() {
+        let content = vec![
+            serde_json::json!({"type": "text", "text": "hello"}),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": "/9j/4AAQ"
+                }
+            }),
+        ];
+        let result = super::convert_images_for_openai(&content, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["type"], "text");
+    }
+
+    #[test]
+    fn convert_images_for_gemini_converts_base64() {
+        let content = vec![
+            serde_json::json!({"type": "text", "text": "Describe this:"}),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/webp",
+                    "data": "UklGRg=="
+                }
+            }),
+        ];
+        let result = super::convert_images_for_gemini(&content, true);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["type"], "text");
+        assert_eq!(result[1]["inlineData"]["mimeType"], "image/webp");
+        assert_eq!(result[1]["inlineData"]["data"], "UklGRg==");
+    }
+
+    #[test]
+    fn convert_images_for_gemini_drops_when_no_vision() {
+        let content = vec![
+            serde_json::json!({"type": "text", "text": "hi"}),
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "abc"
+                }
+            }),
+        ];
+        let result = super::convert_images_for_gemini(&content, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["type"], "text");
+    }
+
+    #[test]
+    fn convert_images_preserves_non_image_blocks() {
+        let content = vec![
+            serde_json::json!({"type": "text", "text": "a"}),
+            serde_json::json!({"type": "tool_use", "id": "1", "name": "read"}),
+        ];
+        let oai = super::convert_images_for_openai(&content, true);
+        let gem = super::convert_images_for_gemini(&content, true);
+        assert_eq!(oai.len(), 2);
+        assert_eq!(gem.len(), 2);
+        assert_eq!(oai[1]["type"], "tool_use");
+        assert_eq!(gem[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn convert_images_handles_empty_content() {
+        assert!(super::convert_images_for_openai(&[], true).is_empty());
+        assert!(super::convert_images_for_gemini(&[], false).is_empty());
     }
 }

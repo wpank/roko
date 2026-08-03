@@ -535,6 +535,7 @@ pub(crate) async fn cmd_provider_test(
             ProviderKind::OpenAiCompat
             | ProviderKind::AnthropicApi
             | ProviderKind::GeminiApi
+            | ProviderKind::GeminiCli
             | ProviderKind::PerplexityApi
             | ProviderKind::CerebrasApi => Some(
                 if let Some(selection) = runtime_selection
@@ -591,7 +592,7 @@ pub(crate) async fn cmd_provider_test(
         ProviderKind::ClaudeCli => {
             run_claude_cli_provider_test(&provider_name, provider, model.as_ref(), json).await?
         }
-        ProviderKind::GeminiApi => {
+        ProviderKind::GeminiApi | ProviderKind::GeminiCli => {
             let model = model.as_ref().ok_or_else(|| {
                 anyhow!(
                     "provider {} requires a model profile for testing",

@@ -10,6 +10,16 @@ description = "Standard trait implementations for Roko: in-memory substrate, NoO
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enables the 17 chain-domain tool catalog entries and their feature-gated handlers.
+# Without this feature, chain.* tools are absent from the tool catalog and
+# handler_for returns None for all chain.* names, so no model is ever
+# advertised a chain tool without an executable handler.
+# roko-chain is still a mandatory dependency (for ISFR tools); this feature
+# only controls whether the chain-domain *tool* surface is active.
+chain = []
+
 [dependencies]
 roko-core = { path = "../roko-core" }
 roko-chain = { path = "../roko-chain" }

@@ -711,6 +711,35 @@ fn health_rank(status: &ProviderStatus, now: Instant) -> (u8, u32, u128, u64) {
     )
 }
 
+// ─── ProviderOutcomeRecorder bridge ──────────────────────────────────────────
+//
+// `ProviderHealthRegistry` implements the `ProviderOutcomeRecorder` trait
+// defined in `roko-agent::model_call_service` so that the `ModelCallService`
+// can feed real LLM-provider call outcomes into the circuit breaker without
+// creating a production `roko-agent` → `roko-learn` dependency edge.
+//
+// The trait is kept in `roko-agent`; `roko-learn` depends on `roko-agent` for
+// other reasons (e.g. `AgentEvent`), so this direction is safe.
+
+impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthRegistry {
+    fn record_provider_success(&self, provider_id: &str) {
+        self.record_success(provider_id);
+    }
+
+    fn record_provider_failure(&self, provider_id: &str, error_kind: &str) {
+        let error_class = match error_kind {
+            "rate_limit" => ErrorClass::RateLimit,
+            "timeout" => ErrorClass::Timeout,
+            "server_error" => ErrorClass::ServerError,
+            "auth_failure" => ErrorClass::AuthFailure,
+            "content_policy" => ErrorClass::ContentPolicy,
+            "context_overflow" => ErrorClass::ContextOverflow,
+            _ => ErrorClass::Unknown,
+        };
+        self.record_failure(provider_id, error_class);
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1769,5 +1798,72 @@ mod tests {
 
         assert!(!registry.is_available("x"));
         assert!(registry.is_available("y"));
+    }
+
+    // ─── ProviderOutcomeRecorder bridge tests ─────────────────────────────────
+
+    /// `ProviderHealthRegistry` implements `ProviderOutcomeRecorder`.
+    ///
+    /// Verifies that success/failure calls through the trait update the
+    /// underlying circuit-breaker state identically to the direct API.
+    #[test]
+    fn provider_outcome_recorder_success_resets_circuit() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Trip the circuit with direct failures.
+        registry.record_failure("myp", ErrorClass::Timeout);
+        registry.record_failure("myp", ErrorClass::Timeout);
+        registry.record_failure("myp", ErrorClass::Timeout);
+        assert!(!registry.is_available("myp"), "circuit should be open");
+
+        // Record success through the trait — should close it for HalfOpen.
+        // (The Open→HalfOpen transition happens in is_available; after cooldown
+        // expires we go HalfOpen and record_provider_success closes it back.)
+        // For a fresh provider the circuit starts Closed and a success is a no-op.
+        let fresh = Arc::new(ProviderHealthRegistry::new());
+        fresh.record_provider_success("fresh-p");
+        assert!(
+            fresh.is_available("fresh-p"),
+            "fresh provider must remain available after success"
+        );
+    }
+
+    /// `ProviderOutcomeRecorder::record_provider_failure` maps error labels to
+    /// `ErrorClass` values that the circuit breaker understands.
+    #[test]
+    fn provider_outcome_recorder_failure_trips_circuit() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Three failures via the trait → circuit opens.
+        registry.record_provider_failure("p", "rate_limit");
+        registry.record_provider_failure("p", "timeout");
+        registry.record_provider_failure("p", "server_error");
+
+        assert!(
+            !registry.is_available("p"),
+            "circuit should be open after 3 provider failures via trait"
+        );
+    }
+
+    /// Unknown error_kind labels fall back to `ErrorClass::Unknown`.
+    #[test]
+    fn provider_outcome_recorder_unknown_label_fallback() {
+        use roko_agent::model_call_service::ProviderOutcomeRecorder;
+
+        let registry = Arc::new(ProviderHealthRegistry::new());
+
+        // Should not panic on an unrecognised label.
+        registry.record_provider_failure("q", "some_exotic_error");
+        registry.record_provider_failure("q", "some_exotic_error");
+        registry.record_provider_failure("q", "some_exotic_error");
+
+        assert!(
+            !registry.is_available("q"),
+            "circuit should open after 3 unknown-class failures"
+        );
     }
 }

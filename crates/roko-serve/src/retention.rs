@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Retention policy for a single observability artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetentionPolicy {
+pub struct ArtifactRetentionPolicy {
     /// Artifact name (e.g., "episodes.jsonl", "efficiency.jsonl").
     pub artifact: String,
     /// Path relative to `.roko/`.
@@ -112,63 +112,102 @@ pub enum ActionKind {
 /// Return the default retention policies covering all standard observability
 /// artifacts under `.roko/`.
 #[must_use]
-pub fn default_retention_policies() -> Vec<RetentionPolicy> {
+pub fn default_retention_policies() -> Vec<ArtifactRetentionPolicy> {
     vec![
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "episodes.jsonl".into(),
             path: "episodes.jsonl".into(),
             max_age_hours: 168, // 1 week
             max_size_bytes: 50 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 10_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "engrams.jsonl".into(),
             path: "engrams.jsonl".into(),
             max_age_hours: 168,
             max_size_bytes: 100 * 1024 * 1024,
             strategy: CompactionStrategy::Rotate,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/efficiency.jsonl".into(),
             path: "learn/efficiency.jsonl".into(),
             max_age_hours: 720, // 30 days
             max_size_bytes: 20 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 5_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/c-factor.jsonl".into(),
             path: "learn/c-factor.jsonl".into(),
             max_age_hours: 720,
             max_size_bytes: 10 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 1_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/cascade-router.json".into(),
             path: "learn/cascade-router.json".into(),
             max_age_hours: 0, // no rotation
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/experiments.json".into(),
             path: "learn/experiments.json".into(),
             max_age_hours: 0,
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/gate-thresholds.json".into(),
             path: "learn/gate-thresholds.json".into(),
             max_age_hours: 0,
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "task-outputs/*".into(),
             path: "task-outputs".into(),
             max_age_hours: 336, // 2 weeks
             max_size_bytes: 500 * 1024 * 1024,
             strategy: CompactionStrategy::Archive,
+        },
+        // ── largest unbounded append-only logs (E02-T07) ──────────────────
+        ArtifactRetentionPolicy {
+            artifact: "events.jsonl".into(),
+            path: "events.jsonl".into(),
+            max_age_hours: 168, // 1 week
+            max_size_bytes: 50 * 1024 * 1024,
+            strategy: CompactionStrategy::TailKeep { entries: 20_000 },
+        },
+        ArtifactRetentionPolicy {
+            artifact: "roko.log".into(),
+            path: "roko.log".into(),
+            max_age_hours: 168, // 1 week
+            max_size_bytes: 100 * 1024 * 1024,
+            strategy: CompactionStrategy::Rotate,
+        },
+        ArtifactRetentionPolicy {
+            artifact: "chain-watcher.log".into(),
+            path: "chain-watcher.log".into(),
+            max_age_hours: 168, // 1 week
+            max_size_bytes: 50 * 1024 * 1024,
+            strategy: CompactionStrategy::Rotate,
+        },
+        ArtifactRetentionPolicy {
+            artifact: "run-ledger.jsonl".into(),
+            path: "state/run-ledger.jsonl".into(),
+            max_age_hours: 720, // 30 days
+            max_size_bytes: 20 * 1024 * 1024,
+            strategy: CompactionStrategy::TailKeep { entries: 10_000 },
+        },
+        // ── state/*.bak.* backup files ────────────────────────────────────
+        // Sentinel: apply_retention calls sweep_bak_files() for this entry
+        // instead of acting on the whole state/ directory.
+        ArtifactRetentionPolicy {
+            artifact: "state/bak".into(),
+            path: "state".into(),
+            max_age_hours: 336, // 2 weeks
+            max_size_bytes: 200 * 1024 * 1024,
+            strategy: CompactionStrategy::Rotate,
         },
     ]
 }
@@ -270,6 +309,33 @@ pub fn apply_retention(workdir: &Path, dry_run: bool) -> Vec<RetentionAction> {
 
     for policy in &policies {
         let artifact_path = roko_dir.join(&policy.path);
+
+        // Special-case: "state/bak" sentinel sweeps .bak.* files inside the
+        // state directory rather than acting on the whole state/ tree.
+        if policy.artifact == "state/bak" {
+            let baks = bak_files_in_state(&artifact_path);
+            let has_excess = baks.len() > 10;
+            let has_aged = policy.max_age_hours > 0
+                && baks.iter().any(|p| {
+                    fs::metadata(p)
+                        .ok()
+                        .and_then(|m| file_age_hours(&m))
+                        .unwrap_or(0)
+                        > policy.max_age_hours
+                });
+            if has_excess || has_aged {
+                if !dry_run {
+                    sweep_bak_files(&artifact_path, policy.max_age_hours, 10);
+                }
+                actions.push(RetentionAction {
+                    artifact: policy.artifact.clone(),
+                    path: artifact_path,
+                    action: ActionKind::Rotated,
+                    dry_run,
+                });
+            }
+            continue;
+        }
 
         // Check whether any limit is exceeded.
         let exceeded = if policy.max_age_hours == 0 && policy.max_size_bytes == 0 {
@@ -445,7 +511,7 @@ pub fn export_postmortem(workdir: &Path, output: &Path) -> anyhow::Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetentionStatus {
     /// Current retention policies.
-    pub policies: Vec<RetentionPolicy>,
+    pub policies: Vec<ArtifactRetentionPolicy>,
     /// Any policy violations detected.
     pub violations: Vec<RetentionViolation>,
 }
@@ -509,6 +575,58 @@ fn tail_keep_file(path: &Path, entries: usize) -> usize {
     entries
 }
 
+/// Collect `.bak.*` files under `state_dir`, sorted oldest-first.
+fn bak_files_in_state(state_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(state_dir) else {
+        return Vec::new();
+    };
+    let mut baks: Vec<(PathBuf, SystemTime)> = entries
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let n = name.to_string_lossy();
+            n.contains(".bak.") && e.path().is_file()
+        })
+        .filter_map(|e| {
+            let p = e.path();
+            let mtime = fs::metadata(&p).ok()?.modified().ok()?;
+            Some((p, mtime))
+        })
+        .collect();
+    baks.sort_by_key(|(_, t)| *t);
+    baks.into_iter().map(|(p, _)| p).collect()
+}
+
+/// Remove expired `state/*.bak.*` files, keeping at most `keep_count` of the
+/// most recent and deleting any that are older than `max_age_hours`.
+///
+/// Returns the list of deleted paths.
+pub fn sweep_bak_files(state_dir: &Path, max_age_hours: u64, keep_count: usize) -> Vec<PathBuf> {
+    let mut baks = bak_files_in_state(state_dir);
+    let mut deleted = Vec::new();
+
+    // Always discard the oldest backups beyond keep_count.
+    let excess_count = baks.len().saturating_sub(keep_count);
+    for path in baks.drain(..excess_count) {
+        let _ = fs::remove_file(&path);
+        deleted.push(path);
+    }
+
+    // Among remaining, delete those older than max_age_hours.
+    if max_age_hours > 0 {
+        for path in &baks {
+            if let Ok(meta) = fs::metadata(path) {
+                if file_age_hours(&meta).unwrap_or(0) > max_age_hours {
+                    let _ = fs::remove_file(path);
+                    deleted.push(path.clone());
+                }
+            }
+        }
+    }
+
+    deleted
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -522,9 +640,10 @@ mod tests {
     #[test]
     fn default_policies_cover_expected_artifacts() {
         let policies = default_retention_policies();
-        assert!(policies.len() >= 8);
+        assert!(policies.len() >= 13);
 
         let names: Vec<&str> = policies.iter().map(|p| p.artifact.as_str()).collect();
+        // Previously existing artifacts.
         assert!(names.contains(&"episodes.jsonl"));
         assert!(names.contains(&"engrams.jsonl"));
         assert!(names.contains(&"learn/efficiency.jsonl"));
@@ -533,6 +652,22 @@ mod tests {
         assert!(names.contains(&"learn/experiments.json"));
         assert!(names.contains(&"learn/gate-thresholds.json"));
         assert!(names.contains(&"task-outputs/*"));
+        // New: largest unbounded artifacts (E02-T07).
+        assert!(
+            names.contains(&"events.jsonl"),
+            "missing events.jsonl policy"
+        );
+        assert!(names.contains(&"roko.log"), "missing roko.log policy");
+        assert!(
+            names.contains(&"chain-watcher.log"),
+            "missing chain-watcher.log policy"
+        );
+        assert!(
+            names.contains(&"run-ledger.jsonl"),
+            "missing run-ledger.jsonl policy"
+        );
+        // New: backup file sweep sentinel.
+        assert!(names.contains(&"state/bak"), "missing state/bak policy");
     }
 
     #[test]
@@ -544,7 +679,7 @@ mod tests {
         // Create an episodes.jsonl that exceeds the 50MB limit.
         let episodes_path = roko_dir.join("episodes.jsonl");
         let mut f = fs::File::create(&episodes_path).unwrap();
-        // Write just enough to detect — we override the limit check by using
+        // Write just enough to detect -- we override the limit check by using
         // a smaller file with a patched policy in a real scenario, but for the
         // default policy 50MB is too large. Instead, verify no violation when small.
         writeln!(f, "{{}}").unwrap();
@@ -624,7 +759,7 @@ mod tests {
 
     #[test]
     fn retention_policy_serializes_roundtrip() {
-        let policy = RetentionPolicy {
+        let policy = ArtifactRetentionPolicy {
             artifact: "episodes.jsonl".into(),
             path: "episodes.jsonl".into(),
             max_age_hours: 168,
@@ -632,8 +767,90 @@ mod tests {
             strategy: CompactionStrategy::TailKeep { entries: 10_000 },
         };
         let json = serde_json::to_string(&policy).unwrap();
-        let parsed: RetentionPolicy = serde_json::from_str(&json).unwrap();
+        let parsed: ArtifactRetentionPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.artifact, "episodes.jsonl");
         assert_eq!(parsed.max_age_hours, 168);
+    }
+
+    #[test]
+    fn new_log_policies_use_non_manual_strategies() {
+        let policies = default_retention_policies();
+        for artifact in &[
+            "events.jsonl",
+            "roko.log",
+            "chain-watcher.log",
+            "run-ledger.jsonl",
+        ] {
+            let p = policies
+                .iter()
+                .find(|p| p.artifact == *artifact)
+                .unwrap_or_else(|| panic!("missing policy for {artifact}"));
+            assert!(
+                !matches!(p.strategy, CompactionStrategy::Manual),
+                "policy for {artifact} must not be Manual"
+            );
+            assert!(
+                p.max_size_bytes > 0 || p.max_age_hours > 0,
+                "policy for {artifact} must have at least one non-zero limit"
+            );
+        }
+    }
+
+    #[test]
+    fn sweep_bak_files_removes_excess_backups() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+
+        // Create 15 .bak.* files.
+        for i in 0..15u32 {
+            fs::write(state_dir.join(format!("executor.json.bak.{i}")), b"backup").unwrap();
+        }
+
+        // Sweep with keep_count = 10, no age limit.
+        let deleted = sweep_bak_files(&state_dir, 0, 10);
+        assert_eq!(deleted.len(), 5, "should have deleted 5 excess backups");
+
+        // Only 10 should remain.
+        let remaining = bak_files_in_state(&state_dir);
+        assert_eq!(remaining.len(), 10);
+    }
+
+    #[test]
+    fn sweep_bak_files_is_noop_when_under_count() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+
+        for i in 0..5u32 {
+            fs::write(state_dir.join(format!("run-state.json.bak.{i}")), b"bak").unwrap();
+        }
+
+        let deleted = sweep_bak_files(&state_dir, 0, 10);
+        assert!(
+            deleted.is_empty(),
+            "nothing should be deleted when under keep_count"
+        );
+        assert_eq!(bak_files_in_state(&state_dir).len(), 5);
+    }
+
+    #[test]
+    fn sweep_bak_files_ignores_non_bak_files() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+
+        // Create normal state files (must not be touched).
+        fs::write(state_dir.join("executor.json"), b"{}").unwrap();
+        fs::write(state_dir.join("state-snapshot.json"), b"{}").unwrap();
+        // Two bak files, keep_count = 1.
+        fs::write(state_dir.join("executor.json.bak.123"), b"bak").unwrap();
+        fs::write(state_dir.join("executor.json.bak.456"), b"bak").unwrap();
+
+        let deleted = sweep_bak_files(&state_dir, 0, 1);
+        assert_eq!(deleted.len(), 1, "only one excess bak should be removed");
+        // Normal files must still exist.
+        assert!(state_dir.join("executor.json").exists());
+        assert!(state_dir.join("state-snapshot.json").exists());
     }
 }

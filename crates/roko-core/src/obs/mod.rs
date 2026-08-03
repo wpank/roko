@@ -7,6 +7,7 @@
 
 pub mod health;
 pub mod histograms;
+pub mod lens;
 pub mod metrics;
 pub mod schema;
 pub mod scrub;
@@ -26,5 +27,6 @@ pub use roko_runtime::heartbeat_probes::{
     BuildResult, EngineState, HeartbeatProbe, HeartbeatProbeRegistry, MacdSnapshot, ProbeDomain,
     ProbeResult, ProbeResults,
 };
+pub use lens::{CollectorLens, Lens, LensScope, LensSnapshot};
 pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
 pub use scrub::{LogScrubber, REDACTED};

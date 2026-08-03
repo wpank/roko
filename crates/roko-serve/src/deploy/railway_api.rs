@@ -694,6 +694,7 @@ impl RailwayApiBackend {
                         status: DeploymentStatus::Ready { url: url.clone() },
                         url: Some(url),
                         created_at: started_at,
+                        callback_token: None,
                     });
                 }
                 DeploymentStatus::Failed { reason } => {
@@ -831,6 +832,7 @@ impl DeployBackend for RailwayApiBackend {
             status: DeploymentStatus::Creating,
             url: None,
             created_at: Utc::now(),
+            callback_token: None,
         })
     }
 

@@ -12,7 +12,7 @@ import type {
   RelayAgentEntry, RelayFeed, FeedLogEntry,
   ChainBlockEntry, ChainTxEntry, ChainEventEntry,
 } from '../../app/DataHub';
-import { useContextEventSubscription } from '../../contexts/EventStreamContext';
+import { useServerEventSubscription } from '../../hooks/useEventStream';
 import { useDebouncedRefetch } from '../../hooks/useDebouncedRefetch';
 import { useCountUp, fmtCount } from '../../hooks/useCountUp';
 import { useCanvasSetup } from '../../hooks/useCanvasSetup';
@@ -94,7 +94,7 @@ export default function IsfrDashboard() {
   }, [fetchIsfrSources]);
 
   const debouncedRefetch = useDebouncedRefetch(fetchAll, 2000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['isfr_rate_computed', 'isfr_source_health_changed', 'isfr_keeper_state_changed'],
     useCallback(() => debouncedRefetch(), [debouncedRefetch]),
   );
@@ -105,7 +105,7 @@ export default function IsfrDashboard() {
   // SSE subscriptions — Chain (activity tracking only; DataHub handles updates)
   const [chainSseActive, setChainSseActive] = useState(false);
   const chainSseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['chain_block', 'chain_tx', 'chain_contract_event'],
     useCallback(() => {
       setChainSseActive(true);
@@ -117,7 +117,7 @@ export default function IsfrDashboard() {
 
   // SSE subscriptions — Feeds
   const debouncedFeedRefetch = useDebouncedRefetch(fetchFeedCatalog, 3000);
-  useContextEventSubscription(
+  useServerEventSubscription(
     ['feed_tick', 'feed_agent_online', 'feed_agent_offline'],
     useCallback(() => debouncedFeedRefetch(), [debouncedFeedRefetch]),
   );

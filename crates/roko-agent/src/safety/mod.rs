@@ -764,7 +764,7 @@ impl SafetyLayer {
                 task_id: task_id.to_string(),
                 violation_type: ViolationType::SecretLeak,
                 message: "agent output contains secrets that were scrubbed".to_string(),
-                severity: ViolationSeverity::Warn,
+                severity: ViolationSeverity::Block,
             });
         }
 
@@ -777,7 +777,7 @@ impl SafetyLayer {
                         task_id: task_id.to_string(),
                         violation_type: ViolationType::PathEscape,
                         message: format!("agent modified file outside worktree: {file}"),
-                        severity: ViolationSeverity::Warn,
+                        severity: ViolationSeverity::Block,
                     });
                 }
             }
@@ -1462,10 +1462,36 @@ mod tests {
         let output = format!("found key: {api_key}");
         let violations = layer.post_dispatch_check("plan-1", "task-1", "implementer", &output, &[]);
         assert!(!violations.is_empty());
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.violation_type == ViolationType::SecretLeak)
+        let leak = violations
+            .iter()
+            .find(|v| v.violation_type == ViolationType::SecretLeak)
+            .expect("should detect SecretLeak");
+        assert_eq!(
+            leak.severity,
+            ViolationSeverity::Block,
+            "SecretLeak must block execution, not merely warn"
+        );
+    }
+
+    #[test]
+    fn post_dispatch_check_blocks_path_escape() {
+        let layer = SafetyLayer::with_defaults();
+        let violations = layer.post_dispatch_check(
+            "plan-1",
+            "task-1",
+            "implementer",
+            "clean output",
+            &["../../etc/passwd".to_string()],
+        );
+        assert!(!violations.is_empty());
+        let escape = violations
+            .iter()
+            .find(|v| v.violation_type == ViolationType::PathEscape)
+            .expect("should detect PathEscape");
+        assert_eq!(
+            escape.severity,
+            ViolationSeverity::Block,
+            "PathEscape must block execution, not merely warn"
         );
     }
 

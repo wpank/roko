@@ -233,7 +233,25 @@ impl ServiceFactory {
         let prompt_assembler: Arc<dyn PromptAssembler> = Arc::new(prompt_service);
         let gate_runner: Arc<dyn GateRunner> = Arc::new(GateService::new());
         let affect_policy = config.affect_enabled.then(|| {
-            let state_path = config.roko_dir.join("state").join("daimon.json");
+            // Canonical path: .roko/daimon/affect.json (matches serve).
+            // Fall back to legacy .roko/state/daimon.json for old workspaces
+            // that haven't migrated yet.
+            let canonical = config.roko_dir.join("daimon").join("affect.json");
+            let state_path = if canonical.exists() {
+                canonical
+            } else {
+                let legacy = config.roko_dir.join("state").join("daimon.json");
+                if legacy.exists() {
+                    // Migrate: copy legacy to canonical location.
+                    if let Some(parent) = canonical.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::copy(&legacy, &canonical);
+                    canonical
+                } else {
+                    canonical
+                }
+            };
             Arc::new(tokio::sync::Mutex::new(DaimonPolicy::new(state_path)))
                 as Arc<tokio::sync::Mutex<dyn AffectPolicy>>
         });

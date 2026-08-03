@@ -730,19 +730,9 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
             let api_key =
                 std::env::var("PERPLEXITY_API_KEY").context("PERPLEXITY_API_KEY not set")?;
 
-            let date_range = recency.as_deref().map(|r| {
-                let now = chrono::Local::now();
-                let after = match r {
-                    "day" => now - chrono::Duration::days(1),
-                    "week" => now - chrono::Duration::weeks(1),
-                    "month" => now - chrono::Duration::days(30),
-                    "year" => now - chrono::Duration::days(365),
-                    _ => now - chrono::Duration::days(30),
-                };
-                (
-                    after.format("%Y-%m-%d").to_string(),
-                    now.format("%Y-%m-%d").to_string(),
-                )
+            let recency_filter = recency.as_deref().map(|r| match r {
+                "hour" | "day" | "week" | "month" | "year" => r.to_string(),
+                _ => "month".to_string(),
             });
 
             let search_query = SearchQuery {
@@ -752,7 +742,8 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                 } else {
                     Some(domains)
                 },
-                date_range,
+                date_range: None,
+                recency_filter,
                 ..Default::default()
             };
 

@@ -267,6 +267,10 @@ impl UpdateFrequency {
     fn distiller_due(self, episode_count: u64) -> bool {
         Self::due(episode_count, self.distiller_every_n)
     }
+
+    fn gate_thresholds_due(self, episode_count: u64) -> bool {
+        Self::due(episode_count, self.gate_thresholds_every_n)
+    }
 }
 
 impl Default for UpdateFrequency {
@@ -301,6 +305,13 @@ pub struct CompletedRunInput {
     pub task_metric: Option<TaskMetric>,
     /// Optional prompt experiment variant id for A/B outcome recording.
     pub experiment_variant_id: Option<String>,
+    /// Optional serialized adaptive gate-threshold JSON snapshot.
+    ///
+    /// When provided and the `gate_thresholds_every_n` cadence fires,
+    /// `LearningRuntime` writes this snapshot to `gate-thresholds.json`
+    /// atomically so thresholds survive unexpected shutdowns without
+    /// relying on the orchestrator's graceful-shutdown path.
+    pub gate_thresholds_snapshot: Option<String>,
 }
 
 impl CompletedRunInput {
@@ -316,6 +327,7 @@ impl CompletedRunInput {
             matched_skill_id: None,
             task_metric: None,
             experiment_variant_id: None,
+            gate_thresholds_snapshot: None,
         }
     }
 
@@ -330,6 +342,16 @@ impl CompletedRunInput {
     #[must_use]
     pub fn with_task_metric(mut self, metric: TaskMetric) -> Self {
         self.task_metric = Some(metric);
+        self
+    }
+
+    /// Attach a serialized adaptive gate-threshold snapshot for incremental
+    /// flushing.  When the `gate_thresholds_every_n` cadence fires,
+    /// `LearningRuntime::record_completed_run` writes this JSON to the
+    /// learn directory so thresholds persist before graceful shutdown.
+    #[must_use]
+    pub fn with_gate_thresholds(mut self, json: String) -> Self {
+        self.gate_thresholds_snapshot = Some(json);
         self
     }
 }
@@ -381,6 +403,19 @@ pub struct LearningUpdate {
     pub retry_outcome_recorded: ApplyStatus,
     /// Whether a knowledge seed was persisted.
     pub knowledge_seed_recorded: ApplyStatus,
+    /// Whether adaptive gate thresholds should be flushed to disk at this cadence point.
+    ///
+    /// Retained for backward compatibility with callers that handle the
+    /// flush themselves (orchestrate.rs legacy path).
+    pub gate_thresholds_flush_due: bool,
+    /// Whether adaptive gate thresholds were incrementally flushed to disk
+    /// by `LearningRuntime` during this `record_completed_run` call.
+    ///
+    /// When `CompletedRunInput::gate_thresholds_snapshot` is provided and the
+    /// `gate_thresholds_every_n` cadence fires, the runtime writes the
+    /// snapshot to `gate-thresholds.json` and sets this flag to `true`.
+    /// Callers that see this flag can skip their own flush for this cycle.
+    pub gate_thresholds_flushed: bool,
 }
 
 /// Current schema version for runtime feedback JSONL records.
@@ -2164,6 +2199,24 @@ impl LearningRuntime {
         });
     }
 
+    /// Atomically write pre-serialized adaptive gate thresholds JSON to
+    /// the learn directory (`gate-thresholds.json`).
+    ///
+    /// This is the incremental flush path: callers serialize their
+    /// `AdaptiveThresholds` (which lives in `roko-gate`) and hand the JSON
+    /// string to the learning runtime, which owns the output path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the parent directory cannot be created or
+    /// the atomic write fails.
+    pub fn flush_gate_thresholds_json(&self, json: &str) -> std::io::Result<()> {
+        if let Some(parent) = self.paths.gate_thresholds_json.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        roko_fs::atomic_write_bytes(&self.paths.gate_thresholds_json, json.as_bytes())
+    }
+
     /// Save snapshots for all WAL-covered subsystems then truncate.
     ///
     /// Called both from automatic compaction (entry count threshold) and
@@ -2571,6 +2624,34 @@ impl LearningRuntime {
         }
         if !skip_only {
             self.save_local_rewards();
+        }
+
+        // ── Adaptive gate threshold flush cadence ───────────────────────
+        // When the gate_thresholds_every_n cadence fires, persist adaptive
+        // thresholds incrementally so values survive unexpected shutdowns.
+        // If the caller supplied a serialized snapshot in the input, we
+        // write it to gate-thresholds.json ourselves.  Otherwise we set the
+        // `gate_thresholds_flush_due` flag so the caller can do it.
+        if !skip_only && self.update_frequency.gate_thresholds_due(episode_count) {
+            update.gate_thresholds_flush_due = true;
+            if let Some(ref snapshot_json) = input.gate_thresholds_snapshot {
+                match self.flush_gate_thresholds_json(snapshot_json) {
+                    Ok(()) => {
+                        update.gate_thresholds_flushed = true;
+                        tracing::debug!(
+                            episode_count,
+                            "incremental adaptive threshold flush to {}",
+                            self.paths.gate_thresholds_json.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "incremental adaptive threshold flush failed"
+                        );
+                    }
+                }
+            }
         }
 
         Ok(update)
@@ -4149,9 +4230,9 @@ mod tests {
         ep.episode_id = format!("episode-{suffix}");
         ep.task_id = format!("task-{suffix}");
         ep.gate_verdicts = vec![
-            crate::episode_logger::GateVerdict::new("read", true),
-            crate::episode_logger::GateVerdict::new("edit", true),
-            crate::episode_logger::GateVerdict::new("test", true),
+            crate::episode_logger::EpisodeGateVerdict::new("read", true),
+            crate::episode_logger::EpisodeGateVerdict::new("edit", true),
+            crate::episode_logger::EpisodeGateVerdict::new("test", true),
         ];
         ep.extra.insert(
             "task_tags".to_string(),
@@ -4982,7 +5063,8 @@ mod tests {
         let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
         let mut ep = sample_episode(false);
         ep.gate_verdicts.push(
-            crate::episode_logger::GateVerdict::new("compile", false).with_signature("E0308"),
+            crate::episode_logger::EpisodeGateVerdict::new("compile", false)
+                .with_signature("E0308"),
         );
         ep.reflection = Some(
             "Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string(),
@@ -5441,5 +5523,219 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn gate_thresholds_flush_due_at_cadence() {
+        let tmp = TempDir::new().unwrap();
+        let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+        // gate_thresholds_every_n = 1 means every episode triggers a flush signal.
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 1,
+            ..UpdateFrequency::default()
+        });
+
+        let update = runtime
+            .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
+            .await
+            .unwrap();
+        assert!(
+            update.gate_thresholds_flush_due,
+            "gate_thresholds_flush_due must be true when cadence = 1"
+        );
+
+        // With cadence = 3, only the 3rd episode triggers the flush signal.
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 3,
+            ..UpdateFrequency::default()
+        });
+
+        let update2 = runtime
+            .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
+            .await
+            .unwrap();
+        assert!(
+            !update2.gate_thresholds_flush_due,
+            "episode 2 of 3 must not trigger flush"
+        );
+
+        let update3 = runtime
+            .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
+            .await
+            .unwrap();
+        assert!(
+            update3.gate_thresholds_flush_due,
+            "episode 3 of 3 must trigger flush at cadence"
+        );
+    }
+
+    /// Regression guard: with gate_thresholds_every_n = 1 the very first
+    /// completed run signals an incremental threshold flush, proving
+    /// thresholds are written before shutdown.
+    #[tokio::test]
+    async fn gate_thresholds_incremental_flush_before_shutdown() {
+        let tmp = TempDir::new().unwrap();
+        let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+        // Cadence = 1: every completed run must trigger a flush signal.
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 1,
+            ..UpdateFrequency::default()
+        });
+
+        // First completed run should already signal a flush.
+        let update1 = runtime
+            .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
+            .await
+            .unwrap();
+        assert!(
+            update1.gate_thresholds_flush_due,
+            "incremental threshold flush must fire on the very first completed run at cadence 1"
+        );
+
+        // The gate_thresholds.json path is available for the caller to persist
+        // adaptive thresholds — verify it points inside the learn directory.
+        let expected_path = tmp.path().join("gate-thresholds.json");
+        assert_eq!(
+            runtime.paths().gate_thresholds_json,
+            expected_path,
+            "gate_thresholds_json path must be inside the learn root"
+        );
+
+        // Second run also fires (cadence 1 means every episode).
+        let update2 = runtime
+            .record_completed_run(CompletedRunInput::from_episode(sample_episode(false)))
+            .await
+            .unwrap();
+        assert!(
+            update2.gate_thresholds_flush_due,
+            "incremental threshold flush must fire on every completed run at cadence 1"
+        );
+    }
+
+    /// E07-T10: Prove that when `gate_thresholds_snapshot` is supplied in
+    /// `CompletedRunInput` and cadence = 1, the threshold JSON is written
+    /// to disk *during* `record_completed_run` — before any shutdown.
+    #[tokio::test]
+    async fn gate_thresholds_written_before_shutdown() {
+        let tmp = TempDir::new().unwrap();
+        let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 1,
+            ..UpdateFrequency::default()
+        });
+
+        let thresholds_path = runtime.paths().gate_thresholds_json.clone();
+
+        // Threshold file must not exist yet.
+        assert!(
+            !thresholds_path.exists(),
+            "gate-thresholds.json must not exist before the first run"
+        );
+
+        // Simulate serialized adaptive thresholds from the orchestrator.
+        let fake_thresholds = serde_json::json!({
+            "rungs": {
+                "0": { "pass_count": 5, "total_count": 10, "ema_pass_rate": 0.6 }
+            }
+        });
+        let snapshot_json = serde_json::to_string_pretty(&fake_thresholds).unwrap();
+
+        let input = CompletedRunInput::from_episode(sample_episode(true))
+            .with_gate_thresholds(snapshot_json.clone());
+
+        let update = runtime.record_completed_run(input).await.unwrap();
+
+        // Both flags should be set.
+        assert!(
+            update.gate_thresholds_flush_due,
+            "gate_thresholds_flush_due must be true at cadence 1"
+        );
+        assert!(
+            update.gate_thresholds_flushed,
+            "gate_thresholds_flushed must be true when snapshot was provided"
+        );
+
+        // The file must now exist on disk — written before any shutdown.
+        assert!(
+            thresholds_path.exists(),
+            "gate-thresholds.json must exist after incremental flush"
+        );
+
+        let on_disk = std::fs::read_to_string(&thresholds_path).unwrap();
+        assert_eq!(
+            on_disk, snapshot_json,
+            "on-disk content must match the supplied snapshot"
+        );
+    }
+
+    /// E07-T10: When `gate_thresholds_snapshot` is NOT supplied, the flush
+    /// flag is set but no disk write occurs (backward compat with callers
+    /// that handle the flush themselves).
+    #[tokio::test]
+    async fn gate_thresholds_not_flushed_without_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 1,
+            ..UpdateFrequency::default()
+        });
+
+        let thresholds_path = runtime.paths().gate_thresholds_json.clone();
+
+        let input = CompletedRunInput::from_episode(sample_episode(true));
+        let update = runtime.record_completed_run(input).await.unwrap();
+
+        assert!(
+            update.gate_thresholds_flush_due,
+            "gate_thresholds_flush_due must be true at cadence 1"
+        );
+        assert!(
+            !update.gate_thresholds_flushed,
+            "gate_thresholds_flushed must be false when no snapshot was provided"
+        );
+        assert!(
+            !thresholds_path.exists(),
+            "gate-thresholds.json must not be created when no snapshot is supplied"
+        );
+    }
+
+    /// E07-T10: Honour gate_thresholds_every_n > 1 — the incremental flush
+    /// only fires at the configured cadence, not on every run.
+    #[tokio::test]
+    async fn gate_thresholds_cadence_honoured_with_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+        // Cadence = 3: only the 3rd run should flush.
+        runtime.set_update_frequency(UpdateFrequency {
+            gate_thresholds_every_n: 3,
+            ..UpdateFrequency::default()
+        });
+
+        let thresholds_path = runtime.paths().gate_thresholds_json.clone();
+        let snapshot_json = r#"{"rungs":{}}"#.to_string();
+
+        // Run 1: no flush.
+        let input1 = CompletedRunInput::from_episode(sample_episode(true))
+            .with_gate_thresholds(snapshot_json.clone());
+        let u1 = runtime.record_completed_run(input1).await.unwrap();
+        assert!(!u1.gate_thresholds_flushed, "run 1 of 3 must not flush");
+        assert!(!thresholds_path.exists(), "file must not exist after run 1");
+
+        // Run 2: no flush.
+        let input2 = CompletedRunInput::from_episode(sample_episode(true))
+            .with_gate_thresholds(snapshot_json.clone());
+        let u2 = runtime.record_completed_run(input2).await.unwrap();
+        assert!(!u2.gate_thresholds_flushed, "run 2 of 3 must not flush");
+        assert!(!thresholds_path.exists(), "file must not exist after run 2");
+
+        // Run 3: flush fires.
+        let input3 = CompletedRunInput::from_episode(sample_episode(true))
+            .with_gate_thresholds(snapshot_json.clone());
+        let u3 = runtime.record_completed_run(input3).await.unwrap();
+        assert!(u3.gate_thresholds_flushed, "run 3 of 3 must flush");
+        assert!(
+            thresholds_path.exists(),
+            "file must exist after cadence fires"
+        );
     }
 }

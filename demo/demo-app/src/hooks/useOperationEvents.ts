@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useEventStreamContext } from '../contexts/EventStreamContext';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { subscribeServerEvents } from '../app/bootstrap';
 import type { ServerEvent } from '../transport/types';
 
 export type OperationEventType =
@@ -435,7 +435,6 @@ export function useOperationEvents(
   operationId: string | null,
   eventTypes?: readonly OperationEventType[],
 ): OperationEvent[] {
-  const { manager } = useEventStreamContext();
   const [events, setEvents] = useState<OperationEvent[]>([]);
   const typeFilterKey = eventTypes?.join('\u0000') ?? '*';
   const eventTypeFilters = useMemo(
@@ -445,19 +444,19 @@ export function useOperationEvents(
     [typeFilterKey],
   );
 
+  const handler = useCallback((event: Record<string, unknown>) => {
+    const normalized = normalizeEvent(event);
+    if (!normalized) return;
+    if (!operationIds(normalized).includes(operationId!)) return;
+    if (!eventMatchesTypes(normalized, eventTypeFilters)) return;
+    setEvents((prev) => [...prev.slice(-(MAX_OPERATION_EVENTS - 1)), normalized]);
+  }, [operationId, eventTypeFilters]);
+
   useEffect(() => {
     setEvents([]);
-    if (!manager || !operationId) return;
-
-    return manager.subscribe(['*'], (event: unknown) => {
-      const normalized = normalizeEvent(event);
-      if (!normalized) return;
-      if (!operationIds(normalized).includes(operationId)) return;
-      if (!eventMatchesTypes(normalized, eventTypeFilters)) return;
-
-      setEvents((prev) => [...prev.slice(-(MAX_OPERATION_EVENTS - 1)), normalized]);
-    });
-  }, [manager, operationId, eventTypeFilters]);
+    if (!operationId) return;
+    return subscribeServerEvents(['*'], handler);
+  }, [operationId, handler]);
 
   return events;
 }

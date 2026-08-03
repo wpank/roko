@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::command_events::{CommandEvent, CommandOutputStream};
 use crate::state::AppState;
 use roko_core::config::schema::RokoConfig;
+use roko_core::obs::LogScrubber;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1035,6 +1036,15 @@ pub async fn ws_terminal(
         .on_upgrade(move |socket| handle_ws(socket, id, state, attach_result))
 }
 
+/// Scrub secrets from PTY output bytes. Only scrubs valid UTF-8 data to avoid
+/// corrupting binary terminal escape sequences.
+fn scrub_pty_output(data: Vec<u8>, scrubber: &LogScrubber) -> Vec<u8> {
+    match std::str::from_utf8(&data) {
+        Ok(text) => scrubber.scrub(text).into_bytes(),
+        Err(_) => data, // Not valid UTF-8 — pass through unchanged
+    }
+}
+
 async fn handle_ws(
     mut socket: WebSocket,
     id: String,
@@ -1059,10 +1069,12 @@ async fn handle_ws(
     };
 
     let (mut sink, mut stream) = socket.split();
+    let scrubber = Arc::clone(&state.scrubber);
 
     // Replay scrollback snapshot before live data on reattach
     if let Some(snapshot) = scrollback_snapshot {
         for chunk in snapshot {
+            let chunk = scrub_pty_output(chunk, &scrubber);
             if sink.send(Message::Binary(chunk.into())).await.is_err() {
                 state
                     .terminal_sessions
@@ -1076,6 +1088,7 @@ async fn handle_ws(
     loop {
         tokio::select! {
             Some(data) = pty_rx.recv() => {
+                let data = scrub_pty_output(data, &scrubber);
                 if sink.send(Message::Binary(data.into())).await.is_err() {
                     break;
                 }

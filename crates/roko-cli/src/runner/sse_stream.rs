@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use roko_core::dashboard_snapshot::DashboardEvent;
+use roko_core::obs::LogScrubber;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -28,6 +29,8 @@ pub struct SseStreamClient {
     color: bool,
     /// Maximum number of reconnection attempts before giving up.
     max_retries: u32,
+    /// Scrubber for redacting secrets from SSE payloads before rendering.
+    scrubber: LogScrubber,
 }
 
 impl SseStreamClient {
@@ -37,6 +40,7 @@ impl SseStreamClient {
             url: url.trim_end_matches('/').to_string(),
             color,
             max_retries: 3,
+            scrubber: LogScrubber::new(),
         }
     }
 
@@ -178,13 +182,17 @@ impl SseStreamClient {
     }
 
     /// Parse a `data:` payload as a `DashboardEvent` and print it.
+    ///
+    /// Scrubs secrets from the raw payload before deserialisation so that even
+    /// if the server-side scrubbing is bypassed the CLI never renders secrets.
     fn handle_sse_data(&self, data: &str) {
         let trimmed = data.trim();
         if trimmed.is_empty() {
             return;
         }
 
-        match serde_json::from_str::<DashboardEvent>(trimmed) {
+        let scrubbed = self.scrubber.scrub(trimmed);
+        match serde_json::from_str::<DashboardEvent>(&scrubbed) {
             Ok(event) => {
                 if let Some(line) = format_dashboard_event(&event, self.color) {
                     let mut stderr = std::io::stderr().lock();
@@ -192,7 +200,7 @@ impl SseStreamClient {
                 }
             }
             Err(err) => {
-                debug!(error = %err, data = %trimmed, "failed to parse SSE DashboardEvent");
+                debug!(error = %err, data = %scrubbed, "failed to parse SSE DashboardEvent");
             }
         }
     }

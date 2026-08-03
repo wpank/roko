@@ -201,10 +201,7 @@ pub fn cmd_custody_show(workdir: &Path, index: usize) -> Result<()> {
         "Simulation:  {}",
         record.simulation.as_deref().unwrap_or("none")
     );
-    println!(
-        "Hash:        {}",
-        record.hash.as_deref().unwrap_or("none")
-    );
+    println!("Hash:        {}", record.hash.as_deref().unwrap_or("none"));
     println!(
         "Prev hash:   {}",
         record.prev_hash.as_deref().unwrap_or("none")
@@ -329,10 +326,8 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
                     }
 
                     // Recompute the hash and compare.
-                    let recomputed = compute_hash(
-                        record.prev_hash.as_deref().unwrap_or(""),
-                        &record,
-                    );
+                    let recomputed =
+                        compute_hash(record.prev_hash.as_deref().unwrap_or(""), &record);
                     if *stored_hash != recomputed {
                         violations.push(format!(
                             "line {idx}: hash mismatch — stored {:.16}... != recomputed {:.16}...",
@@ -358,7 +353,14 @@ pub fn cmd_custody_verify(workdir: &Path) -> Result<()> {
     println!("Total lines:    {}", lines.len());
     println!("Valid records:  {valid_count}");
     println!("Parse errors:   {parse_errors}");
-    println!("Hash chain:     {}", if chain_checked { "verified" } else { "not present (legacy)" });
+    println!(
+        "Hash chain:     {}",
+        if chain_checked {
+            "verified"
+        } else {
+            "not present (legacy)"
+        }
+    );
     println!("Violations:     {}", violations.len());
 
     if violations.is_empty() {
@@ -522,11 +524,17 @@ mod tests {
 
         // First record has hash but no prev_hash.
         assert!(records[0].hash.is_some(), "first record should have hash");
-        assert!(records[0].prev_hash.is_none(), "first record should have no prev_hash");
+        assert!(
+            records[0].prev_hash.is_none(),
+            "first record should have no prev_hash"
+        );
 
         // Second record has both hash and prev_hash.
         assert!(records[1].hash.is_some(), "second record should have hash");
-        assert!(records[1].prev_hash.is_some(), "second record should have prev_hash");
+        assert!(
+            records[1].prev_hash.is_some(),
+            "second record should have prev_hash"
+        );
 
         // Second record's prev_hash should match first record's hash.
         assert_eq!(

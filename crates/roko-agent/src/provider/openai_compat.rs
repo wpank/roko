@@ -259,9 +259,7 @@ fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<String>> {
         .map(|name| {
             // Resolve Claude CLI aliases ("Read" -> "read_file") to canonical names.
             // If already canonical or unknown (MCP/plugin tool), pass through as-is.
-            canonical_of_claude(name)
-                .unwrap_or(name)
-                .to_string()
+            canonical_of_claude(name).unwrap_or(name).to_string()
         })
         .collect();
     (!allowed.is_empty()).then_some(allowed)

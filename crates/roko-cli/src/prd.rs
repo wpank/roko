@@ -796,14 +796,20 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
                 let dir_name = entry.file_name().to_string_lossy().to_string();
                 let content = std::fs::read_to_string(&toml_path).unwrap_or_default();
                 let task_count = usize_to_u32_saturating(content.matches("status = ").count());
-                let done_count = usize_to_u32_saturating(
-                    content.matches("status = \"done\"").count(),
-                );
+                let done_count =
+                    usize_to_u32_saturating(content.matches("status = \"done\"").count());
                 // Try to parse source_prd from the [meta] section.
                 let source_prd = TasksFile::parse(&toml_path)
                     .ok()
                     .and_then(|f| f.meta.source_prd);
-                plan_stats.insert(dir_name, PlanStats { tasks: task_count, done: done_count, source_prd });
+                plan_stats.insert(
+                    dir_name,
+                    PlanStats {
+                        tasks: task_count,
+                        done: done_count,
+                        source_prd,
+                    },
+                );
             }
         }
     }
@@ -816,7 +822,8 @@ pub fn cmd_status(workdir: &Path, plans_dir: Option<&Path>) -> Result<()> {
         .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .collect();
     let mut linked_plans: HashMap<String, Vec<String>> = HashMap::new();
-    let mut matched_plan_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut matched_plan_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for (plan_name, stats) in &plan_stats {
         // Direct name match.
         if prd_slugs.contains(plan_name) {

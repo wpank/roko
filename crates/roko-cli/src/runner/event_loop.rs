@@ -7065,12 +7065,9 @@ async fn dispatch_action(
 
             // ── E04-T06: Pre-dispatch safety check ───────────────────
             if let Some(ref safety) = ctx.config.safety_layer {
-                if let Err(violation) = safety.pre_dispatch_check(
-                    plan_id,
-                    &task_id,
-                    role,
-                    &plan_workdir,
-                ) {
+                if let Err(violation) =
+                    safety.pre_dispatch_check(plan_id, &task_id, role, &plan_workdir)
+                {
                     error!(
                         plan_id = %plan_id,
                         task = %task_id,
@@ -7078,18 +7075,15 @@ async fn dispatch_action(
                         "pre-dispatch safety check blocked CLI dispatch: {}",
                         violation.message,
                     );
-                    let message = format!(
-                        "pre-dispatch safety violation: {}",
-                        violation.message
-                    );
+                    let message = format!("pre-dispatch safety violation: {}", violation.message);
                     if is_dag_task_spawn {
                         ctx.task_dag.clear_running(plan_id, &task_id);
                     }
                     ctx.task_runtime_states.remove(&attempt_ref.key());
-                    if let Err(e) = ctx.executor.apply_event(
-                        plan_id,
-                        &ExecutorEvent::Fatal(message.clone()),
-                    ) {
+                    if let Err(e) = ctx
+                        .executor
+                        .apply_event(plan_id, &ExecutorEvent::Fatal(message.clone()))
+                    {
                         error!(plan_id = %plan_id, error = %e,
                             "failed to apply Fatal event -- forcing plan terminal");
                         ctx.state.force_plan_terminal(plan_id);
@@ -7160,7 +7154,14 @@ async fn dispatch_action(
                                     None,
                                 ),
                             );
-                            ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &model_display);
+                            ctx.tui.agent_spawned(
+                                &agent_id,
+                                plan_id,
+                                &task_id,
+                                attempt_ref.attempt,
+                                role,
+                                &model_display,
+                            );
                             ctx.tui.task_started(
                                 plan_id,
                                 &task_id,
@@ -7359,7 +7360,14 @@ async fn dispatch_action(
                             None,
                         ),
                     );
-                    ctx.tui.agent_spawned(&agent_id, plan_id, &task_id, attempt_ref.attempt, role, &format!("{provider_id}:{model}"));
+                    ctx.tui.agent_spawned(
+                        &agent_id,
+                        plan_id,
+                        &task_id,
+                        attempt_ref.attempt,
+                        role,
+                        &format!("{provider_id}:{model}"),
+                    );
                     ctx.tui
                         .task_started(plan_id, &task_id, &task_def.title, "implementing");
                     dispatch_claim.set_agent(agent_id.clone(), None);
@@ -7859,7 +7867,15 @@ async fn dispatch_action(
                 ctx.state,
                 ctx.tui,
                 ctx.config,
-                RunnerEvent::plan_completed(&run_id, plan_id, PlanOutcome::Succeeded, None, 0.0, 0, 0),
+                RunnerEvent::plan_completed(
+                    &run_id,
+                    plan_id,
+                    PlanOutcome::Succeeded,
+                    None,
+                    0.0,
+                    0,
+                    0,
+                ),
             );
             save_snapshot(
                 ctx.config,

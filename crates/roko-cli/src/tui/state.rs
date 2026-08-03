@@ -1481,7 +1481,9 @@ fn gate_pass_rate(gates: &[GateResultSummary]) -> Option<f64> {
     Some(passed as f64 / gates.len() as f64)
 }
 
-fn snapshot_gate_pass_rate(gates: &[roko_core::dashboard_snapshot::GateVerdictView]) -> Option<f64> {
+fn snapshot_gate_pass_rate(
+    gates: &[roko_core::dashboard_snapshot::GateVerdictView],
+) -> Option<f64> {
     if gates.is_empty() {
         return None;
     }
@@ -4414,7 +4416,8 @@ tier = "focused"
     #[test]
     fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation() {
         use roko_core::dashboard_snapshot::{
-            AgentState as SnapshotAgentState, DashboardSnapshot, ErrorEntry, GateVerdictView, PlanState,
+            AgentState as SnapshotAgentState, DashboardSnapshot, ErrorEntry, GateVerdictView,
+            PlanState,
         };
 
         let mut state = TuiState::default();
@@ -4839,13 +4842,14 @@ tier = "focused"
                 last_event_at_ms: 0,
             },
         );
-        snap.gates.push(roko_core::dashboard_snapshot::GateVerdictView {
-            plan_id: "plan-a".into(),
-            task_id: "task-2".into(),
-            gate: "compile".into(),
-            passed: true,
-            ts_millis: 1,
-        });
+        snap.gates
+            .push(roko_core::dashboard_snapshot::GateVerdictView {
+                plan_id: "plan-a".into(),
+                task_id: "task-2".into(),
+                gate: "compile".into(),
+                passed: true,
+                ts_millis: 1,
+            });
         snap.diagnoses
             .push_back(roko_core::dashboard_snapshot::DiagnosisSummary {
                 id: "plan:plan-a:watcher:circuit-breaker:pattern:loop-detected".into(),

@@ -122,11 +122,27 @@ fn load_config(path: &Path) -> Result<(PathBuf, McpConfig), ConfigError> {
 /// list. Operators can extend the set via `[security.mcp_allowed_commands]` in
 /// `roko.toml` (not yet wired), but the defaults cover the common case.
 pub const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
-    "npx", "node", "deno", "bun", "python", "python3", "uvx", "uv",
-    "cargo", "docker", "mcp-server-fetch", "mcp-server-filesystem",
-    "mcp-server-git", "mcp-server-github", "mcp-server-slack",
-    "mcp-server-sqlite", "mcp-server-postgres", "mcp-server-memory",
-    "mcp-server-brave-search", "mcp-server-puppeteer", "mcp-server-sequential-thinking",
+    "npx",
+    "node",
+    "deno",
+    "bun",
+    "python",
+    "python3",
+    "uvx",
+    "uv",
+    "cargo",
+    "docker",
+    "mcp-server-fetch",
+    "mcp-server-filesystem",
+    "mcp-server-git",
+    "mcp-server-github",
+    "mcp-server-slack",
+    "mcp-server-sqlite",
+    "mcp-server-postgres",
+    "mcp-server-memory",
+    "mcp-server-brave-search",
+    "mcp-server-puppeteer",
+    "mcp-server-sequential-thinking",
 ];
 
 /// Environment variable key patterns that likely carry secrets.
@@ -134,8 +150,15 @@ pub const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
 /// Doctor warns (but does not print values) when MCP server env maps contain
 /// keys matching any of these substrings (case-insensitive).
 pub const SENSITIVE_ENV_PATTERNS: &[&str] = &[
-    "SECRET", "TOKEN", "KEY", "PASSWORD", "CREDENTIAL", "AUTH",
-    "PRIVATE", "API_KEY", "APIKEY",
+    "SECRET",
+    "TOKEN",
+    "KEY",
+    "PASSWORD",
+    "CREDENTIAL",
+    "AUTH",
+    "PRIVATE",
+    "API_KEY",
+    "APIKEY",
 ];
 
 /// Check whether `command` is on the default allowlist.
@@ -166,10 +189,7 @@ pub fn sensitive_env_keys(env: &std::collections::HashMap<String, String>) -> Ve
     let mut hits = Vec::new();
     for key in env.keys() {
         let upper = key.to_ascii_uppercase();
-        if SENSITIVE_ENV_PATTERNS
-            .iter()
-            .any(|pat| upper.contains(pat))
-        {
+        if SENSITIVE_ENV_PATTERNS.iter().any(|pat| upper.contains(pat)) {
             hits.push(key.clone());
         }
     }

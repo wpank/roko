@@ -45,7 +45,9 @@ use roko_core::{
 };
 use roko_fs::FileSubstrate;
 use roko_gate::{BuildSystem, ClippyGate, CompileGate, GatePayload, ShellGate, TestGate};
-use roko_learn::episode_logger::{Episode, EpisodeLogger, EpisodeGateVerdict, Usage as EpisodeUsage};
+use roko_learn::episode_logger::{
+    Episode, EpisodeGateVerdict, EpisodeLogger, Usage as EpisodeUsage,
+};
 use roko_learn::playbook::Playbook;
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 use roko_learn::skill_library::{Skill, SkillQuery};

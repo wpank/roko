@@ -21,7 +21,7 @@ use roko_agent::{Agent, AgentResult, nl_to_format::NlToFormatConverter};
 use roko_core::{Body, Context as RokoContext, Engram, Kind};
 use roko_learn::{
     cfactor::{CFactor, CFactorRegression, detect_cfactor_regression},
-    episode_logger::{Episode, EpisodeLogger, EpisodeGateVerdict, Usage},
+    episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage},
     pattern_discovery::{CrossEpisodeConsolidationReport, CrossEpisodeConsolidator},
     playbook::{Playbook, PlaybookStep, PlaybookStore},
 };

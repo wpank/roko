@@ -160,6 +160,64 @@ pub struct RokoConfig {
     /// Cold-storage archival settings.
     #[serde(default)]
     pub cold_storage: ColdStorageConfig,
+    /// Prompt composition knobs (strategy, VCG warmup threshold).
+    #[serde(default)]
+    pub prompt: PromptConfig,
+}
+
+/// Composition strategy for allocating prompt token budget across candidate sections.
+///
+/// Mirrors [`roko_compose::CompositionStrategy`] so that `roko-core` (which cannot
+/// depend on `roko-compose`) can expose this knob in the config schema.  The CLI
+/// converts this value to the compose-side enum at construction time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigCompositionStrategy {
+    /// Select `Vcg` once learned bidder observations are warm; otherwise use
+    /// the deterministic density-greedy path.
+    #[default]
+    Auto,
+    /// Deterministic greedy allocation by score density.
+    DensityGreedy,
+    /// Backward-compatible alias for density-greedy allocation.
+    WeightedSum,
+    /// VCG-style allocation with payments and displacement diagnostics.
+    Vcg,
+}
+
+/// Default VCG warmup observation count (mirrors the compose-side constant).
+const fn default_vcg_warmup_observations() -> u32 {
+    10
+}
+
+/// Prompt composition configuration.
+///
+/// Controls how the runner-v2 `PromptComposer` allocates token budget across
+/// candidate prompt sections and when the VCG auction activates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PromptConfig {
+    /// Budget-allocation strategy for prompt composition.
+    ///
+    /// - `auto` (default): density-greedy on cold start; VCG once bidders are warm.
+    /// - `density_greedy` / `weighted_sum`: always use the deterministic greedy path.
+    /// - `vcg`: always use VCG allocation (requires warm bidder observations).
+    #[serde(default)]
+    pub composition_strategy: ConfigCompositionStrategy,
+    /// Minimum bidder-observation count before `auto` enables VCG allocation.
+    ///
+    /// Defaults to 10. Setting this to 0 enables VCG immediately (not
+    /// recommended for cold starts).
+    #[serde(default = "default_vcg_warmup_observations")]
+    pub vcg_warmup_observations: u32,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            composition_strategy: ConfigCompositionStrategy::default(),
+            vcg_warmup_observations: default_vcg_warmup_observations(),
+        }
+    }
 }
 
 /// Validation behavior configuration.
@@ -219,6 +277,7 @@ impl Default for RokoConfig {
             agents: Vec::new(),
             validation: ValidationConfig::default(),
             cold_storage: ColdStorageConfig::default(),
+            prompt: PromptConfig::default(),
         }
     }
 }
@@ -865,6 +924,7 @@ impl RokoConfig {
         Self::write_example_budget(&mut out, &cfg);
         Self::write_example_conductor(&mut out, &cfg);
         Self::write_example_learning(&mut out, &cfg);
+        Self::write_example_prompt(&mut out, &cfg);
         Self::write_example_tui_and_server(&mut out, &cfg);
         Self::write_example_scheduler(&mut out, &cfg);
         Self::write_example_webhooks(&mut out, &cfg);
@@ -1042,6 +1102,22 @@ impl RokoConfig {
             out,
             "dream_on_completion = {}\n",
             c.learning.dream_on_completion
+        );
+    }
+    fn write_example_prompt(out: &mut String, c: &Self) {
+        let strategy = match c.prompt.composition_strategy {
+            ConfigCompositionStrategy::Auto => "auto",
+            ConfigCompositionStrategy::DensityGreedy => "density_greedy",
+            ConfigCompositionStrategy::WeightedSum => "weighted_sum",
+            ConfigCompositionStrategy::Vcg => "vcg",
+        };
+        let _ = writeln!(out, "# -- Prompt composition --");
+        let _ = writeln!(out, "[prompt]");
+        let _ = writeln!(out, "composition_strategy = \"{}\"", strategy);
+        let _ = writeln!(
+            out,
+            "vcg_warmup_observations = {}\n",
+            c.prompt.vcg_warmup_observations
         );
     }
     fn write_example_tui_and_server(out: &mut String, c: &Self) {

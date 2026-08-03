@@ -48,7 +48,10 @@ fn validate_workspace_prefix(prefix: &str) -> Result<(), String> {
         return Err("prefix must not contain '..'".into());
     }
     // Reject Windows drive letters like "C:" or "d:".
-    if prefix.len() >= 2 && prefix.as_bytes()[0].is_ascii_alphabetic() && prefix.as_bytes()[1] == b':' {
+    if prefix.len() >= 2
+        && prefix.as_bytes()[0].is_ascii_alphabetic()
+        && prefix.as_bytes()[1] == b':'
+    {
         return Err("prefix must not contain a drive letter".into());
     }
     Ok(())
@@ -681,8 +684,8 @@ mod tests {
         let ws_path = json["path"].as_str().expect("path field");
 
         // Read the generated roko.toml and verify it does NOT contain the secret.
-        let written = std::fs::read_to_string(format!("{ws_path}/roko.toml"))
-            .expect("read roko.toml");
+        let written =
+            std::fs::read_to_string(format!("{ws_path}/roko.toml")).expect("read roko.toml");
 
         assert!(
             !written.contains("sk-ant-SUPER-SECRET-KEY-12345"),

@@ -4982,7 +4982,8 @@ mod tests {
         let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
         let mut ep = sample_episode(false);
         ep.gate_verdicts.push(
-            crate::episode_logger::EpisodeGateVerdict::new("compile", false).with_signature("E0308"),
+            crate::episode_logger::EpisodeGateVerdict::new("compile", false)
+                .with_signature("E0308"),
         );
         ep.reflection = Some(
             "Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string(),

@@ -239,9 +239,7 @@ async fn try_privy_jwt(
         "admin".to_string()
     } else {
         match claims.role.as_deref() {
-            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => {
-                "admin".to_string()
-            }
+            Some(role) if auth.privy_allowed_roles.iter().any(|r| r == role) => "admin".to_string(),
             _ => {
                 tracing::info!(
                     sub = %claims.sub,

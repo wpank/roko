@@ -2734,7 +2734,9 @@ mod tests {
 
         let mut failing = make_episode("task-2", false, 1, "complex", &["rust"], "implementation");
         failing.episode_id = "ep-fail-1".into();
-        failing.gate_verdicts = vec![crate::episode_logger::EpisodeGateVerdict::new("compile", false)];
+        failing.gate_verdicts = vec![crate::episode_logger::EpisodeGateVerdict::new(
+            "compile", false,
+        )];
 
         let candidates = extract_skill_candidates(&[passing, failing], &agent).await;
         assert_eq!(candidates.len(), 1);

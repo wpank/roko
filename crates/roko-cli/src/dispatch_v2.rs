@@ -1500,8 +1500,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
     /// roko-side pre- and post-dispatch safety checks via SafetyLayer.
     #[test]
     fn claude_cli_dispatch_runs_safety_funnel() {
-        use roko_agent::safety::ViolationSeverity;
         use roko_agent::SafetyLayer;
+        use roko_agent::safety::ViolationSeverity;
 
         let tmp = tempdir().expect("tempdir");
         let workdir = tmp.path().to_path_buf();
@@ -1521,12 +1521,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         // Use a non-existent traversal path that cannot be canonicalized
         // -- it falls back to the raw string which contains "..".
         let traversal_dir = tmp.path().join("nonexistent/../../..");
-        let pre_traversal = safety.pre_dispatch_check(
-            "test-plan",
-            "test-task",
-            "implementer",
-            &traversal_dir,
-        );
+        let pre_traversal =
+            safety.pre_dispatch_check("test-plan", "test-task", "implementer", &traversal_dir);
         // The path policy checks canonicalized paths; when canonicalization
         // fails (non-existent path) it falls back to the raw string.
         // Verify the API is callable and returns a structured result.
@@ -1534,13 +1530,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
 
         // ── Post-dispatch: clean output passes ───────────────────────
         let clean_output = "implemented the feature successfully";
-        let post_clean = safety.post_dispatch_check(
-            "test-plan",
-            "test-task",
-            "implementer",
-            clean_output,
-            &[],
-        );
+        let post_clean =
+            safety.post_dispatch_check("test-plan", "test-task", "implementer", clean_output, &[]);
         assert!(
             post_clean.is_empty(),
             "post-dispatch check should produce no violations for clean output"
@@ -1568,13 +1559,8 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
 
         // ── Post-dispatch: secret leak in output is Block ────────────
         let secret_output = "here is the api key: AKIA1234567890ABCDEF";
-        let post_secret = safety.post_dispatch_check(
-            "test-plan",
-            "test-task",
-            "implementer",
-            secret_output,
-            &[],
-        );
+        let post_secret =
+            safety.post_dispatch_check("test-plan", "test-task", "implementer", secret_output, &[]);
         // The scrub policy detects AWS-style keys by default.
         // If the default scrub patterns catch it, we get a Block violation.
         if !post_secret.is_empty() {

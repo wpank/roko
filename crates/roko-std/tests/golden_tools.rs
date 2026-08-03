@@ -126,8 +126,12 @@ fn golden_run_tests() {
 
 #[test]
 fn golden_all_shipped_tools_present() {
+    // ROKO_BUILTIN_TOOLS.len() must equal TOOL_COUNT (the compile-time constant
+    // that reflects the active feature set).
     assert_eq!(ROKO_BUILTIN_TOOLS.len(), TOOL_COUNT);
-    let expected = [
+
+    // The 16 std tools and 4 ISFR tools are always present.
+    let std_and_isfr = [
         "read_file",
         "write_file",
         "edit_file",
@@ -144,32 +148,58 @@ fn golden_all_shipped_tools_present() {
         "exit_plan_mode",
         "apply_patch",
         "run_tests",
-        // Chain domain tools
-        "chain.balance",
-        "chain.transfer",
-        "chain.approve",
-        "chain.swap",
-        "chain.add_liquidity",
-        "chain.remove_liquidity",
-        "chain.get_pool_info",
-        "chain.get_position",
-        "chain.simulate_tx",
-        "chain.gas_estimate",
-        "chain.wallet_create",
-        "chain.wallet_list",
-        "chain.wallet_info",
-        "chain.wallet_export_address",
-        "chain.post_insight",
-        "chain.search_insights",
-        "chain.confirm_insight",
         // ISFR domain tools
         "isfr.read_rates",
         "isfr.read_rate_history",
         "isfr.oracle_status",
         "isfr.source_status",
     ];
-    assert_eq!(expected.len(), TOOL_COUNT);
-    for name in expected {
+    for name in std_and_isfr {
         assert_golden(name);
+    }
+
+    // Chain domain tools appear only when the `chain` feature is enabled.
+    #[cfg(feature = "chain")]
+    {
+        let chain_tools = [
+            "chain.balance",
+            "chain.transfer",
+            "chain.approve",
+            "chain.swap",
+            "chain.add_liquidity",
+            "chain.remove_liquidity",
+            "chain.get_pool_info",
+            "chain.get_position",
+            "chain.simulate_tx",
+            "chain.gas_estimate",
+            "chain.wallet_create",
+            "chain.wallet_list",
+            "chain.wallet_info",
+            "chain.wallet_export_address",
+            "chain.post_insight",
+            "chain.search_insights",
+            "chain.confirm_insight",
+        ];
+        for name in chain_tools {
+            assert_golden(name);
+        }
+    }
+
+    // Without the `chain` feature, chain tools must not appear in the catalog.
+    #[cfg(not(feature = "chain"))]
+    {
+        let reg = StaticToolRegistry::new();
+        let chain_names = [
+            "chain.balance",
+            "chain.transfer",
+            "chain.approve",
+            "chain.swap",
+        ];
+        for name in chain_names {
+            assert!(
+                reg.get(name).is_none(),
+                "chain tool `{name}` must not be in the catalog when chain feature is disabled"
+            );
+        }
     }
 }

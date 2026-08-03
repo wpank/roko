@@ -2118,9 +2118,8 @@ command = "claude"
         );
 
         // Serialize through the same redacted path used by cmd_show_effective.
-        let output =
-            roko_core::config::loader::serialize_effective_redacted(&config)
-                .expect("redacted serialization");
+        let output = roko_core::config::loader::serialize_effective_redacted(&config)
+            .expect("redacted serialization");
 
         // The literal secret values must NOT appear in the output.
         assert!(

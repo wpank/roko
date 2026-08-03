@@ -1503,14 +1503,8 @@ default_model = "missing"
             "authorization".to_string(),
             "Bearer sk-live-1234".to_string(),
         );
-        headers.insert(
-            "x-custom-token".to_string(),
-            "tok_secret_val".to_string(),
-        );
-        headers.insert(
-            "x-trace-id".to_string(),
-            "non-secret-value".to_string(),
-        );
+        headers.insert("x-custom-token".to_string(), "tok_secret_val".to_string());
+        headers.insert("x-trace-id".to_string(), "non-secret-value".to_string());
         config.providers.insert(
             "test".into(),
             ProviderConfig {

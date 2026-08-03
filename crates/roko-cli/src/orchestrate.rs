@@ -114,7 +114,7 @@ use roko_learn::curriculum::{CurriculumMode, CurriculumScheduler};
 use roko_learn::efficiency::{
     AgentEfficiencyEvent, FleetCFactor, PromptSectionMeta, compute_fleet_cfactor,
 };
-use roko_learn::episode_logger::{Episode, EpisodeLogger, EpisodeGateVerdict, Usage};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use roko_learn::error_pattern_store::{
     ErrorPatternStore, FailurePatternQuery, GateFailureObservation, GateFailureSource,
 };
@@ -158,7 +158,7 @@ use roko_orchestrator::{
 };
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::event_bus::{
-    Envelope as RuntimeEventEnvelope, EventBus as RuntimeEventBus, EpisodeGateVerdictSummary,
+    Envelope as RuntimeEventEnvelope, EpisodeGateVerdictSummary, EventBus as RuntimeEventBus,
     PlanRevisionReason, RokoEvent,
 };
 use roko_runtime::process::ProcessSupervisor;
@@ -8815,7 +8815,10 @@ impl PlanRunner {
                                 if counts.executed() == 0 {
                                     Vec::new()
                                 } else {
-                                    vec![EpisodeGateVerdict::new(format!("rung-{effective_rung}"), passed)]
+                                    vec![EpisodeGateVerdict::new(
+                                        format!("rung-{effective_rung}"),
+                                        passed,
+                                    )]
                                 }
                             });
                         ep.input_signal_hash = self
@@ -21407,16 +21410,19 @@ title = "Test task"
             &EpisodeGateVerdict::new("judge", true).with_signature("stub-not-yet-implemented")
         ));
         assert!(is_stub_gate_verdict(
-            &EpisodeGateVerdict::new("judge", true).with_signature("LLM judge gate not yet implemented")
+            &EpisodeGateVerdict::new("judge", true)
+                .with_signature("LLM judge gate not yet implemented")
         ));
-        assert!(!is_stub_gate_verdict(&EpisodeGateVerdict::new("compile", true)));
+        assert!(!is_stub_gate_verdict(&EpisodeGateVerdict::new(
+            "compile", true
+        )));
     }
 
     #[test]
     fn positive_learning_withhold_reason_blocks_stub_and_missing_gates() {
         let real_gate = EpisodeGateVerdict::new("compile", true);
-        let stub_gate =
-            EpisodeGateVerdict::new("stub-llm-judge", true).with_signature("stub-not-yet-implemented");
+        let stub_gate = EpisodeGateVerdict::new("stub-llm-judge", true)
+            .with_signature("stub-not-yet-implemented");
 
         assert_eq!(
             positive_learning_withhold_reason(true, std::slice::from_ref(&real_gate)),

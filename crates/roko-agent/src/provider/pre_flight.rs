@@ -131,9 +131,7 @@ fn check_single_provider(
             if !binary_on_path(command) {
                 issues.push(ProviderReadinessIssue {
                     provider_name: provider_name.to_string(),
-                    message: format!(
-                        "Gemini CLI command '{command}' not found on PATH."
-                    ),
+                    message: format!("Gemini CLI command '{command}' not found on PATH."),
                 });
             }
         }

@@ -604,10 +604,7 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
                                     target.display()
                                 );
                             } else {
-                                eprintln!(
-                                    "Removed invalid draft: {}",
-                                    target.display()
-                                );
+                                eprintln!("Removed invalid draft: {}", target.display());
                             }
                             artifact_success = false;
                         }

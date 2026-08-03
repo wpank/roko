@@ -570,7 +570,9 @@ pub fn convert_images_for_openai(
                     }
                     // Anthropic format: {"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
                     let source = block.get("source")?;
-                    let media_type = source.get("media_type").and_then(serde_json::Value::as_str)?;
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(serde_json::Value::as_str)?;
                     let data = source.get("data").and_then(serde_json::Value::as_str)?;
                     Some(serde_json::json!({
                         "type": "image_url",
@@ -606,7 +608,9 @@ pub fn convert_images_for_gemini(
                         return None;
                     }
                     let source = block.get("source")?;
-                    let media_type = source.get("media_type").and_then(serde_json::Value::as_str)?;
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(serde_json::Value::as_str)?;
                     let data = source.get("data").and_then(serde_json::Value::as_str)?;
                     Some(serde_json::json!({
                         "inlineData": {

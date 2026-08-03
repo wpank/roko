@@ -1303,7 +1303,8 @@ mod tests {
         let mut ep = Episode::new(agent, task);
         ep.success = success;
         ep.usage = Usage::tokens(100, 50);
-        ep.gate_verdicts.push(EpisodeGateVerdict::new("compile", success));
+        ep.gate_verdicts
+            .push(EpisodeGateVerdict::new("compile", success));
         ep
     }
 

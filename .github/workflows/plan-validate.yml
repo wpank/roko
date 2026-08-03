@@ -1,0 +1,37 @@
+name: Plan Validate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plans/**/*.toml"
+      - "tmp/status-quo/**/tasks.toml"
+      - ".github/workflows/plan-validate.yml"
+      - "crates/roko-cli/src/commands/plan.rs"
+      - "crates/roko-cli/src/plan_validate.rs"
+  pull_request:
+    paths:
+      - "plans/**/*.toml"
+      - "tmp/status-quo/**/tasks.toml"
+      - ".github/workflows/plan-validate.yml"
+      - "crates/roko-cli/src/commands/plan.rs"
+      - "crates/roko-cli/src/plan_validate.rs"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan-validate:
+    name: Validate plan files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build roko-cli
+        run: cargo build -p roko-cli
+      - name: Validate plans/
+        run: cargo run -p roko-cli -- plan validate --strict plans/
+      - name: Validate tmp/status-quo/backlog/plans/
+        run: cargo run -p roko-cli -- plan validate --strict tmp/status-quo/backlog/plans/

@@ -322,11 +322,7 @@ pub async fn run_gate_once(
     let workdir_for_run = workdir.clone();
     let run = async {
         let inputs = build_rung_execution_inputs(&target_crates);
-        let config = build_rung_execution_config(
-            &workdir_for_run,
-            timeout_secs,
-            &verify_steps,
-        );
+        let config = build_rung_execution_config(&workdir_for_run, timeout_secs, &verify_steps);
         let pipeline = if gates_config.has_custom_rungs() {
             GatePipelineBuilder::from_config(&gates_config, complexity)
         } else {
@@ -414,8 +410,7 @@ pub async fn run_gate_once(
     let passed = real_verdicts.iter().all(|v| v.passed);
     let all_skipped = real_verdicts.is_empty() && !verdicts.is_empty();
     let output = render_output(&verdicts);
-    let failure_kind = (!passed && !all_skipped)
-        .then(|| classify_failure_kind(&verdicts, &output));
+    let failure_kind = (!passed && !all_skipped).then(|| classify_failure_kind(&verdicts, &output));
 
     let summaries: Vec<GateVerdictSummary> = verdicts
         .iter()

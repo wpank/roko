@@ -222,14 +222,11 @@ impl LlmBackend for GeminiNativeBackend {
         let body = serialize_generate_content_request(&request)
             .map_err(|err| LlmError::Backend(format!("serialize request: {err}")))?;
 
-        let endpoint =
-            stream_generate_content_endpoint(&self.base_url, &self.model.slug);
+        let endpoint = stream_generate_content_endpoint(&self.base_url, &self.model.slug);
         let headers = generate_content_headers(&self.api_key);
 
         let client = crate::provider::shared_http_client();
-        let mut req = client
-            .post(&endpoint)
-            .timeout(config.request_timeout);
+        let mut req = client.post(&endpoint).timeout(config.request_timeout);
         for (k, v) in &headers {
             req = req.header(k.as_str(), v.as_str());
         }
@@ -252,7 +249,10 @@ impl LlmBackend for GeminiNativeBackend {
                     retry_after_ms: retry_after.map(|s| s * 1000),
                 }));
             }
-            return Err(LlmError::Network(format!("http {}: {text}", status.as_u16())));
+            return Err(LlmError::Network(format!(
+                "http {}: {text}",
+                status.as_u16()
+            )));
         }
 
         // Spawn a task that reads SSE chunks and sends StreamEvents.

@@ -125,6 +125,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         validation: ValidationConfig::default(),
         graduation: crate::config::graduation::GraduationConfig::default(),
         cold_storage: ColdStorageConfig::default(),
+        prompt: crate::config::schema::PromptConfig::default(),
     }
 }
 

@@ -116,9 +116,13 @@ mod tests {
 
     #[test]
     fn builtin_count_matches() {
-        assert_eq!(TOOL_COUNT, 37);
+        // TOOL_COUNT is a compile-time constant that reflects the active
+        // feature set (chain tools add 17 when `chain` is enabled).
+        // Assert the invariant between the constant and the runtime slices.
         assert_eq!(ROKO_BUILTIN_TOOLS.len(), TOOL_COUNT);
         assert_eq!(BUILTIN_TOOL_NAMES.len(), TOOL_COUNT);
+        // Sanity: minimum is 16 std + 4 ISFR = 20.
+        assert!(TOOL_COUNT >= 20, "TOOL_COUNT must be at least 20");
     }
 
     #[test]
@@ -240,6 +244,79 @@ mod tests {
         for role in all_roles {
             let tools = reg.for_role(role);
             assert!(tools.len() <= TOOL_COUNT);
+        }
+    }
+
+    /// Verify that all 19 GitHub MCP tools appear in the catalog with correct
+    /// source, category, and write/read permission classification.
+    #[test]
+    fn github_tool_catalog_entries() {
+        use super::super::builtin::github::{GITHUB_TOOL_COUNT, GITHUB_TOOL_NAMES};
+        use roko_core::tool::{ToolCategory, ToolSource};
+
+        let reg = StaticToolRegistry::new();
+
+        // All GitHub tools must be present.
+        let mut found = 0usize;
+        for name in &GITHUB_TOOL_NAMES {
+            let def = reg
+                .get(name)
+                .unwrap_or_else(|| panic!("GitHub tool '{name}' missing from catalog"));
+            assert_eq!(
+                def.category,
+                ToolCategory::Mcp,
+                "GitHub tool '{name}' must have category Mcp"
+            );
+            assert!(
+                matches!(&def.source, ToolSource::Mcp { server } if server == "roko-mcp-github"),
+                "GitHub tool '{name}' must have source Mcp {{ server: \"roko-mcp-github\" }}"
+            );
+            found += 1;
+        }
+        assert_eq!(
+            found, GITHUB_TOOL_COUNT,
+            "expected exactly {GITHUB_TOOL_COUNT} GitHub tools"
+        );
+
+        // Write tools must carry write permission.
+        let write_tools = [
+            "github.create_pr",
+            "github.comment_pr",
+            "github.review_pr",
+            "github.merge_pr",
+            "github.create_issue",
+            "github.comment_issue",
+            "github.close_issue",
+            "github.add_labels",
+            "github.create_label",
+            "github.create_branch",
+        ];
+        for name in write_tools {
+            let def = reg.get(name).unwrap_or_else(|| panic!("missing '{name}'"));
+            assert!(
+                def.permission.write,
+                "write tool '{name}' must have permission.write = true"
+            );
+        }
+
+        // Read-only tools must NOT carry write permission.
+        let read_tools = [
+            "github.list_prs",
+            "github.get_pr",
+            "github.list_issues",
+            "github.get_file",
+            "github.search_code",
+            "github.list_commits",
+            "github.get_branch",
+            "github.compare_branches",
+            "github.get_actions_status",
+        ];
+        for name in read_tools {
+            let def = reg.get(name).unwrap_or_else(|| panic!("missing '{name}'"));
+            assert!(
+                !def.permission.write,
+                "read tool '{name}' must have permission.write = false"
+            );
         }
     }
 }

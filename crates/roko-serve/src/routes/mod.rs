@@ -161,7 +161,10 @@ fn rate_limit_key(req: &Request<Body>) -> String {
     }
 
     // 4. Fall back to connected peer address (requires `ConnectInfo`).
-    if let Some(addr) = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+    if let Some(addr) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
         return format!("ip:{}", addr.0.ip());
     }
 
@@ -725,7 +728,11 @@ mod tests {
             .body(Body::empty())
             .expect("build request");
         let resp = app.clone().oneshot(req).await.expect("oneshot");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "POST /relay/agents");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST /relay/agents"
+        );
 
         // GET /relay/agents/ws (WS upgrade path) — unauthenticated → 401
         let (status, body) = get_json(&app, "/relay/agents/ws").await;
@@ -752,7 +759,11 @@ mod tests {
         // Without a relay URL configured, we expect 503 (not 401),
         // proving the auth layer was skipped.
         let (status, body) = get_json(&app, "/relay/health").await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "GET /relay/health without auth");
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GET /relay/health without auth"
+        );
         assert_eq!(body["code"], "agent_relay_not_configured");
     }
 

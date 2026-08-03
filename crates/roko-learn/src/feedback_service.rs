@@ -4,7 +4,7 @@
 //! existing learning infrastructure as append-only efficiency JSONL events.
 
 use crate::cascade_router::CascadeRouter;
-use crate::episode_logger::{Episode, EpisodeLogger, EpisodeGateVerdict, Usage};
+use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use crate::model_call_feedback::observe_model_call_on_router;
 use crate::section_effect::SectionEffectivenessRegistry;
 use async_trait::async_trait;

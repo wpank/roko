@@ -375,10 +375,7 @@ pub(crate) async fn cmd_deploy_railway(
         );
         // Generate a callback token so the control plane can verify worker callbacks.
         let callback_token = uuid::Uuid::new_v4().to_string();
-        worker_env.insert(
-            "ROKO_WORKER_CALLBACK_TOKEN".to_string(),
-            callback_token,
-        );
+        worker_env.insert("ROKO_WORKER_CALLBACK_TOKEN".to_string(), callback_token);
 
         let service_name = format!("roko-worker-{template_name}");
         let (_worker_dep, _) = backend

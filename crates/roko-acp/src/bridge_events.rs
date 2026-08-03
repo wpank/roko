@@ -5711,8 +5711,7 @@ mod tests {
         }
 
         // Send the event through an mpsc channel (simulating the real flow).
-        let (event_tx, mut event_rx) =
-            tokio::sync::mpsc::channel::<CognitiveEvent>(4);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<CognitiveEvent>(4);
         event_tx.send(event).await.expect("send event");
         drop(event_tx);
 
@@ -5742,6 +5741,9 @@ mod tests {
         drop(reply);
 
         // The receiver should get an error (fail-closed).
-        assert!(rx.await.is_err(), "dropped reply channel must produce RecvError");
+        assert!(
+            rx.await.is_err(),
+            "dropped reply channel must produce RecvError"
+        );
     }
 }

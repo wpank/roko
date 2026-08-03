@@ -139,9 +139,9 @@ pub(crate) async fn cmd_init(
         // to avoid schema-mixing in the engram store.
         let legacy = roko_dir.join("signals.jsonl");
         if legacy.exists() {
-            let content = tokio::fs::read_to_string(&legacy).await.with_context(|| {
-                format!("read legacy {}", legacy.display())
-            })?;
+            let content = tokio::fs::read_to_string(&legacy)
+                .await
+                .with_context(|| format!("read legacy {}", legacy.display()))?;
 
             let mut engram_lines = Vec::new();
             let mut kept_lines = Vec::new();
@@ -181,9 +181,7 @@ pub(crate) async fn cmd_init(
                 remainder.push('\n');
                 tokio::fs::write(&legacy, remainder.as_bytes())
                     .await
-                    .with_context(|| {
-                        format!("rewrite non-Engram rows to {}", legacy.display())
-                    })?;
+                    .with_context(|| format!("rewrite non-Engram rows to {}", legacy.display()))?;
             }
         } else {
             tokio::fs::write(&engrams_path, b"")

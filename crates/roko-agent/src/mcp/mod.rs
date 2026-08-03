@@ -20,8 +20,8 @@ pub use client::{
     McpToolResult, StdioTransport, Transport,
 };
 pub use config::{
-    McpConfig, McpServerConfig, McpTransportConfig, find_mcp_config, is_command_allowed,
-    sensitive_env_keys, DEFAULT_ALLOWED_COMMANDS, SENSITIVE_ENV_PATTERNS,
+    DEFAULT_ALLOWED_COMMANDS, McpConfig, McpServerConfig, McpTransportConfig,
+    SENSITIVE_ENV_PATTERNS, find_mcp_config, is_command_allowed, sensitive_env_keys,
 };
 pub use dedup::dedup_tools;
 pub use dynamic_registry::{DynamicToolRegistry, MergedToolRegistry};

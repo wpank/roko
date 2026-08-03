@@ -222,10 +222,7 @@ mod tests {
 
     #[test]
     fn vcg_payments_preserved_in_attribution() {
-        let payments = vec![
-            ("sec-a".to_string(), 0.15),
-            ("sec-b".to_string(), 0.08),
-        ];
+        let payments = vec![("sec-a".to_string(), 0.15), ("sec-b".to_string(), 0.08)];
         let attribution = CostAttribution::from_turn(
             "turn-5",
             100,

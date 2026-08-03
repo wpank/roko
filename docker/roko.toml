@@ -1,0 +1,46 @@
+# Docker/Railway default configuration for roko.
+#
+# Copied into /workspace/roko.toml at image build time by the Dockerfile.
+# Runtime behavior is configured via ROKO_* environment variables injected
+# by the deployment platform (see: roko config export --env railway).
+#
+# If a mounted workspace supplies its own roko.toml this file is overridden.
+# The start-railway script generates a fresh default when the file is absent
+# at startup, preserving that fallback path.
+
+schema_version = 2
+
+[project]
+name = "roko"
+root = "/workspace"
+
+[agent]
+# Provider resolved at runtime via ANTHROPIC_API_KEY / CLAUDE_API_KEY.
+# Override with ROKO_AGENT_DEFAULT_MODEL if a different model is preferred.
+default_model = "claude-sonnet-4-6"
+timeout_ms = 300000
+bare_mode = true
+
+[server]
+# Bind and port are overridden by ROKO_BIND / ROKO_PORT / PORT at startup.
+bind = "0.0.0.0"
+port = 6677
+
+[serve]
+auto_start = false
+# Public bind without auth is acknowledged for the container context.
+# Set serve.auth.enabled = true and serve.auth.api_key in production.
+acknowledge_public_risk = true
+
+[gates]
+clippy_enabled = true
+skip_tests = false
+
+[conductor]
+max_agents = 2
+
+[learning]
+auto_playbook_refresh = false
+
+[runner]
+max_parallel_tasks = 2

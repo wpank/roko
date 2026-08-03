@@ -371,11 +371,7 @@ pub async fn spawn_agent(
                 if !line.trim().is_empty() {
                     let line = stderr_scrubber.scrub(&line);
                     debug!(stderr = %line, "agent stderr");
-                    let _ = stderr_tx
-                        .send(AgentEvent::Error {
-                            message: line,
-                        })
-                        .await;
+                    let _ = stderr_tx.send(AgentEvent::Error { message: line }).await;
                 }
             }
         }))

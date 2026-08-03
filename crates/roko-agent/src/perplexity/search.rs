@@ -578,5 +578,4 @@ mod tests {
         let c = captured.lock().expect("lock").clone().expect("captured");
         assert_eq!(c.url, "https://api.perplexity.ai/search");
     }
-
 }

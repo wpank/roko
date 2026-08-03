@@ -40,6 +40,8 @@ pub const ROKO_LLM_REQUEST_DURATION_SECONDS: &str = "roko_llm_request_duration_s
 pub const ROKO_CONTEXT_UTILIZATION: &str = "roko_context_utilization";
 /// Output token throughput for the latest call (tokens/sec gauge), by provider and model.
 pub const ROKO_TOKEN_THROUGHPUT_PER_SECOND: &str = "roko_token_throughput_per_second";
+/// Size of the Rust target/ directory in bytes (gauge, periodically sampled).
+pub const ROKO_TARGET_DIR_SIZE_BYTES: &str = "roko_target_dir_size_bytes";
 
 /// Total number of plans observed, by status.
 pub const ROKO_PLANS_TOTAL: &str = "roko_plans_total";
@@ -217,6 +219,14 @@ pub const ROKO_TOKEN_THROUGHPUT_PER_SECOND_DESCRIPTOR: MetricDescriptor = Metric
     labels: &[LABEL_PROVIDER, LABEL_MODEL],
 };
 
+/// Canonical descriptor for `roko_target_dir_size_bytes`.
+pub const ROKO_TARGET_DIR_SIZE_BYTES_DESCRIPTOR: MetricDescriptor = MetricDescriptor {
+    name: ROKO_TARGET_DIR_SIZE_BYTES,
+    help: "Size of the Rust target/ directory in bytes",
+    kind: MetricKind::Gauge,
+    labels: &[],
+};
+
 /// Full canonical metric surface shared across the core registry and sidecars.
 pub const CANONICAL_METRICS: &[MetricDescriptor] = &[
     ROKO_PLANS_TOTAL_DESCRIPTOR,
@@ -234,6 +244,7 @@ pub const CANONICAL_METRICS: &[MetricDescriptor] = &[
     ROKO_LLM_REQUEST_DURATION_SECONDS_DESCRIPTOR,
     ROKO_CONTEXT_UTILIZATION_DESCRIPTOR,
     ROKO_TOKEN_THROUGHPUT_PER_SECOND_DESCRIPTOR,
+    ROKO_TARGET_DIR_SIZE_BYTES_DESCRIPTOR,
 ];
 
 #[cfg(test)]
@@ -276,7 +287,7 @@ mod tests {
 
     #[test]
     fn canonical_metrics_count_is_15() {
-        assert_eq!(CANONICAL_METRICS.len(), 15, "expected 15 canonical metrics");
+        assert_eq!(CANONICAL_METRICS.len(), 16, "expected 16 canonical metrics");
     }
 
     #[test]

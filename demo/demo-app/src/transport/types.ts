@@ -28,15 +28,14 @@ export type ServerEvent =
        description: string }
   | { type: 'task_completed'; plan_id: string; task_id: string;
        success: boolean }
-  | { type: 'task_failed'; plan_id: string; task_id: string; error: string;
-       gate_failure: boolean }
+  | { type: 'task_failed'; plan_id: string; task_id: string; error: string }
   // Agent lifecycle
   | { type: 'agent_spawned'; agent_id: string; role: string; model: string }
   | { type: 'agent_output'; agent_id: string; run_id?: string;
        content: string; done: boolean;
        metadata?: Record<string, unknown> }
   | { type: 'agent_trace'; agent_id: string; run_id?: string;
-       turn?: number; content?: string; tool_calls?: unknown[];
+       content: string; tool_calls?: unknown[];
        reasoning?: string; usage?: Record<string, unknown>; done?: boolean }
   | { type: 'agent_started'; agent_id: string }
   | { type: 'agent_stopped'; agent_id: string; reason: string }
@@ -44,18 +43,16 @@ export type ServerEvent =
   | { type: 'gate_result'; plan_id: string; task_id: string;
        gate: string; rung: number; passed: boolean }
   // Inference tracking
-  | { type: 'inference_started'; run_id: string; request_id: string; model: string;
+  | { type: 'inference_started'; request_id: string; model: string;
        agent_id: string; auto_routed: boolean }
-  | { type: 'inference_completed'; run_id: string; request_id: string; model: string;
+  | { type: 'inference_completed'; request_id: string; model: string;
        agent_id: string; input_tokens: number; output_tokens: number;
        cost_usd: number; duration_ms: number }
-  | { type: 'inference_failed'; run_id: string; request_id: string; model: string;
+  | { type: 'inference_failed'; request_id: string; model: string;
        agent_id: string; error: string }
   // One-shot runs
-  | { type: 'run_started'; run_id: string; prompt_preview: string;
-       complexity: string }
-  | { type: 'run_completed'; run_id: string; success: boolean;
-       cost_usd: number; duration_ms: number }
+  | { type: 'run_started'; run_id: string; prompt_preview: string }
+  | { type: 'run_completed'; run_id: string; success: boolean }
   // Knowledge
   | { type: 'knowledge_ingested'; run_id: string; entry_id: string; topic: string;
        source_agent: string }

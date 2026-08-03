@@ -661,6 +661,21 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 join_approval_tui_thread(approval_tui_handle.take());
                 let v2_report = v2_result?;
 
+                // Dump the metric registry to Prometheus exposition format
+                // so post-mortem operators (or a scrape sidecar) can read it.
+                // Best-effort: a failed write must not fail the run.
+                {
+                    let metrics_dir = layout.root().join("metrics");
+                    let _ = std::fs::create_dir_all(&metrics_dir).map_err(|e| {
+                        tracing::debug!("create metrics dir: {e}");
+                    });
+                    let prom = metrics.render_prometheus();
+                    let _ =
+                        std::fs::write(metrics_dir.join("prometheus.txt"), &prom).map_err(|e| {
+                            tracing::debug!("write prometheus.txt: {e}");
+                        });
+                }
+
                 if cli.json {
                     println!(
                         "{}",

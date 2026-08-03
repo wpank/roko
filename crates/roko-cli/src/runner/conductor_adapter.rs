@@ -9,9 +9,14 @@
 //! Only events that at least one conductor watcher consumes are mapped;
 //! everything else returns `None` to avoid ring buffer churn.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 use roko_core::{Body, Engram, Kind};
 
 use super::types::{AgentEvent, RunnerEvent};
+use crate::runtime_feedback::{FeedbackEvent, FeedbackSink};
 
 // ─── Tag key constants ──────────────────────────────────────────────────
 //
@@ -242,6 +247,252 @@ pub fn agent_event_to_engram(
         // MessageDelta, ToolCall, ToolOutput, TokenUsage, SystemInit,
         // Error, Exited — no watcher consumes these.
         _ => None,
+    }
+}
+
+// ─── Bounded conductor ring ─────────────────────────────────────────────
+
+/// Default capacity for the conductor ring buffer.
+const DEFAULT_RING_CAPACITY: usize = 512;
+
+/// A bounded ring buffer of [`Engram`]s consumed by the conductor's
+/// evaluation pipeline.
+///
+/// The ring uses drop-oldest (`pop_front`) semantics when the capacity is
+/// reached. All operations are synchronous behind a [`Mutex`]; callers
+/// must never hold the lock across `.await` points.
+#[derive(Debug, Clone)]
+pub struct ConductorRing {
+    inner: Arc<Mutex<VecDeque<Engram>>>,
+    capacity: usize,
+}
+
+impl ConductorRing {
+    /// Create a ring with the default capacity (512).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_RING_CAPACITY)
+    }
+
+    /// Create a ring with a custom capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "conductor ring capacity must be > 0");
+        Self {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            capacity,
+        }
+    }
+
+    /// Push an engram into the ring, dropping the oldest entry if full.
+    ///
+    /// Returns `true` if the push succeeded (always, unless the lock is
+    /// poisoned, in which case we silently drop the engram).
+    pub fn push(&self, engram: Engram) -> bool {
+        let Ok(mut ring) = self.inner.lock() else {
+            // Poisoned lock — best-effort: silently drop.
+            tracing::warn!("conductor ring lock poisoned; dropping engram");
+            return false;
+        };
+        if ring.len() >= self.capacity {
+            ring.pop_front();
+        }
+        ring.push_back(engram);
+        true
+    }
+
+    /// Snapshot the current contents as a `Vec<Engram>` for conductor
+    /// evaluation.
+    ///
+    /// Does **not** drain the ring — the same engrams remain available
+    /// for subsequent snapshots until overwritten by newer entries.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<Engram> {
+        let Ok(ring) = self.inner.lock() else {
+            tracing::warn!("conductor ring lock poisoned; returning empty snapshot");
+            return Vec::new();
+        };
+        ring.iter().cloned().collect()
+    }
+
+    /// Number of engrams currently in the ring.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.lock().map(|r| r.len()).unwrap_or(0)
+    }
+
+    /// Whether the ring is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The configured capacity of this ring.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl Default for ConductorRing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ─── FeedbackEvent -> Engram mapping ────────────────────────────────────
+
+/// Convert a [`FeedbackEvent`] into an [`Engram`] suitable for the
+/// conductor's evaluation pipeline.
+///
+/// This is the feedback-vocabulary counterpart of [`runner_event_to_engram`]
+/// and [`agent_event_to_engram`]. It maps the provider-neutral
+/// [`FeedbackEvent`] variants into the same tag layout the conductor
+/// watchers expect. Returns `None` for events no watcher consumes.
+#[must_use]
+pub fn feedback_event_to_engram(event: &FeedbackEvent) -> Option<Engram> {
+    match event {
+        FeedbackEvent::TurnCompleted {
+            plan_id,
+            task_id,
+            cost_usd,
+            ..
+        } => {
+            // Map to the ghost-turn signal schema the GhostTurnWatcher
+            // expects. We emit all turns; the watcher classifies
+            // ghost-vs-productive.
+            let body = Body::from_json(&serde_json::json!({
+                "plan_id": plan_id,
+                "task": task_id,
+                "role": "Agent",
+                "model": "",
+                "cost_usd": cost_usd,
+                "duration_ms": 0,
+                "changed_files_before": [],
+                "changed_files_after": [],
+                "net_new_changes": 0,
+                "output_meaningful": true,
+                "wasted_cost": false,
+            }))
+            .ok()?;
+
+            Some(
+                Engram::builder(Kind::Custom(GHOST_TURN_KIND.into()))
+                    .body(body)
+                    .tag(PLAN_ID_TAG, plan_id.as_str())
+                    .tag(TASK_TAG, task_id.as_str())
+                    .build(),
+            )
+        }
+
+        FeedbackEvent::GateOutcome {
+            plan_id,
+            task_id,
+            rung,
+            passed,
+            duration_ms,
+        } => {
+            let body = Body::from_json(&serde_json::json!({
+                "plan_id": plan_id,
+                "task": task_id,
+                "rung": rung,
+                "passed": passed,
+                "duration_ms": duration_ms,
+            }))
+            .ok()?;
+
+            Some(
+                Engram::builder(Kind::GateVerdict)
+                    .body(body)
+                    .tag(PLAN_ID_TAG, plan_id.as_str())
+                    .tag(TASK_TAG, task_id.as_str())
+                    .tag(SEVERITY_TAG, if *passed { "info" } else { "error" })
+                    .build(),
+            )
+        }
+
+        FeedbackEvent::PlanCompleted {
+            plan_id,
+            succeeded,
+            total_cost_usd,
+            ..
+        } => {
+            let mut builder = Engram::builder(Kind::PlanPhase)
+                .body(Body::text(if *succeeded { "completed" } else { "failed" }))
+                .tag(PLAN_ID_TAG, plan_id.as_str())
+                .tag("phase", if *succeeded { "completed" } else { "failed" })
+                .tag("cost_usd", format!("{total_cost_usd:.4}"));
+
+            // Also emit a cost metric for CostOverrunWatcher.
+            if *total_cost_usd > 0.0 {
+                builder = builder
+                    .tag(METRIC_NAME_TAG, "plan_cost")
+                    .tag(METRIC_VALUE_TAG, format!("{total_cost_usd:.4}"));
+            }
+
+            Some(builder.build())
+        }
+
+        // TaskCompleted, RetryDecision, IdleTick — no watcher consumes
+        // these directly from the feedback vocabulary. The runner
+        // path emits the corresponding RunnerEvent-based engrams.
+        _ => None,
+    }
+}
+
+// ─── ConductorRingSink ──────────────────────────────────────────────────
+
+/// A [`FeedbackSink`] decorator that converts [`FeedbackEvent`]s into
+/// conductor [`Engram`]s via [`feedback_event_to_engram`] and pushes
+/// them into a shared [`ConductorRing`].
+///
+/// The sink is best-effort: a poisoned lock or full ring never aborts
+/// the facade fan-out.
+#[derive(Debug, Clone)]
+pub struct ConductorRingSink {
+    ring: ConductorRing,
+}
+
+impl ConductorRingSink {
+    /// Construct a sink that pushes into the given ring.
+    #[must_use]
+    pub fn new(ring: ConductorRing) -> Self {
+        Self { ring }
+    }
+
+    /// Access the underlying ring (e.g. for snapshot by the conductor
+    /// evaluation loop).
+    #[must_use]
+    pub fn ring(&self) -> &ConductorRing {
+        &self.ring
+    }
+}
+
+#[async_trait]
+impl FeedbackSink for ConductorRingSink {
+    fn name(&self) -> &'static str {
+        "conductor_ring"
+    }
+
+    fn interested(&self, event: &FeedbackEvent) -> bool {
+        // Only forward events that produce an Engram.
+        matches!(
+            event,
+            FeedbackEvent::TurnCompleted { .. }
+                | FeedbackEvent::GateOutcome { .. }
+                | FeedbackEvent::PlanCompleted { .. }
+        )
+    }
+
+    async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
+        if let Some(engram) = feedback_event_to_engram(event) {
+            self.ring.push(engram);
+        }
+        Ok(())
     }
 }
 
@@ -570,5 +821,259 @@ mod tests {
         assert_eq!(engram.kind, Kind::AgentOutput);
         assert_eq!(engram.tag(MODEL_TAG), Some("claude-sonnet-4-6"));
         assert_eq!(engram.tag(PROVIDER_TAG), Some("anthropic"));
+    }
+
+    // ── ConductorRing tests ─────────────────────────────────────────────
+
+    #[test]
+    fn conductor_ring_basic_push_and_snapshot() {
+        let ring = ConductorRing::with_capacity(4);
+        assert!(ring.is_empty());
+        assert_eq!(ring.len(), 0);
+
+        let engram = Engram::builder(Kind::Metric)
+            .body(Body::text("test"))
+            .build();
+        assert!(ring.push(engram));
+
+        assert_eq!(ring.len(), 1);
+        assert!(!ring.is_empty());
+
+        let snap = ring.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].kind, Kind::Metric);
+    }
+
+    #[test]
+    fn conductor_ring_enforces_bound_with_drop_oldest() {
+        let ring = ConductorRing::with_capacity(3);
+
+        // Push 5 engrams into a ring of capacity 3.
+        for i in 0..5 {
+            let engram = Engram::builder(Kind::Metric)
+                .body(Body::text(format!("item-{i}")))
+                .tag("idx", format!("{i}"))
+                .build();
+            ring.push(engram);
+        }
+
+        // Ring should contain only the last 3.
+        assert_eq!(ring.len(), 3);
+        let snap = ring.snapshot();
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap[0].tag("idx"), Some("2"), "oldest surviving = idx 2");
+        assert_eq!(snap[1].tag("idx"), Some("3"));
+        assert_eq!(snap[2].tag("idx"), Some("4"), "newest = idx 4");
+    }
+
+    #[test]
+    fn conductor_ring_snapshot_does_not_drain() {
+        let ring = ConductorRing::with_capacity(8);
+        let engram = Engram::builder(Kind::PlanPhase)
+            .body(Body::text("started"))
+            .build();
+        ring.push(engram);
+
+        // Snapshot twice — both should return the same content.
+        let snap1 = ring.snapshot();
+        let snap2 = ring.snapshot();
+        assert_eq!(snap1.len(), 1);
+        assert_eq!(snap2.len(), 1);
+        assert_eq!(ring.len(), 1);
+    }
+
+    #[test]
+    fn conductor_ring_default_capacity() {
+        let ring = ConductorRing::new();
+        assert_eq!(ring.capacity(), DEFAULT_RING_CAPACITY);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be > 0")]
+    fn conductor_ring_zero_capacity_panics() {
+        let _ring = ConductorRing::with_capacity(0);
+    }
+
+    // ── FeedbackEvent -> Engram mapping tests ───────────────────────────
+
+    #[test]
+    fn feedback_turn_completed_maps_to_ghost_turn() {
+        let event = FeedbackEvent::TurnCompleted {
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            attempt: 1,
+            tokens_in: 100,
+            tokens_out: 50,
+            cost_usd: 0.003,
+        };
+        let engram = feedback_event_to_engram(&event).expect("should map");
+        assert!(matches!(engram.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
+        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(engram.tag(TASK_TAG), Some("task-1"));
+    }
+
+    #[test]
+    fn feedback_gate_outcome_maps_to_gate_verdict() {
+        let pass = FeedbackEvent::GateOutcome {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            rung: 2,
+            passed: true,
+            duration_ms: 300,
+        };
+        let engram = feedback_event_to_engram(&pass).expect("should map");
+        assert_eq!(engram.kind, Kind::GateVerdict);
+        assert_eq!(engram.tag(SEVERITY_TAG), Some("info"));
+
+        let fail = FeedbackEvent::GateOutcome {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            rung: 1,
+            passed: false,
+            duration_ms: 500,
+        };
+        let engram = feedback_event_to_engram(&fail).expect("should map");
+        assert_eq!(engram.tag(SEVERITY_TAG), Some("error"));
+    }
+
+    #[test]
+    fn feedback_plan_completed_maps_to_plan_phase() {
+        let event = FeedbackEvent::PlanCompleted {
+            plan_id: "plan-1".into(),
+            succeeded: true,
+            tasks_completed: 5,
+            tasks_failed: 0,
+            total_cost_usd: 1.234,
+        };
+        let engram = feedback_event_to_engram(&event).expect("should map");
+        assert_eq!(engram.kind, Kind::PlanPhase);
+        assert_eq!(engram.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(engram.tag("phase"), Some("completed"));
+    }
+
+    #[test]
+    fn feedback_idle_tick_returns_none() {
+        let event = FeedbackEvent::IdleTick {
+            ticks_since_last_work: 5,
+        };
+        assert!(feedback_event_to_engram(&event).is_none());
+    }
+
+    // ── ConductorRingSink tests ─────────────────────────────────────────
+
+    use crate::runtime_feedback::FeedbackSink;
+
+    #[test]
+    fn conductor_ring_sink_interested_filters_correctly() {
+        let ring = ConductorRing::new();
+        let sink = ConductorRingSink::new(ring);
+
+        assert!(sink.interested(&FeedbackEvent::TurnCompleted {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            attempt: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: 0.0,
+        }));
+        assert!(sink.interested(&FeedbackEvent::GateOutcome {
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            rung: 1,
+            passed: true,
+            duration_ms: 0,
+        }));
+        assert!(sink.interested(&FeedbackEvent::PlanCompleted {
+            plan_id: "p".into(),
+            succeeded: true,
+            tasks_completed: 1,
+            tasks_failed: 0,
+            total_cost_usd: 0.0,
+        }));
+        assert!(!sink.interested(&FeedbackEvent::IdleTick {
+            ticks_since_last_work: 1,
+        }));
+    }
+
+    #[tokio::test]
+    async fn conductor_ring_sink_pushes_engrams() {
+        let ring = ConductorRing::with_capacity(16);
+        let sink = ConductorRingSink::new(ring.clone());
+
+        let event = FeedbackEvent::TurnCompleted {
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            attempt: 1,
+            tokens_in: 100,
+            tokens_out: 50,
+            cost_usd: 0.005,
+        };
+        sink.on_event(&event).await.unwrap();
+
+        assert_eq!(ring.len(), 1);
+        let snap = ring.snapshot();
+        assert!(matches!(snap[0].kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
+    }
+
+    #[tokio::test]
+    async fn conductor_ring_sink_many_events_capped() {
+        let ring = ConductorRing::with_capacity(4);
+        let sink = ConductorRingSink::new(ring.clone());
+
+        // Push 10 events into a ring of capacity 4.
+        for i in 0..10 {
+            let event = FeedbackEvent::GateOutcome {
+                plan_id: format!("plan-{i}"),
+                task_id: "t".into(),
+                rung: 1,
+                passed: i % 2 == 0,
+                duration_ms: 100,
+            };
+            sink.on_event(&event).await.unwrap();
+        }
+
+        // Ring should be non-empty and capped at 4.
+        assert!(!ring.is_empty());
+        assert_eq!(ring.len(), 4);
+        let snap = ring.snapshot();
+        assert_eq!(snap.len(), 4);
+        // Oldest surviving should be plan-6 (items 6,7,8,9).
+        assert_eq!(snap[0].tag(PLAN_ID_TAG), Some("plan-6"));
+        assert_eq!(snap[3].tag(PLAN_ID_TAG), Some("plan-9"));
+    }
+
+    #[tokio::test]
+    async fn conductor_ring_sink_never_aborts_facade_fanout() {
+        // The sink must always return Ok even under stress.
+        let ring = ConductorRing::with_capacity(2);
+        let sink = ConductorRingSink::new(ring);
+
+        for _ in 0..100 {
+            let event = FeedbackEvent::TurnCompleted {
+                plan_id: "p".into(),
+                task_id: "t".into(),
+                attempt: 0,
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+            };
+            let result = sink.on_event(&event).await;
+            assert!(result.is_ok(), "sink must never error");
+        }
+    }
+
+    #[tokio::test]
+    async fn conductor_ring_sink_skips_unmapped_events() {
+        let ring = ConductorRing::with_capacity(8);
+        let sink = ConductorRingSink::new(ring.clone());
+
+        // IdleTick does not map to an engram.
+        let event = FeedbackEvent::IdleTick {
+            ticks_since_last_work: 5,
+        };
+        sink.on_event(&event).await.unwrap();
+
+        // Ring should remain empty.
+        assert!(ring.is_empty());
     }
 }

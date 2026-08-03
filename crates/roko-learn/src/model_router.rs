@@ -1360,7 +1360,6 @@ impl LinUCBRouter {
     /// Each arm's `a_matrix` (dim x dim) is flattened row-major into a single
     /// `Vec<f64>`. The snapshot can later be restored via
     /// [`import_linucb_snapshot`](Self::import_linucb_snapshot).
-    #[allow(dead_code)] // Wired by E07-T02
     pub(crate) fn export_linucb_snapshot(&self) -> LinUCBSnapshot {
         let state = self.state.read();
         let mut a_matrices = Vec::with_capacity(state.arms.len());
@@ -1393,7 +1392,6 @@ impl LinUCBRouter {
     /// Arms are matched by index. If the snapshot has fewer arms, a different
     /// dimensionality, or a mismatched row length, the affected arm is left
     /// at its constructed default (identity A, zero b).
-    #[allow(dead_code)] // Wired by E07-T02
     pub(crate) fn import_linucb_snapshot(&self, snap: &LinUCBSnapshot) {
         if snap.dim != CONTEXT_DIM {
             // Dimensionality mismatch — leave all arms at their defaults.

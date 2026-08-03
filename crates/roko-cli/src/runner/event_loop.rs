@@ -1019,6 +1019,8 @@ struct RunContext<'a> {
     /// E07-T04: Knowledge IDs per attempt key — populated at dispatch,
     /// consumed on gate terminal to reinforce entries via KnowledgeStore.
     task_knowledge_ids: &'a mut HashMap<String, Vec<String>>,
+    /// E05-T08: Verdict publisher for emitting Kind::GateVerdict engrams.
+    verdict_publisher: &'a roko_gate::VerdictPublisher,
 }
 
 fn default_runner_worktree_manager(workdir: &Path) -> WorktreeManager {
@@ -1389,6 +1391,31 @@ pub async fn run(
     let (gate_tx, mut gate_rx) = mpsc::channel::<GateCompletion>(gate_buffer);
     let sink = config.output_sink.as_ref();
 
+    // E05-T08: Create a VerdictPublisher that graduates Pulse → Engram and
+    // appends the result to engrams.jsonl. This replaces the ad-hoc JSON
+    // append to gate-verdicts.jsonl with canonical Kind::GateVerdict engrams
+    // that dashboard and query paths can consume.
+    let engrams_path = config.layout.engrams_path();
+    let verdict_publisher = {
+        let path = engrams_path.clone();
+        roko_gate::VerdictPublisher::new(Arc::new(move |pulse: roko_core::Pulse| {
+            let engram = pulse.graduate(
+                roko_core::Provenance::trusted("runner/gate"),
+                roko_core::Score::default(),
+            );
+            if let Ok(line) = serde_json::to_string(&engram) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+        }))
+    };
+
     // -- Warm cargo cache -------------------------------------------------------
     // Run `cargo check --workspace` once before the main loop so that
     // subsequent per-task compile gates are incremental (2-5s vs 30-120s).
@@ -1576,6 +1603,20 @@ pub async fn run(
 
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
+    let mut target_size_interval = interval(Duration::from_secs(60));
+    // Register a gauge for the target/ directory size if the metric
+    // registry is available. The gauge is updated on a slow interval
+    // (60 s) to avoid walking the potentially large directory tree on
+    // every tick.
+    let target_dir_size_gauge: Option<roko_core::obs::metrics::Gauge> =
+        config.metrics.as_ref().map(|m| {
+            m.register_gauge(
+                roko_core::obs::schema::ROKO_TARGET_DIR_SIZE_BYTES,
+                "Size of the Rust target/ directory in bytes",
+                roko_core::obs::metrics::LabelSet::new(),
+            )
+        });
+    let target_dir_path = config.workdir.join("target");
     let plan_timeout_duration = plan_total_timeout(&config);
     let agent_timeout_duration = agent_dispatch_timeout(&config);
     let timeout_config = config
@@ -1743,6 +1784,7 @@ pub async fn run(
         //   Branch 2 (gate_rx.recv):  cancel-safe — mpsc::Receiver::recv drops no data.
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
+        //   Branch 4b (target_size_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
         tokio::select! {
@@ -2811,7 +2853,11 @@ pub async fn run(
                     },
                 );
 
-                // Append gate verdict to gate-verdicts.jsonl for audit / replay.
+                // E05-T08: Live gate verdicts are now published as
+                // Kind::GateVerdict engrams via VerdictPublisher (wired
+                // into gate_dispatch::run_gate_once). The canonical path
+                // is engrams.jsonl. Legacy gate-verdicts.jsonl retained
+                // for backward-compatible tooling.
                 {
                     let verdict_json = serde_json::json!({
                         "kind": "GateVerdict",
@@ -3641,6 +3687,7 @@ pub async fn run(
                         section_diagnostics: &mut section_diagnostics,
                         task_playbook_ids: &mut task_playbook_ids,
                         task_knowledge_ids: &mut task_knowledge_ids,
+                        verdict_publisher: &verdict_publisher,
                     };
                     let dispatch_outcome = dispatch_action(&action, &mut ctx).await;
                     let dispatch_ms = t_dispatch.elapsed().as_millis() as u64;
@@ -3711,6 +3758,14 @@ pub async fn run(
                     if !pids.is_empty() {
                         let _ = persist::save_agent_pids(&paths, &pids);
                     }
+                }
+            }
+
+            // ─── Branch 4b: Target directory size gauge ─────────────
+            _ = target_size_interval.tick() => {
+                if let Some(ref gauge) = target_dir_size_gauge {
+                    let size = compute_target_dir_size_bytes(&target_dir_path).await;
+                    gauge.set(size as i64);
                 }
             }
 
@@ -6756,6 +6811,8 @@ async fn dispatch_action(
                         ctx.gate_tx.clone(),
                         ctx.gate_sem.clone(),
                         task_target_crates(Some(task_def)),
+                        Some(ctx.verdict_publisher.clone()),
+                        gate_dispatch::GateTaskContext::from_task_def(plan_id, Some(task_def)),
                     );
                     let AgentRuntimeResource::AwaitingGate { permit } = gate_claim
                         .replace_resource(AgentRuntimeResource::AwaitingGate { permit: None })
@@ -7715,6 +7772,8 @@ async fn dispatch_action(
                     ctx.gate_tx.clone(),
                     ctx.gate_sem.clone(),
                     target_crates,
+                    Some(ctx.verdict_publisher.clone()),
+                    gate_dispatch::GateTaskContext::from_task_def(plan_id, task_def),
                 )
             };
             let AgentRuntimeResource::AwaitingGate { permit } =
@@ -11782,6 +11841,48 @@ fn now_unix_ms() -> i64 {
         .map_or(0_i64, |d| d.as_millis() as i64)
 }
 
+/// Compute the total size of the `target/` directory in bytes.
+///
+/// Best-effort: returns 0 if the directory does not exist or cannot be
+/// read. Individual unreadable entries are silently skipped. This walks
+/// the full directory tree, so it should only be called on a slow
+/// interval (60 s+) — never on every event-loop tick.
+async fn compute_target_dir_size_bytes(target_dir: &Path) -> u64 {
+    let Ok(mut entries) = tokio::fs::read_dir(target_dir).await else {
+        return 0;
+    };
+    let mut total = 0u64;
+    let mut stack: Vec<PathBuf> = Vec::new();
+    // Seed with top-level entries.
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(meta) = entry.metadata().await else {
+            continue;
+        };
+        if meta.is_dir() {
+            stack.push(entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    // Walk subdirectories iteratively.
+    while let Some(dir) = stack.pop() {
+        let Ok(mut sub_entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = sub_entries.next_entry().await {
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12364,6 +12465,7 @@ slug = "fixture-model"
         let mut playbooks = HashMap::new();
         let mut knowledge_ids = HashMap::new();
         let task_capacity = TaskCapacity::new(1, [("plan", 1)]);
+        let test_verdict_publisher = roko_gate::VerdictPublisher::new(Arc::new(|_pulse| {}));
         let mut ctx = RunContext {
             executor: &mut executor,
             task_dag: &mut task_dag,
@@ -12394,6 +12496,7 @@ slug = "fixture-model"
             section_diagnostics: &mut diagnostics,
             task_playbook_ids: &mut playbooks,
             task_knowledge_ids: &mut knowledge_ids,
+            verdict_publisher: &test_verdict_publisher,
         };
         let action = ExecutorAction::SpawnAgent {
             plan_id: "plan".to_string(),

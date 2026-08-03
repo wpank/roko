@@ -27,6 +27,6 @@ pub use roko_runtime::heartbeat_probes::{
     BuildResult, EngineState, HeartbeatProbe, HeartbeatProbeRegistry, MacdSnapshot, ProbeDomain,
     ProbeResult, ProbeResults,
 };
-pub use lens::{Lens, LensScope, LensSnapshot};
+pub use lens::{CollectorLens, Lens, LensScope, LensSnapshot};
 pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
 pub use scrub::{LogScrubber, REDACTED};

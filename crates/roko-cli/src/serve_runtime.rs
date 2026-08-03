@@ -32,6 +32,9 @@ pub struct RokoCliRuntime {
     config: Config,
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
+    /// Shared metric registry from AppState so serve-launched runs increment
+    /// counters visible on the live `/metrics` endpoint.
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     // Lazily bound to the workspace used by the first bench task that needs it.
     knowledge_store: OnceLock<KnowledgeStore>,
     // Lazily bound to the workspace used by the first bench task that earns a playbook.
@@ -50,10 +53,24 @@ impl RokoCliRuntime {
         repo_registry: RepoRegistry,
         state_hub: SharedStateHub,
     ) -> Self {
+        Self::new_with_state_hub_and_metrics(config, repo_registry, state_hub, Default::default())
+    }
+
+    /// Like [`Self::new_with_state_hub`] but also threads a shared
+    /// [`MetricRegistry`] so serve-launched runner plans increment counters
+    /// visible on the live `/metrics` endpoint.
+    #[must_use]
+    pub fn new_with_state_hub_and_metrics(
+        config: Config,
+        repo_registry: RepoRegistry,
+        state_hub: SharedStateHub,
+        metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    ) -> Self {
         Self {
             config,
             repo_registry,
             state_hub,
+            metrics,
             knowledge_store: OnceLock::new(),
             playbook_store: OnceLock::new(),
         }
@@ -208,8 +225,16 @@ impl CliRuntime for RokoCliRuntime {
         let config = self.config.clone();
         let repo_registry = self.repo_registry.clone();
         let state_hub = self.state_hub.clone();
+        let metrics = self.metrics.clone();
         tokio::task::spawn_blocking(move || {
-            run_plan_on_local_runtime(workdir, plan_target, config, repo_registry, state_hub)
+            run_plan_on_local_runtime(
+                workdir,
+                plan_target,
+                config,
+                repo_registry,
+                state_hub,
+                metrics,
+            )
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
@@ -282,6 +307,7 @@ fn run_plan_on_local_runtime(
     config: Config,
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 ) -> anyhow::Result<PlanExecutionResult> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -297,7 +323,8 @@ fn run_plan_on_local_runtime(
             .map(|plan| plan.id.clone())
             .collect::<BTreeSet<_>>();
         let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
-        let run_config = build_runner_config(&workdir, &execution_root, &config, roko_config);
+        let run_config =
+            build_runner_config(&workdir, &execution_root, &config, roko_config, metrics);
         let events_offset = runner_events_offset(&workdir);
         let cancel = tokio_util::sync::CancellationToken::new();
 
@@ -529,6 +556,7 @@ fn build_runner_config(
     plan_dir: &Path,
     cli_config: &Config,
     roko_config: RokoConfig,
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 ) -> crate::runner::RunConfig {
     let model = non_empty_string(&roko_config.agent.default_model)
         .or_else(|| cli_config.agent.model.clone())
@@ -627,7 +655,7 @@ fn build_runner_config(
         http_event_sink: None,
         output_sink: Arc::new(crate::runner::output_sink::NoopSink),
         warm_cache: true,
-        metrics: None,
+        metrics,
         obs_sinks: None,
     }
 }

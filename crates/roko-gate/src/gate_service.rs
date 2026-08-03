@@ -47,18 +47,9 @@ impl GateService {
         self
     }
 
-    /// Map a gate name to its rung index.
+    /// Map a gate name to its gate-service rung index via the shared registry.
     fn rung_for_name(name: &str) -> Option<u8> {
-        match name {
-            "compile" | "compile:cargo" => Some(0),
-            "clippy" | "clippy:cargo" => Some(1),
-            "test" | "test:cargo" => Some(2),
-            "diff" | "diff:git" => Some(3),
-            "fmt" | "fmt:cargo" | "format" => Some(4),
-            "custom" | "custom:shell" | "shell" => Some(5),
-            "judge" | "llm-judge" => Some(6),
-            _ => None,
-        }
+        crate::registry::GateRegistry::new().rung_for_name(name)
     }
 
     /// Map a gate name to a concrete gate implementation.

@@ -147,6 +147,8 @@ pub mod project;
 pub mod provenance;
 pub mod pulse;
 pub mod query;
+/// Shared retention policy type for all data-management subsystems.
+pub mod retention;
 pub mod runtime_event;
 pub mod score;
 pub mod secrets;

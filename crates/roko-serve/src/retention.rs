@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Retention policy for a single observability artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetentionPolicy {
+pub struct ArtifactRetentionPolicy {
     /// Artifact name (e.g., "episodes.jsonl", "efficiency.jsonl").
     pub artifact: String,
     /// Path relative to `.roko/`.
@@ -112,58 +112,58 @@ pub enum ActionKind {
 /// Return the default retention policies covering all standard observability
 /// artifacts under `.roko/`.
 #[must_use]
-pub fn default_retention_policies() -> Vec<RetentionPolicy> {
+pub fn default_retention_policies() -> Vec<ArtifactRetentionPolicy> {
     vec![
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "episodes.jsonl".into(),
             path: "episodes.jsonl".into(),
             max_age_hours: 168, // 1 week
             max_size_bytes: 50 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 10_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "engrams.jsonl".into(),
             path: "engrams.jsonl".into(),
             max_age_hours: 168,
             max_size_bytes: 100 * 1024 * 1024,
             strategy: CompactionStrategy::Rotate,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/efficiency.jsonl".into(),
             path: "learn/efficiency.jsonl".into(),
             max_age_hours: 720, // 30 days
             max_size_bytes: 20 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 5_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/c-factor.jsonl".into(),
             path: "learn/c-factor.jsonl".into(),
             max_age_hours: 720,
             max_size_bytes: 10 * 1024 * 1024,
             strategy: CompactionStrategy::TailKeep { entries: 1_000 },
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/cascade-router.json".into(),
             path: "learn/cascade-router.json".into(),
             max_age_hours: 0, // no rotation
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/experiments.json".into(),
             path: "learn/experiments.json".into(),
             max_age_hours: 0,
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "learn/gate-thresholds.json".into(),
             path: "learn/gate-thresholds.json".into(),
             max_age_hours: 0,
             max_size_bytes: 0,
             strategy: CompactionStrategy::Manual,
         },
-        RetentionPolicy {
+        ArtifactRetentionPolicy {
             artifact: "task-outputs/*".into(),
             path: "task-outputs".into(),
             max_age_hours: 336, // 2 weeks
@@ -445,7 +445,7 @@ pub fn export_postmortem(workdir: &Path, output: &Path) -> anyhow::Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetentionStatus {
     /// Current retention policies.
-    pub policies: Vec<RetentionPolicy>,
+    pub policies: Vec<ArtifactRetentionPolicy>,
     /// Any policy violations detected.
     pub violations: Vec<RetentionViolation>,
 }
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn retention_policy_serializes_roundtrip() {
-        let policy = RetentionPolicy {
+        let policy = ArtifactRetentionPolicy {
             artifact: "episodes.jsonl".into(),
             path: "episodes.jsonl".into(),
             max_age_hours: 168,
@@ -632,7 +632,7 @@ mod tests {
             strategy: CompactionStrategy::TailKeep { entries: 10_000 },
         };
         let json = serde_json::to_string(&policy).unwrap();
-        let parsed: RetentionPolicy = serde_json::from_str(&json).unwrap();
+        let parsed: ArtifactRetentionPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.artifact, "episodes.jsonl");
         assert_eq!(parsed.max_age_hours, 168);
     }

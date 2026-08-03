@@ -1588,7 +1588,7 @@ pub enum GateType {
     ///
     /// This is the default variant. Use it for gates that don't fit the four
     /// built-in categories (Compile, Semantic, Quality, Safety). When
-    /// constructing a [`GateVerdict`] for a custom gate, set `gate` to
+    /// constructing a [`ChainGateVerdict`] for a custom gate, set `gate` to
     /// `GateType::Custom` and rely on the verdict's `details` field to carry
     /// the gate-specific context.
     #[default]
@@ -1597,7 +1597,7 @@ pub enum GateType {
 
 /// Deferred gate verdict referenced by futures delivery records.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GateVerdict {
+pub struct ChainGateVerdict {
     /// Verify that produced the verdict.
     pub gate: GateType,
     /// Whether the gate passed.

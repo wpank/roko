@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Utc};
 use roko_core::PadVector;
-use roko_learn::episode_logger::{Episode, GateVerdict};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -455,7 +455,7 @@ fn episode_signature(episode: &Episode) -> u64 {
     episode.trigger_kind.hash(&mut hasher);
     episode.success.hash(&mut hasher);
     episode.failure_reason.hash(&mut hasher);
-    for GateVerdict {
+    for EpisodeGateVerdict {
         gate,
         passed,
         signature,
@@ -550,7 +550,7 @@ mod tests {
         failure_reason: Option<&str>,
         minutes_ago: i64,
         tokens_used: u64,
-        gate_verdicts: Vec<GateVerdict>,
+        gate_verdicts: Vec<EpisodeGateVerdict>,
     ) -> Episode {
         let timestamp = Utc::now() - chrono::Duration::minutes(minutes_ago);
         let mut episode = Episode::new("agent", task_id);
@@ -579,8 +579,8 @@ mod tests {
                 10,
                 1_000,
                 vec![
-                    GateVerdict::new("compile", true),
-                    GateVerdict::new("test", true),
+                    EpisodeGateVerdict::new("compile", true),
+                    EpisodeGateVerdict::new("test", true),
                 ],
             ),
             episode(
@@ -591,7 +591,7 @@ mod tests {
                 None,
                 10,
                 100,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
             episode(
                 "c",
@@ -601,7 +601,7 @@ mod tests {
                 None,
                 10,
                 100,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
         ];
         let policy = DreamReplayPolicy {
@@ -646,7 +646,7 @@ mod tests {
                 None,
                 30,
                 10,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
             episode(
                 "b",
@@ -656,7 +656,7 @@ mod tests {
                 Some("timeout"),
                 20,
                 10,
-                vec![GateVerdict::new("compile", false)],
+                vec![EpisodeGateVerdict::new("compile", false)],
             ),
             episode(
                 "c",
@@ -666,7 +666,7 @@ mod tests {
                 Some("timeout"),
                 10,
                 10,
-                vec![GateVerdict::new("compile", false)],
+                vec![EpisodeGateVerdict::new("compile", false)],
             ),
             episode(
                 "d",
@@ -676,7 +676,7 @@ mod tests {
                 None,
                 5,
                 10,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
         ];
         let policy = DreamReplayPolicy {
@@ -699,7 +699,7 @@ mod tests {
             Some("timeout"),
             5,
             20,
-            vec![GateVerdict::new("compile", false)],
+            vec![EpisodeGateVerdict::new("compile", false)],
         )];
         let policy = DreamReplayPolicy {
             mode: DreamReplayMode::Hypothetical,
@@ -724,7 +724,7 @@ mod tests {
                 None,
                 10,
                 1_000,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
             episode(
                 "b",
@@ -734,7 +734,7 @@ mod tests {
                 None,
                 10,
                 100,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
             episode(
                 "c",
@@ -744,7 +744,7 @@ mod tests {
                 None,
                 10,
                 100,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
         ];
         let policy = DreamReplayPolicy {
@@ -781,7 +781,7 @@ mod tests {
             None,
             10,
             100,
-            vec![GateVerdict::new("compile", true)],
+            vec![EpisodeGateVerdict::new("compile", true)],
         )];
         let policy = DreamReplayPolicy::default();
         let now = Utc::now();
@@ -802,7 +802,7 @@ mod tests {
                     None,
                     i * 5,
                     100,
-                    vec![GateVerdict::new("compile", true)],
+                    vec![EpisodeGateVerdict::new("compile", true)],
                 )
             })
             .collect();
@@ -830,7 +830,7 @@ mod tests {
                 None,
                 5,
                 100,
-                vec![GateVerdict::new("compile", true)],
+                vec![EpisodeGateVerdict::new("compile", true)],
             ),
             episode(
                 "failure",
@@ -840,7 +840,7 @@ mod tests {
                 Some("error"),
                 5,
                 100,
-                vec![GateVerdict::new("compile", false)],
+                vec![EpisodeGateVerdict::new("compile", false)],
             ),
         ];
         let policy = DreamReplayPolicy {
@@ -866,7 +866,7 @@ mod tests {
             None,
             10,
             100,
-            vec![GateVerdict::new("compile", true)],
+            vec![EpisodeGateVerdict::new("compile", true)],
         );
         let failure = episode(
             "f",
@@ -876,7 +876,7 @@ mod tests {
             Some("timeout"),
             10,
             100,
-            vec![GateVerdict::new("compile", false)],
+            vec![EpisodeGateVerdict::new("compile", false)],
         );
         let config = MattarDawConfig::default();
         let recency = 0.5;
@@ -898,7 +898,7 @@ mod tests {
             Some("err"),
             10,
             100,
-            vec![GateVerdict::new("compile", false)],
+            vec![EpisodeGateVerdict::new("compile", false)],
         );
         let default_config = MattarDawConfig::default();
         let boosted = MattarDawConfig {
@@ -920,7 +920,7 @@ mod tests {
             None,
             30,
             100,
-            vec![GateVerdict::new("compile", true)],
+            vec![EpisodeGateVerdict::new("compile", true)],
         );
         let policy = DreamReplayPolicy::default();
         let u = compute_replay_utility(&ep, &policy, Utc::now());

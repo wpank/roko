@@ -4149,9 +4149,9 @@ mod tests {
         ep.episode_id = format!("episode-{suffix}");
         ep.task_id = format!("task-{suffix}");
         ep.gate_verdicts = vec![
-            crate::episode_logger::GateVerdict::new("read", true),
-            crate::episode_logger::GateVerdict::new("edit", true),
-            crate::episode_logger::GateVerdict::new("test", true),
+            crate::episode_logger::EpisodeGateVerdict::new("read", true),
+            crate::episode_logger::EpisodeGateVerdict::new("edit", true),
+            crate::episode_logger::EpisodeGateVerdict::new("test", true),
         ];
         ep.extra.insert(
             "task_tags".to_string(),
@@ -4982,7 +4982,7 @@ mod tests {
         let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
         let mut ep = sample_episode(false);
         ep.gate_verdicts.push(
-            crate::episode_logger::GateVerdict::new("compile", false).with_signature("E0308"),
+            crate::episode_logger::EpisodeGateVerdict::new("compile", false).with_signature("E0308"),
         );
         ep.reflection = Some(
             "Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string(),

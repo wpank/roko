@@ -972,7 +972,7 @@ mod tests {
         let mut ep = Episode::new("agent", id);
         ep.id = id.to_string();
         ep.gate_verdicts
-            .push(crate::episode_logger::GateVerdict::new("compile", false).with_signature(sig));
+            .push(crate::episode_logger::EpisodeGateVerdict::new("compile", false).with_signature(sig));
         ep.failure_reason = Some(failure_reason.to_string());
         ep.extra.insert(
             "category".to_string(),
@@ -987,7 +987,7 @@ mod tests {
         let mut ep = Episode::new("agent", id);
         ep.id = id.to_string();
         ep.gate_verdicts
-            .push(crate::episode_logger::GateVerdict::new("compile", true).with_signature(sig));
+            .push(crate::episode_logger::EpisodeGateVerdict::new("compile", true).with_signature(sig));
         ep.extra.insert(
             "category".to_string(),
             serde_json::Value::String(category.to_string()),

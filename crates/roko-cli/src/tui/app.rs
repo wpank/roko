@@ -3890,7 +3890,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-            gates: vec![roko_core::dashboard_snapshot::GateVerdict {
+            gates: vec![roko_core::dashboard_snapshot::GateVerdictView {
                 plan_id: "plan-b".to_string(),
                 task_id: "task-1".to_string(),
                 gate: "compile".to_string(),

@@ -17,7 +17,7 @@ use clap::ValueEnum;
 use roko_core::{ConfigHash, TaskMetric};
 use roko_learn::cfactor::CFactor;
 use roko_learn::efficiency::AgentEfficiencyEvent;
-use roko_learn::episode_logger::{Episode, GateVerdict, Usage};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, Usage};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime, refresh_cfactor_snapshot};
 use roko_neuro::{KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier};
 use serde::{Deserialize, Serialize};
@@ -648,9 +648,9 @@ async fn record_learning(
         ..Usage::default()
     };
     episode.gate_verdicts = vec![
-        GateVerdict::new("bench:format", row.format_valid),
-        GateVerdict::new("bench:git_apply_check", row.apply_check),
-        GateVerdict::new("bench:test", row.tests_passed),
+        EpisodeGateVerdict::new("bench:format", row.format_valid),
+        EpisodeGateVerdict::new("bench:git_apply_check", row.apply_check),
+        EpisodeGateVerdict::new("bench:test", row.tests_passed),
     ];
     episode.failure_reason = row.failure_reason.clone();
     episode

@@ -39,6 +39,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS};
+use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, VecToolRegistry};
 use roko_std::StaticToolRegistry;
 use serde::{Deserialize, Serialize};
@@ -249,12 +250,19 @@ pub(crate) fn max_tokens_for_model(model: &ModelProfile) -> u32 {
         .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
 }
 
-fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<&str>> {
-    let allowed: HashSet<&str> = csv
+fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<String>> {
+    let allowed: HashSet<String> = csv
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
+        .map(|name| {
+            // Resolve Claude CLI aliases ("Read" -> "read_file") to canonical names.
+            // If already canonical or unknown (MCP/plugin tool), pass through as-is.
+            canonical_of_claude(name)
+                .unwrap_or(name)
+                .to_string()
+        })
         .collect();
     (!allowed.is_empty()).then_some(allowed)
 }
@@ -310,6 +318,14 @@ fn add_mcp_tools_to_registry(registry: &mut DynamicToolRegistry, mcp_tools: Vec<
     }
 }
 
+/// Build a filtered tool registry from agent options.
+///
+/// **Audit note (P09-T3):** This is the single tool-filtering path for all
+/// non-Claude-CLI providers. `anthropic_api`, `cerebras`, and the
+/// `OpenAiCompatAdapter` itself all call this function. `claude_cli` passes
+/// the raw CSV to the Claude binary which understands PascalCase natively.
+/// No other backends have independent CSV parsing that would need alias
+/// resolution.
 pub(crate) fn tool_registry_for_options(
     model: &ModelProfile,
     options: &AgentOptions,
@@ -1431,5 +1447,51 @@ done
             adapter.classify_error(400, &serde_json::json!({ "error": { "code": "1261" } })),
             ProviderError::ContextOverflow
         ));
+    }
+
+    // ── parse_allowed_tools_csv alias resolution tests ──────────────────
+
+    #[test]
+    fn parse_allowed_tools_csv_resolves_claude_names() {
+        let result = parse_allowed_tools_csv(Some("Read,Write,Edit")).unwrap();
+        assert!(result.contains("read_file"));
+        assert!(result.contains("write_file"));
+        assert!(result.contains("edit_file"));
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn parse_allowed_tools_csv_passes_canonical_names_through() {
+        let result = parse_allowed_tools_csv(Some("read_file,bash")).unwrap();
+        assert!(result.contains("read_file"));
+        assert!(result.contains("bash"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn parse_allowed_tools_csv_handles_mixed_names() {
+        let result = parse_allowed_tools_csv(Some("Read,bash,Glob")).unwrap();
+        assert!(result.contains("read_file"));
+        assert!(result.contains("bash"));
+        assert!(result.contains("glob"));
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn parse_allowed_tools_csv_passes_unknown_names_through() {
+        let result = parse_allowed_tools_csv(Some("Read,my_mcp_tool")).unwrap();
+        assert!(result.contains("read_file"));
+        assert!(result.contains("my_mcp_tool"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn parse_allowed_tools_csv_none_returns_none() {
+        assert!(parse_allowed_tools_csv(None).is_none());
+    }
+
+    #[test]
+    fn parse_allowed_tools_csv_empty_returns_none() {
+        assert!(parse_allowed_tools_csv(Some("")).is_none());
     }
 }

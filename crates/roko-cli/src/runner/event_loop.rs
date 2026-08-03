@@ -8364,10 +8364,10 @@ async fn shutdown_subsystems(config: &RunConfig, tui: &TuiBridge) {
 
 /// Compact the episode log if it exceeds the retention threshold.
 ///
-/// Uses the default [`RetentionPolicy`] (200 episodes, 90 days).
+/// Uses the default [`EpisodeRetentionPolicy`] (200 episodes, 90 days).
 /// Errors are logged but never propagated — compaction is best-effort.
 async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
-    use roko_learn::episode_logger::{EpisodeLogger, RetentionPolicy};
+    use roko_learn::episode_logger::{EpisodeLogger, EpisodeRetentionPolicy};
 
     // Use metadata probe instead of .exists() to avoid TOCTOU.
     // If the file doesn't exist, there's nothing to compact.
@@ -8381,7 +8381,7 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
     }
 
     let logger = EpisodeLogger::new(episodes_path.to_path_buf());
-    let policy = RetentionPolicy::default();
+    let policy = EpisodeRetentionPolicy::default();
     let now = chrono::Utc::now();
 
     match logger.compact(now, &policy).await {

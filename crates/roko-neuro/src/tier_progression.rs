@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use parking_lot::Mutex;
 use roko_learn::episode_logger::Episode;
-use roko_learn::episode_logger::GateVerdict;
+use roko_learn::episode_logger::EpisodeGateVerdict;
 use roko_learn::pattern_discovery::{EpisodeView, PatternMiner};
 use serde::{Deserialize, Serialize};
 
@@ -659,7 +659,7 @@ impl TierProgression {
     #[must_use]
     pub fn evaluate_promotion(
         entry: &KnowledgeEntry,
-        verdicts: &[GateVerdict],
+        verdicts: &[EpisodeGateVerdict],
     ) -> Option<KnowledgeTier> {
         Self::evaluate_tier_progression(entry, verdicts).tier()
     }
@@ -668,7 +668,7 @@ impl TierProgression {
     #[must_use]
     pub fn evaluate_tier_progression(
         entry: &KnowledgeEntry,
-        verdicts: &[GateVerdict],
+        verdicts: &[EpisodeGateVerdict],
     ) -> TierProgressionDecision {
         let successes = verdicts.iter().filter(|verdict| verdict.passed).count();
         let failures = verdicts.len().saturating_sub(successes);
@@ -1706,7 +1706,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_learn::episode_logger::GateVerdict;
+    use roko_learn::episode_logger::EpisodeGateVerdict;
 
     fn episode(
         id: &str,
@@ -1722,7 +1722,7 @@ mod tests {
         episode.kind = "agent_turn".to_string();
         episode.trigger_kind = trigger.to_string();
         episode.agent_template = agent.to_string();
-        episode.gate_verdicts = vec![GateVerdict::new(gate, passed)];
+        episode.gate_verdicts = vec![EpisodeGateVerdict::new(gate, passed)];
         episode.success = success;
         episode
     }
@@ -2010,9 +2010,9 @@ mod tests {
             catalytic_score: 0,
         };
         let verdicts = vec![
-            GateVerdict::new("compile", true),
-            GateVerdict::new("test", true),
-            GateVerdict::new("lint", true),
+            EpisodeGateVerdict::new("compile", true),
+            EpisodeGateVerdict::new("test", true),
+            EpisodeGateVerdict::new("lint", true),
         ];
 
         assert_eq!(
@@ -2054,8 +2054,8 @@ mod tests {
             catalytic_score: 0,
         };
         let verdicts = vec![
-            GateVerdict::new("compile", false),
-            GateVerdict::new("test", false),
+            EpisodeGateVerdict::new("compile", false),
+            EpisodeGateVerdict::new("test", false),
         ];
 
         assert_eq!(
@@ -2139,13 +2139,13 @@ mod tests {
         };
 
         let promote = vec![
-            GateVerdict::new("compile", true),
-            GateVerdict::new("test", true),
-            GateVerdict::new("lint", true),
+            EpisodeGateVerdict::new("compile", true),
+            EpisodeGateVerdict::new("test", true),
+            EpisodeGateVerdict::new("lint", true),
         ];
         let demote = vec![
-            GateVerdict::new("compile", false),
-            GateVerdict::new("test", false),
+            EpisodeGateVerdict::new("compile", false),
+            EpisodeGateVerdict::new("test", false),
         ];
 
         assert_eq!(

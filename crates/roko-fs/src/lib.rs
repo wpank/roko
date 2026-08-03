@@ -48,7 +48,7 @@ pub use atomic::{atomic_write_bytes, atomic_write_json};
 pub use bandit::{ArmSnapshot, BanditStore};
 pub use cold_substrate::{ArchiveColdSubstrate, SubstrateMigrator};
 pub use file_substrate::FileSubstrate;
-pub use gc::{GcCandidate, GcEngine, GcReport, RetentionPolicy};
+pub use gc::{FsRetentionPolicy, GcCandidate, GcEngine, GcReport};
 pub use layout::{LayoutVersion, RokoLayout};
 pub use metrics::MetricsLog;
 pub use observability::FsObservabilitySinks;

@@ -12,7 +12,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::efficiency::AgentEfficiencyEvent;
-use crate::episode_logger::{Episode, GateVerdict};
+use crate::episode_logger::{Episode, EpisodeGateVerdict};
 
 /// Current JSON schema version for provider/model outcome records.
 pub const PROVIDER_MODEL_OUTCOME_SCHEMA_VERSION: u32 = 1;
@@ -62,8 +62,8 @@ pub struct ProviderModelGateOutcome {
     pub duration_ms: Option<u64>,
 }
 
-impl From<&GateVerdict> for ProviderModelGateOutcome {
-    fn from(verdict: &GateVerdict) -> Self {
+impl From<&EpisodeGateVerdict> for ProviderModelGateOutcome {
+    fn from(verdict: &EpisodeGateVerdict) -> Self {
         Self {
             gate_name: verdict.gate.clone(),
             passed: verdict.passed,
@@ -621,7 +621,7 @@ mod tests {
         };
         episode
             .gate_verdicts
-            .push(GateVerdict::new("cargo_test", success));
+            .push(EpisodeGateVerdict::new("cargo_test", success));
         episode.extra.insert(
             "task_category".to_string(),
             serde_json::json!("implementation"),

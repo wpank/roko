@@ -1992,7 +1992,7 @@ fn task_matches_filter(
 }
 
 fn gate_matches_filter(
-    gate: &roko_core::dashboard_snapshot::GateVerdict,
+    gate: &roko_core::dashboard_snapshot::GateVerdictView,
     query: &ProjectionQuery,
 ) -> bool {
     plan_id_matches_filter(&gate.plan_id, query)

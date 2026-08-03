@@ -40,6 +40,11 @@ pub struct TaskMeta {
     /// contains complete definitions.
     #[serde(default)]
     pub skip_enrichment: bool,
+    /// Optional slug of the originating PRD.  Set by `roko prd plan` so that
+    /// `cmd_status` can link plans back to PRDs even when the directory name
+    /// does not match the slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_prd: Option<String>,
 }
 
 fn default_max_parallel() -> u32 {
@@ -1772,6 +1777,7 @@ depends_on = []
                 max_parallel: 1,
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
+                source_prd: None,
             },
             tasks: Vec::new(),
         };

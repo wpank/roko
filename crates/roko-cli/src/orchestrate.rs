@@ -114,7 +114,7 @@ use roko_learn::curriculum::{CurriculumMode, CurriculumScheduler};
 use roko_learn::efficiency::{
     AgentEfficiencyEvent, FleetCFactor, PromptSectionMeta, compute_fleet_cfactor,
 };
-use roko_learn::episode_logger::{Episode, EpisodeLogger, GateVerdict, Usage};
+use roko_learn::episode_logger::{Episode, EpisodeLogger, EpisodeGateVerdict, Usage};
 use roko_learn::error_pattern_store::{
     ErrorPatternStore, FailurePatternQuery, GateFailureObservation, GateFailureSource,
 };
@@ -158,7 +158,7 @@ use roko_orchestrator::{
 };
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::event_bus::{
-    Envelope as RuntimeEventEnvelope, EventBus as RuntimeEventBus, GateVerdictSummary,
+    Envelope as RuntimeEventEnvelope, EventBus as RuntimeEventBus, EpisodeGateVerdictSummary,
     PlanRevisionReason, RokoEvent,
 };
 use roko_runtime::process::ProcessSupervisor;
@@ -214,7 +214,7 @@ use crate::workspace_paths::find_prd_path;
 
 // Verify-related free functions and types extracted to gate_runner.rs.
 use crate::gate_runner::{
-    FsGeneratedArtifactStore, RecordedGateVerdict, RecordingGate, acceptance_task_dir,
+    FsGeneratedArtifactStore, RecordedEpisodeGateVerdict, RecordingGate, acceptance_task_dir,
     domain_uses_compiled_gates, format_acceptance_decision, gate_artifact_store_path,
     gate_ratchet_path, gate_result_matches_requirement, primary_gate_phase_to_rung,
     scan_no_stub_evidence,
@@ -2833,9 +2833,9 @@ struct TaskTracker {
     /// Knowledge entry ids surfaced in the most recent task context.
     last_context_knowledge_ids: Vec<String>,
     /// Last detailed gate verdicts emitted for this plan, with short signatures.
-    last_gate_verdicts: Vec<GateVerdict>,
+    last_gate_verdicts: Vec<EpisodeGateVerdict>,
     /// Last runtime-facing gate verdict summaries emitted for this plan.
-    last_gate_verdict_summaries: Vec<GateVerdictSummary>,
+    last_gate_verdict_summaries: Vec<EpisodeGateVerdictSummary>,
     /// Last structured reviewer verdict parsed for this plan.
     last_review_verdict: Option<ReviewVerdictEvidence>,
     review_feedback: Option<String>,
@@ -3424,7 +3424,7 @@ fn gate_verdict_signature(verdict: &Verdict) -> Option<String> {
 }
 
 /// Returns true if the stored gate verdict looks like a stub or placeholder.
-fn is_stub_gate_verdict(verdict: &GateVerdict) -> bool {
+fn is_stub_gate_verdict(verdict: &EpisodeGateVerdict) -> bool {
     verdict.gate.contains("stub")
         || verdict.signature.as_deref().is_some_and(|signature| {
             signature.contains("not yet implemented") || signature.contains("stub-")
@@ -3434,7 +3434,7 @@ fn is_stub_gate_verdict(verdict: &GateVerdict) -> bool {
 /// Decide whether positive learning should be withheld for this success.
 fn positive_learning_withhold_reason(
     artifact_valid: bool,
-    gate_verdicts: &[GateVerdict],
+    gate_verdicts: &[EpisodeGateVerdict],
 ) -> Option<String> {
     let mut reasons = Vec::new();
 
@@ -4114,7 +4114,44 @@ struct GateRunOutcome {
     passed: bool,
     summary: String,
     counts: GateSummaryCounts,
-    recorded_verdicts: Vec<RecordedGateVerdict>,
+    recorded_verdicts: Vec<RecordedEpisodeGateVerdict>,
+}
+
+/// Build the Claude CLI `{"mcpServers": {"<name>": {command, args, env}}}` shape
+/// from a list of roko [`McpServerConfig`] entries.
+///
+/// Only emits `command`, `args`, and `env` per server -- Claude does not accept
+/// roko-internal fields (tier, transport, endpoint, auth_token). The `env` map
+/// is included only when non-empty.
+fn to_claude_mcp_config(servers: &[McpServerConfig]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for server in servers {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "command".to_string(),
+            serde_json::Value::String(server.command.clone()),
+        );
+        entry.insert(
+            "args".to_string(),
+            serde_json::Value::Array(
+                server
+                    .args
+                    .iter()
+                    .map(|a| serde_json::Value::String(a.clone()))
+                    .collect(),
+            ),
+        );
+        if !server.env.is_empty() {
+            let env_map: serde_json::Map<String, serde_json::Value> = server
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            entry.insert("env".to_string(), serde_json::Value::Object(env_map));
+        }
+        map.insert(server.name.clone(), serde_json::Value::Object(entry));
+    }
+    serde_json::json!({ "mcpServers": map })
 }
 
 impl PlanRunner {
@@ -4262,7 +4299,6 @@ impl PlanRunner {
         }
 
         servers.sort_by(|a, b| a.name.cmp(&b.name));
-        let config = McpConfig { servers };
         let dir = self.workdir.join(".roko");
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!(
@@ -4274,7 +4310,11 @@ impl PlanRunner {
 
         let path = dir.join("mcp-config.json");
         let tmp_path = path.with_extension("json.tmp");
-        let json = match serde_json::to_string_pretty(&config) {
+        // Build the Claude CLI {"mcpServers": {"<name>": {command, args, env}}} shape.
+        // Only emit command/args/env — Claude does not accept roko-internal fields
+        // (tier, transport, endpoint, auth_token).
+        let claude_value = to_claude_mcp_config(&servers);
+        let json = match serde_json::to_string_pretty(&claude_value) {
             Ok(json) => json,
             Err(e) => {
                 tracing::warn!("failed to serialize runtime MCP config: {e}");
@@ -5387,7 +5427,7 @@ impl PlanRunner {
         task_id: &str,
         reason: &PlanRevisionReason,
         request: &PlanRevisionRequest,
-        failing_verdicts: &[GateVerdictSummary],
+        failing_verdicts: &[EpisodeGateVerdictSummary],
         log_tail: &str,
     ) -> String {
         let reason_line = match reason {
@@ -5445,7 +5485,7 @@ impl PlanRunner {
     fn gate_failure_next_action(
         attempts: u32,
         attempt_limit: u32,
-        failing_verdicts: &[GateVerdictSummary],
+        failing_verdicts: &[EpisodeGateVerdictSummary],
     ) -> GateFailureAction {
         let has_class = |needle: &str| {
             failing_verdicts
@@ -5471,7 +5511,7 @@ impl PlanRunner {
         plan_id: &str,
         task_id: &str,
         attempts: u32,
-        failing_verdicts: &[GateVerdictSummary],
+        failing_verdicts: &[EpisodeGateVerdictSummary],
     ) -> PlanRevisionRequest {
         let evidence = failing_verdicts
             .iter()
@@ -5488,7 +5528,7 @@ impl PlanRunner {
 
     fn plan_revision_failure_hash(
         reason: &PlanRevisionReason,
-        failing_verdicts: &[GateVerdictSummary],
+        failing_verdicts: &[EpisodeGateVerdictSummary],
         log_tail: &str,
     ) -> String {
         let payload = serde_json::json!({
@@ -5508,7 +5548,7 @@ impl PlanRunner {
         plan_id: &str,
         task_id: &str,
         reason: &PlanRevisionReason,
-        failing_verdicts: &[GateVerdictSummary],
+        failing_verdicts: &[EpisodeGateVerdictSummary],
         log_tail: &str,
         request: PlanRevisionRequest,
     ) -> Result<PlanRevisionClaim> {
@@ -8775,7 +8815,7 @@ impl PlanRunner {
                                 if counts.executed() == 0 {
                                     Vec::new()
                                 } else {
-                                    vec![GateVerdict::new(format!("rung-{effective_rung}"), passed)]
+                                    vec![EpisodeGateVerdict::new(format!("rung-{effective_rung}"), passed)]
                                 }
                             });
                         ep.input_signal_hash = self
@@ -13400,6 +13440,7 @@ impl PlanRunner {
                 max_parallel: old_tasks.meta.max_parallel,
                 estimated_total_minutes: old_tasks.meta.estimated_total_minutes,
                 skip_enrichment: old_tasks.meta.skip_enrichment,
+                source_prd: old_tasks.meta.source_prd.clone(),
             },
             tasks: vec![regenerated_task.clone()],
         };
@@ -13664,7 +13705,7 @@ impl PlanRunner {
             .format_for_prompt()
     }
 
-    fn summarize_runtime_verdicts(verdicts: &[Verdict]) -> Vec<GateVerdictSummary> {
+    fn summarize_runtime_verdicts(verdicts: &[Verdict]) -> Vec<EpisodeGateVerdictSummary> {
         verdicts
             .iter()
             .map(|verdict| {
@@ -13683,7 +13724,7 @@ impl PlanRunner {
                     .clone()
                     .or_else(|| verdict.detail.clone())
                     .or_else(|| (!verdict.reason.is_empty()).then(|| verdict.reason.clone()));
-                GateVerdictSummary {
+                EpisodeGateVerdictSummary {
                     gate: verdict.gate.clone(),
                     passed: verdict.passed,
                     classification,
@@ -17646,7 +17687,7 @@ impl PlanRunner {
             (
                 verdicts
                     .into_iter()
-                    .map(|verdict| RecordedGateVerdict {
+                    .map(|verdict| RecordedEpisodeGateVerdict {
                         rung: explicit_rung,
                         verdict,
                     })
@@ -17691,7 +17732,7 @@ impl PlanRunner {
             tracker.last_gate_verdicts = verdicts
                 .iter()
                 .map(|verdict| {
-                    let mut tracked = GateVerdict::new(verdict.gate.clone(), verdict.passed);
+                    let mut tracked = EpisodeGateVerdict::new(verdict.gate.clone(), verdict.passed);
                     if let Some(signature) = gate_verdict_signature(verdict) {
                         tracked = tracked.with_signature(signature);
                     }
@@ -18353,7 +18394,7 @@ impl PlanRunner {
         plan_id: &str,
         payload_sig: &Engram,
         exec_dir: &Path,
-    ) -> (Vec<RecordedGateVerdict>, usize) {
+    ) -> (Vec<RecordedEpisodeGateVerdict>, usize) {
         let ctx = Context::now();
         let sink = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let mut pipeline = GatePipeline::new(format!("gate-pipeline:{plan_id}"));
@@ -21209,7 +21250,7 @@ acceptance = []
         tracker.last_gate_failure = Some(format!("compile: {detail}"));
         tracker.last_gate_failure_phase = Some("compile".to_string());
         tracker.last_impl_task_id = Some("T1".to_string());
-        tracker.last_gate_verdict_summaries = vec![GateVerdictSummary {
+        tracker.last_gate_verdict_summaries = vec![EpisodeGateVerdictSummary {
             gate: "compile".to_string(),
             passed: false,
             classification: Some("type_error".to_string()),
@@ -21358,24 +21399,24 @@ title = "Test task"
 
     #[test]
     fn stub_gate_verdict_detection_matches_gate_name_and_signature() {
-        assert!(is_stub_gate_verdict(&GateVerdict::new(
+        assert!(is_stub_gate_verdict(&EpisodeGateVerdict::new(
             "stub-llm-judge",
             true
         )));
         assert!(is_stub_gate_verdict(
-            &GateVerdict::new("judge", true).with_signature("stub-not-yet-implemented")
+            &EpisodeGateVerdict::new("judge", true).with_signature("stub-not-yet-implemented")
         ));
         assert!(is_stub_gate_verdict(
-            &GateVerdict::new("judge", true).with_signature("LLM judge gate not yet implemented")
+            &EpisodeGateVerdict::new("judge", true).with_signature("LLM judge gate not yet implemented")
         ));
-        assert!(!is_stub_gate_verdict(&GateVerdict::new("compile", true)));
+        assert!(!is_stub_gate_verdict(&EpisodeGateVerdict::new("compile", true)));
     }
 
     #[test]
     fn positive_learning_withhold_reason_blocks_stub_and_missing_gates() {
-        let real_gate = GateVerdict::new("compile", true);
+        let real_gate = EpisodeGateVerdict::new("compile", true);
         let stub_gate =
-            GateVerdict::new("stub-llm-judge", true).with_signature("stub-not-yet-implemented");
+            EpisodeGateVerdict::new("stub-llm-judge", true).with_signature("stub-not-yet-implemented");
 
         assert_eq!(
             positive_learning_withhold_reason(true, std::slice::from_ref(&real_gate)),
@@ -21558,7 +21599,7 @@ title = "Test task"
 
     #[test]
     fn gate_failure_next_action_distinguishes_retry_replan_blocked_and_human() {
-        let retry = vec![GateVerdictSummary {
+        let retry = vec![EpisodeGateVerdictSummary {
             gate: "compile".into(),
             passed: false,
             classification: Some("type_error".into()),
@@ -21575,7 +21616,7 @@ title = "Test task"
             GateFailureAction::NeedsReplan
         );
 
-        let replan = vec![GateVerdictSummary {
+        let replan = vec![EpisodeGateVerdictSummary {
             gate: "review".into(),
             passed: false,
             classification: Some("architectural_conflict_requires_replan".into()),
@@ -21588,7 +21629,7 @@ title = "Test task"
             GateFailureAction::NeedsReplan
         );
 
-        let blocked = vec![GateVerdictSummary {
+        let blocked = vec![EpisodeGateVerdictSummary {
             gate: "compile".into(),
             passed: false,
             classification: Some("external_environment".into()),
@@ -21601,7 +21642,7 @@ title = "Test task"
             GateFailureAction::Blocked
         );
 
-        let human = vec![GateVerdictSummary {
+        let human = vec![EpisodeGateVerdictSummary {
             gate: "tool".into(),
             passed: false,
             classification: Some("role_tool_permission".into()),
@@ -23681,5 +23722,64 @@ command = "cargo check -p roko-cli"
         assert_eq!(task_id, "t1");
         assert_eq!(phase, "compile");
         assert_eq!(cmd, "false");
+    }
+
+    #[test]
+    fn resolve_mcp_config_claude_shape() {
+        use roko_agent::mcp::McpServerConfig;
+
+        let servers = vec![
+            McpServerConfig {
+                name: "code".to_string(),
+                command: "roko-mcp-code".to_string(),
+                args: vec!["--workspace".to_string(), "/tmp/ws".to_string()],
+                env: HashMap::new(),
+                ..Default::default()
+            },
+            McpServerConfig {
+                name: "github".to_string(),
+                command: "roko-mcp-github".to_string(),
+                args: vec![],
+                env: {
+                    let mut m = HashMap::new();
+                    m.insert("GITHUB_TOKEN".to_string(), "gh_abc".to_string());
+                    m
+                },
+                ..Default::default()
+            },
+        ];
+
+        let value = to_claude_mcp_config(&servers);
+
+        // Top-level key must be "mcpServers".
+        let mcp_servers = value
+            .get("mcpServers")
+            .expect("top-level mcpServers key missing");
+        assert!(
+            mcp_servers.is_object(),
+            "mcpServers must be an object, not an array"
+        );
+
+        // Each server keyed by name.
+        let code = mcp_servers.get("code").expect("code server missing");
+        assert_eq!(code["command"], "roko-mcp-code");
+        assert_eq!(code["args"][0], "--workspace");
+        assert_eq!(code["args"][1], "/tmp/ws");
+        // env omitted when empty.
+        assert!(code.get("env").is_none(), "empty env should be omitted");
+
+        let github = mcp_servers.get("github").expect("github server missing");
+        assert_eq!(github["command"], "roko-mcp-github");
+        assert_eq!(github["env"]["GITHUB_TOKEN"], "gh_abc");
+
+        // Roko-internal fields must NOT appear.
+        assert!(code.get("tier").is_none(), "tier must not appear");
+        assert!(code.get("transport").is_none(), "transport must not appear");
+        assert!(code.get("name").is_none(), "name must not appear as value");
+        assert!(code.get("endpoint").is_none(), "endpoint must not appear");
+        assert!(
+            code.get("auth_token").is_none(),
+            "auth_token must not appear"
+        );
     }
 }

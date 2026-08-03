@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use roko_core::dashboard_snapshot::{ErrorEntry, GateVerdict, SnapshotStats};
+use roko_core::dashboard_snapshot::{ErrorEntry, GateVerdictView, SnapshotStats};
 
 use super::super::dashboard::Theme;
 
@@ -33,7 +33,7 @@ fn fmt_ts(ts_millis: u64) -> String {
 pub fn render_error_digest(
     frame: &mut Frame<'_>,
     area: Rect,
-    gates: &[GateVerdict],
+    gates: &[GateVerdictView],
     errors: &[ErrorEntry],
     stats: &SnapshotStats,
     theme: &Theme,
@@ -65,7 +65,7 @@ pub fn render_error_digest(
 fn render_gate_summary(
     frame: &mut Frame<'_>,
     area: Rect,
-    gates: &[GateVerdict],
+    gates: &[GateVerdictView],
     stats: &SnapshotStats,
     theme: &Theme,
 ) {
@@ -86,7 +86,7 @@ fn render_gate_summary(
     };
 
     // Show the last few failed gates inline.
-    let recent_failures: Vec<&GateVerdict> =
+    let recent_failures: Vec<&GateVerdictView> =
         gates.iter().rev().filter(|g| !g.passed).take(3).collect();
 
     let mut lines = vec![Line::from(Span::styled(ratio_text, ratio_style))];
@@ -147,14 +147,14 @@ mod tests {
         let theme = Theme::dark();
 
         let gates = vec![
-            GateVerdict {
+            GateVerdictView {
                 plan_id: "p1".into(),
                 task_id: "t1".into(),
                 gate: "compile".into(),
                 passed: true,
                 ts_millis: 1_000_000,
             },
-            GateVerdict {
+            GateVerdictView {
                 plan_id: "p1".into(),
                 task_id: "t2".into(),
                 gate: "test".into(),

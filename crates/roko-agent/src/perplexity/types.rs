@@ -23,6 +23,7 @@ pub struct PerplexityMetadata {
 pub struct SearchResult {
     pub url: String,
     pub title: String,
+    #[serde(alias = "snippet")]
     pub content: String,
     pub date: Option<String>,
     pub last_updated: Option<String>,
@@ -297,5 +298,18 @@ mod tests {
         assert!(!val.as_object().unwrap().contains_key("instructions"));
         assert!(!val.as_object().unwrap().contains_key("tools"));
         assert_eq!(val["model"], "sonar");
+    }
+
+    #[test]
+    fn search_result_snippet_alias() {
+        let json = json!({
+            "url": "https://x.com",
+            "title": "T",
+            "snippet": "S",
+            "date": null,
+            "last_updated": null
+        });
+        let result: SearchResult = serde_json::from_value(json).expect("snippet alias");
+        assert_eq!(result.content, "S");
     }
 }

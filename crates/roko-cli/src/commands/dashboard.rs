@@ -63,7 +63,7 @@ pub(crate) async fn render_dashboard_text(
         return Ok(out);
     }
 
-    let snapshot = DashboardSnapshot::load(&workdir).await?;
+    let snapshot = CommandDashboardSnapshot::load(&workdir).await?;
 
     if let Some(page) = page {
         let Some(page_id) = parse_dashboard_page(&page) else {
@@ -151,7 +151,7 @@ pub(crate) async fn load_cfactor_history(path: PathBuf) -> Vec<CFactor> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DashboardSnapshot {
+pub(crate) struct CommandDashboardSnapshot {
     episodes: Vec<Episode>,
     task_metrics: Vec<TaskMetric>,
     headlines: Headlines,
@@ -159,7 +159,7 @@ pub(crate) struct DashboardSnapshot {
     cfactor: Option<CFactor>,
 }
 
-impl DashboardSnapshot {
+impl CommandDashboardSnapshot {
     async fn load(workdir: &Path) -> Result<Self> {
         let layout = RokoLayout::for_project(workdir);
         let episodes = EpisodeLogger::read_all_lossy(layout.episodes_path()).await?;

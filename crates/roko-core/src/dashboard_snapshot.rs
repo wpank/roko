@@ -332,9 +332,9 @@ pub struct AgentState {
     pub last_event_at_ms: u64,
 }
 
-/// A single gate verdict.
+/// A single gate verdict projected for dashboard ring-view display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateVerdict {
+pub struct GateVerdictView {
     /// Plan identifier.
     pub plan_id: String,
     /// Task identifier.
@@ -345,6 +345,29 @@ pub struct GateVerdict {
     pub passed: bool,
     /// Unix timestamp in milliseconds.
     pub ts_millis: u64,
+}
+
+/// Context required to project a canonical [`foundation::GateVerdict`] into
+/// the dashboard ring-view.
+pub struct GateVerdictContext {
+    /// Plan that owns the task.
+    pub plan_id: String,
+    /// Task within the plan.
+    pub task_id: String,
+    /// Event timestamp (epoch milliseconds).
+    pub ts_millis: u64,
+}
+
+impl From<(&crate::foundation::GateVerdict, GateVerdictContext)> for GateVerdictView {
+    fn from((v, ctx): (&crate::foundation::GateVerdict, GateVerdictContext)) -> Self {
+        Self {
+            plan_id: ctx.plan_id,
+            task_id: ctx.task_id,
+            gate: v.gate_name.clone(),
+            passed: v.passed,
+            ts_millis: ctx.ts_millis,
+        }
+    }
 }
 
 /// Recent episode summary for the dashboard.
@@ -811,7 +834,7 @@ pub struct DashboardSnapshot {
     /// Active agents keyed by agent_id.
     pub agents: HashMap<String, AgentState>,
     /// Recent gate verdicts (ring of last 256).
-    pub gates: Vec<GateVerdict>,
+    pub gates: Vec<GateVerdictView>,
     /// Recent conductor diagnoses (ring of last 50).
     #[serde(default)]
     pub diagnoses: VecDeque<DiagnosisSummary>,
@@ -1138,7 +1161,7 @@ impl DashboardSnapshot {
                 if self.gates.len() >= MAX_GATES {
                     self.gates.remove(0);
                 }
-                self.gates.push(GateVerdict {
+                self.gates.push(GateVerdictView {
                     plan_id: plan_id.clone(),
                     task_id: task_id.clone(),
                     gate: gate.clone(),
@@ -1364,20 +1387,8 @@ impl DashboardSnapshot {
                 (rd, sd, ld, ep)
             };
 
-        // Read executor state from the unified state-snapshot.json, falling
-        // back to the legacy executor.json for old workspaces.
-        let state = {
-            let snapshot_path = state_dir.join("state-snapshot.json");
-            if let Ok(Some(snap)) = read_json_value(&snapshot_path) {
-                snap.get("executor_json")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                    .unwrap_or(serde_json::Value::Null)
-            } else {
-                read_json_value(&state_dir.join("executor.json"))?
-                    .unwrap_or(serde_json::Value::Null)
-            }
-        };
+        let state =
+            read_json_value(&state_dir.join("executor.json"))?.unwrap_or(serde_json::Value::Null);
         let task_trackers = read_task_trackers(&state_dir.join("task-trackers.json"))?;
         let signal_gates = read_signal_gates(&engrams_path)?;
         let event_entries = read_event_entries(&state_dir.join("events.json"))?;
@@ -1441,7 +1452,7 @@ struct TaskTrackerSnapshot {
 fn snapshot_from_workdir_parts(
     state: &serde_json::Value,
     task_trackers: &HashMap<String, TaskTrackerSnapshot>,
-    signal_gates: &[GateVerdict],
+    signal_gates: &[GateVerdictView],
     event_entries: &[serde_json::Value],
     experiment_winners: &[ExperimentWinnerSummary],
     cfactor_trend: &[CFactorBucket],
@@ -1980,7 +1991,7 @@ fn bootstrap_plan_state(
             *plan_gate_results += 1;
             push_gate(
                 snapshot,
-                GateVerdict {
+                GateVerdictView {
                     plan_id: plan_id.to_string(),
                     task_id: result
                         .get("task_id")
@@ -2109,7 +2120,7 @@ fn read_task_trackers(path: &Path) -> Result<HashMap<String, TaskTrackerSnapshot
     Ok(trackers)
 }
 
-fn read_signal_gates(path: &Path) -> Result<Vec<GateVerdict>, io::Error> {
+fn read_signal_gates(path: &Path) -> Result<Vec<GateVerdictView>, io::Error> {
     let Some(values) = read_jsonl_values(path)? else {
         return Ok(Vec::new());
     };
@@ -2128,7 +2139,7 @@ fn read_signal_gates(path: &Path) -> Result<Vec<GateVerdict>, io::Error> {
         let Some(passed) = extract_gate_passed(&value) else {
             continue;
         };
-        gates.push(GateVerdict {
+        gates.push(GateVerdictView {
             plan_id: value
                 .pointer("/tags/plan_id")
                 .and_then(serde_json::Value::as_str)
@@ -2316,7 +2327,7 @@ fn event_timestamp_ms(entry: &serde_json::Value) -> u64 {
         .unwrap_or_default()
 }
 
-fn push_gate(snapshot: &mut DashboardSnapshot, gate: GateVerdict) {
+fn push_gate(snapshot: &mut DashboardSnapshot, gate: GateVerdictView) {
     if gate.passed {
         snapshot.stats.gates_passed += 1;
     } else {
@@ -2350,7 +2361,7 @@ fn push_gate_failure(snapshot: &mut DashboardSnapshot, failure: FailureEntry) {
     snapshot.gate_recent_failures.push(failure);
 }
 
-fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVerdict]) {
+fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVerdictView]) {
     snapshot.gate_trends.clear();
     snapshot.gate_recent_failures.clear();
 

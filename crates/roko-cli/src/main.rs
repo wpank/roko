@@ -2537,8 +2537,16 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             let config = resolve_config_for_workdir(cli, &wd)?;
             let repo_registry = RepoRegistry::load(&config, &wd).unwrap_or_default();
             let state_hub = roko_serve::state::AppState::state_hub_for_workdir(&wd);
+            // Create a shared MetricRegistry so the runtime and the HTTP
+            // server expose the same counters on /metrics (E09-T03).
+            let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
             let runtime =
-                RokoCliRuntime::new_with_state_hub(config, repo_registry, state_hub.clone())
+                RokoCliRuntime::new_with_state_hub_and_metrics(
+                    config,
+                    repo_registry,
+                    state_hub.clone(),
+                    Some(std::sync::Arc::clone(&metrics)),
+                )
                     .into_arc();
 
             // Bootstrap: consistent workspace check + unified config load.
@@ -2564,7 +2572,8 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
 
             let server_config =
                 roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
-                    .with_state_hub(state_hub);
+                    .with_state_hub(state_hub)
+                    .with_metrics(metrics);
             let server_builder = roko_serve::ServerBuilder::new(server_config);
 
             if tui {

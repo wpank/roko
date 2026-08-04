@@ -762,9 +762,9 @@ Wave gate:
 
 Eligible parallel roots, subject to file reservations:
 
-- [ ] E07-learning-knowledge — 10 tasks. (4/10 done: T01,T02,T04,T08. Remaining: T03 test, T05 freshness, T06 admission, T07 hdc feature, T09 cascade, T10 flush.)
+- [ ] E07-learning-knowledge — 10 tasks. (5/10 done: T01,T02,T03,T04,T08. T03 LinUCB persistence test exists. Remaining: T05 freshness, T06 admission, T07 hdc feature, T09 cascade, T10 flush.)
 - [x] E08-conductor-supervision — 9 tasks. (8/9 done: T01,T02,T03,T04,T05,T06,T08,T09. ConductorRingSink wired into plan/do/serve FeedbackFacade. Remaining: T07 routing bias — design-only, non-blocking.)
-- [ ] E09-OBSERVABILITY — 11 tasks. (6/11 done: T01,T02,T04,T05,T06,T07. Remaining: T03 serve metrics, T08 sinks, T09 design doc, T10 archive, T11 target size.)
+- [ ] E09-OBSERVABILITY — 11 tasks. (7/11 done: T01,T02,T03,T04,T05,T06,T07. T03 shared MetricRegistry wired into serve. Remaining: T08 sinks, T09 design doc, T10 archive, T11 target size.)
 - [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
 - [ ] E11-chain-isfr prerequisite/design recovery — 5 tasks. (3/5 done: T01,T02,T03. Remaining: T04 dead stubs, T05 wire-or-shelve.)
 - [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)

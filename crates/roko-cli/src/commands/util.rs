@@ -290,17 +290,22 @@ pub(crate) async fn cmd_run(
     )> = if serve || share {
         let repo_registry = RepoRegistry::load(&config, &workdir).unwrap_or_default();
         let state_hub = roko_serve::state::AppState::state_hub_for_workdir(&workdir);
-        let runtime = roko_cli::serve_runtime::RokoCliRuntime::new_with_state_hub(
+        // Create a shared MetricRegistry so the runtime and the HTTP server
+        // expose the same counters on /metrics (E09-T03).
+        let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+        let runtime = roko_cli::serve_runtime::RokoCliRuntime::new_with_state_hub_and_metrics(
             config.clone(),
             repo_registry,
             state_hub.clone(),
+            Some(std::sync::Arc::clone(&metrics)),
         )
         .into_arc();
         let roko_config = roko_core::config::loader::load_config_unified(&workdir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let server_config =
             roko_serve::ServerBuildConfig::new(workdir.clone(), runtime, roko_config, None, None)
-                .with_state_hub(state_hub);
+                .with_state_hub(state_hub)
+                .with_metrics(metrics);
         let (state, handle) = roko_serve::ServerBuilder::new(server_config)
             .start_background()
             .await?;

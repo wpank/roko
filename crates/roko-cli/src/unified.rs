@@ -205,10 +205,14 @@ async fn spawn_background_serve(
     workdir: &std::path::Path,
 ) -> Option<(Arc<roko_serve::state::AppState>, JoinHandle<Result<()>>)> {
     let state_hub = roko_serve::state::AppState::state_hub_for_workdir(workdir);
-    let runtime = RokoCliRuntime::new_with_state_hub(
+    // Create a shared MetricRegistry so the runtime and the HTTP server
+    // expose the same counters on /metrics (E09-T03).
+    let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+    let runtime = RokoCliRuntime::new_with_state_hub_and_metrics(
         config.clone(),
         RepoRegistry::default(),
         state_hub.clone(),
+        Some(std::sync::Arc::clone(&metrics)),
     )
     .into_arc();
     let roko_config = match roko_core::config::loader::load_config_unified(workdir) {
@@ -220,7 +224,8 @@ async fn spawn_background_serve(
     };
     let server_config =
         roko_serve::ServerBuildConfig::new(workdir.to_path_buf(), runtime, roko_config, None, None)
-            .with_state_hub(state_hub);
+            .with_state_hub(state_hub)
+            .with_metrics(metrics);
     match roko_serve::ServerBuilder::new(server_config)
         .start_background()
         .await

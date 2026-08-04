@@ -787,7 +787,7 @@ pub fn load_workspace_registry(workdir: &Path) -> HashMap<String, WorkspaceInfo>
 /// Register the additional observability metric families that task 096 will
 /// emit into. Registered at `AppState` construction so they appear in
 /// `GET /metrics` output even before any observations are recorded.
-fn register_observability_foundation_metrics(registry: &MetricRegistry) {
+pub(crate) fn register_observability_foundation_metrics(registry: &MetricRegistry) {
     use roko_core::obs::histograms::LLM_LATENCY_BUCKETS;
     use roko_core::obs::metrics::LabelSet;
 

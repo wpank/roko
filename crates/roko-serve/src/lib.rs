@@ -143,6 +143,10 @@ pub struct ServerBuildConfig {
     pub bind: Option<String>,
     /// Optional port override.
     pub port: Option<u16>,
+    /// Optional pre-created [`MetricRegistry`] shared with the runtime so
+    /// that metrics collected during plan execution are visible on the
+    /// `/metrics` endpoint (E09-T03).
+    pub metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 }
 
 impl ServerBuildConfig {
@@ -161,6 +165,7 @@ impl ServerBuildConfig {
             roko_config,
             bind,
             port,
+            metrics: None,
         }
     }
 
@@ -168,6 +173,14 @@ impl ServerBuildConfig {
     #[must_use]
     pub fn with_state_hub(mut self, state_hub: crate::SharedStateHub) -> Self {
         self.state_hub = Some(state_hub);
+        self
+    }
+
+    /// Share a pre-created [`MetricRegistry`] so the runtime and server expose
+    /// the same counters on the `/metrics` endpoint (E09-T03).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<roko_core::obs::metrics::MetricRegistry>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -296,12 +309,14 @@ impl ServerBuilder {
         let runtime = Arc::clone(&self.config.runtime);
         let roko_config = self.config.roko_config.clone();
         let state_hub = self.config.state_hub.clone();
+        let metrics = self.config.metrics.clone();
         if self.state.is_none() {
             self.state = Some(Arc::new(build_app_state(
                 workdir,
                 runtime,
                 roko_config,
                 state_hub,
+                metrics,
             )?));
         }
         let state = Arc::clone(
@@ -951,6 +966,7 @@ fn build_app_state(
     runtime: Arc<dyn CliRuntime>,
     mut roko_config: RokoConfig,
     state_hub: Option<crate::SharedStateHub>,
+    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
 ) -> anyhow::Result<AppState> {
     // Auto-configure Privy JWT auth: always set the app ID (it's a project
     // constant) and auto-enable auth when a stored Privy credential exists.
@@ -974,12 +990,21 @@ fn build_app_state(
     }
     log_provider_credential_status(&roko_config);
     let deploy_backend = create_deploy_backend(&roko_config);
-    let state = match state_hub {
+    let mut state = match state_hub {
         Some(state_hub) => {
             AppState::new_with_state_hub(workdir, runtime, roko_config, deploy_backend, state_hub)?
         }
         None => AppState::new(workdir, runtime, roko_config, deploy_backend)?,
     };
+
+    // If the caller supplied a shared MetricRegistry (E09-T03), replace the
+    // one that AppState created so the runtime and the /metrics endpoint
+    // expose the same counters.
+    if let Some(shared_metrics) = metrics {
+        roko_core::obs::metrics::register_standard_metrics(&shared_metrics);
+        crate::state::register_observability_foundation_metrics(&shared_metrics);
+        state.metrics = shared_metrics;
+    }
 
     // Warm the cached cascade router once so gateway selection reuses the
     // persisted bandit state instead of rebuilding it on the first request.
@@ -3088,6 +3113,7 @@ mod tests {
             Arc::new(NoOpRuntime),
             config.clone(),
             None,
+            None,
         )
         .expect("build_app_state");
 
@@ -3109,6 +3135,7 @@ mod tests {
             Arc::new(NoOpRuntime),
             config,
             None,
+            None,
         )
         .expect("build_app_state");
 
@@ -3125,6 +3152,7 @@ mod tests {
             workdir.clone(),
             Arc::new(NoOpRuntime),
             roko_core::config::schema::RokoConfig::default(),
+            None,
             None,
         )
         .expect("build_app_state");
@@ -3242,6 +3270,7 @@ mod tests {
                 dir.path().to_path_buf(),
                 Arc::new(NoOpRuntime),
                 config,
+                None,
                 None,
             )
             .expect("build app state"),

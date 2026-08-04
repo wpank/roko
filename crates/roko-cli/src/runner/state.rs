@@ -1077,6 +1077,7 @@ mod tests {
             verdicts: Vec::new(),
             output: String::new(),
             duration_ms: 10,
+            selected_rungs: Vec::new(),
         };
         state.apply_runner_event(&RunnerEvent::gate_completed(
             &run_id,

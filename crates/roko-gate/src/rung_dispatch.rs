@@ -126,6 +126,31 @@ impl GatePipelineBuilder {
         Self::from_default_rungs_with_execution(rungs, inputs, execution)
     }
 
+    /// Return the labels of the canonical rungs that would be selected for the
+    /// given config and complexity, without building the full pipeline.
+    ///
+    /// E05-T04: Callers thread these labels through `GateCompletion` so
+    /// downstream consumers (TUI, EMA, ledger) know which rungs actually ran.
+    #[must_use]
+    pub fn selected_rung_labels(config: &GatesConfig, complexity: PlanComplexity) -> Vec<String> {
+        if config.has_custom_rungs() {
+            return config
+                .effective_rungs()
+                .iter()
+                .map(|rc| rc.name.clone())
+                .collect();
+        }
+        let caps = RungCaps {
+            has_lint_tool: config.clippy_enabled,
+            ..RungCaps::all()
+        };
+        select_rungs(complexity, &caps, 0)
+            .into_iter()
+            .filter(|rung| !(config.skip_tests && *rung == Rung::Test))
+            .map(|rung| rung.label().to_string())
+            .collect()
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     fn from_custom_config_with_execution(
         rungs: Vec<GateRungConfig>,

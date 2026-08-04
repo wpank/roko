@@ -65,6 +65,7 @@ fn gc(plan: &str, task: &str, ok: bool) -> GateCompletion {
         verdicts: Vec::new(),
         output: String::new(),
         duration_ms: 100,
+        selected_rungs: Vec::new(),
     }
 }
 const RUN: &str = "crash-test";

@@ -152,6 +152,10 @@ pub struct GateCompletion {
     pub verdicts: Vec<GateVerdictSummary>,
     pub output: String,
     pub duration_ms: u64,
+    /// Labels of the canonical rungs that were actually selected and executed
+    /// by the gate pipeline (e.g. `["compile", "lint", "test"]`).  Empty for
+    /// sentinel completions (PlanVerify / Merge) and auto-passed gates.
+    pub selected_rungs: Vec<String>,
 }
 
 /// Minimal gate verdict for reporting.
@@ -169,6 +173,10 @@ pub struct GateVerdictSummary {
     pub error_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<RunnerFailureKind>,
+    /// Canonical rung index (0-6) that produced this verdict, when available.
+    /// `None` for verify-step verdicts and sentinel gates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rung_index: Option<u32>,
 }
 
 // ─── Stderr Classification ──────────────────────────────────────────────

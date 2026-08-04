@@ -601,6 +601,7 @@ impl PlanMerger {
                 summary: outcome.summary.clone(),
                 error_digest: None,
                 failure_kind: outcome.failure_kind,
+                rung_index: None, // merge sentinel: not a canonical rung
             };
 
             let completion = GateCompletion {
@@ -615,6 +616,7 @@ impl PlanMerger {
                 verdicts: vec![summary],
                 output: outcome.summary,
                 duration_ms: outcome.duration_ms,
+                selected_rungs: Vec::new(), // sentinel: no canonical rungs for merge
             };
 
             // Channel may be closed if the runner shut down — log only.

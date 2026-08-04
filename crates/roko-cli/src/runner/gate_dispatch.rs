@@ -16,6 +16,7 @@ use roko_gate::classify_gate_failure;
 use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
 use roko_gate::llm_judge_gate::JudgePayload;
 use roko_gate::rung_dispatch::{GatePipelineBuilder, RungExecutionConfig, RungExecutionInputs};
+use roko_gate::rung_for_gate_name;
 use roko_gate::symbol_gate::{SymbolExpectation, SymbolKind, SymbolManifest, Visibility};
 use roko_gate::verdict_publisher::VerdictPublisher;
 use roko_gate::{GatePayload, PlanComplexity, ShellGate};
@@ -341,6 +342,7 @@ fn failed_gate_completion(
         verdicts: Vec::new(),
         output: message,
         duration_ms: 0,
+        selected_rungs: Vec::new(),
     }
 }
 
@@ -373,6 +375,11 @@ pub async fn run_gate_once(
         verify_step_count = verify_steps.len(),
         "gate rung starting"
     );
+
+    // E05-T04: Compute the labels of the canonical rungs that were selected
+    // for this gate run BEFORE building the pipeline, so we can thread them
+    // through the GateCompletion for callers.
+    let selected_rungs = GatePipelineBuilder::selected_rung_labels(&gates_config, complexity);
 
     let workdir_for_run = workdir.clone();
     let run = async {
@@ -485,14 +492,22 @@ pub async fn run_gate_once(
 
     let summaries: Vec<GateVerdictSummary> = verdicts
         .iter()
-        .map(|v| GateVerdictSummary {
-            gate_name: v.gate.clone(),
-            passed: v.passed,
-            skipped: v.skipped,
-            summary: v.reason.clone(),
-            error_digest: v.error_digest.clone(),
-            failure_kind: (!v.passed && !v.skipped)
-                .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
+        .map(|v| {
+            // E05-T04: Resolve each verdict's gate name to its canonical rung
+            // index so callers can observe per-rung EMA thresholds. Strip
+            // attribution prefixes (baseline:, owned-diff:, etc.) before lookup.
+            let raw_name = raw_gate_name(&v.gate);
+            let rung_index = rung_for_gate_name(raw_name).map(|r| r.as_index());
+            GateVerdictSummary {
+                gate_name: v.gate.clone(),
+                passed: v.passed,
+                skipped: v.skipped,
+                summary: v.reason.clone(),
+                error_digest: v.error_digest.clone(),
+                failure_kind: (!v.passed && !v.skipped)
+                    .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
+                rung_index,
+            }
         })
         .collect();
 
@@ -523,6 +538,7 @@ pub async fn run_gate_once(
         verdicts: summaries,
         output,
         duration_ms,
+        selected_rungs,
     }
 }
 
@@ -615,6 +631,7 @@ pub fn spawn_plan_verify(
                     error_digest: v.error_digest.clone(),
                     failure_kind: (!v.passed && !v.skipped)
                         .then(|| classify_failure_kind(std::slice::from_ref(v), &v.reason)),
+                    rung_index: None, // plan-verify steps are not canonical rungs
                 })
                 .collect();
 
@@ -637,6 +654,7 @@ pub fn spawn_plan_verify(
                 verdicts: summaries,
                 output,
                 duration_ms,
+                selected_rungs: Vec::new(), // sentinel: no canonical rungs for plan-verify
             })
         })
         .catch_unwind()

@@ -2883,18 +2883,35 @@ pub async fn run(
                     .max_retries
                     .min(gate_thresholds.suggested_max_retries(completion.rung));
 
-                // E05-T03: Only observe the rung into the adaptive EMA when at
-                // least one non-skipped verdict exists. A rung whose verdicts
-                // are ALL stubs/not-wired carries no real signal and would
-                // inflate the pass rate toward 1.0 (F2/F3).
-                let all_skipped = !completion.verdicts.is_empty()
-                    && completion.verdicts.iter().all(|v| v.skipped);
-                if !all_skipped {
-                    update_gate_thresholds(
-                        &mut gate_thresholds,
-                        completion.rung,
-                        completion.passed,
-                    );
+                // E05-T03 + E05-T04: Observe each verdict's actual rung into
+                // the adaptive EMA rather than the single max_gate_rung.
+                // Skipped verdicts are excluded (they carry no real signal).
+                // When a verdict has a resolved rung_index, observe that
+                // specific rung; otherwise fall back to completion.rung for
+                // backwards compatibility.
+                {
+                    let mut observed_any = false;
+                    for v in &completion.verdicts {
+                        if v.skipped {
+                            continue;
+                        }
+                        let actual_rung = v.rung_index.unwrap_or(completion.rung);
+                        update_gate_thresholds(
+                            &mut gate_thresholds,
+                            actual_rung,
+                            v.passed,
+                        );
+                        observed_any = true;
+                    }
+                    // If there were no verdicts at all (empty completion),
+                    // fall back to the old single-rung observation.
+                    if !observed_any && completion.verdicts.is_empty() {
+                        update_gate_thresholds(
+                            &mut gate_thresholds,
+                            completion.rung,
+                            completion.passed,
+                        );
+                    }
                 }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
 
@@ -8065,6 +8082,7 @@ async fn dispatch_action(
                     duration_ms: 0,
                     kind: GateCompletionKind::Gate,
                     verdicts: Vec::new(),
+                    selected_rungs: Vec::new(), // auto-passed: no rungs executed
                 };
                 let gate_tx = ctx.gate_tx.clone();
                 let fatal_tx = ctx.fatal_tx.clone();
@@ -12381,6 +12399,7 @@ verify = []
             duration_ms: 0,
             kind: GateCompletionKind::Gate,
             verdicts: Vec::new(),
+            selected_rungs: Vec::new(),
         };
         assert!(matches!(
             terminalize_passed_task(
@@ -12747,6 +12766,7 @@ verify = []
             verdicts: Vec::new(),
             output: "retry fixture".to_string(),
             duration_ms: 0,
+            selected_rungs: Vec::new(),
         };
         let decision = RetryDecision::for_failure(RunnerFailureKind::Unknown, 1, 1, "retry");
         let (phase, failed_attempt) = begin_gate_retry_rollover(
@@ -13365,6 +13385,7 @@ files = ["declared.txt"]
             verdicts: Vec::new(),
             output: "passed".to_string(),
             duration_ms: 0,
+            selected_rungs: Vec::new(),
         };
 
         let success_dir = tempfile::tempdir().unwrap();
@@ -14563,6 +14584,7 @@ depends_on = []
             verdicts: Vec::new(),
             output: "producer failed".to_string(),
             duration_ms: 0,
+            selected_rungs: Vec::new(),
         };
 
         cleanup_finished_task_gate(&mut pending, &mut runtimes, &mut executor, &completion);

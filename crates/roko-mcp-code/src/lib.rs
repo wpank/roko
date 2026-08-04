@@ -224,7 +224,7 @@ fn handle_initialize() -> Value {
 fn handle_tools_list() -> Value {
     json!({
         "tools": [
-            tool_spec(
+            tool_spec_ro(
                 "search_code",
                 "Search the codebase for symbols, patterns, or code matching a query.",
                 &json!({
@@ -247,7 +247,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "get_symbol_context",
                 "Get detailed context for a symbol including definition, dependencies, and callers.",
                 &json!({
@@ -263,7 +263,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "get_file_ast",
                 "Get the symbol-level structure of a source file.",
                 &json!({
@@ -276,7 +276,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "find_similar_patterns",
                 "Find code patterns structurally similar to a reference symbol or code snippet.",
                 &json!({
@@ -290,7 +290,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "get_index_stats",
                 "Get statistics about the code index: file count, symbol count, edge count, and languages.",
                 &json!({
@@ -299,7 +299,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "find_references",
                 "Find all locations where a symbol is referenced.",
                 &json!({
@@ -313,7 +313,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "find_implementations",
                 "Find all types that implement a given trait or interface.",
                 &json!({
@@ -326,7 +326,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "get_callers",
                 "Find all functions that call a given function.",
                 &json!({
@@ -341,7 +341,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "workspace_map",
                 "Get a high-level map of the workspace: crates, modules, and top symbols.",
                 &json!({
@@ -357,7 +357,7 @@ fn handle_tools_list() -> Value {
                     "additionalProperties": false
                 })
             ),
-            tool_spec(
+            tool_spec_ro(
                 "get_context",
                 "Given a task description, automatically assemble the most relevant code context.",
                 &json!({
@@ -1542,11 +1542,23 @@ fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
-fn tool_spec(name: &str, description: &str, input_schema: &Value) -> Value {
+/// Build a read-only, closed-world tool spec.
+///
+/// All 10 code-intelligence tools are read-only (they inspect the index but
+/// never write to disk or the network) so they carry `readOnlyHint: true` and
+/// `openWorldHint: false`. Both the legacy (`readOnly`) and the MCP-2025 spec
+/// (`readOnlyHint`) names are emitted for compatibility with older consumers.
+fn tool_spec_ro(name: &str, description: &str, input_schema: &Value) -> Value {
     json!({
         "name": name,
         "description": description,
         "inputSchema": input_schema,
+        "annotations": {
+            "readOnly": true,
+            "readOnlyHint": true,
+            "openWorld": false,
+            "openWorldHint": false,
+        },
     })
 }
 
@@ -1681,6 +1693,43 @@ mod tests {
                 "get_context",
             ]
         );
+    }
+
+    #[test]
+    fn tools_list_all_tools_carry_read_only_annotations() {
+        // Every code-intel tool is read-only: it queries the in-memory index and
+        // never writes to disk or the network.  Both the legacy `readOnly` name
+        // and the MCP-2025 spec name `readOnlyHint` must be present so that
+        // both old consumers (roko-agent) and spec-compliant clients agree.
+        let tools = handle_tools_list();
+        let tool_array = tools["tools"].as_array().expect("tools array");
+        assert_eq!(tool_array.len(), 10, "expected 10 code-intel tools");
+
+        for tool in tool_array {
+            let name = tool["name"].as_str().unwrap_or("<unknown>");
+            let annotations = &tool["annotations"];
+            assert!(!annotations.is_null(), "tool {name} is missing annotations");
+            assert_eq!(
+                annotations["readOnlyHint"],
+                serde_json::Value::Bool(true),
+                "tool {name} must have readOnlyHint: true"
+            );
+            assert_eq!(
+                annotations["readOnly"],
+                serde_json::Value::Bool(true),
+                "tool {name} must have readOnly: true (legacy compat)"
+            );
+            assert_eq!(
+                annotations["openWorldHint"],
+                serde_json::Value::Bool(false),
+                "tool {name} must have openWorldHint: false (no network access)"
+            );
+            assert_eq!(
+                annotations["openWorld"],
+                serde_json::Value::Bool(false),
+                "tool {name} must have openWorld: false (legacy compat)"
+            );
+        }
     }
 
     #[test]

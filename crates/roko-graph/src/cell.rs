@@ -4,7 +4,7 @@
 //! instantiated from TOML config via the `CellRegistry` and executed by the
 //! graph engine in topological order.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use roko_core::{Engram, ProtocolId, error::Result};
@@ -24,6 +24,17 @@ pub struct CellContext {
     pub run_id: Option<String>,
     /// Remaining budget for this execution (USD).
     pub budget_remaining: Option<f64>,
+    /// Unix millisecond deadline for this execution scope.
+    ///
+    /// When `Some`, the cell should not begin work after this timestamp.
+    /// Use [`CellContext::time_remaining_ms`] to check how much time is left.
+    pub deadline_ms: Option<i64>,
+    /// ID of the enclosing `Graph` (for nested execution tracing).
+    pub parent_graph_id: Option<String>,
+    /// The ID of the Cell currently being executed.
+    ///
+    /// Set by the engine immediately before calling [`Cell::execute`].
+    pub cell_id: Option<String>,
 }
 
 impl CellContext {
@@ -34,6 +45,9 @@ impl CellContext {
             trace_id: None,
             run_id: None,
             budget_remaining: None,
+            deadline_ms: None,
+            parent_graph_id: None,
+            cell_id: None,
         }
     }
 
@@ -55,6 +69,50 @@ impl CellContext {
     #[must_use]
     pub const fn with_budget(mut self, budget: f64) -> Self {
         self.budget_remaining = Some(budget);
+        self
+    }
+
+    /// Returns `true` if the budget has been exhausted.
+    ///
+    /// Specifically, returns `true` when `budget_remaining` is `Some(x)` and
+    /// `x <= 0.0`. Returns `false` when no budget limit is set.
+    #[must_use]
+    pub fn is_over_budget(&self) -> bool {
+        self.budget_remaining.is_some_and(|b| b <= 0.0)
+    }
+
+    /// Returns the number of milliseconds remaining before the deadline.
+    ///
+    /// Returns `None` when no deadline is set. Returns a negative value if the
+    /// deadline has already passed.
+    #[must_use]
+    pub fn time_remaining_ms(&self) -> Option<i64> {
+        let deadline = self.deadline_ms?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Some(deadline - now_ms)
+    }
+
+    /// Builder: set a Unix millisecond deadline for this execution scope.
+    #[must_use]
+    pub fn with_deadline(mut self, ms: i64) -> Self {
+        self.deadline_ms = Some(ms);
+        self
+    }
+
+    /// Builder: record the ID of the enclosing Graph.
+    #[must_use]
+    pub fn with_parent_graph(mut self, id: String) -> Self {
+        self.parent_graph_id = Some(id);
+        self
+    }
+
+    /// Builder: record the ID of the Cell being executed.
+    #[must_use]
+    pub fn with_cell_id(mut self, id: String) -> Self {
+        self.cell_id = Some(id);
         self
     }
 }
@@ -99,6 +157,16 @@ pub trait Cell: Send + Sync + 'static {
 
     /// Estimated wall-clock duration per invocation, when known.
     fn estimated_duration(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Describes the input type this cell expects. `None` means untyped (Any).
+    fn input_schema(&self) -> Option<&roko_core::TypeSchema> {
+        None
+    }
+
+    /// Describes the output type this cell produces. `None` means untyped (Any).
+    fn output_schema(&self) -> Option<&roko_core::TypeSchema> {
         None
     }
 

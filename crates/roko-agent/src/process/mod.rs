@@ -38,7 +38,7 @@ pub use group::{
 };
 pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, kill_tree};
 pub use limits::{ResourceLimits, apply_resource_limits};
-pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch, write_mcp_config};
+pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch};
 pub use registry::{
     cleanup_orphaned_agents, reap_orphaned_children, register_spawned_pid, registered_pids,
     unregister_pid,

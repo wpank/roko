@@ -3,7 +3,9 @@
 //! These tests exercise the `serialize_effective_redacted` path in
 //! `roko_core::config::loader` which is called by `cmd_show_effective`.
 
-use roko_core::config::loader::{redact_secrets_in_toml_str as redact_secrets_in_toml, serialize_effective_redacted};
+use roko_core::config::loader::{
+    redact_secrets_in_toml_str as redact_secrets_in_toml, serialize_effective_redacted,
+};
 use roko_core::config::schema::RokoConfig;
 
 /// Build a `RokoConfig` that contains at least one non-empty value in every

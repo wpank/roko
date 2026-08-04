@@ -37,42 +37,47 @@ use tokio::sync::watch;
 
 use roko_core::dashboard_snapshot::{DashboardEvent, DashboardSnapshot};
 
-/// Maximum number of JSONL lines kept in the persistent dashboard event log.
-///
-/// When the writer exceeds this limit it compacts the file, retaining only the
-/// most recent half of the entries so that replay semantics are preserved
-/// without unbounded growth.
-const EVENT_LOG_MAX_LINES: usize = 10_000;
+/// Default maximum number of JSONL lines retained in `events.jsonl` after compaction.
+const EVENT_LOG_MAX_LINES: usize = 50_000;
+
+/// How often (in appended lines) to check whether compaction is needed.
+const EVENT_LOG_COMPACT_CHECK_INTERVAL: usize = 500;
 
 /// Append-only JSONL writer for persisting events to disk.
 ///
-/// Tracks the number of lines written and compacts the log file when
-/// [`EVENT_LOG_MAX_LINES`] is exceeded, keeping the most recent entries.
+/// After every [`EVENT_LOG_COMPACT_CHECK_INTERVAL`] appends the writer checks
+/// whether the file exceeds `max_lines`. If so it reads the file, discards the
+/// oldest lines to keep only the newest `max_lines`, and rewrites it atomically.
+/// Compaction always operates on complete JSONL lines, so replay never ingests
+/// partial JSON caused by truncation.
 struct EventLogWriter {
     writer: std::io::BufWriter<std::fs::File>,
     path: PathBuf,
-    lines_written: usize,
+    /// Maximum number of JSONL lines to retain; 0 means unlimited.
+    max_lines: usize,
+    /// Lines appended since the last compaction check.
+    lines_since_check: usize,
 }
 
 impl EventLogWriter {
     fn open(path: &Path) -> std::io::Result<Self> {
+        Self::open_with_max(path, EVENT_LOG_MAX_LINES)
+    }
+
+    fn open_with_max(path: &Path, max_lines: usize) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-
-        // Count existing lines so resumed sessions start with an accurate tally.
-        let existing_lines = std::fs::read_to_string(path)
-            .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0);
 
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
         Ok(Self {
-            writer: std::io::BufWriter::new(file),
             path: path.to_path_buf(),
-            lines_written: existing_lines,
+            writer: std::io::BufWriter::new(file),
+            max_lines,
+            lines_since_check: 0,
         })
     }
 
@@ -81,82 +86,71 @@ impl EventLogWriter {
         if let Ok(json) = serde_json::to_string(event) {
             let _ = writeln!(self.writer, "{json}");
             let _ = self.writer.flush();
-            self.lines_written += 1;
-            self.compact_if_needed();
+            self.lines_since_check += 1;
+            if self.max_lines > 0 && self.lines_since_check >= EVENT_LOG_COMPACT_CHECK_INTERVAL {
+                self.lines_since_check = 0;
+                self.compact_event_log();
+            }
         }
     }
 
-    /// When the log exceeds [`EVENT_LOG_MAX_LINES`], rewrite it keeping only
-    /// the most recent half of the entries. This preserves complete JSONL
-    /// records (never truncating mid-line) and keeps the newest events that
-    /// dashboard replay depends on.
-    fn compact_if_needed(&mut self) {
-        if self.lines_written <= EVENT_LOG_MAX_LINES {
-            return;
-        }
-
-        let keep = EVENT_LOG_MAX_LINES / 2;
+    /// Compact the on-disk log by retaining only the newest `max_lines` lines.
+    ///
+    /// Reads the current file, counts complete JSONL records, drops the oldest
+    /// ones, then atomically rewrites the file. The BufWriter is re-opened in
+    /// append mode afterwards so subsequent writes continue normally.
+    ///
+    /// This is best-effort: any I/O error is logged at debug level and the
+    /// writer continues normally with the uncompacted file.
+    fn compact_event_log(&mut self) {
         let content = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::debug!(
-                    error = %e,
-                    path = %self.path.display(),
-                    "event log compaction: failed to read file"
-                );
+                tracing::debug!(error = %e, "event log compact: failed to read");
                 return;
             }
         };
 
-        let all_lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-        let retained = if all_lines.len() > keep {
-            &all_lines[all_lines.len() - keep..]
-        } else {
-            &all_lines[..]
-        };
-        let mut compacted = String::with_capacity(retained.len() * 200);
-        for line in retained {
-            compacted.push_str(line);
-            compacted.push('\n');
-        }
+        // Collect non-empty complete lines (valid JSONL records).
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-        // Atomic-ish rewrite: write to a temp sibling, then rename over the
-        // original. This avoids a window where the file is empty.
-        let tmp_path = self.path.with_extension("jsonl.tmp");
-        if std::fs::write(&tmp_path, &compacted).is_err() {
-            tracing::debug!(
-                path = %self.path.display(),
-                "event log compaction: failed to write temp file"
-            );
+        if lines.len() <= self.max_lines {
+            // Not above cap; nothing to do.
             return;
         }
-        if std::fs::rename(&tmp_path, &self.path).is_err() {
-            tracing::debug!(
-                path = %self.path.display(),
-                "event log compaction: failed to rename temp file"
-            );
-            // Clean up the temp file best-effort.
+
+        // Keep only the newest `max_lines` lines.
+        let keep = &lines[lines.len() - self.max_lines..];
+        let new_content = keep.join("\n") + "\n";
+
+        // Write to a sibling temp file then rename for atomicity.
+        let tmp_path = self.path.with_extension("jsonl.tmp");
+        if let Err(e) = std::fs::write(&tmp_path, &new_content) {
+            tracing::debug!(error = %e, "event log compact: failed to write tmp");
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &self.path) {
+            tracing::debug!(error = %e, "event log compact: failed to rename");
             let _ = std::fs::remove_file(&tmp_path);
             return;
         }
 
-        // Re-open the file in append mode and update the line count.
-        match std::fs::OpenOptions::new().append(true).open(&self.path) {
-            Ok(file) => {
-                self.writer = std::io::BufWriter::new(file);
-                self.lines_written = retained.len();
+        // Re-open the writer in append mode to continue writing.
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(f) => {
+                self.writer = std::io::BufWriter::new(f);
                 tracing::debug!(
-                    path = %self.path.display(),
-                    kept = retained.len(),
+                    retained = self.max_lines,
+                    dropped = lines.len().saturating_sub(self.max_lines),
                     "event log compacted"
                 );
             }
             Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    path = %self.path.display(),
-                    "event log compaction: failed to re-open file after rename"
-                );
+                tracing::debug!(error = %e, "event log compact: failed to reopen after rename");
             }
         }
     }
@@ -248,8 +242,22 @@ impl StateHub {
     /// Every call to [`publish`] also appends the event to disk so that
     /// future consumers (e.g. `roko dashboard` in standalone mode) can
     /// replay the log to reconstruct the snapshot.
+    ///
+    /// The writer applies the default line cap ([`EVENT_LOG_MAX_LINES`]) and
+    /// compacts on-disk to keep only the newest N lines when the cap is
+    /// exceeded. Pass [`Self::with_event_log_capped`] to override the cap.
     pub fn with_event_log(ring_capacity: usize, log_path: &Path) -> Self {
-        let event_log = EventLogWriter::open(log_path)
+        Self::with_event_log_capped(ring_capacity, log_path, EVENT_LOG_MAX_LINES)
+    }
+
+    /// Create a new hub that persists events to the given JSONL log file with
+    /// a custom maximum line count.
+    ///
+    /// When `max_lines` is `0` the log grows without bound (no cap). Otherwise
+    /// every [`EVENT_LOG_COMPACT_CHECK_INTERVAL`] appends the writer checks and
+    /// compacts the file to at most `max_lines` complete JSONL records.
+    pub fn with_event_log_capped(ring_capacity: usize, log_path: &Path, max_lines: usize) -> Self {
+        let event_log = EventLogWriter::open_with_max(log_path, max_lines)
             .map(|w| Arc::new(Mutex::new(w)))
             .ok();
         if event_log.is_none() {
@@ -1220,5 +1228,120 @@ mod tests {
                 "partial JSON at line {i}: {line}"
             );
         }
+    }
+
+    /// Write more events than `max_lines`, then trigger compaction manually
+    /// and verify that (a) the file is bounded and (b) every retained line is
+    /// valid JSON that replays cleanly.
+    #[test]
+    fn event_log_caps_and_compacts_at_line_limit() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        // Use a tiny cap (10 lines) and bypass the check-interval by calling
+        // compact_event_log directly through the internal lock after writing.
+        let max_lines: usize = 10;
+        let hub = StateHub::with_event_log_capped(16, &log_path, max_lines);
+
+        // Publish 25 plan-started events.
+        for i in 0..25usize {
+            hub.publish(DashboardEvent::PlanStarted {
+                plan_id: format!("plan-{i}"),
+            });
+        }
+
+        // Force compaction by directly calling the writer's method.
+        if let Some(log) = &hub.event_log {
+            if let Ok(mut w) = log.lock() {
+                w.compact_event_log();
+            }
+        }
+
+        // After compaction the file must have exactly max_lines lines.
+        let content = std::fs::read_to_string(&log_path).expect("read event log");
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            max_lines,
+            "expected exactly {max_lines} lines after compaction, got {}",
+            lines.len()
+        );
+
+        // Every retained line must be valid JSON (no partial records).
+        for (idx, line) in lines.iter().enumerate() {
+            assert!(
+                serde_json::from_str::<DashboardEvent>(line).is_ok(),
+                "line {idx} is not valid DashboardEvent JSON: {line}"
+            );
+        }
+
+        // Newest events must be retained (plan-15 through plan-24).
+        let retained_ids: Vec<String> = lines
+            .iter()
+            .filter_map(|l| {
+                serde_json::from_str::<DashboardEvent>(l)
+                    .ok()
+                    .and_then(|e| {
+                        if let DashboardEvent::PlanStarted { plan_id } = e {
+                            Some(plan_id)
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect();
+        for i in 15..25usize {
+            assert!(
+                retained_ids.contains(&format!("plan-{i}")),
+                "plan-{i} should be retained after compaction"
+            );
+        }
+    }
+
+    /// After compaction the log must replay into a correct dashboard snapshot.
+    #[test]
+    fn event_log_capped_replays_correctly() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let log_path = tmpdir.path().join("events.jsonl");
+
+        let max_lines: usize = 5;
+        let hub = StateHub::with_event_log_capped(16, &log_path, max_lines);
+
+        // Publish an agent-spawned followed by several plan-started events.
+        hub.publish(DashboardEvent::AgentSpawned {
+            agent_id: "survivor".into(),
+            plan_id: String::new(),
+            task_id: String::new(),
+            attempt: 0,
+            role: "coder".into(),
+            model: String::new(),
+        });
+        for i in 0..20usize {
+            hub.publish(DashboardEvent::PlanStarted {
+                plan_id: format!("p{i}"),
+            });
+        }
+
+        // Force compaction.
+        if let Some(log) = &hub.event_log {
+            if let Ok(mut w) = log.lock() {
+                w.compact_event_log();
+            }
+        }
+
+        // File must be bounded.
+        let content = std::fs::read_to_string(&log_path).expect("read event log");
+        let line_count = content.lines().filter(|l| !l.trim().is_empty()).count();
+        assert_eq!(line_count, max_lines);
+
+        // Replay must produce a valid snapshot without panicking.
+        let (replayed, count) = StateHub::replay_from_log(&log_path);
+        assert_eq!(count, max_lines, "replay should ingest {max_lines} events");
+        let snap = replayed.current_snapshot();
+        // At least some plans should be present (the 5 newest plan-started events).
+        assert!(
+            snap.stats.plans_active > 0,
+            "snapshot must have active plans"
+        );
     }
 }

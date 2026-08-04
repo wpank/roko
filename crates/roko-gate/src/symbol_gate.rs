@@ -205,8 +205,8 @@ impl roko_core::Cell for SymbolGate {
     fn cell_name(&self) -> &str {
         "SymbolGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

@@ -6,6 +6,7 @@
 use crate::gateway_events::{GatewayEvent, GatewayEventWriter};
 use crate::observer::InferenceObserver;
 use crate::provider::{AgentOptions, create_agent_for_model};
+use crate::rate_limit::ProviderRateLimiter;
 use crate::task_runner::CostTable;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -134,6 +135,13 @@ pub struct ModelCallService {
     run_id: String,
     /// Per-service sequence for gateway request ids.
     request_seq: AtomicU64,
+    /// Shared per-provider rate limiter acquired before every live LLM request.
+    ///
+    /// A single `Arc<ProviderRateLimiter>` is shared across all concurrent
+    /// agent dispatches that use this service, enforcing configured RPM/TPM
+    /// budgets at the provider I/O boundary.  When `None`, the
+    /// `OpenAiCompatLlmBackend` falls back to its own process-global limiter.
+    rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
 impl ModelCallService {
@@ -162,6 +170,7 @@ impl ModelCallService {
             convergence: ConvergenceDetectionCell::new(5, 0.85, 3),
             run_id: "model-call-service".to_string(),
             request_seq: AtomicU64::new(1),
+            rate_limiter: None,
         }
     }
 
@@ -253,6 +262,21 @@ impl ModelCallService {
         R: ProviderOutcomeRecorder + 'static,
     {
         self.provider_outcome_recorder = Some(recorder);
+        self
+    }
+
+    /// Attach a shared provider rate limiter.
+    ///
+    /// The limiter is acquired for the resolved provider before every live LLM
+    /// request, enforcing the configured RPM/TPM budgets across all concurrent
+    /// agent dispatches that share this service.
+    ///
+    /// Build from live `ProviderConfig` entries via
+    /// [`ProviderRateLimiter::from_provider_configs`] at runtime construction,
+    /// then pass the same `Arc` to every `ModelCallService` in the process.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 
@@ -1617,22 +1641,45 @@ fn similarity(a: &str, b: &str) -> f64 {
 struct ProviderCallCell {
     config: RokoConfig,
     cost_table: CostTable,
+    /// Optional shared rate limiter acquired before every live LLM request.
+    rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
 impl ProviderCallCell {
-    fn new(config: RokoConfig, cost_table: CostTable) -> Self {
-        Self { config, cost_table }
+    fn new(
+        config: RokoConfig,
+        cost_table: CostTable,
+        rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    ) -> Self {
+        Self {
+            config,
+            cost_table,
+            rate_limiter,
+        }
+    }
+
+    /// Resolve the provider ID for a model key using the cell's config.
+    fn provider_id_for(&self, model_key: &str) -> String {
+        let models = self.config.effective_models();
+        models
+            .get(model_key)
+            .or_else(|| models.values().find(|p| p.slug == model_key))
+            .map(|p| p.provider.clone())
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| model_key.to_string())
     }
 
     /// Execute a model call through the provider layer.
     ///
-    /// 1. Calls `create_agent_for_model()` to get a `Box<dyn Agent>`.
-    /// 2. Runs `agent.run()` with the prompt.
-    /// 3. Classifies the result as success or failure.
-    /// 4. On rate-limit failure, applies exponential backoff (2s / 4s / 8s)
+    /// 1. Acquires a slot from the shared `ProviderRateLimiter` (if set) for
+    ///    the resolved provider ID -- this is the canonical rate-limit gate.
+    /// 2. Calls `create_agent_for_model()` to get a `Box<dyn Agent>`.
+    /// 3. Runs `agent.run()` with the prompt.
+    /// 4. Classifies the result as success or failure.
+    /// 5. On rate-limit failure, applies exponential backoff (2s / 4s / 8s)
     ///    before trying the next fallback model.
-    /// 5. On other retryable failures, tries the next model immediately.
-    /// 6. Returns the response or the final error.
+    /// 6. On other retryable failures, tries the next model immediately.
+    /// 7. Returns the response or the final error.
     async fn execute(
         &self,
         model: &str,
@@ -1670,6 +1717,14 @@ impl ProviderCallCell {
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
                 }
+            }
+
+            // Acquire a rate-limit slot before dispatching to the provider.
+            // This is the canonical enforcement point for RPM budgets shared
+            // across all concurrent agent calls in this runtime.
+            let provider_id = self.provider_id_for(attempt_model);
+            if let Some(ref limiter) = self.rate_limiter {
+                limiter.acquire(&provider_id).await;
             }
 
             let mut attempt_options = options.clone();
@@ -1932,7 +1987,8 @@ impl ModelCaller for ModelCallService {
         // ModelCallRequest carries it.
 
         let fallback_models = self.fallback_models_for_request(&model);
-        let cell = ProviderCallCell::new(config, self.cost_table.clone());
+        let cell =
+            ProviderCallCell::new(config, self.cost_table.clone(), self.rate_limiter.clone());
         self.inference_started(&request_id, &model, &agent_id, auto_routed);
         let inference_start = Instant::now();
         let output = match cell
@@ -2915,5 +2971,131 @@ mod tests {
             vec![("my-model".to_string(), true)],
             "should use model slug when provider is None"
         );
+    }
+
+    /// A `ModelCallService` built with `with_rate_limiter` stores the shared limiter.
+    #[test]
+    fn provider_rate_limit_wired_into_model_call_service() {
+        use crate::rate_limit::ProviderRateLimiter;
+
+        let limiter = Arc::new(ProviderRateLimiter::new(60));
+        let svc =
+            ModelCallService::new("test-model".to_string()).with_rate_limiter(Arc::clone(&limiter));
+
+        assert!(
+            svc.rate_limiter.is_some(),
+            "with_rate_limiter should store the shared limiter"
+        );
+    }
+
+    /// `ProviderCallCell::provider_id_for` resolves from config when available.
+    #[test]
+    fn provider_call_cell_resolves_provider_id_from_config() {
+        use crate::rate_limit::ProviderRateLimiter;
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::provider::{ProviderConfig, ProviderLimits};
+        use roko_core::config::schema::{ModelProfile, RokoConfig};
+
+        let mut config = RokoConfig::default();
+        config.providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::AnthropicApi,
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: Some(ProviderLimits {
+                    rpm: 50,
+                    tpm: 40_000,
+                }),
+            },
+        );
+        config.models.insert(
+            "claude-3-5-sonnet".to_string(),
+            ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: "claude-3-5-sonnet-20241022".to_string(),
+                context_window: 200_000,
+                supports_tools: true,
+                ..Default::default()
+            },
+        );
+
+        let cell = ProviderCallCell {
+            config,
+            cost_table: CostTable::default(),
+            rate_limiter: Some(Arc::new(ProviderRateLimiter::new(60))),
+        };
+
+        // Model key in config resolves to provider "anthropic".
+        let provider = cell.provider_id_for("claude-3-5-sonnet");
+        assert_eq!(provider, "anthropic", "should resolve provider from config");
+
+        // Unknown model falls back to the model key itself.
+        let fallback = cell.provider_id_for("unknown-model");
+        assert_eq!(
+            fallback, "unknown-model",
+            "unknown model should fall back to model key"
+        );
+    }
+
+    /// `ProviderRateLimiter::from_provider_configs` feeds configured limits into
+    /// the shared limiter used by concurrent calls.
+    #[tokio::test]
+    async fn provider_rate_limit_configured_from_provider_config() {
+        use crate::rate_limit::ProviderRateLimiter;
+        use roko_core::agent::ProviderKind;
+        use roko_core::config::provider::{ProviderConfig, ProviderLimits};
+        use std::collections::HashMap;
+        use std::time::Instant;
+
+        let mut configs = HashMap::new();
+        // Very high RPM so the test does not actually throttle.
+        configs.insert(
+            "test-provider".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::OpenAiCompat,
+                base_url: None,
+                api_key_env: None,
+                command: None,
+                args: None,
+                timeout_ms: None,
+                ttft_timeout_ms: None,
+                connect_timeout_ms: None,
+                extra_headers: None,
+                max_concurrent: None,
+                limits: Some(ProviderLimits {
+                    rpm: 600,
+                    tpm: 100_000,
+                }),
+            },
+        );
+
+        let limiter = Arc::new(ProviderRateLimiter::from_provider_configs(
+            60,
+            configs.iter(),
+        ));
+
+        // Two concurrent acquires for different providers should not contend.
+        let start = Instant::now();
+        let ((), ()) = tokio::join!(
+            limiter.acquire("test-provider"),
+            limiter.acquire("other-provider"),
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "independent providers should not contend: {:?}",
+            start.elapsed()
+        );
+
+        // TPM tracking works.
+        let tpm = limiter.record_tokens("test-provider", 500).await;
+        assert!(tpm > 0, "TPM should be non-zero after recording tokens");
     }
 }

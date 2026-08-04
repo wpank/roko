@@ -290,6 +290,7 @@ fn build_mock_config(base_url: &str, timeout_ms: u64) -> RokoConfig {
             connect_timeout_ms: Some(timeout_ms),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         },
     );
     config.models.insert(

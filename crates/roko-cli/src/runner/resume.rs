@@ -57,6 +57,14 @@ pub struct ResumeReport {
     /// Embedded CascadeRouter snapshot JSON from the prior run-state snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_router_json: Option<String>,
+    /// Conductor circuit-breaker state from the prior run-state snapshot.
+    ///
+    /// When `Some`, the event loop restores the conductor via
+    /// [`roko_conductor::Conductor::from_circuit_breaker_state`] before
+    /// falling back to `Conductor::from_config`. `None` means the prior
+    /// run had no conductor or the snapshot predates E08-T06.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_circuit_breaker_state: Option<roko_conductor::CircuitBreakerState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,6 +191,9 @@ pub(crate) fn prepare_resume_with_force(
         cascade_router_json: snapshot
             .as_ref()
             .and_then(|s| s.cascade_router_json.clone()),
+        conductor_circuit_breaker_state: snapshot
+            .as_ref()
+            .and_then(|s| s.conductor_circuit_breaker_state.clone()),
     };
 
     if let Some(prior) = snapshot.as_ref() {
@@ -329,6 +340,7 @@ mod tests {
             replan_ledger: ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            conductor_circuit_breaker_state: None,
         }
     }
 

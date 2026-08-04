@@ -620,6 +620,7 @@ impl ChatAgentSession {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             });
 
         let model_key = self.model_call_model_key();

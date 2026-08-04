@@ -900,6 +900,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         )),
         "ollama" => Ok((
@@ -919,6 +920,7 @@ fn legacy_provider_config(config: &RokoConfig) -> Result<(String, ProviderConfig
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         )),
         other => Err(anyhow!(
@@ -1956,6 +1958,7 @@ command = "claude"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
 
@@ -2036,6 +2039,7 @@ command = "claude"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         )]);
         config.models.insert(
@@ -2123,6 +2127,7 @@ command = "claude"
                 connect_timeout_ms: None,
                 extra_headers: Some(headers),
                 max_concurrent: None,
+                limits: None,
             },
         );
 

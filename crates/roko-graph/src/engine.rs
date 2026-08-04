@@ -405,8 +405,8 @@ impl Cell for NoopCell {
     fn cell_version(&self) -> crate::cell::CellVersion {
         (0, 1, 0)
     }
-    fn protocols(&self) -> &[&str] {
-        &[]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        Vec::new()
     }
     fn estimated_cost(&self) -> Option<f64> {
         None
@@ -459,8 +459,8 @@ impl Cell for ShellCell {
     fn cell_version(&self) -> crate::cell::CellVersion {
         (0, 1, 0)
     }
-    fn protocols(&self) -> &[&str] {
-        &["Gate"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
     fn estimated_cost(&self) -> Option<f64> {
         None

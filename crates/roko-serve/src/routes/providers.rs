@@ -742,6 +742,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -846,6 +847,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -940,6 +942,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -1134,6 +1137,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.providers.insert(
@@ -1149,6 +1153,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -1305,6 +1310,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
 
@@ -1394,6 +1400,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -1520,6 +1527,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
 

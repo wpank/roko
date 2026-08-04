@@ -120,8 +120,8 @@ mod tests {
         fn cell_version(&self) -> CellVersion {
             (0, 1, 0)
         }
-        fn protocols(&self) -> &[&str] {
-            &[]
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            Vec::new()
         }
         fn estimated_cost(&self) -> Option<f64> {
             None

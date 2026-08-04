@@ -12,6 +12,7 @@ use std::sync::Arc;
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::mcp::{McpConfig, discover_mcp_tools};
 use roko_agent::provider::ProviderSemaphores;
+use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_compose::{AttentionBidder, LearningBidder};
 use roko_core::config::schema::RokoConfig;
 use roko_core::tool::ToolDef;
@@ -40,6 +41,12 @@ pub struct SharedAgentFactory {
     mcp_tools: Option<Arc<Vec<ToolDef>>>,
     dispatcher: Dispatcher,
     resolver: ProviderDispatchResolver,
+    /// Runtime-scoped per-provider rate limiter built from `[providers.<name>].limits`.
+    ///
+    /// Shared across all concurrent agent dispatches for the duration of the run.
+    /// Passed to `AgentOptions.rate_limiter` so HTTP-backed provider adapters
+    /// call `acquire(provider_id)` before each live LLM request.
+    rate_limiter: Arc<ProviderRateLimiter>,
 }
 
 impl SharedAgentFactory {
@@ -95,12 +102,21 @@ impl SharedAgentFactory {
         let dispatcher = Dispatcher::new(cascade_router, prompt_assembler, WarmPool::new(0));
         let resolver = ProviderDispatchResolver::new(Arc::clone(&config));
 
+        // Build one shared rate limiter from the provider limits declared in roko.toml.
+        // Every concurrent agent dispatch shares this budget so the collective request
+        // rate across all spawned agents respects the per-provider RPM/TPM config.
+        let rate_limiter = Arc::new(ProviderRateLimiter::from_provider_configs(
+            60, // default RPM when no provider-level limit is configured
+            config.effective_providers().iter(),
+        ));
+
         Self {
             config,
             semaphores,
             mcp_tools,
             dispatcher,
             resolver,
+            rate_limiter,
         }
     }
 
@@ -168,9 +184,11 @@ impl SharedAgentFactory {
         let config = Arc::clone(&self.config);
         let semaphores = Arc::clone(&self.semaphores);
         let mcp_tools = self.mcp_tools.clone();
+        let rate_limiter = Arc::clone(&self.rate_limiter);
 
         tokio::spawn(async move {
-            let dispatcher = AgentDispatcherV2::with_shared(config, semaphores);
+            let dispatcher =
+                AgentDispatcherV2::with_shared(config, semaphores).with_rate_limiter(rate_limiter);
             match dispatcher
                 .run_agent_result_bridge_with_mcp(request, mcp_tools)
                 .await

@@ -191,6 +191,7 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.push(check_serve_auth(&loaded_config));
     checks.push(check_serve_health(options.serve_url.as_deref(), &loaded_config).await?);
     checks.push(check_v2_abstractions());
+    checks.extend(check_state_layout_audit(&workdir));
     checks.extend(check_harness_providers(&loaded_config));
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
 
@@ -931,6 +932,198 @@ fn check_v2_abstractions() -> DoctorCheck {
     }
 }
 
+/// Audit the `.roko/` state layout for version, canonical, and legacy files.
+///
+/// Produces up to three checks:
+/// - `state_layout_version` -- verifies `.roko/VERSION` is V2 (current).
+/// - `state_canonical_files` -- lists which E02 canonical files are present.
+/// - `state_legacy_files` -- flags legacy files left over from V1 layouts.
+///
+/// Returns an empty slice when `.roko/` does not exist (workspace not yet
+/// initialized); the `layout` check already covers that case.
+fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
+    use roko_fs::LayoutVersion;
+
+    let layout = RokoLayout::for_project(workdir);
+    if !layout.root().is_dir() {
+        // Workspace not initialized; the `layout` check reports this already.
+        return vec![];
+    }
+
+    let mut checks = Vec::new();
+
+    // -- 1. VERSION file ------------------------------------------------------
+    let version_path = layout.version_file();
+    let version_check = if !version_path.is_file() {
+        DoctorCheck {
+            id: "state_layout_version".to_string(),
+            status: DoctorStatus::Warn,
+            message: ".roko/VERSION file is missing".to_string(),
+            detail: Some("run `roko init` to create the version file".to_string()),
+            path: Some(version_path.display().to_string()),
+            url: None,
+            fix: Some("roko init".to_string()),
+        }
+    } else {
+        let on_disk = std::fs::read_to_string(&version_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .and_then(LayoutVersion::from_u32);
+
+        match on_disk {
+            Some(LayoutVersion::V2) => DoctorCheck {
+                id: "state_layout_version".to_string(),
+                status: DoctorStatus::Ok,
+                message: "storage layout is V2 (current)".to_string(),
+                detail: None,
+                path: Some(version_path.display().to_string()),
+                url: None,
+                fix: None,
+            },
+            Some(LayoutVersion::V1) => DoctorCheck {
+                id: "state_layout_version".to_string(),
+                status: DoctorStatus::Warn,
+                message: "storage layout is V1 (outdated)".to_string(),
+                detail: Some(
+                    "V1->V2 migration moves signals.jsonl to signals.jsonl.v1-legacy \
+                     and bumps VERSION to 2"
+                        .to_string(),
+                ),
+                path: Some(version_path.display().to_string()),
+                url: None,
+                fix: Some("roko init".to_string()),
+            },
+            None => DoctorCheck {
+                id: "state_layout_version".to_string(),
+                status: DoctorStatus::Warn,
+                message: ".roko/VERSION contains an unrecognized value".to_string(),
+                detail: Some(
+                    std::fs::read_to_string(&version_path)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                ),
+                path: Some(version_path.display().to_string()),
+                url: None,
+                fix: Some("roko init".to_string()),
+            },
+        }
+    };
+    checks.push(version_check);
+
+    // -- 2. Canonical E02 files -----------------------------------------------
+    // These are the paths that all E02 writers now target in V2.
+    let canonical_paths: &[(&str, PathBuf)] = &[
+        ("episodes.jsonl", layout.root_episodes_path()),
+        (
+            "gate-verdicts.jsonl",
+            layout.root().join("gate-verdicts.jsonl"),
+        ),
+        ("engrams.jsonl", layout.engrams_path()),
+        ("events.jsonl", layout.events_jsonl_path()),
+        ("learn/gate-thresholds.json", layout.gate_thresholds_path()),
+        (
+            "state/state-snapshot.json",
+            layout.state_dir().join("state-snapshot.json"),
+        ),
+    ];
+
+    let mut present: Vec<&str> = Vec::new();
+    let mut absent: Vec<&str> = Vec::new();
+    for (name, path) in canonical_paths {
+        if path.exists() {
+            present.push(name);
+        } else {
+            absent.push(name);
+        }
+    }
+
+    let canonical_check = if absent.is_empty() {
+        DoctorCheck {
+            id: "state_canonical_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: format!(
+                "all {} canonical V2 storage files are present",
+                present.len()
+            ),
+            detail: Some(present.join(", ")),
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: None,
+        }
+    } else {
+        DoctorCheck {
+            id: "state_canonical_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: format!(
+                "{} canonical V2 files present, {} absent (normal for new workspaces)",
+                present.len(),
+                absent.len()
+            ),
+            detail: Some(format!(
+                "present: {}; absent: {}",
+                if present.is_empty() {
+                    "none".to_string()
+                } else {
+                    present.join(", ")
+                },
+                absent.join(", ")
+            )),
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: None,
+        }
+    };
+    checks.push(canonical_check);
+
+    // -- 3. Legacy V1 files ---------------------------------------------------
+    // Files that should not exist in a migrated V2 workspace.
+    let legacy_paths: &[(&str, PathBuf)] = &[
+        ("signals.jsonl", layout.signals_path()),
+        (
+            "memory/episodes.jsonl",
+            layout.memory_dir().join("episodes.jsonl"),
+        ),
+        ("state/executor.json", layout.executor_snapshot()),
+        ("state/events.json", layout.event_log_snapshot()),
+    ];
+
+    let mut legacy_found: Vec<&str> = Vec::new();
+    for (name, path) in legacy_paths {
+        if path.exists() {
+            legacy_found.push(name);
+        }
+    }
+
+    let legacy_check = if legacy_found.is_empty() {
+        DoctorCheck {
+            id: "state_legacy_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no legacy V1 storage files detected".to_string(),
+            detail: None,
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: None,
+        }
+    } else {
+        DoctorCheck {
+            id: "state_legacy_files".to_string(),
+            status: DoctorStatus::Warn,
+            message: format!("{} legacy V1 storage file(s) detected", legacy_found.len()),
+            detail: Some(format!(
+                "legacy files (safe to remove after migration): {}",
+                legacy_found.join(", ")
+            )),
+            path: Some(layout.root().display().to_string()),
+            url: None,
+            fix: Some("roko init".to_string()),
+        }
+    };
+    checks.push(legacy_check);
+
+    checks
+}
+
 /// Check for configured harness providers (Hermes, OpenClaw) and verify
 /// their binaries are available on PATH.
 fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
@@ -1596,5 +1789,165 @@ mod tests {
         assert_eq!(mcp_check.status, DoctorStatus::Skipped);
         // Missing MCP config must NOT cause a failure.
         assert!(report.healthy);
+    }
+
+    // -- state layout audit tests ---------------------------------------------
+
+    #[test]
+    fn state_layout_audit_skipped_when_no_roko_dir() {
+        let temp = tempdir().unwrap();
+        // No .roko/ directory created -- audit should return empty.
+        let checks = check_state_layout_audit(temp.path());
+        assert!(
+            checks.is_empty(),
+            "audit should return no checks when .roko/ does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_layout_audit_v2_workspace_is_clean() {
+        let temp = tempdir().unwrap();
+        // Bootstrap a fresh V2 workspace.
+        RokoLayout::for_project(temp.path())
+            .ensure_dirs()
+            .await
+            .expect("ensure_dirs");
+
+        let checks = check_state_layout_audit(temp.path());
+        assert_eq!(checks.len(), 3, "should produce exactly 3 checks");
+
+        let version_check = checks
+            .iter()
+            .find(|c| c.id == "state_layout_version")
+            .expect("state_layout_version check");
+        assert_eq!(
+            version_check.status,
+            DoctorStatus::Ok,
+            "V2 workspace should have Ok version check"
+        );
+
+        let legacy_check = checks
+            .iter()
+            .find(|c| c.id == "state_legacy_files")
+            .expect("state_legacy_files check");
+        assert_eq!(
+            legacy_check.status,
+            DoctorStatus::Ok,
+            "fresh V2 workspace should have no legacy files"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_layout_audit_v1_workspace_warns_on_legacy_signals() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+
+        // Bootstrap a V1 workspace manually (no migration).
+        for dir in &layout.top_level_dirs() {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+        std::fs::write(layout.version_file(), "1").expect("write VERSION");
+        // Place a signals.jsonl file that would be present in a V1 workspace.
+        std::fs::write(layout.signals_path(), "{}\n").expect("write signals.jsonl");
+
+        let checks = check_state_layout_audit(temp.path());
+
+        let version_check = checks
+            .iter()
+            .find(|c| c.id == "state_layout_version")
+            .expect("state_layout_version check");
+        assert_eq!(
+            version_check.status,
+            DoctorStatus::Warn,
+            "V1 workspace should warn on version check"
+        );
+        assert!(
+            version_check.message.contains("V1"),
+            "version check message should mention V1"
+        );
+
+        let legacy_check = checks
+            .iter()
+            .find(|c| c.id == "state_legacy_files")
+            .expect("state_legacy_files check");
+        assert_eq!(
+            legacy_check.status,
+            DoctorStatus::Warn,
+            "V1 workspace with signals.jsonl should warn on legacy files"
+        );
+        assert!(
+            legacy_check
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("signals.jsonl"),
+            "legacy files detail should mention signals.jsonl"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_layout_audit_v1_version_warns_even_without_signals_file() {
+        let temp = tempdir().unwrap();
+        let layout = RokoLayout::for_project(temp.path());
+
+        // V1 workspace without signals.jsonl (already partially migrated).
+        for dir in &layout.top_level_dirs() {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+        std::fs::write(layout.version_file(), "1").expect("write VERSION");
+        // No signals.jsonl written.
+
+        let checks = check_state_layout_audit(temp.path());
+
+        let version_check = checks
+            .iter()
+            .find(|c| c.id == "state_layout_version")
+            .expect("state_layout_version check");
+        assert_eq!(
+            version_check.status,
+            DoctorStatus::Warn,
+            "V1 version should still warn even without signals.jsonl"
+        );
+
+        let legacy_check = checks
+            .iter()
+            .find(|c| c.id == "state_legacy_files")
+            .expect("state_legacy_files check");
+        assert_eq!(
+            legacy_check.status,
+            DoctorStatus::Ok,
+            "no legacy files should be Ok when signals.jsonl absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_report_includes_state_layout_audit() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        let check_ids: Vec<&str> = report.checks.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            check_ids.contains(&"state_layout_version"),
+            "report should include state_layout_version; got: {check_ids:?}"
+        );
+        assert!(
+            check_ids.contains(&"state_canonical_files"),
+            "report should include state_canonical_files; got: {check_ids:?}"
+        );
+        assert!(
+            check_ids.contains(&"state_legacy_files"),
+            "report should include state_legacy_files; got: {check_ids:?}"
+        );
     }
 }

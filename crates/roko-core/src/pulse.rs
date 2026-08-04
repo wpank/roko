@@ -6,7 +6,7 @@
 //! addressing key for Pulses), [`TopicFilter`] (subscription filters), and
 //! [`PolicyOutputs`] (the explicit outputs from a React's `decide()` call).
 
-use crate::{Body, Engram, Kind, Provenance, Score};
+use crate::{Body, ContentHash, Engram, Kind, Provenance, Score};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -85,6 +85,14 @@ pub struct Pulse {
     pub created_at_ms: i64,
     /// Arbitrary string metadata (ordered for stable serialization).
     pub tags: BTreeMap<String, String>,
+    /// Optional back-reference to the [`Engram`] that projected this Pulse.
+    ///
+    /// Set when an [`Engram`] is projected to a Pulse via `Engram::to_pulse()`, or
+    /// when a Cell explicitly links this Pulse to a Signal it references. Most Pulses
+    /// originate directly from Bus emission and have no Signal context, so this
+    /// field defaults to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_hint: Option<ContentHash>,
 }
 
 impl Pulse {
@@ -98,6 +106,7 @@ impl Pulse {
             body,
             created_at_ms: current_time_ms(),
             tags: BTreeMap::new(),
+            lineage_hint: None,
         }
     }
 
@@ -115,37 +124,55 @@ impl Pulse {
 
     /// Promote this ephemeral Pulse to a durable Signal (Engram).
     ///
-    /// This is the deliberate graduation path -- the only way to get a Pulse
-    /// into the Store. Unlike [`Engram::from_pulse_synthetic()`] (which is a
-    /// read-only scoring helper), `graduate()` carries explicit provenance
-    /// and score metadata for the audit trail.
+    /// This is the deliberate graduation path — the only way to get a Pulse
+    /// into the durable audit DAG (Store). Unlike [`Engram::from_pulse_synthetic()`]
+    /// (a lossy helper for quick scoring), `graduate()` carries explicit provenance,
+    /// balance, score, and tag metadata for the full audit trail.
     ///
-    /// The graduated signal preserves the pulse's kind, body, creation time,
-    /// and all existing tags. Two additional audit tags are added:
-    /// - `pulse_topic`: the original topic string
-    /// - `pulse_seq`: the original sequence number
+    /// The graduated signal:
+    /// - Preserves the pulse's kind, body, creation time, and existing tags.
+    /// - Starts at the [`SignalStatus::Working`](crate::engram::SignalStatus::Working)
+    ///   tier (graduated signals are already past Transient).
+    /// - Sets the initial demurrage balance to `initial_balance`.
+    /// - Adds the pulse's topic string as an additional `"pulse_topic"` tag.
+    /// - Adds audit tag `"pulse_seq"` with the sequence number.
+    /// - Merges any extra label strings from `tags` as `key = "true"` entries.
     ///
-    /// These audit tags change the content hash (relative to `from_pulse_synthetic`),
-    /// which is intentional -- graduated signals are distinct from synthetic ones.
+    /// The graduated content hash differs from `from_pulse_synthetic` because
+    /// of the additional audit tags — this is intentional.
     ///
-    /// No lineage is fabricated because there is no source engram content hash.
+    /// No lineage is fabricated because there is no source Engram content hash.
     ///
     /// # Arguments
     ///
-    /// * `provenance` -- who or what decided to graduate this Pulse
-    /// * `score` -- the initial relevance/importance score for the Signal
+    /// * `provenance` — who or what decided to graduate this Pulse
+    /// * `initial_balance` — starting demurrage balance `[0.0, 1.0]`
+    /// * `score` — the initial relevance/importance score for the Signal
+    /// * `tags` — additional string labels to attach (added as `label = "true"`)
     #[must_use]
-    pub fn graduate(&self, provenance: Provenance, score: Score) -> Engram {
+    pub fn graduate(
+        &self,
+        provenance: Provenance,
+        initial_balance: f64,
+        score: Score,
+        tags: Vec<String>,
+    ) -> Engram {
         let mut builder = Engram::builder(self.kind.clone())
             .body(self.body.clone())
             .provenance(provenance)
             .score(score)
+            .balance(initial_balance)
+            .status(crate::engram::SignalStatus::Working)
             .created_at_ms(self.created_at_ms)
             .tag("pulse_topic", self.topic.to_string())
             .tag("pulse_seq", self.seq.to_string());
         // Copy all existing pulse tags onto the graduated engram.
         for (key, value) in &self.tags {
             builder = builder.tag(key.clone(), value.clone());
+        }
+        // Add extra label tags from the caller.
+        for label in tags {
+            builder = builder.tag(label, "true");
         }
         builder.build()
     }
@@ -155,7 +182,7 @@ impl Pulse {
 
 /// Ergonomic builder for [`Pulse`]s.
 ///
-/// Fills in sensible defaults: current time, empty body, no tags.
+/// Fills in sensible defaults: current time, empty body, no tags, no lineage hint.
 pub struct PulseBuilder {
     seq: u64,
     topic: Topic,
@@ -163,6 +190,7 @@ pub struct PulseBuilder {
     body: Body,
     created_at_ms: Option<i64>,
     tags: BTreeMap<String, String>,
+    lineage_hint: Option<ContentHash>,
 }
 
 impl PulseBuilder {
@@ -176,6 +204,7 @@ impl PulseBuilder {
             body: Body::empty(),
             created_at_ms: None,
             tags: BTreeMap::new(),
+            lineage_hint: None,
         }
     }
 
@@ -200,6 +229,16 @@ impl PulseBuilder {
         self
     }
 
+    /// Set a back-reference to the [`Engram`] that projected or relates to this Pulse.
+    ///
+    /// Use this when projecting a Signal via `Engram::to_pulse()` to preserve the
+    /// link from the ephemeral Pulse back to its durable origin.
+    #[must_use]
+    pub fn lineage_hint(mut self, hash: ContentHash) -> Self {
+        self.lineage_hint = Some(hash);
+        self
+    }
+
     /// Finalize the pulse.
     #[must_use]
     pub fn build(self) -> Pulse {
@@ -210,6 +249,7 @@ impl PulseBuilder {
             body: self.body,
             created_at_ms: self.created_at_ms.unwrap_or_else(current_time_ms),
             tags: self.tags,
+            lineage_hint: self.lineage_hint,
         }
     }
 }
@@ -633,7 +673,12 @@ mod graduation_tests {
             .created_at_ms(99999)
             .build();
 
-        let signal = pulse.graduate(Provenance::trusted("graduation-policy"), Score::default());
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
 
         assert_eq!(signal.kind, Kind::GateVerdict);
         assert_eq!(signal.body, Body::text("passed"));
@@ -649,7 +694,7 @@ mod graduation_tests {
 
         let prov = Provenance::trusted("graduation-policy");
         let score = Score::NEUTRAL;
-        let signal = pulse.graduate(prov.clone(), score);
+        let signal = pulse.graduate(prov.clone(), 1.0, score, vec![]);
 
         assert_eq!(signal.provenance, prov);
         assert_eq!(signal.score, score);
@@ -662,7 +707,12 @@ mod graduation_tests {
             .created_at_ms(0)
             .build();
 
-        let signal = pulse.graduate(Provenance::trusted("graduation-policy"), Score::default());
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
 
         assert_eq!(signal.tag("pulse_topic"), Some("gate.verdict.emitted"));
         assert_eq!(signal.tag("pulse_seq"), Some("7"));
@@ -677,7 +727,12 @@ mod graduation_tests {
             .tag("gate", "compile")
             .build();
 
-        let signal = pulse.graduate(Provenance::trusted("graduation-policy"), Score::default());
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
 
         // Original tags preserved
         assert_eq!(signal.tag("plan_id"), Some("plan-42"));
@@ -698,8 +753,18 @@ mod graduation_tests {
             .created_at_ms(0)
             .build();
 
-        let e1 = p1.graduate(Provenance::trusted("graduation-policy"), Score::default());
-        let e2 = p2.graduate(Provenance::trusted("graduation-policy"), Score::default());
+        let e1 = p1.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
+        let e2 = p2.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
 
         // Different bodies -> different content hashes.
         assert_ne!(e1.content_hash(), e2.content_hash());
@@ -712,11 +777,111 @@ mod graduation_tests {
             .created_at_ms(0)
             .build();
 
-        let graduated = pulse.graduate(Provenance::agent("pulse_promotion"), Score::default());
+        let graduated = pulse.graduate(
+            Provenance::agent("pulse_promotion"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
         let synthetic = Engram::from_pulse_synthetic(&pulse);
 
         // The graduated engram has extra audit tags (pulse_topic, pulse_seq)
         // that the synthetic one does not, so their content hashes differ.
         assert_ne!(graduated.content_hash(), synthetic.content_hash());
+    }
+
+    #[test]
+    fn graduate_sets_status_to_working() {
+        use crate::engram::SignalStatus;
+
+        let pulse = Pulse::builder(1, Topic::new("gate.verdict"), Kind::GateVerdict)
+            .body(Body::text("pass"))
+            .created_at_ms(0)
+            .build();
+
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec![],
+        );
+
+        assert_eq!(signal.status, SignalStatus::Working);
+    }
+
+    #[test]
+    fn graduate_sets_initial_balance() {
+        let pulse = Pulse::builder(1, Topic::new("gate.verdict"), Kind::GateVerdict)
+            .body(Body::text("pass"))
+            .created_at_ms(0)
+            .build();
+
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            0.75,
+            Score::default(),
+            vec![],
+        );
+
+        assert!((signal.balance - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn graduate_merges_extra_labels() {
+        let pulse = Pulse::builder(1, Topic::new("gate.verdict"), Kind::GateVerdict)
+            .body(Body::text("pass"))
+            .created_at_ms(0)
+            .build();
+
+        let signal = pulse.graduate(
+            Provenance::trusted("graduation-policy"),
+            1.0,
+            Score::default(),
+            vec!["important".to_string(), "gate-pass".to_string()],
+        );
+
+        assert_eq!(signal.tag("important"), Some("true"));
+        assert_eq!(signal.tag("gate-pass"), Some("true"));
+    }
+
+    #[test]
+    fn pulse_lineage_hint_defaults_to_none() {
+        let p = Pulse::new(1, Topic::new("test"), Kind::Task, Body::text("hi"));
+        assert!(p.lineage_hint.is_none());
+    }
+
+    #[test]
+    fn pulse_builder_lineage_hint_setter() {
+        let hash = ContentHash([0x42; 32]);
+        let p = Pulse::builder(3, Topic::new("t"), Kind::Task)
+            .lineage_hint(hash)
+            .build();
+        assert_eq!(p.lineage_hint, Some(hash));
+    }
+
+    #[test]
+    fn pulse_lineage_hint_serde_roundtrip() {
+        let hash = ContentHash([0xab; 32]);
+        let p = Pulse::builder(5, Topic::new("sig.projected"), Kind::Episode)
+            .body(Body::text("from signal"))
+            .created_at_ms(12345)
+            .lineage_hint(hash)
+            .build();
+        let json = serde_json::to_string(&p).unwrap();
+        let parsed: Pulse = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, parsed);
+        assert_eq!(parsed.lineage_hint, Some(hash));
+    }
+
+    #[test]
+    fn pulse_without_lineage_hint_skipped_in_json() {
+        let p = Pulse::builder(1, Topic::new("t"), Kind::Task)
+            .created_at_ms(0)
+            .build();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            !json.contains("lineage_hint"),
+            "lineage_hint should be omitted when None, got: {json}"
+        );
     }
 }

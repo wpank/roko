@@ -167,6 +167,7 @@ impl DreamAgentConfig {
             dangerously_skip_permissions: false,
             name,
             pre_discovered_mcp_tools: None,
+            rate_limiter: None,
         }
     }
 }

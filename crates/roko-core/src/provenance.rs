@@ -13,6 +13,60 @@
 use crate::ContentHash;
 use serde::{Deserialize, Serialize};
 
+// ─── TaintLevel ──────────────────────────────────────────────────────────────
+
+/// Information-Flow Control (IFC) security classification lattice.
+///
+/// `TaintLevel` implements a 4-tier lattice with `join` (least upper bound)
+/// and `meet` (greatest lower bound) operations for no-write-down / no-read-up
+/// enforcement.
+///
+/// This is **orthogonal** to the [`Taint`] enum — `Taint` tracks contamination
+/// *sources* (LLM hallucination, external API, etc.) while `TaintLevel` tracks
+/// security *classification* (how secret the data is).
+///
+/// `can_flow_to` enforces the no-write-down rule: data can only flow to equally
+/// or more classified contexts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TaintLevel {
+    /// Unrestricted — visible to all contexts.
+    Public = 0,
+    /// Internal use only.
+    Internal = 1,
+    /// Sensitive business data.
+    Confidential = 2,
+    /// Highest classification — strict access control required.
+    Secret = 3,
+}
+
+impl Default for TaintLevel {
+    fn default() -> Self {
+        Self::Public
+    }
+}
+
+impl TaintLevel {
+    /// Least upper bound (max classification) of two levels.
+    #[must_use]
+    pub fn join(self, other: TaintLevel) -> TaintLevel {
+        self.max(other)
+    }
+
+    /// Greatest lower bound (min classification) of two levels.
+    #[must_use]
+    pub fn meet(self, other: TaintLevel) -> TaintLevel {
+        self.min(other)
+    }
+
+    /// Returns `true` when data at this level can flow to `target`.
+    ///
+    /// Enforces the no-write-down rule: `self <= target`.
+    #[must_use]
+    pub fn can_flow_to(self, target: TaintLevel) -> bool {
+        self <= target
+    }
+}
+
 /// Typed taint classification for provenance records.
 ///
 /// Replaces the former `tainted: bool` + `TaintInfo { category, detail }` pair
@@ -135,6 +189,9 @@ pub struct TaintInfo {
     /// Upstream tainted signal that caused propagation, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_from: Option<ContentHash>,
+    /// IFC security classification for this taint record.
+    #[serde(default)]
+    pub taint_level: TaintLevel,
 }
 
 impl TaintInfo {
@@ -145,6 +202,7 @@ impl TaintInfo {
             category: category.into(),
             detail: detail.into(),
             inherited_from: None,
+            taint_level: TaintLevel::Public,
         }
     }
 
@@ -289,6 +347,11 @@ pub struct Provenance {
     /// Optional: the agent session or run that produced this signal.
     /// Useful for grouping related signals and computing per-run metrics.
     pub session: Option<String>,
+
+    /// IFC security classification for this provenance record.
+    /// Defaults to `Public`; set to a higher level when the data is sensitive.
+    #[serde(default)]
+    pub taint_level: TaintLevel,
 }
 
 impl Provenance {
@@ -301,6 +364,7 @@ impl Provenance {
             taint: Taint::Clean,
             taint_info: None,
             session: None,
+            taint_level: TaintLevel::Public,
         }
     }
 
@@ -313,6 +377,7 @@ impl Provenance {
             taint: Taint::Clean,
             taint_info: None,
             session: None,
+            taint_level: TaintLevel::Public,
         }
     }
 
@@ -328,6 +393,7 @@ impl Provenance {
             author,
             trust: 0.1,
             session: None,
+            taint_level: TaintLevel::Public,
         }
     }
 
@@ -343,6 +409,7 @@ impl Provenance {
             author,
             trust: 0.5,
             session: None,
+            taint_level: TaintLevel::Public,
         }
     }
 

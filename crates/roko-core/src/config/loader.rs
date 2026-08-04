@@ -778,6 +778,16 @@ pub fn serialize_effective_redacted(config: &RokoConfig) -> Result<String, toml:
         .expect("re-serialization of a value that was already valid TOML cannot fail"))
 }
 
+/// Convenience wrapper: parse a raw TOML string, redact secret fields, and
+/// return the re-serialized TOML. Useful in tests and CLI output paths that
+/// operate on raw config text rather than a typed `RokoConfig`.
+pub fn redact_secrets_in_toml_str(raw: &str) -> String {
+    let mut value: toml::Value = raw.parse().unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    redact_secrets_in_toml(&mut value);
+    toml::to_string_pretty(&value)
+        .unwrap_or_else(|_| raw.to_string())
+}
+
 /// Walk a [`toml::Value`] tree in-place, replacing secret-like string leaves
 /// with [`REDACTED_MARKER`].
 ///
@@ -1518,6 +1528,7 @@ default_model = "missing"
                 connect_timeout_ms: None,
                 extra_headers: Some(headers),
                 max_concurrent: None,
+                limits: None,
             },
         );
 

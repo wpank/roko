@@ -295,6 +295,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -335,6 +336,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -367,6 +369,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         // SAFETY: test is single-threaded; no other thread reads this env var.

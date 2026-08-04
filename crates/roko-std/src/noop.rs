@@ -9,8 +9,8 @@
 use async_trait::async_trait;
 use roko_core::traits::Score as ScoreFn;
 use roko_core::{
-    Body, Budget, Compose, Context, Engram, Kind, Outcome, React, Route, Score, Selection, Verdict,
-    Verify, error::Result,
+    Body, Budget, Compose, Context, Engram, Kind, Outcome, ProtocolId, React, Route, Score,
+    Selection, Verdict, Verify, error::Result,
 };
 
 /// A scorer that returns `Score::NEUTRAL` for every signal.
@@ -36,8 +36,8 @@ impl roko_core::Cell for NoOpGate {
     fn cell_name(&self) -> &str {
         "NoOpGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Verify]
     }
 }
 

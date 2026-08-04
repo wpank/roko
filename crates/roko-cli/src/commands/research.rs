@@ -244,6 +244,7 @@ pub(crate) async fn cmd_research(cli: &Cli, cmd: ResearchCmd) -> Result<i32> {
                             connect_timeout_ms: Some(5_000),
                             extra_headers: None,
                             max_concurrent: None,
+                            limits: None,
                         }),
                         model_profile,
                     );
@@ -871,6 +872,7 @@ pub(crate) fn with_perplexity_research_model(
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         }),
         model_profile,
     );

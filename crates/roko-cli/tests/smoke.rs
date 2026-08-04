@@ -258,6 +258,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         connect_timeout_ms: Some(5_000),
         extra_headers: None,
         max_concurrent: None,
+        limits: None,
     };
     let options = AgentOptions {
         command: None,
@@ -275,6 +276,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         dangerously_skip_permissions: false,
         name: "ux44-mcp-smoke".to_string(),
         pre_discovered_mcp_tools: None,
+        rate_limiter: None,
     };
 
     let agent = ClaudeCliAdapter

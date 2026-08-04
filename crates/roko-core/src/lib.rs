@@ -205,14 +205,14 @@ pub use connector::{
 pub use context::Context;
 pub use datum::Datum;
 pub use decay::Decay;
-pub use demurrage::Demurrage;
+pub use demurrage::{Demurrage, DemurrageConfig, demurrage_tick};
 pub use dispatch_plan::{
     ConfigBag, DispatchAttempt, DispatchAttemptKind, DispatchAuthStatus, DispatchCaller,
     DispatchError, DispatchPlan, DispatchRequest, DispatchRequirement, FallbackPolicy,
     TransportAuth, TransportPlan,
 };
 pub use domain_profile::{DomainProfile, TypedContext};
-pub use engram::{Engram, EngramBuilder, HdcFingerprint};
+pub use engram::{Engram, EngramBuilder, GraduationError, HdcFingerprint, SignalStatus};
 pub use error::{Result, RokoError};
 pub use feed::{FeedAccess, FeedInfo, FeedKind, FeedRegistry, FeedRuntimeStatus};
 pub use forensic::{
@@ -235,7 +235,7 @@ pub use immune::{
     AnomalyScore, ImmuneResponse, IncidentLink, IncidentRelation, QuarantineDecision,
     QuarantineEntry, QuarantineStatus, QuarantineVault, ResponseAction,
 };
-pub use kind::Kind;
+pub use kind::{Kind, KindEntry, KindRegistry};
 pub use language::{Import, ImportKind, LanguageProvider, Symbol, SymbolKind, Visibility};
 pub use loop_tick::{TickConfig, TickOutcome, loop_tick, loop_tick_with_config};
 pub use metric::{ConfigHash, Headlines, TaskMetric, compute_headlines};
@@ -267,7 +267,7 @@ pub use project::{
     detect_from_files_with_cargo_toml,
 };
 pub use provenance::{
-    Provenance, ProvenanceCoherenceCheck, ProvenanceCoherenceIssue, Taint, TaintInfo,
+    Provenance, ProvenanceCoherenceCheck, ProvenanceCoherenceIssue, Taint, TaintInfo, TaintLevel,
 };
 pub use pulse::{PolicyOutputs, Pulse, PulseBuilder, Topic, TopicFilter};
 pub use query::{Budget, Query};

@@ -165,8 +165,8 @@ impl roko_core::Cell for FormatCheckGate {
         "FormatCheckGate"
     }
 
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 
@@ -196,8 +196,8 @@ impl roko_core::Cell for StubJudgeGate {
         "StubJudgeGate"
     }
 
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

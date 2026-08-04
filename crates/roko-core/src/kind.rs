@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
 
 /// The category of a signal. Determines how its body should be interpreted.
@@ -250,6 +251,116 @@ impl Kind {
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KindRegistry — runtime validation and hierarchy for Custom kinds
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Entry stored in [`KindRegistry`] for each registered custom kind.
+///
+/// Holds the optional parent kind and a reserved `schema` slot for future
+/// JSON-Schema-based body validation. The schema field is `None` for now;
+/// it is intentionally left here so downstream code can extend it without
+/// a breaking struct change.
+#[derive(Debug, Clone)]
+pub struct KindEntry {
+    /// Optional parent kind. Enables hierarchy queries (e.g. `is_a` checks).
+    pub parent: Option<Kind>,
+    /// Reserved for future JSON-Schema body validation. Always `None` today.
+    pub schema: Option<String>,
+}
+
+/// Runtime registry for custom [`Kind`] validation and parent-child hierarchy.
+///
+/// Built-in variants are **always** valid without registration. Only
+/// [`Kind::Custom`] variants need to be registered via [`register_custom`].
+///
+/// # Example
+///
+/// ```rust
+/// use roko_core::{Kind, KindRegistry};
+///
+/// let mut registry = KindRegistry::default();
+/// registry.register_custom("com.example.widget".into(), Some(Kind::Task));
+///
+/// assert!(registry.is_valid(&Kind::GateVerdict));  // built-in — always valid
+/// assert!(registry.is_valid(&Kind::Custom("com.example.widget".into())));
+/// assert!(!registry.is_valid(&Kind::Custom("com.example.unknown".into())));
+///
+/// let parent = registry.parent(&Kind::Custom("com.example.widget".into()));
+/// assert_eq!(parent, Some(&Kind::Task));
+/// ```
+///
+/// # No globals
+///
+/// The registry is a plain struct — pass it around rather than using a
+/// `once_cell` or `lazy_static`. Callers own the instance lifetime.
+#[derive(Debug, Default, Clone)]
+pub struct KindRegistry {
+    entries: HashMap<String, KindEntry>,
+}
+
+impl KindRegistry {
+    /// Create an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a custom kind by name with an optional parent.
+    ///
+    /// Re-registering an existing name overwrites the previous entry.
+    /// The `name` should match the string inside `Kind::Custom(name)`.
+    pub fn register_custom(&mut self, name: String, parent: Option<Kind>) {
+        self.entries.insert(
+            name,
+            KindEntry {
+                parent,
+                schema: None,
+            },
+        );
+    }
+
+    /// Returns `true` if the kind is considered valid.
+    ///
+    /// - Built-in variants (everything except `Custom`) are **always** valid.
+    /// - [`Kind::Custom`] is valid only if registered via [`register_custom`].
+    /// - [`Kind::Compound`] is valid if all constituent kinds are valid.
+    #[must_use]
+    pub fn is_valid(&self, kind: &Kind) -> bool {
+        match kind {
+            Kind::Custom(name) => self.entries.contains_key(name.as_str()),
+            Kind::Compound(parts) => parts.iter().all(|k| self.is_valid(k)),
+            // All named built-in variants are valid by definition.
+            _ => true,
+        }
+    }
+
+    /// Returns the registered parent of a kind, if any.
+    ///
+    /// Built-in kinds and unregistered Custom kinds return `None`.
+    #[must_use]
+    pub fn parent(&self, kind: &Kind) -> Option<&Kind> {
+        match kind {
+            Kind::Custom(name) => self.entries.get(name.as_str())?.parent.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// List the names of all registered custom kinds.
+    #[must_use]
+    pub fn list_custom(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.entries.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Returns a reference to the full [`KindEntry`] for a registered custom kind.
+    #[must_use]
+    pub fn entry(&self, name: &str) -> Option<&KindEntry> {
+        self.entries.get(name)
     }
 }
 

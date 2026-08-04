@@ -15,7 +15,7 @@ use crate::threshold_learner::{InterventionOutcome, ThresholdLearner};
 use crate::watchers::{
     CompileFailRepeatWatcher, ContextWindowPressureWatcher, CostOverrunWatcher, GhostTurnWatcher,
     IterationLoopWatcher, ReviewLoopWatcher, SpecDriftWatcher, StuckPatternWatcher,
-    TestFailureBudgetWatcher, TimeOverrunWatcher,
+    TestFailureBudgetWatcher, TimeOverrunWatcher, WorktreeCountWatcher,
 };
 use parking_lot::Mutex;
 use roko_core::{
@@ -104,6 +104,7 @@ fn default_watchers() -> Vec<Box<dyn React>> {
         Box::new(CostOverrunWatcher::default()),
         Box::new(TimeOverrunWatcher::new()),
         Box::new(StuckPatternWatcher::default()),
+        Box::new(WorktreeCountWatcher::default()),
     ]
 }
 
@@ -171,6 +172,13 @@ fn configured_watchers(config: &ConductorConfig) -> Vec<Box<dyn React>> {
                 .stuck_pattern
                 .as_ref()
                 .map(|cfg| StuckPatternWatcher::new(cfg.max_identical_actions.max(1)))
+                .unwrap_or_default(),
+        ),
+        Box::new(
+            thresholds
+                .worktree_count
+                .as_ref()
+                .map(|cfg| WorktreeCountWatcher::new(cfg.max_live.max(1)))
                 .unwrap_or_default(),
         ),
     ];
@@ -858,7 +866,8 @@ mod tests {
     #[test]
     fn watcher_count() {
         let c = Conductor::default();
-        assert_eq!(c.watchers.len(), 10);
+        // 10 original watchers + WorktreeCountWatcher (E08-T09)
+        assert_eq!(c.watchers.len(), 11);
     }
 
     #[test]

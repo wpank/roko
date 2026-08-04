@@ -287,6 +287,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         }
     }
 

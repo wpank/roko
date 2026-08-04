@@ -14,6 +14,118 @@ use roko_primitives::HdcVector;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+// ─── SignalStatus ─────────────────────────────────────────────────────────────
+
+/// Lifecycle tier for a durable Signal (Engram).
+///
+/// Graduation is **monotonic** — signals can only move forward through tiers,
+/// never backward. Each tier carries a different retention guarantee:
+///
+/// - [`Transient`](SignalStatus::Transient): may be pruned aggressively (minutes)
+/// - [`Working`](SignalStatus::Working): retained during active task scope
+/// - [`Consolidated`](SignalStatus::Consolidated): survives across sessions, feeds learning
+/// - [`Persistent`](SignalStatus::Persistent): permanent archive, never auto-pruned
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalStatus {
+    /// Default tier — subject to aggressive pruning.
+    Transient,
+    /// Retained for the duration of the active task scope.
+    Working,
+    /// Survives session boundaries; eligible to feed learning subsystems.
+    Consolidated,
+    /// Permanent archive; never auto-pruned.
+    Persistent,
+}
+
+impl Default for SignalStatus {
+    fn default() -> Self {
+        Self::Transient
+    }
+}
+
+impl SignalStatus {
+    /// Returns `true` for tiers that survive beyond a single session.
+    #[must_use]
+    pub fn is_durable(self) -> bool {
+        matches!(self, Self::Consolidated | Self::Persistent)
+    }
+}
+
+// ─── GraduationError ─────────────────────────────────────────────────────────
+
+/// Errors that can occur when attempting a Signal graduation transition.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraduationError {
+    /// The requested transition is not a valid forward step.
+    InvalidTransition {
+        /// Current status before the attempted transition.
+        from: SignalStatus,
+        /// Requested target status.
+        to: SignalStatus,
+    },
+    /// The signal's effective score is below the required threshold.
+    ScoreTooLow {
+        /// Minimum required effective score.
+        required: f32,
+        /// Actual effective score at transition time.
+        actual: f32,
+    },
+    /// The signal has not been alive long enough to graduate.
+    InsufficientAge {
+        /// Required minimum age in seconds.
+        required_secs: u64,
+        /// Actual age at transition time in seconds.
+        actual_secs: u64,
+    },
+    /// The signal has not been accessed enough times to graduate.
+    InsufficientAccesses {
+        /// Required minimum access count.
+        required: u32,
+        /// Actual access count at transition time.
+        actual: u32,
+    },
+}
+
+impl std::fmt::Display for GraduationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidTransition { from, to } => {
+                write!(f, "invalid graduation transition: {from:?} → {to:?}")
+            }
+            Self::ScoreTooLow { required, actual } => {
+                write!(
+                    f,
+                    "score too low for graduation: required {required:.3}, got {actual:.3}"
+                )
+            }
+            Self::InsufficientAge {
+                required_secs,
+                actual_secs,
+            } => {
+                write!(
+                    f,
+                    "insufficient age: required {required_secs}s, got {actual_secs}s"
+                )
+            }
+            Self::InsufficientAccesses { required, actual } => {
+                write!(
+                    f,
+                    "insufficient accesses: required {required}, got {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for GraduationError {}
+
+/// Encoder version tag for the text-v1 HDC fingerprint encoder.
+///
+/// Text and JSON bodies are fingerprinted using [`HdcVector::from_seed`] with
+/// this version recorded so future re-encoders can invalidate stale fingerprints.
+pub const ENCODER_VERSION_TEXT_V1: u32 = 1;
+
 /// HDC fingerprint metadata stored alongside an [`Engram`].
 ///
 /// The vector provides semantic similarity lookup, while `encoder_version`
@@ -95,6 +207,18 @@ pub struct Engram {
     /// Demurrage balance in [0.0, 1.0]. Decays over time; refreshed on access.
     #[serde(default = "default_balance")]
     pub balance: f64,
+    /// Lifecycle tier — tracks the graduation state of this signal.
+    #[serde(default)]
+    pub status: SignalStatus,
+    /// Number of times this engram has been accessed (used for graduation checks).
+    #[serde(default)]
+    pub access_count: u32,
+    /// Cumulative demurrage paid over this signal's lifetime (monotonically increasing).
+    ///
+    /// Tracks the total balance lost to demurrage ticks. Never decreases — even if
+    /// novelty gains partially offset decay, this field only grows.
+    #[serde(default)]
+    pub demurrage_paid: f64,
 }
 
 impl Engram {
@@ -148,8 +272,161 @@ impl Engram {
     }
 
     /// Reset the demurrage balance to full (1.0), as if freshly accessed.
+    ///
+    /// Also increments `access_count`, which is tracked for graduation checks.
     pub fn touch(&mut self) {
         self.balance = 1.0;
+        self.access_count = self.access_count.saturating_add(1);
+    }
+
+    // ─── Graduation transitions ────────────────────────────────────────────
+
+    /// Attempt to promote this signal from `Transient` to `Working`.
+    ///
+    /// Requires the signal's effective score to be >= `min_score`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraduationError::InvalidTransition`] if the current status is
+    /// not `Transient`, or [`GraduationError::ScoreTooLow`] if the score is
+    /// below the threshold.
+    pub fn promote_to_working(&mut self, min_score: f32) -> Result<(), GraduationError> {
+        if self.status != SignalStatus::Transient {
+            return Err(GraduationError::InvalidTransition {
+                from: self.status,
+                to: SignalStatus::Working,
+            });
+        }
+        let actual = self.score.effective();
+        if actual < min_score {
+            return Err(GraduationError::ScoreTooLow {
+                required: min_score,
+                actual,
+            });
+        }
+        self.status = SignalStatus::Working;
+        Ok(())
+    }
+
+    /// Attempt to promote this signal from `Working` to `Consolidated`.
+    ///
+    /// Requires the current status to be `Working`. Typically called after
+    /// a gate pass, but the precondition check is the caller's responsibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraduationError::InvalidTransition`] if the current status is
+    /// not `Working`.
+    pub fn promote_to_consolidated(&mut self) -> Result<(), GraduationError> {
+        if self.status != SignalStatus::Working {
+            return Err(GraduationError::InvalidTransition {
+                from: self.status,
+                to: SignalStatus::Consolidated,
+            });
+        }
+        self.status = SignalStatus::Consolidated;
+        Ok(())
+    }
+
+    /// Attempt to promote this signal from `Consolidated` to `Persistent`.
+    ///
+    /// Requires the current status to be `Consolidated`, the signal to have
+    /// been alive for at least `min_age_secs`, and accessed at least
+    /// `min_accesses` times.
+    ///
+    /// # Errors
+    ///
+    /// Returns the appropriate [`GraduationError`] variant if any precondition
+    /// is not met. Preconditions are checked in order: status, age, accesses.
+    pub fn promote_to_persistent(
+        &mut self,
+        min_age_secs: u64,
+        min_accesses: u32,
+    ) -> Result<(), GraduationError> {
+        if self.status != SignalStatus::Consolidated {
+            return Err(GraduationError::InvalidTransition {
+                from: self.status,
+                to: SignalStatus::Persistent,
+            });
+        }
+        let now_ms = current_time_ms();
+        let age_ms = (now_ms - self.created_at_ms).max(0) as u64;
+        let actual_secs = age_ms / 1000;
+        if actual_secs < min_age_secs {
+            return Err(GraduationError::InsufficientAge {
+                required_secs: min_age_secs,
+                actual_secs,
+            });
+        }
+        if self.access_count < min_accesses {
+            return Err(GraduationError::InsufficientAccesses {
+                required: min_accesses,
+                actual: self.access_count,
+            });
+        }
+        self.status = SignalStatus::Persistent;
+        Ok(())
+    }
+
+    // ─── HDC fingerprinting ────────────────────────────────────────────────
+
+    /// Compute and set an HDC fingerprint from this engram's body content.
+    ///
+    /// - [`Body::Text`] and [`Body::Json`] are encoded via [`HdcVector::from_seed`]
+    ///   using the body's canonical byte representation as the seed.
+    /// - [`Body::Empty`] produces a zero vector (marker signals have no content).
+    /// - [`Body::Bytes`] is skipped — binary data requires specialized encoding.
+    ///
+    /// The encoder version is set to [`ENCODER_VERSION_TEXT_V1`].
+    /// This method always overwrites any existing fingerprint.
+    pub fn compute_fingerprint(&mut self) {
+        let vector = match &self.body {
+            Body::Text(s) => HdcVector::from_seed(s.as_bytes()),
+            Body::Json(v) => HdcVector::from_seed(v.to_string().as_bytes()),
+            Body::Empty => HdcVector::zeros(),
+            Body::Bytes(_) => return, // binary data: skip
+        };
+        self.fingerprint = Some(HdcFingerprint::new(vector, ENCODER_VERSION_TEXT_V1));
+    }
+
+    /// Ensure this engram has an HDC fingerprint, computing one if absent.
+    ///
+    /// Idempotent — if `self.fingerprint` is already `Some`, this is a no-op.
+    /// For [`Body::Bytes`], this is always a no-op (binary bodies are not fingerprinted).
+    pub fn ensure_fingerprint(&mut self) {
+        if self.fingerprint.is_none() {
+            self.compute_fingerprint();
+        }
+    }
+
+    // ─── Pulse projection ──────────────────────────────────────────────────
+
+    /// Project this durable Signal into an ephemeral [`Pulse`] for Bus broadcast.
+    ///
+    /// This is the inverse of [`Pulse::graduate`] — it creates a lossy projection
+    /// of a Signal back into the ephemeral transport layer. The projection intentionally
+    /// drops durable-only metadata: score, balance, decay, fingerprint, attestation,
+    /// and the full lineage DAG. Only the essential content (kind, body, tags) and a
+    /// back-reference (`lineage_hint`) cross over.
+    ///
+    /// The originating Signal's id is preserved as the Pulse's `lineage_hint`, enabling
+    /// consumers to trace a received Pulse back to its Signal if needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `topic` - The Bus routing topic for the emitted Pulse
+    /// * `seq` - The monotonic sequence number assigned by the Bus
+    #[must_use]
+    pub fn to_pulse(&self, topic: crate::pulse::Topic, seq: u64) -> Pulse {
+        let mut builder = Pulse::builder(seq, topic, self.kind.clone())
+            .body(self.body.clone())
+            .lineage_hint(self.id)
+            .tag("signal_author", self.provenance.author.clone());
+        // Copy all signal tags onto the pulse for downstream filtering.
+        for (key, value) in &self.tags {
+            builder = builder.tag(key.clone(), value.clone());
+        }
+        builder.build()
     }
 
     /// Get a tag value by key.
@@ -320,6 +597,8 @@ pub struct EngramBuilder {
     attestation: Option<Attestation>,
     emotional_tag: Option<EmotionalTag>,
     balance: f64,
+    status: SignalStatus,
+    access_count: u32,
 }
 
 impl EngramBuilder {
@@ -339,6 +618,8 @@ impl EngramBuilder {
             attestation: None,
             emotional_tag: None,
             balance: 1.0,
+            status: SignalStatus::Transient,
+            access_count: 0,
         }
     }
 
@@ -422,6 +703,20 @@ impl EngramBuilder {
         self
     }
 
+    /// Set the initial graduation status (defaults to `Transient`).
+    #[must_use]
+    pub fn status(mut self, status: SignalStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set the initial access count (defaults to 0).
+    #[must_use]
+    pub fn access_count(mut self, count: u32) -> Self {
+        self.access_count = count;
+        self
+    }
+
     /// Finalize the engram, computing its content hash.
     #[must_use]
     pub fn build(self) -> Engram {
@@ -440,6 +735,9 @@ impl EngramBuilder {
             attestation: self.attestation,
             emotional_tag: self.emotional_tag,
             balance: self.balance,
+            status: self.status,
+            access_count: self.access_count,
+            demurrage_paid: 0.0,
         };
         engram.id = engram.content_hash();
         engram
@@ -1002,5 +1300,273 @@ mod tests {
         assert!(parsed.attestation.is_some());
         assert!(parsed.emotional_tag.is_some());
         assert!((parsed.balance - 0.42).abs() < f64::EPSILON);
+    }
+
+    // ─── SignalStatus / Graduation tests ────────────────────────────────────
+
+    #[test]
+    fn signal_status_default_is_transient() {
+        let e = Engram::builder(Kind::Task).build();
+        assert_eq!(e.status, SignalStatus::Transient);
+    }
+
+    #[test]
+    fn signal_status_is_durable() {
+        assert!(!SignalStatus::Transient.is_durable());
+        assert!(!SignalStatus::Working.is_durable());
+        assert!(SignalStatus::Consolidated.is_durable());
+        assert!(SignalStatus::Persistent.is_durable());
+    }
+
+    #[test]
+    fn access_count_default_is_zero() {
+        let e = Engram::builder(Kind::Task).build();
+        assert_eq!(e.access_count, 0);
+    }
+
+    #[test]
+    fn touch_increments_access_count() {
+        let mut e = Engram::builder(Kind::Task).balance(0.1).build();
+        assert_eq!(e.access_count, 0);
+        e.touch();
+        assert_eq!(e.access_count, 1);
+        e.touch();
+        assert_eq!(e.access_count, 2);
+        assert!((e.balance - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn promote_transient_to_working_succeeds_with_sufficient_score() {
+        let mut e = Engram::builder(Kind::Task)
+            .score(Score::new(0.8, 0.0, 0.0, 1.0))
+            .build();
+        assert_eq!(e.status, SignalStatus::Transient);
+        e.promote_to_working(0.5).unwrap();
+        assert_eq!(e.status, SignalStatus::Working);
+    }
+
+    #[test]
+    fn promote_to_working_fails_when_score_too_low() {
+        let mut e = Engram::builder(Kind::Task)
+            .score(Score::new(0.2, 0.0, 0.0, 1.0))
+            .build();
+        let err = e.promote_to_working(0.5).unwrap_err();
+        assert!(matches!(err, GraduationError::ScoreTooLow { .. }));
+        assert_eq!(e.status, SignalStatus::Transient);
+    }
+
+    #[test]
+    fn promote_to_working_fails_from_wrong_status() {
+        let mut e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Working)
+            .build();
+        let err = e.promote_to_working(0.0).unwrap_err();
+        assert!(matches!(
+            err,
+            GraduationError::InvalidTransition {
+                from: SignalStatus::Working,
+                to: SignalStatus::Working
+            }
+        ));
+    }
+
+    #[test]
+    fn promote_working_to_consolidated_succeeds() {
+        let mut e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Working)
+            .build();
+        e.promote_to_consolidated().unwrap();
+        assert_eq!(e.status, SignalStatus::Consolidated);
+    }
+
+    #[test]
+    fn promote_to_consolidated_fails_from_transient() {
+        let mut e = Engram::builder(Kind::Task).build();
+        let err = e.promote_to_consolidated().unwrap_err();
+        assert!(matches!(
+            err,
+            GraduationError::InvalidTransition {
+                from: SignalStatus::Transient,
+                to: SignalStatus::Consolidated
+            }
+        ));
+    }
+
+    #[test]
+    fn promote_consolidated_to_persistent_succeeds() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Consolidated)
+            .created_at_ms(now_ms - 200_000)
+            .access_count(5)
+            .build();
+        e.promote_to_persistent(100, 3).unwrap();
+        assert_eq!(e.status, SignalStatus::Persistent);
+    }
+
+    #[test]
+    fn promote_to_persistent_fails_insufficient_age() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Consolidated)
+            .created_at_ms(now_ms - 5_000)
+            .access_count(10)
+            .build();
+        let err = e.promote_to_persistent(60, 1).unwrap_err();
+        assert!(matches!(err, GraduationError::InsufficientAge { .. }));
+        assert_eq!(e.status, SignalStatus::Consolidated);
+    }
+
+    #[test]
+    fn promote_to_persistent_fails_insufficient_accesses() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Consolidated)
+            .created_at_ms(now_ms - 200_000)
+            .access_count(1)
+            .build();
+        let err = e.promote_to_persistent(60, 5).unwrap_err();
+        assert!(matches!(
+            err,
+            GraduationError::InsufficientAccesses {
+                required: 5,
+                actual: 1
+            }
+        ));
+        assert_eq!(e.status, SignalStatus::Consolidated);
+    }
+
+    #[test]
+    fn builder_status_setter() {
+        let e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Consolidated)
+            .build();
+        assert_eq!(e.status, SignalStatus::Consolidated);
+    }
+
+    #[test]
+    fn serde_roundtrip_with_status_and_access_count() {
+        let e = Engram::builder(Kind::Task)
+            .status(SignalStatus::Working)
+            .access_count(7)
+            .build();
+        let json = serde_json::to_string(&e).unwrap();
+        let parsed: Engram = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.status, SignalStatus::Working);
+        assert_eq!(parsed.access_count, 7);
+    }
+
+    #[test]
+    fn serde_defaults_missing_status_to_transient() {
+        let e = Engram::builder(Kind::Task)
+            .body(Body::text("old"))
+            .created_at_ms(0)
+            .build();
+        let mut json: serde_json::Value = serde_json::to_value(&e).unwrap();
+        json.as_object_mut().unwrap().remove("status");
+        json.as_object_mut().unwrap().remove("access_count");
+        let parsed: Engram = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.status, SignalStatus::Transient);
+        assert_eq!(parsed.access_count, 0);
+    }
+
+    #[test]
+    fn graduation_error_display() {
+        let err = GraduationError::ScoreTooLow {
+            required: 0.5,
+            actual: 0.2,
+        };
+        let s = err.to_string();
+        assert!(s.contains("score too low"));
+    }
+
+    // ─── compute_fingerprint / ensure_fingerprint ────────────────────────────
+
+    #[test]
+    fn compute_fingerprint_sets_fingerprint_for_text_body() {
+        let mut e = Engram::builder(Kind::Task)
+            .body(Body::text("hello world"))
+            .build();
+        assert!(e.fingerprint.is_none());
+        e.compute_fingerprint();
+        let fp = e
+            .fingerprint
+            .expect("fingerprint should be set after compute");
+        assert_eq!(fp.encoder_version, ENCODER_VERSION_TEXT_V1);
+        assert_eq!(fp.vector, HdcVector::from_seed(b"hello world"));
+    }
+
+    #[test]
+    fn compute_fingerprint_sets_zero_vector_for_empty_body() {
+        let mut e = Engram::builder(Kind::Task).body(Body::empty()).build();
+        e.compute_fingerprint();
+        let fp = e
+            .fingerprint
+            .expect("fingerprint should be set for Empty body");
+        assert_eq!(fp.encoder_version, ENCODER_VERSION_TEXT_V1);
+        assert_eq!(fp.vector, HdcVector::zeros());
+    }
+
+    #[test]
+    fn compute_fingerprint_skips_bytes_body() {
+        let mut e = Engram::builder(Kind::Task)
+            .body(Body::bytes(vec![0xde, 0xad, 0xbe, 0xef]))
+            .build();
+        e.compute_fingerprint();
+        assert!(e.fingerprint.is_none());
+    }
+
+    #[test]
+    fn ensure_fingerprint_is_idempotent_for_text_body() {
+        let mut e = Engram::builder(Kind::Task)
+            .body(Body::text("idempotent"))
+            .build();
+        e.ensure_fingerprint();
+        let fp1 = e.fingerprint.unwrap();
+        e.ensure_fingerprint();
+        let fp2 = e.fingerprint.unwrap();
+        assert_eq!(fp1, fp2);
+    }
+
+    // ─── to_pulse tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn to_pulse_preserves_kind_and_body() {
+        let engram = Engram::builder(Kind::Task)
+            .body(Body::text("task output"))
+            .provenance(Provenance::agent("my-agent"))
+            .created_at_ms(0)
+            .build();
+
+        let pulse = engram.to_pulse(crate::pulse::Topic::new("task.output"), 42);
+        assert_eq!(pulse.seq, 42);
+        assert_eq!(pulse.topic, crate::pulse::Topic::new("task.output"));
+        assert_eq!(pulse.kind, Kind::Task);
+        assert_eq!(pulse.body, Body::text("task output"));
+    }
+
+    #[test]
+    fn to_pulse_sets_lineage_hint_to_signal_id() {
+        let engram = Engram::builder(Kind::Episode)
+            .body(Body::text("logged"))
+            .created_at_ms(0)
+            .build();
+
+        let pulse = engram.to_pulse(crate::pulse::Topic::new("episode.logged"), 1);
+        assert_eq!(pulse.lineage_hint, Some(engram.id));
+    }
+
+    #[test]
+    fn to_pulse_copies_signal_tags() {
+        let engram = Engram::builder(Kind::Task)
+            .body(Body::text("x"))
+            .tag("plan_id", "plan-7")
+            .tag("gate", "compile")
+            .created_at_ms(0)
+            .build();
+
+        let pulse = engram.to_pulse(crate::pulse::Topic::new("task"), 0);
+        assert_eq!(pulse.tag("plan_id"), Some("plan-7"));
+        assert_eq!(pulse.tag("gate"), Some("compile"));
     }
 }

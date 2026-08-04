@@ -68,7 +68,7 @@ pub use schema::{
     ServeDeployWebhookConfig, ServerConfig, SpecDriftConfig, StuckPatternConfig,
     SubscriptionConfig, SubscriptionFilterConfig, SubscriptionTrigger, TestFailureBudgetConfig,
     TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig,
-    WatcherConfig, WatcherPathConfig, WatcherThresholds, WebhooksConfig,
+    WatcherConfig, WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
 };
 
 /// Error returned when loading a `roko.toml` file from disk.
@@ -351,6 +351,7 @@ mod load_config_tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: Some(8),
+                limits: None,
             },
         );
         config.models.insert(

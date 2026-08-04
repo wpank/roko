@@ -30,7 +30,9 @@ use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
     tool_limit_for_temperament, tool_loop_max_iterations_for_profile,
 };
-use crate::tool_loop::backends::create_openai_compat_backend;
+use crate::tool_loop::backends::{
+    create_openai_compat_backend, create_openai_compat_backend_with_limiter,
+};
 use crate::tool_loop::{ToolLoop, ToolLoopAgent};
 use crate::translate::capability::cap_tools_for_profile;
 use crate::translate::{OpenAiTranslator, Translator};
@@ -409,7 +411,19 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
+            // If a runtime-scoped rate limiter is available (built from provider
+            // config and shared across concurrent dispatches), use it instead of
+            // the process-global default singleton in OpenAiCompatBackend::new.
+            let backend = if let Some(ref limiter) = options.rate_limiter {
+                create_openai_compat_backend_with_limiter(
+                    &tool_loop_provider,
+                    model,
+                    poster,
+                    std::sync::Arc::clone(limiter),
+                )?
+            } else {
+                create_openai_compat_backend(&tool_loop_provider, model, poster)?
+            };
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
@@ -724,6 +738,7 @@ mod tests {
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -828,6 +843,7 @@ mod tests {
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "moonshot".to_string(),
@@ -926,6 +942,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "openai".to_string(),
@@ -1047,6 +1064,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1175,6 +1193,7 @@ done
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "zai".to_string(),
@@ -1261,6 +1280,7 @@ done
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "openrouter".to_string(),

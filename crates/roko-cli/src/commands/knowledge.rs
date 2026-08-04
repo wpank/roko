@@ -76,7 +76,44 @@ pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i
             workdir,
             dry_run,
         } => cmd_archive(cli, workdir, &older_than, batch_size, dry_run).await,
+        KnowledgeCmd::BackfillHdc { workdir } => cmd_backfill_hdc(cli, workdir).await,
     }
+}
+
+async fn cmd_backfill_hdc(cli: &Cli, workdir: Option<PathBuf>) -> Result<i32> {
+    let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    let store = KnowledgeStore::for_workdir(&wd);
+
+    let changed = store.backfill_hdc_vectors().with_context(|| {
+        format!(
+            "backfill HDC vectors in knowledge store at {}",
+            store.path().display()
+        )
+    })?;
+
+    if cli.json {
+        let payload = serde_json::json!({
+            "workdir": wd,
+            "path": store.path(),
+            "updated": changed,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(EXIT_SUCCESS);
+    }
+
+    if changed == 0 {
+        println!(
+            "backfill-hdc: all entries already have HDC vectors in {}",
+            store.path().display()
+        );
+    } else {
+        println!(
+            "backfill-hdc: populated HDC vectors for {changed} entr{} in {}",
+            if changed == 1 { "y" } else { "ies" },
+            store.path().display()
+        );
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 pub(crate) async fn dispatch_knowledge_dream(cli: &Cli, cmd: KnowledgeDreamCmd) -> Result<i32> {

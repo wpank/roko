@@ -465,6 +465,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"{\"score\":8.5,\"n
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(

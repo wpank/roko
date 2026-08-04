@@ -1373,6 +1373,20 @@ pub async fn run(
         }
     }
 
+    // Prefer the prior circuit-breaker state over a fresh conductor on resume.
+    // This ensures tripped failure budgets survive process restarts.
+    if let Some(breaker_state) = resume_report.conductor_circuit_breaker_state.clone() {
+        if config.conductor.is_some() {
+            info!(
+                tracked_plans = breaker_state.records.len(),
+                "restoring conductor circuit-breaker state from run-state snapshot"
+            );
+            config.conductor = Some(Arc::new(
+                roko_conductor::Conductor::from_circuit_breaker_state(breaker_state),
+            ));
+        }
+    }
+
     // All mutations to `config` are done; reborrow as shared reference so
     // downstream helpers that expect `&RunConfig` work without extra `&`.
     let config = &config;
@@ -1438,7 +1452,9 @@ pub async fn run(
         roko_gate::VerdictPublisher::new(Arc::new(move |pulse: roko_core::Pulse| {
             let engram = pulse.graduate(
                 roko_core::Provenance::trusted("runner/gate"),
+                1.0,
                 roko_core::Score::default(),
+                vec![],
             );
             if let Ok(line) = serde_json::to_string(&engram) {
                 if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1641,6 +1657,9 @@ pub async fn run(
     let mut tick_interval = interval(Duration::from_millis(100));
     let mut flush_interval = interval(Duration::from_secs(2));
     let mut target_size_interval = interval(Duration::from_secs(60));
+    // Conductor supervision fires every 5 s. Cheap: just locks + drains the
+    // ring and calls evaluate_full (no IO, no await inside the branch).
+    let mut conductor_supervision_interval = interval(Duration::from_secs(5));
     // Register a gauge for the target/ directory size if the metric
     // registry is available. The gauge is updated on a slow interval
     // (60 s) to avoid walking the potentially large directory tree on
@@ -1822,6 +1841,7 @@ pub async fn run(
         //   Branch 3 (tick_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 4 (flush_interval): cancel-safe — Interval::tick is restartable.
         //   Branch 4b (target_size_interval): cancel-safe — Interval::tick is restartable.
+        //   Branch 4c (conductor_supervision_interval): cancel-safe — Interval::tick; no await inside.
         //   Branch 5 (plan_timeout): cancel-safe — fixed deadline, no state lost.
         //   Branch 6 (cancel.cancelled): cancel-safe — CancellationToken is idempotent.
         tokio::select! {
@@ -3806,6 +3826,50 @@ pub async fn run(
                 }
             }
 
+            // ─── Branch 4c: Conductor supervision tick ────────────────
+            //
+            // Fires on a 5-second interval (not on every 100 ms runner tick)
+            // to keep supervision overhead bounded.  The ring lock is taken,
+            // drained into a snapshot Vec, and released before we call
+            // evaluate_full — we never hold the ring lock across an await or
+            // across the conductor evaluation path.
+            //
+            // Decision handling:
+            //   Continue  — healthy; log at trace level, nothing to do.
+            //   Restart   — cancel active agents and requeue via the existing
+            //               retry path (mirrors gate-failure replan behavior).
+            //   Fail      — terminal: stop all agents, emit RunCompleted(Failed),
+            //               and break the event loop.  The reason names the
+            //               watcher (circuit-breaker, ghost-turn, etc.) so the
+            //               operator can distinguish this from a plan_timeout.
+            //
+            // Cognitive signals (Cooldown, Escalate, …) are applied best-effort
+            // and do not change the primary decision.
+            _ = conductor_supervision_interval.tick() => {
+                conductor_supervision_tick(
+                    config,
+                    &mut executor,
+                    &mut task_dag,
+                    &mut task_index,
+                    &mut pending_gate_tasks,
+                    &mut attempt_ownership,
+                    &mut task_runtime_states,
+                    &mut state,
+                    &merge_queue,
+                    &paths,
+                    &tui,
+                    &gate_thresholds,
+                    &snapshot_writer,
+                    &cancel,
+                    &run_id,
+                    &plans,
+                )
+                .await;
+                // After a conductor Fail the cancel token will have been
+                // triggered.  The next select! iteration will enter Branch 6
+                // and perform the orderly shutdown.
+            }
+
             // ─── Branch 5: Cancellation ─────────────────────────────
             _ = cancel.cancelled() => {
                 warn!("cancellation requested — shutting down");
@@ -3970,6 +4034,208 @@ fn apply_agent_completion(executor: &mut ParallelExecutor, plan_id: &str, tui: &
         }
         Err(e) => {
             warn!(plan_id = %plan_id, err = %e, "transition error after agent completion");
+        }
+    }
+}
+
+// ─── Conductor supervision ──────────────────────────────────────────────
+//
+// Called from Branch 4c every ~5 s. Must not block or hold any locks across
+// `.await` points. The ring snapshot is taken (lock-then-drop) synchronously
+// before the async stop/emit work begins.
+#[allow(clippy::too_many_arguments)]
+async fn conductor_supervision_tick(
+    config: &RunConfig,
+    executor: &mut ParallelExecutor,
+    task_dag: &mut TaskDag,
+    task_index: &mut HashMap<String, HashMap<String, TaskDef>>,
+    pending_gate_tasks: &mut HashMap<String, Vec<String>>,
+    attempt_ownership: &mut AttemptOwnership<AgentRuntimeResource>,
+    task_runtime_states: &mut HashMap<String, TaskRuntimeState>,
+    state: &mut RunState,
+    merge_queue: &MergeQueue,
+    paths: &PersistPaths,
+    tui: &TuiBridge,
+    gate_thresholds: &GateThresholds,
+    snapshot_writer: &SnapshotWriter,
+    cancel: &CancellationToken,
+    run_id: &str,
+    plans: &[Plan],
+) {
+    // Guard: conductor supervision is opt-in (None when config absent).
+    let (Some(conductor), Some(ring)) = (config.conductor.as_ref(), config.conductor_ring.as_ref())
+    else {
+        return;
+    };
+
+    // Snapshot the ring without holding the lock across the evaluation.
+    let snapshot = ring.snapshot();
+    if snapshot.is_empty() {
+        return; // nothing to evaluate yet
+    }
+
+    let eval = conductor.evaluate_full(&snapshot, &roko_core::Context::now());
+
+    // Log cognitive signals best-effort regardless of primary decision.
+    for signal in &eval.signals {
+        debug!(signal = ?signal, "conductor cognitive signal");
+    }
+
+    match eval.decision {
+        roko_core::ConductorDecision::Continue => {
+            // Healthy: nothing to do.
+        }
+
+        roko_core::ConductorDecision::Restart {
+            ref watcher,
+            ref reason,
+        } => {
+            warn!(
+                watcher = watcher.as_str(),
+                reason = reason.as_str(),
+                "conductor_supervision: Restart — stopping active agents for supervised retry"
+            );
+            tui.error(&format!(
+                "conductor supervision triggered restart (watcher={watcher}): {reason}"
+            ));
+            // Cancel all active agents and requeue the work through the
+            // normal retry path.  We do NOT break the event loop here — the
+            // executor will re-dispatch from the cleared state.
+            loop {
+                let cancellation = stop_all_agents(
+                    attempt_ownership,
+                    task_runtime_states,
+                    task_dag,
+                    task_index,
+                    pending_gate_tasks,
+                    executor,
+                    state,
+                    merge_queue,
+                    paths,
+                    tui,
+                    config,
+                    Duration::from_secs(3),
+                )
+                .await;
+                if cancellation.all_confirmed() {
+                    break;
+                }
+                save_snapshot(
+                    config,
+                    executor,
+                    paths,
+                    state,
+                    merge_queue,
+                    gate_thresholds,
+                    snapshot_writer,
+                );
+                let pids = attempt_ownership.surviving_agent_metadata().pids;
+                let _ = persist::save_agent_pids(paths, &pids);
+                snapshot_writer.flush();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            // Requeue retryable terminals so the executor can re-dispatch them.
+            for plan in plans {
+                if executor.requeue_retryable_terminal(&plan.id).is_some() {
+                    info!(
+                        plan_id = %plan.id,
+                        watcher = watcher.as_str(),
+                        "conductor supervision requeued retryable terminal plan after restart"
+                    );
+                }
+            }
+            save_snapshot(
+                config,
+                executor,
+                paths,
+                state,
+                merge_queue,
+                gate_thresholds,
+                snapshot_writer,
+            );
+        }
+
+        roko_core::ConductorDecision::Fail {
+            ref watcher,
+            ref reason,
+        } => {
+            // Terminal: emit a run-completion failure event that names the
+            // conductor watcher (not "plan_timeout") so operators can
+            // distinguish supervised failure from wall-clock timeout.
+            let reason_str = format!("{reason:?}");
+            warn!(
+                watcher = watcher.as_str(),
+                reason = reason_str.as_str(),
+                "conductor_supervision: Fail — aborting run due to supervised failure"
+            );
+            tui.error(&format!(
+                "conductor supervision terminated run (watcher={watcher}): {reason_str}"
+            ));
+            // Stop all agents before emitting the terminal event.
+            loop {
+                let cancellation = stop_all_agents(
+                    attempt_ownership,
+                    task_runtime_states,
+                    task_dag,
+                    task_index,
+                    pending_gate_tasks,
+                    executor,
+                    state,
+                    merge_queue,
+                    paths,
+                    tui,
+                    config,
+                    Duration::from_secs(3),
+                )
+                .await;
+                if cancellation.all_confirmed() {
+                    break;
+                }
+                save_snapshot(
+                    config,
+                    executor,
+                    paths,
+                    state,
+                    merge_queue,
+                    gate_thresholds,
+                    snapshot_writer,
+                );
+                let pids = attempt_ownership.surviving_agent_metadata().pids;
+                let _ = persist::save_agent_pids(paths, &pids);
+                snapshot_writer.flush();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            let report = build_report(executor, plans, state, task_dag);
+            let completed_event = build_run_completed_event(state, &report, RunOutcome::Failed);
+            emit_runner_event(paths, state, tui, config, completed_event);
+            save_snapshot(
+                config,
+                executor,
+                paths,
+                state,
+                merge_queue,
+                gate_thresholds,
+                snapshot_writer,
+            );
+            let _ = persist::save_agent_pids(paths, &[]);
+            snapshot_writer.flush();
+            // Signal the outer select! loop to enter Branch 6 (cancellation
+            // shutdown) on the next iteration.  This avoids blocking here
+            // while still guaranteeing an orderly exit.
+            cancel.cancel();
+            // Emit a minimal RunnerEvent so downstream subscribers see the
+            // conductor reason. We reuse the run_id for correlation.
+            info!(
+                run_id = run_id,
+                watcher = watcher.as_str(),
+                reason = reason_str.as_str(),
+                "conductor supervision emitted terminal run failure"
+            );
+        }
+
+        // ConductorDecision is #[non_exhaustive]; forward-compat wildcard.
+        _ => {
+            debug!(decision = ?eval.decision, "conductor returned unknown decision variant; ignoring");
         }
     }
 }
@@ -5884,6 +6150,10 @@ fn save_snapshot(
             .cascade_router
             .as_ref()
             .map(|router| router.snapshot_json()),
+        conductor_circuit_breaker_state: config
+            .conductor
+            .as_ref()
+            .map(|c| c.circuit_breaker().snapshot_state()),
     };
     let run_state_json = match serde_json::to_string_pretty(&run_state) {
         Ok(json) => json,
@@ -6991,6 +7261,24 @@ async fn dispatch_action(
             ctx.state.current_daimon_strategy = daimon_hook.as_ref().map(|hook| hook.strategy);
             let routing_context = {
                 use roko_learn::model_router::RoutingContext;
+                let active_agents = u32::try_from(
+                    ctx.attempt_ownership
+                        .surviving_agent_metadata()
+                        .agent_ids
+                        .len(),
+                )
+                .unwrap_or(u32::MAX);
+                let ready_queue_depth = u32::try_from(
+                    ready_tasks_for_plan(
+                        ctx.task_dag,
+                        ctx.executor,
+                        ctx.task_index,
+                        ctx.state,
+                        plan_id,
+                    )
+                    .len(),
+                )
+                .unwrap_or(u32::MAX);
                 RoutingContext {
                     task_category,
                     complexity: tier_to_complexity(&task_def.tier),
@@ -6998,15 +7286,9 @@ async fn dispatch_action(
                     role: role_enum,
                     crate_familiarity: 0.5,
                     has_prior_failure: attempt_num > 1,
-                    conductor_load: 0.0,
-                    active_agents: u32::try_from(
-                        ctx.attempt_ownership
-                            .surviving_agent_metadata()
-                            .agent_ids
-                            .len(),
-                    )
-                    .unwrap_or(u32::MAX),
-                    ready_queue_depth: 0,
+                    conductor_load: compute_conductor_load(active_agents, ready_queue_depth, 0.0),
+                    active_agents,
+                    ready_queue_depth,
                     max_queue_wait_hours: 0.0,
                     daimon_policy: daimon_policy_for_hook(daimon_hook.as_ref()),
                     thinking_level: daimon_hook
@@ -11225,6 +11507,26 @@ fn architectural_model_hint(config: &RunConfig) -> String {
         .unwrap_or_else(|| roko_core::defaults::MODEL_DEEP.to_string())
 }
 
+/// Compute a bounded [0.0, 1.0] conductor load from live runner pressure signals.
+///
+/// The load estimate combines three independent pressure axes:
+/// - **agent pressure**: ratio of active agents to the typical max concurrency (6).
+/// - **queue pressure**: ratio of ready-but-unstarted tasks to 6.
+/// - **wait pressure**: ratio of maximum per-task queue wait hours to 8 h.
+///
+/// The returned value is the maximum of the three axes, clamped to `[0.0, 1.0]`.
+/// When no conductor is configured, pass all-zeros to obtain a neutral `0.0` load.
+pub fn compute_conductor_load(
+    active_agents: u32,
+    ready_queue_depth: u32,
+    max_queue_wait_hours: f64,
+) -> f64 {
+    let agent_pressure = (f64::from(active_agents) / 6.0).clamp(0.0, 1.0);
+    let queue_pressure = (f64::from(ready_queue_depth) / 6.0).clamp(0.0, 1.0);
+    let wait_pressure = (max_queue_wait_hours / 8.0).clamp(0.0, 1.0);
+    agent_pressure.max(queue_pressure).max(wait_pressure)
+}
+
 fn failure_class_label(class: &roko_gate::FailureClass) -> String {
     serde_json::to_value(class)
         .ok()
@@ -14328,6 +14630,7 @@ depends_on = []
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            conductor_circuit_breaker_state: None,
         };
         let encoded = serde_json::to_string(&snapshot).unwrap();
         let decoded: persist::RunStateSnapshot = serde_json::from_str(&encoded).unwrap();
@@ -15417,6 +15720,7 @@ depends_on = ["T1"]
             replan_ledger: persist::ReplanLedgerSnapshot::default(),
             revised_tasks: Vec::new(),
             cascade_router_json: None,
+            conductor_circuit_breaker_state: None,
         };
         let mut resumed = RunState::new(2);
         restore_state_from_resume_snapshot(&mut resumed, &snapshot, &task_index, &[]);

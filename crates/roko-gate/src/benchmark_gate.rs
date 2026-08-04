@@ -60,7 +60,7 @@ impl Default for BenchmarkRegressionGate {
 impl roko_core::Cell for BenchmarkRegressionGate {
     fn cell_id(&self) -> &str { "benchmark-gate" }
     fn cell_name(&self) -> &str { "BenchmarkRegressionGate" }
-    fn protocols(&self) -> &[&str] { &["Verify"] }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> { vec![roko_core::ProtocolId::Verify] }
 }
 
 #[async_trait]

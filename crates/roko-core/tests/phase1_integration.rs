@@ -20,7 +20,8 @@ use roko_core::error::Result;
 use roko_core::traits::{Connect, Observe, Store, Substrate, Trigger};
 use roko_core::{
     Body, Bus, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, Engram, HdcVector,
-    Kind, MemoryBus, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter, TypeSchema,
+    Kind, MemoryBus, ProtocolId, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter,
+    TypeSchema,
 };
 
 // ============================================================================
@@ -101,8 +102,8 @@ impl Cell for DoubleCell {
     fn cell_name(&self) -> &str {
         "Double Cell"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Transform"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        Vec::new()
     }
     fn cell_version(&self) -> CellVersion {
         (1, 0, 0)
@@ -142,8 +143,8 @@ impl Cell for PassthroughCell {
     fn cell_name(&self) -> &str {
         "Passthrough Cell"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Observe", "Transform"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Observe]
     }
 
     async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
@@ -180,8 +181,8 @@ impl Cell for StoreCountObserver {
     fn cell_name(&self) -> &str {
         "Store Count Observer"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Observe"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Observe]
     }
 }
 
@@ -229,8 +230,8 @@ impl Cell for MockConnection {
     fn cell_name(&self) -> &str {
         "Mock Connection"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Connect"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Connect]
     }
 }
 
@@ -286,8 +287,8 @@ impl Cell for TopicTrigger {
     fn cell_name(&self) -> &str {
         "Topic Trigger"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Trigger"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Trigger]
     }
 }
 
@@ -414,7 +415,7 @@ fn observer_has_cell_identity() {
     let observer = StoreCountObserver::new();
     assert_eq!(observer.cell_id(), "store-count-observer");
     assert_eq!(observer.cell_name(), "Store Count Observer");
-    assert!(observer.protocols().contains(&"Observe"));
+    assert!(observer.has_protocol(ProtocolId::Observe));
 }
 
 // ============================================================================
@@ -449,7 +450,7 @@ fn connect_has_cell_identity() {
     let conn = MockConnection::new();
     assert_eq!(conn.cell_id(), "mock-connection");
     assert_eq!(conn.cell_name(), "Mock Connection");
-    assert!(conn.protocols().contains(&"Connect"));
+    assert!(conn.has_protocol(ProtocolId::Connect));
 }
 
 // ============================================================================
@@ -496,7 +497,7 @@ fn trigger_has_cell_identity() {
     let trigger = TopicTrigger::new("test.");
     assert_eq!(trigger.cell_id(), "topic-trigger");
     assert_eq!(trigger.cell_name(), "Topic Trigger");
-    assert!(trigger.protocols().contains(&"Trigger"));
+    assert!(trigger.has_protocol(ProtocolId::Trigger));
 }
 
 // ============================================================================
@@ -637,7 +638,6 @@ fn cell_context_has_optional_fields() {
 fn cell_can_declare_multiple_protocols() {
     let cell = PassthroughCell;
     let protos = cell.protocols();
-    assert!(protos.contains(&"Observe"));
-    assert!(protos.contains(&"Transform"));
-    assert_eq!(protos.len(), 2);
+    assert!(protos.contains(&ProtocolId::Observe));
+    assert_eq!(protos.len(), 1);
 }

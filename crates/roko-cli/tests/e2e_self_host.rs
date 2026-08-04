@@ -119,6 +119,7 @@ fn snap(
         replan_ledger: ReplanLedgerSnapshot::default(),
         revised_tasks: Vec::new(),
         cascade_router_json: None,
+        conductor_circuit_breaker_state: None,
     }
 }
 
@@ -541,6 +542,7 @@ fn resume_from_mid_run_replays_remaining() {
         replan_ledger: ReplanLedgerSnapshot::default(),
         revised_tasks: Vec::new(),
         cascade_router_json: None,
+        conductor_circuit_breaker_state: None,
     };
     save_run_state(&paths, &mid).unwrap();
 
@@ -661,6 +663,7 @@ fn failed_task_blocks_dependent_terminal_counts() {
         replan_ledger: ReplanLedgerSnapshot::default(),
         revised_tasks: Vec::new(),
         cascade_router_json: None,
+        conductor_circuit_breaker_state: None,
     };
     save_run_state(&paths, &s).unwrap();
     let ld = load_run_state(&paths).unwrap().unwrap();

@@ -1039,6 +1039,7 @@ mod tests {
             connect_timeout_ms: Some(1_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         }
     }
 
@@ -1060,6 +1061,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
 

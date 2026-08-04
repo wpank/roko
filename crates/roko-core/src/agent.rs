@@ -91,7 +91,8 @@ impl ProviderKind {
             Self::OpenAiCompat => AgentBackend::OpenAi,
             Self::CursorAcp | Self::CursorCli => AgentBackend::Cursor,
             Self::PerplexityApi => AgentBackend::Perplexity,
-            Self::GeminiApi | Self::GeminiCli => AgentBackend::OpenAi,
+            Self::GeminiApi => AgentBackend::OpenAi,
+            Self::GeminiCli => AgentBackend::GeminiCli,
             Self::CerebrasApi => AgentBackend::Cerebras,
             Self::Hermes => AgentBackend::Hermes,
             Self::OpenClaw => AgentBackend::OpenClaw,
@@ -134,6 +135,8 @@ pub enum AgentBackend {
     Hermes,
     /// OpenClaw inference runtime (harness).
     OpenClaw,
+    /// Google Gemini CLI subprocess (Google OAuth, no API key required).
+    GeminiCli,
 }
 
 impl AgentBackend {
@@ -150,6 +153,7 @@ impl AgentBackend {
             Self::Cerebras => "cb",
             Self::Hermes => "hm",
             Self::OpenClaw => "oc",
+            Self::GeminiCli => "gc",
         }
     }
 
@@ -211,6 +215,7 @@ impl From<AgentBackend> for ProviderKind {
             AgentBackend::Cerebras => ProviderKind::CerebrasApi,
             AgentBackend::Hermes => ProviderKind::Hermes,
             AgentBackend::OpenClaw => ProviderKind::OpenClaw,
+            AgentBackend::GeminiCli => ProviderKind::GeminiCli,
         }
     }
 }
@@ -1376,6 +1381,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: Some(8),
+                limits: None,
             },
         );
         config.models.insert(

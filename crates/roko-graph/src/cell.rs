@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use roko_core::{Engram, error::Result};
+use roko_core::{Engram, ProtocolId, error::Result};
 
 /// Semantic version tuple for Cell implementations.
 pub type CellVersion = (u32, u32, u32);
@@ -83,9 +83,13 @@ pub trait Cell: Send + Sync + 'static {
         (0, 1, 0)
     }
 
-    /// Protocol names this cell conforms to (e.g. `["Gate", "Scorer"]`).
-    fn protocols(&self) -> &[&str] {
-        &[]
+    /// Protocol conformances this cell declares (typed).
+    fn protocols(&self) -> Vec<ProtocolId> {
+        Vec::new()
+    }
+    /// Convenience: check if this cell conforms to a given protocol.
+    fn has_protocol(&self, id: ProtocolId) -> bool {
+        self.protocols().contains(&id)
     }
 
     /// Estimated USD cost per invocation, when known.

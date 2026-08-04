@@ -128,6 +128,7 @@ fn command_backed_config(command: &str, model: &str, kind: ProviderKind) -> Roko
             connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         },
     );
     config.models.insert(

@@ -110,8 +110,8 @@ impl roko_core::Cell for CascadeRouter {
     fn cell_name(&self) -> &str {
         "CascadeRouter"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Route"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
     }
 }
 

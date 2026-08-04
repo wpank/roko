@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result as AnyhowResult};
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::StreamChunk;
 use roko_agent::provider::{AgentOptions, ProviderSemaphores};
+use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::{Agent, AgentResult, create_agent_for_model};
 use roko_core::agent::{ProviderKind, resolve_model};
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
@@ -723,6 +724,11 @@ pub struct AgentDispatcherV2 {
     config: Arc<RokoConfig>,
     resolver: ProviderDispatchResolver,
     semaphores: Arc<ProviderSemaphores>,
+    /// Runtime-scoped per-provider rate limiter.
+    ///
+    /// When present, threaded into `AgentOptions.rate_limiter` so HTTP-backed
+    /// provider adapters call `acquire(provider_id)` before each LLM request.
+    rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
 impl AgentDispatcherV2 {
@@ -735,6 +741,7 @@ impl AgentDispatcherV2 {
             config,
             resolver,
             semaphores,
+            rate_limiter: None,
         }
     }
 
@@ -748,7 +755,19 @@ impl AgentDispatcherV2 {
             config,
             resolver,
             semaphores,
+            rate_limiter: None,
         }
+    }
+
+    /// Attach a runtime-scoped rate limiter.
+    ///
+    /// The limiter is built once per run from `[providers.<name>].limits` in
+    /// roko.toml and shared by every concurrent task dispatch via
+    /// `SharedAgentFactory`. This ensures all agents share a single RPM/TPM
+    /// budget per provider rather than each maintaining independent counters.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.rate_limiter = Some(limiter);
+        self
     }
 
     /// Resolve a model without launching anything.
@@ -982,6 +1001,11 @@ impl AgentDispatcherV2 {
             bare_mode: request.bare_mode,
             dangerously_skip_permissions: request.dangerously_skip_permissions,
             name: request.agent_id.clone(),
+            // Thread the runtime-scoped rate limiter through to provider adapters.
+            // HTTP-backed adapters (OpenAI-compat, Anthropic API, Gemini) will call
+            // `limiter.acquire(provider_id)` before each live LLM request so that
+            // all concurrent task dispatches share one RPM/TPM budget per provider.
+            rate_limiter: self.rate_limiter.clone(),
             ..Default::default()
         }
     }
@@ -1437,6 +1461,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(

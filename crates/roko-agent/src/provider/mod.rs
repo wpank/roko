@@ -43,6 +43,7 @@ use crate::SafetyLayer;
 use crate::dispatcher::{HandlerResolver, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
 use crate::mock::MockAgent;
+use crate::rate_limit::ProviderRateLimiter;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
 use roko_core::Temperament;
@@ -68,6 +69,7 @@ pub mod cerebras;
 pub mod claude_cli;
 pub mod cursor_acp;
 pub mod cursor_cli;
+pub mod gemini_cli;
 pub mod hermes;
 pub mod openai_compat;
 pub mod openclaw;
@@ -79,6 +81,7 @@ pub use cerebras::CerebrasAdapter;
 pub use claude_cli::ClaudeCliAdapter;
 pub use cursor_acp::CursorAcpAdapter;
 pub use cursor_cli::CursorCliAdapter;
+pub use gemini_cli::GeminiCliAdapter;
 pub use hermes::HermesProviderAdapter;
 pub use openai_compat::OpenAiCompatAdapter;
 pub use openclaw::OpenClawProviderAdapter;
@@ -92,6 +95,7 @@ static CEREBRAS_ADAPTER: CerebrasAdapter = CerebrasAdapter;
 static CLAUDE_CLI_ADAPTER: ClaudeCliAdapter = ClaudeCliAdapter;
 static CURSOR_ACP_ADAPTER: CursorAcpAdapter = CursorAcpAdapter;
 static CURSOR_CLI_ADAPTER: CursorCliAdapter = CursorCliAdapter;
+static GEMINI_CLI_ADAPTER: GeminiCliAdapter = GeminiCliAdapter;
 static HERMES_ADAPTER: HermesProviderAdapter = HermesProviderAdapter;
 static OPENAI_COMPAT_ADAPTER: OpenAiCompatAdapter = OpenAiCompatAdapter;
 static OPENCLAW_ADAPTER: OpenClawProviderAdapter = OpenClawProviderAdapter;
@@ -168,7 +172,8 @@ pub fn adapter_for_kind(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::CursorAcp => &CURSOR_ACP_ADAPTER,
         ProviderKind::CursorCli => &CURSOR_CLI_ADAPTER,
         ProviderKind::PerplexityApi => &PERPLEXITY_ADAPTER,
-        ProviderKind::GeminiApi | ProviderKind::GeminiCli => &GEMINI_ADAPTER,
+        ProviderKind::GeminiApi => &GEMINI_ADAPTER,
+        ProviderKind::GeminiCli => &GEMINI_CLI_ADAPTER,
         ProviderKind::CerebrasApi => &CEREBRAS_ADAPTER,
         ProviderKind::Hermes => &HERMES_ADAPTER,
         ProviderKind::OpenClaw => &OPENCLAW_ADAPTER,
@@ -580,6 +585,12 @@ pub struct AgentOptions {
     /// Pre-discovered MCP tools. When `Some`, the provider adapter skips MCP
     /// discovery entirely and uses these tools instead of spawning MCP servers.
     pub pre_discovered_mcp_tools: Option<Arc<Vec<ToolDef>>>,
+    /// Runtime-scoped per-provider rate limiter shared across concurrent dispatches.
+    ///
+    /// When set, provider adapters that create HTTP-backed LLM backends (OpenAI-compat,
+    /// Anthropic API, Gemini) should call `acquire(provider_id)` before each I/O request
+    /// to enforce configured RPM/TPM budgets from `[providers.<name>].limits` in roko.toml.
+    pub rate_limiter: Option<Arc<ProviderRateLimiter>>,
 }
 
 impl AgentOptions {
@@ -891,6 +902,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -945,6 +957,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -1427,6 +1440,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(
@@ -1532,6 +1546,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: Some(3),
+                limits: None,
             },
         );
 
@@ -1664,6 +1679,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -1704,6 +1720,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "openclaw".to_string(),

@@ -648,6 +648,7 @@ mod tests {
                 connect_timeout_ms: None,
                 extra_headers: Some(headers),
                 max_concurrent: None,
+                limits: None,
             },
         );
 

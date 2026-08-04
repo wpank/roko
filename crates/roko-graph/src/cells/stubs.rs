@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use roko_core::{Engram, error::Result};
+use roko_core::{Engram, ProtocolId, error::Result};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
@@ -41,8 +41,8 @@ impl Cell for PassthroughCell {
         (0, 1, 0)
     }
 
-    fn protocols(&self) -> &[&str] {
-        &[]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        Vec::new()
     }
 
     fn estimated_cost(&self) -> Option<f64> {

@@ -199,8 +199,8 @@ impl roko_core::Cell for LlmJudgeGate {
     fn cell_name(&self) -> &str {
         "LlmJudgeGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

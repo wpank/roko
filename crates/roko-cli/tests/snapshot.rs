@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use roko_cli::orchestrate::save_snapshot_atomic;
+use roko_cli::runner::persist::atomic_write;
 use roko_cli::snapshot_migrate;
 use roko_cli::snapshot_reconcile::{SnapshotReconcileError, reconcile_snapshot_vs_plans};
 use roko_orchestrator::{CURRENT_SCHEMA_VERSION, ExecutorSnapshot, PlanInfo, PlanState};
@@ -85,7 +85,8 @@ fn save_writes_current_version() {
     let path = temp.path().join("executor.json");
     let snapshot = ExecutorSnapshot::new(77);
 
-    save_snapshot_atomic(&snapshot, &path).expect("save snapshot");
+    let json = serde_json::to_string_pretty(&snapshot).expect("serialize snapshot");
+    atomic_write(&path, json.as_bytes()).expect("save snapshot");
 
     let saved: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("read snapshot"))

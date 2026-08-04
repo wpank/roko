@@ -30,6 +30,7 @@ use roko_learn::model_router::RoutingContext;
 use super::{FeedbackEvent, FeedbackSink};
 #[cfg(test)]
 use crate::dispatch::ModelChoiceSource;
+use crate::runner::event_loop::compute_conductor_load;
 
 /// Sink that records a routing observation per `task_completed` event.
 #[derive(Clone)]
@@ -129,7 +130,7 @@ fn build_fallback_routing_context(model: &str) -> RoutingContext {
         role: AgentRole::Implementer,
         crate_familiarity: 0.5,
         has_prior_failure: false,
-        conductor_load: 0.0,
+        conductor_load: compute_conductor_load(0, 0, 0.0),
         active_agents: 0,
         ready_queue_depth: 0,
         max_queue_wait_hours: 0.0,

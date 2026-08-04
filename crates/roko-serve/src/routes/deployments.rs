@@ -1084,6 +1084,7 @@ mod tests {
                     url: "http://worker.invalid".to_string(),
                 },
                 url: Some("http://worker.invalid".to_string()),
+                callback_token: None,
                 created_at: chrono::Utc::now(),
             },
         );

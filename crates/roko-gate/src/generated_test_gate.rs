@@ -250,8 +250,8 @@ impl roko_core::Cell for GeneratedTestGate {
     fn cell_name(&self) -> &str {
         "GeneratedTestGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

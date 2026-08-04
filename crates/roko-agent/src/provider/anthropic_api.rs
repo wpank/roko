@@ -346,6 +346,7 @@ mod tests {
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),
@@ -438,6 +439,7 @@ mod tests {
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(2_500),

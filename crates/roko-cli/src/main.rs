@@ -987,6 +987,17 @@ enum KnowledgeCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Backfill HDC vectors for existing knowledge entries that lack them.
+    ///
+    /// Reads the knowledge store, computes HDC vectors for any entry whose
+    /// hdc_vector field is absent or has the wrong byte length, and atomically
+    /// rewrites the store. Entries that already have a valid vector are unchanged.
+    /// Requires the roko-neuro hdc feature to be enabled in this binary.
+    BackfillHdc {
+        /// Working directory (default: cwd / --repo).
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -15,6 +15,7 @@ pub mod spec_drift;
 pub mod stuck_pattern;
 pub mod test_failure_budget;
 pub mod time_overrun;
+pub mod worktree_count;
 
 pub use compile_fail_repeat::CompileFailRepeatWatcher;
 pub use context_window_pressure::ContextWindowPressureWatcher;
@@ -26,3 +27,4 @@ pub use spec_drift::SpecDriftWatcher;
 pub use stuck_pattern::StuckPatternWatcher;
 pub use test_failure_budget::TestFailureBudgetWatcher;
 pub use time_overrun::TimeOverrunWatcher;
+pub use worktree_count::WorktreeCountWatcher;

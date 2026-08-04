@@ -164,8 +164,8 @@ impl roko_core::Cell for FactCheckGate {
     fn cell_name(&self) -> &str {
         "FactCheckGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

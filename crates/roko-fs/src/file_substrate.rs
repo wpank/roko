@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use roko_core::{
-    ContentHash, Context, Engram, Query, Store,
+    ContentHash, Context, Engram, ProtocolId, Query, Store,
     error::{Result, RokoError},
 };
 use std::collections::{HashMap, HashSet};
@@ -261,8 +261,8 @@ impl roko_core::Cell for FileSubstrate {
     fn cell_name(&self) -> &str {
         "FileSubstrate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Store"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Store]
     }
 }
 

@@ -35,8 +35,10 @@ pub fn mcp_to_tool_def(mcp_tool: &McpToolDef, server_prefix: &str) -> ToolDef {
         });
 
     let annotations = mcp_tool.annotations.as_ref();
-    let read_only = annotations.and_then(|a| a.read_only).unwrap_or(false);
-    let open_world = annotations.and_then(|a| a.open_world).unwrap_or(false);
+    // Accept both legacy (readOnly/openWorld) and MCP-2025 spec names
+    // (readOnlyHint/openWorldHint) via the helper methods on McpToolAnnotations.
+    let read_only = annotations.map_or(false, |a| a.is_read_only());
+    let open_world = annotations.map_or(false, |a| a.is_open_world());
     let idempotent = annotations.and_then(|a| a.idempotent).unwrap_or(false);
 
     ToolDef {
@@ -164,7 +166,9 @@ mod tests {
         let mut mcp = sample_mcp_tool();
         mcp.annotations = Some(super::super::client::McpToolAnnotations {
             read_only: Some(true),
+            read_only_hint: None,
             open_world: Some(true),
+            open_world_hint: None,
             idempotent: Some(true),
             title: Some("Read file".to_string()),
         });
@@ -179,5 +183,54 @@ mod tests {
             def.metadata.as_ref().unwrap()["mcp_annotations"]["title"],
             "Read file"
         );
+    }
+
+    #[test]
+    fn mcp_to_tool_def_maps_read_only_hint_annotation() {
+        // Verify that the MCP-2025 spec names (readOnlyHint / openWorldHint) are
+        // accepted and produce the same permission outcome as the legacy names.
+        let mut mcp = sample_mcp_tool();
+        mcp.annotations = Some(super::super::client::McpToolAnnotations {
+            read_only: None,
+            read_only_hint: Some(true),
+            open_world: None,
+            open_world_hint: Some(true),
+            idempotent: Some(false),
+            title: None,
+        });
+
+        let def = mcp_to_tool_def(&mcp, "code");
+
+        assert!(def.permission.read);
+        assert!(
+            !def.permission.write,
+            "readOnlyHint:true must set write=false"
+        );
+        assert!(
+            def.permission.network,
+            "openWorldHint:true must set network=true"
+        );
+        assert!(!def.idempotent);
+    }
+
+    #[test]
+    fn mcp_to_tool_def_legacy_and_hint_names_are_disjunctive() {
+        // Either name being true is sufficient to trigger the flag.
+        let mut mcp = sample_mcp_tool();
+        mcp.annotations = Some(super::super::client::McpToolAnnotations {
+            read_only: Some(false),
+            read_only_hint: Some(true), // hint takes precedence when legacy is false
+            open_world: Some(false),
+            open_world_hint: Some(false),
+            idempotent: None,
+            title: None,
+        });
+
+        let def = mcp_to_tool_def(&mcp, "code");
+        assert!(
+            !def.permission.write,
+            "readOnlyHint:true must override readOnly:false"
+        );
+        assert!(!def.permission.network);
     }
 }

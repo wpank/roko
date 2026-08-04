@@ -12,15 +12,15 @@ use super::types::StageTransition;
 /// without them, a stage-3 router (UCB mode) would have empty A/b
 /// parameters and produce effectively random selections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LinUCBSnapshot {
+pub struct LinUCBSnapshot {
     /// Per-arm A matrix (flattened from `dim x dim`).
-    pub(crate) a_matrices: Vec<Vec<f64>>,
+    pub a_matrices: Vec<Vec<f64>>,
     /// Per-arm b vector.
-    pub(crate) b_vectors: Vec<Vec<f64>>,
+    pub b_vectors: Vec<Vec<f64>>,
     /// Dimensionality of the context feature vector.
-    pub(crate) dim: usize,
+    pub dim: usize,
     /// Total observations at snapshot time.
-    pub(crate) observations: usize,
+    pub observations: usize,
 }
 
 /// Persisted snapshot of cascade router state.

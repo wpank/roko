@@ -4,7 +4,9 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::types::{Edge, EdgeCondition, Graph, GraphError, GraphMetadata, Node};
+use crate::types::{
+    Edge, EdgeCondition, ExecutionClass, Graph, GraphError, GraphMetadata, GraphPolicy, Node,
+};
 
 /// Raw TOML representation of a graph file (for deserialization).
 #[derive(Debug, Deserialize)]
@@ -16,7 +18,7 @@ struct RawGraphFile {
     edges: Vec<RawEdge>,
 }
 
-/// Raw metadata section.
+/// Raw metadata section (including optional policy subsection).
 #[derive(Debug, Deserialize)]
 struct RawGraphMeta {
     name: String,
@@ -26,6 +28,9 @@ struct RawGraphMeta {
     version: Option<String>,
     #[serde(default)]
     labels: Option<std::collections::HashMap<String, String>>,
+    /// Optional `[graph.policy]` section. Absent → default policy.
+    #[serde(default)]
+    policy: Option<GraphPolicy>,
 }
 
 /// Raw node definition from TOML.
@@ -39,6 +44,10 @@ struct RawNode {
     inputs: Vec<String>,
     #[serde(default)]
     outputs: Vec<String>,
+    /// Execution classification for replay and snapshot decisions.
+    /// Defaults to `Activity` (non-deterministic) when absent from TOML.
+    #[serde(default)]
+    execution_class: ExecutionClass,
 }
 
 /// Raw edge definition from TOML.
@@ -91,7 +100,10 @@ pub fn load_from_str(toml_str: &str) -> Result<Graph, GraphError> {
         labels: raw.graph.labels.unwrap_or_default(),
     };
 
-    let mut graph = Graph::new(metadata);
+    // Use the `[graph.policy]` section if present; otherwise fall back to default.
+    let policy = raw.graph.policy.unwrap_or_default();
+
+    let mut graph = Graph::new(metadata).with_policy(policy);
 
     // Add all nodes first.
     for raw_node in raw.nodes {
@@ -103,6 +115,7 @@ pub fn load_from_str(toml_str: &str) -> Result<Graph, GraphError> {
                 .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new())),
             inputs: raw_node.inputs,
             outputs: raw_node.outputs,
+            execution_class: raw_node.execution_class,
         };
         graph.add_node(node)?;
     }
@@ -132,6 +145,8 @@ pub fn load_from_file(path: &Path) -> Result<Graph, GraphError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::{FailureStrategy, GraphMode};
+
     use super::*;
 
     const SAMPLE_GRAPH: &str = r#"
@@ -182,6 +197,40 @@ type = "success"
         let test = graph.get_node("test").unwrap();
         assert_eq!(test.cell_type, "gate.test");
         assert_eq!(test.inputs, vec!["compile.artifact"]);
+    }
+
+    #[test]
+    fn load_graph_without_policy_uses_defaults() {
+        let graph = load_from_str(SAMPLE_GRAPH).unwrap();
+        // No [graph.policy] section -> defaults applied.
+        assert_eq!(graph.policy.mode, GraphMode::OneShot);
+        assert_eq!(graph.policy.failure_strategy, FailureStrategy::FailFast);
+        assert_eq!(graph.policy.max_concurrent_nodes, 4);
+        assert!(graph.policy.timeout_ms.is_none());
+        assert!(graph.policy.hot.is_none());
+    }
+
+    #[test]
+    fn load_graph_with_policy_section() {
+        let toml_str = r#"
+[graph]
+name = "hot-pipeline"
+
+[graph.policy]
+mode = "hot"
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 8
+timeout_ms = 60000
+
+[[nodes]]
+id = "a"
+cell_type = "noop"
+"#;
+        let graph = load_from_str(toml_str).unwrap();
+        assert_eq!(graph.policy.mode, GraphMode::Hot);
+        assert_eq!(graph.policy.failure_strategy, FailureStrategy::SkipFailed);
+        assert_eq!(graph.policy.max_concurrent_nodes, 8);
+        assert_eq!(graph.policy.timeout_ms, Some(60_000));
     }
 
     #[test]

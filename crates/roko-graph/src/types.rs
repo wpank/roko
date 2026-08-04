@@ -1,12 +1,15 @@
 //! Core graph types: `Graph`, `Node`, `Edge`, `NodeId`, `EdgeCondition`, `GraphMetadata`,
-//! `NodeOutput`, `NodeOutputStatus`, `GraphConfig`.
+//! `NodeOutput`, `NodeOutputStatus`, `GraphConfig`, `GraphPolicy`, `GraphMode`, `FailureStrategy`.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use indexmap::IndexMap;
 use petgraph::graph::DiGraph;
+use roko_core::TypeSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::hot::HotPolicy;
 
 /// Unique identifier for a node within a graph.
 pub type NodeId = String;
@@ -51,6 +54,26 @@ fn default_config() -> toml::Value {
     toml::Value::Table(toml::map::Map::new())
 }
 
+/// Classification of a node for replay and snapshot purposes.
+///
+/// - `Workflow` nodes are deterministic (routing, scoring, composition): they can be
+///   re-derived from their inputs on replay and do **not** need to be recorded.
+/// - `Activity` nodes are non-deterministic (LLM calls, tool execution, external APIs):
+///   their outputs must be recorded so replay can reproduce the same result without
+///   re-invoking the external system.
+///
+/// The Graph Engine uses this flag when deciding which node outputs to include in a
+/// snapshot (E21-T05).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionClass {
+    /// Deterministic: routing, scoring, composition. Re-derived on replay.
+    Workflow,
+    /// Non-deterministic: LLM calls, tool execution, external APIs. Recorded for replay.
+    #[default]
+    Activity,
+}
+
 /// A node in the execution graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
@@ -67,6 +90,14 @@ pub struct Node {
     /// Named outputs this node produces (for downstream edges).
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// Execution classification for replay and snapshot decisions.
+    ///
+    /// Defaults to [`ExecutionClass::Activity`] because most graph nodes involve
+    /// non-deterministic external computation (LLM calls, tool use, API calls).
+    /// Set to [`ExecutionClass::Workflow`] for pure routing or scoring nodes whose
+    /// outputs can be re-derived from inputs without re-running the external system.
+    #[serde(default)]
+    pub execution_class: ExecutionClass,
 }
 
 /// An edge connecting two nodes in the execution graph.
@@ -84,11 +115,81 @@ pub struct Edge {
 /// Index type used by petgraph for node indices.
 pub type GraphNodeIdx = petgraph::graph::NodeIndex;
 
+// ─── Graph execution policy ──────────────────────────────────────────────────
+
+/// Execution mode for a graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphMode {
+    /// Execute the graph once and return. Default mode.
+    #[default]
+    OneShot,
+    /// Execute the graph in a continuous tick loop (Hot Graph).
+    Hot,
+}
+
+/// Strategy to apply when a node fails during execution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureStrategy {
+    /// Abort the entire graph immediately on the first node failure. Default.
+    #[default]
+    FailFast,
+    /// Skip failed nodes and continue executing independent successors.
+    SkipFailed,
+    /// Retry failed nodes up to `max_retries` times before giving up.
+    Retry {
+        /// Maximum number of retry attempts per failed node.
+        max_retries: u32,
+    },
+}
+
+/// Top-level execution policy for a graph definition.
+///
+/// Parsed from `[graph.policy]` in TOML graph definitions. If the section is
+/// absent, all fields use their defaults (OneShot, FailFast, 4 concurrent nodes).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GraphPolicy {
+    /// Whether to run once (`OneShot`) or continuously tick (`Hot`).
+    #[serde(default)]
+    pub mode: GraphMode,
+    /// What to do when a node fails.
+    #[serde(default)]
+    pub failure_strategy: FailureStrategy,
+    /// Maximum number of nodes that may execute concurrently within one wave.
+    #[serde(default = "default_max_concurrent_nodes")]
+    pub max_concurrent_nodes: usize,
+    /// Optional wall-clock timeout for the entire graph execution (milliseconds).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Hot Graph tick policy. Only relevant when `mode = Hot`.
+    #[serde(default)]
+    pub hot: Option<HotPolicy>,
+}
+
+fn default_max_concurrent_nodes() -> usize {
+    4
+}
+
+impl Default for GraphPolicy {
+    fn default() -> Self {
+        Self {
+            mode: GraphMode::OneShot,
+            failure_strategy: FailureStrategy::FailFast,
+            max_concurrent_nodes: default_max_concurrent_nodes(),
+            timeout_ms: None,
+            hot: None,
+        }
+    }
+}
+
 /// A directed acyclic graph of execution nodes, backed by petgraph.
 #[derive(Debug, Clone)]
 pub struct Graph {
     /// Graph metadata (name, description, labels).
     pub metadata: GraphMetadata,
+    /// Execution policy controlling mode, failure handling, and concurrency.
+    pub policy: GraphPolicy,
     /// The underlying petgraph directed graph.
     pub inner: DiGraph<Node, Edge>,
     /// Mapping from `NodeId` (string) to petgraph node index.
@@ -96,14 +197,22 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// Create a new empty graph with the given metadata.
+    /// Create a new empty graph with the given metadata and default policy.
     #[must_use]
     pub fn new(metadata: GraphMetadata) -> Self {
         Self {
             metadata,
+            policy: GraphPolicy::default(),
             inner: DiGraph::new(),
             node_map: IndexMap::new(),
         }
+    }
+
+    /// Builder method to override the graph's execution policy.
+    #[must_use]
+    pub fn with_policy(mut self, policy: GraphPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Add a node to the graph. Returns the petgraph index.
@@ -155,6 +264,152 @@ impl Graph {
     #[must_use]
     pub fn edge_count(&self) -> usize {
         self.inner.edge_count()
+    }
+
+    /// Validate all edges for TypeSchema compatibility between source output and
+    /// target input schemas.
+    ///
+    /// Iterates every edge in the graph and checks that the source node's cell
+    /// `output_schema` is compatible with the target node's cell `input_schema`
+    /// (using [`TypeSchema::is_compatible_with`]).
+    ///
+    /// Rules:
+    /// - Edges where either cell is missing from the registry produce an error.
+    /// - Edges where either cell returns `None` for its schema (i.e. untyped /
+    ///   "Any") are always considered valid.
+    /// - ALL errors are collected — validation does not fail fast.
+    #[must_use]
+    pub fn validate_edges(
+        &self,
+        registry: &crate::registry::CellRegistry,
+    ) -> Vec<EdgeValidationError> {
+        let mut errors = Vec::new();
+
+        for edge_ref in self.inner.edge_references() {
+            let edge = edge_ref.weight();
+            let from_id = &edge.from;
+            let to_id = &edge.to;
+
+            // Look up source node's cell type.
+            let source_cell_type = match self.get_node(from_id) {
+                Some(n) => n.cell_type.clone(),
+                None => {
+                    errors.push(EdgeValidationError {
+                        edge_from: from_id.clone(),
+                        edge_to: to_id.clone(),
+                        source_schema: None,
+                        target_schema: None,
+                        reason: format!("source node '{from_id}' not found in graph"),
+                    });
+                    continue;
+                }
+            };
+
+            // Look up target node's cell type.
+            let target_cell_type = match self.get_node(to_id) {
+                Some(n) => n.cell_type.clone(),
+                None => {
+                    errors.push(EdgeValidationError {
+                        edge_from: from_id.clone(),
+                        edge_to: to_id.clone(),
+                        source_schema: None,
+                        target_schema: None,
+                        reason: format!("target node '{to_id}' not found in graph"),
+                    });
+                    continue;
+                }
+            };
+
+            // Instantiate source cell from registry.
+            let source_cell = match registry
+                .create(&source_cell_type, toml::Value::Table(toml::map::Map::new()))
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    errors.push(EdgeValidationError {
+                        edge_from: from_id.clone(),
+                        edge_to: to_id.clone(),
+                        source_schema: None,
+                        target_schema: None,
+                        reason: format!(
+                            "source node '{from_id}' cell type '{source_cell_type}' not in registry"
+                        ),
+                    });
+                    continue;
+                }
+            };
+
+            // Instantiate target cell from registry.
+            let target_cell = match registry
+                .create(&target_cell_type, toml::Value::Table(toml::map::Map::new()))
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    errors.push(EdgeValidationError {
+                        edge_from: from_id.clone(),
+                        edge_to: to_id.clone(),
+                        source_schema: None,
+                        target_schema: None,
+                        reason: format!(
+                            "target node '{to_id}' cell type '{target_cell_type}' not in registry"
+                        ),
+                    });
+                    continue;
+                }
+            };
+
+            // Get schemas. None means untyped (Any) — always valid.
+            let source_schema = source_cell.output_schema().cloned();
+            let target_schema = target_cell.input_schema().cloned();
+
+            let compatible = match (&source_schema, &target_schema) {
+                // Either side is None (untyped / Any) -> always valid.
+                (None, _) | (_, None) => true,
+                (Some(src), Some(tgt)) => src.is_compatible_with(tgt),
+            };
+
+            if !compatible {
+                errors.push(EdgeValidationError {
+                    edge_from: from_id.clone(),
+                    edge_to: to_id.clone(),
+                    source_schema,
+                    target_schema,
+                    reason: format!(
+                        "output schema of '{from_id}' is not compatible with input schema of '{to_id}'"
+                    ),
+                });
+            }
+        }
+
+        errors
+    }
+}
+
+/// A type-schema mismatch detected between two connected graph nodes.
+///
+/// Produced by [`Graph::validate_edges`] when the source node's `output_schema`
+/// is not compatible with the target node's `input_schema`.
+#[derive(Debug, Clone)]
+pub struct EdgeValidationError {
+    /// ID of the source (upstream) node.
+    pub edge_from: String,
+    /// ID of the target (downstream) node.
+    pub edge_to: String,
+    /// Output schema declared by the source cell (`None` = untyped).
+    pub source_schema: Option<TypeSchema>,
+    /// Input schema declared by the target cell (`None` = untyped).
+    pub target_schema: Option<TypeSchema>,
+    /// Human-readable explanation of why the edge is invalid.
+    pub reason: String,
+}
+
+impl std::fmt::Display for EdgeValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "edge {} -> {}: {}",
+            self.edge_from, self.edge_to, self.reason
+        )
     }
 }
 
@@ -360,6 +615,32 @@ mod tests {
     }
 
     #[test]
+    fn graph_default_policy() {
+        let graph = Graph::new(GraphMetadata::default());
+        assert_eq!(graph.policy.mode, GraphMode::OneShot);
+        assert_eq!(graph.policy.failure_strategy, FailureStrategy::FailFast);
+        assert_eq!(graph.policy.max_concurrent_nodes, 4);
+        assert!(graph.policy.timeout_ms.is_none());
+        assert!(graph.policy.hot.is_none());
+    }
+
+    #[test]
+    fn graph_with_policy_builder() {
+        let policy = GraphPolicy {
+            mode: GraphMode::Hot,
+            failure_strategy: FailureStrategy::SkipFailed,
+            max_concurrent_nodes: 8,
+            timeout_ms: Some(30_000),
+            hot: None,
+        };
+        let graph = Graph::new(GraphMetadata::default()).with_policy(policy);
+        assert_eq!(graph.policy.mode, GraphMode::Hot);
+        assert_eq!(graph.policy.failure_strategy, FailureStrategy::SkipFailed);
+        assert_eq!(graph.policy.max_concurrent_nodes, 8);
+        assert_eq!(graph.policy.timeout_ms, Some(30_000));
+    }
+
+    #[test]
     fn add_nodes_and_edges() {
         let mut graph = Graph::new(GraphMetadata {
             name: "pipeline".to_string(),
@@ -372,6 +653,7 @@ mod tests {
             config: toml::Value::Table(toml::map::Map::new()),
             inputs: vec![],
             outputs: vec!["success".to_string()],
+            execution_class: ExecutionClass::default(),
         };
         let test_node = Node {
             id: "test".to_string(),
@@ -379,6 +661,7 @@ mod tests {
             config: toml::Value::Table(toml::map::Map::new()),
             inputs: vec!["compile.success".to_string()],
             outputs: vec![],
+            execution_class: ExecutionClass::default(),
         };
 
         graph.add_node(compile_node).unwrap();
@@ -407,6 +690,7 @@ mod tests {
             config: toml::Value::Table(toml::map::Map::new()),
             inputs: vec![],
             outputs: vec![],
+            execution_class: ExecutionClass::default(),
         };
         graph.add_node(node.clone()).unwrap();
         let result = graph.add_node(node);
@@ -422,6 +706,7 @@ mod tests {
             config: toml::Value::Table(toml::map::Map::new()),
             inputs: vec![],
             outputs: vec![],
+            execution_class: ExecutionClass::default(),
         };
         graph.add_node(node).unwrap();
 
@@ -471,5 +756,216 @@ mod tests {
         assert!(output.status.is_skipped());
         assert!(!output.status.is_success());
         assert!(!output.status.is_failed());
+    }
+
+    // ─── validate_edges tests ─────────────────────────────────────────────────
+
+    use roko_core::TypeSchema;
+
+    use crate::cell::CellContext;
+    use crate::registry::CellRegistry;
+
+    /// Cell with no schemas (untyped / Any).
+    struct UntypedCell;
+
+    #[async_trait::async_trait]
+    impl crate::cell::Cell for UntypedCell {
+        fn cell_id(&self) -> &str {
+            "untyped"
+        }
+        fn cell_name(&self) -> &str {
+            "UntypedCell"
+        }
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Engram>,
+            _ctx: &CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+            Ok(input)
+        }
+    }
+
+    /// Cell that outputs a given schema.
+    struct SchemaOutputCell {
+        schema: TypeSchema,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::cell::Cell for SchemaOutputCell {
+        fn cell_id(&self) -> &str {
+            "schema-out"
+        }
+        fn cell_name(&self) -> &str {
+            "SchemaOutputCell"
+        }
+        fn output_schema(&self) -> Option<&TypeSchema> {
+            Some(&self.schema)
+        }
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Engram>,
+            _ctx: &CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+            Ok(input)
+        }
+    }
+
+    /// Cell that requires a given input schema.
+    struct SchemaInputCell {
+        schema: TypeSchema,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::cell::Cell for SchemaInputCell {
+        fn cell_id(&self) -> &str {
+            "schema-in"
+        }
+        fn cell_name(&self) -> &str {
+            "SchemaInputCell"
+        }
+        fn input_schema(&self) -> Option<&TypeSchema> {
+            Some(&self.schema)
+        }
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Engram>,
+            _ctx: &CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Engram>> {
+            Ok(input)
+        }
+    }
+
+    fn make_test_node(id: &str, cell_type: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            cell_type: cell_type.to_string(),
+            config: toml::Value::Table(toml::map::Map::new()),
+            inputs: vec![],
+            outputs: vec![],
+            execution_class: ExecutionClass::default(),
+        }
+    }
+
+    fn make_test_edge(from: &str, to: &str) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            condition: None,
+        }
+    }
+
+    #[test]
+    fn validate_edges_no_schemas_always_valid() {
+        let mut registry = CellRegistry::new();
+        registry.register("untyped", |_| Box::new(UntypedCell));
+
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_test_node("a", "untyped")).unwrap();
+        graph.add_node(make_test_node("b", "untyped")).unwrap();
+        graph.add_edge(make_test_edge("a", "b")).unwrap();
+
+        let errors = graph.validate_edges(&registry);
+        assert!(
+            errors.is_empty(),
+            "untyped cells should always be valid: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_edges_incompatible_schemas_produces_error() {
+        let mut registry = CellRegistry::new();
+        registry.register("task-out", |_| {
+            Box::new(SchemaOutputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Task),
+            })
+        });
+        registry.register("episode-in", |_| {
+            Box::new(SchemaInputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Episode),
+            })
+        });
+
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_test_node("src", "task-out")).unwrap();
+        graph.add_node(make_test_node("tgt", "episode-in")).unwrap();
+        graph.add_edge(make_test_edge("src", "tgt")).unwrap();
+
+        let errors = graph.validate_edges(&registry);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].edge_from, "src");
+        assert_eq!(errors[0].edge_to, "tgt");
+    }
+
+    #[test]
+    fn validate_edges_missing_cell_type_produces_error() {
+        let registry = CellRegistry::new(); // empty
+
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_test_node("a", "unknown-type")).unwrap();
+        graph.add_node(make_test_node("b", "unknown-type")).unwrap();
+        graph.add_edge(make_test_edge("a", "b")).unwrap();
+
+        let errors = graph.validate_edges(&registry);
+        assert_eq!(
+            errors.len(),
+            1,
+            "one error for the missing source cell type"
+        );
+        assert!(errors[0].reason.contains("not in registry"));
+    }
+
+    #[test]
+    fn validate_edges_compatible_same_kind_no_error() {
+        let mut registry = CellRegistry::new();
+        registry.register("task-out", |_| {
+            Box::new(SchemaOutputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Task),
+            })
+        });
+        registry.register("task-in", |_| {
+            Box::new(SchemaInputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Task),
+            })
+        });
+
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_test_node("src", "task-out")).unwrap();
+        graph.add_node(make_test_node("tgt", "task-in")).unwrap();
+        graph.add_edge(make_test_edge("src", "tgt")).unwrap();
+
+        let errors = graph.validate_edges(&registry);
+        assert!(
+            errors.is_empty(),
+            "same Kind should be compatible: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_edges_collects_all_errors() {
+        let mut registry = CellRegistry::new();
+        registry.register("task-out", |_| {
+            Box::new(SchemaOutputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Task),
+            })
+        });
+        registry.register("episode-in", |_| {
+            Box::new(SchemaInputCell {
+                schema: TypeSchema::OfKind(roko_core::Kind::Episode),
+            })
+        });
+
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_test_node("a", "task-out")).unwrap();
+        graph.add_node(make_test_node("b", "episode-in")).unwrap();
+        graph.add_node(make_test_node("c", "episode-in")).unwrap();
+        graph.add_edge(make_test_edge("a", "b")).unwrap();
+        graph.add_edge(make_test_edge("a", "c")).unwrap();
+
+        let errors = graph.validate_edges(&registry);
+        assert_eq!(
+            errors.len(),
+            2,
+            "both incompatible edges should be reported"
+        );
     }
 }

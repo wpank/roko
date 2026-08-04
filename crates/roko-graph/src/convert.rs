@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use tracing::warn;
 
-use crate::types::{Edge, Graph, GraphError, GraphMetadata, Node};
+use crate::types::{Edge, ExecutionClass, Graph, GraphError, GraphMetadata, Node};
 
 /// Convert a loaded Runner v2 plan into a Graph ready for Engine execution.
 ///
@@ -56,6 +56,8 @@ pub fn plan_to_graph(
     let mut graph = Graph::new(metadata);
 
     // Phase 1: Add all nodes.
+    // All plan tasks are Activity nodes: they involve non-deterministic LLM dispatch
+    // and must have their outputs recorded for snapshot/replay (E21-T03).
     for (id, info) in tasks {
         let config = build_node_config(plan_id, plan_dir, info);
         let node = Node {
@@ -64,6 +66,7 @@ pub fn plan_to_graph(
             config,
             inputs: vec![],
             outputs: vec![],
+            execution_class: ExecutionClass::Activity,
         };
         graph.add_node(node)?;
     }

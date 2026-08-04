@@ -417,6 +417,7 @@ impl AgentServeRuntimeConfig {
             tick_interval_ms: 1000,
             max_ticks: None,
             persist_tick_state: false,
+            loop_level: None,
         };
 
         info!(

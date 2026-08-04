@@ -23,12 +23,40 @@ use crate::engine::{GraphEngine, GraphOutput};
 use crate::registry::CellRegistry;
 use crate::types::Graph;
 
+/// Named loop levels for nested hot graph timing, per v2 spec (04-EXECUTION.md).
+///
+/// When a `HotPolicy` has `loop_level` set, the level's default interval is used
+/// in place of `tick_interval_ms`. This allows graphs to declare their temporal
+/// role (perception, planning, consolidation) without hard-coding millisecond values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LoopLevel {
+    /// Fast: perception, reflex. Default 250 ms.
+    Gamma,
+    /// Medium: planning, deliberation. Default 10 000 ms.
+    Theta,
+    /// Slow: learning, consolidation. Default 60 000 ms.
+    Delta,
+}
+
+impl LoopLevel {
+    /// Return the spec-default tick interval in milliseconds for this loop level.
+    pub fn default_interval_ms(self) -> u64 {
+        match self {
+            Self::Gamma => 250,
+            Self::Theta => 10_000,
+            Self::Delta => 60_000,
+        }
+    }
+}
+
 /// Policy controlling Hot Graph tick behavior.
 ///
 /// Parsed from `[graph.policy.hot]` in TOML graph definitions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HotPolicy {
     /// How long to wait between ticks (ms). 0 = run as fast as possible.
+    ///
+    /// Overridden by `loop_level` when that field is set.
     #[serde(default)]
     pub tick_interval_ms: u64,
     /// Stop after this many ticks. None = run until cancelled.
@@ -38,6 +66,23 @@ pub struct HotPolicy {
     /// resume from their previous output.
     #[serde(default)]
     pub persist_tick_state: bool,
+    /// Named loop level. When set, the level's default interval overrides
+    /// `tick_interval_ms`.
+    #[serde(default)]
+    pub loop_level: Option<LoopLevel>,
+}
+
+impl HotPolicy {
+    /// Return the effective tick interval in milliseconds.
+    ///
+    /// If `loop_level` is set, returns that level's spec-default interval.
+    /// Otherwise falls back to the raw `tick_interval_ms` value.
+    pub fn resolve_tick_interval_ms(&self) -> u64 {
+        match self.loop_level {
+            Some(level) => level.default_interval_ms(),
+            None => self.tick_interval_ms,
+        }
+    }
 }
 
 impl Default for HotPolicy {
@@ -46,6 +91,7 @@ impl Default for HotPolicy {
             tick_interval_ms: 1000,
             max_ticks: None,
             persist_tick_state: false,
+            loop_level: None,
         }
     }
 }
@@ -135,10 +181,12 @@ pub fn start_hot(
         let ctx = CellContext::new();
         let mut current_tick = 0u64;
 
+        let tick_interval_ms = policy.resolve_tick_interval_ms();
         info!(
             graph = %graph_name,
             max_ticks = ?policy.max_ticks,
-            tick_interval_ms = policy.tick_interval_ms,
+            tick_interval_ms,
+            loop_level = ?policy.loop_level,
             "hot graph started"
         );
 
@@ -189,8 +237,8 @@ pub fn start_hot(
             tick_clone.store(current_tick, Ordering::Relaxed);
 
             // Wait for next tick interval, respecting cancellation.
-            if policy.tick_interval_ms > 0 {
-                let sleep_dur = Duration::from_millis(policy.tick_interval_ms);
+            if tick_interval_ms > 0 {
+                let sleep_dur = Duration::from_millis(tick_interval_ms);
                 tokio::select! {
                     () = tokio::time::sleep(sleep_dur) => {}
                     () = cancel_clone.cancelled() => {
@@ -250,6 +298,7 @@ cell_type = "noop"
             tick_interval_ms: 0,
             max_ticks: Some(3),
             persist_tick_state: false,
+            loop_level: None,
         };
         let handle = start_hot(graph, noop_registry(), policy, None);
         handle.wait().await;
@@ -271,6 +320,7 @@ cell_type = "noop"
             tick_interval_ms: 100,
             max_ticks: None,
             persist_tick_state: false,
+            loop_level: None,
         };
         let handle = start_hot(graph, noop_registry(), policy, None);
 
@@ -303,6 +353,7 @@ cell_type = "noop"
             tick_interval_ms: 0,
             max_ticks: Some(10),
             persist_tick_state: false,
+            loop_level: None,
         };
         let handle = start_hot(graph, noop_registry(), policy, None);
         handle.wait().await;
@@ -324,11 +375,42 @@ cell_type = "noop"
             tick_interval_ms: 0,
             max_ticks: Some(1),
             persist_tick_state: false,
+            loop_level: None,
         };
         let handle = start_hot(graph, noop_registry(), policy, None);
         handle.wait().await;
         let output = handle.last_output();
         assert!(output.is_some());
         assert!(output.unwrap().success);
+    }
+
+    #[test]
+    fn loop_level_default_intervals() {
+        assert_eq!(LoopLevel::Gamma.default_interval_ms(), 250);
+        assert_eq!(LoopLevel::Theta.default_interval_ms(), 10_000);
+        assert_eq!(LoopLevel::Delta.default_interval_ms(), 60_000);
+    }
+
+    #[test]
+    fn resolve_tick_interval_uses_loop_level_when_set() {
+        let policy = HotPolicy {
+            tick_interval_ms: 5000,
+            max_ticks: None,
+            persist_tick_state: false,
+            loop_level: Some(LoopLevel::Gamma),
+        };
+        // loop_level should override tick_interval_ms
+        assert_eq!(policy.resolve_tick_interval_ms(), 250);
+    }
+
+    #[test]
+    fn resolve_tick_interval_falls_back_to_raw_when_no_level() {
+        let policy = HotPolicy {
+            tick_interval_ms: 3000,
+            max_ticks: None,
+            persist_tick_state: false,
+            loop_level: None,
+        };
+        assert_eq!(policy.resolve_tick_interval_ms(), 3000);
     }
 }

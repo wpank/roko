@@ -105,6 +105,7 @@ mod tests {
             config: toml::Value::Table(toml::map::Map::new()),
             inputs: vec![],
             outputs: vec![],
+            execution_class: crate::types::ExecutionClass::default(),
         }
     }
 

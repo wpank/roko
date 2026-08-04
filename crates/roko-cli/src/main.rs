@@ -2128,9 +2128,15 @@ fn main() {
             .with_writer(non_blocking_writer),
     );
 
-    // Stderr layer: only when --verbose, RUST_LOG is set, or raw_logs mode.
+    // Stderr layer: only when --verbose, ROKO_LOG/RUST_LOG is set, or raw_logs mode.
+    // ROKO_LOG is the authoritative knob for all roko-owned binaries; RUST_LOG is
+    // accepted as a compatibility fallback. Either one activates stderr output.
     // In TUI mode, never write to stderr (would corrupt ratatui rendering).
-    let show_stderr = !tui_mode && (cli.verbose || std::env::var("RUST_LOG").is_ok() || raw_logs);
+    let show_stderr = !tui_mode
+        && (cli.verbose
+            || std::env::var("ROKO_LOG").is_ok()
+            || std::env::var("RUST_LOG").is_ok()
+            || raw_logs);
     let stderr_layer = if show_stderr {
         let scrubber = build_log_scrubber(&startup_env_redactions);
         Some(

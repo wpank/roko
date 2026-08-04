@@ -82,20 +82,47 @@ pub struct McpToolDef {
 ///
 /// These annotations let Roko map dynamic MCP tools onto its static
 /// permission model without trusting every external tool equally.
+///
+/// Both the legacy (`readOnly`/`openWorld`) and the MCP-2025 spec names
+/// (`readOnlyHint`/`openWorldHint`) are accepted on inbound JSON so that
+/// servers which follow the newer spec (such as `roko-mcp-code`) are
+/// handled correctly. Use [`McpToolAnnotations::is_read_only`] and
+/// [`McpToolAnnotations::is_open_world`] instead of reading the raw fields
+/// directly to get the merged value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpToolAnnotations {
-    /// Tool does not modify external state.
+    /// Tool does not modify external state (legacy name).
     #[serde(default, rename = "readOnly")]
     pub read_only: Option<bool>,
-    /// Tool accesses open-world resources such as network services.
+    /// Tool does not modify external state (MCP-2025 spec name).
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only_hint: Option<bool>,
+    /// Tool accesses open-world resources such as network services (legacy name).
     #[serde(default, rename = "openWorld")]
     pub open_world: Option<bool>,
+    /// Tool accesses open-world resources such as network services (MCP-2025 spec name).
+    #[serde(default, rename = "openWorldHint")]
+    pub open_world_hint: Option<bool>,
     /// Calling the tool twice with the same arguments has no extra effect.
     #[serde(default)]
     pub idempotent: Option<bool>,
     /// Human-readable title for UI surfaces.
     #[serde(default)]
     pub title: Option<String>,
+}
+
+impl McpToolAnnotations {
+    /// Returns `true` if either `readOnly` or `readOnlyHint` is set to `true`.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.read_only.unwrap_or(false) || self.read_only_hint.unwrap_or(false)
+    }
+
+    /// Returns `true` if either `openWorld` or `openWorldHint` is set to `true`.
+    #[must_use]
+    pub fn is_open_world(&self) -> bool {
+        self.open_world.unwrap_or(false) || self.open_world_hint.unwrap_or(false)
+    }
 }
 
 /// The result of invoking an MCP tool via `tools/call`.

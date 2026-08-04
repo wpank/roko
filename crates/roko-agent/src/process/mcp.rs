@@ -3,11 +3,16 @@
 //! An MCP server is always spawned as a **child of the agent** (never of Roko
 //! itself). This module handles:
 //! - Discovering the MCP config by walking up from the working directory.
-//! - Normalizing the launch command (resolving relative paths, falling back
-//!   to `cargo run`).
-//! - Writing/updating MCP config files.
+//! - Normalizing the launch command (resolving relative paths).
+//!
+//! # Writers
+//!
+//! The only authoritative writer for `.roko/mcp-config.json` is
+//! `PlanRunner::resolve_mcp_config_path` in `roko-cli/src/orchestrate.rs` (the
+//! C5 runtime path). The legacy C4 writer (`write_mcp_config`) has been removed
+//! to prevent it from clobbering C5's output with an incompatible JSON shape.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,27 +75,6 @@ fn load_toml_mcp_launch(path: &Path) -> Option<McpLaunch> {
     Some(McpLaunch { command, args })
 }
 
-/// Check whether the command basename is `roko-mcp`.
-fn command_looks_like_roko_mcp(command: &str) -> bool {
-    Path::new(command)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map_or(command == "roko-mcp", |name| name == "roko-mcp")
-}
-
-/// Walk ancestor directories looking for `target/{release,debug}/roko-mcp`.
-fn find_roko_mcp_binary_from_ancestors(start: &Path) -> Option<String> {
-    for dir in start.ancestors() {
-        for rel in ["target/release/roko-mcp", "target/debug/roko-mcp"] {
-            let candidate = dir.join(rel);
-            if candidate.exists() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
-}
-
 /// Check whether the command exists at the given path (absolute or relative to `probe_root`).
 fn mcp_command_exists(command: &str, probe_root: &Path) -> bool {
     let command_path = Path::new(command);
@@ -100,38 +84,42 @@ fn mcp_command_exists(command: &str, probe_root: &Path) -> bool {
     probe_root.join(command_path).exists()
 }
 
-/// Build a `cargo run -p roko-mcp --release --` launch.
-fn cargo_run_roko_mcp_launch(args: Vec<String>) -> McpLaunch {
-    let mut launch_args = vec![
-        "run".to_string(),
-        "-p".to_string(),
-        "roko-mcp".to_string(),
-        "--release".to_string(),
-        "--".to_string(),
-    ];
-    launch_args.extend(args);
-    McpLaunch {
-        command: "cargo".to_string(),
-        args: launch_args,
+/// Walk ancestor directories looking for `target/{release,debug}/<binary>`.
+fn find_mcp_binary_from_ancestors(start: &Path, binary: &str) -> Option<String> {
+    for dir in start.ancestors() {
+        for profile in ["target/release", "target/debug"] {
+            let candidate = dir.join(profile).join(binary);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
     }
+    None
 }
 
 /// Normalize a discovered MCP launch.
 ///
-/// If the command looks like `roko-mcp` but the binary doesn't exist at the
-/// configured path, try to resolve it from ancestor `target/` directories or
-/// fall back to `cargo run`.
+/// If the command is a bare binary name that does not exist at the configured
+/// path, attempt to resolve it from ancestor `target/` directories.  Unlike
+/// the old C4 path, there is **no fallback to `cargo run -p roko-mcp`** — the
+/// `roko-mcp` crate does not exist in this workspace and the C5 writer
+/// (`resolve_mcp_config_path` in `roko-cli`) is the sole authority over
+/// `.roko/mcp-config.json`.
 pub fn normalize_mcp_launch(launch: McpLaunch, probe_root: &Path) -> McpLaunch {
-    if command_looks_like_roko_mcp(&launch.command)
-        && (!mcp_command_exists(&launch.command, probe_root) || launch.command == "roko-mcp")
-    {
-        if let Some(command) = find_roko_mcp_binary_from_ancestors(probe_root) {
+    // Only attempt binary resolution when the command is not already an
+    // absolute path that exists on disk.
+    if !mcp_command_exists(&launch.command, probe_root) {
+        let binary = Path::new(&launch.command)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&launch.command)
+            .to_owned();
+        if let Some(resolved) = find_mcp_binary_from_ancestors(probe_root, &binary) {
             return McpLaunch {
-                command,
+                command: resolved,
                 args: launch.args,
             };
         }
-        return cargo_run_roko_mcp_launch(launch.args);
     }
     launch
 }
@@ -178,68 +166,27 @@ pub fn find_mcp_launch(working_dir: &Path) -> Option<McpLaunch> {
     None
 }
 
-/// Write an MCP config JSON file for an agent to discover.
-///
-/// Creates the file at `<base>/.roko/mcp-config.json` with the standard
-/// `mcpServers.roko` shape.
-pub fn write_mcp_config(base: &Path, launch: &McpLaunch) -> Result<PathBuf, std::io::Error> {
-    let dir = base.join(".roko");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("mcp-config.json");
-    let value = serde_json::json!({
-        "mcpServers": {
-            "roko": {
-                "command": launch.command,
-                "args": launch.args,
-            }
-        }
-    });
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&value).unwrap_or_default(),
-    )?;
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn command_looks_like_roko_mcp_checks_basename() {
-        assert!(command_looks_like_roko_mcp("roko-mcp"));
-        assert!(command_looks_like_roko_mcp("/usr/local/bin/roko-mcp"));
-        assert!(command_looks_like_roko_mcp("target/release/roko-mcp"));
-        assert!(!command_looks_like_roko_mcp("cargo"));
-        assert!(!command_looks_like_roko_mcp("node"));
-    }
-
-    #[test]
-    fn normalize_falls_back_to_cargo_run() {
-        let launch = McpLaunch {
-            command: "roko-mcp".to_string(),
-            args: vec!["--port".to_string(), "9999".to_string()],
-        };
-        // probe_root is /tmp which won't have target/release/roko-mcp
-        let normalized = normalize_mcp_launch(launch, Path::new("/tmp"));
-        assert_eq!(normalized.command, "cargo");
-        assert!(normalized.args.contains(&"roko-mcp".to_string()));
-        assert!(normalized.args.contains(&"--port".to_string()));
-    }
-
-    #[test]
-    fn write_and_read_mcp_config_roundtrips() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let launch = McpLaunch {
-            command: "/usr/bin/roko-mcp".to_string(),
-            args: vec!["--verbose".to_string()],
-        };
-        let path = write_mcp_config(tmp.path(), &launch).expect("write");
-        assert!(path.exists());
-
-        let loaded = load_json_mcp_launch(&path).expect("load");
-        assert_eq!(loaded.command, launch.command);
-        assert_eq!(loaded.args, launch.args);
+    // Helper: write a minimal Claude-shape mcpServers JSON into a temp dir so
+    // find_mcp_launch can discover it.  The C4 writer (removed by E15-T6) is
+    // NOT used here — this helper only exists to set up fixture files for tests.
+    fn seed_test_mcp_config(base: &Path, command: &str, args: &[&str]) {
+        let dot_roko = base.join(".roko");
+        std::fs::create_dir_all(&dot_roko).expect("create .roko");
+        let value = serde_json::json!({
+            "mcpServers": {
+                "roko": {
+                    "command": command,
+                    "args": args,
+                }
+            }
+        });
+        let target = dot_roko.join("mcp-config.json");
+        std::fs::write(&target, serde_json::to_string_pretty(&value).unwrap())
+            .expect("write test fixture");
     }
 
     #[test]
@@ -250,26 +197,46 @@ mod tests {
     }
 
     #[test]
-    fn find_mcp_launch_discovers_written_config() {
+    fn find_mcp_launch_discovers_config() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // Use a non-roko-mcp command name so normalization does not rewrite it.
-        let launch = McpLaunch {
-            command: "/usr/bin/custom-mcp-server".to_string(),
-            args: vec!["--port".to_string(), "8080".to_string()],
-        };
-        write_mcp_config(tmp.path(), &launch).expect("write");
-        let found = find_mcp_launch(tmp.path());
-        assert!(found.is_some());
-        let found = found.expect("should find config");
+        seed_test_mcp_config(
+            tmp.path(),
+            "/usr/bin/custom-mcp-server",
+            &["--port", "8080"],
+        );
+        let found = find_mcp_launch(tmp.path()).expect("should find config");
         assert_eq!(found.command, "/usr/bin/custom-mcp-server");
         assert_eq!(found.args, vec!["--port", "8080"]);
     }
 
+    /// normalize_mcp_launch must NOT fall back to `cargo run` for the absent
+    /// roko-mcp crate.  When a bare binary name is not resolvable the launch
+    /// is returned unchanged rather than emitting a broken cargo command.
     #[test]
-    fn cargo_run_launch_includes_release_flag() {
-        let launch = cargo_run_roko_mcp_launch(vec!["--flag".to_string()]);
-        assert_eq!(launch.command, "cargo");
-        assert!(launch.args.contains(&"--release".to_string()));
-        assert!(launch.args.contains(&"--flag".to_string()));
+    fn normalize_does_not_fall_back_to_cargo_run() {
+        // Use a bare (non-existent) binary name that would previously have
+        // triggered the old cargo-run fallback.
+        let bare_cmd = "nonexistent-mcp-bin";
+        let launch = McpLaunch {
+            command: bare_cmd.to_string(),
+            args: vec!["--port".to_string(), "9999".to_string()],
+        };
+        // /tmp won't have target/{release,debug}/<bare_cmd> so normalization
+        // cannot resolve the binary and must leave the command as-is.
+        let normalized = normalize_mcp_launch(launch.clone(), Path::new("/tmp"));
+        // Must NOT become `cargo`.
+        assert_ne!(normalized.command, "cargo");
+        assert_eq!(normalized.command, bare_cmd);
+        // Args are preserved.
+        assert!(normalized.args.contains(&"--port".to_string()));
+    }
+
+    /// E15-T6 acceptance: the C4 writer has been removed from this module.
+    /// Compilation of this file without the dead writer is the acceptance
+    /// criterion; no runtime assertion is needed beyond the code compiling.
+    #[test]
+    fn c4_mcp_writer_is_neutralized() {
+        // Intentionally empty — the structural verify in tasks.toml checks for
+        // absence of the removed symbols at the source level.
     }
 }

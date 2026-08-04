@@ -5,7 +5,8 @@
 //!
 //! - **Cell** trait (universal computation unit for graph nodes)
 //! - **Types** (`Graph`, `Node`, `Edge`, `NodeId`, `EdgeCondition`, `GraphMetadata`,
-//!   `NodeOutput`, `NodeOutputStatus`, `GraphConfig`)
+//!   `NodeOutput`, `NodeOutputStatus`, `GraphConfig`, `GraphPolicy`, `GraphMode`,
+//!   `FailureStrategy`, `ExecutionClass`, `EdgeValidationError`)
 //! - **Loader** (TOML parsing into `Graph` struct)
 //! - **Registry** (`CellRegistry` for mapping cell type names to factory functions)
 //! - **Topo** (topological sort, cycle detection, dependency resolution)
@@ -51,6 +52,7 @@ pub mod error;
 pub mod hot;
 pub mod loader;
 pub mod registry;
+pub mod replay;
 pub mod topo;
 pub mod types;
 
@@ -59,8 +61,9 @@ pub use cell::{Cell, CellContext, CellVersion};
 pub use engine::{GraphEngine, GraphOutput, NodeResult, NodeStatus, default_registry};
 pub use registry::{CellFactory, CellRegistry};
 pub use types::{
-    Edge, EdgeCondition, Graph, GraphConfig, GraphError, GraphMetadata, GraphNodeIdx, Node, NodeId,
-    NodeOutput, NodeOutputStatus,
+    Edge, EdgeCondition, EdgeValidationError, ExecutionClass, FailureStrategy, Graph, GraphConfig,
+    GraphError, GraphMetadata, GraphMode, GraphNodeIdx, GraphPolicy, Node, NodeId, NodeOutput,
+    NodeOutputStatus,
 };
 
 // Re-export from new modules.
@@ -68,4 +71,5 @@ pub use budget::{BudgetLimits, BudgetTracker, NodeCost};
 pub use condition::{CompareOp, Condition, evaluate};
 pub use convert::{PlanTaskInfo, plan_to_graph, plan_to_graph_with_endpoints};
 pub use error::Result as GraphResult;
-pub use hot::{HotGraphHandle, HotPolicy, start_hot};
+pub use hot::{HotGraphHandle, HotPolicy, LoopLevel, start_hot};
+pub use replay::{ActivityRecorder, ActivityReplayer, RecordEntry};

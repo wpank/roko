@@ -348,9 +348,11 @@ impl RunOutputSink for StderrSink {
                 summary: result.summary.clone(),
                 error_digest: None,
                 failure_kind: None,
+                rung_index: None,
             }],
             output: String::new(),
             duration_ms: result.duration_ms,
+            selected_rungs: Vec::new(),
         };
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.gate_completed(&completion);

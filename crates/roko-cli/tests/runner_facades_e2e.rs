@@ -86,6 +86,7 @@ async fn run_config_facades_receive_runner_events() {
         verdicts: Vec::new(),
         output: String::new(),
         duration_ms: 4321,
+        selected_rungs: Vec::new(),
     };
     let gate_completed = RunnerEvent::gate_completed("e2e-runner", attempt.clone(), &completion);
     let plan_completed = RunnerEvent::plan_completed(
@@ -197,6 +198,7 @@ async fn projection_categorizes_runner_events_correctly() {
                     verdicts: Vec::new(),
                     output: String::new(),
                     duration_ms: 100,
+                    selected_rungs: Vec::new(),
                 };
                 RunnerEvent::gate_completed("cat-test", attempt.clone(), &completion)
             },

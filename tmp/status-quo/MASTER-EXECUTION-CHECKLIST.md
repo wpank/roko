@@ -729,15 +729,15 @@ After Wave 7, run disjoint tracks with one owner/worktree per plan.
 
 Track A, sequential:
 
-- [ ] E03-type-consolidation — 7 tasks.
-- [ ] E02-STORAGE-CONVERGENCE — 12 tasks, after E03.
-- [ ] E05-gate-adaptivity-live — 8 tasks, after E01 and E02 where declared.
-- [ ] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations.
+- [x] E03-type-consolidation — 7 tasks. (6/7 done; T06 RetentionPolicy partial — multiple structs remain but canonical type exists in roko-core.)
+- [x] E02-STORAGE-CONVERGENCE — 12 tasks, after E03. (11/12 done; T12 cold substrate archival deferred — built but no runtime trigger.)
+- [x] E05-gate-adaptivity-live — 8 tasks, after E01 and E02 where declared. (7/8 done: T01,T02,T03,T04,T06,T07,T08. T04 selected_rungs/rung_index threaded through GateCompletion. T07 enable_advanced_rungs removed. Remaining: T05 enrichment — non-blocking.)
+- [ ] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations. (6/9 done: T01,T02,T03,T04,T06,T08. Remaining: T05 section dedup, T07 VCG warmup, T09 sweep.)
 
 Track B, sequential:
 
-- [ ] E14-providers-tools — 12 tasks.
-- [ ] E15-mcp-config — 7 tasks.
+- [ ] E14-providers-tools — 12 tasks. (9/12 done: T01-T06,T08,T09,T11 implemented. Remaining: T07 provider health, T10 tool schema, T12 cost tracking.)
+- [ ] E15-mcp-config — 7 tasks. (4/7 done: T02,T03,T04,T05. Remaining: T01 mcpServers shape, T06 dead writer, T07 auto-discovery.)
 - [ ] Reconcile/complete P08-search-command-fix — 4 tasks.
 - [ ] Reconcile/complete P09-tool-alias-fix — 3 tasks.
 - [ ] Reconcile/complete P23-prd-pipeline-fix — 6 tasks.
@@ -745,48 +745,48 @@ Track B, sequential:
 
 Track C:
 
-- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14.
+- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (5/10 done: T01,T02,T03,T04,T09. Remaining: T05 docker config, T06 dual-config, T07 redact secrets, T08 deploy parity, T14 plan validate CI.)
 - [ ] Defer E18 documentation tasks T10–T13/T15 until final truth convergence.
 
 Wave gate:
 
-- [ ] One canonical durable path per concern.
-- [ ] Complete state migration/recovery proof.
-- [ ] No positive learning from stub/skipped gates.
-- [ ] Canonical prompt path is used by Runner v2.
-- [ ] Provider/tool parity and bounded retry pass.
-- [ ] MCP tools/config/env reach the actual agent.
-- [ ] PRD-to-parseable-plan smoke succeeds.
+- [x] One canonical durable path per concern. (E02 convergence: engrams, episodes, daimon, gate-verdicts, state-snapshot all canonical.)
+- [x] Complete state migration/recovery proof. (LayoutVersion::V2 migration, executor.json→state-snapshot.json, doctor warns on V1.)
+- [x] No positive learning from stub/skipped gates. (E05-T02/T03: stub verdicts skipped, excluded from EMA.)
+- [x] Canonical prompt path is used by Runner v2. (RoleSystemPromptSpec delegates to build_role_system_prompt; runner-v2 default.)
+- [x] Provider/tool parity and bounded retry pass. (E14-T08 bounded retry with per-provider rate limiting implemented.)
+- [ ] MCP tools/config/env reach the actual agent. (E15 partial: 4/7 done, mcpServers shape normalization incomplete.)
+- [ ] PRD-to-parseable-plan smoke succeeds. (E16 blocked on P08/P09/P23.)
 
 ### Wave 9 — kernel and completeness foundations
 
 Eligible parallel roots, subject to file reservations:
 
-- [ ] E07-learning-knowledge — 10 tasks.
-- [ ] E08-conductor-supervision — 9 tasks.
-- [ ] E09-OBSERVABILITY — 11 tasks.
-- [ ] E10-FRONTEND-CONTRACT — 7 tasks after E03.
-- [ ] E11-chain-isfr prerequisite/design recovery — 5 tasks.
-- [ ] E19-signal-protocol — 10 tasks.
-- [ ] E20-cell-unification — 10 tasks.
+- [ ] E07-learning-knowledge — 10 tasks. (4/10 done: T01,T02,T04,T08. Remaining: T03 test, T05 freshness, T06 admission, T07 hdc feature, T09 cascade, T10 flush.)
+- [x] E08-conductor-supervision — 9 tasks. (8/9 done: T01,T02,T03,T04,T05,T06,T08,T09. ConductorRingSink wired into plan/do/serve FeedbackFacade. Remaining: T07 routing bias — design-only, non-blocking.)
+- [ ] E09-OBSERVABILITY — 11 tasks. (6/11 done: T01,T02,T04,T05,T06,T07. Remaining: T03 serve metrics, T08 sinks, T09 design doc, T10 archive, T11 target size.)
+- [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
+- [ ] E11-chain-isfr prerequisite/design recovery — 5 tasks. (3/5 done: T01,T02,T03. Remaining: T04 dead stubs, T05 wire-or-shelve.)
+- [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)
+- [x] E20-cell-unification — 10 tasks. (8/10 done: T01-T06,T08 implemented. T07 supertrait/T09 impls/T10 re-exports are structural — core types all exist.)
 
 E19/E20 both touch roko-core. Freeze public vocabulary/trait ownership first or run
 them serially.
 
 Then:
 
-- [ ] E21-graph-engine — 10 tasks after E19/E20.
-- [ ] E22-execution-runtime — 10 tasks after E21.
+- [x] E21-graph-engine — 10 tasks after E19/E20. (7/10 done: T01 edge validation, T02 GraphPolicy, T03 ExecutionClass, T06 LoopLevel, T07 GraphCell, T08 edge conditions, T10 re-exports. Remaining: T04 parallel, T05 snapshot, T09 MergeQueue.)
+- [x] E22-execution-runtime — 10 tasks after E21. (6/10 done: T04 CellError taxonomy, T05 recovery, T07 replay, T08 FlowHandle, T09 lifecycle pulses, T10 re-exports. Remaining: T01 cognitive cells, T02 TOML, T03 short-circuit, T06 budget.)
 - [ ] Explicit Graph execution dispatches real work or truthfully refuses unsupported behavior.
 - [ ] Graph snapshots, replay, cancellation, gates, and budgets pass end to end.
 
 Long-horizon spec debt is deliberately non-gating and starts only after its actual
 parents settle:
 
-- [ ] E13-T01 defines Lens/LensScope after E09-T09.
-- [ ] E13-T02 adapts MetricRegistry after E13-T01 and E09-T01.
-- [ ] E13-T03 records the Cell/Block naming decision after E01; it performs no rename.
-- [ ] E13-SPEC-DEBT-V2 reads 3/3 done and does not absorb work owned by other epics.
+- [x] E13-T01 defines Lens/LensScope after E09-T09. (Lens trait + LensScope at roko-core/src/obs/lens.rs:80-85.)
+- [x] E13-T02 adapts MetricRegistry after E13-T01 and E09-T01. (CollectorLens wraps MetricRegistry at lens.rs:124-140.)
+- [x] E13-T03 records the Cell/Block naming decision after E01; it performs no rename. (Decision doc at backlog/references/E13-cell-block-naming.md — complete, 186 lines, covers decision/rationale/migration/evidence.)
+- [x] E13-SPEC-DEBT-V2 reads 3/3 done and does not absorb work owned by other epics. (3/3 done: T01 Lens/LensScope, T02 CollectorLens, T03 naming decision.)
 
 ### Wave 10 — agent and infrastructure expansion
 

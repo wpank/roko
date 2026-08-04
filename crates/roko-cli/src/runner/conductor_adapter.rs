@@ -550,6 +550,7 @@ mod tests {
                 summary: "ok".into(),
                 error_digest: None,
                 failure_kind: None,
+                rung_index: None,
             }],
         };
         let engram = runner_event_to_engram(&event).expect("should map");
@@ -578,6 +579,7 @@ mod tests {
                     summary: "failed".into(),
                     error_digest: Some("error[E0308]".into()),
                     failure_kind: Some(RunnerFailureKind::Transient),
+                    rung_index: None,
                 },
                 GateVerdictSummary {
                     gate_name: "cargo-test".into(),
@@ -586,6 +588,7 @@ mod tests {
                     summary: "3 failures".into(),
                     error_digest: None,
                     failure_kind: Some(RunnerFailureKind::Transient),
+                    rung_index: None,
                 },
             ],
         };
@@ -788,6 +791,7 @@ mod tests {
                     summary: format!("{} test failures", i + 1),
                     error_digest: None,
                     failure_kind: Some(RunnerFailureKind::Transient),
+                    rung_index: None,
                 }],
             };
             let engram = runner_event_to_engram(&event).expect("gate failure should map to engram");
@@ -1175,6 +1179,7 @@ mod tests {
                     summary: format!("{} test failures", i + 1),
                     error_digest: None,
                     failure_kind: Some(RunnerFailureKind::Transient),
+                    rung_index: None,
                 }],
             };
             if let Some(e) = runner_event_to_engram(&event) {

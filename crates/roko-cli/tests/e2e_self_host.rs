@@ -73,6 +73,7 @@ fn gc(p: &str, t: &str, ok: bool, n: u32) -> GateCompletion {
         verdicts: Vec::new(),
         output: String::new(),
         duration_ms: 100,
+        selected_rungs: Vec::new(),
     }
 }
 fn fresh(total: usize) -> RunState {

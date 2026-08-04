@@ -155,6 +155,14 @@ pub struct RunStateSnapshot {
     /// `None` for old snapshots or when no router is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade_router_json: Option<String>,
+    /// Conductor circuit-breaker state captured at save time.
+    ///
+    /// On `--resume`, this is restored via
+    /// [`roko_conductor::Conductor::from_circuit_breaker_state`] so
+    /// tripped failure budgets survive process restarts.
+    /// `None` for old snapshots or when no conductor is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_circuit_breaker_state: Option<roko_conductor::CircuitBreakerState>,
 }
 
 /// Durable gate-failure replan ledger embedded in [`RunStateSnapshot`].

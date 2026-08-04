@@ -9,7 +9,7 @@ use roko_core::error::{Result, RokoError};
 use roko_core::traits::{Store, Substrate};
 use roko_core::{
     Body, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, Engram, HdcVector, Kind,
-    MemoryBus, Query, TypeSchema,
+    MemoryBus, ProtocolId, Query, TypeSchema,
 };
 
 // ─── TestStore ──────────────────────────────────────────────────────────────
@@ -70,8 +70,8 @@ impl Cell for EchoCell {
         (1, 0, 0)
     }
 
-    fn protocols(&self) -> &[&str] {
-        &["Echo"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        Vec::new()
     }
 
     async fn execute(&self, input: Vec<Engram>, _ctx: &CellContext) -> Result<Vec<Engram>> {
@@ -219,7 +219,7 @@ fn cell_metadata_accessors() {
     assert_eq!(cell.cell_id(), "echo-cell-001");
     assert_eq!(cell.cell_name(), "EchoCell");
     assert_eq!(cell.cell_version(), (1, 0, 0));
-    assert_eq!(cell.protocols(), &["Echo"]);
+    assert!(cell.protocols().is_empty());
     assert!(cell.estimated_cost().is_none());
     assert!(cell.estimated_duration().is_none());
     assert!(cell.input_schema().is_none());
@@ -230,7 +230,7 @@ fn cell_metadata_accessors() {
 fn cell_default_metadata() {
     let cell = DefaultOnlyCell;
     assert_eq!(cell.cell_version(), (0, 1, 0));
-    assert_eq!(cell.protocols(), &[] as &[&str]);
+    assert!(cell.protocols().is_empty());
     assert!(cell.estimated_cost().is_none());
     assert!(cell.estimated_duration().is_none());
 }

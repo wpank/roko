@@ -84,6 +84,7 @@ fn baseline_snapshot(run_id: &str, fingerprints: Vec<TaskDefFingerprint>) -> Run
         replan_ledger: ReplanLedgerSnapshot::default(),
         revised_tasks: Vec::new(),
         cascade_router_json: None,
+        conductor_circuit_breaker_state: None,
     }
 }
 
@@ -256,6 +257,7 @@ fn snapshot_with(
         replan_ledger,
         revised_tasks: Vec::new(),
         cascade_router_json: None,
+        conductor_circuit_breaker_state: None,
     }
 }
 

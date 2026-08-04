@@ -32,11 +32,19 @@ pub enum LayoutVersion {
     /// Initial layout: `runtime/`, `memory/`, `plans/`, `runs/`,
     /// `state/`, `config/`, `cache/`.
     V1 = 1,
+
+    /// Converged storage layout (E02):
+    /// - gate verdicts written to `gate-verdicts.jsonl` (not `signals.jsonl`)
+    /// - episodes canonical at root `episodes.jsonl` (not `memory/episodes.jsonl`)
+    /// - `state/executor.json` superseded by `state/state-snapshot.json`
+    /// - gate thresholds materialized to `learn/gate-thresholds.json`
+    /// - `signals.jsonl` retained only as a legacy migration input
+    V2 = 2,
 }
 
 impl LayoutVersion {
     /// The most recent version. New directories are initialized to this.
-    pub const CURRENT: Self = Self::V1;
+    pub const CURRENT: Self = Self::V2;
 
     /// Parse from the numeric value stored in `.roko/VERSION`.
     ///
@@ -45,6 +53,7 @@ impl LayoutVersion {
     pub const fn from_u32(n: u32) -> Option<Self> {
         match n {
             1 => Some(Self::V1),
+            2 => Some(Self::V2),
             _ => None,
         }
     }
@@ -494,7 +503,14 @@ impl RokoLayout {
         }
         let version_path = self.version_file();
         if !version_path.exists() {
+            // Fresh workspace: write CURRENT version directly.
             tokio::fs::write(&version_path, LayoutVersion::CURRENT.as_u32().to_string()).await?;
+        } else {
+            // Existing workspace: check if migration is needed.
+            let on_disk = self.read_version().await?;
+            if on_disk == Some(LayoutVersion::V1) {
+                self.migrate_v1_to_v2().await?;
+            }
         }
         Ok(())
     }
@@ -517,6 +533,24 @@ impl RokoLayout {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Migrate a V1 workspace to V2 in-place.
+    ///
+    /// 1. Renames `signals.jsonl` to `signals.jsonl.v1-legacy` (no data loss).
+    /// 2. Writes VERSION = 2.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if renaming or writing the VERSION file fails.
+    pub async fn migrate_v1_to_v2(&self) -> std::io::Result<()> {
+        let signals = self.signals_path();
+        if signals.exists() {
+            let legacy = self.root.join("signals.jsonl.v1-legacy");
+            tokio::fs::rename(&signals, &legacy).await?;
+        }
+        tokio::fs::write(self.version_file(), LayoutVersion::V2.as_u32().to_string()).await?;
+        Ok(())
     }
 }
 
@@ -674,12 +708,14 @@ mod tests {
         layout.ensure_dirs().await.expect("ensure dirs");
 
         let version = layout.read_version().await.expect("read version");
-        assert_eq!(version, Some(LayoutVersion::V1));
+        // A fresh workspace is written at CURRENT = V2.
+        assert_eq!(version, Some(LayoutVersion::V2));
     }
 
     #[test]
     fn layout_version_from_u32() {
         assert_eq!(LayoutVersion::from_u32(1), Some(LayoutVersion::V1));
+        assert_eq!(LayoutVersion::from_u32(2), Some(LayoutVersion::V2));
         assert_eq!(LayoutVersion::from_u32(0), None);
         assert_eq!(LayoutVersion::from_u32(999), None);
     }
@@ -687,10 +723,50 @@ mod tests {
     #[test]
     fn layout_version_as_u32() {
         assert_eq!(LayoutVersion::V1.as_u32(), 1);
+        assert_eq!(LayoutVersion::V2.as_u32(), 2);
     }
 
     #[test]
-    fn layout_version_current_is_v1() {
-        assert_eq!(LayoutVersion::CURRENT, LayoutVersion::V1);
+    fn layout_version_current_is_v2() {
+        assert_eq!(LayoutVersion::CURRENT, LayoutVersion::V2);
+    }
+
+    #[tokio::test]
+    async fn ensure_dirs_migrates_v1_to_v2() {
+        let tmp = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::for_project(tmp.path());
+
+        // Bootstrap a V1 workspace manually.
+        for dir in &layout.top_level_dirs() {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+        std::fs::write(layout.version_file(), "1").expect("write VERSION");
+        std::fs::write(layout.signals_path(), "{}\n").expect("write signals.jsonl");
+
+        layout.ensure_dirs().await.expect("ensure_dirs migration");
+
+        let version = layout.read_version().await.expect("read version");
+        assert_eq!(version, Some(LayoutVersion::V2));
+
+        assert!(
+            !layout.signals_path().exists(),
+            "signals.jsonl must be renamed away during migration"
+        );
+        assert!(
+            layout.root().join("signals.jsonl.v1-legacy").exists(),
+            "legacy signals file must be preserved as signals.jsonl.v1-legacy"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_v1_to_v2_is_idempotent_when_no_signals_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::for_project(tmp.path());
+        layout.ensure_dirs().await.expect("ensure_dirs fresh");
+
+        layout.migrate_v1_to_v2().await.expect("migrate idempotent");
+
+        let version = layout.read_version().await.expect("read version");
+        assert_eq!(version, Some(LayoutVersion::V2));
     }
 }

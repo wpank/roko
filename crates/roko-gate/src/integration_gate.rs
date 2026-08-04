@@ -253,8 +253,8 @@ impl roko_core::Cell for IntegrationGate {
     fn cell_name(&self) -> &str {
         "IntegrationGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

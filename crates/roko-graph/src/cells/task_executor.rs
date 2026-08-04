@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use roko_core::{Body, Engram, Kind, error::Result};
+use roko_core::{Body, Engram, Kind, ProtocolId, error::Result};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
@@ -47,8 +47,8 @@ impl Cell for TaskExecutorCell {
         (0, 1, 0)
     }
 
-    fn protocols(&self) -> &[&str] {
-        &["TaskExecution"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        Vec::new()
     }
 
     fn estimated_cost(&self) -> Option<f64> {

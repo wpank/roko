@@ -1465,6 +1465,39 @@ impl KnowledgeStore {
         Ok(changed)
     }
 
+    /// Backfill HDC vectors for existing knowledge entries that lack them.
+    ///
+    /// Reads all entries, computes HDC vectors for any entry whose
+    /// `hdc_vector` field is absent or has the wrong byte length, and
+    /// atomically rewrites the store. Entries that already have a valid
+    /// HDC vector are left unchanged, making this operation idempotent.
+    ///
+    /// This function is only available when the `hdc` feature is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read or rewritten.
+    #[cfg(feature = "hdc")]
+    pub fn backfill_hdc_vectors(&self) -> Result<usize> {
+        let _guard = self.write_gate.lock();
+        let mut entries = self.read_all()?;
+        let mut changed = 0usize;
+        for entry in &mut entries {
+            let has_valid = entry
+                .hdc_vector
+                .as_ref()
+                .is_some_and(|v| v.len() == HDC_VECTOR_BYTES);
+            if !has_valid {
+                entry.hdc_vector = Some(fingerprint_entry(entry).to_bytes().to_vec());
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.rewrite_all(&entries)?;
+        }
+        Ok(changed)
+    }
+
     /// Adjust the confidence score of a knowledge entry by `delta`.
     ///
     /// The resulting confidence is clamped to `[0.0, 1.0]`. If the entry

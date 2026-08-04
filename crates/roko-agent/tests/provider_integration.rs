@@ -65,6 +65,7 @@ fn zai_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         connect_timeout_ms: Some(5_000),
         extra_headers: None,
         max_concurrent: None,
+        limits: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn ollama_provider_config(base_url: impl Into<String>) -> ProviderConfig {
         connect_timeout_ms: Some(5_000),
         extra_headers: None,
         max_concurrent: None,
+        limits: None,
     }
 }
 

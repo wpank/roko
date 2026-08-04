@@ -29,7 +29,7 @@ impl FormatCheckGate {
 impl roko_core::Cell for FormatCheckGate {
     fn cell_id(&self) -> &str { "format-check-gate" }
     fn cell_name(&self) -> &str { "FormatCheckGate" }
-    fn protocols(&self) -> &[&str] { &["Verify"] }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> { vec![roko_core::ProtocolId::Verify] }
 }
 
 impl Verify for FormatCheckGate {

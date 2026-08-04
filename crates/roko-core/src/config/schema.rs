@@ -347,6 +347,7 @@ fn synthesize_standard_providers_with_env(
                     connect_timeout_ms: default_provider_connect_timeout_ms(),
                     extra_headers: None,
                     max_concurrent: None,
+                    limits: None,
                 },
             );
         }
@@ -1409,6 +1410,9 @@ pub struct WatcherThresholds {
     pub test_failure_budget: Option<TestFailureBudgetConfig>,
     #[serde(default)]
     pub time_overrun: Option<TimeOverrunConfig>,
+    /// Worktree-count watcher threshold override.
+    #[serde(default)]
+    pub worktree_count: Option<WorktreeCountConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1527,6 +1531,32 @@ pub struct TimeOverrunConfig {
 
 const fn default_time_overrun_alert_ratio() -> f64 {
     0.80
+}
+
+/// Configuration for the worktree-count conductor watcher.
+///
+/// Controls the maximum number of live git worktrees before the conductor
+/// emits a `severity=warning` intervention. The metric is produced by the
+/// E47-T09 WorktreeManager adapter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeCountConfig {
+    /// Maximum number of live worktrees before a warning is emitted.
+    ///
+    /// Default: 8.
+    #[serde(default = "default_worktree_count_max_live")]
+    pub max_live: usize,
+}
+
+const fn default_worktree_count_max_live() -> usize {
+    8
+}
+
+impl Default for WorktreeCountConfig {
+    fn default() -> Self {
+        Self {
+            max_live: default_worktree_count_max_live(),
+        }
+    }
 }
 
 /// Agent definition for multi-agent startup via `roko up`.
@@ -2155,6 +2185,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert_eq!(cfg.resolve_api_key().as_deref(), Some(expected.as_str()));
     }
@@ -2176,6 +2207,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert_eq!(cfg.resolve_api_key(), None);
     }
@@ -2206,6 +2238,7 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         cfg.models.insert(
@@ -2294,6 +2327,7 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: Some(headers),
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.resolve_file_secrets();
@@ -2340,6 +2374,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(!cfg.is_provider_available_with_env(&p, |_| None));
         cfg.agent.env = Some(vec![("OPENAI_API_KEY".into(), "sk-test".into())]);
@@ -2366,6 +2401,7 @@ default_model = "claude-sonnet-4-6"
                 connect_timeout_ms: None,
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         cfg.models.insert(
@@ -2405,6 +2441,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -2427,6 +2464,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -2448,6 +2486,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -2469,6 +2508,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -2491,6 +2531,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -2512,6 +2553,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             !cfg.is_provider_available(&provider),
@@ -2533,6 +2575,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         assert!(
             cfg.is_provider_available(&provider),
@@ -2555,6 +2598,7 @@ default_model = "claude-sonnet-4-6"
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         // Whether this passes depends on whether hermes is installed;
         // just verify it doesn't panic.

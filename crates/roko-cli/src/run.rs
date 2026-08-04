@@ -3266,7 +3266,7 @@ mod tests {
                 verdicts: config
                     .enabled_gates
                     .into_iter()
-                    .map(|gate_name| EpisodeGateVerdict {
+                    .map(|gate_name| GateVerdict {
                         gate_name,
                         passed: true,
                         skipped: false,

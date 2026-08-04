@@ -299,6 +299,45 @@ pub struct ProviderConfig {
     /// Maximum concurrent requests allowed for this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
+    /// Provider-level rate limits for request and token throttling.
+    ///
+    /// When set, the runtime enforces these limits across all concurrent agents
+    /// that share this provider, gating new requests when the budget is
+    /// exhausted. Unset means the runtime falls back to the process-wide
+    /// default RPM defined by `DEFAULT_PROVIDER_RPM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<ProviderLimits>,
+}
+
+/// Per-provider request and token budget enforced by the shared rate limiter.
+///
+/// Configure these under `[providers.<name>]` in `roko.toml`:
+///
+/// ```toml
+/// [providers.anthropic]
+/// kind = "anthropic_api"
+/// api_key_env = "ANTHROPIC_API_KEY"
+///
+/// [providers.anthropic.limits]
+/// rpm = 50
+/// tpm = 40000
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderLimits {
+    /// Maximum requests per minute across all concurrent agents.
+    ///
+    /// Common defaults:
+    /// - Anthropic tier 1: 50 RPM
+    /// - OpenAI tier 1: 500 RPM
+    /// - Gemini free: 15 RPM
+    /// - Ollama (local): no limit
+    pub rpm: u32,
+    /// Maximum tokens per minute (input + output combined).
+    ///
+    /// Advisory limit: warns and delays when approached, blocks at 100%.
+    /// Set to 0 to disable TPM tracking.
+    #[serde(default)]
+    pub tpm: u64,
 }
 
 pub(crate) const fn default_provider_timeout_ms() -> Option<u64> {

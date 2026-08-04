@@ -1360,6 +1360,11 @@ pub struct ProviderLayer {
     pub extra_headers: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
+    /// Per-provider rate limits (RPM + TPM).
+    ///
+    /// Populated from `[providers.<name>.limits]` in `roko.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<roko_core::config::provider::ProviderLimits>,
 }
 
 impl ProviderLayer {
@@ -1382,6 +1387,7 @@ impl ProviderLayer {
                 connect_timeout_ms: overlay.connect_timeout_ms.or(self.connect_timeout_ms),
                 extra_headers: overlay.extra_headers.or(self.extra_headers),
                 max_concurrent: overlay.max_concurrent.or(self.max_concurrent),
+                limits: overlay.limits.or(self.limits),
             }
         } else {
             Self {
@@ -1395,6 +1401,7 @@ impl ProviderLayer {
                 connect_timeout_ms: overlay.connect_timeout_ms.or(self.connect_timeout_ms),
                 extra_headers: overlay.extra_headers.or(self.extra_headers),
                 max_concurrent: overlay.max_concurrent.or(self.max_concurrent),
+                limits: overlay.limits.or(self.limits),
             }
         }
     }
@@ -1411,6 +1418,7 @@ impl ProviderLayer {
             connect_timeout_ms: self.connect_timeout_ms.or(Some(DEFAULT_CONNECT_TIMEOUT_MS)),
             extra_headers: self.extra_headers,
             max_concurrent: self.max_concurrent,
+            limits: self.limits,
         })
     }
 }

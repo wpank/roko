@@ -90,6 +90,7 @@ pub struct CodeExecutionResultPart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InlineDataPart {
+    #[serde(rename = "mimeType")]
     pub mime_type: String,
     pub data: String,
 }

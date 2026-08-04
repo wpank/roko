@@ -9,7 +9,8 @@ use crate::gemini::native::{
     build_generate_content_request, build_generation_config, system_instruction_from_segments,
 };
 use crate::gemini::types::{
-    Content, GeminiTool, GenerateContentRequest, GenerateContentResponse, GenerationConfig, Part,
+    Content, GeminiTool, GenerateContentRequest, GenerateContentResponse, GenerationConfig,
+    InlineDataPart, Part,
 };
 use crate::gemini::wire::{
     generate_content_endpoint, generate_content_headers, send_generate_content_request,
@@ -23,6 +24,7 @@ use crate::safety::SafetyLayer;
 use crate::tool_loop::{LlmBackend, LlmError, StreamEvent, StreamEventKind, TurnConfig};
 use crate::translate::{
     BackendResponse, GeminiTranslator, RenderedTools, SessionState, Translator,
+    convert_images_for_gemini,
 };
 use roko_core::tool::ToolContext;
 
@@ -38,6 +40,9 @@ pub struct GeminiNativeBackend {
     timeout_ms: u64,
     safety: SafetyLayer,
     poster: Box<dyn HttpPoster>,
+    /// Whether to preserve image blocks as Gemini `inlineData` parts.
+    /// Derived from `model.supports_vision`.
+    supports_vision: bool,
 }
 
 impl GeminiNativeBackend {
@@ -50,6 +55,7 @@ impl GeminiNativeBackend {
         options: &AgentOptions,
         safety: SafetyLayer,
     ) -> Self {
+        let supports_vision = model.supports_vision;
         Self {
             api_key: api_key.into(),
             base_url: base_url.into(),
@@ -60,6 +66,7 @@ impl GeminiNativeBackend {
             cached_content: options.cached_content.clone(),
             timeout_ms: options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
             safety,
+            supports_vision,
             model,
             poster: Box::new(ReqwestPoster::new()),
         }
@@ -72,30 +79,75 @@ impl GeminiNativeBackend {
         self
     }
 
-    fn translate_message(message: &Value) -> Option<Content> {
+    fn translate_message_with_vision(message: &Value, supports_vision: bool) -> Option<Content> {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
 
         if role == "system" {
             return None;
         }
 
+        // If the message already carries native Gemini `parts`, pass through as-is.
         if message.get("parts").is_some() {
             return serde_json::from_value(message.clone()).ok();
         }
 
-        let text = message.get("content").and_then(Value::as_str)?;
-        if text.trim().is_empty() {
-            return None;
-        }
-
-        let role = match role {
+        let gemini_role = match role {
             "assistant" => "model",
             "model" => "model",
             _ => "user",
         };
 
+        // Array content: Anthropic-style multipart blocks (may include images).
+        if let Some(content_arr) = message.get("content").and_then(Value::as_array) {
+            let converted = convert_images_for_gemini(content_arr, supports_vision);
+            let parts: Vec<Part> = converted
+                .into_iter()
+                .filter_map(|block| {
+                    // inlineData image block -> Part::InlineData
+                    if let Some(inline) = block.get("inlineData") {
+                        let mime_type = inline
+                            .get("mimeType")
+                            .and_then(Value::as_str)
+                            .unwrap_or("image/png")
+                            .to_string();
+                        let data = inline
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        return Some(Part::InlineData {
+                            inline_data: InlineDataPart { mime_type, data },
+                        });
+                    }
+                    // Text block
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            return Some(Part::Text {
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            if parts.is_empty() {
+                return None;
+            }
+            return Some(Content {
+                role: gemini_role.to_string(),
+                parts,
+            });
+        }
+
+        // Scalar string content.
+        let text = message.get("content").and_then(Value::as_str)?;
+        if text.trim().is_empty() {
+            return None;
+        }
+
         Some(Content {
-            role: role.to_string(),
+            role: gemini_role.to_string(),
             parts: vec![Part::Text {
                 text: text.to_string(),
             }],
@@ -121,10 +173,11 @@ impl GeminiNativeBackend {
         system_instruction_from_segments(segments)
     }
 
-    fn translate_messages(messages: &[Value]) -> Vec<Content> {
+    fn translate_messages(&self, messages: &[Value]) -> Vec<Content> {
+        let supports_vision = self.supports_vision;
         messages
             .iter()
-            .filter_map(Self::translate_message)
+            .filter_map(|msg| Self::translate_message_with_vision(msg, supports_vision))
             .collect()
     }
 
@@ -148,7 +201,7 @@ impl GeminiNativeBackend {
         tools: &RenderedTools,
     ) -> Result<GenerateContentRequest, LlmError> {
         Ok(build_generate_content_request(
-            Self::translate_messages(messages),
+            self.translate_messages(messages),
             Self::system_instruction(messages),
             Self::translate_tools(tools)?,
             self.generation_config(),

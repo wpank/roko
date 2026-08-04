@@ -15,7 +15,7 @@ use crate::rate_limit::ProviderRateLimiter;
 use crate::streaming::{StreamAccumulator, StreamChunk, parse_sse_line};
 use crate::tool_loop::{LlmBackend, LlmError};
 use crate::translate::FinishReason;
-use crate::translate::{BackendResponse, RenderedTools, SessionState};
+use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
 use crate::usage::Usage;
 use roko_core::agent::ProviderKind;
 use roko_core::defaults::{DEFAULT_PROVIDER_RPM, DEFAULT_REQUEST_TIMEOUT_MS};
@@ -86,6 +86,10 @@ pub struct OpenAiCompatLlmBackend {
     api_key_env: Option<String>,
     /// Optional metric registry for emitting TTFT and request duration histograms.
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// When true, image blocks in incoming messages are preserved as
+    /// `image_url` content parts (data URIs). When false, image blocks are
+    /// silently dropped so non-vision models never receive them.
+    supports_vision: bool,
 }
 
 impl OpenAiCompatLlmBackend {
@@ -115,6 +119,7 @@ impl OpenAiCompatLlmBackend {
             provider_kind: ProviderKind::OpenAiCompat,
             api_key_env: None,
             metrics: None,
+            supports_vision: false,
         }
     }
 
@@ -122,6 +127,16 @@ impl OpenAiCompatLlmBackend {
     #[must_use]
     pub fn with_metrics(mut self, registry: Arc<roko_core::obs::metrics::MetricRegistry>) -> Self {
         self.metrics = Some(registry);
+        self
+    }
+
+    /// Control whether image blocks in incoming messages are passed through as
+    /// `image_url` data-URI content parts (`true`) or silently dropped (`false`).
+    ///
+    /// Must match the model's `supports_vision` capability. Defaults to `false`.
+    #[must_use]
+    pub const fn with_supports_vision(mut self, supports_vision: bool) -> Self {
+        self.supports_vision = supports_vision;
         self
     }
 
@@ -280,11 +295,30 @@ impl OpenAiCompatLlmBackend {
         let RenderedTools::JsonArray(tools) = tools else {
             return Err(LlmError::Backend("expected json tool array".into()));
         };
-        // Optionally normalize assistant messages for strict providers.
-        let messages = if self.normalize_tool_call_content {
+        // Check if any message has array content (multipart blocks). Array
+        // content must be processed to convert or drop image blocks regardless
+        // of vision support, since the backend expects the OpenAI wire format.
+        let has_array_content = messages
+            .iter()
+            .any(|msg| msg.get("content").is_some_and(Value::is_array));
+        let needs_mutation = has_array_content || self.normalize_tool_call_content;
+        let messages = if needs_mutation {
             let mut msgs = messages.to_vec();
             for msg in &mut msgs {
-                if msg.get("role").and_then(Value::as_str) == Some("assistant")
+                // Convert/drop image blocks in array-content messages.
+                if let Some(content_arr) = msg
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.to_vec())
+                {
+                    let converted = convert_images_for_openai(&content_arr, self.supports_vision);
+                    if let Some(obj) = msg.as_object_mut() {
+                        obj.insert("content".to_string(), Value::Array(converted));
+                    }
+                }
+                // Normalize content: "" -> null on assistant messages with tool_calls.
+                if self.normalize_tool_call_content
+                    && msg.get("role").and_then(Value::as_str) == Some("assistant")
                     && msg.get("tool_calls").is_some_and(Value::is_array)
                 {
                     if let Some(content) = msg.get("content") {
@@ -457,7 +491,19 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 self.timeout_ms,
             )
             .await
-            .map_err(|e| LlmError::Network(self.decorate_error(&e)))?;
+            .map_err(|e| {
+                // Propagate Retry-After header from 429/529 as structured error so
+                // the retry policy (E01-T12) can honour the provider's wait hint.
+                use crate::provider::ProviderError;
+                if let Some(s) = e.status {
+                    if s == 429 || s == 529 {
+                        return LlmError::Provider(ProviderError::RateLimit {
+                            retry_after_ms: e.retry_after_secs.map(|sec| sec * 1000),
+                        });
+                    }
+                }
+                LlmError::Network(self.decorate_error(&e))
+            })?;
 
         let json: Value = serde_json::from_str(&raw)
             .map_err(|e| LlmError::Backend(format!("parse response: {e}")))?;
@@ -526,6 +572,13 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
+            let status_u16 = raw_err.status.unwrap_or(0);
+            if status_u16 == 429 || status_u16 == 529 {
+                use crate::provider::ProviderError;
+                return Err(LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: raw_err.retry_after_secs.map(|sec| sec * 1000),
+                }));
+            }
             return Err(LlmError::Network(self.decorate_error(&raw_err)));
         }
 
@@ -750,6 +803,15 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
+            let s = raw_err.status.unwrap_or(0);
+            if s == 429 || s == 529 {
+                use crate::provider::ProviderError;
+                let err = LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: raw_err.retry_after_secs.map(|sec| sec * 1000),
+                });
+                let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
+                return Err(err);
+            }
             let message = self.decorate_error(&raw_err);
             let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
             return Err(LlmError::Network(message));
@@ -1748,5 +1810,91 @@ mod tests {
         assert!(got_error, "expected StreamChunk::Error for TTFT timeout");
 
         server.join().expect("server thread");
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_429_maps_to_provider_rate_limit() {
+        use crate::provider::ProviderError;
+        let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
+            429,
+            "rate limited",
+            Some(30),
+        ))]);
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "model").with_poster(Box::new(poster));
+        let err = backend
+            .send_turn(
+                &[serde_json::json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: Some(30_000)
+                })
+            ),
+            "expected Provider(RateLimit {{ 30_000ms }}), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_529_maps_to_provider_rate_limit() {
+        use crate::provider::ProviderError;
+        let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
+            529,
+            "overloaded",
+            Some(60),
+        ))]);
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "model").with_poster(Box::new(poster));
+        let err = backend
+            .send_turn(
+                &[serde_json::json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: Some(60_000)
+                })
+            ),
+            "expected Provider(RateLimit {{ 60_000ms }}), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_absent_produces_rate_limit_none() {
+        use crate::provider::ProviderError;
+        let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http(
+            429,
+            "rate limited no header",
+        ))]);
+        let backend =
+            OpenAiCompatLlmBackend::new("test-key", "model").with_poster(Box::new(poster));
+        let err = backend
+            .send_turn(
+                &[serde_json::json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(serde_json::json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None
+                })
+            ),
+            "expected Provider(RateLimit {{ None }}), got {err:?}"
+        );
     }
 }

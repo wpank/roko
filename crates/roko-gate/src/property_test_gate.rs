@@ -178,8 +178,8 @@ impl roko_core::Cell for PropertyTestGate {
     fn cell_name(&self) -> &str {
         "PropertyTestGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

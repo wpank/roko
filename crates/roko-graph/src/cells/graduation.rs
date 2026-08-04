@@ -25,7 +25,7 @@ use async_trait::async_trait;
 
 use roko_core::config::graduation::GraduationConfig;
 use roko_core::traits::React;
-use roko_core::{Context, Engram, PolicyOutputs, Provenance, Pulse, Score};
+use roko_core::{Context, Engram, PolicyOutputs, ProtocolId, Provenance, Pulse, Score};
 
 use crate::cell::{Cell, CellContext, CellVersion};
 
@@ -76,7 +76,7 @@ impl GraduationCell {
     fn graduate_pulse(&self, pulse: &Pulse) -> Engram {
         let score = Score::NEUTRAL;
         let provenance = Provenance::trusted(self.provenance_tag.clone());
-        pulse.graduate(provenance, score)
+        pulse.graduate(provenance, 1.0, score, vec![])
     }
 
     /// Access the graduation config.
@@ -108,8 +108,8 @@ impl Cell for GraduationCell {
         (0, 1, 0)
     }
 
-    fn protocols(&self) -> &[&str] {
-        &["React"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::React]
     }
 
     async fn execute(
@@ -277,7 +277,7 @@ mod tests {
         let cell = GraduationCell::with_default_policies();
         assert_eq!(cell.cell_id(), "graduation-policy");
         assert_eq!(cell.cell_name(), "Graduation Policy");
-        assert_eq!(cell.protocols(), &["React"]);
+        assert_eq!(cell.protocols(), vec![ProtocolId::React]);
     }
 
     #[test]

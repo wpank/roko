@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use roko_core::{ContentHash, Context, Engram, Query, Store, error::Result};
+use roko_core::{ContentHash, Context, Engram, ProtocolId, Query, Store, error::Result};
 use std::collections::HashMap;
 
 /// An in-memory, concurrent signal substrate.
@@ -65,8 +65,8 @@ impl roko_core::Cell for MemorySubstrate {
     fn cell_name(&self) -> &str {
         "MemorySubstrate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Store"]
+    fn protocols(&self) -> Vec<ProtocolId> {
+        vec![ProtocolId::Store]
     }
 }
 

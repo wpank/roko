@@ -73,8 +73,8 @@ impl roko_core::Cell for ClippyGate {
     fn cell_name(&self) -> &str {
         "ClippyGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 
     async fn execute(

@@ -172,6 +172,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -201,6 +202,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -230,6 +232,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "hermes".to_string(),
@@ -259,6 +262,7 @@ mod tests {
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile::default();
         let options = AgentOptions::default();

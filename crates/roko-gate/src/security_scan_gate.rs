@@ -28,7 +28,7 @@ impl SecurityScanGate {
 impl roko_core::Cell for SecurityScanGate {
     fn cell_id(&self) -> &str { "security-scan-gate" }
     fn cell_name(&self) -> &str { "SecurityScanGate" }
-    fn protocols(&self) -> &[&str] { &["Verify"] }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> { vec![roko_core::ProtocolId::Verify] }
 }
 
 #[async_trait]

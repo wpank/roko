@@ -4801,6 +4801,7 @@ mod tests {
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
 
@@ -5488,8 +5489,8 @@ mod tests {
         let mut episode = Episode::new("agent-1", playbook.id.as_str()).succeeded();
         episode.kind = "agent_turn".into();
         episode.gate_verdicts = vec![
-            roko_learn::episode_logger::GateVerdict::new("compile", true),
-            roko_learn::episode_logger::GateVerdict::new("test", true),
+            roko_learn::episode_logger::EpisodeGateVerdict::new("compile", true),
+            roko_learn::episode_logger::EpisodeGateVerdict::new("test", true),
         ];
         let logger = EpisodeLogger::new(workdir.join(".roko").join("episodes.jsonl"));
         logger.append(&episode).await.expect("append episode");
@@ -5532,6 +5533,7 @@ mod tests {
                 effective_confidence: 0.9,
                 recency_factor: 1.0,
                 emotional_boost: 1.0,
+                balance_freshness_boost: 0.0,
                 hdc_similarity: None,
             },
         }];
@@ -5589,6 +5591,7 @@ mod tests {
                 effective_confidence: 0.5,
                 recency_factor: 1.0,
                 emotional_boost: 1.0,
+                balance_freshness_boost: 0.0,
                 hdc_similarity: None,
             },
         }];

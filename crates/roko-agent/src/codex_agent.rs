@@ -907,6 +907,7 @@ mod tests {
                 connect_timeout_ms: Some(5_000),
                 extra_headers: None,
                 max_concurrent: Some(1),
+                limits: None,
             },
         );
 

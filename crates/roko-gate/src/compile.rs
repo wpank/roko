@@ -75,8 +75,8 @@ impl roko_core::Cell for CompileGate {
     fn cell_name(&self) -> &str {
         "CompileGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 
     async fn execute(

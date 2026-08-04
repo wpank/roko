@@ -342,6 +342,7 @@ mod tests {
                 effective_confidence: 0.9,
                 recency_factor: 1.0,
                 emotional_boost: 1.0,
+                balance_freshness_boost: 0.0,
                 hdc_similarity: None,
             },
         }

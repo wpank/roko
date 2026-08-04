@@ -15,6 +15,7 @@ use crate::provider::openai_compat::{
     should_use_max_completion_tokens,
 };
 use crate::provider::{AgentCreationError, current_safety_layer};
+use crate::rate_limit::ProviderRateLimiter;
 use crate::tool_loop::LlmBackend;
 
 /// Tail-latency hedging for latency-sensitive requests.
@@ -64,6 +65,7 @@ pub fn create_openai_compat_backend(
                     model.use_max_completion_tokens
                         || should_use_max_completion_tokens(&model.slug),
                 )
+                .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(provider.kind);
@@ -103,6 +105,7 @@ pub fn create_openai_compat_backend(
                     model.use_max_completion_tokens
                         || should_use_max_completion_tokens(&model.slug),
                 )
+                .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::PerplexityApi);
@@ -138,6 +141,7 @@ pub fn create_openai_compat_backend(
                     model.use_max_completion_tokens
                         || should_use_max_completion_tokens(&model.slug),
                 )
+                .with_supports_vision(model.supports_vision)
                 .with_ttft_timeout_ms(provider.ttft_timeout_ms)
                 .with_poster(Box::new(SharedHttpPoster { inner: poster }))
                 .with_provider_kind(ProviderKind::CerebrasApi);
@@ -153,6 +157,52 @@ pub fn create_openai_compat_backend(
         }
         ProviderKind::Hermes | ProviderKind::OpenClaw => {
             // Harness adapters use OpenAI-compat as their base HTTP transport.
+            create_openai_compat_backend(provider, model, poster)
+        }
+    }
+}
+
+/// Like [`create_openai_compat_backend`] but attaches a runtime-scoped
+/// `ProviderRateLimiter` so concurrent dispatches share one RPM/TPM budget.
+///
+/// This variant is called from provider adapters when `AgentOptions` carries
+/// a rate limiter built from the runner's `[providers.<name>].limits` config.
+/// Providers that don't need a limiter call the plain `create_openai_compat_backend`.
+pub fn create_openai_compat_backend_with_limiter(
+    provider: &ProviderConfig,
+    model: &ModelProfile,
+    poster: Arc<dyn HttpPoster>,
+    rate_limiter: Arc<ProviderRateLimiter>,
+) -> Result<Arc<dyn LlmBackend>, AgentCreationError> {
+    match provider.kind {
+        ProviderKind::OpenAiCompat
+        | ProviderKind::PerplexityApi
+        | ProviderKind::CerebrasApi
+        | ProviderKind::Hermes
+        | ProviderKind::OpenClaw => {
+            let api_key = resolve_api_key(provider)?;
+            let base_url = base_url_for_tool_loop(provider);
+            let backend = OpenAiCompatBackend::new(api_key, model.slug.clone())
+                .with_provider_id(model.provider.clone())
+                .with_base_url(base_url)
+                .with_timeout_ms(provider.timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS))
+                .with_max_tokens(max_tokens_for_model(model))
+                .with_extra_headers(provider.extra_headers.clone().unwrap_or_default())
+                .with_extra_body_params(build_extra_body_params(provider, model))
+                .with_skip_session_fields(true)
+                .with_use_max_completion_tokens(
+                    model.use_max_completion_tokens
+                        || should_use_max_completion_tokens(&model.slug),
+                )
+                .with_ttft_timeout_ms(provider.ttft_timeout_ms)
+                .with_poster(Box::new(SharedHttpPoster { inner: poster }))
+                .with_provider_kind(provider.kind)
+                .with_rate_limiter(rate_limiter);
+            Ok(Arc::new(backend))
+        }
+        _ => {
+            // Non-OpenAI-compat providers: fall back to standard creation (rate
+            // limiting for those paths is handled internally by their backends).
             create_openai_compat_backend(provider, model, poster)
         }
     }
@@ -282,6 +332,7 @@ mod tests {
                 "present".to_string(),
             )])),
             max_concurrent: None,
+            limits: None,
         }
     }
 
@@ -455,6 +506,7 @@ mod tests {
             connect_timeout_ms: Some(5_000),
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let model = ModelProfile {
             provider: "gemini".to_string(),

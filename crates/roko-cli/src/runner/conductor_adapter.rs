@@ -1076,4 +1076,173 @@ mod tests {
         // Ring should remain empty.
         assert!(ring.is_empty());
     }
+
+    // ── conductor_supervision regression tests ──────────────────────────
+    //
+    // These tests validate that a synthetic ghost-turn or repeated gate-fail
+    // stream fed through the conductor ring produces a non-Continue decision
+    // BEFORE the plan wall-clock timeout fires.  They are the acceptance
+    // criteria for E08-T04.
+
+    /// A synthetic ghost-turn stream (4 error turns) must cause
+    /// `evaluate_full` to emit a non-Continue decision.  This proves that
+    /// the supervision tick would fire a Restart or Fail before the plan
+    /// wall-clock timeout.
+    #[test]
+    fn conductor_supervision_ghost_turn_triggers_non_continue() {
+        use roko_conductor::Conductor;
+
+        let ring = ConductorRing::with_capacity(64);
+
+        // Seed the ring with a plan-phase engram so extract_plan_id works.
+        ring.push(
+            Engram::builder(Kind::PlanPhase)
+                .body(Body::text("implementing"))
+                .tag(PLAN_ID_TAG, "plan-sup-1")
+                .tag("phase", "implementing")
+                .build(),
+        );
+
+        // 4 error turns — exceeds the default ghost-turn budget (3).
+        for i in 0..4 {
+            let event = AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: Some(0.10 + i as f64 * 0.05),
+                num_turns: Some(1),
+                is_error: true,
+            };
+            if let Some(e) = agent_event_to_engram(
+                &event,
+                "plan-sup-1",
+                "task-1",
+                "claude-sonnet-4-6",
+                "anthropic",
+            ) {
+                ring.push(e);
+            }
+        }
+
+        let snapshot = ring.snapshot();
+        let conductor = Conductor::default();
+        let eval = conductor.evaluate_full(&snapshot, &roko_core::Context::now());
+
+        assert!(
+            !eval.decision.is_continue(),
+            "conductor_supervision: 4 ghost turns must produce non-Continue before plan_timeout; \
+             got {:?}",
+            eval.decision
+        );
+    }
+
+    /// A repeated gate-failure stream (6 failures) must produce a non-Continue
+    /// decision, proving the supervision tick would act before plan_timeout.
+    #[test]
+    fn conductor_supervision_gate_fail_stream_triggers_non_continue() {
+        use roko_conductor::Conductor;
+
+        let ring = ConductorRing::with_capacity(64);
+
+        // Plan-phase engram for plan identity.
+        ring.push(
+            Engram::builder(Kind::PlanPhase)
+                .body(Body::text("implementing"))
+                .tag(PLAN_ID_TAG, "plan-sup-2")
+                .tag("phase", "implementing")
+                .build(),
+        );
+
+        // 6 failed gate verdicts — enough to exhaust default test-failure budget.
+        for i in 0..6 {
+            let event = RunnerEvent::GateCompleted {
+                timestamp: String::new(),
+                timestamp_ms: i * 1000,
+                run_id: "run-sup-1".into(),
+                attempt: TaskAttemptRef {
+                    plan_id: "plan-sup-2".into(),
+                    task_id: "task-1".into(),
+                    attempt: i as u32 + 1,
+                },
+                kind: GateCompletionKind::Gate,
+                rung: 1,
+                passed: false,
+                failure_kind: Some(RunnerFailureKind::Transient),
+                duration_ms: 500,
+                output: format!("test failure iteration {i}"),
+                verdicts: vec![GateVerdictSummary {
+                    gate_name: "cargo-test".into(),
+                    passed: false,
+                    skipped: false,
+                    summary: format!("{} test failures", i + 1),
+                    error_digest: None,
+                    failure_kind: Some(RunnerFailureKind::Transient),
+                }],
+            };
+            if let Some(e) = runner_event_to_engram(&event) {
+                ring.push(e);
+            }
+        }
+
+        let snapshot = ring.snapshot();
+        let conductor = Conductor::default();
+        let eval = conductor.evaluate_full(&snapshot, &roko_core::Context::now());
+
+        assert!(
+            !eval.decision.is_continue(),
+            "conductor_supervision: 6 gate failures must produce non-Continue before plan_timeout; \
+             got {:?}",
+            eval.decision
+        );
+    }
+
+    /// Proves the supervision path names the watcher/circuit-breaker in the
+    /// decision, not "plan_timeout", so operators can distinguish causes.
+    #[test]
+    fn conductor_supervision_fail_names_watcher_not_timeout() {
+        use roko_conductor::Conductor;
+        use roko_core::ConductorDecision;
+
+        let ring = ConductorRing::with_capacity(64);
+
+        ring.push(
+            Engram::builder(Kind::PlanPhase)
+                .body(Body::text("implementing"))
+                .tag(PLAN_ID_TAG, "plan-sup-3")
+                .tag("phase", "implementing")
+                .build(),
+        );
+
+        // Drive the circuit breaker to a trip by recording many error turns.
+        for i in 0..5 {
+            let event = AgentEvent::TurnCompleted {
+                session_id: None,
+                total_cost_usd: Some(0.20 * i as f64),
+                num_turns: Some(1),
+                is_error: true,
+            };
+            if let Some(e) =
+                agent_event_to_engram(&event, "plan-sup-3", "task-1", "model-x", "provider-y")
+            {
+                ring.push(e);
+            }
+        }
+
+        let snapshot = ring.snapshot();
+        let conductor = Conductor::default();
+        let eval = conductor.evaluate_full(&snapshot, &roko_core::Context::now());
+
+        if let ConductorDecision::Fail { ref watcher, .. } = eval.decision {
+            // The watcher name must NOT be "plan_timeout".
+            assert_ne!(
+                watcher.as_str(),
+                "plan_timeout",
+                "conductor Fail must name the watcher, not 'plan_timeout'"
+            );
+        }
+        // Either way (Restart or Fail) the decision must be non-Continue.
+        assert!(
+            !eval.decision.is_continue(),
+            "5 error turns must not continue; got {:?}",
+            eval.decision
+        );
+    }
 }

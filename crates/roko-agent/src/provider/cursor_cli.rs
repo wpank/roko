@@ -171,6 +171,7 @@ for line in sys.stdin:
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let options = AgentOptions {
             timeout_ms: Some(10_000),
@@ -209,6 +210,7 @@ for line in sys.stdin:
             connect_timeout_ms: None,
             extra_headers: None,
             max_concurrent: None,
+            limits: None,
         };
         let options = AgentOptions {
             name: "default-cmd".to_string(),

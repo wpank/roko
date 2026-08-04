@@ -15,7 +15,7 @@ use crate::dispatcher::HandlerResolver;
 use crate::http::{HttpPoster, ReqwestPoster};
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderSemaphores, build_tool_dispatcher,
+    AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores, build_tool_dispatcher,
     map_provider_error, tool_loop_max_iterations_for_profile,
 };
 use crate::tool_loop::{LlmBackend, LlmError, ToolLoop, ToolLoopAgent};
@@ -411,6 +411,15 @@ impl LlmBackend for AnthropicMessagesBackend {
             )
             .await
             .map_err(|err| {
+                // Propagate Retry-After from 429/529 as structured error so the
+                // retry policy (E01-T12) can honour the provider's wait hint.
+                if let Some(s) = err.status {
+                    if s == 429 || s == 529 {
+                        return LlmError::Provider(ProviderError::RateLimit {
+                            retry_after_ms: err.retry_after_secs.map(|sec| sec * 1000),
+                        });
+                    }
+                }
                 let decorated = map_provider_error(
                     ProviderKind::AnthropicApi,
                     &self.provider_id,
@@ -710,5 +719,59 @@ mod tests {
             { "type": "text", "text": "world" }
         ]);
         assert_eq!(content_as_text(&content), "hello\nworld");
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_429_anthropic_maps_to_provider_rate_limit() {
+        let poster = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
+            429,
+            "rate limited",
+            Some(30),
+        ))]);
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url("https://example.test")
+            .with_poster(Box::new(poster));
+        let err = backend
+            .send_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: Some(30_000)
+                })
+            ),
+            "expected Provider(RateLimit {{ 30_000ms }}), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_absent_anthropic_produces_rate_limit_none() {
+        let poster = MockPoster::new(vec![Err(HttpPostError::http(429, "no header"))]);
+        let backend = AnthropicMessagesBackend::new("test-key", "claude-sonnet-4-6")
+            .with_base_url("https://example.test")
+            .with_poster(Box::new(poster));
+        let err = backend
+            .send_turn(
+                &[json!({"role": "user", "content": "hi"})],
+                &RenderedTools::JsonArray(json!([])),
+                &SessionState::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: None
+                })
+            ),
+            "expected Provider(RateLimit {{ None }}), got {err:?}"
+        );
     }
 }

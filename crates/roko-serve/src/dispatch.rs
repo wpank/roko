@@ -1852,6 +1852,7 @@ fn build_agent(
             dangerously_skip_permissions: true,
             name: String::new(),
             pre_discovered_mcp_tools: None,
+            rate_limiter: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -3040,6 +3041,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
                 connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
                 extra_headers: None,
                 max_concurrent: None,
+                limits: None,
             },
         );
         config.models.insert(

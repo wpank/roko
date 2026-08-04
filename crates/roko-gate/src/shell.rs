@@ -62,8 +62,8 @@ impl roko_core::Cell for ShellGate {
     fn cell_name(&self) -> &str {
         "ShellGate"
     }
-    fn protocols(&self) -> &[&str] {
-        &["Verify"]
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
     }
 }
 

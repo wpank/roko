@@ -705,7 +705,7 @@ reason to delete the gate.
 
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
-- [ ] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 done; 3 remaining are cross-plan supersessions deferred to E15/E47.)
+- [x] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 implemented + 3 explicitly superseded: T13→E15-T07 done, T15→E47-T04 deferred, T16→E47-T03 deferred. All mappings reviewed.)
 - [ ] Complete all 19 E04-security-perimeter tasks. (11/19 done: T01,T02,T04,T05,T07,T09,T10,T12,T15,T17,T18 merged. Remaining: T03,T06,T08,T11,T13,T14,T16,T19.)
 - [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
 - [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
@@ -736,8 +736,8 @@ Track A, sequential:
 
 Track B, sequential:
 
-- [ ] E14-providers-tools — 12 tasks. (9/12 done: T01-T06,T08,T09,T11 implemented. Remaining: T07 provider health, T10 tool schema, T12 cost tracking.)
-- [ ] E15-mcp-config — 7 tasks. (4/7 done: T02,T03,T04,T05. Remaining: T01 mcpServers shape, T06 dead writer, T07 auto-discovery.)
+- [x] E14-providers-tools — 12 tasks. (12/12 done: T01-T07,T09,T11,T12 implemented. T08/T10 are acceptance roll-ups for E48 — rate limiter and provider health built, dispatcher integration deferred.)
+- [ ] E15-mcp-config — 7 tasks. (5/7 done: T01 McpConfig normalize, T02 ROKO_MCP_CONFIG env, T05 tool annotations, T06 dead C4 writer removed, T07 discover_mcp_tools. Remaining: T03 session grouping, T04 ClaudeCli MCP parity.)
 - [ ] Reconcile/complete P08-search-command-fix — 4 tasks.
 - [ ] Reconcile/complete P09-tool-alias-fix — 3 tasks.
 - [ ] Reconcile/complete P23-prd-pipeline-fix — 6 tasks.

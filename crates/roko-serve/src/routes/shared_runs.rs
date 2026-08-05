@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+use crate::service_factory::{ServiceConfig, ServiceFactory};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -14,7 +15,6 @@ use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutcome};
 use roko_core::{config::schema::RokoConfig, obs::LogScrubber};
-use roko_orchestrator::{ServiceConfig, ServiceFactory};
 use roko_runtime::{
     JsonlLogger, WorkflowConfig, WorkflowEngine, WorkflowRunConfig, WorkflowRunReport,
 };

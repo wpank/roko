@@ -124,6 +124,18 @@ impl JsonlTraceSink {
         self.inner.lock().writers.is_empty()
     }
 
+    /// Flush all open trace writers to disk without closing them.
+    ///
+    /// This ensures buffered data from in-progress traces is persisted even
+    /// when the run terminates before every trace calls [`TraceSink::finish`].
+    /// Best-effort: individual flush failures are silently ignored.
+    pub fn flush_all(&self) {
+        let mut inner = self.inner.lock();
+        for writer in inner.writers.values_mut() {
+            let _ = writer.writer.flush();
+        }
+    }
+
     /// Ensure a writer exists for `trace_id`; open one if missing.
     ///
     /// Returns `None` if the file could not be opened (logged + swallowed).
@@ -485,5 +497,36 @@ mod tests {
 
         let contents = fs::read_to_string(&jsonl_file).expect("read");
         assert_eq!(contents.lines().count(), 2, "1 event + 1 trace summary");
+    }
+
+    #[test]
+    fn flush_all_persists_buffered_data_without_closing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sink = JsonlTraceSink::with_clock(tmp.path(), fixed_clock(1_700_000_000));
+        let id = trace_id(0xFF);
+
+        // Append events but do NOT call finish.
+        sink.append(id, ToolTraceEvent::StreamCoerced { at_ms: 1 });
+        sink.append(id, ToolTraceEvent::StreamCoerced { at_ms: 2 });
+
+        // flush_all should persist buffered bytes without closing the writer.
+        sink.flush_all();
+
+        // The file should exist and contain the two event lines.
+        let date_dir = tmp.path().join("2023-11-14");
+        let file = date_dir.join(format!("{}.jsonl", id.to_hex()));
+        assert!(file.is_file(), "trace file should exist after flush_all");
+        let contents = fs::read_to_string(&file).expect("read");
+        assert_eq!(
+            contents.lines().count(),
+            2,
+            "expected 2 event lines after flush_all"
+        );
+
+        // Writer should still be open (not empty).
+        assert!(
+            !sink.is_empty(),
+            "writer bag must not be empty after flush_all"
+        );
     }
 }

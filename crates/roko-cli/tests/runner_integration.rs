@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+use roko_cli::orchestrator::{MergeQueue, MergeRequest};
 use roko_cli::runner::merge::{
     MergeBackend, MergeBackendOutcome, MergeDispatch, PlanMerger, PlanMergerConfig, RegressionGate,
     RegressionOutcome,
@@ -19,7 +20,6 @@ use roko_cli::runner::types::{
 };
 use roko_cli::task_parser::TaskDef;
 use roko_core::tool::ToolCall;
-use roko_orchestrator::{MergeQueue, MergeRequest};
 use tempfile::tempdir;
 
 fn task(id: &str, deps: &[&str]) -> TaskDef {

@@ -8,11 +8,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::orchestrator::GateResult;
 use roko_core::{Context, Engram, TaskDomain, Verdict, Verify};
 use roko_gate::generated_test_gate::ArtifactStore as GeneratedArtifactStore;
 use roko_gate::rung_selector::Rung;
 use roko_gate::{AcceptanceDecision, AcceptanceOutcome, NoStubEvidence};
-use roko_orchestrator::GateResult;
 
 // ─── Path helpers ────────────────────────────────────────────────────────
 

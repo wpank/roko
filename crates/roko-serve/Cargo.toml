@@ -33,7 +33,6 @@ roko-gate = { path = "../roko-gate" }
 roko-fs = { path = "../roko-fs" }
 roko-compose = { path = "../roko-compose" }
 roko-std = { path = "../roko-std" }
-roko-orchestrator = { path = "../roko-orchestrator" }
 roko-conductor = { path = "../roko-conductor" }
 roko-plugin = { path = "../roko-plugin" }
 roko-daimon = { path = "../roko-daimon" }

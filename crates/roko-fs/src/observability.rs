@@ -113,6 +113,46 @@ impl FsObservabilitySinks {
     pub fn metrics_sink_dyn(&self) -> Arc<dyn MetricsSink> {
         self.metrics_sink.clone()
     }
+
+    /// Flush all open trace writers to disk.
+    ///
+    /// Ensures buffered data from in-progress traces lands on disk even when
+    /// the run terminates before every trace calls `finish()`.
+    pub fn flush_traces(&self) {
+        self.trace_sink.flush_all();
+    }
+
+    /// Persist a [`MetricRegistry`](roko_core::obs::metrics::MetricRegistry)
+    /// snapshot to `<metrics_dir>/registry_snapshot.json`.
+    ///
+    /// This writes the full Prometheus-compatible metric state (counters,
+    /// gauges, histograms) collected during a run so it survives process
+    /// exit and can be queried offline or loaded by dashboards.
+    ///
+    /// Best-effort: returns `Ok(())` on success, `Err` on I/O failure.
+    /// The caller should log and swallow the error rather than abort the run.
+    pub fn flush_registry_snapshot(
+        &self,
+        registry: &roko_core::obs::metrics::MetricRegistry,
+    ) -> io::Result<()> {
+        let snapshot = registry.snapshot();
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        // Write next to the tool_metrics.jsonl file.
+        let snapshot_path = self
+            .metrics_sink
+            .path()
+            .parent()
+            .map(|p| p.join("registry_snapshot.json"))
+            .unwrap_or_else(|| Path::new("registry_snapshot.json").to_path_buf());
+
+        if let Some(parent) = snapshot_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&snapshot_path, json)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +198,79 @@ mod tests {
 
         assert!(roko_dir.join("traces").is_dir());
         assert!(roko_dir.join("metrics").is_dir());
+    }
+
+    #[test]
+    fn flush_registry_snapshot_writes_json_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sinks =
+            FsObservabilitySinks::initialized_for_workdir(tmp.path()).expect("initialize sinks");
+
+        let registry = roko_core::obs::metrics::MetricRegistry::new();
+        let counter = registry.register_counter(
+            "roko_test_total",
+            "test counter",
+            roko_core::obs::metrics::LabelSet::new(),
+        );
+        counter.inc_by(42);
+
+        sinks
+            .flush_registry_snapshot(&registry)
+            .expect("flush snapshot");
+
+        let snapshot_path = tmp
+            .path()
+            .join(".roko")
+            .join("metrics")
+            .join("registry_snapshot.json");
+        assert!(
+            snapshot_path.is_file(),
+            "registry_snapshot.json must exist: {snapshot_path:?}"
+        );
+
+        let contents = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+        assert!(
+            contents.contains("roko_test_total"),
+            "snapshot must contain the registered metric"
+        );
+        assert!(
+            contents.contains("42"),
+            "snapshot must contain the counter value"
+        );
+    }
+
+    #[test]
+    fn flush_traces_delegates_to_trace_sink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sinks =
+            FsObservabilitySinks::initialized_for_workdir(tmp.path()).expect("initialize sinks");
+
+        // Append a trace event but do not finish it.
+        let trace_id = roko_core::tool::trace::TraceId::from_bytes([0xAA; 16]);
+        sinks.trace_sink.append(
+            trace_id,
+            roko_core::tool::trace::ToolTraceEvent::StreamCoerced { at_ms: 1 },
+        );
+
+        // flush_traces should persist buffered data.
+        sinks.flush_traces();
+
+        // Verify the trace file exists with content.
+        let traces_dir = tmp.path().join(".roko").join("traces");
+        assert!(traces_dir.is_dir(), "traces dir must exist");
+        // Walk into date directory.
+        let entries: Vec<_> = std::fs::read_dir(&traces_dir)
+            .expect("read traces dir")
+            .filter_map(Result::ok)
+            .collect();
+        assert!(!entries.is_empty(), "should have a date directory");
+        let date_dir = &entries[0].path();
+        let trace_file = date_dir.join(format!("{}.jsonl", trace_id.to_hex()));
+        assert!(
+            trace_file.is_file(),
+            "trace file must exist after flush: {trace_file:?}"
+        );
+        let contents = std::fs::read_to_string(&trace_file).expect("read trace");
+        assert_eq!(contents.lines().count(), 1, "one event line expected");
     }
 }

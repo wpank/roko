@@ -89,7 +89,13 @@ pub enum KnowledgeEvidenceSource {
 }
 
 impl KnowledgeEvidenceSource {
-    fn trust_weight(self) -> f64 {
+    /// Return the trust weight for this evidence source channel.
+    ///
+    /// Higher values indicate more trustworthy sources (e.g. user input = 1.0,
+    /// dream consolidation = 0.45).  Used by the light admission gate and
+    /// evidence-weighted confidence scoring.
+    #[must_use]
+    pub fn trust_weight(self) -> f64 {
         match self {
             Self::UserInput => 1.0,
             Self::GateOutcome | Self::ReviewVerdict => 0.95,
@@ -1425,6 +1431,59 @@ mod tests {
                 || decision.outcome == KnowledgeAdmissionOutcome::Deferred,
             "expected Admitted or Deferred, got {:?}",
             decision.outcome,
+        );
+    }
+
+    // ─── E07-T06: LightAdmissionGate unit tests ──────────────────────
+
+    /// Low confidence is rejected regardless of novelty and trust.
+    #[test]
+    fn light_gate_rejects_low_confidence() {
+        let gate = LightAdmissionGate::default();
+        // Default min_confidence = 0.5.
+        assert!(!gate.evaluate(0.3, 0.0, 1.0), "0.3 < min 0.5");
+        assert!(!gate.evaluate(0.49, 0.0, 1.0), "0.49 < min 0.5");
+        assert!(gate.evaluate(0.5, 0.0, 1.0), "0.5 >= min 0.5");
+        assert!(gate.evaluate(1.0, 0.0, 1.0), "1.0 >= min 0.5");
+    }
+
+    /// High similarity (low novelty) is rejected.
+    #[test]
+    fn light_gate_rejects_near_duplicate() {
+        let gate = LightAdmissionGate::default();
+        // Default min_novelty = 0.3, so similarity > 0.7 → novelty < 0.3 → rejected.
+        assert!(
+            !gate.evaluate(1.0, 0.8, 1.0),
+            "similarity 0.8 → novelty 0.2 < 0.3"
+        );
+        assert!(
+            !gate.evaluate(1.0, 1.0, 1.0),
+            "exact duplicate → novelty 0.0"
+        );
+        assert!(
+            gate.evaluate(1.0, 0.7, 1.0),
+            "similarity 0.7 → novelty 0.3 >= 0.3"
+        );
+    }
+
+    /// Low source trust is rejected.
+    #[test]
+    fn light_gate_rejects_low_trust() {
+        let gate = LightAdmissionGate::default();
+        // Default min_source_trust = 0.65.
+        assert!(!gate.evaluate(1.0, 0.0, 0.4), "trust 0.4 < min 0.65");
+        assert!(gate.evaluate(1.0, 0.0, 0.65), "trust 0.65 >= min 0.65");
+    }
+
+    /// ExternalObservation trust_weight (0.65) is exactly at the default
+    /// min_source_trust threshold, so lifecycle entries pass.
+    #[test]
+    fn external_observation_trust_passes_default_gate() {
+        let gate = LightAdmissionGate::default();
+        let trust = KnowledgeEvidenceSource::ExternalObservation.trust_weight();
+        assert!(
+            gate.evaluate(1.0, 0.0, trust),
+            "ExternalObservation (trust={trust}) should pass default gate"
         );
     }
 }

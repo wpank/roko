@@ -23,12 +23,12 @@ use roko_gate::{
     AdaptiveThresholds, ClippyGate, CompileGate, GatePayload, TestGate,
     parse_structured_review_verdict, review_verdict::ReviewVerdictContext,
 };
-use roko_orchestrator::{ServiceConfig, ServiceFactory};
 use roko_runtime::JsonlLogger;
 use roko_runtime::effect_driver::RuntimeEvent as RuntimeDriverEvent;
 use roko_runtime::event_bus::runtime_event_bus;
 use roko_runtime::pipeline_state::WorkflowConfig;
 use roko_runtime::workflow_engine::{WorkflowEngine, WorkflowRunConfig, WorkflowRunReport};
+use roko_serve::{ServiceConfig, ServiceFactory};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -54,6 +54,8 @@ pub struct PipelineConfig {
     pub review_strictness: String,
     /// Resolved model slug used for agent phases.
     pub model_slug: String,
+    /// Optional MCP server config path written for the session.
+    pub mcp_config: Option<std::path::PathBuf>,
 }
 
 const CLAUDE_CLI_BIN: &str = "claude";
@@ -446,6 +448,7 @@ pub async fn run_with_workflow_engine(
     prompt: &str,
     workdir: &Path,
     template: &str,
+    mcp_config: Option<std::path::PathBuf>,
     provenance_card: Option<String>,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<WorkflowRunReport> {
@@ -460,7 +463,7 @@ pub async fn run_with_workflow_engine(
         roko_dir: workdir.join(".roko"),
         workspace_config: roko_config,
         model_key: std::env::var("ROKO_MODEL").ok(),
-        mcp_config: None,
+        mcp_config,
         feedback_enabled: true,
         affect_enabled: false,
         cascade_enabled: true,
@@ -1052,6 +1055,7 @@ pub async fn run_workflow_pipeline(
                     &full_prompt,
                     workdir,
                     &config.model_slug,
+                    config.mcp_config.as_deref(),
                     &cancel_token,
                     &event_sender,
                 )
@@ -1086,6 +1090,7 @@ pub async fn run_workflow_pipeline(
                     &full_prompt,
                     workdir,
                     &config.model_slug,
+                    config.mcp_config.as_deref(),
                     &cancel_token,
                     &event_sender,
                 )
@@ -1113,6 +1118,7 @@ pub async fn run_workflow_pipeline(
                     &fix_prompt,
                     workdir,
                     &config.model_slug,
+                    config.mcp_config.as_deref(),
                     &cancel_token,
                     &event_sender,
                 )
@@ -1681,6 +1687,7 @@ async fn run_single_review(
         &review_prompt,
         workdir,
         &config.model_slug,
+        config.mcp_config.as_deref(),
         cancel_token,
         event_sender,
     )
@@ -1752,6 +1759,7 @@ async fn run_multi_role_review(
         &architect_prompt,
         workdir,
         &config.model_slug,
+        config.mcp_config.as_deref(),
         cancel_token,
         event_sender,
     )
@@ -1777,6 +1785,7 @@ async fn run_multi_role_review(
         &auditor_prompt,
         workdir,
         &config.model_slug,
+        config.mcp_config.as_deref(),
         cancel_token,
         event_sender,
     )
@@ -1806,12 +1815,14 @@ async fn run_multi_role_review(
 }
 
 /// Run a single agent phase using ClaudeCliAgent and stream output.
+#[allow(clippy::too_many_arguments)]
 async fn run_agent_phase(
     session_id: &str,
     role: &str,
     prompt: &str,
     workdir: &Path,
     model_slug: &str,
+    mcp_config: Option<&Path>,
     cancel_token: &CancelToken,
     event_sender: &mpsc::Sender<CognitiveEvent>,
 ) -> anyhow::Result<String> {
@@ -1827,7 +1838,8 @@ async fn run_agent_phase(
         .await;
 
     // Run through the shared Claude CLI agent adapter.
-    let output = run_claude_cli_via_agent(prompt, workdir, model_slug, cancel_token).await;
+    let output =
+        run_claude_cli_via_agent(prompt, workdir, model_slug, mcp_config, cancel_token).await;
 
     match &output {
         Ok(text) => {
@@ -2057,14 +2069,18 @@ async fn run_claude_cli_via_agent(
     prompt: &str,
     workdir: &Path,
     model_slug: &str,
+    mcp_config: Option<&Path>,
     cancel_token: &CancelToken,
 ) -> anyhow::Result<String> {
     if cancel_token.is_cancelled() {
         return Err(anyhow::anyhow!("cancelled"));
     }
 
-    let agent = ClaudeCliAgent::new(CLAUDE_CLI_BIN, workdir, model_slug)
+    let mut agent = ClaudeCliAgent::new(CLAUDE_CLI_BIN, workdir, model_slug)
         .with_settings_json(build_settings_json());
+    if let Some(mcp_path) = mcp_config {
+        agent = agent.with_mcp_config(mcp_path);
+    }
     let input = Engram::builder(Kind::Task).body(Body::text(prompt)).build();
     let ctx = Context::now();
 

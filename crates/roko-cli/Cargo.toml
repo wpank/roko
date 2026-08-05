@@ -38,7 +38,6 @@ roko-compose = { path = "../roko-compose" }
 roko-agent = { path = "../roko-agent" }
 roko-agent-server = { path = "../roko-agent-server" }
 roko-gate = { path = "../roko-gate" }
-roko-orchestrator = { path = "../roko-orchestrator" }
 roko-dreams = { path = "../roko-dreams" }
 roko-daimon = { path = "../roko-daimon" }
 roko-neuro = { path = "../roko-neuro", features = ["hdc"] }
@@ -93,6 +92,8 @@ fs2 = "0.4"
 pulldown-cmark = "0.12"
 webbrowser = { workspace = true }
 glob = { workspace = true }
+blake3 = { workspace = true }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 
 [dev-dependencies]
 agent-relay = { path = "../../apps/agent-relay" }

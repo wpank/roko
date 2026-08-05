@@ -1968,6 +1968,13 @@ impl RunConfig {
         let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
         let conductor_ring = super::conductor_adapter::ConductorRing::new();
 
+        // Construct a MetricRegistry so standard metrics (gate verdicts, agent
+        // duration, LLM tokens, etc.) are tracked even when not running under
+        // `roko serve`. The registry is flushed to disk at run completion by
+        // the event loop via FsObservabilitySinks.
+        let metrics = Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+        roko_core::obs::metrics::register_standard_metrics(&metrics);
+
         Self {
             layout,
             workdir,
@@ -2016,7 +2023,7 @@ impl RunConfig {
             feedback_facade: None,
             projection: None,
             http_event_sink: None,
-            metrics: None,
+            metrics: Some(metrics),
             safety_layer: Some(safety_layer),
             obs_sinks: None,
             conductor: Some(Arc::new(conductor)),

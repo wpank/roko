@@ -246,7 +246,7 @@ pub(crate) fn knowledge_routing_boost(
 /// knowledge enables future sessions to learn from operational history (e.g.
 /// "agent X was degraded due to budget constraints 5 times last week").
 pub(crate) fn record_lifecycle_knowledge(
-    _knowledge_store: &KnowledgeStore,
+    knowledge_store: &KnowledgeStore,
     admission: Option<&roko_neuro::KnowledgeAdmissionStore>,
     transition: &LifecycleTransition,
 ) {
@@ -304,6 +304,55 @@ pub(crate) fn record_lifecycle_knowledge(
         format!("state:{:?}", transition.to),
     ];
 
+    // E07-T06: Run the light admission gate before submitting.
+    //
+    // Build a probe entry to check novelty via max_similarity against the
+    // existing durable store.  The source channel for lifecycle observations
+    // is ExternalObservation (trust weight 0.65).
+    let candidate_confidence = 1.0_f64;
+    let source_trust = roko_neuro::KnowledgeEvidenceSource::ExternalObservation.trust_weight();
+    let similarity = {
+        let probe = KnowledgeEntry {
+            id: candidate_id.clone(),
+            kind,
+            source: Some("lifecycle-monitor".to_string()),
+            content: content.clone(),
+            confidence: candidate_confidence,
+            confidence_weight: candidate_confidence,
+            refuted_insight_id: None,
+            refutation_evidence: None,
+            source_episodes: Vec::new(),
+            tags: tags.clone(),
+            source_model: None,
+            model_generality: 0.0,
+            created_at: transition.occurred_at,
+            half_life_days: kind.default_half_life_days(),
+            tier: KnowledgeTier::Transient,
+            emotional_tag: None,
+            emotional_provenance: None,
+            hdc_vector: None,
+            confirmation_count: 0,
+            distinct_contexts: Vec::new(),
+            deprecated: false,
+            balance: 1.0,
+            frozen: false,
+            catalytic_score: 0,
+        };
+        knowledge_store.max_similarity(&probe).unwrap_or(0.0)
+    };
+
+    let gate = roko_neuro::LightAdmissionGate::default();
+    if !gate.evaluate(candidate_confidence, similarity, source_trust) {
+        tracing::debug!(
+            candidate_id,
+            confidence = candidate_confidence,
+            similarity,
+            source_trust,
+            "E07-T06: lifecycle knowledge rejected by admission gate"
+        );
+        return;
+    }
+
     // Build evidence from the lifecycle transition itself.
     let is_negative = matches!(
         &transition.to,
@@ -336,7 +385,7 @@ pub(crate) fn record_lifecycle_knowledge(
         kind,
         "lifecycle-monitor",
         &content,
-        1.0,
+        candidate_confidence,
     )
     .with_scope(roko_neuro::KnowledgeScope {
         action_id: None,
@@ -687,4 +736,147 @@ pub(crate) fn build_knowledge_routing_advice(
 
     let has_signal = !hints.is_empty();
     KnowledgeRoutingAdvice { hints, has_signal }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roko_neuro::KnowledgeStore;
+    use roko_runtime::lifecycle::{
+        AgentLifecycleState, DegradationStage, LifecycleTransition, LifecycleTransitionReason,
+    };
+
+    /// Helper: build a significant lifecycle transition (Degraded) that would
+    /// normally be recorded.
+    fn degraded_transition(agent_id: &str) -> LifecycleTransition {
+        LifecycleTransition {
+            agent_id: agent_id.to_string(),
+            from: AgentLifecycleState::Active,
+            to: AgentLifecycleState::Degraded {
+                stage: DegradationStage::BudgetPaused,
+            },
+            reason: LifecycleTransitionReason::BudgetConstrained,
+            occurred_at: chrono::Utc::now(),
+        }
+    }
+
+    /// E07-T06: The light admission gate rejects candidates whose confidence
+    /// falls below the minimum threshold.
+    #[test]
+    fn low_confidence_rejected_by_admission_gate() {
+        let gate = roko_neuro::LightAdmissionGate::default();
+        // Default min_confidence = 0.5.  A candidate with confidence 0.3
+        // must be rejected even with perfect novelty and full trust.
+        assert!(
+            !gate.evaluate(0.3, 0.0, 1.0),
+            "confidence 0.3 should be rejected (min_confidence = 0.5)"
+        );
+        // Confidence exactly at the threshold should pass.
+        assert!(
+            gate.evaluate(0.5, 0.0, 1.0),
+            "confidence 0.5 should pass (>= min_confidence)"
+        );
+    }
+
+    /// E07-T06: Near-duplicate entries (high similarity / low novelty) are
+    /// rejected by the admission gate inside `record_lifecycle_knowledge`.
+    #[test]
+    fn lifecycle_duplicate_rejected_by_admission_gate() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store_path = tmp.path().join("neuro").join("knowledge.jsonl");
+        std::fs::create_dir_all(store_path.parent().unwrap()).expect("mkdir");
+        let knowledge_store = KnowledgeStore::new(&store_path);
+        let admission_store = roko_neuro::KnowledgeAdmissionStore::new(knowledge_store.clone());
+
+        let transition = degraded_transition("test-agent-dup");
+
+        // First call: novel entry, should be submitted.
+        record_lifecycle_knowledge(&knowledge_store, Some(&admission_store), &transition);
+        let candidates = admission_store.read_candidates().unwrap_or_default();
+        assert_eq!(candidates.len(), 1, "first call should submit a candidate");
+
+        // Manually insert a matching entry into the knowledge store so that
+        // max_similarity is high (> 0.7) for the same content/tags.
+        // Use a different id so max_similarity doesn't filter it out (it
+        // skips entries with the same id as the probe).
+        let existing = KnowledgeEntry {
+            id: format!(
+                "lifecycle-{}-{}-prev",
+                transition.agent_id,
+                transition.occurred_at.timestamp_millis()
+            ),
+            kind: KnowledgeKind::AntiKnowledge,
+            source: Some("lifecycle-monitor".to_string()),
+            content: format!(
+                "Agent '{}' transitioned from {:?} to {:?} (reason: {:?}) at {}",
+                transition.agent_id,
+                transition.from,
+                transition.to,
+                transition.reason,
+                transition.occurred_at.format("%Y-%m-%d %H:%M:%S UTC"),
+            ),
+            confidence: 1.0,
+            confidence_weight: 1.0,
+            refuted_insight_id: None,
+            refutation_evidence: None,
+            source_episodes: Vec::new(),
+            tags: vec![
+                "lifecycle".to_string(),
+                format!("agent:{}", transition.agent_id),
+                format!("state:{:?}", transition.to),
+            ],
+            source_model: None,
+            model_generality: 0.0,
+            created_at: transition.occurred_at,
+            half_life_days: KnowledgeKind::AntiKnowledge.default_half_life_days(),
+            tier: KnowledgeTier::Transient,
+            emotional_tag: None,
+            emotional_provenance: None,
+            hdc_vector: None,
+            confirmation_count: 0,
+            distinct_contexts: Vec::new(),
+            deprecated: false,
+            balance: 1.0,
+            frozen: false,
+            catalytic_score: 0,
+        };
+        knowledge_store.add(existing).expect("add existing entry");
+
+        // Second call: duplicate content -- the light admission gate should
+        // reject it due to low novelty (high similarity).
+        record_lifecycle_knowledge(&knowledge_store, Some(&admission_store), &transition);
+        let candidates_after = admission_store.read_candidates().unwrap_or_default();
+        assert_eq!(
+            candidates_after.len(),
+            1,
+            "duplicate should be rejected by admission gate (still 1 candidate)"
+        );
+    }
+
+    /// E07-T06: A novel lifecycle transition passes the admission gate and
+    /// reaches the admission store.
+    #[test]
+    fn lifecycle_novel_entry_passes_admission_gate() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let store_path = tmp.path().join("neuro").join("knowledge.jsonl");
+        std::fs::create_dir_all(store_path.parent().unwrap()).expect("mkdir");
+        let knowledge_store = KnowledgeStore::new(&store_path);
+        let admission_store = roko_neuro::KnowledgeAdmissionStore::new(knowledge_store.clone());
+
+        let transition = degraded_transition("novel-agent");
+        record_lifecycle_knowledge(&knowledge_store, Some(&admission_store), &transition);
+
+        let candidates = admission_store.read_candidates().unwrap_or_default();
+        assert_eq!(
+            candidates.len(),
+            1,
+            "novel lifecycle entry should pass gate and be submitted"
+        );
+        assert!(
+            candidates[0].candidate_id.contains("novel-agent"),
+            "candidate should reference the agent id"
+        );
+    }
 }

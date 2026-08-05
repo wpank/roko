@@ -6308,8 +6308,8 @@ dependencies = [
  "roko-gate",
  "roko-learn",
  "roko-neuro",
- "roko-orchestrator",
  "roko-runtime",
+ "roko-serve",
  "roko-std",
  "serde",
  "serde_json",
@@ -6430,6 +6430,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",
+ "blake3",
  "cargo_metadata",
  "chrono",
  "clap",
@@ -6467,11 +6468,11 @@ dependencies = [
  "roko-index",
  "roko-learn",
  "roko-neuro",
- "roko-orchestrator",
  "roko-plugin",
  "roko-runtime",
  "roko-serve",
  "roko-std",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -6832,35 +6833,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "roko-orchestrator"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "chrono",
- "parking_lot",
- "rand 0.8.7",
- "roko-agent",
- "roko-compose",
- "roko-conductor",
- "roko-core",
- "roko-daimon",
- "roko-gate",
- "roko-learn",
- "roko-neuro",
- "roko-runtime",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "roko-plugin"
 version = "0.1.0"
 dependencies = [
@@ -6955,7 +6927,6 @@ dependencies = [
  "roko-gate",
  "roko-learn",
  "roko-neuro",
- "roko-orchestrator",
  "roko-plugin",
  "roko-primitives",
  "roko-runtime",

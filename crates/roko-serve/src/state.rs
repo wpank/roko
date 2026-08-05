@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, OnceCell, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::service_factory::{ServiceConfig, ServiceFactory};
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
@@ -27,7 +28,6 @@ use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::provider_health::ProviderHealthTracker;
-use roko_orchestrator::{ServiceConfig, ServiceFactory};
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::process::{ProcessId, ProcessSupervisor};
 

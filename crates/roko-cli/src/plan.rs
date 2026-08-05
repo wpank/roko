@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use roko_orchestrator::{DiscoveryError, PlanInfo, discover_plans};
+use crate::orchestrator::{DiscoveryError, PlanInfo, discover_plans};
 
 /// Resolve the plans directory, preferring the top-level layout and falling
 /// back to the legacy `.roko` location.

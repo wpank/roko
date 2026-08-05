@@ -4,8 +4,8 @@
 //! [`ExecutorSnapshot`] shape by applying forward-only migrations in
 //! version order.
 
+use crate::orchestrator::{CURRENT_SCHEMA_VERSION, ExecutorSnapshot, current_schema_version};
 use anyhow::{Context as _, Result, anyhow, bail};
-use roko_orchestrator::{CURRENT_SCHEMA_VERSION, ExecutorSnapshot, current_schema_version};
 use serde_json::{Value, json};
 
 fn snapshot_schema_version(raw: &Value) -> Result<u32> {
@@ -86,8 +86,8 @@ fn migrate_v0_to_v1(mut raw: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::{ExecutorSnapshot, PlanState};
     use roko_core::PlanPhase;
-    use roko_orchestrator::{ExecutorSnapshot, PlanState};
 
     #[test]
     fn upgrade_v0_to_v1_succeeds() {

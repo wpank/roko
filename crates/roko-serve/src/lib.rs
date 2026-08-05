@@ -92,10 +92,12 @@ pub mod routes;
 pub mod runtime;
 pub mod sanitize;
 pub mod scheduler;
+pub mod service_factory;
 pub mod state;
 pub mod templates;
 pub mod terminal;
 pub mod truth_map;
+pub use service_factory::{ServiceBundle, ServiceConfig, ServiceFactory};
 
 pub use crate::routes::reload_config_from_disk;
 pub use crate::sanitize::sanitize_agent_content;

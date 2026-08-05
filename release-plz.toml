@@ -25,7 +25,6 @@ changelog_include = [
     "roko-agent",
     "roko-gate",
     "roko-compose",
-    "roko-orchestrator",
     "roko-learn",
     "roko-serve",
     "roko-cli",

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "title": "Agent Orchestration Incident Tabletop: Provider Failure Cascade",
+  "objectives": [
+    "Restore agent dispatch capability within the configured timeout window by activating tier-based provider escalation.",
+    "Preserve plan execution state so that interrupted tasks can be recovered from durable checkpoints rather than re-dispatched from scratch.",
+    "Maintain verification gate integrity without bypassing safety controls or suppressing legitimate test failures.",
+    "Ensure parallel agents operate in isolated worktrees so that no cross-contamination of branch state occurs during recovery.",
+    "Communicate status, decisions, and trade-offs to all role leads at least every five minutes throughout the incident."
+  ],
+  "roles": [
+    {
+      "name": "Incident Commander",
+      "responsibility": "Owns the response timeline, convenes the bridge, approves all recovery decisions, and ensures stakeholder communication cadence is maintained."
+    },
+    {
+      "name": "Agent Runtime Lead",
+      "responsibility": "Diagnoses provider and dispatch failures, validates fallback model configuration, and confirms tier-based escalation is active."
+    },
+    {
+      "name": "Operations Engineer",
+      "responsibility": "Monitors timeout thresholds, assesses partial workspace state from killed tasks, and decides between tuning timeouts and resuming from checkpoint."
+    },
+    {
+      "name": "QA Lead",
+      "responsibility": "Triages gate failures, determines whether to retry with an escalating model or adjust adaptive thresholds, and documents the trade-off."
+    },
+    {
+      "name": "Platform Infrastructure Lead",
+      "responsibility": "Manages worktree isolation, enforces workspace_lock_secs, and resolves merge conflicts caused by overlapping agent file access."
+    },
+    {
+      "name": "Reliability Engineer",
+      "responsibility": "Identifies the last durable BLAKE3 DAG checkpoint, executes plan resume, and confirms state recovery before incident closure."
+    }
+  ],
+  "injects": [
+    {
+      "minute": 0,
+      "source_risk": "RISK-01",
+      "event": "The primary LLM provider begins returning HTTP 503 errors. Agent dispatch tasks stall and several return incomplete output that is persisted as signal.",
+      "expected_action": "Incident Commander opens the response bridge and assigns roles. Agent Runtime Lead verifies provider status, confirms the failure is not transient, and enables tier-based escalation to the fallback model configured in roko.toml. Incident Commander broadcasts the initial status to all leads.",
+      "evidence": "RISK-01 mitigation: Configure fallback_model in roko.toml; enable tier-based escalation to next viable provider."
+    },
+    {
+      "minute": 4,
+      "source_risk": "RISK-02",
+      "event": "A long-running agent task exceeds the 600-second task_attempt_secs threshold and is killed mid-execution, leaving partial workspace state that may corrupt the signal DAG.",
+      "expected_action": "Operations Engineer assesses the partial state and determines whether it is safe to retain. Incident Commander decides whether to tune [timeouts] in roko.toml for the affected task class or to discard the partial work and recover via --resume-plan from the last checkpoint. The decision and rationale are communicated to all leads.",
+      "evidence": "RISK-02 mitigation: Tune [timeouts] in roko.toml; use --resume-plan to recover from checkpointed state."
+    },
+    {
+      "minute": 9,
+      "source_risk": "RISK-03",
+      "event": "cargo test returns a non-zero exit code during the gate run. The 7-rung pipeline short-circuits on first failure and the task cannot pass verification, stalling the plan.",
+      "expected_action": "QA Lead triages the test failure to distinguish a genuine defect from a flaky test. Incident Commander weighs two options: retry the task with an escalating model, or relax the adaptive threshold after confirming the failure is repeated. The chosen path and its safety trade-off are documented and shared with the bridge.",
+      "evidence": "RISK-03 mitigation: Retries with escalating models; adaptive thresholds relax on repeated failures."
+    },
+    {
+      "minute": 15,
+      "source_risk": "RISK-04",
+      "event": "Two parallel agents modify overlapping file paths within a shared worktree, producing merge conflicts and corrupted build artifacts that block downstream tasks.",
+      "expected_action": "Platform Infrastructure Lead halts parallel execution and invokes the worktree manager to create isolated git worktrees per task. Before resuming, the lead verifies that workspace_lock_secs guards file access and that no two agents target the same paths. Incident Commander confirms isolation is in place before unblocking work.",
+      "evidence": "RISK-04 mitigation: Worktree manager creates isolated git worktrees per task; workspace_lock_secs guards access."
+    },
+    {
+      "minute": 22,
+      "source_risk": "RISK-05",
+      "event": "The orchestrator process receives SIGTERM during plan execution before a durable checkpoint is written. In-progress plan execution is at risk of being lost entirely.",
+      "expected_action": "Reliability Engineer identifies the last persisted content-addressed BLAKE3 DAG record and issues roko plan run plans/ --resume-plan. Incident Commander confirms with each role lead that their recovered state is consistent, then schedules a post-incident review before formally closing the incident.",
+      "evidence": "RISK-05 mitigation: Use --resume-plan flag; signals persisted as content-addressed BLAKE3 DAG records."
+    }
+  ],
+  "success_criteria": [
+    "Tier-based escalation to a fallback model is enabled and at least one agent task completes successfully after the provider failure.",
+    "Partial workspace state from the timed-out task is either cleanly recovered via --resume-plan or explicitly discarded with documented rationale approved by the Incident Commander.",
+    "The verification gate failure is resolved without bypassing the gate pipeline; either a retry with an escalating model or a documented adaptive-threshold adjustment is recorded.",
+    "All parallel agents resume in isolated git worktrees with workspace_lock_secs enforced, and no further merge conflicts or artifact corruption occurs.",
+    "Plan execution state is recovered from the last durable BLAKE3 DAG checkpoint using --resume-plan, and the incident is formally closed with a post-incident review scheduled.",
+    "Status updates with decisions and trade-offs are communicated to all role leads at least every five minutes throughout the incident."
+  ]
+}

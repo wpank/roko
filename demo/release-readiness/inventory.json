@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "workspace_version": null,
+  "sources": [
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "release-plz.toml",
+    ".github/workflows/release.yml"
+  ],
+  "observations": [
+    {
+      "source": "Cargo.toml",
+      "fact": "[workspace.package] declares edition, rust-version, license, authors, repository, and homepage but does not include a version key.",
+      "release_impact": "Without a workspace.package.version, release tooling that reads the workspace version has no value to consume; per-crate versions must be specified individually or are absent entirely."
+    },
+    {
+      "source": "Cargo.toml",
+      "fact": "[workspace.metadata.dist] configures cargo-dist 0.28.1 with GitHub CI, a shell installer, and four targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, and x86_64-unknown-linux-musl.",
+      "release_impact": "The cargo-dist metadata declares intended release targets and installer format but does not itself produce binaries; the release workflow must invoke builds for each declared target."
+    },
+    {
+      "source": "CHANGELOG.md",
+      "fact": "CHANGELOG.md follows the Keep a Changelog 1.1.0 format and adheres to Semantic Versioning; the only released version is [0.1.0] - 2026-04-05, with an extensive [Unreleased] section listing additions from sections 33 through 43.",
+      "release_impact": "A gap exists between the last changelog release (0.1.0) and the unreleased work; the next release version and its changelog entry have not yet been determined or promoted."
+    },
+    {
+      "source": "release-plz.toml",
+      "fact": "release-plz is configured with publish=false, allow_dirty=true, registry_update=false, release_commits matching ^(feat|fix|perf|refactor|docs|test|chore), and a single [[package]] entry for roko-cli whose changelog_include spans roko-core, roko-agent, roko-gate, roko-compose, roko-learn, roko-serve, and roko-cli.",
+      "release_impact": "release-plz will not publish to crates.io and will generate a workspace-wide release PR; only the roko-cli package aggregates changelog entries from its listed dependencies, so changes in unlisted crates may be invisible to the generated changelog."
+    },
+    {
+      "source": ".github/workflows/release.yml",
+      "fact": "The Release workflow triggers on tag pushes matching v[0-9]+.* and on workflow_dispatch; it manually runs cargo build --release for roko-cli and roko-mcp-code across a four-target matrix, then creates a GitHub Release via softprops/action-gh-release@v2 using the default GITHUB_TOKEN.",
+      "release_impact": "Release artifacts are produced by a hand-rolled cargo build rather than cargo-dist build; the workflow does not run tests, clippy, or format checks before publishing binaries, so quality gates must be enforced elsewhere."
+    },
+    {
+      "source": "release-plz.toml",
+      "fact": "release-plz references changelog_config = \"cliff.toml\" for changelog generation, and the release workflow's Generate changelog step also attempts to invoke git-cliff, falling back to raw git log if the binary is absent.",
+      "release_impact": "Both release-plz and the release workflow depend on cliff.toml and the git-cliff tool; if either is missing or misconfigured, changelog generation degrades to unstructured git log output, reducing release-note quality."
+    }
+  ],
+  "unknowns": [
+    "No version key is present in [workspace.package] in Cargo.toml; the workspace version cannot be determined from this file and is recorded as null.",
+    "The existence and contents of cliff.toml, referenced by both release-plz.toml and the release workflow, have not been verified in the inspected sources.",
+    "Whether any git tags matching the pattern v[0-9]+.* have been pushed is not determinable from the four inspected files; the release workflow's tag trigger may never have fired.",
+    "Whether individual crate Cargo.toml files declare their own version fields independently of the workspace is not covered by the workspace-level inspection.",
+    "Whether a separate CI workflow runs tests, clippy, and format checks and gates on them before a tag push is not evident from these four release-specific sources."
+  ],
+  "required_checks": [
+    "Verify [workspace.package].version (or per-crate version fields) is set and matches the intended release version.",
+    "Confirm cliff.toml exists at the repository root and is syntactically valid for git-cliff before relying on automated changelog generation.",
+    "Ensure the CHANGELOG.md [Unreleased] section is promoted to a versioned entry matching the tag before pushing a release tag.",
+    "Verify that the release workflow's tag pattern v[0-9]+.* is consistent with the versioning scheme that release-plz will produce.",
+    "Confirm all four declared build targets compile successfully with cargo build --release before creating a release tag.",
+    "Verify that a quality-gate CI workflow (cargo test, clippy, rustfmt) runs and passes prior to tag push, since the release workflow itself performs no quality checks."
+  ]
+}

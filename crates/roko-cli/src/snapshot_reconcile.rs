@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use roko_orchestrator::{ExecutorSnapshot, PlanInfo};
+use crate::orchestrator::{ExecutorSnapshot, PlanInfo};
 
 /// Errors returned when a resume snapshot no longer matches the discovered plan set.
 #[derive(Debug)]

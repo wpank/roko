@@ -574,7 +574,7 @@ fn build_runner_config(
         .max_concurrent_tasks
         .or_else(|| {
             (cli_config.executor.max_concurrent_tasks
-                != roko_orchestrator::ExecutorConfig::default().max_concurrent_tasks)
+                != crate::orchestrator::ExecutorConfig::default().max_concurrent_tasks)
                 .then_some(cli_config.executor.max_concurrent_tasks)
         })
         .unwrap_or(4)

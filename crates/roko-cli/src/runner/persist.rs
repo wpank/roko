@@ -7,13 +7,13 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use anyhow::{Context, Result};
 use roko_core::defaults::{
     DEFAULT_GATE_RETRY_COLD_START, DEFAULT_GATE_RETRY_MAX, DEFAULT_GATE_RETRY_MIN,
     DEFAULT_GATE_RETRY_MIN_OBSERVATIONS,
 };
 use roko_fs::RokoLayout;
-use roko_orchestrator::{ExecutorSnapshot, OrchestratorSnapshot, PlanRevisionRequest};
 use roko_runtime::StateSnapshot;
 use serde::{Deserialize, Serialize};
 
@@ -260,6 +260,11 @@ impl GateThresholds {
     fn load(path: &Path) -> Result<Self> {
         let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         serde_json::from_reader(file).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Sum of `total_count` across all observed rungs.
+    pub fn total_observations(&self) -> u64 {
+        self.rungs.values().map(|s| s.total_count).sum()
     }
 
     pub(crate) fn observe(&mut self, rung: u32, passed: bool) {
@@ -907,5 +912,84 @@ mod tests {
         let path = section_outcomes_path(tmp.path());
         assert!(path.ends_with("learn/section-outcomes.jsonl"));
         assert!(path.starts_with(tmp.path()));
+    }
+
+    #[test]
+    fn total_observations_sums_all_rungs() {
+        let mut gt = GateThresholds::default();
+        gt.observe(1, true);
+        gt.observe(1, false);
+        gt.observe(2, true);
+        assert_eq!(gt.total_observations(), 3);
+
+        gt.observe(3, false);
+        gt.observe(3, true);
+        assert_eq!(gt.total_observations(), 5);
+    }
+
+    /// E07-T10: Prove incremental gate-threshold flush writes to disk
+    /// periodically (every N observations) and that data survives a
+    /// re-read.
+    #[test]
+    fn incremental_gate_threshold_flush() {
+        use super::super::event_loop::GATE_THRESHOLD_FLUSH_INTERVAL;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+
+        let mut thresholds = GateThresholds::default();
+        let mut obs_since_flush: u64 = 0;
+
+        // Accumulate observations below the flush interval -- no file yet.
+        for i in 0..(GATE_THRESHOLD_FLUSH_INTERVAL - 1) {
+            thresholds.observe(1, i % 2 == 0);
+            obs_since_flush += 1;
+            super::super::event_loop::maybe_flush_gate_thresholds(
+                &thresholds,
+                &mut obs_since_flush,
+                &paths,
+            );
+        }
+        assert!(
+            !paths.gate_thresholds_json.exists(),
+            "file must not exist before flush interval reached"
+        );
+        assert_eq!(obs_since_flush, GATE_THRESHOLD_FLUSH_INTERVAL - 1);
+
+        // One more observation crosses the interval -- file must appear.
+        thresholds.observe(1, true);
+        obs_since_flush += 1;
+        super::super::event_loop::maybe_flush_gate_thresholds(
+            &thresholds,
+            &mut obs_since_flush,
+            &paths,
+        );
+        assert!(
+            paths.gate_thresholds_json.exists(),
+            "file must exist after flush interval reached"
+        );
+        assert_eq!(obs_since_flush, 0, "counter must reset after flush");
+
+        // Verify the persisted content round-trips.
+        let loaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
+        assert_eq!(loaded, thresholds);
+
+        // Another full interval of observations produces a second flush
+        // with updated data.
+        for _ in 0..GATE_THRESHOLD_FLUSH_INTERVAL {
+            thresholds.observe(2, false);
+            obs_since_flush += 1;
+        }
+        super::super::event_loop::maybe_flush_gate_thresholds(
+            &thresholds,
+            &mut obs_since_flush,
+            &paths,
+        );
+        let reloaded = GateThresholds::load(&paths.gate_thresholds_json).unwrap();
+        assert_eq!(reloaded, thresholds, "second flush must write updated data");
+        assert!(
+            reloaded.rungs.contains_key(&2),
+            "rung 2 must be present after second flush"
+        );
     }
 }

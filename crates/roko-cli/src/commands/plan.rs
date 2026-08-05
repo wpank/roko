@@ -347,7 +347,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         .max_concurrent_tasks
                         .or_else(|| {
                             (config.executor.max_concurrent_tasks
-                                != roko_orchestrator::ExecutorConfig::default()
+                                != roko_cli::orchestrator::ExecutorConfig::default()
                                     .max_concurrent_tasks)
                                 .then_some(config.executor.max_concurrent_tasks)
                         })
@@ -1084,7 +1084,7 @@ fn resolve_effective_model_key(
 
 /// Parse and display a plan directory without executing anything.
 pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32> {
-    let plans = roko_orchestrator::discover_plans(plans_dir)
+    let plans = roko_cli::orchestrator::discover_plans(plans_dir)
         .map_err(|e| anyhow!("plan discovery failed: {e}"))?;
 
     if plans.is_empty() {

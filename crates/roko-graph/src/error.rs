@@ -130,9 +130,7 @@ impl CellError {
                 max_attempts: 2,
                 backoff_ms: 1_000,
             },
-            Self::PolicyViolation { policy, .. } => {
-                ErrorRecovery::Escalate { to: policy.clone() }
-            }
+            Self::PolicyViolation { policy, .. } => ErrorRecovery::Escalate { to: policy.clone() },
             Self::BudgetExceeded { message, .. } => ErrorRecovery::Skip {
                 reason: message.clone(),
             },

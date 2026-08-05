@@ -10,13 +10,13 @@ use crate::config::{
     ResolvedConfig, RunnerLayer, ServeAuthLayer, ServeLayer, Source, ToolsLayer, apply_layer_value,
     detect_clis, global_config_path, load_resolved_config, resolve_paths,
 };
+use crate::orchestrator::ExecutorConfig;
 use anyhow::{Context as _, Result, anyhow};
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{
     CURRENT_CONFIG_VERSION, CURRENT_SCHEMA_VERSION, ModelProfile, ProviderConfig, RokoConfig,
 };
 use roko_core::tool::{ToolFormat, profile_for_model};
-use roko_orchestrator::ExecutorConfig;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, Write};

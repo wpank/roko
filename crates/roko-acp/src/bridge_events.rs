@@ -1349,6 +1349,7 @@ where
                         tests_enabled,
                         review_strictness,
                         model_slug: resolved.slug.clone(),
+                        mcp_config: write_session_mcp_config(&session_mcp_servers, &workdir),
                     },
                     cancel_token,
                     event_sender,
@@ -1383,11 +1384,13 @@ where
                 };
             }
 
+            let mcp_config_path = write_session_mcp_config(&session_mcp_servers, &workdir);
             let report = run_with_workflow_engine(
                 &session_id,
                 &prompt_text,
                 &workdir,
                 workflow_template_name(&template),
+                mcp_config_path,
                 provenance_card,
                 event_sender,
             )
@@ -2210,7 +2213,11 @@ async fn run_openai_compat_cognitive_task(
     }
 
     // Fallback: plain streaming with no tool execution loop.
-    let caller = ModelCallService::new(model_key.to_string()).with_config(roko_config.clone());
+    // Thread session MCP servers as a --mcp-config file for Claude CLI dispatch.
+    let mut caller = ModelCallService::new(model_key.to_string()).with_config(roko_config.clone());
+    if let Some(mcp_path) = write_session_mcp_config(mcp_servers, workdir) {
+        caller = caller.with_mcp_config(mcp_path);
+    }
     let tools = tools_enabled.then(acp_builtin_tools).unwrap_or_default();
     let request = model_call_request_from_acp_messages(model_key, messages, tools);
     stream_model_call_to_cognitive_events(session_id, &caller, request, cancel_token, event_sender)
@@ -2625,6 +2632,61 @@ fn usage_info_from_tool_loop_usage(usage: &roko_core::Usage) -> Option<UsageInfo
         cached_read_tokens: (cached_read_tokens > 0).then_some(cached_read_tokens),
         cached_write_tokens: (cached_write_tokens > 0).then_some(cached_write_tokens),
     })
+}
+
+/// Write session MCP server configs to a temporary `.mcp.json` file that
+/// the Claude CLI can consume via `--mcp-config`.
+///
+/// Returns `None` when the input list is empty or all servers use unsupported
+/// transports (only stdio is supported for the Claude CLI passthrough).
+fn write_session_mcp_config(
+    mcp_servers: &[crate::types::McpServerConfig],
+    workdir: &Path,
+) -> Option<PathBuf> {
+    if mcp_servers.is_empty() {
+        return None;
+    }
+
+    let mut servers = serde_json::Map::new();
+    for server in mcp_servers {
+        match &server.transport {
+            crate::types::McpTransport::Stdio { command, args } => {
+                servers.insert(
+                    server.name.clone(),
+                    serde_json::json!({
+                        "command": command,
+                        "args": args,
+                    }),
+                );
+            }
+            crate::types::McpTransport::Http { .. } => {
+                // HTTP transports are not supported by Claude CLI's
+                // `--mcp-config` flag; skip them silently.
+            }
+        }
+    }
+
+    if servers.is_empty() {
+        return None;
+    }
+
+    let config = serde_json::json!({ "mcpServers": servers });
+    let roko_dir = workdir.join(".roko");
+    let _ = std::fs::create_dir_all(&roko_dir);
+    let path = roko_dir.join("session-mcp.json");
+    match std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    ) {
+        Ok(()) => {
+            debug!(path = %path.display(), servers = servers.len(), "wrote session MCP config");
+            Some(path)
+        }
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "failed to write session MCP config");
+            None
+        }
+    }
 }
 
 struct SessionMcpRuntime {
@@ -3727,6 +3789,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         tests_enabled: true,
                         review_strictness: "standard".to_string(),
                         model_slug: model_key.clone(),
+                        mcp_config: None,
                     },
                     cancel_token,
                     event_sender,
@@ -3740,6 +3803,7 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "express",
+                None,
                 provenance_card,
                 event_sender,
             )
@@ -3770,6 +3834,7 @@ Use the Workflow dropdown in the status bar to select, or:
                         tests_enabled: true,
                         review_strictness: "standard".to_string(),
                         model_slug: model_key.clone(),
+                        mcp_config: None,
                     },
                     cancel_token,
                     event_sender,
@@ -3783,6 +3848,7 @@ Use the Workflow dropdown in the status bar to select, or:
                 args,
                 workdir,
                 "full",
+                None,
                 provenance_card,
                 event_sender,
             )

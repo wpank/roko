@@ -131,7 +131,7 @@ fn gate_input_snapshot_blocking(workdir: &Path) -> Result<GateInputSnapshot, Str
         "--ignored=matching",
         "-uall",
     ])?;
-    roko_orchestrator::worktree::validate_workspace_file_kinds(workdir, &status)
+    crate::orchestrator::worktree::validate_workspace_file_kinds(workdir, &status)
         .map_err(|error| error.to_string())?;
     let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
     let mut hasher = Sha256::new();

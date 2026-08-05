@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
+use roko_cli::orchestrator::detect_cycle_nodes;
 use roko_core::AgentRole;
 use roko_core::config::schema::ModelProfile;
 use roko_gate::AcceptanceContract;
-use roko_orchestrator::detect_cycle_nodes;
 use serde::Serialize;
 use toml::Value;
 

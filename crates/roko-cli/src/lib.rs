@@ -90,6 +90,7 @@ pub mod oneshot;
 // orchestrate.rs was the legacy 21K-line engine. Deleted in E12-T07.
 // The v2 event_loop.rs in runner/ is the sole execution engine.
 // The feature flag is retained for cfg-gate compile compatibility (E12-T08 removes it).
+pub mod orchestrator;
 pub mod output_format;
 pub mod pipe;
 pub mod plan;

@@ -2540,14 +2540,13 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
             // Create a shared MetricRegistry so the runtime and the HTTP
             // server expose the same counters on /metrics (E09-T03).
             let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
-            let runtime =
-                RokoCliRuntime::new_with_state_hub_and_metrics(
-                    config,
-                    repo_registry,
-                    state_hub.clone(),
-                    Some(std::sync::Arc::clone(&metrics)),
-                )
-                    .into_arc();
+            let runtime = RokoCliRuntime::new_with_state_hub_and_metrics(
+                config,
+                repo_registry,
+                state_hub.clone(),
+                Some(std::sync::Arc::clone(&metrics)),
+            )
+            .into_arc();
 
             // Bootstrap: consistent workspace check + unified config load.
             let boot = roko_cli::bootstrap::RokoBootstrap::new(

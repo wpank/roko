@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::orchestrator::ExecutorConfig;
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{
     ModelProfile, ProviderConfig, ProviderRouting, RokoConfig, SubscriptionConfig,
@@ -21,7 +22,6 @@ use roko_core::defaults::{
     DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_PLAN_TIMEOUT_SECS, DEFAULT_REQUEST_TIMEOUT_MS,
 };
 use roko_daimon::StrategySpaceDefinition;
-use roko_orchestrator::ExecutorConfig;
 
 /// The top-level `roko.toml` document.
 #[derive(Clone, Debug, Deserialize, Serialize)]

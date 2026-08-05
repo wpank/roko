@@ -2,7 +2,20 @@
 
 Canonical list of unfinished items. Check before starting new work.
 
-Last updated: 2026-07-24 (Wave 7 cleanup pass).
+Last updated: 2026-08-05 (E07-T10 incremental gate-threshold flush).
+
+## E07-T10: Incremental gate-threshold flush (2026-08-05)
+
+### Completed
+- `maybe_flush_gate_thresholds()` function in `event_loop.rs` flushes the standalone `gate-thresholds.json` every 10 gate observations.
+- Counter `gate_obs_since_flush` tracks observations since last incremental flush; resets on flush.
+- `GateThresholds::total_observations()` method added to `persist.rs`.
+- Test `incremental_gate_threshold_flush` in `persist::tests` proves periodic disk writes and round-trip.
+- Existing shutdown flush in `save_snapshot()` remains unconditionally intact.
+
+### Remaining gaps
+- **Test not runnable in CI**: The `roko-cli` test target cannot build due to pre-existing broken imports in `roko-acp` (missing `roko_orchestrator` crate in workspace) and `roko-serve` (missing `service_factory` module). The test compiles in isolation (lib check passes) and will run once those deps are fixed.
+- **Flush interval not configurable at runtime**: The constant `GATE_THRESHOLD_FLUSH_INTERVAL = 10` is hardcoded. Could be made configurable via `roko.toml` if operators want different cadences.
 
 ## Tasks 101-103 (Wave 5: Migration + Hot Graphs)
 
@@ -87,3 +100,18 @@ operation, and it is already wired.
 - `event_loop.rs` (runner-v2) does not yet pass a `ProviderOutcomeRecorder` to the `ModelCallService` or `ProviderCallCell` it creates. The circuit breaker is currently updated only via the event bus (AgentEvent::ProviderError) in `run_learning_subscriber`. Wiring through `ModelCallService` requires E48-T03 to construct the service with the recorder.
 - Legacy `orchestrate.rs` `run_task_plans_inner` dispatch also does not pass a recorder to `ModelCallService`. Tracked under E48-T03.
 - `force_backend` routing does not bypass circuit-breaker filtering — this is intentional per acceptance (explicit intent must remain selectable).
+
+## E09-T08: FsObservabilitySinks in runner-v2 tool loop (2026-08-05)
+
+### What was implemented
+- `JsonlTraceSink::flush_all()` added to `roko-fs/src/trace_sink.rs` — flushes all open `BufWriter`s without closing them, so in-progress traces persist on unclean shutdown.
+- `FsObservabilitySinks::flush_traces()` and `flush_registry_snapshot()` added to `roko-fs/src/observability.rs` — delegates trace flush and writes `MetricRegistry` snapshot to `.roko/metrics/registry_snapshot.json`.
+- `RunConfig::from_roko_config()` in `roko-cli/src/runner/types.rs` now creates and registers a `MetricRegistry` with all 13 standard metrics, so gate verdict counters and target dir size gauge work from every entry point (not just `roko plan run` under serve).
+- `roko do` command in `roko-cli/src/commands/do_cmd.rs` similarly creates and registers a `MetricRegistry`.
+- Event loop shutdown path (`event_loop.rs`) flushes obs sinks on both normal completion and cancellation — trace writers are flushed and MetricRegistry snapshot is persisted to `.roko/metrics/registry_snapshot.json`.
+- 3 new tests: `flush_all_persists_buffered_data_without_closing`, `flush_registry_snapshot_writes_json_file`, `flush_traces_delegates_to_trace_sink`.
+
+### What remains
+- Pre-existing branch compile errors in `roko-acp` (missing `mcp_config` field on `PipelineConfig`) and `do_cmd.rs`/`plan.rs` (`roko_orchestrator` vs `crate::orchestrator`) blocked full workspace `cargo check`. These are not related to E09-T08.
+- The `Default` impl for `RunConfig` still sets `metrics: None` — tests and smoke runs do not get a MetricRegistry. This is intentional (tests should not write to disk by default).
+- The periodic flush interval (Branch 4, every 2s) does not include obs sink flushing — only the final shutdown path does. For long-running plans, the `BufWriter` flushes on its own when the buffer fills. A periodic obs flush could be added if mid-run trace persistence is desired.

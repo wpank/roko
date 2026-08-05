@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::orchestrator::{MergeQueue, MergeRequest, MergeReservation, ReservedMerge};
 use futures::FutureExt;
-use roko_orchestrator::{MergeQueue, MergeRequest, MergeReservation, ReservedMerge};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -514,7 +514,7 @@ impl PlanMerger {
             .iter()
             .map(|entry| {
                 usize::try_from(
-                    roko_orchestrator::DEFAULT_MAX_MERGE_RETRIES
+                    crate::orchestrator::DEFAULT_MAX_MERGE_RETRIES
                         .saturating_sub(entry.request.retry_count)
                         .max(1),
                 )

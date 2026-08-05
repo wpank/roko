@@ -480,7 +480,7 @@ async fn run_plan_execution(
         .max_concurrent_tasks
         .or_else(|| {
             (cli_config.executor.max_concurrent_tasks
-                != roko_orchestrator::ExecutorConfig::default().max_concurrent_tasks)
+                != roko_cli::orchestrator::ExecutorConfig::default().max_concurrent_tasks)
                 .then_some(cli_config.executor.max_concurrent_tasks)
         })
         .unwrap_or(4)
@@ -612,7 +612,11 @@ async fn run_plan_execution(
                 as std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink>
         },
         warm_cache: true,
-        metrics: None,
+        metrics: {
+            let m = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
+            roko_core::obs::metrics::register_standard_metrics(&m);
+            Some(m)
+        },
         obs_sinks: None,
         conductor: Some(std::sync::Arc::new(conductor)),
         conductor_ring: Some(conductor_ring),

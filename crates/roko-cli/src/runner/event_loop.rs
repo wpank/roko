@@ -17,6 +17,12 @@ use roko_core::dashboard_snapshot::{DiagnosisSeverity, DiagnosisSummary};
 use roko_core::defaults::DEFAULT_AGENT_TURN_LIMIT;
 // TimeoutConfig-derived helpers: agent_dispatch_timeout, plan_total_timeout,
 // llm_call_timeout, gate_timeout — see below.
+use crate::orchestrator::{
+    ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
+    MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
+    PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
+    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
+};
 use roko_core::runtime_event::WorkflowOutcome as RuntimeWorkflowOutcome;
 use roko_core::tool::MetricsSink as _;
 use roko_core::tool::trace::{ToolTraceEvent, TraceSink};
@@ -27,12 +33,6 @@ use roko_daimon::{
 };
 use roko_fs::{FsObservabilitySinks, RokoLayout};
 use roko_gate::{PlanComplexity, classify_gate_failure, render_failure_classification};
-use roko_orchestrator::{
-    ExecutorAction, ExecutorConfig, ExecutorEvent, ExecutorSnapshot, GateResult, MergeQueue,
-    MergeRequest, OrchestratorSnapshot, ParallelExecutor, PlanRevisionEvidence,
-    PlanRevisionRequest, PlanState as OrcPlanState, RecoveryEngine, ReplanStrategy,
-    TransitionError, WorktreeConfig, WorktreeManager, format_branch_name,
-};
 use roko_runtime::event_bus::PlanRevisionReason;
 use roko_runtime::run_ledger::{
     TaskTimeoutTerminal as RuntimeTaskTimeoutTerminal, TimeoutEffectKind,
@@ -1062,7 +1062,7 @@ fn tracked_attempt_workdir(
 fn accepted_plan_worktree(
     worktrees: &WorktreeManager,
     plan_id: &str,
-) -> Option<roko_orchestrator::worktree::AcceptedWorktree> {
+) -> Option<crate::orchestrator::worktree::AcceptedWorktree> {
     worktrees.accepted_for_plan(plan_id).inspect(|accepted| {
         worktrees.touch(&accepted.handle.id);
     })
@@ -1168,6 +1168,10 @@ pub async fn run(
     let snapshot_writer = SnapshotWriter::new(4);
     persist::cleanup_orphaned_agents(&paths);
     let mut gate_thresholds = persist::load_gate_thresholds(&paths).unwrap_or_default();
+    // E07-T10: Counter for incremental gate-threshold flushing.
+    // Tracks observations since the last incremental flush to the
+    // standalone `gate-thresholds.json` file.
+    let mut gate_obs_since_flush: u64 = 0;
 
     // Ensure knowledge store directory exists for episode ingestion.
     let neuro_dir = config.layout.neuro_dir();
@@ -2901,6 +2905,7 @@ pub async fn run(
                             actual_rung,
                             v.passed,
                         );
+                        gate_obs_since_flush += 1;
                         observed_any = true;
                     }
                     // If there were no verdicts at all (empty completion),
@@ -2911,9 +2916,20 @@ pub async fn run(
                             completion.rung,
                             completion.passed,
                         );
+                        gate_obs_since_flush += 1;
                     }
                 }
                 emit_gate_thresholds_event(&gate_thresholds, &tui);
+
+                // E07-T10: Incrementally flush gate thresholds to the
+                // standalone learn file every N observations so external
+                // readers (serve, TUI, `roko learn`) see fresh data
+                // without waiting for shutdown.
+                maybe_flush_gate_thresholds(
+                    &gate_thresholds,
+                    &mut gate_obs_since_flush,
+                    &paths,
+                );
 
                 // Publish gate result to the learning event bus so the
                 // background subscriber can update VerdictHistory and
@@ -3920,6 +3936,15 @@ pub async fn run(
                 save_snapshot(config, &executor, &paths, &mut state, &merge_queue, &gate_thresholds, &snapshot_writer);
                 let _ = persist::save_agent_pids(&paths, &[]);
                 snapshot_writer.flush();
+                // Flush observability sinks on cancellation (E09-T08).
+                if let Some(ref sinks) = obs_sinks {
+                    sinks.flush_traces();
+                    if let Some(ref registry) = config.metrics {
+                        if let Err(err) = sinks.flush_registry_snapshot(registry) {
+                            warn!(error = %err, "failed to flush metric registry snapshot on cancel");
+                        }
+                    }
+                }
                 shutdown_subsystems(config, &tui).await;
                 break;
             }
@@ -3977,6 +4002,24 @@ pub async fn run(
 
     // Ensure all pending snapshots land on disk before returning.
     snapshot_writer.flush();
+
+    // ── Flush observability sinks (E09-T08) ─────────────────────────────
+    //
+    // 1. Flush any open trace writers so buffered data from in-progress
+    //    traces lands on disk even when the run exits before every trace
+    //    calls `finish()`.
+    // 2. Persist the MetricRegistry snapshot (counters, gauges, histograms)
+    //    to `.roko/metrics/registry_snapshot.json` so gate verdicts, agent
+    //    durations, LLM token counts, etc. survive process exit and are
+    //    queryable offline.
+    if let Some(ref sinks) = obs_sinks {
+        sinks.flush_traces();
+        if let Some(ref registry) = config.metrics {
+            if let Err(err) = sinks.flush_registry_snapshot(registry) {
+                warn!(error = %err, "failed to flush metric registry snapshot (best-effort)");
+            }
+        }
+    }
 
     // Persist the run ledger (final write on the general exit path).
     persist_run_ledger(&run_ledger, &paths.run_ledger_jsonl);
@@ -8596,11 +8639,55 @@ async fn dispatch_action(
 
 // ─── Adaptive gate thresholds ────────────────────────────────────────────
 
+/// How many gate observations accumulate before an incremental flush
+/// of adaptive thresholds to `.roko/learn/gate-thresholds.json`.
+///
+/// The unified `save_snapshot()` still writes thresholds on every state
+/// change, but the standalone file is what external readers (serve, TUI,
+/// ACP, `roko learn tune gates`) depend on.  Flushing every 10
+/// observations keeps the standalone file reasonably fresh without
+/// incurring an atomic-write on every single verdict.
+pub(crate) const GATE_THRESHOLD_FLUSH_INTERVAL: u64 = 10;
+
 /// Update EMA-based adaptive gate thresholds for a given rung.
 fn update_gate_thresholds(thresholds: &mut GateThresholds, rung: u32, passed: bool) {
     thresholds.observe(rung, passed);
     // Gate thresholds are now persisted as part of the unified StateSnapshot
     // in save_snapshot(), not via a separate disk write.
+}
+
+/// Incrementally flush adaptive gate thresholds to the standalone
+/// `gate-thresholds.json` file every [`GATE_THRESHOLD_FLUSH_INTERVAL`]
+/// observations.
+///
+/// `obs_since_last_flush` tracks how many observations have accumulated
+/// since the last incremental flush (or startup).  When the counter
+/// reaches the interval the thresholds are atomically written and the
+/// counter resets.  The existing shutdown flush in `save_snapshot()`
+/// still runs unconditionally so no observations are ever lost.
+pub(crate) fn maybe_flush_gate_thresholds(
+    thresholds: &GateThresholds,
+    obs_since_last_flush: &mut u64,
+    paths: &PersistPaths,
+) {
+    if *obs_since_last_flush >= GATE_THRESHOLD_FLUSH_INTERVAL {
+        match persist::save_gate_thresholds(paths, thresholds) {
+            Ok(()) => {
+                tracing::debug!(
+                    total_observations = thresholds.total_observations(),
+                    "incremental gate-threshold flush to {}",
+                    paths.gate_thresholds_json.display(),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "incremental gate-threshold flush failed"
+                );
+            }
+        }
+        *obs_since_last_flush = 0;
+    }
 }
 
 /// Emit gate thresholds into the TUI push pipeline after updating in memory.

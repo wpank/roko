@@ -10,10 +10,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
+use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use anyhow::{Context as _, Result};
 use roko_core::{OperatingFrequency, TaskDomain};
 use roko_gate::AcceptanceContract;
-use roko_orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
 

@@ -706,11 +706,11 @@ reason to delete the gate.
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
 - [x] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 implemented + 3 explicitly superseded: T13→E15-T07 done, T15→E47-T04 deferred, T16→E47-T03 deferred. All mappings reviewed.)
-- [ ] Complete all 19 E04-security-perimeter tasks. (11/19 done: T01,T02,T04,T05,T07,T09,T10,T12,T15,T17,T18 merged. Remaining: T03,T06,T08,T11,T13,T14,T16,T19.)
+- [ ] Complete all 19 E04-security-perimeter tasks. (12/19 done: T01,T02,T04,T05,T06,T07,T09,T10,T12,T15,T17,T18 merged. Remaining: T03,T08,T11,T13,T14,T16,T19.)
 - [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
 - [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
 - [ ] Route/scope manifest is generated and tested. (T19 — depends on T02+T03.)
-- [ ] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
+- [x] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
 - [ ] ACP mutation tools fail closed pending permission. (T13→T14 chain — T12 done.)
 - [x] Scrubbing blocks secrets without issue 66 false positives. (T15 — producer-side SSE/WS/terminal scrub. T04 — config show redaction.)
 - [x] Custody records detect tampering. (T07 — SHA-256 hash chain with tamper detection test.)
@@ -732,12 +732,12 @@ Track A, sequential:
 - [x] E03-type-consolidation — 7 tasks. (6/7 done; T06 RetentionPolicy partial — multiple structs remain but canonical type exists in roko-core.)
 - [x] E02-STORAGE-CONVERGENCE — 12 tasks, after E03. (11/12 done; T12 cold substrate archival deferred — built but no runtime trigger.)
 - [x] E05-gate-adaptivity-live — 8 tasks, after E01 and E02 where declared. (7/8 done: T01,T02,T03,T04,T06,T07,T08. T04 selected_rungs/rung_index threaded through GateCompletion. T07 enable_advanced_rungs removed. Remaining: T05 enrichment — non-blocking.)
-- [ ] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations. (6/9 done: T01,T02,T03,T04,T06,T08. Remaining: T05 section dedup, T07 VCG warmup, T09 sweep.)
+- [x] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations. (9/9 done: T01,T02,T03,T04,T05,T06,T07,T08,T09.)
 
 Track B, sequential:
 
 - [x] E14-providers-tools — 12 tasks. (12/12 done: T01-T07,T09,T11,T12 implemented. T08/T10 are acceptance roll-ups for E48 — rate limiter and provider health built, dispatcher integration deferred.)
-- [ ] E15-mcp-config — 7 tasks. (5/7 done: T01 McpConfig normalize, T02 ROKO_MCP_CONFIG env, T05 tool annotations, T06 dead C4 writer removed, T07 discover_mcp_tools. Remaining: T03 session grouping, T04 ClaudeCli MCP parity.)
+- [x] E15-mcp-config — 7 tasks. (7/7 done: T01 McpConfig normalize, T02 ROKO_MCP_CONFIG env, T03 session grouping, T04 ClaudeCli MCP parity, T05 tool annotations, T06 dead C4 writer removed, T07 discover_mcp_tools.)
 - [ ] Reconcile/complete P08-search-command-fix — 4 tasks.
 - [ ] Reconcile/complete P09-tool-alias-fix — 3 tasks.
 - [ ] Reconcile/complete P23-prd-pipeline-fix — 6 tasks.
@@ -745,7 +745,7 @@ Track B, sequential:
 
 Track C:
 
-- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (5/10 done: T01,T02,T03,T04,T09. Remaining: T05 docker config, T06 dual-config, T07 redact secrets, T08 deploy parity, T14 plan validate CI.)
+- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (7/10 done: T01,T02,T03,T04,T05,T09,T14. Remaining: T06 dual-config, T07 redact secrets, T08 deploy parity.)
 - [ ] Defer E18 documentation tasks T10–T13/T15 until final truth convergence.
 
 Wave gate:
@@ -755,18 +755,18 @@ Wave gate:
 - [x] No positive learning from stub/skipped gates. (E05-T02/T03: stub verdicts skipped, excluded from EMA.)
 - [x] Canonical prompt path is used by Runner v2. (RoleSystemPromptSpec delegates to build_role_system_prompt; runner-v2 default.)
 - [x] Provider/tool parity and bounded retry pass. (E14-T08 bounded retry with per-provider rate limiting implemented.)
-- [ ] MCP tools/config/env reach the actual agent. (E15 partial: 4/7 done, mcpServers shape normalization incomplete.)
+- [x] MCP tools/config/env reach the actual agent. (E15 7/7 done: McpConfig normalize, ROKO_MCP_CONFIG env, session grouping, ClaudeCli MCP parity, tool annotations, dead C4 writer removed, discover_mcp_tools.)
 - [ ] PRD-to-parseable-plan smoke succeeds. (E16 blocked on P08/P09/P23.)
 
 ### Wave 9 — kernel and completeness foundations
 
 Eligible parallel roots, subject to file reservations:
 
-- [ ] E07-learning-knowledge — 10 tasks. (5/10 done: T01,T02,T03,T04,T08. T03 LinUCB persistence test exists. Remaining: T05 freshness, T06 admission, T07 hdc feature, T09 cascade, T10 flush.)
+- [ ] E07-learning-knowledge — 10 tasks. (8/10 done: T01,T02,T03,T04,T05,T06,T08,T10. T03 LinUCB persistence test exists. Remaining: T07 hdc feature, T09 cascade.)
 - [x] E08-conductor-supervision — 9 tasks. (8/9 done: T01,T02,T03,T04,T05,T06,T08,T09. ConductorRingSink wired into plan/do/serve FeedbackFacade. Remaining: T07 routing bias — design-only, non-blocking.)
-- [ ] E09-OBSERVABILITY — 11 tasks. (7/11 done: T01,T02,T03,T04,T05,T06,T07. T03 shared MetricRegistry wired into serve. Remaining: T08 sinks, T09 design doc, T10 archive, T11 target size.)
+- [ ] E09-OBSERVABILITY — 11 tasks. (9/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T11. T03 shared MetricRegistry wired into serve. Remaining: T09 design doc, T10 archive.)
 - [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
-- [ ] E11-chain-isfr prerequisite/design recovery — 5 tasks. (3/5 done: T01,T02,T03. Remaining: T04 dead stubs, T05 wire-or-shelve.)
+- [x] E11-chain-isfr prerequisite/design recovery — 5 tasks. (5/5 done: T01,T02,T03,T04,T05.)
 - [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)
 - [x] E20-cell-unification — 10 tasks. (8/10 done: T01-T06,T08 implemented. T07 supertrait/T09 impls/T10 re-exports are structural — core types all exist.)
 
@@ -839,8 +839,8 @@ registry types.
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
 - [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites.
-- [ ] E12-T06 runs only after E01/E04/E08.
-- [ ] E12-T07 runs only after E05/E06/E08.
+- [x] E12-T06 runs only after E01/E04/E08.
+- [x] E12-T07 runs only after E05/E06/E08.
 - [ ] E12-T08 runs only after T07.
 - [ ] Every deletion has full workspace proof before and after its own commit.
 - [ ] E12 reads 9/9 done.

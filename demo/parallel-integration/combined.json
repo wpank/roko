@@ -1,1 +1,9 @@
-{"schema_version": 1, "inputs": ["demo/parallel-integration/left.json", "demo/parallel-integration/right.json"], "total": 42, "integration": "both sibling tips present"}
+{
+  "schema_version": 1,
+  "inputs": [
+    "demo/parallel-integration/left.json",
+    "demo/parallel-integration/right.json"
+  ],
+  "total": 42,
+  "integration": "both sibling tips present"
+}

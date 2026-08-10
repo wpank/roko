@@ -559,14 +559,17 @@ async fn run_plan_execution(
         dangerously_skip_permissions: true,
         force_resume: false,
         mcp_config: {
-            let roko_local = layout.mcp_config_path();
-            if roko_local.is_file() {
-                Some(roko_local)
+            // Resolve MCP config with auto-discovery of roko-mcp-github.
+            let mcp = crate::resolve_mcp_config_with_autodiscovery(
+                workdir,
+                layout.root(),
+            );
+            if let Some(ref path) = mcp {
+                tracing::info!(path = ?path, "MCP config resolved for do run");
             } else {
-                roko_agent::mcp::find_mcp_config(workdir)
-                    .and_then(|r| r.ok())
-                    .map(|(p, _)| p)
+                tracing::debug!("no MCP config found for do run");
             }
+            mcp
         },
         resume_session: cli.resume.clone(),
         max_gate_rung: if roko_config.gates.skip_tests {

@@ -517,17 +517,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     dangerously_skip_permissions: true,
                     force_resume,
                     mcp_config: {
-                        // Resolve MCP config: .roko/mcp.json > auto-discovery
-                        let mcp = {
-                            let roko_local = layout.mcp_config_path();
-                            if roko_local.is_file() {
-                                Some(roko_local)
-                            } else {
-                                roko_agent::mcp::find_mcp_config(&wd)
-                                    .and_then(|r| r.ok())
-                                    .map(|(p, _)| p)
-                            }
-                        };
+                        // Resolve MCP config with auto-discovery of roko-mcp-github.
+                        // Priority: .roko/mcp.json > ~/.claude/mcp-config.json > .mcp.json
+                        // walk-up > auto-discovered (augmented with roko-mcp-github when
+                        // the binary is available).
+                        let mcp = crate::resolve_mcp_config_with_autodiscovery(
+                            &wd,
+                            layout.root(),
+                        );
                         if let Some(ref path) = mcp {
                             tracing::info!(path = ?path, "MCP config resolved for plan run");
                         } else {

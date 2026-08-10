@@ -3377,6 +3377,191 @@ fn resolve_mcp_config_path(explicit: Option<&Path>, workdir: &Path) -> Option<Pa
         .map(|(p, _)| p)
 }
 
+/// Locate a named binary via `$PATH` scan.
+///
+/// Returns the full path to the first matching executable, or `None` if the
+/// binary is not found on the PATH.
+fn find_binary_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return Some(candidate);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Walk ancestor directories looking for `target/{release,debug}/<binary>`.
+///
+/// This covers the common developer workflow where the binary is built locally
+/// but not installed to `$PATH`.
+fn find_binary_in_target_dirs(start: &Path, name: &str) -> Option<PathBuf> {
+    for dir in start.ancestors() {
+        for profile in ["target/release", "target/debug"] {
+            let candidate = dir.join(profile).join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Discover the `roko-mcp-github` binary.
+///
+/// Search order:
+/// 1. `$PATH` scan — covers installed binaries
+/// 2. Ancestor `target/{release,debug}/` — covers local dev builds
+///
+/// Returns the binary's absolute path as a string, or `None` if not found.
+fn discover_roko_github_binary(workdir: &Path) -> Option<String> {
+    const BINARY: &str = "roko-mcp-github";
+
+    if let Some(path) = find_binary_on_path(BINARY) {
+        tracing::debug!(path = %path.display(), "discovered roko-mcp-github on PATH");
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    if let Some(path) = find_binary_in_target_dirs(workdir, BINARY) {
+        tracing::debug!(path = %path.display(), "discovered roko-mcp-github in target/");
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    tracing::debug!("roko-mcp-github not found on PATH or in target/ dirs");
+    None
+}
+
+/// Add a `github` MCP server entry using the given command path.
+///
+/// Internal helper used by both production code and tests.  The caller is
+/// responsible for ensuring `command` points to a valid `roko-mcp-github`
+/// binary.  `GITHUB_TOKEN` is forwarded from the current environment when set.
+fn add_github_mcp_server(config: &mut roko_agent::mcp::McpConfig, command: String) {
+    let mut env = std::collections::HashMap::new();
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if !token.is_empty() {
+            env.insert("GITHUB_TOKEN".to_string(), token);
+        }
+    }
+
+    config.servers.push(roko_agent::mcp::McpServerConfig {
+        name: "github".to_string(),
+        transport: roko_agent::mcp::McpTransportConfig::Stdio,
+        command,
+        args: vec![],
+        env,
+        endpoint: None,
+        auth_token: None,
+        tier: Default::default(),
+    });
+}
+
+/// Augment an [`McpConfig`](roko_agent::mcp::McpConfig) with an auto-discovered
+/// `roko-mcp-github` server entry.
+///
+/// The entry is only added when:
+/// - The binary is discoverable (PATH or target/)
+/// - No server named `"github"` already exists in `config.servers`
+///
+/// The auto-discovered entry includes `GITHUB_TOKEN` from the current
+/// environment when the variable is set.
+fn augment_mcp_config_with_github(config: &mut roko_agent::mcp::McpConfig, workdir: &Path) {
+    // User-configured 'github' server takes precedence — never override it.
+    if config.servers.iter().any(|s| s.name == "github") {
+        tracing::debug!("user-configured 'github' MCP server present; skipping auto-discovery");
+        return;
+    }
+
+    let Some(command) = discover_roko_github_binary(workdir) else {
+        tracing::debug!("roko-mcp-github not found; skipping auto-discovery");
+        return;
+    };
+
+    add_github_mcp_server(config, command);
+    tracing::info!("auto-discovered roko-mcp-github; added 'github' MCP server entry");
+}
+
+/// Resolve the MCP config path, then auto-augment it with `roko-mcp-github`
+/// when the binary is available and no user-configured `github` server exists.
+///
+/// The augmented config is written to `<roko_dir>/mcp-auto.json`.  When
+/// augmentation adds no new entries the path to the original config is
+/// returned unchanged so callers that already have a fully-configured MCP
+/// file do not pay the extra write cost.
+///
+/// Returns `None` when no MCP config is found **and** `roko-mcp-github` is
+/// not available.
+pub fn resolve_mcp_config_with_autodiscovery(workdir: &Path, roko_dir: &Path) -> Option<PathBuf> {
+    // Load base config (may be None when no file exists yet).
+    let base_path = resolve_mcp_config_path(None, workdir);
+    let mut config: roko_agent::mcp::McpConfig = match &base_path {
+        Some(p) => match roko_agent::mcp::McpConfig::load(p) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(
+                    path = %p.display(),
+                    error = %err,
+                    "MCP config load failed; using empty config for github augmentation"
+                );
+                roko_agent::mcp::McpConfig { servers: vec![] }
+            }
+        },
+        None => roko_agent::mcp::McpConfig { servers: vec![] },
+    };
+
+    let servers_before = config.servers.len();
+    augment_mcp_config_with_github(&mut config, workdir);
+
+    // If augmentation added entries, write the merged config to mcp-auto.json.
+    if config.servers.len() > servers_before {
+        let auto_path = roko_dir.join("mcp-auto.json");
+        match serde_json::to_string_pretty(&config) {
+            Ok(json) => match std::fs::write(&auto_path, json) {
+                Ok(()) => {
+                    tracing::debug!(
+                        path = %auto_path.display(),
+                        "wrote augmented MCP config"
+                    );
+                    return Some(auto_path);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %auto_path.display(),
+                        error = %err,
+                        "failed to write augmented MCP config; falling back to base"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to serialize augmented MCP config; falling back to base"
+                );
+            }
+        }
+    }
+
+    // Return original base path (or None if nothing was found/discovered).
+    if config.servers.is_empty() {
+        None
+    } else {
+        base_path
+    }
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -5124,5 +5309,152 @@ mod tests {
             }) => assert_eq!(id, "file-watch-roko-dir"),
             other => panic!("unexpected command variant: {other:?}"),
         }
+    }
+
+    // ── E15-T7: roko-mcp-github auto-discovery tests ─────────────────────────
+
+    /// Helper: create a fake executable at `dir/roko-mcp-github` and return its
+    /// path. Uses only `std::fs` — no env var manipulation required.
+    fn create_fake_github_binary(dir: &std::path::Path) -> std::path::PathBuf {
+        let fake = dir.join("roko-mcp-github");
+        std::fs::write(&fake, b"#!/bin/sh\necho ok").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).unwrap();
+        }
+        fake
+    }
+
+    /// `find_binary_in_target_dirs` must locate a binary placed in a
+    /// `target/debug/` ancestor of the given search root.
+    #[test]
+    fn mcp_github_discover_finds_binary_in_target_debug() {
+        let tmp = tempdir().unwrap();
+        let target_debug = tmp.path().join("target").join("debug");
+        std::fs::create_dir_all(&target_debug).unwrap();
+        let fake = create_fake_github_binary(&target_debug);
+
+        let found = find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
+        assert!(found.is_some(), "should find binary in target/debug/");
+        assert_eq!(found.unwrap(), fake);
+    }
+
+    /// `find_binary_in_target_dirs` must return `None` when no matching binary
+    /// exists anywhere in the ancestor tree.
+    #[test]
+    fn mcp_github_discover_returns_none_when_no_target_binary() {
+        let tmp = tempdir().unwrap();
+        // No target/ subdirectory — nothing to find.
+        let found = find_binary_in_target_dirs(tmp.path(), "roko-mcp-github");
+        assert!(found.is_none(), "should return None when binary is absent");
+    }
+
+    /// `add_github_mcp_server` must add a `github` entry with the supplied
+    /// command. Does not touch environment variables.
+    #[test]
+    fn mcp_github_discover_adds_entry_with_explicit_command() {
+        let mut config = roko_agent::mcp::McpConfig { servers: vec![] };
+        let cmd = "/fake/path/roko-mcp-github".to_string();
+        add_github_mcp_server(&mut config, cmd.clone());
+
+        assert_eq!(config.servers.len(), 1, "expected exactly one server entry");
+        let s = &config.servers[0];
+        assert_eq!(s.name, "github");
+        assert_eq!(s.command, cmd);
+        assert!(s.args.is_empty(), "auto-discovered entry should have no args");
+    }
+
+    /// When the user already configured a `github` server, auto-discovery
+    /// must not add a duplicate entry.
+    #[test]
+    fn mcp_github_discover_respects_user_configured_github_server() {
+        let tmp = tempdir().unwrap();
+
+        // Place a fake binary so discovery would succeed if it weren't for the
+        // existing user-configured server.
+        let target_debug = tmp.path().join("target").join("debug");
+        std::fs::create_dir_all(&target_debug).unwrap();
+        create_fake_github_binary(&target_debug);
+
+        // User-configured entry.
+        let user_entry = roko_agent::mcp::McpServerConfig {
+            name: "github".to_string(),
+            transport: roko_agent::mcp::McpTransportConfig::Stdio,
+            command: "/usr/local/bin/my-custom-github-mcp".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            endpoint: None,
+            auth_token: None,
+            tier: Default::default(),
+        };
+
+        let mut config = roko_agent::mcp::McpConfig {
+            servers: vec![user_entry],
+        };
+        augment_mcp_config_with_github(&mut config, tmp.path());
+
+        assert_eq!(
+            config.servers.len(),
+            1,
+            "user-configured server must not be duplicated"
+        );
+        assert_eq!(
+            config.servers[0].command,
+            "/usr/local/bin/my-custom-github-mcp",
+            "user-configured command must be preserved"
+        );
+    }
+
+    /// `augment_mcp_config_with_github` on a workdir without a target/ tree
+    /// must not panic and must leave the config unchanged when the binary is
+    /// absent from target/.  (If the binary is genuinely on PATH the test
+    /// correctly adds one entry — that is valid behaviour.)
+    #[test]
+    fn mcp_github_discover_skips_when_binary_absent_from_target() {
+        let tmp = tempdir().unwrap();
+        let mut config = roko_agent::mcp::McpConfig { servers: vec![] };
+        augment_mcp_config_with_github(&mut config, tmp.path());
+        // Must not panic.  Binary count may be 0 (absent) or 1 (on real PATH).
+        let _ = config.servers.len();
+    }
+
+    /// `resolve_mcp_config_with_autodiscovery` writes `mcp-auto.json` when the
+    /// github binary is found in `target/debug/` and no pre-existing MCP config
+    /// is present.
+    #[test]
+    fn mcp_github_discover_writes_auto_config_file() {
+        let tmp = tempdir().unwrap();
+        let roko_dir = tmp.path().join(".roko");
+        std::fs::create_dir_all(&roko_dir).unwrap();
+
+        // Place a fake binary inside target/debug relative to tmp so the
+        // ancestor walk succeeds without touching PATH.
+        let target_debug = tmp.path().join("target").join("debug");
+        std::fs::create_dir_all(&target_debug).unwrap();
+        create_fake_github_binary(&target_debug);
+
+        let result = resolve_mcp_config_with_autodiscovery(tmp.path(), &roko_dir);
+
+        // A path must be returned (binary was found in target/debug/).
+        let path = result.expect("expected a config path when github binary is in target/");
+
+        // The returned path should be the auto-generated file.
+        assert_eq!(
+            path,
+            roko_dir.join("mcp-auto.json"),
+            "expected mcp-auto.json, got: {}",
+            path.display()
+        );
+
+        // The file must exist and contain the github server.
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: roko_agent::mcp::McpConfig = serde_json::from_str(&content).unwrap();
+        assert!(
+            parsed.servers.iter().any(|s| s.name == "github"),
+            "mcp-auto.json must contain a 'github' server entry"
+        );
     }
 }

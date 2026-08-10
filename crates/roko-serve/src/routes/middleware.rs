@@ -1415,18 +1415,18 @@ mod tests {
     }
 
     #[test]
-    fn required_scope_for_unclassified_mutating_route_is_write() {
-        // Routes not explicitly classified (e.g. /api/jobs, /api/run, /api/deploy)
-        // must fall back to "write", not "read", so read-only keys are denied.
+    fn required_scope_for_classified_mutating_routes_return_write() {
+        // Routes explicitly classified as "write" in ROUTE_SCOPE_MANIFEST.
         assert_eq!(required_scope_for(&Method::POST, "/api/jobs"), "write");
         assert_eq!(required_scope_for(&Method::POST, "/api/run"), "write");
         assert_eq!(
             required_scope_for(&Method::POST, "/api/research/query"),
             "write"
         );
+        // Unclassified routes get the sentinel (not plain "write").
         assert_eq!(
             required_scope_for(&Method::DELETE, "/api/deploy/abc"),
-            "write"
+            SCOPE_WRITE_UNCLASSIFIED
         );
     }
 

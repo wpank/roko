@@ -309,7 +309,8 @@ mod tests {
             "date": null,
             "last_updated": null
         });
-        let result: SearchResult = serde_json::from_value(json).expect("snippet alias");
+        let result: SearchResult =
+            serde_json::from_value(json).expect("snippet alias deserializes into content");
         assert_eq!(result.content, "S");
     }
 }

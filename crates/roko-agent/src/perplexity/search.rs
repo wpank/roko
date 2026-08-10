@@ -4,7 +4,7 @@
 //! running a generation model. Useful for finding sources, verifying URLs,
 //! and enriching context at a flat $5/1K requests cost.
 //!
-//! One query per request (Perplexity has no batch endpoint).
+//! Each call submits a single query to the API (no batch endpoint exists).
 
 #[cfg(test)]
 use crate::http::HttpPostError;
@@ -45,14 +45,14 @@ pub struct SearchQuery {
     /// [`PerplexitySearchClient::query_to_wire`].
     #[serde(skip)]
     pub date_range: Option<(String, String)>,
-    /// Native Perplexity recency filter (`"hour"`, `"day"`, `"week"`, `"month"`, `"year"`).
-    ///
-    /// Skipped during serde serialization; converted to `search_recency_filter` wire field
-    /// in [`PerplexitySearchClient::query_to_wire`].
-    #[serde(skip)]
-    pub recency_filter: Option<String>,
     /// ISO 3166-1 alpha-2 country code for regional filtering (e.g. `"US"`, `"DE"`).
     pub region: Option<String>,
+    /// Perplexity native recency filter: `"hour"`, `"day"`, `"week"`, `"month"`, or `"year"`.
+    ///
+    /// Skipped during serde serialization; converted to `search_recency_filter` in
+    /// [`PerplexitySearchClient::query_to_wire`].
+    #[serde(skip)]
+    pub recency_filter: Option<String>,
 }
 
 /// Structured search results for one query.
@@ -127,18 +127,18 @@ impl PerplexitySearchClient {
             obj["search_after_date_filter"] = json!(after);
             obj["search_before_date_filter"] = json!(before);
         }
-        if let Some(ref recency) = q.recency_filter {
-            obj["search_recency_filter"] = json!(recency);
-        }
         if let Some(ref region) = q.region {
             obj["country"] = json!(region);
+        }
+        if let Some(ref recency) = q.recency_filter {
+            obj["search_recency_filter"] = json!(recency);
         }
         obj
     }
 
     /// Execute a single search query against the Perplexity API.
     ///
-    /// Returns a [`SearchResponse`] containing the query string and results.
+    /// Returns a [`SearchResponse`] with the query echoed back and a flat list of results.
     ///
     /// # Errors
     ///
@@ -175,13 +175,12 @@ impl PerplexitySearchClient {
             .and_then(Value::as_array)
             .ok_or_else(|| SearchError::Parse("response missing 'results' array".to_string()))?;
 
-        let results: Vec<SearchResult> = results_array
-            .iter()
-            .map(|item| {
-                serde_json::from_value(item.clone())
-                    .map_err(|e| SearchError::Parse(format!("failed to parse result item: {e}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut results = Vec::with_capacity(results_array.len());
+        for item in results_array {
+            let result: SearchResult = serde_json::from_value(item.clone())
+                .map_err(|e| SearchError::Parse(format!("failed to parse result item: {e}")))?;
+            results.push(result);
+        }
 
         Ok(SearchResponse {
             query: q.query.clone(),
@@ -189,7 +188,7 @@ impl PerplexitySearchClient {
         })
     }
 
-    /// Execute multiple search queries sequentially (one request per query).
+    /// Execute multiple search queries by calling the single-query API once per query.
     ///
     /// Returns one [`SearchResponse`] per query in the same order as `queries`.
     ///
@@ -285,7 +284,7 @@ mod tests {
         PerplexitySearchClient::new("pplx-key").with_poster(poster)
     }
 
-    /// Build a flat Perplexity search response: `{"results": [{url, title, content, ...}, ...]}`.
+    /// Build a flat Perplexity API response body: {"results": [{url, title, content, ...}]}.
     fn canned_results(results: &[(&str, &str, &str)]) -> String {
         let items: Vec<Value> = results
             .iter()
@@ -337,9 +336,9 @@ mod tests {
         let c = captured.lock().expect("lock").clone().expect("captured");
         assert_eq!(c.url, "https://api.perplexity.ai/search");
         let parsed: Value = serde_json::from_slice(&c.body).expect("body is json");
+        // Single-query format: top-level "query" field, not a "queries" array.
         assert_eq!(parsed["query"], "test");
-        // Must be a flat object, not a queries array
-        assert!(parsed.get("queries").is_none());
+        assert!(parsed.get("queries").is_none(), "must not have queries array");
     }
 
     #[tokio::test]
@@ -358,15 +357,51 @@ mod tests {
         assert_eq!(auth, "Bearer pplx-secret");
     }
 
-    // ── batch search (sequential single-query calls) ───────────────────────
+    // ── batch search ──────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn perplexity_search_batch_returns_one_response_per_query() {
-        // Each search_single call receives the same mock response; the query
-        // name comes from the SearchQuery, not the response body.
-        let body = canned_results(&[("https://a.com", "Result", "Info...")]);
-        let (mock, _) = MockPoster::ok(body);
-        let client = client_with(Box::new(mock));
+        // search_batch loops over single queries; mock returns same flat response each time.
+        let body_traits = canned_results(&[("https://a.com", "Traits", "Trait info...")]);
+        let body_lifetimes = canned_results(&[("https://b.com", "Lifetimes", "Lifetime info...")]);
+        // Use a multi-response mock: first call returns traits, second returns lifetimes.
+        let calls = Arc::new(Mutex::new(0usize));
+        let bodies = Arc::new(vec![body_traits, body_lifetimes]);
+        let captured_all: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(vec![]));
+
+        struct MultiMock {
+            calls: Arc<Mutex<usize>>,
+            bodies: Arc<Vec<String>>,
+            captured_all: Arc<Mutex<Vec<Captured>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HttpPoster for MultiMock {
+            async fn post_json(
+                &self,
+                url: &str,
+                headers: &[(String, String)],
+                body: &[u8],
+                _timeout_ms: u64,
+            ) -> Result<String, crate::http::HttpPostError> {
+                let mut n = self.calls.lock().expect("lock");
+                let idx = *n;
+                *n += 1;
+                self.captured_all.lock().expect("lock").push(Captured {
+                    url: url.to_string(),
+                    headers: headers.to_vec(),
+                    body: body.to_vec(),
+                });
+                Ok(self.bodies[idx].clone())
+            }
+        }
+
+        let client = PerplexitySearchClient::new("pplx-key").with_poster(Box::new(MultiMock {
+            calls: calls.clone(),
+            bodies: bodies.clone(),
+            captured_all: captured_all.clone(),
+        }));
+
         let queries = vec![
             SearchQuery {
                 query: "rust traits".to_string(),
@@ -381,17 +416,52 @@ mod tests {
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0].query, "rust traits");
         assert_eq!(responses[0].results.len(), 1);
+        assert_eq!(responses[0].results[0].url, "https://a.com");
         assert_eq!(responses[1].query, "rust lifetimes");
         assert_eq!(responses[1].results.len(), 1);
+        assert_eq!(responses[1].results[0].url, "https://b.com");
+        // Must have made exactly 2 HTTP calls (one per query).
+        assert_eq!(*calls.lock().expect("lock"), 2);
     }
 
     #[tokio::test]
-    async fn perplexity_search_batch_sends_sequential_queries() {
-        // With the sequential model, the mock captures the *last* call.
-        // Verify it receives a flat single-query body, not a queries array.
-        let body = canned_results(&[]);
-        let (mock, captured) = MockPoster::ok(body);
-        let client = client_with(Box::new(mock));
+    async fn perplexity_search_batch_sends_all_queries() {
+        // Each call gets a flat single-query body; verify each call has the right "query" field.
+        let bodies = Arc::new(Mutex::new(vec![
+            canned_results(&[]),
+            canned_results(&[]),
+            canned_results(&[]),
+        ]));
+        let captured_bodies: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(vec![]));
+
+        struct CaptureMock {
+            bodies: Arc<Mutex<Vec<String>>>,
+            captured_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HttpPoster for CaptureMock {
+            async fn post_json(
+                &self,
+                _url: &str,
+                _headers: &[(String, String)],
+                body: &[u8],
+                _timeout_ms: u64,
+            ) -> Result<String, crate::http::HttpPostError> {
+                self.captured_bodies
+                    .lock()
+                    .expect("lock")
+                    .push(body.to_vec());
+                let mut b = self.bodies.lock().expect("lock");
+                Ok(b.remove(0))
+            }
+        }
+
+        let client = PerplexitySearchClient::new("pplx-key").with_poster(Box::new(CaptureMock {
+            bodies: bodies.clone(),
+            captured_bodies: captured_bodies.clone(),
+        }));
+
         let queries: Vec<SearchQuery> = ["a", "b", "c"]
             .iter()
             .map(|q| SearchQuery {
@@ -399,13 +469,14 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let responses = client.search_batch(&queries).await.expect("ok");
-        assert_eq!(responses.len(), 3);
-        // Last captured request should be for query "c" (the final call)
-        let c = captured.lock().expect("lock").clone().expect("captured");
-        let parsed: Value = serde_json::from_slice(&c.body).expect("json");
-        assert_eq!(parsed["query"], "c");
-        assert!(parsed.get("queries").is_none());
+        let _ = client.search_batch(&queries).await.expect("ok");
+
+        let caps = captured_bodies.lock().expect("lock");
+        assert_eq!(caps.len(), 3, "must make 3 sequential calls");
+        for (cap, expected_q) in caps.iter().zip(["a", "b", "c"]) {
+            let parsed: Value = serde_json::from_slice(cap).expect("json");
+            assert_eq!(parsed["query"], expected_q);
+        }
     }
 
     // ── filters ───────────────────────────────────────────────────────────────
@@ -420,9 +491,10 @@ mod tests {
             domain_filter: Some(vec!["docs.rs".to_string(), "crates.io".to_string()]),
             ..Default::default()
         };
-        let _ = client.search_single(&query).await.expect("ok");
+        let _ = client.search_batch(&[query]).await.expect("ok");
         let c = captured.lock().expect("lock").clone().expect("captured");
         let parsed: Value = serde_json::from_slice(&c.body).expect("json");
+        // Top-level field (not nested under queries[0]).
         let filter = &parsed["search_domain_filter"];
         assert_eq!(filter[0], "docs.rs");
         assert_eq!(filter[1], "crates.io");
@@ -438,27 +510,12 @@ mod tests {
             date_range: Some(("2024-01-01".to_string(), "2025-01-01".to_string())),
             ..Default::default()
         };
-        let _ = client.search_single(&query).await.expect("ok");
+        let _ = client.search_batch(&[query]).await.expect("ok");
         let c = captured.lock().expect("lock").clone().expect("captured");
         let parsed: Value = serde_json::from_slice(&c.body).expect("json");
+        // Top-level fields (not nested under queries[0]).
         assert_eq!(parsed["search_after_date_filter"], "2024-01-01");
         assert_eq!(parsed["search_before_date_filter"], "2025-01-01");
-    }
-
-    #[tokio::test]
-    async fn perplexity_search_recency_filter_is_sent() {
-        let body = canned_results(&[]);
-        let (mock, captured) = MockPoster::ok(body);
-        let client = client_with(Box::new(mock));
-        let query = SearchQuery {
-            query: "latest news".to_string(),
-            recency_filter: Some("week".to_string()),
-            ..Default::default()
-        };
-        let _ = client.search_single(&query).await.expect("ok");
-        let c = captured.lock().expect("lock").clone().expect("captured");
-        let parsed: Value = serde_json::from_slice(&c.body).expect("json");
-        assert_eq!(parsed["search_recency_filter"], "week");
     }
 
     #[tokio::test]
@@ -471,10 +528,27 @@ mod tests {
             region: Some("DE".to_string()),
             ..Default::default()
         };
-        let _ = client.search_single(&query).await.expect("ok");
+        let _ = client.search_batch(&[query]).await.expect("ok");
         let c = captured.lock().expect("lock").clone().expect("captured");
         let parsed: Value = serde_json::from_slice(&c.body).expect("json");
+        // Top-level field.
         assert_eq!(parsed["country"], "DE");
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_recency_filter_is_sent() {
+        let body = canned_results(&[]);
+        let (mock, captured) = MockPoster::ok(body);
+        let client = client_with(Box::new(mock));
+        let query = SearchQuery {
+            query: "latest news".to_string(),
+            recency_filter: Some("week".to_string()),
+            ..Default::default()
+        };
+        let _ = client.search_batch(&[query]).await.expect("ok");
+        let c = captured.lock().expect("lock").clone().expect("captured");
+        let parsed: Value = serde_json::from_slice(&c.body).expect("json");
+        assert_eq!(parsed["search_recency_filter"], "week");
     }
 
     // ── error handling ────────────────────────────────────────────────────────
@@ -521,6 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn perplexity_search_result_fields_are_populated() {
+        // Real flat Perplexity API response format.
         let body = json!({
             "results": [{
                 "url": "https://arxiv.org/abs/1706.03762",
@@ -534,6 +609,7 @@ mod tests {
         let (mock, _) = MockPoster::ok(body);
         let client = client_with(Box::new(mock));
         let resp = client.search("attention mechanism").await.expect("ok");
+        assert_eq!(resp.query, "attention mechanism");
         assert_eq!(resp.results.len(), 1);
         let r = &resp.results[0];
         assert_eq!(r.url, "https://arxiv.org/abs/1706.03762");
@@ -577,5 +653,45 @@ mod tests {
         let _ = client.search("test").await.expect("ok");
         let c = captured.lock().expect("lock").clone().expect("captured");
         assert_eq!(c.url, "https://api.perplexity.ai/search");
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_large_batch_succeeds() {
+        // No limit on batch size; more than 5 queries must work fine.
+        let body = canned_results(&[]);
+        // Each of the 7 calls returns the same flat response.
+        let bodies: Arc<Mutex<Vec<String>>> =
+            Arc::new(Mutex::new((0..7).map(|_| canned_results(&[])).collect()));
+
+        struct RepeatingMock {
+            bodies: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HttpPoster for RepeatingMock {
+            async fn post_json(
+                &self,
+                _url: &str,
+                _headers: &[(String, String)],
+                _body: &[u8],
+                _timeout_ms: u64,
+            ) -> Result<String, crate::http::HttpPostError> {
+                let mut b = self.bodies.lock().expect("lock");
+                Ok(b.remove(0))
+            }
+        }
+
+        let _ = body; // consumed above
+        let client = PerplexitySearchClient::new("k").with_poster(Box::new(RepeatingMock {
+            bodies: bodies.clone(),
+        }));
+        let queries: Vec<SearchQuery> = (1..=7)
+            .map(|i| SearchQuery {
+                query: format!("q{i}"),
+                ..Default::default()
+            })
+            .collect();
+        let responses = client.search_batch(&queries).await.expect("7 queries ok");
+        assert_eq!(responses.len(), 7);
     }
 }

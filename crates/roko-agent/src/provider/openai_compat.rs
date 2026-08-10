@@ -30,9 +30,7 @@ use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, build_tool_dispatcher,
     tool_limit_for_temperament, tool_loop_max_iterations_for_profile,
 };
-use crate::tool_loop::backends::{
-    create_openai_compat_backend, create_openai_compat_backend_with_limiter,
-};
+use crate::tool_loop::backends::create_openai_compat_backend;
 use crate::tool_loop::{ToolLoop, ToolLoopAgent};
 use crate::translate::capability::cap_tools_for_profile;
 use crate::translate::{OpenAiTranslator, Translator};
@@ -44,7 +42,6 @@ use roko_core::defaults::{DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS}
 use roko_core::tool::aliases::canonical_of_claude;
 use roko_core::tool::{ToolDef, ToolRegistry, VecToolRegistry};
 use roko_std::StaticToolRegistry;
-#[cfg(test)]
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -112,29 +109,29 @@ fn is_kimi_model(model: &ModelProfile) -> bool {
     model.slug.starts_with("kimi-")
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub(crate) struct ChatMessage {
     #[serde(default)]
     content: Vec<ContentBlock>,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl ChatMessage {
     fn content_blocks(&self) -> Option<&[ContentBlock]> {
         (!self.content.is_empty()).then_some(self.content.as_slice())
     }
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
 pub(crate) enum ContentBlock {
     Text { text: String },
     ImageUrl { image_url: ImageUrlBlock },
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl ContentBlock {
     fn is_image_url(&self) -> bool {
         matches!(self, Self::ImageUrl { .. })
@@ -150,13 +147,13 @@ impl ContentBlock {
     }
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub(crate) struct ImageUrlBlock {
     url: String,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn validate_vision_input(
     messages: &[ChatMessage],
     model: &ModelProfile,
@@ -262,7 +259,9 @@ fn parse_allowed_tools_csv(csv: Option<&str>) -> Option<HashSet<String>> {
         .map(|name| {
             // Resolve Claude CLI aliases ("Read" -> "read_file") to canonical names.
             // If already canonical or unknown (MCP/plugin tool), pass through as-is.
-            canonical_of_claude(name).unwrap_or(name).to_string()
+            canonical_of_claude(name)
+                .unwrap_or(name)
+                .to_string()
         })
         .collect();
     (!allowed.is_empty()).then_some(allowed)
@@ -319,14 +318,14 @@ fn add_mcp_tools_to_registry(registry: &mut DynamicToolRegistry, mcp_tools: Vec<
     }
 }
 
-/// Build a filtered tool registry from agent options.
+/// Build the tool registry for a non-Claude provider.
 ///
-/// **Audit note (P09-T3):** This is the single tool-filtering path for all
-/// non-Claude-CLI providers. `anthropic_api`, `cerebras`, and the
-/// `OpenAiCompatAdapter` itself all call this function. `claude_cli` passes
-/// the raw CSV to the Claude binary which understands PascalCase natively.
-/// No other backends have independent CSV parsing that would need alias
-/// resolution.
+/// Alias resolution audit (P09): all non-Claude provider backends
+/// (Anthropic API, Gemini, Cerebras, Perplexity) call this function,
+/// so the Claude alias fix in `parse_allowed_tools_csv` covers all of them.
+/// The Claude CLI backend (`claude_cli.rs`) passes the CSV directly to the CLI
+/// process and does not call this function — Claude CLI natively understands
+/// its own PascalCase names, so no alias translation is needed there.
 pub(crate) fn tool_registry_for_options(
     model: &ModelProfile,
     options: &AgentOptions,
@@ -411,19 +410,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let mut tool_loop_provider = provider.clone();
             tool_loop_provider.timeout_ms = Some(timeout);
             let poster = Arc::new(ReqwestPoster::new());
-            // If a runtime-scoped rate limiter is available (built from provider
-            // config and shared across concurrent dispatches), use it instead of
-            // the process-global default singleton in OpenAiCompatBackend::new.
-            let backend = if let Some(ref limiter) = options.rate_limiter {
-                create_openai_compat_backend_with_limiter(
-                    &tool_loop_provider,
-                    model,
-                    poster,
-                    std::sync::Arc::clone(limiter),
-                )?
-            } else {
-                create_openai_compat_backend(&tool_loop_provider, model, poster)?
-            };
+            let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
                 .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
@@ -1468,40 +1455,44 @@ done
         ));
     }
 
-    // ── parse_allowed_tools_csv alias resolution tests ──────────────────
+    // ── parse_allowed_tools_csv ───────────────────────────────────────────────
 
     #[test]
-    fn parse_allowed_tools_csv_resolves_claude_names() {
-        let result = parse_allowed_tools_csv(Some("Read,Write,Edit")).unwrap();
-        assert!(result.contains("read_file"));
-        assert!(result.contains("write_file"));
-        assert!(result.contains("edit_file"));
-        assert_eq!(result.len(), 3);
+    fn parse_allowed_tools_csv_resolves_claude_names_read_write_edit() {
+        let result = parse_allowed_tools_csv(Some("Read,Write,Edit"));
+        let set = result.expect("should be Some");
+        assert!(set.contains("read_file"), "Read -> read_file");
+        assert!(set.contains("write_file"), "Write -> write_file");
+        assert!(set.contains("edit_file"), "Edit -> edit_file");
+        assert_eq!(set.len(), 3);
     }
 
     #[test]
-    fn parse_allowed_tools_csv_passes_canonical_names_through() {
-        let result = parse_allowed_tools_csv(Some("read_file,bash")).unwrap();
-        assert!(result.contains("read_file"));
-        assert!(result.contains("bash"));
-        assert_eq!(result.len(), 2);
+    fn parse_allowed_tools_csv_canonical_names_pass_through() {
+        let result = parse_allowed_tools_csv(Some("read_file,bash"));
+        let set = result.expect("should be Some");
+        assert!(set.contains("read_file"));
+        assert!(set.contains("bash"));
+        assert_eq!(set.len(), 2);
     }
 
     #[test]
-    fn parse_allowed_tools_csv_handles_mixed_names() {
-        let result = parse_allowed_tools_csv(Some("Read,bash,Glob")).unwrap();
-        assert!(result.contains("read_file"));
-        assert!(result.contains("bash"));
-        assert!(result.contains("glob"));
-        assert_eq!(result.len(), 3);
+    fn parse_allowed_tools_csv_mixed_names_work() {
+        let result = parse_allowed_tools_csv(Some("Read,bash,Glob"));
+        let set = result.expect("should be Some");
+        assert!(set.contains("read_file"), "Read -> read_file");
+        assert!(set.contains("bash"), "bash stays bash");
+        assert!(set.contains("glob"), "Glob -> glob");
+        assert_eq!(set.len(), 3);
     }
 
     #[test]
-    fn parse_allowed_tools_csv_passes_unknown_names_through() {
-        let result = parse_allowed_tools_csv(Some("Read,my_mcp_tool")).unwrap();
-        assert!(result.contains("read_file"));
-        assert!(result.contains("my_mcp_tool"));
-        assert_eq!(result.len(), 2);
+    fn parse_allowed_tools_csv_unknown_names_pass_through() {
+        let result = parse_allowed_tools_csv(Some("Read,my_mcp_tool"));
+        let set = result.expect("should be Some");
+        assert!(set.contains("read_file"), "Read -> read_file");
+        assert!(set.contains("my_mcp_tool"), "unknown passes through");
+        assert_eq!(set.len(), 2);
     }
 
     #[test]
@@ -1510,7 +1501,7 @@ done
     }
 
     #[test]
-    fn parse_allowed_tools_csv_empty_returns_none() {
+    fn parse_allowed_tools_csv_empty_string_returns_none() {
         assert!(parse_allowed_tools_csv(Some("")).is_none());
     }
 }

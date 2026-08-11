@@ -41,7 +41,7 @@ pub const PROGRESS_FILL: &str = "━";
 pub const PROGRESS_EMPTY: &str = "░";
 
 /// Pending / waiting indicator.
-pub const PENDING: &str = "⏳";
+pub const PENDING: &str = "○";
 
 /// Collapsed disclosure triangle (right-pointing).
 pub const COLLAPSED: &str = "▸";

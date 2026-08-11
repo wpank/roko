@@ -1586,11 +1586,7 @@ fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
         .map(|entries| {
             entries
                 .filter_map(Result::ok)
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|ext| ext == "tmp")
-                })
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
                 .count()
         })
         .unwrap_or(0);
@@ -1631,10 +1627,20 @@ fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
 
     if top_level.is_dir() && dot_roko.is_dir() {
         let top_count = std::fs::read_dir(&top_level)
-            .map(|entries| entries.filter_map(Result::ok).filter(|e| e.path().is_dir()).count())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
             .unwrap_or(0);
         let dot_count = std::fs::read_dir(&dot_roko)
-            .map(|entries| entries.filter_map(Result::ok).filter(|e| e.path().is_dir()).count())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
             .unwrap_or(0);
 
         DoctorCheck {

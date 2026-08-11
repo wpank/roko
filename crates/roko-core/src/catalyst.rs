@@ -56,6 +56,18 @@ impl CatalystScorer {
     }
 }
 
+impl crate::cell::Cell for CatalystScorer {
+    fn cell_id(&self) -> &str {
+        "catalyst-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "CatalystScorer"
+    }
+    fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+        vec![crate::cell::ProtocolId::Score]
+    }
+}
+
 impl ScoreTrait for CatalystScorer {
     fn score(&self, signal: &Engram, ctx: &Context) -> Score {
         let summary = self.source.impact(signal, ctx);

@@ -80,6 +80,18 @@ fn extract_ghost_turn_event(signal: &Engram) -> Option<GhostTurnEvent> {
         })
 }
 
+impl roko_core::Cell for GhostTurnWatcher {
+    fn cell_id(&self) -> &str {
+        "LGhost-LTurn-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "GhostTurnWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for GhostTurnWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // Count consecutive wasted turns from the end of the stream.

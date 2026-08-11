@@ -874,6 +874,18 @@ impl SystemPromptBuilder {
     }
 }
 
+impl roko_core::Cell for SystemPromptBuilder {
+    fn cell_id(&self) -> &str {
+        "system-prompt-builder"
+    }
+    fn cell_name(&self) -> &str {
+        "SystemPromptBuilder"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Compose]
+    }
+}
+
 impl Compose for SystemPromptBuilder {
     fn compose(
         &self,
@@ -1415,6 +1427,18 @@ mod tests {
     use roko_learn::skill_library::Skill;
 
     struct ConstScorer;
+
+    impl roko_core::Cell for ConstScorer {
+        fn cell_id(&self) -> &str {
+            "const-scorer-test"
+        }
+        fn cell_name(&self) -> &str {
+            "ConstScorer"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Score]
+        }
+    }
 
     impl ScoreFn for ConstScorer {
         fn score(&self, _signal: &Signal, _ctx: &Context) -> Score {

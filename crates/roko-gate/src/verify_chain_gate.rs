@@ -878,7 +878,20 @@ mod tests {
         // verify_chain gate as its own fallback. We verify the name
         // equality check that triggers it.
         struct FakeCycle;
+        impl roko_core::Cell for FakeCycle {
+            fn cell_id(&self) -> &str {
+                "fake-cycle-test"
+            }
+            fn cell_name(&self) -> &str {
+                "FakeCycle"
+            }
+            fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+                vec![roko_core::ProtocolId::Verify]
+            }
+        }
+
         #[async_trait]
+
         impl Verify for FakeCycle {
             async fn verify(&self, _: &Signal, _: &Context) -> Verdict {
                 Verdict::pass("verify_chain")

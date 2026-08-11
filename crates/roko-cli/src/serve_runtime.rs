@@ -704,11 +704,10 @@ fn simulate_bench_result(prompt: &str) -> RunResult {
     }
 }
 
-/// Dispatch a bench prompt via the v2 `ModelCallService` path.
+/// Dispatch a bench prompt via the `ModelCallService` path.
 ///
-/// This replaces the legacy `run_once()` which is feature-gated behind
-/// `legacy-orchestrate`. The v2 path uses the same ModelCallService that
-/// `WorkflowEngine` uses, preserving routing, budget, and feedback behavior.
+/// Uses the same ModelCallService that `WorkflowEngine` uses, preserving
+/// routing, budget, and feedback behavior.
 pub(crate) async fn dispatch_bench_prompt(
     workdir: &Path,
     config: &Config,

@@ -393,7 +393,20 @@ impl ComposedGatePipeline {
     }
 }
 
+impl roko_core::Cell for ComposedGatePipeline {
+    fn cell_id(&self) -> &str {
+        "composed-gate-pipeline"
+    }
+    fn cell_name(&self) -> &str {
+        "ComposedGatePipeline"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for ComposedGatePipeline {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let started = Instant::now();
@@ -693,7 +706,20 @@ mod tests {
         }
     }
 
+    impl roko_core::Cell for MockGate {
+        fn cell_id(&self) -> &str {
+            "mock-gate-test"
+        }
+        fn cell_name(&self) -> &str {
+            "MockGate"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Verify]
+        }
+    }
+
     #[async_trait]
+
     impl Verify for MockGate {
         async fn verify(&self, _signal: &Signal, _ctx: &Context) -> Verdict {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -834,7 +860,20 @@ mod tests {
         counter: Arc<AtomicUsize>,
     }
 
+    impl roko_core::Cell for OrderedGate {
+        fn cell_id(&self) -> &str {
+            "ordered-gate-test"
+        }
+        fn cell_name(&self) -> &str {
+            "OrderedGate"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Verify]
+        }
+    }
+
     #[async_trait]
+
     impl Verify for OrderedGate {
         async fn verify(&self, _s: &Signal, _c: &Context) -> Verdict {
             let position = self.counter.fetch_add(1, Ordering::SeqCst);

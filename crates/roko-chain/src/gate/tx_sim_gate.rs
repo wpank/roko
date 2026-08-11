@@ -143,7 +143,20 @@ impl TxSimGate {
     }
 }
 
+impl roko_core::Cell for TxSimGate {
+    fn cell_id(&self) -> &'static str {
+        "tx-sim-gate"
+    }
+    fn cell_name(&self) -> &'static str {
+        "TxSimGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for TxSimGate {
     async fn verify(&self, input: &Engram, _ctx: &Context) -> Verdict {
         let started = Instant::now();

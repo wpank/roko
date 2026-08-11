@@ -164,7 +164,7 @@ pub trait ColdStore: Send + Sync {
 /// - `RecencyScorer`: how recent is this engram?
 /// - `ReputationScorer`: how trustworthy is its author?
 /// - `CatalyticScorer`: how many downstream engrams does this enable?
-pub trait Score: Send + Sync {
+pub trait Score: crate::cell::Cell + Send + Sync {
     /// Score an engram in the given context.
     ///
     /// This is the implementor hook — override this in your scorer impl.
@@ -211,7 +211,7 @@ pub trait Score: Send + Sync {
 /// trait is async. For pure/synchronous verification, implementors can return
 /// a ready future.
 #[async_trait]
-pub trait Verify: Send + Sync {
+pub trait Verify: crate::cell::Cell + Send + Sync {
     /// Verify the engram and return a verdict.
     async fn verify(&self, engram: &Engram, ctx: &Context) -> Verdict;
 
@@ -239,7 +239,7 @@ pub trait Verify: Send + Sync {
 /// - `LinUCBRouter` — contextual bandit
 /// - `CascadeRouter` — multi-stage confidence → UCB
 /// - `WeightedRouter` — softmax over scorers
-pub trait Route: Send + Sync {
+pub trait Route: crate::cell::Cell + Send + Sync {
     /// Select one engram from the candidates. None = no selection made.
     ///
     /// This is the implementor hook — override this in your router impl.
@@ -282,7 +282,7 @@ pub trait Route: Send + Sync {
 /// compose call.  The default implementation filters for engrams and
 /// delegates to [`compose`](Self::compose), so existing implementations
 /// get the new entry point for free.
-pub trait Compose: Send + Sync {
+pub trait Compose: crate::cell::Cell + Send + Sync {
     /// Combine input engrams into a new composed engram.
     /// The composer may use the scorer to rank/select inputs under budget.
     fn compose(
@@ -336,7 +336,7 @@ pub trait Compose: Send + Sync {
 /// (to publish on the Bus).  The default implementation ignores pulses and
 /// wraps the existing [`decide`](Self::decide) output in `PolicyOutputs`,
 /// so existing implementations get the new entry point for free.
-pub trait React: Send + Sync {
+pub trait React: crate::cell::Cell + Send + Sync {
     /// Examine the recent engram stream and produce new engrams (interventions).
     fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram>;
 

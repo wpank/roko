@@ -43,6 +43,18 @@ impl SectionScorer {
     }
 }
 
+impl roko_core::Cell for SectionScorer {
+    fn cell_id(&self) -> &str {
+        "section-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "SectionScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl ScoreFn for SectionScorer {
     fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         let Ok(section) = PromptSection::from_signal(signal) else {
@@ -225,6 +237,18 @@ impl GoalDirectedHeuristicScorer {
             .unwrap_or(0.0);
 
         (0.65 * uncertainty + 0.2 * novelty_hint + 0.15 * informational_leverage).clamp(0.0, 1.0)
+    }
+}
+
+impl roko_core::Cell for GoalDirectedHeuristicScorer {
+    fn cell_id(&self) -> &str {
+        "goal-directed-heuristic-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "GoalDirectedHeuristicScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
     }
 }
 

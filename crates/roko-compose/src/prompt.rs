@@ -777,6 +777,18 @@ impl PromptComposer {
     }
 }
 
+impl roko_core::Cell for PromptComposer {
+    fn cell_id(&self) -> &str {
+        "prompt-composer"
+    }
+    fn cell_name(&self) -> &str {
+        "PromptComposer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Compose]
+    }
+}
+
 impl Compose for PromptComposer {
     fn compose(
         &self,

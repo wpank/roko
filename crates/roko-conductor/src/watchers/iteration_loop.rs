@@ -76,6 +76,18 @@ fn plan_event(signal: &Engram) -> Option<String> {
         })
 }
 
+impl roko_core::Cell for IterationLoopWatcher {
+    fn cell_id(&self) -> &str {
+        "LIteration-LLoop-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "IterationLoopWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for IterationLoopWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(plan_id) = latest_plan_id(stream) else {

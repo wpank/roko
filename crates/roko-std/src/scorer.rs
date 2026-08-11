@@ -42,6 +42,18 @@ impl SumScorer {
     }
 }
 
+impl roko_core::Cell for SumScorer {
+    fn cell_id(&self) -> &str {
+        "sum-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "SumScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl ScoreFn for SumScorer {
     fn score(&self, signal: &Engram, ctx: &Context) -> Score {
         self.scorers
@@ -81,6 +93,18 @@ impl MulScorer {
     }
 }
 
+impl roko_core::Cell for MulScorer {
+    fn cell_id(&self) -> &str {
+        "mul-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "MulScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl ScoreFn for MulScorer {
     fn score(&self, signal: &Engram, ctx: &Context) -> Score {
         // Start with all-1 score so multiplication is identity.
@@ -105,6 +129,18 @@ impl ConstScorer {
     #[must_use]
     pub const fn new(value: Score) -> Self {
         Self { value }
+    }
+}
+
+impl roko_core::Cell for ConstScorer {
+    fn cell_id(&self) -> &str {
+        "const-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "ConstScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
     }
 }
 

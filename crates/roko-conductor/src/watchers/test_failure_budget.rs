@@ -53,6 +53,18 @@ impl TestFailureBudgetWatcher {
     }
 }
 
+impl roko_core::Cell for TestFailureBudgetWatcher {
+    fn cell_id(&self) -> &str {
+        "LTest-LFailure-LBudget-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "TestFailureBudgetWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for TestFailureBudgetWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let mut baselines: HashMap<String, u32> = HashMap::new();

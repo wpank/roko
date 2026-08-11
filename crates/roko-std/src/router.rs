@@ -13,6 +13,18 @@ use std::sync::Arc;
 pub struct FirstRouter;
 
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for FirstRouter {
+    fn cell_id(&self) -> &str {
+        "first-router"
+    }
+    fn cell_name(&self) -> &str {
+        "FirstRouter"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
+    }
+}
+
 impl Route for FirstRouter {
     fn select(&self, candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
         candidates
@@ -39,6 +51,18 @@ impl HighestScoreRouter {
 }
 
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for HighestScoreRouter {
+    fn cell_id(&self) -> &str {
+        "highest-score-router"
+    }
+    fn cell_name(&self) -> &str {
+        "HighestScoreRouter"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
+    }
+}
+
 impl Route for HighestScoreRouter {
     fn select(&self, candidates: &[Engram], ctx: &Context) -> Option<Selection> {
         candidates
@@ -72,6 +96,18 @@ impl RoundRobinRouter {
 }
 
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for RoundRobinRouter {
+    fn cell_id(&self) -> &str {
+        "round-robin-router"
+    }
+    fn cell_name(&self) -> &str {
+        "RoundRobinRouter"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
+    }
+}
+
 impl Route for RoundRobinRouter {
     fn select(&self, candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
         if candidates.is_empty() {

@@ -143,6 +143,18 @@ impl Default for VerdictAwareScorer {
     }
 }
 
+impl roko_core::Cell for VerdictAwareScorer {
+    fn cell_id(&self) -> &str {
+        "verdict-aware-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "VerdictAwareScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl ScoreFn for VerdictAwareScorer {
     fn score(&self, signal: &Signal, ctx: &Context) -> Score {
         // Only score GateVerdict engrams.

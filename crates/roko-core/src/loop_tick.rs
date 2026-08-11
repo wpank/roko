@@ -307,6 +307,18 @@ mod tests {
         choice: Selection,
     }
 
+    impl crate::cell::Cell for TestRouter {
+        fn cell_id(&self) -> &str {
+            "test-router"
+        }
+        fn cell_name(&self) -> &str {
+            "TestRouter"
+        }
+        fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+            vec![crate::cell::ProtocolId::Route]
+        }
+    }
+
     impl Route for TestRouter {
         fn select(&self, _candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
             Some(self.choice.clone())
@@ -320,6 +332,18 @@ mod tests {
     }
 
     struct PassthroughComposer;
+
+    impl crate::cell::Cell for PassthroughComposer {
+        fn cell_id(&self) -> &str {
+            "passthrough-composer"
+        }
+        fn cell_name(&self) -> &str {
+            "PassthroughComposer"
+        }
+        fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+            vec![crate::cell::ProtocolId::Compose]
+        }
+    }
 
     impl Compose for PassthroughComposer {
         fn compose(
@@ -350,6 +374,18 @@ mod tests {
     struct PassGate;
 
     #[async_trait]
+    impl crate::cell::Cell for PassGate {
+        fn cell_id(&self) -> &str {
+            "pass-gate"
+        }
+        fn cell_name(&self) -> &str {
+            "PassGate"
+        }
+        fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+            vec![crate::cell::ProtocolId::Verify]
+        }
+    }
+
     impl Verify for PassGate {
         async fn verify(&self, _signal: &Engram, _ctx: &Context) -> Verdict {
             Verdict::pass("pass_gate")
@@ -362,6 +398,18 @@ mod tests {
 
     struct NoopPolicy;
 
+    impl crate::cell::Cell for NoopPolicy {
+        fn cell_id(&self) -> &str {
+            "noop-policy"
+        }
+        fn cell_name(&self) -> &str {
+            "NoopPolicy"
+        }
+        fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+            vec![crate::cell::ProtocolId::React]
+        }
+    }
+
     impl React for NoopPolicy {
         fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
             Vec::new()
@@ -373,6 +421,18 @@ mod tests {
     }
 
     struct ZeroScorer;
+
+    impl crate::cell::Cell for ZeroScorer {
+        fn cell_id(&self) -> &str {
+            "zero-scorer"
+        }
+        fn cell_name(&self) -> &str {
+            "ZeroScorer"
+        }
+        fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+            vec![crate::cell::ProtocolId::Score]
+        }
+    }
 
     impl crate::traits::Score for ZeroScorer {
         fn score(&self, _signal: &Engram, _ctx: &Context) -> crate::Score {

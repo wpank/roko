@@ -179,6 +179,18 @@ impl CFactorPolicy {
     }
 }
 
+impl crate::cell::Cell for CFactorPolicy {
+    fn cell_id(&self) -> &str {
+        "cfactor-policy"
+    }
+    fn cell_name(&self) -> &str {
+        "CFactorPolicy"
+    }
+    fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+        vec![crate::cell::ProtocolId::React]
+    }
+}
+
 impl React for CFactorPolicy {
     fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(summary) = self.source.summary() else {

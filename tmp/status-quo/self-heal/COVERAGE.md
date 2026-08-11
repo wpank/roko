@@ -58,6 +58,14 @@ This ledger maps every issue source in `tmp/status-quo/issues` to a new self-hea
 | 55 | SH05-T01 |
 | 56, 58 | SH03-T02/T05 |
 | 57, 59 | SH04-T02/T08 |
+| 60 | SH01-T01; SH03-T01/T03 |
+| 61 | SH05-T03; existing E08 |
+| 62 | SH03-T01/T02 |
+| 63 | SH06; existing E18 |
+| 64 | SH01-T01/T05; SH05-T04 |
+| 65 | SH02-T02; existing E05 |
+| 66 | existing E04 |
+| 67 | SH05-T03/T04; existing E48 |
 
 ## Execution waves
 

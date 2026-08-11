@@ -53,10 +53,10 @@ pushed to `status-quo/batch-2026-08-10`. Key findings:
 | Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
 | E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
-| Cross-wave ledger | 120 external tasks: ~35 confirmed done, ~15 partial, ~70 greenfield. Batch 4: E08 9/9, E09 11/11, E18 10/10, E47 1/11, P24 3/4, P26 4/4, P31 1/3. |
+| Cross-wave ledger | 120 external tasks: ~55 confirmed done, ~10 partial, ~55 greenfield. Batch 5: P13 4/4, P17 2/6, P18 5/5, P19 1/6, P20 5/5, P22 5/5, P25 3/4, P31 3/3, P32 2/2, E12-T09 done, E47-T01 done. |
 | Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
 | Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
-| E12 dead code | 6/9 done (T01,T03,T04,T05,T07,T08), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep), 1/9 needs impl (T09). |
+| E12 dead code | 7/9 done (T01,T03,T04,T05,T07,T08,T09), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep). T09: plugin webhook scopes wired. |
 | GcEngine | Wired into runner (E47): `roko-fs` GcEngine now called from event loop. |
 | TOML metadata | 33 tasks.toml metadata files reconciled to reflect actual implementation state. |
 
@@ -593,26 +593,26 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P10-slash-command-flags (5/5 done) — plans/P10-slash-command-flags/tasks.toml; Wave 9/E10. T1-T5 implemented: `/develop` dispatch handler, `/plan-resume` uses `--resume-plan`, `--model` on `/plan-run`, `/develop` registered in session.
 - [x] P11-runner-v2-default (5/5 done) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01. T1 done (runner-v2 default), T3/T4 satisfied by feature removal (E12-T03/T08), T5 done (TOML validation after plan generate).
 - [x] P12-runner-parallelism (5/5 done) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01. All 5 tasks done per P12 agent audit.
-- [ ] P13-rate-limit-retry (2/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry exists), T4 done (`classify_http_error` helper extracted + tests). T2-T3 need implementation.
+- [x] P13-rate-limit-retry (4/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry), T2 done (±25% jitter, 30s cap), T3 done (per-task max_retries budget), T4 done (classify_http_error).
 - [x] P14-gate-rung-fix (3/3 done) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2,T3 all done. T3 `complex_pipeline_has_seven_canonical_rungs` test added.
 - [x] P15-error-recovery-wiring (5/5 done) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash), T2 done (crash classification in do_cmd plan-gen errors), T3 done (config parse warnings logged instead of silently swallowed), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler).
 - [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 done (bridge advisory log for non-CLI dispatch).
-- [ ] P17-cli-output-format (1/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct added in cli_output.rs). T2-T6 remaining: migrate remaining `eprintln!` calls.
-- [ ] P18-tui-agent-data (0/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. Acceptance roll-ups gated on SH04; SH04 is done but acceptance tests not yet verified.
-- [ ] P19-cascade-router-acp (0/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. All 6 unimplemented: no `cascade_select_model()`, model key mismatch bug at line 1607, DaimonState still hardcoded default.
-- [ ] P20-zero-config (1/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T4 done (`use_max_completion_tokens` builtin field fix). T1-T3,T5 need implementation.
+- [ ] P17-cli-output-format (2/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct), T2 done (do_cmd.rs eprintln migration). T3-T6 remaining.
+- [x] P18-tui-agent-data (5/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. All 5 acceptance roll-ups verified: structured attribution, token accumulation, error classification, gate diagnosis, TUI bridge. 6 agent_events tests added.
+- [ ] P19-cascade-router-acp (1/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. T1 done (cascade_select_model env-gated). T2-T6 remaining: wire call site, model key fix, DaimonState loading.
+- [x] P20-zero-config (5/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T1 done (auto-detect provider), T2 done (default roko.toml), T3 done (skip provider validation), T4 done (use_max_completion_tokens), T5 done (resolve_model builtin path + 3 tests).
 - [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
-- [ ] P22-acp-tool-permission (3/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied_tools/allowed_tools enforcement in AcpBuiltinToolHandler), T3 done (session.rs denied/allowed_tools fields). T4-T5 remaining.
+- [x] P22-acp-tool-permission (5/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied/allowed enforcement), T3 done (session fields), T4 done (5 unit tests), T5 done (audit logging with session_id).
 - [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
 - [ ] P24-workspace-paths (3/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43. T1 resolve_plans_dir swap, T3 orphaned .tmp check, T4 plans dir conflict check done. Remaining: T2 doc updates.
-- [ ] P25-mcp-acp-passthrough (2/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2 done. T3,T4 need implementation.
+- [ ] P25-mcp-acp-passthrough (3/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2,T3 done (MCP auto-discovery in AcpSession). T4 remaining.
 - [x] P26-hdc-similarity-lookup (4/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24. query_similar_episodes + test + event_loop wiring + format section all done.
 - [x] P27-provider-error-ux (4/4 done) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14. T1-T4 done: structured provider key checks in doctor, multi-provider setup instructions, state layout audit, MCP allowlist check.
 - [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
 - [x] P29-develop-command-wire (3/3 done) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18. T1-T3 done: develop command wired, refactored from do_cmd boilerplate.
 - [x] P30-onboarding-doctor (4/4 done) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1-T4 done: multi-provider key checks, setup command improvements, state layout audit check, MCP allowlist check. Superseded by P27 which covers all the same ground.
-- [ ] P31-note-and-context (1/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07. T2 note_cluster module done. Remaining: T1 shorthand routing, T3 --from-notes flag.
-- [ ] P32-cli-polish (0/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18.
+- [x] P31-note-and-context (3/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07. T1 done (plan shorthand routing), T2 done (note_cluster module), T3 done (--from-notes flag).
+- [x] P32-cli-polish (2/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18. T1 done (skip_serializing_if on ModelProfile), T2 done (pending symbol ○).
 - [x] P33-model-ux (1/1 done) — plans/P33-model-ux/tasks.toml; Wave 8/E14. T1 done: `skip_serializing_if` on provider config + pending symbol in inline display.
 - [ ] P34-verification-sweep (0/4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
 - [ ] architecture-defi-critical-path (0/3) — plans/architecture-defi-critical-path/tasks.toml;
@@ -834,8 +834,8 @@ Run only after the named parents are DONE:
 - [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
 - [ ] E37-surfaces — 0/9, all greenfield. After E09/E33. `ProjectionEnvelope`, `DashboardEvent` are the right foundation.
 - [ ] E43-deployment-portability — ~2/8 partial. After E18. T03 daemon install ~70% done (launchd missing RUST_LOG). T08 Dockerfile exists but uses debian not distroless. 6/8 greenfield.
-- [ ] Reconcile/complete P19-cascade-router-acp — 0/6. No `cascade_select_model()`, model key mismatch bug, DaimonState hardcoded.
-- [ ] Reconcile/complete P25-mcp-acp-passthrough — 2/4. T1,T2 done. T3,T4 need implementation.
+- [ ] Reconcile/complete P19-cascade-router-acp — 1/6. T1 done (cascade_select_model env-gated). T2-T6 remaining.
+- [ ] Reconcile/complete P25-mcp-acp-passthrough — 3/4. T1,T2,T3 done. T4 remaining.
 - [ ] Reconcile/complete P28-image-support — 0/5. All unimplemented.
 - [ ] E17-acp-completion — 1/8 (T01 done). After E04/E07/E14/P19/P22/P25/P28. T03 ~80% (setup function exists, not threaded into Anthropic path). 6/8 greenfield.
 
@@ -868,7 +868,7 @@ Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 - [x] E12-T07 runs only after E05/E06/E08. (Done: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` deleted.)
 - [x] E12-T08 runs only after T07. (Done: `legacy-orchestrate` feature removed from Cargo.toml; ~1900 lines of conditional code removed from run.rs; dead structs cleaned.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
-- [ ] E12 reads 9/9 done. (Current: 6 done (T01,T03,T04,T05,T07,T08), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep), 1 needs implementation (T09).)
+- [ ] E12 reads 9/9 done. (Current: 7 done (T01,T03,T04,T05,T07,T08,T09), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep). T09 done: plugin webhook scopes wired at serve startup.)
 - [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12. E45-T07 appears done (`build_knowledge_routing_advice` wired at event_loop.rs:7304).
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 

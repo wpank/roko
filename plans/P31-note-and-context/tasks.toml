@@ -1,8 +1,8 @@
 [meta]
 plan = "P31-note-and-context"
 total = 3
-done = 1
-status = "active"
+done = 3
+status = "done"
 max_parallel = 1
 estimated_total_minutes = 90
 skip_enrichment = true

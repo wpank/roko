@@ -36,6 +36,7 @@ pub mod cold_substrate;
 pub mod file_substrate;
 pub mod gc;
 pub mod layout;
+pub mod log_rotation;
 pub mod metrics;
 pub mod observability;
 pub mod pointer;

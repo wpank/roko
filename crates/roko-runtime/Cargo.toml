@@ -33,6 +33,7 @@ nix = { version = "0.29", features = ["signal"] }
 tempfile = { workspace = true }
 roko-compose = { path = "../roko-compose" }
 roko-learn = { path = "../roko-learn" }
+roko-gate = { path = "../roko-gate" }
 axum = { workspace = true }
 http-body-util = { workspace = true }
 

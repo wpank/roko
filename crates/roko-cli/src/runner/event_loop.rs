@@ -45,6 +45,7 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::agent_exec::classify_agent_crash;
 use crate::dispatch::model_routing::tier_to_complexity;
 use crate::dispatch::{
     AgentDispatchRequest, DispatchContext, GateFeedback as DispatchGateFeedback, PromptCache,
@@ -2299,10 +2300,15 @@ pub async fn run(
                             );
                             apply_agent_completion(&mut executor, &plan_id, &tui);
                         } else {
-                            let message = terminal_failure.clone().unwrap_or_else(|| format!(
-                                "agent process exited unsuccessfully: exit_code={}",
-                                exit_code.map_or_else(|| "unknown".into(), |code| code.to_string())
-                            ));
+                            let message = terminal_failure.clone().unwrap_or_else(|| {
+                                let exit_crash = classify_agent_crash(&state.agent_output);
+                                format!(
+                                    "agent exited (code {}): {:?}\n  Recovery: {}",
+                                    exit_code.map_or_else(|| "unknown".into(), |code: i32| code.to_string()),
+                                    exit_crash,
+                                    exit_crash.recovery_hint(),
+                                )
+                            });
                             let attempt = event_attempt.clone();
                             let run_id = state.run_id().to_string();
                             emit_runner_event(
@@ -4422,6 +4428,8 @@ fn handle_agent_failure(
 
     let failure_text = format!("{message}\n{}", state.agent_output);
     let failure_kind = RunnerFailureKind::from_output(&failure_text);
+    let crash_class = classify_agent_crash(&failure_text);
+    let recovery = crash_class.recovery_hint();
     let retry_budget = config.max_retries;
     let retry_phase_open = executor
         .plan_state(&plan_id)
@@ -4435,9 +4443,11 @@ fn handle_agent_failure(
     let decision_reason = if decision_probe.should_retry() {
         "agent turn failed and retry policy allows another attempt".to_string()
     } else if decision_probe.retryable {
-        format!("agent turn failed and retries exhausted: {message}")
+        format!("agent turn failed and retries exhausted: {message}\nRecovery: {recovery}")
     } else {
-        format!("agent turn failed with non-retryable {failure_kind:?} failure: {message}")
+        format!(
+            "agent turn failed with non-retryable {failure_kind:?} failure: {message}\nRecovery: {recovery}"
+        )
     };
     let decision = RetryDecision::for_failure(
         failure_kind,
@@ -4538,6 +4548,21 @@ fn handle_agent_failure(
     }
     sink.task_failed(&plan_id, &task_id, &reason);
     tui.task_completed(&plan_id, &task_id, "failed");
+
+    // Record crash classification for failure aggregation (P15-T4).
+    let _ = append_ledger_entry(
+        &paths.run_ledger_jsonl,
+        "task_crash_class",
+        &serde_json::json!({
+            "run_id": &run_id,
+            "plan_id": &plan_id,
+            "task_id": &task_id,
+            "attempt": attempt.attempt,
+            "crash_class": format!("{crash_class:?}"),
+            "recovery_hint": recovery,
+            "timestamp_ms": chrono::Utc::now().timestamp_millis().max(0) as u64,
+        }),
+    );
 
     emit_runner_event(
         paths,

@@ -319,6 +319,13 @@ pub struct AcpSession {
     pub busy: Arc<AtomicBool>,
     /// Session-scoped MCP server attachments.
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Path to the `.mcp.json` config resolved during session creation.
+    ///
+    /// Populated by [`SessionManager::create_session`] via MCP auto-discovery
+    /// so that prompt dispatch can pass a resolved path to the tool loop without
+    /// re-scanning the filesystem on every turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config_path: Option<PathBuf>,
     /// Current ACP configuration options.
     #[serde(default)]
     pub config_options: Vec<ConfigOption>,
@@ -369,6 +376,7 @@ impl AcpSession {
             cancel_token: CancelToken::new(),
             busy: new_atomic_flag(),
             mcp_servers: params.mcp_servers,
+            mcp_config_path: None,
             config_options,
             warnings: Vec::new(),
             conversation_history: Vec::new(),
@@ -416,6 +424,7 @@ impl AcpSession {
             cancel_token: CancelToken::new(),
             busy: new_atomic_flag(),
             mcp_servers,
+            mcp_config_path: None,
             config_options,
             warnings,
             conversation_history: Vec::new(),
@@ -1064,9 +1073,34 @@ impl SessionManager {
         let mut session = AcpSession::new_with_config(params, &self.roko_config);
         session.cached_conventions = AcpSession::load_conventions(&self.workdir);
         session.always_allowed = AcpSession::load_workspace_trust(&self.workdir);
+        session.mcp_config_path = self.resolve_mcp_config_path();
         let result = session.new_result();
         self.sessions.insert(session.session_id.clone(), session);
         result
+    }
+
+    /// Resolve the MCP config path for a new session.
+    ///
+    /// Checks (in order):
+    /// 1. `roko.toml` `[agent].mcp_config` explicit path
+    /// 2. Auto-discovery: walks up from the workdir looking for `.mcp.json`
+    ///
+    /// Returns `None` if no config is found. Errors during discovery are logged
+    /// and treated as "not found" so session creation is never blocked.
+    fn resolve_mcp_config_path(&self) -> Option<PathBuf> {
+        // 1. Explicit path from roko.toml agent config.
+        if let Some(explicit) = &self.roko_config.agent.mcp_config {
+            return Some(explicit.clone());
+        }
+        // 2. Auto-discover by walking parent directories.
+        match roko_agent::mcp::find_mcp_config(&self.workdir) {
+            Some(Ok((path, _config))) => Some(path),
+            Some(Err(err)) => {
+                tracing::debug!("MCP config discovery failed: {err}");
+                None
+            }
+            None => None,
+        }
     }
 
     /// Returns an immutable reference to a known session.

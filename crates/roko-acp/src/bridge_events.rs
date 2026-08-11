@@ -645,6 +645,43 @@ fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> 
     model_slugs
 }
 
+/// Select a model for an ACP session using the cascade router.
+///
+/// Returns `Some(slug)` when:
+/// 1. The `ROKO_ACP_CASCADE_SELECT` environment variable is set.
+/// 2. The cascade router state file exists at `workdir/.roko/learn/cascade-router.json`.
+///
+/// Returns `None` (leaving model selection to the caller) when the env var is
+/// absent or the router file does not yet exist (cold start).
+#[allow(dead_code)] // P19-T2 will wire the call site
+fn cascade_select_model(
+    workdir: &Path,
+    roko_config: &RokoConfig,
+    mode: &str,
+    prompt: &str,
+    effort: &str,
+    resolved_slug: &str,
+) -> Option<String> {
+    if std::env::var("ROKO_ACP_CASCADE_SELECT").is_err() {
+        return None;
+    }
+
+    let router_path = workdir
+        .join(".roko")
+        .join("learn")
+        .join("cascade-router.json");
+
+    if !router_path.exists() {
+        return None;
+    }
+
+    let model_slugs = cascade_router_model_slugs(roko_config, resolved_slug);
+    let router = CascadeRouter::load_or_new(&router_path, model_slugs);
+    let ctx = acp_routing_context(mode, prompt, effort);
+    let cascade_model = router.route_with_cfactor(&ctx, None, None);
+    Some(cascade_model.primary.slug)
+}
+
 fn compute_acp_reward(success: bool, wall_ms: u64, output_tokens: Option<u64>) -> f64 {
     if !success {
         return 0.0;
@@ -1791,6 +1828,7 @@ async fn run_anthropic_builtin_tool_loop(
             tool.name.clone(),
             Arc::new(AcpBuiltinToolHandler {
                 tool_name: tool.name.clone(),
+                session_id: session_id.to_string(),
                 workdir: workdir.to_path_buf(),
                 event_sender: event_sender.clone(),
             }),
@@ -2494,6 +2532,7 @@ async fn run_openai_compat_builtin_tool_loop(
             tool.name.clone(),
             Arc::new(AcpBuiltinToolHandler {
                 tool_name: tool.name.clone(),
+                session_id: session_id.to_string(),
                 workdir: workdir.to_path_buf(),
                 event_sender: event_sender.clone(),
             }),
@@ -2980,6 +3019,7 @@ impl roko_core::tool::CancelToken for AcpToolCancelToken {
 /// MCP tools.
 struct AcpBuiltinToolHandler {
     tool_name: String,
+    session_id: String,
     workdir: PathBuf,
     event_sender: mpsc::Sender<CognitiveEvent>,
 }
@@ -2995,6 +3035,12 @@ impl ToolHandler for AcpBuiltinToolHandler {
         if let Some(ref denied) = ctx.denied_tools
             && denied.contains(&self.tool_name)
         {
+            warn!(
+                tool = %self.tool_name,
+                session_id = %self.session_id,
+                reason = "denied_tools",
+                "ACP tool call denied"
+            );
             return ToolResult::err(ToolError::Other(format!(
                 "tool '{}' is denied for this command",
                 self.tool_name
@@ -3004,11 +3050,22 @@ impl ToolHandler for AcpBuiltinToolHandler {
         if let Some(ref allowed) = ctx.allowed_tools
             && !allowed.contains(&self.tool_name)
         {
+            warn!(
+                tool = %self.tool_name,
+                session_id = %self.session_id,
+                reason = "not_in_allowed_tools",
+                "ACP tool call denied"
+            );
             return ToolResult::err(ToolError::Other(format!(
                 "tool '{}' is not in the allowed set for this command",
                 self.tool_name
             )));
         }
+        debug!(
+            tool = %self.tool_name,
+            session_id = %self.session_id,
+            "ACP tool call allowed"
+        );
         let output = crate::builtin_tools::execute_acp_builtin_tool(
             &self.tool_name,
             &call.arguments,
@@ -5781,6 +5838,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let handler = AcpBuiltinToolHandler {
             tool_name: "bash".into(),
+            session_id: "test-session".into(),
             workdir: std::env::temp_dir(),
             event_sender: tx,
         };
@@ -5804,6 +5862,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let handler = AcpBuiltinToolHandler {
             tool_name: "bash".into(),
+            session_id: "test-session".into(),
             workdir: std::env::temp_dir(),
             event_sender: tx,
         };

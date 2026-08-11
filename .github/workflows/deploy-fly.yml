@@ -68,7 +68,7 @@ jobs:
           interval = "30s"
           timeout = "5s"
           grace_period = "10s"
-          path = "/api/health"
+          path = "/health"
           method = "GET"
 
           [mounts]

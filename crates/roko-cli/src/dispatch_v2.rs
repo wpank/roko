@@ -418,6 +418,10 @@ impl CliProviderConfig {
             args.push("--resume".to_string());
             args.push(session.clone());
         }
+        for tool in &request.disallowed_tools {
+            args.push("--disallowed-tools".to_string());
+            args.push(tool.clone());
+        }
 
         Ok(CliInvocation::new(
             self,
@@ -492,6 +496,11 @@ pub struct CliDispatchRequest {
     pub env: Vec<(String, String)>,
     /// Agent id used by observers.
     pub agent_id: String,
+    /// Tool names the agent must not invoke (passed as --disallowed-tools to Claude CLI).
+    ///
+    /// Only applied on the Claude CLI path — the Codex path has no equivalent flag.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
 }
 
 impl CliDispatchRequest {
@@ -1424,6 +1433,7 @@ mod tests {
             resume_session: None,
             env: Vec::new(),
             agent_id: "p/t".to_string(),
+            disallowed_tools: Vec::new(),
         };
 
         let invocation = provider.build_invocation(&request).unwrap();

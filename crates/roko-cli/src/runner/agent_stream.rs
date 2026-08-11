@@ -50,6 +50,11 @@ pub struct AgentSpawnConfig {
     pub agent_id: String,
     /// Materialized CLI provider selected by provider/model resolution.
     pub cli_provider: Option<CliProviderConfig>,
+    /// Tool names the agent must not invoke, derived from safety contracts.
+    ///
+    /// Set by the caller (event_loop) after contract loading — not populated
+    /// by `from_run_config`. Passed through to `CliDispatchRequest`.
+    pub disallowed_tools: Vec<String>,
 }
 
 impl AgentSpawnConfig {
@@ -74,6 +79,7 @@ impl AgentSpawnConfig {
             resume_session: config.resume_session.clone(),
             agent_id,
             cli_provider: None,
+            disallowed_tools: Vec::new(),
         }
     }
 
@@ -278,6 +284,7 @@ pub async fn spawn_agent(
         resume_session: config.resume_session.clone(),
         env: Vec::new(),
         agent_id: config.agent_id.clone(),
+        disallowed_tools: config.disallowed_tools.clone(),
     })?;
 
     let mut cmd = Command::new(&invocation.program);
@@ -417,6 +424,7 @@ mod tests {
             resume_session: None,
             agent_id: "test-agent".to_string(),
             cli_provider: Some(CliProviderConfig::claude("test-cli", program)),
+            disallowed_tools: Vec::new(),
         };
         (temp, config)
     }

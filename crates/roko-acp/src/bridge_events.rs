@@ -38,7 +38,7 @@ use roko_core::foundation::{
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::tool::{
     NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolCall, ToolContext, ToolDef, ToolError,
-    ToolHandler, ToolPermission, ToolResult, ToolSource, VecToolRegistry,
+    ToolHandler, ToolResult, ToolSource, VecToolRegistry,
 };
 use roko_dreams::{load_dream_routing_advice, relevant_pattern_summaries};
 use roko_learn::{
@@ -58,7 +58,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::builtin_tools::acp_builtin_tools;
+use crate::builtin_tools::{acp_builtin_tools, compute_session_capabilities};
 use crate::event_forward::AcpEventForwarder;
 use crate::knowledge::{DispatchKnowledge, append_context, query_dispatch_knowledge};
 use crate::runner::run_with_workflow_engine;
@@ -1828,13 +1828,7 @@ async fn run_anthropic_builtin_tool_loop(
     let tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        ToolPermission {
-            read: true,
-            write: true,
-            exec: true,
-            git: true,
-            network: true,
-        },
+        compute_session_capabilities(&tools),
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
@@ -2368,13 +2362,7 @@ async fn run_openai_compat_mcp_tool_loop(
     let tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        ToolPermission {
-            read: true,
-            write: true,
-            exec: true,
-            git: true,
-            network: true,
-        },
+        compute_session_capabilities(&mcp_state.tools),
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
@@ -2527,13 +2515,7 @@ async fn run_openai_compat_builtin_tool_loop(
     let tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
-        ToolPermission {
-            read: true,
-            write: true,
-            exec: true,
-            git: true,
-            network: true,
-        },
+        compute_session_capabilities(&tools),
         Arc::new(NoopAuditSink),
         Arc::new(NoopTraceSink),
         Arc::new(NoopMetricsSink),
@@ -3554,7 +3536,13 @@ async fn run_slash_command(
         }
         "plan-run" => {
             let dir = if args.is_empty() { "plans/" } else { args };
-            vec!["plan".into(), "run".into(), dir.into()]
+            vec![
+                "plan".into(),
+                "run".into(),
+                dir.into(),
+                "--model".into(),
+                model_key.clone(),
+            ]
         }
 
         // ── Implementation & Execution ──
@@ -3573,6 +3561,16 @@ async fn run_slash_command(
                 "do".into(),
                 "--model".into(),
                 model_key.clone(),
+                args.into(),
+            ]
+        }
+        "develop" => {
+            require_args!("develop", "<prompt>");
+            vec![
+                "develop".into(),
+                "--model".into(),
+                model_key.clone(),
+                "--yes".into(),
                 args.into(),
             ]
         }
@@ -3690,7 +3688,7 @@ async fn run_slash_command(
                 "plan".into(),
                 "run".into(),
                 "plans/".into(),
-                "--resume".into(),
+                "--resume-plan".into(),
                 path.into(),
             ]
         }
@@ -3923,6 +3921,7 @@ Available commands (organized by Will's core loop):
 
   Implementation & Execution
     /run <prompt>      Single prompt → universal loop
+    /develop <prompt>  Full pipeline: scope → plan → execute → gate
     /agents            List agents and their status
     /agent-chat <name> Interactive chat with a specific agent
     /agent-start <name> Start a named agent

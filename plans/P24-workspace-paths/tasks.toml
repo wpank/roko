@@ -1,8 +1,8 @@
 [meta]
 plan = "P24-workspace-paths"
 total = 4
-done = 0
-status = "ready"
+done = 3
+status = "active"
 max_parallel = 1
 
 # ────────────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Align resolve_plans_dir in main.rs to prefer top-level plans/"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -124,7 +124,7 @@ fail_msg = "Must compile after doc string changes"
 [[task]]
 id = "T3"
 title = "Add orphaned tmp file detection to roko doctor"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 45
@@ -191,7 +191,7 @@ fail_msg = "Existing doctor tests must still pass"
 [[task]]
 id = "T4"
 title = "Add plans directory conflict detection to roko doctor"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 35

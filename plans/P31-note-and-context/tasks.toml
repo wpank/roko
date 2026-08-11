@@ -1,8 +1,8 @@
 [meta]
 plan = "P31-note-and-context"
 total = 3
-done = 0
-status = "ready"
+done = 1
+status = "active"
 max_parallel = 1
 estimated_total_minutes = 90
 skip_enrichment = true
@@ -122,7 +122,7 @@ Create crates/roko-cli/src/note_cluster.rs implementing note clustering:
 
 5. Register the module in lib.rs.
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 150

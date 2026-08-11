@@ -1714,6 +1714,10 @@ enum DeployCmd {
         /// Registry namespace to tag the image under.
         #[arg(long)]
         registry: Option<String>,
+        /// Push the tagged image to the registry after a successful build.
+        /// When omitted the image is built and tagged locally but NOT pushed.
+        #[arg(long)]
+        push: bool,
         /// Skip the security posture check (WARNING: server will be public without auth).
         #[arg(long)]
         unsafe_public: bool,
@@ -4357,6 +4361,31 @@ mod tests {
                     unsafe_public: true,
                     ..
                 }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_docker_push_flag_absent_by_default() {
+        // Without --push the flag must default to false so docker push is NOT invoked.
+        let cli = Cli::try_parse_from(["roko", "deploy", "docker"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Docker { push: false, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn deploy_docker_push_flag_set_when_requested() {
+        // --push must be parsed and forwarded so cmd_deploy_docker can invoke
+        // `docker push` after a successful build+tag.
+        let cli = Cli::try_parse_from(["roko", "deploy", "docker", "--push"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Deploy {
+                cmd: DeployCmd::Docker { push: true, .. }
             })
         ));
     }

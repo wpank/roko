@@ -79,7 +79,7 @@ services:
     # roko is a CLI; keep the container alive with a long-running entrypoint
     # so operators can `docker compose exec roko roko <subcommand>`.
     entrypoint: ["/usr/local/bin/roko"]
-    command: ["serve", "--listen", "0.0.0.0:9092"]
+    command: ["serve", "--bind", "0.0.0.0", "--port", "9092"]
     ports:
       - "9092:9092"
     volumes:

@@ -255,8 +255,9 @@ pub(crate) async fn cmd_deploy(cli: &Cli, cmd: DeployCmd) -> Result<i32> {
         DeployCmd::Docker {
             workdir,
             registry,
+            push,
             unsafe_public,
-        } => cmd_deploy_docker(cli, workdir, registry, unsafe_public).await,
+        } => cmd_deploy_docker(cli, workdir, registry, push, unsafe_public).await,
     }
 }
 
@@ -451,6 +452,7 @@ pub(crate) async fn cmd_deploy_docker(
     cli: &Cli,
     workdir: Option<PathBuf>,
     registry: Option<String>,
+    push: bool,
     unsafe_public: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -463,6 +465,14 @@ pub(crate) async fn cmd_deploy_docker(
 
     run_command_status(&workdir, "docker", &["build", "-t", "roko", "."])?;
     run_command_status(&workdir, "docker", &["tag", "roko:latest", &tagged_image])?;
+
+    if push {
+        println!("Pushing {tagged_image} ...");
+        run_command_status(&workdir, "docker", &["push", &tagged_image])?;
+        println!("Pushed {tagged_image}");
+    } else {
+        println!("Image tagged as {tagged_image} (use --push to push to registry)");
+    }
 
     Ok(EXIT_SUCCESS)
 }
@@ -792,7 +802,7 @@ min_machines_running = 0
 interval = "30s"
 timeout = "5s"
 grace_period = "10s"
-path = "/api/health"
+path = "/health"
 method = "GET"
 
 [mounts]

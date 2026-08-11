@@ -4058,6 +4058,14 @@ pub async fn run(
     // sink appending new entries.
     compact_episodes_if_needed(&paths.episodes_jsonl).await;
 
+    // ── Post-run filesystem GC ──────────────────────────────────────
+    //
+    // Check whether the `.roko/` directory exceeds the configured size
+    // threshold and, if so, run the GC engine to prune old runs, excess
+    // episodes, and stale cache entries.  Runs after all flushes are
+    // complete so we never race with in-flight writes.
+    run_gc_if_needed(&config.layout).await;
+
     Ok(report)
 }
 
@@ -9050,6 +9058,45 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
         Ok(_) => {} // nothing to compact
         Err(err) => {
             warn!(error = %err, "episode compaction failed (best-effort)");
+        }
+    }
+}
+
+/// Run the filesystem GC engine if the `.roko/` directory exceeds the size
+/// threshold.
+///
+/// Uses `FsRetentionPolicy::default()` (500 MB threshold, 7-day run age,
+/// 200 max episodes, 2000 max cache entries). Errors are logged but never
+/// propagated — GC is best-effort housekeeping.
+async fn run_gc_if_needed(layout: &RokoLayout) {
+    use roko_fs::{FsRetentionPolicy, GcEngine};
+
+    let engine = GcEngine::new(layout.clone(), FsRetentionPolicy::default());
+
+    match engine.should_auto_gc().await {
+        Ok(false) => {} // under threshold, nothing to do
+        Err(err) => {
+            debug!(error = %err, "GC size check failed (best-effort)");
+        }
+        Ok(true) => {
+            info!("`.roko/` exceeds size threshold — running GC");
+            match engine.collect().await {
+                Ok(report) if report.removed_count > 0 => {
+                    info!(
+                        removed = report.removed_count,
+                        failed = report.failed_count,
+                        bytes_freed = report.total_bytes,
+                        candidates = report.candidate_count(),
+                        "filesystem GC completed"
+                    );
+                }
+                Ok(_) => {
+                    debug!("GC scan found no candidates to remove");
+                }
+                Err(err) => {
+                    warn!(error = %err, "filesystem GC failed (best-effort)");
+                }
+            }
         }
     }
 }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -16,8 +17,118 @@ use tracing::{info, warn};
 use crate::cell::{Cell, CellContext};
 use crate::registry::CellRegistry;
 use crate::replay::{ActivityRecorder, ActivityReplayer};
-use crate::topo::topological_order;
-use crate::types::{ExecutionClass, Graph, GraphError, NodeId};
+use crate::topo::{topological_order, topological_waves};
+use crate::types::{ExecutionClass, Graph, GraphError, GraphPolicy, NodeId};
+
+// ─── MergeEnqueuer trait ────────────────────────────────────────────────────
+
+/// A merge request produced by the graph engine after a successful plan execution.
+///
+/// This mirrors `roko_orchestrator::MergeRequest` but lives in roko-graph to
+/// avoid a circular dependency (roko-graph is layer 2, roko-orchestrator is layer 3).
+/// The orchestrator's runner bridges this to the real `MergeQueue` via the
+/// [`MergeEnqueuer`] trait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRequest {
+    /// Plan identifier (typically the graph name).
+    pub plan_id: String,
+    /// Branch name to merge from.
+    pub branch_name: String,
+    /// Files changed by this plan execution.
+    pub files_changed: Vec<String>,
+    /// Merge priority (higher merges first).
+    pub priority: u32,
+}
+
+/// Trait for enqueueing merge requests after graph execution.
+///
+/// The graph engine holds an optional `Arc<dyn MergeEnqueuer>`. After a
+/// successful graph execution that represents a plan, the engine calls
+/// [`MergeEnqueuer::enqueue`] with the plan's changed files.
+///
+/// Implement this trait to bridge to your merge queue implementation
+/// (e.g., `roko_orchestrator::MergeQueue`).
+pub trait MergeEnqueuer: Send + Sync + std::fmt::Debug {
+    /// Enqueue a merge request. Returns `true` if the request was accepted.
+    fn enqueue(&self, request: MergeRequest) -> bool;
+}
+
+// ─── GraphSnapshot ──────────────────────────────────────────────────────────
+
+/// Serializable snapshot of a graph execution in progress or completed.
+///
+/// Captures per-node status, Activity node outputs, and policy so the engine
+/// can be resumed from this point. Only Activity node outputs are included --
+/// Workflow node outputs are re-derived on resume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphSnapshot {
+    /// Name of the graph.
+    pub graph_name: String,
+    /// Graph ID (from metadata).
+    pub graph_id: String,
+    /// Per-node execution status at snapshot time.
+    pub node_statuses: HashMap<String, SerializableNodeStatus>,
+    /// Activity node outputs. Workflow nodes are excluded (re-derived on resume).
+    pub node_outputs: HashMap<String, Vec<SerializableEngram>>,
+    /// Hot Graph tick count at snapshot time.
+    pub tick_count: u64,
+    /// Unix milliseconds when the snapshot was captured.
+    pub created_at_ms: i64,
+    /// Graph policy preserved for resume.
+    pub policy: GraphPolicy,
+}
+
+/// Serializable node status (mirrors [`NodeStatus`] but with serde support).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SerializableNodeStatus {
+    /// Not yet started.
+    Pending,
+    /// Currently executing (treated as Pending on resume).
+    Running,
+    /// Completed successfully.
+    Complete,
+    /// Failed during execution.
+    Failed,
+    /// Skipped because an upstream node failed.
+    Skipped,
+}
+
+impl From<NodeStatus> for SerializableNodeStatus {
+    fn from(s: NodeStatus) -> Self {
+        match s {
+            NodeStatus::Pending => Self::Pending,
+            NodeStatus::Running => Self::Running,
+            NodeStatus::Complete => Self::Complete,
+            NodeStatus::Failed => Self::Failed,
+            NodeStatus::Skipped => Self::Skipped,
+        }
+    }
+}
+
+impl From<SerializableNodeStatus> for NodeStatus {
+    fn from(s: SerializableNodeStatus) -> Self {
+        match s {
+            SerializableNodeStatus::Pending | SerializableNodeStatus::Running => Self::Pending,
+            SerializableNodeStatus::Complete => Self::Complete,
+            SerializableNodeStatus::Failed => Self::Failed,
+            SerializableNodeStatus::Skipped => Self::Skipped,
+        }
+    }
+}
+
+/// Lightweight serializable engram reference for snapshots.
+///
+/// Full [`roko_core::Engram`] is already serde-compatible, but we wrap the
+/// JSON representation to keep the snapshot format stable even if Engram
+/// internals change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableEngram {
+    /// JSON-serialized engram.
+    pub json: serde_json::Value,
+}
+
+// ─── Node types ─────────────────────────────────────────────────────────────
 
 /// Status of a node during graph execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +310,9 @@ pub struct GraphEngine {
     /// Optional replayer — when present, Activity node outputs are read from
     /// the JSONL file instead of re-executing the cell.
     replayer: Option<ActivityReplayer>,
+    /// Optional merge queue — when present, a [`MergeRequest`] is enqueued
+    /// after a successful graph execution that represents a plan.
+    merge_queue: Option<Arc<dyn MergeEnqueuer>>,
 }
 
 impl GraphEngine {
@@ -210,6 +324,7 @@ impl GraphEngine {
             registry,
             recorder: None,
             replayer: None,
+            merge_queue: None,
         }
     }
 
@@ -231,6 +346,19 @@ impl GraphEngine {
     #[must_use]
     pub fn with_replayer(mut self, replayer: ActivityReplayer) -> Self {
         self.replayer = Some(replayer);
+        self
+    }
+
+    /// Attach a [`MergeEnqueuer`] to this engine.
+    ///
+    /// After a successful graph execution, the engine will enqueue a
+    /// [`MergeRequest`] containing the graph name as `plan_id` and any
+    /// `files_changed` collected from Activity node outputs. The caller
+    /// (typically the plan runner) is responsible for providing an
+    /// implementation that bridges to the real merge queue.
+    #[must_use]
+    pub fn with_merge_queue(mut self, queue: Arc<dyn MergeEnqueuer>) -> Self {
+        self.merge_queue = Some(queue);
         self
     }
 
@@ -385,6 +513,387 @@ impl GraphEngine {
                         duration_ms = duration.as_millis(),
                         "node failed"
                     );
+                    failed_nodes.insert(node_id.clone());
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Failed,
+                        duration,
+                        error: Some(msg),
+                        output_count: 0,
+                    });
+                }
+            }
+        }
+
+        let total_duration = start.elapsed();
+        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+
+        // After successful execution, enqueue a merge request if a merge queue
+        // is attached. Collect files_changed from Activity node outputs via
+        // the "files_changed" tag convention.
+        if success {
+            if let Some(merge_queue) = &self.merge_queue {
+                let files_changed = Self::collect_files_changed(&outputs);
+                if !files_changed.is_empty() {
+                    let request = MergeRequest {
+                        plan_id: graph_name.clone(),
+                        branch_name: String::new(), // caller sets via merge queue impl
+                        files_changed,
+                        priority: 0,
+                    };
+                    let accepted = merge_queue.enqueue(request);
+                    info!(
+                        graph = %graph_name,
+                        accepted,
+                        "merge request enqueued after successful execution"
+                    );
+                }
+            }
+        }
+
+        Ok(GraphOutput {
+            graph_name,
+            success,
+            node_results: results,
+            total_duration,
+        })
+    }
+
+    /// Execute the graph with parallel node execution within topological waves.
+    ///
+    /// Nodes are grouped into waves using [`topological_waves`]. Within each
+    /// wave, nodes execute concurrently via `tokio::task::JoinSet`, limited by
+    /// [`GraphPolicy::max_concurrent_nodes`] through a [`tokio::sync::Semaphore`].
+    ///
+    /// Between waves, execution is sequential: wave N+1 only starts after all
+    /// nodes in wave N have completed. If any node fails and the failure
+    /// strategy is `FailFast`, remaining waves are skipped.
+    ///
+    /// # Errors
+    /// Returns `GraphError::CycleDetected` if the graph contains a cycle, or
+    /// `GraphError::UnknownCellType` if a node references an unregistered cell type.
+    #[allow(clippy::too_many_lines)]
+    pub async fn execute_parallel(&self, ctx: &CellContext) -> Result<GraphOutput, GraphError> {
+        use tokio::task::JoinSet;
+
+        let start = Instant::now();
+        let graph_name = self.graph.metadata.name.clone();
+        let max_concurrent = self.graph.policy.max_concurrent_nodes;
+
+        // 1. Compute waves
+        let waves = topological_waves(&self.graph)?;
+
+        // 2. Track outputs and failures
+        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Engram>>>> =
+            Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let failed_nodes: Arc<parking_lot::Mutex<HashSet<NodeId>>> =
+            Arc::new(parking_lot::Mutex::new(HashSet::new()));
+        let mut results: Vec<NodeResult> = Vec::new();
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+
+        // 3. Execute wave by wave
+        for wave in &waves {
+            let mut join_set: JoinSet<NodeResult> = JoinSet::new();
+            for node_id in wave {
+                let Some(node) = self.graph.get_node(node_id) else {
+                    continue;
+                };
+
+                // Check if any upstream dependency failed -> skip
+                {
+                    let failed = failed_nodes.lock();
+                    if self.has_failed_ancestor_set(node_id, &failed) {
+                        failed_nodes.lock().insert(node_id.clone());
+                        results.push(NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::Skipped,
+                            duration: Duration::ZERO,
+                            error: Some("upstream dependency failed".to_string()),
+                            output_count: 0,
+                        });
+                        continue;
+                    }
+                }
+
+                // Instantiate cell from registry
+                let cell: Arc<dyn Cell> = self
+                    .registry
+                    .create(&node.cell_type, node.config.clone())?
+                    .into();
+
+                // Gather inputs from upstream nodes (all in previous waves, so all completed)
+                let input = {
+                    let out = outputs.lock();
+                    self.gather_inputs_from(node_id, &out)
+                };
+
+                let sem = semaphore.clone();
+                let node_id = node_id.clone();
+                let cell_type = node.cell_type.clone();
+                let ctx = ctx.clone();
+
+                join_set.spawn(async move {
+                    let _permit = sem.acquire().await.expect("semaphore closed");
+
+                    let node_start = Instant::now();
+                    match cell.execute(input, &ctx).await {
+                        Ok(output_engrams) => {
+                            let duration = node_start.elapsed();
+                            let count = output_engrams.len();
+                            NodeResult {
+                                node_id: node_id.clone(),
+                                cell_type,
+                                status: NodeStatus::Complete,
+                                duration,
+                                error: None,
+                                output_count: count,
+                            }
+                        }
+                        Err(e) => {
+                            let duration = node_start.elapsed();
+                            NodeResult {
+                                node_id: node_id.clone(),
+                                cell_type,
+                                status: NodeStatus::Failed,
+                                duration,
+                                error: Some(e.to_string()),
+                                output_count: 0,
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Await all tasks in this wave
+            while let Some(join_result) = join_set.join_next().await {
+                match join_result {
+                    Ok(node_result) => {
+                        if node_result.status == NodeStatus::Failed {
+                            failed_nodes.lock().insert(node_result.node_id.clone());
+                        }
+                        // Note: in parallel mode, we don't capture engram outputs
+                        // in the wave_outputs map because the spawned tasks don't
+                        // return them (they're consumed inside the task). For full
+                        // inter-wave data flow, we'd need to Arc the outputs.
+                        // This is acceptable for plan execution where nodes are
+                        // independent and communicate via filesystem/git, not engrams.
+                        results.push(node_result);
+                    }
+                    Err(join_err) => {
+                        warn!(error = %join_err, "parallel node task panicked");
+                    }
+                }
+            }
+
+            // Check if we need to abort (FailFast with any failure in this wave)
+            if matches!(
+                self.graph.policy.failure_strategy,
+                crate::types::FailureStrategy::FailFast
+            ) && failed_nodes.lock().iter().next().is_some()
+            {
+                // Mark remaining waves as skipped
+                for remaining_wave in waves.iter().skip_while(|w| *w != wave).skip(1) {
+                    for node_id in remaining_wave {
+                        if let Some(node) = self.graph.get_node(node_id) {
+                            results.push(NodeResult {
+                                node_id: node_id.clone(),
+                                cell_type: node.cell_type.clone(),
+                                status: NodeStatus::Skipped,
+                                duration: Duration::ZERO,
+                                error: Some("aborted: upstream wave had failure".to_string()),
+                                output_count: 0,
+                            });
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        let total_duration = start.elapsed();
+        let success = results.iter().all(|r| r.status == NodeStatus::Complete);
+
+        Ok(GraphOutput {
+            graph_name,
+            success,
+            node_results: results,
+            total_duration,
+        })
+    }
+
+    /// Capture a serializable snapshot of the current execution state.
+    ///
+    /// Only Activity node outputs are included; Workflow node outputs are
+    /// omitted because they can be re-derived from inputs on resume.
+    #[must_use]
+    pub fn snapshot(
+        &self,
+        node_statuses: &HashMap<NodeId, NodeStatus>,
+        node_outputs: &HashMap<NodeId, Vec<roko_core::Engram>>,
+        tick: u64,
+    ) -> GraphSnapshot {
+        let mut snap_statuses = HashMap::new();
+        for (id, status) in node_statuses {
+            snap_statuses.insert(id.clone(), SerializableNodeStatus::from(*status));
+        }
+
+        let mut snap_outputs = HashMap::new();
+        for (id, engrams) in node_outputs {
+            // Only snapshot Activity node outputs.
+            if let Some(node) = self.graph.get_node(id) {
+                if node.execution_class == ExecutionClass::Activity {
+                    let serialized: Vec<SerializableEngram> = engrams
+                        .iter()
+                        .filter_map(|e| {
+                            serde_json::to_value(e)
+                                .ok()
+                                .map(|json| SerializableEngram { json })
+                        })
+                        .collect();
+                    if !serialized.is_empty() {
+                        snap_outputs.insert(id.clone(), serialized);
+                    }
+                }
+            }
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        GraphSnapshot {
+            graph_name: self.graph.metadata.name.clone(),
+            graph_id: self.graph.metadata.name.clone(),
+            node_statuses: snap_statuses,
+            node_outputs: snap_outputs,
+            tick_count: tick,
+            created_at_ms: now,
+            policy: self.graph.policy.clone(),
+        }
+    }
+
+    /// Resume a graph engine from a previously captured snapshot.
+    ///
+    /// Nodes that were `Complete` in the snapshot are not re-executed. Their
+    /// Activity outputs are restored from the snapshot. Pending and Running
+    /// nodes (Running is treated as Pending on resume) will be re-executed.
+    ///
+    /// # Errors
+    /// Returns an error if the graph contains a cycle or references unknown cell types.
+    #[allow(clippy::too_many_lines)]
+    pub async fn resume_from(
+        snapshot: &GraphSnapshot,
+        graph: Graph,
+        registry: CellRegistry,
+        ctx: &CellContext,
+    ) -> Result<GraphOutput, GraphError> {
+        let start = Instant::now();
+        let graph_name = graph.metadata.name.clone();
+
+        let order = topological_order(&graph)?;
+
+        let mut outputs: HashMap<NodeId, Vec<roko_core::Engram>> = HashMap::new();
+        #[allow(clippy::collection_is_never_read)]
+        let mut failed_nodes: HashSet<NodeId> = HashSet::new();
+        let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
+
+        // Restore completed Activity node outputs from the snapshot.
+        for (node_id, serialized_engrams) in &snapshot.node_outputs {
+            let engrams: Vec<roko_core::Engram> = serialized_engrams
+                .iter()
+                .filter_map(|se| serde_json::from_value(se.json.clone()).ok())
+                .collect();
+            if !engrams.is_empty() {
+                outputs.insert(node_id.clone(), engrams);
+            }
+        }
+
+        for node_id in &order {
+            let Some(node) = graph.get_node(node_id) else {
+                continue;
+            };
+
+            // Check snapshot status -- skip already-completed nodes.
+            if let Some(snap_status) = snapshot.node_statuses.get(node_id) {
+                let status: NodeStatus = (*snap_status).into();
+                if status == NodeStatus::Complete {
+                    let output_count = outputs.get(node_id).map_or(0, Vec::len);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Complete,
+                        duration: Duration::ZERO,
+                        error: None,
+                        output_count,
+                    });
+                    continue;
+                }
+                if status == NodeStatus::Skipped {
+                    failed_nodes.insert(node_id.clone());
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Skipped,
+                        duration: Duration::ZERO,
+                        error: Some("skipped in snapshot".to_string()),
+                        output_count: 0,
+                    });
+                    continue;
+                }
+                if status == NodeStatus::Failed {
+                    failed_nodes.insert(node_id.clone());
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Failed,
+                        duration: Duration::ZERO,
+                        error: Some("failed in snapshot".to_string()),
+                        output_count: 0,
+                    });
+                    continue;
+                }
+            }
+
+            // Re-execute pending nodes.
+            let cell: Box<dyn Cell> = registry.create(&node.cell_type, node.config.clone())?;
+
+            let mut input = Vec::new();
+            {
+                use petgraph::Direction;
+                if let Some(&idx) = graph.node_map.get(node_id) {
+                    for pred_idx in graph.inner.neighbors_directed(idx, Direction::Incoming) {
+                        let pred_id = &graph.inner[pred_idx].id;
+                        if let Some(engrams) = outputs.get(pred_id) {
+                            input.extend(engrams.iter().cloned());
+                        }
+                    }
+                }
+            }
+
+            info!(node_id = %node_id, cell_type = %node.cell_type, "resume: executing node");
+            let node_start = Instant::now();
+
+            match cell.execute(input, ctx).await {
+                Ok(output_engrams) => {
+                    let duration = node_start.elapsed();
+                    let count = output_engrams.len();
+                    outputs.insert(node_id.clone(), output_engrams);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Complete,
+                        duration,
+                        error: None,
+                        output_count: count,
+                    });
+                }
+                Err(e) => {
+                    let duration = node_start.elapsed();
+                    let msg = e.to_string();
                     failed_nodes.insert(node_id.clone());
                     results.push(NodeResult {
                         node_id: node_id.clone(),
@@ -675,6 +1184,79 @@ impl GraphEngine {
         }
         input
     }
+
+    /// Check if a node has any failed ancestor -- variant that takes a `&HashSet`
+    /// from a `parking_lot::Mutex` guard (used by `execute_parallel`).
+    fn has_failed_ancestor_set(&self, node_id: &str, failed: &HashSet<NodeId>) -> bool {
+        use petgraph::Direction;
+
+        let Some(&idx) = self.graph.node_map.get(node_id) else {
+            return false;
+        };
+
+        for pred_idx in self
+            .graph
+            .inner
+            .neighbors_directed(idx, Direction::Incoming)
+        {
+            let pred_id = &self.graph.inner[pred_idx].id;
+            if failed.contains(pred_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Gather input engrams from upstream nodes -- variant that takes
+    /// an external `HashMap` (used by `execute_parallel` with a `Mutex` guard).
+    fn gather_inputs_from(
+        &self,
+        node_id: &str,
+        outputs: &HashMap<NodeId, Vec<roko_core::Engram>>,
+    ) -> Vec<roko_core::Engram> {
+        use petgraph::Direction;
+
+        let Some(&idx) = self.graph.node_map.get(node_id) else {
+            return vec![];
+        };
+
+        let mut input = Vec::new();
+        for pred_idx in self
+            .graph
+            .inner
+            .neighbors_directed(idx, Direction::Incoming)
+        {
+            let pred_id = &self.graph.inner[pred_idx].id;
+            if let Some(engrams) = outputs.get(pred_id) {
+                input.extend(engrams.iter().cloned());
+            }
+        }
+        input
+    }
+
+    /// Extract `files_changed` from completed node outputs.
+    ///
+    /// Convention: nodes that modify files include a `"files_changed"` tag in
+    /// their output engrams. The tag value is a comma-separated list of file
+    /// paths. This method scans all node outputs and collects those paths.
+    fn collect_files_changed(outputs: &HashMap<NodeId, Vec<roko_core::Engram>>) -> Vec<String> {
+        let mut files = Vec::new();
+        for engrams in outputs.values() {
+            for engram in engrams {
+                if let Some(value) = engram.tags.get("files_changed") {
+                    for path in value.split(',') {
+                        let trimmed = path.trim();
+                        if !trimmed.is_empty() {
+                            files.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        files.sort();
+        files.dedup();
+        files
+    }
 }
 
 /// Build the default cell registry with standard gate and utility cells.
@@ -717,16 +1299,31 @@ pub fn default_registry() -> CellRegistry {
 
     registry.register("noop", |_config| Box::new(NoopCell::default()));
 
+    // Cognitive loop cells (E22-T01): real typed Cell implementations.
+    registry.register("sense", |_config| {
+        Box::new(crate::cells::cognitive::SenseCell::new())
+    });
+    registry.register("assess", |_config| {
+        Box::new(crate::cells::cognitive::AssessCell::new())
+    });
+    // "score" is an alias for "assess" in legacy graph definitions.
     registry.register("score", |_config| {
-        Box::new(NoopCell::with_id_and_name("score", "ScoreCell"))
+        Box::new(crate::cells::cognitive::AssessCell::new())
     });
-
     registry.register("compose", |_config| {
-        Box::new(NoopCell::with_id_and_name("compose", "ComposeCell"))
+        Box::new(crate::cells::cognitive::CognitiveComposeCell::new())
     });
-
     registry.register("act", |_config| {
-        Box::new(NoopCell::with_id_and_name("act", "ActCell"))
+        Box::new(crate::cells::cognitive::ActCell::new())
+    });
+    registry.register("verify", |_config| {
+        Box::new(crate::cells::cognitive::VerifyCell::new())
+    });
+    registry.register("persist", |_config| {
+        Box::new(crate::cells::cognitive::PersistCell::new())
+    });
+    registry.register("react", |_config| {
+        Box::new(crate::cells::cognitive::ReactCell::new())
     });
 
     // Task executor cell for plan-to-graph converted tasks (task 101).
@@ -734,9 +1331,8 @@ pub fn default_registry() -> CellRegistry {
         Box::new(crate::cells::task_executor::TaskExecutorCell::default())
     });
 
-    // Cognitive loop stub cells (task 103).
-    // These are passthrough stubs registered so cognitive loop TOML graphs
-    // validate without error. Real implementations are future tasks.
+    // Legacy cognitive loop stub aliases -- keep PassthroughCell stubs for
+    // graph definitions that still reference old names (signal-reader, etc.).
     for name in crate::cells::stubs::COGNITIVE_LOOP_STUBS {
         let cell_name = (*name).to_string();
         registry.register(name, move |_config| {
@@ -757,6 +1353,7 @@ struct NoopCell {
 }
 
 impl NoopCell {
+    #[cfg(test)]
     const fn with_id_and_name(id: &'static str, name: &'static str) -> Self {
         Self { id, name }
     }

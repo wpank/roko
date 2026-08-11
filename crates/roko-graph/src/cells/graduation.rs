@@ -124,6 +124,17 @@ impl Cell for GraduationCell {
     }
 }
 
+// ---- roko-core Cell trait (required by React supertrait) ---------------------
+
+impl roko_core::cell::Cell for GraduationCell {
+    fn cell_id(&self) -> &'static str {
+        "graduation-policy"
+    }
+    fn cell_name(&self) -> &'static str {
+        "Graduation Policy"
+    }
+}
+
 // ---- roko-core React trait ------------------------------------------------
 
 impl React for GraduationCell {

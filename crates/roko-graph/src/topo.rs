@@ -75,6 +75,56 @@ pub fn root_nodes(graph: &Graph) -> Vec<NodeId> {
         .collect()
 }
 
+/// Group topologically sorted nodes into parallel execution waves.
+///
+/// Within each wave, all nodes are independent of each other (no edges between
+/// them). Nodes in wave N+1 depend only on nodes in waves 0..N. This makes it
+/// safe to execute all nodes within a single wave concurrently.
+///
+/// Returns a `Vec<Vec<NodeId>>` where each inner `Vec` is one wave.
+///
+/// # Errors
+/// Returns `GraphError::CycleDetected` if the graph contains a cycle.
+pub fn topological_waves(graph: &Graph) -> Result<Vec<Vec<NodeId>>, GraphError> {
+    use std::collections::HashMap;
+
+    // Compute the longest-path depth for each node. Roots have depth 0.
+    let order = topological_order(graph)?;
+
+    let mut depth: HashMap<&str, usize> = HashMap::new();
+    let mut max_depth: usize = 0;
+
+    for node_id in &order {
+        let Some(&idx) = graph.node_map.get(node_id) else {
+            continue;
+        };
+
+        // Depth = max(depth of predecessors) + 1, or 0 if no predecessors.
+        let mut node_depth = 0;
+        for pred_idx in graph.inner.neighbors_directed(idx, Direction::Incoming) {
+            let pred_id = &graph.inner[pred_idx].id;
+            if let Some(&pd) = depth.get(pred_id.as_str()) {
+                node_depth = node_depth.max(pd + 1);
+            }
+        }
+        depth.insert(node_id, node_depth);
+        max_depth = max_depth.max(node_depth);
+    }
+
+    // Group nodes by depth level.
+    let mut waves: Vec<Vec<NodeId>> = vec![Vec::new(); max_depth + 1];
+    for node_id in &order {
+        if let Some(&d) = depth.get(node_id.as_str()) {
+            waves[d].push(node_id.clone());
+        }
+    }
+
+    // Remove empty waves (shouldn't happen, but be safe).
+    waves.retain(|w| !w.is_empty());
+
+    Ok(waves)
+}
+
 /// Return nodes that have no outgoing edges (leaf/terminal nodes).
 #[must_use]
 pub fn leaf_nodes(graph: &Graph) -> Vec<NodeId> {
@@ -229,6 +279,58 @@ mod tests {
 
         let leaves = leaf_nodes(&graph);
         assert_eq!(leaves, vec!["c"]);
+    }
+
+    #[test]
+    fn topological_waves_linear() {
+        // a -> b -> c should produce 3 waves of 1 node each
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_node("a")).unwrap();
+        graph.add_node(make_node("b")).unwrap();
+        graph.add_node(make_node("c")).unwrap();
+        graph.add_edge(make_edge("a", "b")).unwrap();
+        graph.add_edge(make_edge("b", "c")).unwrap();
+
+        let waves = topological_waves(&graph).unwrap();
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0], vec!["a"]);
+        assert_eq!(waves[1], vec!["b"]);
+        assert_eq!(waves[2], vec!["c"]);
+    }
+
+    #[test]
+    fn topological_waves_diamond() {
+        // a -> b, a -> c, b -> d, c -> d
+        // Wave 0: [a], Wave 1: [b, c], Wave 2: [d]
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_node("a")).unwrap();
+        graph.add_node(make_node("b")).unwrap();
+        graph.add_node(make_node("c")).unwrap();
+        graph.add_node(make_node("d")).unwrap();
+        graph.add_edge(make_edge("a", "b")).unwrap();
+        graph.add_edge(make_edge("a", "c")).unwrap();
+        graph.add_edge(make_edge("b", "d")).unwrap();
+        graph.add_edge(make_edge("c", "d")).unwrap();
+
+        let waves = topological_waves(&graph).unwrap();
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0], vec!["a"]);
+        assert_eq!(waves[1].len(), 2);
+        assert!(waves[1].contains(&"b".to_string()));
+        assert!(waves[1].contains(&"c".to_string()));
+        assert_eq!(waves[2], vec!["d"]);
+    }
+
+    #[test]
+    fn topological_waves_independent_roots() {
+        // Two independent nodes should be in the same wave
+        let mut graph = Graph::new(GraphMetadata::default());
+        graph.add_node(make_node("x")).unwrap();
+        graph.add_node(make_node("y")).unwrap();
+
+        let waves = topological_waves(&graph).unwrap();
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].len(), 2);
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub(crate) async fn cmd_do(
         ];
         if let Some(found) = candidates.iter().find(|p| p.is_file()) {
             let plan_dir = found.parent().expect("tasks.toml has parent dir");
-            eprintln!("\u{25b8} Found existing plan: {}", plan_dir.display());
+            roko_cli::output_format::step("Found plan", &plan_dir.display().to_string());
             return run_plan_execution(cli, &workdir, plan_dir, no_cascade, provider).await;
         }
     }
@@ -114,11 +114,12 @@ async fn run_simple_path(
 ) -> Result<i32> {
     let workflow_template = workflow_template_for_complexity(complexity);
 
-    eprintln!(
-        "\u{25b8} Complexity: {} (auto-detected)",
-        complexity_label(complexity)
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+    out.step(
+        "Complexity",
+        &format!("{} (auto-detected)", complexity_label(complexity)),
     );
-    eprintln!("\u{25b8} Running single agent...");
+    out.step("Running", "single agent...");
 
     prepare_runtime_hooks(workdir, cli.quiet);
     let mut config = resolve_config_for_workdir(cli, workdir)?;
@@ -167,8 +168,12 @@ async fn run_standard_path(
     use roko_cli::agent_config::{command_from_config, load_gateway_env};
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
 
-    eprintln!("\u{25b8} Complexity: standard (auto-detected, override with --complexity simple)");
-    eprintln!("\u{25b8} Step 1/2: Generating plan...");
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+    out.step(
+        "Complexity",
+        "standard (auto-detected, override with --complexity simple)",
+    );
+    out.step("Step 1/2", "Generating plan...");
 
     prepare_runtime_hooks(workdir, cli.quiet);
 
@@ -184,7 +189,17 @@ async fn run_standard_path(
     {
         let do_config: RokoConfig = std::fs::read_to_string(workdir.join("roko.toml"))
             .ok()
-            .and_then(|s| RokoConfig::from_toml(&s).ok())
+            .and_then(|s| match RokoConfig::from_toml(&s) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %workdir.join("roko.toml").display(),
+                        error = %e,
+                        "roko.toml parse error; using default config. Run `roko config validate` to fix."
+                    );
+                    None
+                }
+            })
             .unwrap_or_default();
         crate::commands::util::preflight_provider_for_model(&do_config, &model_key)?;
     }
@@ -232,7 +247,11 @@ async fn run_standard_path(
     .await?;
 
     if exit_code != 0 {
-        eprintln!("\u{25b8} Plan generation failed (exit {exit_code})");
+        let crash_class = roko_cli::agent_exec::classify_agent_crash(&output);
+        out.error(&format!(
+            "Plan generation failed (exit {exit_code}): {}",
+            crash_class.recovery_hint()
+        ));
         if !output.is_empty() && !cli.quiet {
             eprint!("{output}");
         }
@@ -242,27 +261,30 @@ async fn run_standard_path(
     // Find the generated plans directory.
     let plans_dir = roko_cli::plan::plans_dir(workdir);
     if !plans_dir.is_dir() {
-        eprintln!(
-            "\u{25b8} No plans directory found after generation at {}",
+        out.error(&format!(
+            "No plans directory found after generation at {}",
             plans_dir.display()
-        );
+        ));
         return Ok(EXIT_AGENT_FAILURE);
     }
 
     let plans = match roko_cli::runner::plan_loader::load_plans(&plans_dir) {
         Ok(plans) if plans.is_empty() => {
-            eprintln!("\u{25b8} Plan generation produced no executable plans");
+            out.error("Plan generation produced no executable plans");
             return Ok(EXIT_AGENT_FAILURE);
         }
         Ok(plans) => plans,
         Err(err) => {
-            eprintln!("\u{25b8} Failed to load generated plans: {err:#}");
+            out.error(&format!("Failed to load generated plans: {err:#}"));
             return Ok(EXIT_AGENT_FAILURE);
         }
     };
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
-    eprintln!("\u{25b8} Step 2/2: Executing plan ({total_tasks} tasks)...");
+    out.step(
+        "Step 2/2",
+        &format!("Executing plan ({total_tasks} tasks)..."),
+    );
 
     // Execute the plans through the WorkflowEngine / plan runner.
     run_plan_execution(cli, workdir, &plans_dir, no_cascade, provider).await
@@ -281,7 +303,11 @@ async fn run_complex_path(
     use roko_cli::agent_config::{command_from_config, load_gateway_env};
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
 
-    eprintln!("\u{25b8} Complexity: complex (auto-detected, override with --complexity simple)");
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+    out.step(
+        "Complexity",
+        "complex (auto-detected, override with --complexity simple)",
+    );
 
     prepare_runtime_hooks(workdir, cli.quiet);
 
@@ -292,12 +318,12 @@ async fn run_complex_path(
     let agent_command = command_from_config(workdir).unwrap_or_else(|| "claude".to_string());
 
     // ── Step 1: Create PRD idea ──────────────────────────────────────
-    eprintln!("\u{25b8} Step 1/4: Creating PRD...");
+    out.step("Step 1/4", "Creating PRD...");
     roko_cli::prd::ensure_dirs(workdir)?;
     roko_cli::prd::cmd_idea(workdir, prompt)?;
 
     // ── Step 2: Draft the PRD ────────────────────────────────────────
-    eprintln!("\u{25b8} Step 2/4: Drafting PRD...");
+    out.step("Step 2/4", "Drafting PRD...");
     let slug = roko_cli::prd::slugify(prompt);
     let drafts = roko_cli::workspace_paths::drafts_dir(workdir);
     let draft_path = drafts.join(format!("{slug}.md"));
@@ -313,7 +339,17 @@ async fn run_complex_path(
     {
         let do_config: RokoConfig = std::fs::read_to_string(workdir.join("roko.toml"))
             .ok()
-            .and_then(|s| RokoConfig::from_toml(&s).ok())
+            .and_then(|s| match RokoConfig::from_toml(&s) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %workdir.join("roko.toml").display(),
+                        error = %e,
+                        "roko.toml parse error; using default config. Run `roko config validate` to fix."
+                    );
+                    None
+                }
+            })
             .unwrap_or_default();
         crate::commands::util::preflight_provider_for_model(&do_config, &model_key)?;
     }
@@ -398,39 +434,41 @@ async fn run_complex_path(
     .await;
 
     if !draft_written {
-        eprintln!(
-            "\u{25b8} PRD draft generation failed (exit {exit_code}); \
-             falling back to plan-from-prompt path"
-        );
+        out.warning(&format!(
+            "PRD draft generation failed (exit {exit_code}); falling back to plan-from-prompt path"
+        ));
         // Fall back to standard path without the PRD step.
         return run_standard_path_inner(cli, workdir, prompt, no_cascade, provider).await;
     }
 
     // ── Step 3: Generate plan from the PRD ───────────────────────────
-    eprintln!("\u{25b8} Step 3/4: Generating plan...");
+    out.step("Step 3/4", "Generating plan...");
     let plans_root = match roko_cli::prd::generate_plan_from_prd(&slug, &draft_path, false).await {
         Ok(root) => root,
         Err(err) => {
-            eprintln!("\u{25b8} Plan generation from PRD failed: {err:#}");
-            eprintln!("\u{25b8} Falling back to plan-from-prompt path");
+            out.error(&format!("Plan generation from PRD failed: {err:#}"));
+            out.warning("Falling back to plan-from-prompt path");
             return run_standard_path_inner(cli, workdir, prompt, no_cascade, provider).await;
         }
     };
 
     let plans = match roko_cli::runner::plan_loader::load_plans(&plans_root) {
         Ok(plans) if plans.is_empty() => {
-            eprintln!("\u{25b8} Plan generation from PRD produced no executable plans");
+            out.error("Plan generation from PRD produced no executable plans");
             return Ok(EXIT_AGENT_FAILURE);
         }
         Ok(plans) => plans,
         Err(err) => {
-            eprintln!("\u{25b8} Failed to load generated plans: {err:#}");
+            out.error(&format!("Failed to load generated plans: {err:#}"));
             return Ok(EXIT_AGENT_FAILURE);
         }
     };
 
     let total_tasks: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
-    eprintln!("\u{25b8} Step 4/4: Executing plan ({total_tasks} tasks)...");
+    out.step(
+        "Step 4/4",
+        &format!("Executing plan ({total_tasks} tasks)..."),
+    );
 
     // ── Step 4: Execute the plan ─────────────────────────────────────
     run_plan_execution(cli, workdir, &plans_root, no_cascade, provider).await
@@ -438,7 +476,7 @@ async fn run_complex_path(
 
 // ─── Shared: execute a plan directory through the runner v2 ─────────
 
-async fn run_plan_execution(
+pub(crate) async fn run_plan_execution(
     cli: &Cli,
     workdir: &Path,
     plans_dir: &Path,
@@ -451,20 +489,25 @@ async fn run_plan_execution(
         .map(|resolved| resolved.config)
         .unwrap_or_default();
 
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+
     // Load and verify plans exist.
     let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
     if plans.is_empty() {
-        eprintln!("\u{25b8} No plans found at {}", plans_dir.display());
+        out.error(&format!("No plans found at {}", plans_dir.display()));
         return Ok(EXIT_AGENT_FAILURE);
     }
 
     // Scaffold missing crates if needed.
     let scaffolded = roko_cli::runner::plan_loader::scaffold_missing_crates(workdir, &plans)?;
-    if !scaffolded.is_empty() && !cli.quiet {
-        eprintln!(
-            "\u{25b8} Scaffolded {} new crate(s): {}",
-            scaffolded.len(),
-            scaffolded.join(", ")
+    if !scaffolded.is_empty() {
+        out.step(
+            "Scaffolded",
+            &format!(
+                "{} new crate(s): {}",
+                scaffolded.len(),
+                scaffolded.join(", ")
+            ),
         );
     }
 
@@ -647,51 +690,65 @@ async fn run_plan_execution(
             .unwrap_or_default()
         );
     } else if !cli.quiet {
-        eprintln!(
-            "\n\u{25b8} Plan complete: {}/{} tasks, ${:.2}, {}s",
-            v2_report.tasks_completed,
-            v2_report.total_tasks,
-            v2_report.total_cost_usd,
-            v2_report.duration.as_secs()
-        );
+        use roko_cli::inline::symbols;
+        roko_cli::output_format::intro("Plan complete");
+        roko_cli::output_format::branch(&format!(
+            "tasks    {}/{}",
+            v2_report.tasks_completed, v2_report.total_tasks
+        ));
+        roko_cli::output_format::branch(&format!(
+            "cost     {}",
+            roko_cli::output_format::cyan(&format!("${:.2}", v2_report.total_cost_usd))
+        ));
+        roko_cli::output_format::branch(&format!("duration {}s", v2_report.duration.as_secs()));
+        roko_cli::output_format::divider();
         for p in &v2_report.plans {
-            let status = if p.completed { "done" } else { "failed" };
-            eprintln!(
-                "  {status} {} -- {}/{} tasks",
-                p.plan_id, p.tasks_completed, p.tasks_total,
-            );
+            let icon = if p.completed {
+                roko_cli::output_format::green(symbols::PASS)
+            } else {
+                roko_cli::output_format::red(symbols::FAIL)
+            };
+            roko_cli::output_format::branch(&format!(
+                "{icon} {} -- {}/{} tasks",
+                p.plan_id, p.tasks_completed, p.tasks_total
+            ));
         }
         // Per-task cost breakdown.
         if !v2_report.task_costs.is_empty() {
-            eprintln!("\n  Task costs:");
-            eprintln!(
-                "  {:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
+            roko_cli::output_format::divider();
+            roko_cli::output_format::step("Task costs", "");
+            roko_cli::output_format::bar(&roko_cli::output_format::dim(&format!(
+                "{:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
                 "task", "tok_in", "tok_out", "cost", "calls", "result"
-            );
+            )));
             for tc in &v2_report.task_costs {
-                eprintln!(
-                    "  {:.<24} {:>8} {:>8} ${:>7.4} {:>6} {:>6}",
+                roko_cli::output_format::bar(&format!(
+                    "{:.<24} {:>8} {:>8} {:>9} {:>6} {:>6}",
                     tc.task_id,
                     tc.tokens_in,
                     tc.tokens_out,
-                    tc.cost_usd,
+                    roko_cli::output_format::cyan(&format!("${:.4}", tc.cost_usd)),
                     tc.agent_calls,
                     tc.outcome,
-                );
+                ));
             }
         }
-    }
-
-    if v2_report.tasks_failed > 0 && !cli.quiet && !v2_report.failure_reasons.is_empty() {
-        eprintln!("\nFailure details:");
-        for (key, reason) in &v2_report.failure_reasons {
-            if reason.contains('\n') {
-                eprintln!("  {key}:");
-                for line in reason.lines() {
-                    eprintln!("    {line}");
+        if v2_report.tasks_failed > 0 && !v2_report.failure_reasons.is_empty() {
+            roko_cli::output_format::divider();
+            roko_cli::output_format::step("Failures", "");
+            for (key, reason) in &v2_report.failure_reasons {
+                if reason.contains('\n') {
+                    roko_cli::output_format::branch(&roko_cli::output_format::red(key));
+                    for line in reason.lines() {
+                        roko_cli::output_format::bar(&roko_cli::output_format::dim(line));
+                    }
+                } else {
+                    roko_cli::output_format::branch(&format!(
+                        "{}: {}",
+                        roko_cli::output_format::red(key),
+                        roko_cli::output_format::dim(reason)
+                    ));
                 }
-            } else {
-                eprintln!("  {key}: {reason}");
             }
         }
     }
@@ -748,8 +805,14 @@ async fn run_standard_path_inner(
     })
     .await?;
 
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+
     if exit_code != 0 {
-        eprintln!("\u{25b8} Fallback plan generation failed (exit {exit_code})");
+        let crash_class = roko_cli::agent_exec::classify_agent_crash(&output);
+        out.error(&format!(
+            "Fallback plan generation failed (exit {exit_code}): {}",
+            crash_class.recovery_hint()
+        ));
         if !output.is_empty() && !cli.quiet {
             eprint!("{output}");
         }
@@ -758,7 +821,7 @@ async fn run_standard_path_inner(
 
     let plans_dir = roko_cli::plan::plans_dir(workdir);
     if !plans_dir.is_dir() {
-        eprintln!("\u{25b8} No plans directory found after generation");
+        out.error("No plans directory found after generation");
         return Ok(EXIT_AGENT_FAILURE);
     }
 
@@ -780,13 +843,19 @@ async fn cmd_do_continue(workdir: &Path, work_id: Option<String>) -> Result<i32>
     };
 
     if snapshot.exists() {
-        eprintln!(
-            "found resumable snapshot at {}; use `roko resume` until first-class work items land",
-            snapshot.display()
+        roko_cli::output_format::step(
+            "Found snapshot",
+            &format!(
+                "{}; use `roko resume` until first-class work items land",
+                snapshot.display()
+            ),
         );
         Ok(EXIT_SUCCESS)
     } else {
-        eprintln!("no resumable work found at {}", snapshot.display());
+        roko_cli::output_format::error(&format!(
+            "no resumable work found at {}",
+            snapshot.display()
+        ));
         Ok(EXIT_AGENT_FAILURE)
     }
 }
@@ -794,12 +863,15 @@ async fn cmd_do_continue(workdir: &Path, work_id: Option<String>) -> Result<i32>
 fn cmd_do_resume_hint(workdir: &Path) -> Result<i32> {
     let snapshot = executor_snapshot_path(workdir);
     if snapshot.exists() {
-        eprintln!("interrupted work found at {}", snapshot.display());
-        eprintln!("resume with: roko do --continue");
+        roko_cli::output_format::step(
+            "Interrupted work",
+            &format!("found at {}", snapshot.display()),
+        );
+        roko_cli::output_format::step("Resume with", "roko do --continue");
         Ok(EXIT_AGENT_FAILURE)
     } else {
-        eprintln!("no prompt supplied");
-        eprintln!("usage: roko do \"fix the bug\"");
+        roko_cli::output_format::error("no prompt supplied");
+        roko_cli::output_format::step("Usage", "roko do \"fix the bug\"");
         Ok(EXIT_AGENT_FAILURE)
     }
 }
@@ -875,9 +947,8 @@ fn handle_workflow_result(
             }
         }
         Err(error) => {
-            if !cli.quiet {
-                eprintln!("workflow engine error: {error:#}");
-            }
+            let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+            out.error(&format!("workflow engine error: {error:#}"));
             Ok(EXIT_AGENT_FAILURE)
         }
     }

@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
+use crate::budget::BudgetEnforcer;
 use crate::cell::CellContext;
 use crate::engine::{GraphEngine, GraphOutput};
 use crate::registry::CellRegistry;
@@ -109,6 +110,11 @@ pub struct HotGraphHandle {
     last_output: Arc<parking_lot::Mutex<Option<GraphOutput>>>,
     /// Background task handle (taken by `wait`).
     join_handle: parking_lot::Mutex<Option<JoinHandle<()>>>,
+    /// Optional per-loop budget enforcement.
+    ///
+    /// When set, the tick loop checks budget before each tick, skips expensive
+    /// nodes when exhausted, and passes `budget_remaining` to each `CellContext`.
+    budget: Option<Arc<BudgetEnforcer>>,
 }
 
 impl HotGraphHandle {
@@ -146,6 +152,11 @@ impl HotGraphHandle {
             None => false,
         }
     }
+
+    /// Return a reference to the budget enforcer, if one was provided.
+    pub fn budget(&self) -> Option<&BudgetEnforcer> {
+        self.budget.as_deref()
+    }
 }
 
 /// Start a Hot Graph -- a tick-driven, resident graph execution loop.
@@ -166,20 +177,38 @@ pub fn start_hot(
     policy: HotPolicy,
     parent_cancel: Option<CancellationToken>,
 ) -> HotGraphHandle {
+    start_hot_with_budget(graph, registry, policy, parent_cancel, None)
+}
+
+/// Start a Hot Graph with optional per-loop budget enforcement.
+///
+/// Identical to [`start_hot`] but accepts an optional [`BudgetEnforcer`]. When
+/// provided, each tick's [`CellContext::budget_remaining`] is populated from
+/// the enforcer, and the enforcer is available via [`HotGraphHandle::budget`].
+#[allow(clippy::too_many_lines)]
+pub fn start_hot_with_budget(
+    graph: Graph,
+    registry: CellRegistry,
+    policy: HotPolicy,
+    parent_cancel: Option<CancellationToken>,
+    budget: Option<BudgetEnforcer>,
+) -> HotGraphHandle {
     let cancel = parent_cancel.map(|p| p.child_token()).unwrap_or_default();
     let tick = Arc::new(AtomicU64::new(0));
     let last_output: Arc<parking_lot::Mutex<Option<GraphOutput>>> =
         Arc::new(parking_lot::Mutex::new(None));
+    let budget_arc = budget.map(Arc::new);
 
     let cancel_clone = cancel.clone();
     let tick_clone = tick.clone();
     let output_clone = last_output.clone();
+    let budget_clone = budget_arc.clone();
     let graph_name = graph.metadata.name.clone();
 
     let join_handle = tokio::spawn(async move {
         let engine = GraphEngine::new(graph, registry);
-        let ctx = CellContext::new();
         let mut current_tick = 0u64;
+        let mut budget_warned = false;
 
         let tick_interval_ms = policy.resolve_tick_interval_ms();
         info!(
@@ -187,6 +216,7 @@ pub fn start_hot(
             max_ticks = ?policy.max_ticks,
             tick_interval_ms,
             loop_level = ?policy.loop_level,
+            has_budget = budget_clone.is_some(),
             "hot graph started"
         );
 
@@ -208,6 +238,31 @@ pub fn start_hot(
                     break;
                 }
             }
+
+            // Build per-tick CellContext with budget info when available.
+            let ctx = if let Some(ref enforcer) = budget_clone {
+                let remaining = enforcer.remaining_cost_usd();
+
+                // Log once when budget first becomes exhausted.
+                if enforcer.is_exhausted() && !budget_warned {
+                    budget_warned = true;
+                    warn!(
+                        graph = %graph_name,
+                        tick = current_tick,
+                        cost_usd = enforcer.cost_usd(),
+                        tokens_used = enforcer.tokens_used(),
+                        "budget exhausted -- skipping expensive nodes"
+                    );
+                }
+
+                let mut c = CellContext::new();
+                if let Some(r) = remaining {
+                    c = c.with_budget(r);
+                }
+                c
+            } else {
+                CellContext::new()
+            };
 
             // Execute one tick of the graph.
             match engine.execute(&ctx).await {
@@ -267,12 +322,14 @@ pub fn start_hot(
         tick,
         last_output,
         join_handle: parking_lot::Mutex::new(Some(join_handle)),
+        budget: budget_arc,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::{BudgetLimits, BudgetTracker};
     use crate::loader::load_from_str;
 
     fn noop_registry() -> CellRegistry {
@@ -382,6 +439,59 @@ cell_type = "noop"
         let output = handle.last_output();
         assert!(output.is_some());
         assert!(output.unwrap().success);
+    }
+
+    #[tokio::test]
+    async fn hot_graph_with_budget_passes_remaining() {
+        let toml_str = r#"
+[graph]
+name = "budget-test"
+
+[[nodes]]
+id = "a"
+cell_type = "noop"
+"#;
+        let graph = load_from_str(toml_str).unwrap();
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(3),
+            persist_tick_state: false,
+            loop_level: None,
+        };
+        let tracker = BudgetTracker::with_limits(BudgetLimits {
+            max_tokens: Some(10_000),
+            max_cost_usd: Some(5.0),
+            deadline: None,
+        });
+        let enforcer = BudgetEnforcer::new(tracker);
+        let handle = start_hot_with_budget(graph, noop_registry(), policy, None, Some(enforcer));
+        handle.wait().await;
+        assert_eq!(handle.tick_count(), 3);
+        // Budget handle is accessible.
+        assert!(handle.budget().is_some());
+        assert!(!handle.budget().unwrap().is_exhausted());
+    }
+
+    #[tokio::test]
+    async fn hot_graph_without_budget_has_no_handle() {
+        let toml_str = r#"
+[graph]
+name = "no-budget-test"
+
+[[nodes]]
+id = "a"
+cell_type = "noop"
+"#;
+        let graph = load_from_str(toml_str).unwrap();
+        let policy = HotPolicy {
+            tick_interval_ms: 0,
+            max_ticks: Some(1),
+            persist_tick_state: false,
+            loop_level: None,
+        };
+        let handle = start_hot(graph, noop_registry(), policy, None);
+        handle.wait().await;
+        assert!(handle.budget().is_none());
     }
 
     #[test]

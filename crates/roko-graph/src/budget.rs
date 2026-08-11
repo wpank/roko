@@ -3,7 +3,12 @@
 //! [`BudgetTracker`] monitors token usage, cost, and elapsed time against
 //! configured limits. The graph engine checks the tracker before each node
 //! execution and short-circuits with `BudgetExceeded` when any limit is hit.
+//!
+//! [`BudgetEnforcer`] wraps a `BudgetTracker` with Hot-Graph-specific logic:
+//! it categorises nodes as essential (always run) or expensive (skip when
+//! budget is exhausted), enabling graceful degradation.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -176,6 +181,99 @@ impl BudgetTracker {
     }
 }
 
+// ─── Hot Graph budget enforcement ────────────────────────────────────────────
+
+/// Hot-Graph-aware budget enforcement layer on top of [`BudgetTracker`].
+///
+/// Categorises graph nodes as *essential* (cheap, always run) or *expensive*
+/// (skip when budget is exhausted). This enables graceful degradation: when
+/// the budget runs out, the tick loop can still execute Sense and React nodes
+/// for observability while skipping Act and Compose nodes that cost real money.
+#[derive(Debug)]
+pub struct BudgetEnforcer {
+    /// Underlying budget tracker.
+    tracker: BudgetTracker,
+    /// Cell type names considered essential (always execute, even over budget).
+    essential_types: HashSet<String>,
+}
+
+impl BudgetEnforcer {
+    /// Create a new enforcer wrapping the given [`BudgetTracker`].
+    ///
+    /// By default, the following cell types are considered essential:
+    /// `signal-reader`, `event-publisher`, `sense`, `react`, `noop`.
+    /// These are the cognitive loop endpoints that should always run.
+    #[must_use]
+    pub fn new(tracker: BudgetTracker) -> Self {
+        let essential_types: HashSet<String> =
+            ["signal-reader", "event-publisher", "sense", "react", "noop"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+
+        Self {
+            tracker,
+            essential_types,
+        }
+    }
+
+    /// Builder: add an additional cell type to the essential set.
+    #[must_use]
+    pub fn with_essential(mut self, cell_type: impl Into<String>) -> Self {
+        self.essential_types.insert(cell_type.into());
+        self
+    }
+
+    /// Check if a node should be allowed to run given the current budget.
+    ///
+    /// Returns `true` if the node should be **allowed** to run:
+    /// - Always `true` when budget is not exhausted.
+    /// - When budget IS exhausted: `true` only for essential cell types.
+    #[must_use]
+    pub fn should_execute(&self, cell_type: &str) -> bool {
+        if self.tracker.check().is_ok() {
+            return true;
+        }
+        // Budget exhausted -- only essential types proceed.
+        self.essential_types.contains(cell_type)
+    }
+
+    /// Check if the overall budget is exhausted.
+    #[must_use]
+    pub fn is_exhausted(&self) -> bool {
+        self.tracker.check().is_err()
+    }
+
+    /// Return the remaining cost budget in USD, if a cost limit is configured.
+    #[must_use]
+    pub fn remaining_cost_usd(&self) -> Option<f64> {
+        self.tracker.remaining_cost_usd()
+    }
+
+    /// Record resource consumption from a completed node.
+    pub fn record(&self, node_id: &str, tokens: u64, cost_usd: f64, duration: Duration) {
+        self.tracker.record(node_id, tokens, cost_usd, duration);
+    }
+
+    /// Return total tokens consumed so far.
+    #[must_use]
+    pub fn tokens_used(&self) -> u64 {
+        self.tracker.tokens_used()
+    }
+
+    /// Return total cost in USD consumed so far.
+    #[must_use]
+    pub fn cost_usd(&self) -> f64 {
+        self.tracker.cost_usd()
+    }
+
+    /// Return the cost breakdown for all recorded nodes.
+    #[must_use]
+    pub fn breakdown(&self) -> Vec<NodeCost> {
+        self.tracker.breakdown()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +367,58 @@ mod tests {
         assert_eq!(bd.len(), 2);
         assert_eq!(bd[0].node_id, "n1");
         assert_eq!(bd[1].node_id, "n2");
+    }
+
+    // ─── BudgetEnforcer tests ────────────────────────────────────────────────
+
+    #[test]
+    fn enforcer_allows_all_when_budget_available() {
+        let tracker = BudgetTracker::with_limits(BudgetLimits {
+            max_tokens: Some(1000),
+            max_cost_usd: None,
+            deadline: None,
+        });
+        let enforcer = BudgetEnforcer::new(tracker);
+        assert!(enforcer.should_execute("act"));
+        assert!(enforcer.should_execute("compose"));
+        assert!(enforcer.should_execute("sense"));
+        assert!(enforcer.should_execute("react"));
+        assert!(!enforcer.is_exhausted());
+    }
+
+    #[test]
+    fn enforcer_skips_expensive_when_exhausted() {
+        let tracker = BudgetTracker::with_limits(BudgetLimits {
+            max_tokens: Some(100),
+            max_cost_usd: None,
+            deadline: None,
+        });
+        tracker.record("n1", 150, 0.0, Duration::ZERO); // exceed limit
+        let enforcer = BudgetEnforcer::new(tracker);
+
+        assert!(enforcer.is_exhausted());
+        // Essential types still run.
+        assert!(enforcer.should_execute("sense"));
+        assert!(enforcer.should_execute("react"));
+        assert!(enforcer.should_execute("signal-reader"));
+        assert!(enforcer.should_execute("event-publisher"));
+        // Expensive types are skipped.
+        assert!(!enforcer.should_execute("act"));
+        assert!(!enforcer.should_execute("compose"));
+        assert!(!enforcer.should_execute("claude-agent"));
+    }
+
+    #[test]
+    fn enforcer_custom_essential_type() {
+        let tracker = BudgetTracker::with_limits(BudgetLimits {
+            max_tokens: Some(10),
+            max_cost_usd: None,
+            deadline: None,
+        });
+        tracker.record("n1", 20, 0.0, Duration::ZERO);
+        let enforcer = BudgetEnforcer::new(tracker).with_essential("my-monitor");
+
+        assert!(enforcer.should_execute("my-monitor"));
+        assert!(!enforcer.should_execute("some-other-cell"));
     }
 }

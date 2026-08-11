@@ -11,7 +11,7 @@
 //! - **Registry** (`CellRegistry` for mapping cell type names to factory functions)
 //! - **Topo** (topological sort, cycle detection, dependency resolution)
 //! - **Error** (error types and `Result` alias)
-//! - **Budget** (`BudgetTracker` for resource limit enforcement)
+//! - **Budget** (`BudgetTracker` and `BudgetEnforcer` for resource limit enforcement)
 //! - **Condition** (conditional edge evaluation with `CompareOp` and `Condition`)
 //! - **Cells** (built-in cell implementations: `AgentCell`, `ComposeCell`, `GraduationCell`)
 //!
@@ -58,7 +58,10 @@ pub mod types;
 
 // Re-export primary types at crate root for convenience.
 pub use cell::{Cell, CellContext, CellVersion};
-pub use engine::{GraphEngine, GraphOutput, NodeResult, NodeStatus, default_registry};
+pub use engine::{
+    FlowHandle, FlowStatus, GraphEngine, GraphOutput, GraphSnapshot, MergeEnqueuer, MergeRequest,
+    NodeResult, NodeStatus, SerializableEngram, SerializableNodeStatus, default_registry,
+};
 pub use registry::{CellFactory, CellRegistry};
 pub use types::{
     Edge, EdgeCondition, EdgeValidationError, ExecutionClass, FailureStrategy, Graph, GraphConfig,
@@ -67,9 +70,9 @@ pub use types::{
 };
 
 // Re-export from new modules.
-pub use budget::{BudgetLimits, BudgetTracker, NodeCost};
+pub use budget::{BudgetEnforcer, BudgetLimits, BudgetTracker, NodeCost};
 pub use condition::{CompareOp, Condition, evaluate};
 pub use convert::{PlanTaskInfo, plan_to_graph, plan_to_graph_with_endpoints};
 pub use error::Result as GraphResult;
-pub use hot::{HotGraphHandle, HotPolicy, LoopLevel, start_hot};
+pub use hot::{HotGraphHandle, HotPolicy, LoopLevel, start_hot, start_hot_with_budget};
 pub use replay::{ActivityRecorder, ActivityReplayer, RecordEntry};

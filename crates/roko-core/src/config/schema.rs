@@ -163,6 +163,9 @@ pub struct RokoConfig {
     /// Prompt composition knobs (strategy, VCG warmup threshold).
     #[serde(default)]
     pub prompt: PromptConfig,
+    /// Disk budget, thresholds, and GC policy for resource-aware execution.
+    #[serde(default)]
+    pub resources: ResourcesConfig,
 }
 
 /// Composition strategy for allocating prompt token budget across candidate sections.
@@ -278,6 +281,7 @@ impl Default for RokoConfig {
             validation: ValidationConfig::default(),
             cold_storage: ColdStorageConfig::default(),
             prompt: PromptConfig::default(),
+            resources: ResourcesConfig::default(),
         }
     }
 }
@@ -1727,6 +1731,169 @@ impl Default for ColdStorageConfig {
             max_age_days: Self::default_max_age_days(),
             batch_size: Self::default_batch_size(),
             interval_secs: Self::default_interval_secs(),
+        }
+    }
+}
+
+// ---- ResourcesConfig -----------------------------------------------------
+
+/// Disk budget, GC policy, and resource-management thresholds.
+///
+/// Controls how roko manages disk space during plan execution: when to run
+/// the filesystem GC, how much free space to require before starting a run,
+/// and whether to clean up Rust build artifacts and worktrees automatically.
+///
+/// Configurable via `[resources]` in `roko.toml`:
+///
+/// ```toml
+/// [resources]
+/// min_free_disk_mb = 2048
+/// warn_disk_mb = 5120
+/// gc_on_plan_start = true
+/// gc_on_plan_end = true
+/// gc_on_failure = true
+/// target_cleanup_enabled = true
+/// target_max_age_days = 3
+/// log_rotation_max_mb = 100
+/// worktree_cleanup_on_complete = true
+/// worktree_cleanup_on_failure = true
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourcesConfig {
+    /// Minimum free disk space in MB required to start a plan run.
+    ///
+    /// If available disk falls below this threshold before the DAG executor
+    /// begins, the plan run is refused with a clear error message.
+    /// Default: 2048 MB (2 GB).
+    #[serde(default = "ResourcesConfig::default_min_free_disk_mb")]
+    pub min_free_disk_mb: u64,
+
+    /// Disk space threshold in MB at which a warning signal is emitted.
+    ///
+    /// Below this level a warning is logged but execution continues.
+    /// Must be greater than `min_free_disk_mb`.
+    /// Default: 5120 MB (5 GB).
+    #[serde(default = "ResourcesConfig::default_warn_disk_mb")]
+    pub warn_disk_mb: u64,
+
+    /// Optional maximum disk growth allowed per plan in MB.
+    ///
+    /// When set, the runner tracks estimated disk growth and refuses to
+    /// spawn new parallel tasks that would exceed this budget.
+    /// Default: `None` (unlimited).
+    #[serde(default)]
+    pub per_plan_disk_budget_mb: Option<u64>,
+
+    /// Run the filesystem GC engine before starting a plan.
+    ///
+    /// Prunes stale `.roko/` data (old runs, excess episodes, cache) before
+    /// the DAG executor begins. Default: `true`.
+    #[serde(default = "ResourcesConfig::default_gc_on_plan_start")]
+    pub gc_on_plan_start: bool,
+
+    /// Run the filesystem GC engine after plan completion or failure.
+    ///
+    /// Prunes stale `.roko/` data after the DAG executor finishes. Default: `true`.
+    #[serde(default = "ResourcesConfig::default_gc_on_plan_end")]
+    pub gc_on_plan_end: bool,
+
+    /// Run the filesystem GC engine when a task fails.
+    ///
+    /// Frees disk space before any retry or replan attempt. Default: `true`.
+    #[serde(default = "ResourcesConfig::default_gc_on_failure")]
+    pub gc_on_failure: bool,
+
+    /// Enable automatic cleanup of Rust `target/` directories.
+    ///
+    /// When true, stale `target/` directories in worktrees are removed
+    /// according to `target_max_age_days`. Default: `true`.
+    #[serde(default = "ResourcesConfig::default_target_cleanup_enabled")]
+    pub target_cleanup_enabled: bool,
+
+    /// Maximum age in days before a worktree `target/` directory is removed.
+    ///
+    /// Only applies when `target_cleanup_enabled` is true. Default: 3 days.
+    #[serde(default = "ResourcesConfig::default_target_max_age_days")]
+    pub target_max_age_days: u32,
+
+    /// Rotate `.roko/` JSONL log files when they exceed this size in MB.
+    ///
+    /// Applies to `episodes.jsonl`, `signals.jsonl`, `efficiency.jsonl`,
+    /// and other JSONL files in the `learn/` directory. Default: 100 MB.
+    #[serde(default = "ResourcesConfig::default_log_rotation_max_mb")]
+    pub log_rotation_max_mb: u64,
+
+    /// Auto-remove worktrees after successful plan completion.
+    ///
+    /// When true, the worktree created for a plan is removed once the plan
+    /// succeeds and all post-merge checks pass. Default: `true`.
+    #[serde(default = "ResourcesConfig::default_worktree_cleanup_on_complete")]
+    pub worktree_cleanup_on_complete: bool,
+
+    /// Auto-remove worktrees after plan failure or cancellation.
+    ///
+    /// When true, the worktree is removed after a plan is abandoned (max
+    /// retries exhausted, manual cancel, budget exceeded). Default: `true`.
+    #[serde(default = "ResourcesConfig::default_worktree_cleanup_on_failure")]
+    pub worktree_cleanup_on_failure: bool,
+}
+
+impl ResourcesConfig {
+    const fn default_min_free_disk_mb() -> u64 {
+        2048
+    }
+
+    const fn default_warn_disk_mb() -> u64 {
+        5120
+    }
+
+    const fn default_gc_on_plan_start() -> bool {
+        true
+    }
+
+    const fn default_gc_on_plan_end() -> bool {
+        true
+    }
+
+    const fn default_gc_on_failure() -> bool {
+        true
+    }
+
+    const fn default_target_cleanup_enabled() -> bool {
+        true
+    }
+
+    const fn default_target_max_age_days() -> u32 {
+        3
+    }
+
+    const fn default_log_rotation_max_mb() -> u64 {
+        100
+    }
+
+    const fn default_worktree_cleanup_on_complete() -> bool {
+        true
+    }
+
+    const fn default_worktree_cleanup_on_failure() -> bool {
+        true
+    }
+}
+
+impl Default for ResourcesConfig {
+    fn default() -> Self {
+        Self {
+            min_free_disk_mb: Self::default_min_free_disk_mb(),
+            warn_disk_mb: Self::default_warn_disk_mb(),
+            per_plan_disk_budget_mb: None,
+            gc_on_plan_start: Self::default_gc_on_plan_start(),
+            gc_on_plan_end: Self::default_gc_on_plan_end(),
+            gc_on_failure: Self::default_gc_on_failure(),
+            target_cleanup_enabled: Self::default_target_cleanup_enabled(),
+            target_max_age_days: Self::default_target_max_age_days(),
+            log_rotation_max_mb: Self::default_log_rotation_max_mb(),
+            worktree_cleanup_on_complete: Self::default_worktree_cleanup_on_complete(),
+            worktree_cleanup_on_failure: Self::default_worktree_cleanup_on_failure(),
         }
     }
 }

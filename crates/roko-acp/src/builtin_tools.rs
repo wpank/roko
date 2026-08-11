@@ -384,6 +384,47 @@ pub fn tool_needs_permission(name: &str) -> bool {
     needs_permission(name)
 }
 
+/// Returns the set of tool names allowed for a given slash command.
+///
+/// Returns `None` for commands that should have all tools (do, run, express, full).
+/// Returns `Some(vec)` for commands with restricted tools.
+///
+/// Read-only commands (research, search, knowledge queries) get only safe read tools.
+/// PRD/plan editing commands get read + write tools but no bash.
+/// Implementation commands (do, run, express, full, agent-chat) get all tools (None).
+/// Unknown commands default to all tools (None) for a safe fallback.
+#[must_use]
+pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
+    let read_only = || {
+        vec![
+            "read_file".into(),
+            "glob".into(),
+            "grep".into(),
+            "ls".into(),
+            "web_fetch".into(),
+        ]
+    };
+    let read_write = || {
+        let mut v = read_only();
+        v.extend(["write_file".into(), "edit_file".into()]);
+        v
+    };
+    match command {
+        // Read-only: research commands don't need file writes or bash
+        "research" | "search" | "knowledge" | "explain" | "replay" | "status" | "doctor"
+        | "config" | "models" | "learn" | "prd-list" | "prd-status" | "plan-list" | "plan-show"
+        | "agents" | "learn-router" | "learn-episodes" | "knowledge-stats" | "index"
+        | "analyze" => Some(read_only()),
+        // Read + write: PRD/plan editing but no bash
+        "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
+        | "plan-regenerate" => Some(read_write()),
+        // Full access: implementation commands need bash for verification
+        "do" | "run" | "express" | "full" | "agent-chat" => None,
+        // Default: all tools (safe fallback for unknown commands)
+        _ => None,
+    }
+}
+
 /// Build a short human-readable title for the tool call.
 fn format_tool_title(name: &str, args: &serde_json::Value) -> String {
     match name {

@@ -270,7 +270,7 @@ fn load_from_resolved_path(
                 continue;
             }
             if emitted.insert(diag.key.clone()) {
-                tracing::warn!(
+                tracing::debug!(
                     config_key = %diag.key,
                     "config warning: {}",
                     diag.message
@@ -707,14 +707,24 @@ fn collect_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
     }
     for (slug, keys) in &slug_to_keys {
         if keys.len() > 1 {
-            diagnostics.push(ConfigDiagnostic {
-                key: format!("models.*.slug={slug}"),
-                message: format!(
-                    "duplicate model slug '{}' defined by keys: {}",
-                    slug,
-                    keys.join(", ")
-                ),
-            });
+            // Collect the distinct providers for all keys that share this slug.
+            let providers: std::collections::HashSet<&str> = keys
+                .iter()
+                .filter_map(|k| config.models.get(*k).map(|p| p.provider.as_str()))
+                .collect();
+            // Same-provider duplicates are intentional aliases — skip the
+            // diagnostic. Cross-provider duplicates are genuine
+            // misconfigurations and should still be reported.
+            if providers.len() > 1 {
+                diagnostics.push(ConfigDiagnostic {
+                    key: format!("models.*.slug={slug}"),
+                    message: format!(
+                        "duplicate model slug '{}' defined by keys: {}",
+                        slug,
+                        keys.join(", ")
+                    ),
+                });
+            }
         }
     }
 

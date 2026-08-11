@@ -372,6 +372,7 @@ pub fn resolve_model(config: &RokoConfig, model_key: &str) -> ResolvedModel {
             supports_tools: builtin.supports_tools,
             supports_thinking: builtin.supports_thinking,
             supports_vision: builtin.supports_vision,
+            use_max_completion_tokens: builtin.use_max_completion_tokens,
             ..ModelProfile::default()
         };
         let provider_config = provider.map(|(_, provider)| provider.clone());
@@ -1620,5 +1621,52 @@ mod tests {
         assert_eq!(json, "\"quick-reviewer\"");
         let decoded: AgentRole = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, r);
+    }
+
+    // ── Zero-config builtin model resolution (T5) ──────────────────────
+
+    #[test]
+    fn resolve_model_by_builtin_alias() {
+        // "sonnet" is a well-known alias — must resolve with an empty config.
+        let config = RokoConfig::default();
+        let resolved = resolve_model(&config, "sonnet");
+        assert_eq!(resolved.slug, "claude-sonnet-4-6");
+        assert_eq!(resolved.provider_kind, ProviderKind::AnthropicApi);
+        assert!(resolved.profile.is_some(), "profile must be populated");
+    }
+
+    #[test]
+    fn resolve_model_builtin_sets_use_max_completion_tokens() {
+        // "o3" is an OpenAI reasoning model — use_max_completion_tokens must be
+        // true so the HTTP client sends the correct parameter name.
+        let config = RokoConfig::default();
+        let resolved = resolve_model(&config, "o3");
+        let profile = resolved
+            .profile
+            .expect("profile must be present for builtin o3");
+        assert!(
+            profile.use_max_completion_tokens,
+            "o3 must have use_max_completion_tokens=true"
+        );
+    }
+
+    #[test]
+    fn resolve_model_config_overrides_builtin() {
+        // When a config entry exists for a key that would otherwise resolve via the
+        // builtin registry, the config entry must win.
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "sonnet".to_owned(),
+            ModelProfile {
+                provider: "my-proxy".to_owned(),
+                slug: "my-custom-sonnet-v1".to_owned(),
+                context_window: 32_000,
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_model(&config, "sonnet");
+        // Config entry wins — custom slug, not the builtin one.
+        assert_eq!(resolved.slug, "my-custom-sonnet-v1");
+        assert_eq!(resolved.model_key, "sonnet");
     }
 }

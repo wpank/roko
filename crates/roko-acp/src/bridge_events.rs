@@ -1715,6 +1715,7 @@ async fn run_anthropic_cognitive_task(
             slug,
             &config,
             workdir,
+            None, // single-agent chat path: all tools allowed
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -1752,6 +1753,7 @@ async fn run_anthropic_builtin_tool_loop(
     slug: &str,
     roko_config: &RokoConfig,
     workdir: &Path,
+    allowed_tools: Option<Vec<String>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<Option<bool>> {
@@ -1825,7 +1827,7 @@ async fn run_anthropic_builtin_tool_loop(
         event_sender.clone(),
     ));
 
-    let tool_context = ToolContext::new(
+    let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
         compute_session_capabilities(&tools),
@@ -1834,6 +1836,7 @@ async fn run_anthropic_builtin_tool_loop(
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
     );
+    tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
         .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)
@@ -2194,6 +2197,7 @@ async fn run_openai_compat_cognitive_task(
             &resolved,
             workdir,
             mcp_servers,
+            None, // single-agent chat path: all tools allowed
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -2212,6 +2216,7 @@ async fn run_openai_compat_cognitive_task(
             messages,
             &resolved,
             workdir,
+            None, // single-agent chat path: all tools allowed
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -2280,6 +2285,7 @@ async fn run_openai_compat_mcp_tool_loop(
     resolved: &ResolvedModel,
     workdir: &Path,
     mcp_servers: &[crate::types::McpServerConfig],
+    allowed_tools: Option<Vec<String>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -2359,7 +2365,7 @@ async fn run_openai_compat_mcp_tool_loop(
         chunk_receiver,
         event_sender.clone(),
     ));
-    let tool_context = ToolContext::new(
+    let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
         compute_session_capabilities(&mcp_state.tools),
@@ -2368,6 +2374,7 @@ async fn run_openai_compat_mcp_tool_loop(
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
     );
+    tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
         .run_messages_streaming(
@@ -2454,6 +2461,7 @@ async fn run_openai_compat_builtin_tool_loop(
     messages: &[serde_json::Value],
     resolved: &ResolvedModel,
     workdir: &Path,
+    allowed_tools: Option<Vec<String>>,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -2512,7 +2520,7 @@ async fn run_openai_compat_builtin_tool_loop(
         chunk_receiver,
         event_sender.clone(),
     ));
-    let tool_context = ToolContext::new(
+    let mut tool_context = ToolContext::new(
         workdir,
         Duration::from_secs(120),
         compute_session_capabilities(&tools),
@@ -2521,6 +2529,7 @@ async fn run_openai_compat_builtin_tool_loop(
         Arc::new(NoopMetricsSink),
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
     );
+    tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
         .run_messages_streaming(messages.to_vec(), &tools, &tool_context, chunk_sender)
@@ -2981,7 +2990,25 @@ impl ToolHandler for AcpBuiltinToolHandler {
         &self.tool_name
     }
 
-    async fn execute(&self, call: ToolCall, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
+        // Check denied_tools list — if this tool is explicitly denied, reject it.
+        if let Some(ref denied) = ctx.denied_tools
+            && denied.contains(&self.tool_name)
+        {
+            return ToolResult::err(ToolError::Other(format!(
+                "tool '{}' is denied for this command",
+                self.tool_name
+            )));
+        }
+        // Check allowed_tools list — if set, only tools in the list are permitted.
+        if let Some(ref allowed) = ctx.allowed_tools
+            && !allowed.contains(&self.tool_name)
+        {
+            return ToolResult::err(ToolError::Other(format!(
+                "tool '{}' is not in the allowed set for this command",
+                self.tool_name
+            )));
+        }
         let output = crate::builtin_tools::execute_acp_builtin_tool(
             &self.tool_name,
             &call.arguments,
@@ -5744,6 +5771,55 @@ mod tests {
         assert!(
             rx.await.is_err(),
             "dropped reply channel must produce RecvError"
+        );
+    }
+
+    // ── AcpBuiltinToolHandler permission enforcement ─────────────────────────
+
+    #[tokio::test]
+    async fn acp_builtin_tool_handler_respects_denied_tools() {
+        let (tx, _rx) = mpsc::channel(16);
+        let handler = AcpBuiltinToolHandler {
+            tool_name: "bash".into(),
+            workdir: std::env::temp_dir(),
+            event_sender: tx,
+        };
+        let call = ToolCall {
+            id: "t1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "echo hi"}),
+            request_ts_ms: 0,
+        };
+        let mut ctx = ToolContext::testing(std::env::temp_dir());
+        ctx.denied_tools = Some(vec!["bash".into()]);
+        let result = handler.execute(call, &ctx).await;
+        assert!(
+            matches!(result, ToolResult::Err(_)),
+            "denied tool must return ToolResult::Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_builtin_tool_handler_respects_allowed_tools() {
+        let (tx, _rx) = mpsc::channel(16);
+        let handler = AcpBuiltinToolHandler {
+            tool_name: "bash".into(),
+            workdir: std::env::temp_dir(),
+            event_sender: tx,
+        };
+        let call = ToolCall {
+            id: "t1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "echo hi"}),
+            request_ts_ms: 0,
+        };
+        let mut ctx = ToolContext::testing(std::env::temp_dir());
+        // bash is not in the allowed set — only read tools are.
+        ctx.allowed_tools = Some(vec!["read_file".into(), "glob".into()]);
+        let result = handler.execute(call, &ctx).await;
+        assert!(
+            matches!(result, ToolResult::Err(_)),
+            "tool not in allowed set must return ToolResult::Err"
         );
     }
 }

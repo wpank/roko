@@ -30,9 +30,9 @@ const ANTI_KNOWLEDGE_CONFIDENCE_FLOOR: f64 = 0.3;
 const CONFIRMATION_BOOST: f64 = 1.5;
 /// Additive weight for the balance/freshness contribution to the query score.
 ///
-/// Kept small (0.1) so it acts as a tie-breaker and lift for reinforced entries
+/// Kept small (0.15) so it acts as a tie-breaker and lift for reinforced entries
 /// without overriding keyword relevance, which can range up to ~3.0 for a strong match.
-const BALANCE_FRESHNESS_WEIGHT: f64 = 0.1;
+const BALANCE_FRESHNESS_WEIGHT: f64 = 0.15;
 
 /// Death threshold: when recency factor falls below 1% of initial weight,
 /// the entry is considered "dead" and eligible for pruning.
@@ -4607,52 +4607,64 @@ mod tests {
         }
     }
 
-    /// NEURO-10 / E07-T05: score_entry_for_query must rank reinforced (high-balance)
-    /// entries above otherwise identical zero-balance entries.
+    // -----------------------------------------------------------------------
+    // NEURO-10: Balance/freshness influence on query scoring
+    // -----------------------------------------------------------------------
+
+    /// Two entries with equal topic relevance, confidence, and recency: the one
+    /// with higher balance should rank first because of the balance/freshness boost.
     #[test]
-    fn query_prefers_high_balance_entry() {
-        let tmp = TempDir::new().expect("tempdir");
-        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+    fn query_prefers_balance_reinforced_entries() {
+        let dir = TempDir::new().unwrap();
+        let store = KnowledgeStore::for_roko_dir(dir.path());
         let now = Utc::now();
 
-        // Two entries with identical content, tags, confidence, and creation time.
-        // The only difference is balance: `k-rich` has been reinforced (balance=3.0),
-        // `k-zero` has never been reinforced (balance=0.0).
-        let mut k_rich = entry(
-            KnowledgeKind::Insight,
-            "k-rich",
-            "Use the retry backoff strategy for transient failures",
-            &["retry", "backoff", "failure"],
-            0.8,
-            &["ep-a"],
-            now,
-        );
-        k_rich.balance = 3.0;
+        // Use distinct tags and unique content to prevent the confirmation-detection
+        // path from running (entries_are_similar fires on shared tags + keywords).
+        // Both entries match the query but are distinct enough to not confirm each other.
+        let low_balance = {
+            let mut e = entry(
+                KnowledgeKind::Insight,
+                "low-balance",
+                "Run deploy jobs inside the integration gating pipeline",
+                &["deploy-gate", "integration"],
+                0.8,
+                &["ep-x"],
+                now,
+            );
+            e.balance = 0.0; // zero: no reinforcement history
+            e
+        };
 
-        let mut k_zero = entry(
-            KnowledgeKind::Insight,
-            "k-zero",
-            "Use the retry backoff strategy for transient failures",
-            &["retry", "backoff", "failure"],
-            0.8,
-            &["ep-b"],
-            now,
-        );
-        k_zero.balance = 0.0;
+        let high_balance = {
+            let mut e = entry(
+                KnowledgeKind::Insight,
+                "high-balance",
+                "Always validate deploy artifacts in the gating pipeline",
+                &["deploy-validate", "pipeline"],
+                0.8,
+                &["ep-y"],
+                now,
+            );
+            e.balance = 3.0; // reinforced: should get the balance/freshness boost
+            e
+        };
 
-        store.add(k_rich).expect("add k-rich");
-        store.add(k_zero).expect("add k-zero");
+        store.add(low_balance).unwrap();
+        store.add(high_balance).unwrap();
 
-        let results = store
-            .query("retry backoff strategy transient failure", 2)
-            .expect("query");
+        let hits = store
+            .query_hits("deploy gating pipeline", 2)
+            .expect("query_hits");
+        assert_eq!(hits.len(), 2, "both entries should score above the floor");
 
-        // Both entries must be returned.
-        assert_eq!(results.len(), 2, "both entries must be returned");
-        // The reinforced (high-balance) entry must rank first.
         assert_eq!(
-            results[0].id, "k-rich",
-            "reinforced high-balance entry must rank above zero-balance entry"
+            hits[0].entry.id, "high-balance",
+            "reinforced (high-balance) entry must rank first"
+        );
+        assert!(
+            hits[0].breakdown.balance_freshness_boost > hits[1].breakdown.balance_freshness_boost,
+            "high-balance entry must have a larger balance_freshness_boost in the breakdown"
         );
     }
 

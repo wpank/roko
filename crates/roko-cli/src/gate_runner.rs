@@ -178,7 +178,20 @@ impl RecordingGate {
     }
 }
 
+impl roko_core::Cell for RecordingGate {
+    fn cell_id(&self) -> &str {
+        "recording-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "RecordingGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait::async_trait]
+
 impl Verify for RecordingGate {
     async fn verify(&self, signal: &Engram, ctx: &Context) -> Verdict {
         let verdict = self.inner.verify(signal, ctx).await;

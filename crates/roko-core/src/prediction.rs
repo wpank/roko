@@ -1362,6 +1362,18 @@ impl PredictiveScorer {
     }
 }
 
+impl crate::cell::Cell for PredictiveScorer {
+    fn cell_id(&self) -> &str {
+        "predictive-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "PredictiveScorer"
+    }
+    fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+        vec![crate::cell::ProtocolId::Score]
+    }
+}
+
 impl crate::traits::Score for PredictiveScorer {
     fn score(&self, signal: &Engram, ctx: &Context) -> Score {
         let model = signal
@@ -1441,6 +1453,18 @@ impl PredictionPolicy {
     pub const fn with_degradation_threshold(mut self, degradation_threshold: f64) -> Self {
         self.degradation_threshold = degradation_threshold;
         self
+    }
+}
+
+impl crate::cell::Cell for PredictionPolicy {
+    fn cell_id(&self) -> &str {
+        "prediction-policy"
+    }
+    fn cell_name(&self) -> &str {
+        "PredictionPolicy"
+    }
+    fn protocols(&self) -> Vec<crate::cell::ProtocolId> {
+        vec![crate::cell::ProtocolId::React]
     }
 }
 

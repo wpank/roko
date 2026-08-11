@@ -16,6 +16,18 @@ use roko_core::{
 /// A scorer that returns `Score::NEUTRAL` for every signal.
 #[derive(Debug, Clone, Default)]
 pub struct NoOpScorer;
+impl roko_core::Cell for NoOpScorer {
+    fn cell_id(&self) -> &str {
+        "noop-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "NoOpScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl ScoreFn for NoOpScorer {
     fn score(&self, _s: &Engram, _ctx: &Context) -> Score {
         Score::NEUTRAL
@@ -56,6 +68,18 @@ impl Verify for NoOpGate {
 #[derive(Debug, Clone, Default)]
 pub struct NoOpRouter;
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for NoOpRouter {
+    fn cell_id(&self) -> &str {
+        "noop-router"
+    }
+    fn cell_name(&self) -> &str {
+        "NoOpRouter"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Route]
+    }
+}
+
 impl Route for NoOpRouter {
     fn select(&self, candidates: &[Engram], _ctx: &Context) -> Option<Selection> {
         candidates
@@ -73,6 +97,18 @@ impl Route for NoOpRouter {
 #[derive(Debug, Clone, Default)]
 pub struct NoOpComposer;
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for NoOpComposer {
+    fn cell_id(&self) -> &str {
+        "noop-composer"
+    }
+    fn cell_name(&self) -> &str {
+        "NoOpComposer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Compose]
+    }
+}
+
 impl Compose for NoOpComposer {
     fn compose(
         &self,
@@ -96,6 +132,18 @@ impl Compose for NoOpComposer {
 #[derive(Debug, Clone, Default)]
 pub struct NoOpPolicy;
 #[allow(clippy::unnecessary_literal_bound)]
+impl roko_core::Cell for NoOpPolicy {
+    fn cell_id(&self) -> &str {
+        "noop-policy"
+    }
+    fn cell_name(&self) -> &str {
+        "NoOpPolicy"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for NoOpPolicy {
     fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         Vec::new()

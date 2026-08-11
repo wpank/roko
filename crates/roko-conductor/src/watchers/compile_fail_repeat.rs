@@ -62,6 +62,18 @@ fn diagnostic_key(signal: &Engram) -> Option<String> {
     }
 }
 
+impl roko_core::Cell for CompileFailRepeatWatcher {
+    fn cell_id(&self) -> &str {
+        "LCompile-LFail-LRepeat-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "CompileFailRepeatWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for CompileFailRepeatWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // Collect compile diagnostic signals in order.

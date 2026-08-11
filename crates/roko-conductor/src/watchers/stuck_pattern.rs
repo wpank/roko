@@ -71,6 +71,18 @@ fn body_fingerprint(signal: &Engram) -> Option<String> {
     }
 }
 
+impl roko_core::Cell for StuckPatternWatcher {
+    fn cell_id(&self) -> &str {
+        "LStuck-LPattern-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "StuckPatternWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for StuckPatternWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // Walk backwards through action signals, counting consecutive identical ones.

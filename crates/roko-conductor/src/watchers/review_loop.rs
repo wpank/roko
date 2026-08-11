@@ -75,6 +75,18 @@ fn plan_event(signal: &Engram) -> Option<String> {
         })
 }
 
+impl roko_core::Cell for ReviewLoopWatcher {
+    fn cell_id(&self) -> &str {
+        "LReview-LLoop-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "ReviewLoopWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for ReviewLoopWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(plan_id) = latest_plan_id(stream) else {

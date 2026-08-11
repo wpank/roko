@@ -618,7 +618,20 @@ impl Default for MevGate {
     }
 }
 
+impl roko_core::Cell for MevGate {
+    fn cell_id(&self) -> &'static str {
+        "mev-gate"
+    }
+    fn cell_name(&self) -> &'static str {
+        "MevGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for MevGate {
     async fn verify(&self, signal: &Engram, _ctx: &Context) -> Verdict {
         let started = Instant::now();

@@ -68,7 +68,20 @@ impl fmt::Debug for ParallelGate {
     }
 }
 
+impl roko_core::Cell for ParallelGate {
+    fn cell_id(&self) -> &str {
+        "parallel-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "ParallelGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for ParallelGate {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let started = std::time::Instant::now();
@@ -201,7 +214,20 @@ impl fmt::Debug for VotingGate {
     }
 }
 
+impl roko_core::Cell for VotingGate {
+    fn cell_id(&self) -> &str {
+        "voting-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "VotingGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for VotingGate {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let started = std::time::Instant::now();
@@ -313,7 +339,20 @@ impl fmt::Debug for FallbackGate {
     }
 }
 
+impl roko_core::Cell for FallbackGate {
+    fn cell_id(&self) -> &str {
+        "fallback-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "FallbackGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for FallbackGate {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let started = std::time::Instant::now();
@@ -398,7 +437,20 @@ mod tests {
         }
     }
 
+    impl roko_core::Cell for MockGate {
+        fn cell_id(&self) -> &str {
+            "mock-gate-comp-test"
+        }
+        fn cell_name(&self) -> &str {
+            "MockGate"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Verify]
+        }
+    }
+
     #[async_trait]
+
     impl Verify for MockGate {
         async fn verify(&self, _signal: &Signal, _ctx: &Context) -> Verdict {
             self.calls.fetch_add(1, Ordering::SeqCst);

@@ -75,6 +75,18 @@ impl EpisodePolicy {
     }
 }
 
+impl roko_core::Cell for EpisodePolicy {
+    fn cell_id(&self) -> &str {
+        "episode-policy"
+    }
+    fn cell_name(&self) -> &str {
+        "EpisodePolicy"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for EpisodePolicy {
     fn decide(&self, _stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // The CLI drives `record_run` directly; the streaming React API is

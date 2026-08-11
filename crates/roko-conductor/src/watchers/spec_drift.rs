@@ -98,6 +98,18 @@ impl SpecDriftWatcher {
     }
 }
 
+impl roko_core::Cell for SpecDriftWatcher {
+    fn cell_id(&self) -> &str {
+        "LSpec-LDrift-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "SpecDriftWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for SpecDriftWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // Find the most recent spec-drift metric.

@@ -74,6 +74,18 @@ fn exceeds_threshold(duration_ms: u64, timeout_secs: u64, alert_threshold: f64) 
     (duration_ms as f64) > (timeout_ms as f64 * alert_threshold)
 }
 
+impl roko_core::Cell for TimeOverrunWatcher {
+    fn cell_id(&self) -> &str {
+        "LTime-LOverrun-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "TimeOverrunWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for TimeOverrunWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(signal) = stream

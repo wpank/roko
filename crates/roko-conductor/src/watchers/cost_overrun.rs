@@ -59,6 +59,18 @@ fn latest_metric(stream: &[Engram], name: &str) -> Option<f64> {
         .and_then(|v| v.parse().ok())
 }
 
+impl roko_core::Cell for CostOverrunWatcher {
+    fn cell_id(&self) -> &str {
+        "LCost-LOverrun-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "CostOverrunWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for CostOverrunWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(cost) = latest_metric(stream, PLAN_COST_METRIC) else {

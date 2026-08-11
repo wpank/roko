@@ -14,6 +14,18 @@ use std::sync::Arc;
 
 /// A custom scorer: favors signals tagged `priority=high`.
 struct PriorityScorer;
+impl roko_core::Cell for PriorityScorer {
+    fn cell_id(&self) -> &str {
+        "priority-scorer"
+    }
+    fn cell_name(&self) -> &str {
+        "PriorityScorer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Score]
+    }
+}
+
 impl roko_core::traits::Score for PriorityScorer {
     fn score(&self, s: &Engram, _ctx: &Context) -> Score {
         let confidence = if s.tag("priority") == Some("high") {
@@ -30,7 +42,19 @@ impl roko_core::traits::Score for PriorityScorer {
 
 /// A custom gate: passes if the signal body is not empty.
 struct NonEmptyGate;
+impl roko_core::Cell for NonEmptyGate {
+    fn cell_id(&self) -> &str {
+        "non-empty-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "NonEmptyGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
 #[async_trait]
+
 impl Verify for NonEmptyGate {
     async fn verify(&self, s: &Engram, _ctx: &Context) -> Verdict {
         if s.body.byte_size() > 0 {
@@ -46,6 +70,18 @@ impl Verify for NonEmptyGate {
 
 /// A composer that wraps the input in a "processed" kind with lineage.
 struct WrapComposer;
+impl roko_core::Cell for WrapComposer {
+    fn cell_id(&self) -> &str {
+        "wrap-composer"
+    }
+    fn cell_name(&self) -> &str {
+        "WrapComposer"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Compose]
+    }
+}
+
 impl Compose for WrapComposer {
     fn compose(
         &self,
@@ -70,6 +106,18 @@ impl Compose for WrapComposer {
 
 /// A policy that emits a logging episode every time a signal passes through.
 struct EpisodeLoggerPolicy;
+impl roko_core::Cell for EpisodeLoggerPolicy {
+    fn cell_id(&self) -> &str {
+        "episode-logger-policy"
+    }
+    fn cell_name(&self) -> &str {
+        "EpisodeLoggerPolicy"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for EpisodeLoggerPolicy {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         stream
@@ -200,6 +248,18 @@ async fn failing_gate_prevents_writeback() {
     let router = FirstRouter;
     // Compose that produces an empty-body signal — will fail NonEmptyGate.
     struct EmptyComposer;
+    impl roko_core::Cell for EmptyComposer {
+        fn cell_id(&self) -> &str {
+            "empty-composer"
+        }
+        fn cell_name(&self) -> &str {
+            "EmptyComposer"
+        }
+        fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+            vec![roko_core::ProtocolId::Compose]
+        }
+    }
+
     impl Compose for EmptyComposer {
         fn compose(
             &self,

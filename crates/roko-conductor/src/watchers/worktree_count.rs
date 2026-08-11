@@ -60,6 +60,18 @@ fn latest_metric(stream: &[Engram], name: &str) -> Option<usize> {
         .and_then(|v| v.parse::<usize>().ok())
 }
 
+impl roko_core::Cell for WorktreeCountWatcher {
+    fn cell_id(&self) -> &str {
+        "LWorktree-LCount-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "WorktreeCountWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for WorktreeCountWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         let Some(count) = latest_metric(stream, WORKTREE_COUNT_METRIC) else {

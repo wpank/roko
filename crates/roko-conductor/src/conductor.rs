@@ -577,6 +577,18 @@ fn collect_watcher_outputs(
     outputs
 }
 
+impl roko_core::Cell for Conductor {
+    fn cell_id(&self) -> &str {
+        "conductor"
+    }
+    fn cell_name(&self) -> &str {
+        "Conductor"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for Conductor {
     fn decide(&self, stream: &[Engram], ctx: &Context) -> Vec<Engram> {
         // Run all watchers and collect outputs.

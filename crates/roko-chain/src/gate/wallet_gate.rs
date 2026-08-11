@@ -250,7 +250,20 @@ pub(crate) fn parse_tx_from_signal(signal: &Engram) -> Result<TxRequest, String>
     Ok(json.into())
 }
 
+impl roko_core::Cell for WalletGate {
+    fn cell_id(&self) -> &'static str {
+        "wallet-gate"
+    }
+    fn cell_name(&self) -> &'static str {
+        "WalletGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for WalletGate {
     async fn verify(&self, input: &Engram, _ctx: &Context) -> Verdict {
         let started = Instant::now();

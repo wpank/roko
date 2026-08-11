@@ -96,6 +96,18 @@ impl ContextWindowPressureWatcher {
     }
 }
 
+impl roko_core::Cell for ContextWindowPressureWatcher {
+    fn cell_id(&self) -> &str {
+        "LContext-LWindow-LPressure-LWatcher"
+    }
+    fn cell_name(&self) -> &str {
+        "ContextWindowPressureWatcher"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::React]
+    }
+}
+
 impl React for ContextWindowPressureWatcher {
     fn decide(&self, stream: &[Engram], _ctx: &Context) -> Vec<Engram> {
         // Collect the last PRESSURE_LOOKBACK TokenUsage signals and compute

@@ -136,10 +136,22 @@ impl<A> CodeExecutionGate<A> {
     }
 }
 
+impl<A: Send + Sync + 'static> roko_core::Cell for CodeExecutionGate<A> {
+    fn cell_id(&self) -> &str {
+        "code-execution-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "CodeExecutionGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
 impl<A> Verify for CodeExecutionGate<A>
 where
-    A: CodeExecutionBackend,
+    A: CodeExecutionBackend + 'static,
 {
     async fn verify(&self, signal: &Signal, ctx: &Context) -> Verdict {
         let started = Instant::now();

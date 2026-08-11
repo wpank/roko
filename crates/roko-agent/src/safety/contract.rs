@@ -306,9 +306,10 @@ impl AgentContract {
 
     /// Collect all explicitly forbidden tool names from governance rules.
     ///
-    /// Returns a deduplicated list of tool names from all `ForbiddenTools`
-    /// governance rules. Does NOT invert `allowed_tools` -- callers that
-    /// need deny-by-default behavior should use `permits_tool` directly.
+    /// Returns a deduplicated, sorted list of tool names from all
+    /// `ForbiddenTools` governance rules. Does NOT invert `allowed_tools` —
+    /// callers that need deny-by-default behavior should use `permits_tool`
+    /// directly.
     #[must_use]
     pub fn forbidden_tool_names(&self) -> Vec<String> {
         let mut names = Vec::new();
@@ -1371,5 +1372,17 @@ mod tests {
         };
         let names = contract.forbidden_tool_names();
         assert_eq!(names, vec!["curl", "git_push", "rm"]);
+    }
+
+    #[test]
+    fn forbidden_tool_names_empty_when_no_forbidden_rules() {
+        let contract = AgentContract {
+            governance: vec![
+                GovernanceRule::MaxToolCallsPerTurn(10),
+                GovernanceRule::MaxConsecutiveFailures(3),
+            ],
+            ..AgentContract::default()
+        };
+        assert!(contract.forbidden_tool_names().is_empty());
     }
 }

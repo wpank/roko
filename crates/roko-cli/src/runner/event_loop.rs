@@ -56,6 +56,7 @@ use crate::knowledge_helpers::{build_knowledge_routing_advice, neuro_prompt_task
 use crate::task_helpers::task_target_crates;
 use crate::task_parser::TaskDef;
 use roko_agent::ViolationSeverity;
+use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
 use roko_learn::section_outcome::{
@@ -7719,6 +7720,41 @@ async fn dispatch_action(
                 }
             }
 
+            // Load safety contract for the task role and build the denied-tool list.
+            // The list is computed once here and shared across both the CLI and Bridge arms.
+            let contract_denied_tools: Vec<String> = {
+                match AgentContract::load_for_role_with_mode(
+                    task_role,
+                    ContractLoadMode::RestrictedFallback,
+                ) {
+                    Ok(c) => {
+                        let mut denied = c.forbidden_tool_names();
+                        // Merge with task-level denied_tools if present.
+                        if let Some(task_denied) = &task_def.denied_tools {
+                            denied.extend(task_denied.iter().cloned());
+                            denied.sort();
+                            denied.dedup();
+                        }
+                        if !denied.is_empty() {
+                            debug!(
+                                role = %task_role,
+                                denied_tools = ?denied,
+                                "safety contract: applying tool restrictions"
+                            );
+                        }
+                        denied
+                    }
+                    Err(e) => {
+                        warn!(
+                            role = %task_role,
+                            err = %e,
+                            "failed to load safety contract; no tool restrictions applied"
+                        );
+                        task_def.denied_tools.clone().unwrap_or_default()
+                    }
+                }
+            };
+
             match dispatch {
                 ResolvedAgentRuntime::Cli {
                     model,
@@ -7735,6 +7771,7 @@ async fn dispatch_action(
                     spawn_config.workdir = plan_workdir.clone();
                     spawn_config.max_turns = dispatch_turn_limit;
                     spawn_config.effort = dispatch_effort.clone();
+                    spawn_config.disallowed_tools = contract_denied_tools.clone();
                     if let Some(provider) = cli_provider {
                         spawn_config = spawn_config.with_cli_provider(provider);
                     }
@@ -7933,6 +7970,14 @@ async fn dispatch_action(
                     provider_id,
                     roko_config,
                 } => {
+                    if !contract_denied_tools.is_empty() {
+                        debug!(
+                            role = %task_role,
+                            denied_tools = ?contract_denied_tools,
+                            "safety contract: bridge dispatch has tool restrictions \
+                             (note: not enforceable via bridge path)"
+                        );
+                    }
                     ctx.state.agent_active = true;
                     ctx.state.agent_pid = None;
                     let request = AgentDispatchRequest {

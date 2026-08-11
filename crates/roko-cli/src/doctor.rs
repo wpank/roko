@@ -183,8 +183,9 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     ));
     checks.push(check_layout_basics(&workdir));
     checks.push(check_claude_cli());
-    checks.push(check_anthropic_api_key());
+    checks.extend(check_configured_provider_keys(&loaded_config));
     checks.push(check_provider_usable(&workdir));
+    checks.push(check_available_providers(&loaded_config));
     checks.push(check_default_model_configured(&loaded_config));
     checks.push(check_rust_version());
     checks.push(check_node_version());
@@ -720,31 +721,195 @@ fn check_claude_cli() -> DoctorCheck {
     }
 }
 
-fn check_anthropic_api_key() -> DoctorCheck {
-    let has_key = std::env::var("ANTHROPIC_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
-        .is_some();
+/// Check API keys for all providers configured in `roko.toml`.
+///
+/// For each provider that specifies an `api_key_env`, verifies the environment
+/// variable is set and non-empty. If no API-key-based providers are configured
+/// (e.g. the user only uses the `claude` CLI), emits a single `Ok` check.
+fn check_configured_provider_keys(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
+    use roko_core::agent::ProviderKind;
 
-    if has_key {
-        DoctorCheck {
-            id: "anthropic_api_key".to_string(),
+    let Some(config) = &loaded_config.resolved else {
+        // No config file — fall back to checking the single most common key.
+        let has_key = std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .is_some();
+        return vec![DoctorCheck {
+            id: "provider_api_keys".to_string(),
+            status: if has_key {
+                DoctorStatus::Ok
+            } else {
+                DoctorStatus::Warn
+            },
+            message: if has_key {
+                "ANTHROPIC_API_KEY is set (no roko.toml)".to_string()
+            } else {
+                "no API keys found and no roko.toml present".to_string()
+            },
+            detail: None,
+            path: None,
+            url: None,
+            fix: if has_key {
+                None
+            } else {
+                Some("run `roko config init` or set a provider API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)".to_string())
+            },
+        }];
+    };
+
+    // Collect providers that require an API key (non-CLI kinds).
+    let api_providers: Vec<(&String, &roko_core::config::schema::ProviderConfig)> = config
+        .providers
+        .iter()
+        .filter(|(_, p)| {
+            !matches!(
+                p.kind,
+                ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+            )
+        })
+        .collect();
+
+    if api_providers.is_empty() {
+        return vec![DoctorCheck {
+            id: "provider_api_keys".to_string(),
             status: DoctorStatus::Ok,
-            message: "ANTHROPIC_API_KEY is set".to_string(),
+            message: "no API providers configured (using CLI-based provider)".to_string(),
             detail: None,
             path: None,
             url: None,
             fix: None,
-        }
-    } else {
-        DoctorCheck {
-            id: "anthropic_api_key".to_string(),
-            status: DoctorStatus::Warn,
-            message: "ANTHROPIC_API_KEY not set".to_string(),
+        }];
+    }
+
+    let mut checks = Vec::new();
+    for (id, provider) in api_providers {
+        let Some(env_name) = provider.api_key_env.as_deref() else {
+            continue;
+        };
+        let has_key = std::env::var(env_name)
+            .ok()
+            .filter(|k| !k.is_empty())
+            .is_some();
+        checks.push(DoctorCheck {
+            id: format!("provider_key_{id}"),
+            status: if has_key {
+                DoctorStatus::Ok
+            } else {
+                DoctorStatus::Warn
+            },
+            message: if has_key {
+                format!("{env_name} is set (provider `{id}`)")
+            } else {
+                format!("{env_name} not set (provider `{id}` is configured but has no key)")
+            },
             detail: None,
             path: None,
             url: None,
-            fix: Some("export ANTHROPIC_API_KEY=sk-ant-...".to_string()),
+            fix: if has_key {
+                None
+            } else {
+                Some(format!("export {env_name}=<your-api-key>"))
+            },
+        });
+    }
+    checks
+}
+
+/// Summarise all available providers (those with working credentials or CLI tools).
+///
+/// Emits an informational `Ok` check listing detected providers, or a `Warn`
+/// if nothing usable is found. This is intentionally non-blocking — specific
+/// per-provider failures are reported by other checks.
+fn check_available_providers(loaded_config: &LoadedConfig) -> DoctorCheck {
+    use roko_core::agent::ProviderKind;
+
+    let mut available: Vec<String> = Vec::new();
+
+    // Check for claude CLI on PATH.
+    if std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        available.push("claude-cli".to_string());
+    }
+
+    // Check common API key env vars.
+    for (env, label) in &[
+        ("ANTHROPIC_API_KEY", "anthropic"),
+        ("OPENAI_API_KEY", "openai"),
+        ("GEMINI_API_KEY", "gemini"),
+        ("ZAI_API_KEY", "zhipu"),
+    ] {
+        if std::env::var(env).ok().filter(|k| !k.is_empty()).is_some() {
+            available.push((*label).to_string());
+        }
+    }
+
+    // Check configured providers' api_key_env values not already captured above.
+    if let Some(config) = &loaded_config.resolved {
+        for (_id, provider) in &config.providers {
+            // CLI providers already handled above.
+            if matches!(
+                provider.kind,
+                ProviderKind::ClaudeCli | ProviderKind::Hermes | ProviderKind::OpenClaw
+            ) {
+                continue;
+            }
+            let Some(env_name) = provider.api_key_env.as_deref() else {
+                continue;
+            };
+            // Skip well-known keys already in our static list.
+            if [
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "GEMINI_API_KEY",
+                "ZAI_API_KEY",
+            ]
+            .contains(&env_name)
+            {
+                continue;
+            }
+            if std::env::var(env_name)
+                .ok()
+                .filter(|k| !k.is_empty())
+                .is_some()
+            {
+                available.push(format!("{env_name} provider"));
+            }
+        }
+    }
+
+    available.dedup();
+
+    if available.is_empty() {
+        DoctorCheck {
+            id: "providers_detected".to_string(),
+            status: DoctorStatus::Warn,
+            message: "no providers detected — no API keys set and no CLI tools found".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: Some(
+                "run `roko config init` or set OPENAI_API_KEY / ANTHROPIC_API_KEY".to_string(),
+            ),
+        }
+    } else {
+        DoctorCheck {
+            id: "providers_detected".to_string(),
+            status: DoctorStatus::Ok,
+            message: format!(
+                "{} provider{} available ({})",
+                available.len(),
+                if available.len() == 1 { "" } else { "s" },
+                available.join(", ")
+            ),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
         }
     }
 }

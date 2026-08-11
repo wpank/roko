@@ -250,7 +250,9 @@ pub(crate) async fn cmd_init(
         }
     }
 
-    print_next_step_hint("Next: roko setup (configure providers) or roko develop 'prompt'");
+    print_next_step_hint(
+        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"",
+    );
 
     Ok(())
 }
@@ -1871,10 +1873,26 @@ pub(crate) fn preflight_provider_for_model(
     config: &RokoConfig,
     model_key: &str,
 ) -> anyhow::Result<()> {
-    let model = config
-        .models
-        .get(model_key)
-        .ok_or_else(|| anyhow!("model '{}' not found in config", model_key))?;
+    let model = config.models.get(model_key);
+    if model.is_none() {
+        // Builtin registry fallback: the model isn't in roko.toml but may be a
+        // well-known model that works with an available API key.
+        if let Some(builtin) = roko_core::config::model_registry::builtin_model(model_key) {
+            // If the env var is set, dispatch will succeed.
+            if std::env::var(builtin.api_key_env).is_ok() {
+                return Ok(());
+            }
+            // The key isn't set — report an actionable error.
+            anyhow::bail!(
+                "model '{}' requires {} but it is not set.\n  hint: export {}=<your-key>",
+                model_key,
+                builtin.api_key_env,
+                builtin.api_key_env
+            );
+        }
+        anyhow::bail!("model '{}' not found in config", model_key);
+    }
+    let model = model.expect("model should be Some after config lookup loop");
     let provider_name = &model.provider;
     let provider = config.providers.get(provider_name).ok_or_else(|| {
         anyhow!(

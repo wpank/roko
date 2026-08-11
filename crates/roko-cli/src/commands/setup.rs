@@ -86,10 +86,11 @@ pub(crate) async fn cmd_setup(cli: &Cli, workdir: Option<PathBuf>, yes: bool) ->
 
     // ── Step 5: Next steps ──────────────────────────────────────────────
     println!("\n[5/5] Next steps:");
-    println!("  roko \"describe your task\"     Run a one-shot task");
-    println!("  roko do \"add feature X\"       Plan and execute a feature");
-    println!("  roko doctor                   Re-run diagnostics anytime");
-    println!("  roko status                   Check workspace health");
+    println!("  roko develop \"describe your task\"   Plan and execute a task end-to-end");
+    println!("  roko \"describe your task\"           Run a one-shot task");
+    println!("  roko models list                    See available models and routing");
+    println!("  roko doctor                         Re-run diagnostics anytime");
+    println!("  roko status                         Check workspace health");
     if matches!(auth, AuthMethod::NeedsSetup) {
         println!("\n  (Set an LLM provider key to enable agent dispatch)");
     }

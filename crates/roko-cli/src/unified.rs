@@ -281,7 +281,7 @@ fn build_oneshot_session(
 ) -> Result<ChatAgentSession> {
     if matches!(auth, AuthMethod::NeedsSetup) {
         return Err(anyhow::anyhow!(
-            "no authentication configured — run `roko config init` or set ANTHROPIC_API_KEY"
+            "no authentication configured — run `roko config init` or set a provider API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)"
         ));
     }
 

@@ -40,6 +40,23 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ## 2. Current truth at programme start
 
+### Batch audit 2026-08-10
+
+27 parallel audit agents assessed all waves against current source on branch
+`status-quo/batch-2026-08-10` at HEAD `10702da38`. Key findings:
+
+| Finding | Detail |
+|---|---|
+| Build health | `cargo build --workspace` passes. `cargo test --workspace` has 2 compile errors in roko-agent test code (`VAR`, `PATH` not found in scope). |
+| Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
+| E04 security | 17/19 done (was reported as 12/19). Only T13 (PermissionRequest) and T14 (fail-closed tool permission) remain. |
+| Cross-wave ledger | 120 external tasks: ~25 confirmed done, ~15 partial, ~80 greenfield. |
+| Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
+| Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) confirmed still broken: `sk-[A-Za-z0-9-]+` pattern at scrub.rs:72 has no word-boundary guard. |
+| E12 dead code | 3/9 done (T01,T04,T05), 3/9 partial (T03,T06,T07), 3/9 need implementation (T02,T08,T09). orchestrate.rs (23K lines) still on disk as undeclared orphan. |
+
+### July 14 audit baseline
+
 The July 14 audit found:
 
 | Population | Recorded state |
@@ -566,36 +583,36 @@ equivalent-or-stronger merged proof. A shallow/duplicate plan must not run raw, 
 it also must not remain silently ready. The adjacent wave is the initial ownership
 hint; Wave 0 may correct it from actual file/dependency evidence.
 
-- [ ] P08-search-command-fix (4) — plans/P08-search-command-fix/tasks.toml; Wave 8/E16.
-- [ ] P09-tool-alias-fix (3) — plans/P09-tool-alias-fix/tasks.toml; Wave 8/E14/E16.
-- [ ] P10-slash-command-flags (5) — plans/P10-slash-command-flags/tasks.toml; Wave 9/E10.
-- [ ] P11-runner-v2-default (5) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01.
-- [ ] P12-runner-parallelism (5) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01.
-- [ ] P13-rate-limit-retry (4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14.
-- [ ] P14-gate-rung-fix (3) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05.
-- [ ] P15-error-recovery-wiring (5) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01.
-- [ ] P16-safety-contracts (5) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04.
-- [ ] P17-cli-output-format (6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10.
-- [ ] P18-tui-agent-data (5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10.
-- [ ] P19-cascade-router-acp (6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17.
-- [ ] P20-zero-config (5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18.
-- [ ] P21-acp-streaming (5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17.
-- [ ] P22-acp-tool-permission (1/5 done; 4 remaining) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 is merged at `9ee418a57` with independent acceptance at `6b4ace91f` and post-merge `cargo check -p roko-acp`.
-- [ ] P23-prd-pipeline-fix (6) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16.
-- [ ] P24-workspace-paths (4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43.
-- [ ] P25-mcp-acp-passthrough (4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17.
-- [ ] P26-hdc-similarity-lookup (4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24.
-- [ ] P27-provider-error-ux (4) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14.
-- [ ] P28-image-support (5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
-- [ ] P29-develop-command-wire (3) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18.
-- [ ] P30-onboarding-doctor (4) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18.
-- [ ] P31-note-and-context (3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07.
-- [ ] P32-cli-polish (2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18.
-- [ ] P33-model-ux (1) — plans/P33-model-ux/tasks.toml; Wave 8/E14.
-- [ ] P34-verification-sweep (4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
-- [ ] architecture-defi-critical-path (3) — plans/architecture-defi-critical-path/tasks.toml;
+- [x] P08-search-command-fix (4/4 done) — plans/P08-search-command-fix/tasks.toml; Wave 8/E16. All 4 tasks implemented: single-query API rewrite (commit `bd1ce1aa7`), integration tests rewritten, batch sends sequential single queries. TOML `done = 0` is stale.
+- [x] P09-tool-alias-fix (3/3 done) — plans/P09-tool-alias-fix/tasks.toml; Wave 8/E14/E16. All 3 tasks done (commit `7e014b0c6`): `canonical_of_claude` alias resolution in `parse_allowed_tools_csv`. TOML `done = 0` is stale.
+- [ ] P10-slash-command-flags (0/5) — plans/P10-slash-command-flags/tasks.toml; Wave 9/E10. T1 partial (flag struct exists, `--plan` missing from existing slash). T2-T5 unimplemented.
+- [ ] P11-runner-v2-default (1/5) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01. T1 done (runner-v2 is default). T2-T5 need implementation.
+- [ ] P12-runner-parallelism (2/5) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01. T1,T2 done (per-plan concurrency gate). T3-T5 need implementation.
+- [ ] P13-rate-limit-retry (1/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry exists). T2-T4 need implementation (no `classify_http_error` helper, 5xx not mapped).
+- [ ] P14-gate-rung-fix (2/3) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2 done. T3 needs implementation.
+- [ ] P15-error-recovery-wiring (1/5) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. `classify_agent_crash`/`AgentCrashClass` exist but never wired into runner or do_cmd.
+- [ ] P16-safety-contracts (0/5) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. All 5 tasks unimplemented: no `disallowed_tools` field, no `forbidden_tool_names()`, no contract loading in event_loop.
+- [ ] P17-cli-output-format (0/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. All 6 unimplemented: no `CliOutput` struct, 40 raw `eprintln!` calls remain in `do_cmd.rs`.
+- [ ] P18-tui-agent-data (0/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. Acceptance roll-ups gated on SH04; SH04 is done but acceptance tests not yet verified.
+- [ ] P19-cascade-router-acp (0/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. All 6 unimplemented: no `cascade_select_model()`, model key mismatch bug at line 1607, DaimonState still hardcoded default.
+- [ ] P20-zero-config (0/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. All 5 unimplemented: `preflight_provider_for_model` early-returns on miss, no `BUILTIN_MODELS` in ACP.
+- [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
+- [ ] P22-acp-tool-permission (1/5 done; 4 remaining) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 is merged at `9ee418a57` with independent acceptance at `6b4ace91f` and post-merge `cargo check -p roko-acp`. T2 partial (2/4 done), T3-T5 need implementation.
+- [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
+- [ ] P24-workspace-paths (0/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43.
+- [ ] P25-mcp-acp-passthrough (2/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2 done. T3,T4 need implementation.
+- [ ] P26-hdc-similarity-lookup (0/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24.
+- [ ] P27-provider-error-ux (0/4) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14.
+- [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
+- [ ] P29-develop-command-wire (0/3) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18.
+- [ ] P30-onboarding-doctor (1/4) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1 partial.
+- [ ] P31-note-and-context (0/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07.
+- [ ] P32-cli-polish (0/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18.
+- [ ] P33-model-ux (0/1) — plans/P33-model-ux/tasks.toml; Wave 8/E14.
+- [ ] P34-verification-sweep (0/4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
+- [ ] architecture-defi-critical-path (0/3) — plans/architecture-defi-critical-path/tasks.toml;
       after E11 restores or replaces its missing architecture-core prerequisite.
-- [ ] e2e-smoke (2) — plans/e2e-smoke/tasks.toml; final Wave 13 gate.
+- [x] e2e-smoke (2/2 done) — plans/e2e-smoke/tasks.toml; final Wave 13 gate. S01 `#[must_use]` on `generate_share_token`, S02 `share_token_format` test. TOML `done = 0` is stale.
 - [ ] self-dev-ux (55) and self-dev-extras (11) remain superseded, with every
       acceptance outcome mapped into the executable queue; never execute them raw.
 
@@ -706,15 +723,18 @@ reason to delete the gate.
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
 - [x] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 implemented + 3 explicitly superseded: T13→E15-T07 done, T15→E47-T04 deferred, T16→E47-T03 deferred. All mappings reviewed.)
-- [ ] Complete all 19 E04-security-perimeter tasks. (12/19 done: T01,T02,T04,T05,T06,T07,T09,T10,T12,T15,T17,T18 merged. Remaining: T03,T08,T11,T13,T14,T16,T19.)
+- [ ] Complete all 19 E04-security-perimeter tasks. (17/19 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11,T12,T15,T16,T17,T18,T19 merged. Remaining: T13,T14 only.)
 - [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
 - [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
-- [ ] Route/scope manifest is generated and tested. (T19 — depends on T02+T03.)
+- [x] Route/scope manifest is generated and tested. (T19 done — `ROUTE_SCOPE_MANIFEST` + `mutating_routes_are_classified` test. T03 done — `SCOPE_WRITE_UNCLASSIFIED`.)
 - [x] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
-- [ ] ACP mutation tools fail closed pending permission. (T13→T14 chain — T12 done.)
+- [ ] ACP mutation tools fail closed pending permission. (T13 `PermissionRequest` hits `unreachable!()` in `stream_events_to_editor` → T14 depends on T13.)
+- [x] Worker callback token with constant-time comparison. (T08 done — `token_eq` in deployments.rs.)
+- [x] Terminal routes behind scope checks. (T11 done.)
+- [x] Safety checks on bash/web_fetch. (T16 done — builtin_tools.rs.)
 - [x] Scrubbing blocks secrets without issue 66 false positives. (T15 — producer-side SSE/WS/terminal scrub. T04 — config show redaction.)
 - [x] Custody records detect tampering. (T07 — SHA-256 hash chain with tamper detection test.)
-- [ ] Security adversarial integration tests pass post-merge.
+- [ ] Security adversarial integration tests pass post-merge. (Blocked on T13/T14.)
 
 Plans:
 
@@ -731,21 +751,21 @@ Track A, sequential:
 
 - [x] E03-type-consolidation — 7 tasks. (6/7 done; T06 RetentionPolicy partial — multiple structs remain but canonical type exists in roko-core.)
 - [x] E02-STORAGE-CONVERGENCE — 12 tasks, after E03. (11/12 done; T12 cold substrate archival deferred — built but no runtime trigger.)
-- [x] E05-gate-adaptivity-live — 8 tasks, after E01 and E02 where declared. (7/8 done: T01,T02,T03,T04,T06,T07,T08. T04 selected_rungs/rung_index threaded through GateCompletion. T07 enable_advanced_rungs removed. Remaining: T05 enrichment — non-blocking.)
+- [x] E05-gate-adaptivity-live — 8/8 done. T05 done: `build_rung_execution_inputs` + `build_rung_execution_config` (gate_dispatch.rs:699-791) replace bare `RungExecutionInputs::default()` with real enriched inputs for Symbol/FactCheck/LlmJudge/Integration rungs. Only gap: missing `complex_pipeline_has_seven_canonical_rungs` test.
 - [x] E06-COMPOSE-UNIFY — 9 tasks, after E01 and SH foundations. (9/9 done: T01,T02,T03,T04,T05,T06,T07,T08,T09.)
 
 Track B, sequential:
 
 - [x] E14-providers-tools — 12 tasks. (12/12 done: T01-T07,T09,T11,T12 implemented. T08/T10 are acceptance roll-ups for E48 — rate limiter and provider health built, dispatcher integration deferred.)
 - [x] E15-mcp-config — 7 tasks. (7/7 done: T01 McpConfig normalize, T02 ROKO_MCP_CONFIG env, T03 session grouping, T04 ClaudeCli MCP parity, T05 tool annotations, T06 dead C4 writer removed, T07 discover_mcp_tools.)
-- [ ] Reconcile/complete P08-search-command-fix — 4 tasks.
-- [ ] Reconcile/complete P09-tool-alias-fix — 3 tasks.
-- [ ] Reconcile/complete P23-prd-pipeline-fix — 6 tasks.
-- [ ] E16-prd-self-hosting-gaps — 2 tasks after those parents.
+- [x] Reconcile/complete P08-search-command-fix — 4/4 done. Single-query API rewrite at `search.rs`, integration tests rewritten (commit `bd1ce1aa7`).
+- [x] Reconcile/complete P09-tool-alias-fix — 3/3 done. `canonical_of_claude` alias resolution in `parse_allowed_tools_csv` (commit `7e014b0c6`).
+- [x] Reconcile/complete P23-prd-pipeline-fix — 6/6 done. Read-only tools, validation-blocks-write, plan-PRD slug linking, `source_prd` field. TOML `done = 0` is stale.
+- [x] E16-prd-self-hosting-gaps — 2/2 done. T1 perplexity integration tests rewritten for single-query API. T2 offline front-half smoke test (`prd_front_half_offline_smoke`) passes. TOML `done = 0` is stale.
 
 Track C:
 
-- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (7/10 done: T01,T02,T03,T04,T05,T09,T14. Remaining: T06 dual-config, T07 redact secrets, T08 deploy parity.)
+- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (8/10 done: T01,T02,T03,T04,T05,T07,T09,T14. T07 done: `serialize_effective_redacted` in `config_cmd.rs`. Remaining: T06 dual-config (partial — `core_validated.config` loaded but never consumed), T08 deploy parity.)
 - [ ] Defer E18 documentation tasks T10–T13/T15 until final truth convergence.
 
 Wave gate:
@@ -756,15 +776,15 @@ Wave gate:
 - [x] Canonical prompt path is used by Runner v2. (RoleSystemPromptSpec delegates to build_role_system_prompt; runner-v2 default.)
 - [x] Provider/tool parity and bounded retry pass. (E14-T08 bounded retry with per-provider rate limiting implemented.)
 - [x] MCP tools/config/env reach the actual agent. (E15 7/7 done: McpConfig normalize, ROKO_MCP_CONFIG env, session grouping, ClaudeCli MCP parity, tool annotations, dead C4 writer removed, discover_mcp_tools.)
-- [ ] PRD-to-parseable-plan smoke succeeds. (E16 blocked on P08/P09/P23.)
+- [x] PRD-to-parseable-plan smoke succeeds. (E16 2/2 done — P08/P09/P23 all complete. `prd_front_half_offline_smoke` test passes.)
 
 ### Wave 9 — kernel and completeness foundations
 
 Eligible parallel roots, subject to file reservations:
 
-- [ ] E07-learning-knowledge — 10 tasks. (8/10 done: T01,T02,T03,T04,T05,T06,T08,T10. T03 LinUCB persistence test exists. Remaining: T07 hdc feature, T09 cascade.)
+- [x] E07-learning-knowledge — 10/10 done. T07 done: `roko-neuro` with `features = ["hdc"]` in both roko-cli and roko-serve Cargo.toml; test `ingest_populates_hdc_vector_when_feature_is_enabled` passes. T09 done: runner-v2 uses `select_for_frequency_among_with_knowledge` (event_loop.rs:7408-7444); manual nudge pattern removed.
 - [x] E08-conductor-supervision — 9 tasks. (8/9 done: T01,T02,T03,T04,T05,T06,T08,T09. ConductorRingSink wired into plan/do/serve FeedbackFacade. Remaining: T07 routing bias — design-only, non-blocking.)
-- [ ] E09-OBSERVABILITY — 11 tasks. (9/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T11. T03 shared MetricRegistry wired into serve. Remaining: T09 design doc, T10 archive.)
+- [ ] E09-OBSERVABILITY — 11 tasks. (10/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T11. T09 done. Remaining: T10 archive — blocked on E47 GcEngine wiring.)
 - [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
 - [x] E11-chain-isfr prerequisite/design recovery — 5 tasks. (5/5 done: T01,T02,T03,T04,T05.)
 - [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)
@@ -792,33 +812,33 @@ parents settle:
 
 Run only after the named parents are DONE:
 
-- [ ] E23-agent-cognitive-autonomy — 10 tasks after E19/E20/E22.
-- [ ] E24-memory-advanced — 10 tasks after E07/E22.
-- [ ] E25-learning-loops-advanced — 10 tasks after E07.
-- [ ] E26-inference-gateway — 12 tasks after E14; one workspace/crate owner.
-- [ ] E27-feeds-system — 10 tasks after E19/E20.
-- [ ] E28-groups-coordination — 8 tasks after E20.
-- [ ] E29-connectivity-relay — 9 tasks after E04.
-- [ ] E30-extension-system — 9 tasks after E20.
-- [ ] E31-trigger-system — 8 tasks after E08.
-- [ ] E32-tool-plugin-ecosystem — 8 tasks after E14/E15.
-- [ ] E33-telemetry-lens — 9 tasks after E09/E10.
-- [ ] E34-security-ifc — 8 tasks after E04.
-- [ ] E35-auth-protocol — 8 tasks after E04.
-- [ ] E42-config-evolution — 8 tasks after E19.
-- [ ] E44-cross-cut-functors — 8 tasks after E19/E20.
-- [ ] E37-surfaces — 9 tasks after E09/E33.
-- [ ] E43-deployment-portability — 8 tasks after E18 implementation.
-- [ ] Reconcile/complete P19-cascade-router-acp — 6 tasks.
-- [ ] Reconcile/complete P25-mcp-acp-passthrough — 4 tasks.
-- [ ] Reconcile/complete P28-image-support — 5 tasks.
-- [ ] E17-acp-completion — 8 tasks after E04/E07/E14/P19/P22/P25/P28.
+- [ ] E23-agent-cognitive-autonomy — 0/10, all greenfield. After E19/E20/E22. No `CognitiveCell` types exist.
+- [ ] E24-memory-advanced — 0/10, all greenfield. After E07/E22. No advanced memory types exist.
+- [ ] E25-learning-loops-advanced — 0/10, all greenfield. After E07. No advanced learning types exist.
+- [ ] E26-inference-gateway — 0/12, all greenfield. After E14; one workspace/crate owner. No gateway types exist.
+- [ ] E27-feeds-system — 0/10, all greenfield. After E19/E20. No feed types exist.
+- [ ] E28-groups-coordination — 0/8, all greenfield. After E20. No group coordination types exist.
+- [ ] E29-connectivity-relay — 0/9, all greenfield. After E04. Data types exist in `roko-core` but no relay protocol.
+- [ ] E30-extension-system — 0/9, all greenfield but best foundation. After E20. `PluginManifestFile`, `discover_plugins`, `LoadedPlugin`, `DeclarativeTool` all exist.
+- [ ] E31-trigger-system — 0/8, all greenfield. After E08. Only `TriggerDef` (3 manifest variants) exists; no protocol types.
+- [ ] E32-tool-plugin-ecosystem — ~1/8 partial. After E14/E15. `PluginTier` (5 tiers) exists + `PluginCmd::Audit` basic tier inference. No `DynamicToolRegistry`, `SandboxConfig`, version resolution.
+- [ ] E33-telemetry-lens — ~2/9 partial. After E09/E10. `Lens` trait, `LensScope`, `LensSnapshot`, `CollectorLens` exist. No `TelemetryObserve` trait, `LensRegistry`, circuit breaker.
+- [ ] E34-security-ifc — ~2/8 partial. After E04. `TaintLevel` enum exists but variant names diverge from spec (Public/Internal/Confidential/Secret vs Trusted/Local/External/Untrusted). `QuarantineVault` exists. No corrigibility, capabilities module, ImmunePipeline.
+- [ ] E35-auth-protocol — ~1/8 partial. After E04. `expires_at` field exists on `ApiKeyEntry` but not enforced. No RBAC module, AgentToken, relay tokens, JWKS hardening, audit trail.
+- [ ] E42-config-evolution — 0/8, all greenfield. After E19. Hot-reload watcher exists but no `ConfigMigrator`, `FieldProvenance`, `DomainProfile`.
+- [ ] E44-cross-cut-functors — 0/8, all greenfield, architecturally novel. After E19/E20. `CrossCutFunctor` trait doesn't exist anywhere.
+- [ ] E37-surfaces — 0/9, all greenfield. After E09/E33. `ProjectionEnvelope`, `DashboardEvent` are the right foundation.
+- [ ] E43-deployment-portability — ~2/8 partial. After E18. T03 daemon install ~70% done (launchd missing RUST_LOG). T08 Dockerfile exists but uses debian not distroless. 6/8 greenfield.
+- [ ] Reconcile/complete P19-cascade-router-acp — 0/6. No `cascade_select_model()`, model key mismatch bug, DaimonState hardcoded.
+- [ ] Reconcile/complete P25-mcp-acp-passthrough — 2/4. T1,T2 done. T3,T4 need implementation.
+- [ ] Reconcile/complete P28-image-support — 0/5. All unimplemented.
+- [ ] E17-acp-completion — 1/8 (T01 done). After E04/E07/E14/P19/P22/P25/P28. T03 ~80% (setup function exists, not threaded into Anthropic path). 6/8 greenfield.
 
 Operational epics with corrected real dependencies:
 
-- [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15.
-- [ ] E47-resource-disk-management — 11 tasks after E01/E02.
-- [ ] E48-rate-limit-budgeting — 12 tasks after E14/E26.
+- [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15. All greenfield.
+- [ ] E47-resource-disk-management — 11 tasks after E01/E02. GcEngine fully built in `roko-fs/src/gc.rs` but NEVER wired into any runner — classic "built but never connected" pattern. E45-T07 `build_knowledge_routing_advice` appears wired at event_loop.rs:7304.
+- [ ] E48-rate-limit-budgeting — 12 tasks after E14/E26. T01 retry-with-backoff done. Rest greenfield.
 - [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
 
 ### Wave 11 — economy and chain
@@ -838,13 +858,13 @@ registry types.
 
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
-- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites.
-- [x] E12-T06 runs only after E01/E04/E08.
-- [x] E12-T07 runs only after E05/E06/E08.
-- [ ] E12-T08 runs only after T07.
+- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 needs impl: roko-gate still normal dep. T03 partial: cfg guards removed but feature definition remains in Cargo.toml. T09 needs impl: roko-plugin fully live.)
+- [x] E12-T06 runs only after E01/E04/E08. (Partial: workspace membership removed, no Cargo edges remain; physical `crates/roko-orchestrator/` directory still on disk.)
+- [x] E12-T07 runs only after E05/E06/E08. (Partial: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` 23,805 lines still exists as undeclared orphan.)
+- [ ] E12-T08 runs only after T07. (42 cfg sites in `run.rs`, 1 in `e2e.rs`, feature definition intact; blocked on T07 physical deletion.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
-- [ ] E12 reads 9/9 done.
-- [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12.
+- [ ] E12 reads 9/9 done. (Current: 3 done, 3 partial, 3 need implementation.)
+- [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12. E45-T07 appears done (`build_knowledge_routing_advice` wired at event_loop.rs:7304).
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 
 Never combine unrelated legacy deletions in one unverifiable commit.
@@ -864,7 +884,7 @@ DOC reconciliation plans:
 - [ ] DOC-v2-core is a deduplicated acceptance roll-up, not a second implementation stream.
 - [ ] E18 T10–T13/T15 complete after product truth stabilizes.
 - [ ] All 108 original top-level documents have a current or historical disposition.
-- [ ] Issues 60–67 are added to self-heal coverage.
+- [ ] Issues 60–67 are added to self-heal coverage. (Confirmed absent from COVERAGE.md — 8 issues with no coverage mapping. Issue 66 secret scrubber false-positive confirmed still broken in source.)
 - [ ] Issue states derive from merged task evidence.
 - [ ] Counts derive from manifests/scripts with one owner.
 - [ ] CLI help, README, deployment examples, engine/resume semantics, and paths agree.

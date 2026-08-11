@@ -1,7 +1,7 @@
 [meta]
 plan = "P14-gate-rung-fix"
 total = 3
-done = 0
+done = 2
 status = "ready"
 max_parallel = 1
 
@@ -37,7 +37,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: execute advanced rungs on the live runner path"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E05-T05 + E05-T07"
 tier = "focused"
@@ -76,7 +76,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: remove legacy advanced-rung activation logging"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E05-T07"
 tier = "mechanical"

@@ -1,7 +1,7 @@
 [meta]
 plan = "P11-runner-v2-default"
 total = 5
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -62,7 +62,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: canonical runner-v2 default"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E01-T01"
 tier = "mechanical"

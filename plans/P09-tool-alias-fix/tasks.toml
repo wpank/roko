@@ -1,8 +1,8 @@
 [meta]
 plan = "P09-tool-alias-fix"
 total = 3
-done = 0
-status = "ready"
+done = 3
+status = "done"
 max_parallel = 1
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,7 +55,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Resolve Claude aliases to canonical names in parse_allowed_tools_csv"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 25
@@ -135,7 +135,7 @@ fail_msg = "roko-agent crate must compile"
 [[task]]
 id = "T2"
 title = "Add unit tests for alias resolution in tool CSV parser"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 50
@@ -198,7 +198,7 @@ fail_msg = "parse_allowed_tools_csv tests must pass"
 [[task]]
 id = "T3"
 title = "Audit other provider backends for same alias resolution gap"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 20

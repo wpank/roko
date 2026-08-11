@@ -1,0 +1,153 @@
+[meta]
+plan = "demo-release-readiness"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 6
+
+[[task]]
+id = "REL-1"
+title = "Inventory release evidence"
+description = """Inspect Cargo.toml, CHANGELOG.md, release-plz.toml, and the
+release workflow. Create `demo/release-readiness/inventory.json` with exactly
+these top-level keys: `schema_version`, `workspace_version`, `sources`,
+`observations`, `unknowns`, and `required_checks`. Set schema_version to 1. Set
+workspace_version from `[workspace.package].version` when present; otherwise
+set it to JSON null and record the missing version as an explicit unknown. List all four source
+paths; include at least four evidence observations, two explicit unknowns, and
+four required checks. Each observation must be an object with non-empty
+`source`, `fact`, and `release_impact` strings. Report gaps as unknowns rather
+than guessing. If an existing inventory already satisfies this contract and
+the authored verification command, leave it unchanged."""
+status = "ready"
+tier = "focused"
+max_loc = 100
+files = ["demo/release-readiness/inventory.json"]
+role = "scribe"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "Cargo.toml", lines = "1-130", why = "Read workspace version and release scope." },
+    { path = "CHANGELOG.md", lines = "1-180", why = "Assess documented release history." },
+    { path = "release-plz.toml", lines = "1-180", why = "Inspect release automation policy." },
+    { path = ".github/workflows/release.yml", why = "Inspect automated release checks when present." },
+]
+anti_patterns = [
+    "Do not infer that a check passed merely because it is configured.",
+    "Do not invent tags, publication status, or credentials.",
+    "Do not modify release configuration.",
+]
+
+[[task.verify]]
+phase = "inventory-schema"
+command = "python3 -c 'import json,tomllib; p=\"demo/release-readiness/inventory.json\"; d=json.load(open(p)); cargo=tomllib.load(open(\"Cargo.toml\",\"rb\")); version=cargo.get(\"workspace\",{}).get(\"package\",{}).get(\"version\"); assert list(d)==[\"schema_version\",\"workspace_version\",\"sources\",\"observations\",\"unknowns\",\"required_checks\"]; assert d[\"schema_version\"]==1 and d[\"workspace_version\"]==version; assert version is not None or any(\"version\" in u.lower() for u in d[\"unknowns\"]); assert set(d[\"sources\"])=={\"Cargo.toml\",\"CHANGELOG.md\",\"release-plz.toml\",\".github/workflows/release.yml\"}; assert len(d[\"observations\"])>=4 and len(d[\"unknowns\"])>=2 and len(d[\"required_checks\"])>=4; assert all(set(x)=={\"source\",\"fact\",\"release_impact\"} and all(isinstance(v,str) and v.strip() for v in x.values()) for x in d[\"observations\"])'"
+fail_msg = "Inventory must match repository version and the exact evidence schema."
+
+[[task]]
+id = "REL-2"
+title = "Write a conditional go/no-go memo"
+description = """Using inventory.json, create
+`demo/release-readiness/go-no-go.md` with exact headings `## Recommendation`,
+`## Evidence`, `## Blocking unknowns`, `## Required checks`, `## Rollback
+triggers`, and `## Decision owner`. The recommendation must be `CONDITIONAL
+GO`, `GO`, or `NO-GO` and explain why. Reference inventory.json and every
+source path. Convert every inventory unknown into an unchecked Markdown item,
+include at least four required-check checklist items, at least three rollback
+triggers, and name a role—not a person—as decision owner. If the existing memo
+already satisfies this contract and the authored verification commands, leave
+it unchanged."""
+status = "ready"
+tier = "integrative"
+max_loc = 130
+files = ["demo/release-readiness/go-no-go.md"]
+role = "scribe"
+depends_on = ["REL-1"]
+
+[task.context]
+read_files = [
+    { path = "demo/release-readiness/inventory.json", why = "Base the release recommendation on accepted evidence and explicit unknowns." },
+]
+anti_patterns = [
+    "Do not mark an unknown or required check complete without execution evidence.",
+    "Do not name an individual decision owner.",
+]
+
+[[task.verify]]
+phase = "memo-structure"
+command = "test -f demo/release-readiness/go-no-go.md && for h in '## Recommendation' '## Evidence' '## Blocking unknowns' '## Required checks' '## Rollback triggers' '## Decision owner'; do rg -Fqx \"$h\" demo/release-readiness/go-no-go.md || exit 1; done"
+fail_msg = "Release memo must contain every governance section."
+
+[[task.verify]]
+phase = "memo-traceability"
+command = "python3 -c 'import json,re; p=\"demo/release-readiness/\"; d=json.load(open(p+\"inventory.json\")); text=open(p+\"go-no-go.md\").read(); assert re.search(r\"\\b(CONDITIONAL GO|GO|NO-GO)\\b\",text); assert \"demo/release-readiness/inventory.json\" in text; assert all(s in text for s in d[\"sources\"]); assert all(u in text for u in d[\"unknowns\"]); assert len(re.findall(r\"^- \\[ \\]\",text,re.M))>=len(d[\"unknowns\"])+4; section=text.split(\"## Rollback triggers\",1)[1].split(\"## Decision owner\",1)[0]; assert len(re.findall(r\"^- \",section,re.M))>=3'"
+fail_msg = "Memo must trace evidence, unknowns, checks, rollback triggers, and a decision."
+
+[[task]]
+id = "REL-3"
+title = "Create a read-only release readiness checker"
+description = """Create `demo/release-readiness/check.sh` as portable POSIX
+shell of at most 70 lines. Write the file promptly and keep the final response
+brief. It must start with `#!/bin/sh` and `set -eu`; never modify files or use
+the network; use Python standard libraries to validate inventory.json against
+Cargo.toml; check every required memo heading and source reference; confirm
+unknowns remain unchecked; and print exactly `release-readiness demo: PASS` on
+success. Only python3 and rg may be required beyond POSIX utilities. If the
+existing checker already passes both authored verification commands, leave it
+unchanged. Do not create scratch files anywhere in the repository."""
+status = "ready"
+tier = "focused"
+max_loc = 70
+files = ["demo/release-readiness/check.sh"]
+role = "implementer"
+depends_on = ["REL-2"]
+
+[task.context]
+read_files = [
+    { path = "demo/release-readiness/inventory.json", why = "Implement structured evidence checks." },
+    { path = "demo/release-readiness/go-no-go.md", why = "Implement governance and traceability checks." },
+]
+anti_patterns = [
+    "Do not run a release, create tags, publish crates, or access credentials.",
+    "Do not rewrite the artifacts while checking them.",
+    "Do not create temporary verification scripts such as __verify__.sh in the repository.",
+]
+
+[[task.verify]]
+phase = "checker-structure"
+command = "test -f demo/release-readiness/check.sh && test \"$(sed -n '1p' demo/release-readiness/check.sh)\" = '#!/bin/sh' && rg -q '^set -eu$' demo/release-readiness/check.sh && sh -n demo/release-readiness/check.sh"
+fail_msg = "Readiness checker must be strict, portable shell."
+
+[[task.verify]]
+phase = "checker-execution"
+command = "test \"$(sh demo/release-readiness/check.sh)\" = 'release-readiness demo: PASS' && python3 -c 'import json,tomllib; d=json.load(open(\"demo/release-readiness/inventory.json\")); cargo=tomllib.load(open(\"Cargo.toml\",\"rb\")); version=cargo.get(\"workspace\",{}).get(\"package\",{}).get(\"version\"); memo=open(\"demo/release-readiness/go-no-go.md\").read(); assert d[\"workspace_version\"]==version; assert all(f\"- [ ] {u}\" in memo for u in d[\"unknowns\"])'"
+fail_msg = "Readiness checker must validate the package and emit the exact PASS sentinel."
+
+[[task]]
+id = "REL-4"
+title = "Perform independent release governance review"
+description = """Read inventory.json, go-no-go.md, check.sh, and the inspected
+release sources. Confirm facts are not confused with observed pass results,
+unknowns remain visible, the recommendation follows the evidence, rollback
+triggers are actionable, and check.sh is read-only. Do not modify files or
+perform a release action. Report pass/fail and residual risks."""
+status = "ready"
+tier = "integrative"
+max_loc = 0
+files = []
+role = "quick-reviewer"
+depends_on = ["REL-3"]
+
+[task.context]
+read_files = [
+    { path = "demo/release-readiness/inventory.json", why = "Audit structured evidence." },
+    { path = "demo/release-readiness/go-no-go.md", why = "Audit decision governance." },
+    { path = "demo/release-readiness/check.sh", why = "Audit read-only acceptance behavior." },
+]
+
+[[task.verify]]
+phase = "final-acceptance"
+command = "test \"$(sh demo/release-readiness/check.sh)\" = 'release-readiness demo: PASS' && python3 -c 'import json; d=json.load(open(\"demo/release-readiness/inventory.json\")); text=open(\"demo/release-readiness/go-no-go.md\").read(); assert all(u in text for u in d[\"unknowns\"]); assert \"## Rollback triggers\" in text and \"## Decision owner\" in text'"
+fail_msg = "Independent release review requires executable acceptance and visible unknowns."

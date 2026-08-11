@@ -1,7 +1,7 @@
 [meta]
 plan = "E20-cell-unification"
 total = 10
-done = 8
+done = 10
 status = "ready"
 max_parallel = 2
 
@@ -479,7 +479,7 @@ Then fix all implementations that now need Cell:
 
 This is a large change with ~200 LOC across files. Each Cell impl just needs cell_id(),
 cell_name(), and protocols() returning the appropriate ProtocolId."""
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 250
@@ -638,7 +638,7 @@ and protocols() returning vec![ProtocolId::Score] etc.
 
 Run full `cargo test -p roko-std` and fix any test failures from the Cell supertrait change.
 This task is the cleanup/verification pass after the breaking T07 change."""
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120

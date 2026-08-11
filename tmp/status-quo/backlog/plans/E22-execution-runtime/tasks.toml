@@ -1,7 +1,7 @@
 [meta]
 plan = "E22-execution-runtime"
 total = 10
-done = 6
+done = 9
 status = "in-progress"
 max_parallel = 2
 
@@ -35,8 +35,8 @@ Each cell must declare its protocols list per spec:
 - VerifyCell: ["Verify"] (gate execution)
 - PersistCell: ["Store"] (Signal persistence)
 - ReactCell: ["React", "Trigger"] (event emission + reactions)"""
-status = "ready"
-notes = "cognitive.rs file does not exist yet"
+status = "done"
+notes = "7 cognitive cells created in cognitive.rs, registered in default_registry"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 200
@@ -116,8 +116,8 @@ The TOML format follows RawGraphFile (loader.rs:11): [graph] section with name,
 description, labels; [[nodes]] with id, cell_type, config; [[edges]] with from,
 to, and optional [edges.condition]. The condition format uses RawEdgeCondition
 (loader.rs:54-65): type = "success"|"failure"|"always"|"output_equals"."""
-status = "ready"
-notes = "cognitive-loop.toml not yet authored; depends on T01 cognitive cells"
+status = "done"
+notes = "cognitive-loop.toml authored at .roko/graphs/cognitive-loop.toml"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -389,8 +389,8 @@ Compose), and skip expensive nodes when budget is exhausted.
 
 Wire into HotGraphHandle: add a budget field and update it after each tick
 using BudgetTracker::record() with the tick's actual cost."""
-status = "ready"
-notes = "BudgetTracker not wired into hot tick loop yet"
+status = "done"
+notes = "BudgetEnforcer + start_hot_with_budget wired into hot tick loop"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70

@@ -1,8 +1,8 @@
 [meta]
 plan = "E03-type-consolidation"
 total = 7
-done = 6
-status = "ready"
+done = 7
+status = "done"
 max_parallel = 1
 
 # ── E03-T01: Delete orphan roko-core::state_hub ──
@@ -309,7 +309,7 @@ acceptance = [
 [[task]]
 id = "E03-T06"
 title = "Introduce shared RetentionPolicy and adapt the three retention engines"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 150

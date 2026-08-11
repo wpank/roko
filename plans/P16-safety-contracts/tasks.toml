@@ -1,7 +1,7 @@
 [meta]
 plan = "P16-safety-contracts"
 total = 5
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -143,7 +143,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T3"
 title = "Add forbidden_tool_names() helper to AgentContract"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20

@@ -1,7 +1,7 @@
 [meta]
 plan = "P11-runner-v2-default"
 total = 5
-done = 1
+done = 4
 status = "ready"
 max_parallel = 1
 
@@ -24,7 +24,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: retire the legacy-runner-v2 feature facade"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E12-T03"
 tier = "mechanical"
@@ -100,7 +100,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T3"
 title = "Acceptance roll-up: remove the legacy-runner-v2 source facade"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E12-T03"
 tier = "focused"
@@ -138,7 +138,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T4"
 title = "Acceptance roll-up: compile formerly gated runner tests unconditionally"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E12-T03"
 tier = "mechanical"

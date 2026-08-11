@@ -1,7 +1,7 @@
 [meta]
 plan = "E18-DOCS-CONFIG-OPS"
 total = 15
-done = 1
+done = 3
 status = "ready"
 max_parallel = 3
 
@@ -122,7 +122,7 @@ acceptance = ["A release tag now runs clippy -D warnings + `cargo test --workspa
 [[task]]
 id = "E18-T03"
 title = "Add cargo-deny workflow running `cargo deny check` against deny.toml"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 35
@@ -209,7 +209,7 @@ acceptance = ["The coverage workflow still produces html and summary artifacts, 
 id = "E18-T05"
 title = "Track docker/roko.toml and copy it from Dockerfile"
 description = "Fix clean-checkout Docker builds by adding a committed docker/roko.toml default and changing the root Dockerfile to COPY docker/roko.toml /workspace/roko.toml. Keep the startup script behavior that can generate a default when the file is absent."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 45

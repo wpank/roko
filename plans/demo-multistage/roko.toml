@@ -1,0 +1,17 @@
+config_version = 2
+
+# Some command-backed providers report activity only after a full turn. Keep
+# this demo's watchdog above that observed turn duration without changing the
+# workspace-wide timeout policy.
+[timeouts]
+agent_silence_secs = 600
+
+# The authored task checks below are the meaningful gates for this non-coding
+# workflow. Avoid compiling the entire Rust workspace once per artifact.
+[gates]
+
+[[gates.rungs]]
+name = "demo-base"
+command = "true"
+timeout_secs = 30
+required = true

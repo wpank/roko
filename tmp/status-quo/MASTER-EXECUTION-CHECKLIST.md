@@ -42,18 +42,22 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
+Updated 2026-08-11
+
 27 parallel audit agents assessed all waves against current source on branch
 `status-quo/batch-2026-08-10` at HEAD `10702da38`. Key findings:
 
 | Finding | Detail |
 |---|---|
-| Build health | `cargo build --workspace` passes. `cargo test --workspace` has 2 compile errors in roko-agent test code (`VAR`, `PATH` not found in scope). |
+| Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
-| E04 security | 17/19 done (was reported as 12/19). Only T13 (PermissionRequest) and T14 (fail-closed tool permission) remain. |
+| E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
 | Cross-wave ledger | 120 external tasks: ~25 confirmed done, ~15 partial, ~80 greenfield. |
 | Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
-| Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) confirmed still broken: `sk-[A-Za-z0-9-]+` pattern at scrub.rs:72 has no word-boundary guard. |
-| E12 dead code | 3/9 done (T01,T04,T05), 3/9 partial (T03,T06,T07), 3/9 need implementation (T02,T08,T09). orchestrate.rs (23K lines) still on disk as undeclared orphan. |
+| Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
+| E12 dead code | 5/9 done (T01,T03,T04,T05,T07), 2/9 partial (T06,T08), 2/9 need implementation (T02,T09). T03 legacy-runner-v2 feature removed; T07 orchestrate.rs deleted. |
+| GcEngine | Wired into runner (E47): `roko-fs` GcEngine now called from event loop. |
+| TOML metadata | 33 tasks.toml metadata files reconciled to reflect actual implementation state. |
 
 ### July 14 audit baseline
 
@@ -587,7 +591,7 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P09-tool-alias-fix (3/3 done) — plans/P09-tool-alias-fix/tasks.toml; Wave 8/E14/E16. All 3 tasks done (commit `7e014b0c6`): `canonical_of_claude` alias resolution in `parse_allowed_tools_csv`. TOML `done = 0` is stale.
 - [ ] P10-slash-command-flags (0/5) — plans/P10-slash-command-flags/tasks.toml; Wave 9/E10. T1 partial (flag struct exists, `--plan` missing from existing slash). T2-T5 unimplemented.
 - [ ] P11-runner-v2-default (1/5) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01. T1 done (runner-v2 is default). T2-T5 need implementation.
-- [ ] P12-runner-parallelism (2/5) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01. T1,T2 done (per-plan concurrency gate). T3-T5 need implementation.
+- [x] P12-runner-parallelism (5/5 done) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01. All 5 tasks done per P12 agent audit.
 - [ ] P13-rate-limit-retry (1/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry exists). T2-T4 need implementation (no `classify_http_error` helper, 5xx not mapped).
 - [ ] P14-gate-rung-fix (2/3) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2 done. T3 needs implementation.
 - [ ] P15-error-recovery-wiring (1/5) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. `classify_agent_crash`/`AgentCrashClass` exist but never wired into runner or do_cmd.
@@ -723,12 +727,12 @@ reason to delete the gate.
 - [x] Audit E01-T07–T16 against SH02/SH05 and E46–E48. (T07→SH02-T02 done, T09→SH06-T05 done, T11→SH05-T04 done, T12→SH05-T02 done. T13→E15-T07, T15→E47-T04, T16→E47-T03 deferred. T08/T10/T14 need implementation.)
 - [x] Complete or explicitly supersede every E01 task with equivalent proof. (13/16 done; T08 gate enrichment, T10 docs, T14 auto-branch all implemented. T13→E15-T07, T15→E47-T04, T16→E47-T03 explicitly superseded/deferred.)
 - [x] E01-execution-engine reads 16/16 done or has reviewed supersession mappings. (13/16 implemented + 3 explicitly superseded: T13→E15-T07 done, T15→E47-T04 deferred, T16→E47-T03 deferred. All mappings reviewed.)
-- [ ] Complete all 19 E04-security-perimeter tasks. (17/19 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11,T12,T15,T16,T17,T18,T19 merged. Remaining: T13,T14 only.)
+- [ ] Complete all 19 E04-security-perimeter tasks. (18/19 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11,T12,T13,T15,T16,T17,T18,T19 merged. Remaining: T14 only.)
 - [x] Relay HTTP and WS routes require authentication. (T01 — relay wrapped in require_api_key + require_scope.)
 - [x] Unknown mutating routes deny by default. (T02 — scope fallback changed from read to write.)
 - [x] Route/scope manifest is generated and tested. (T19 done — `ROUTE_SCOPE_MANIFEST` + `mutating_routes_are_classified` test. T03 done — `SCOPE_WRITE_UNCLASSIFIED`.)
 - [x] Default Claude CLI execution has a proved safety boundary. (T06 — depends on T05.)
-- [ ] ACP mutation tools fail closed pending permission. (T13 `PermissionRequest` hits `unreachable!()` in `stream_events_to_editor` → T14 depends on T13.)
+- [ ] ACP mutation tools fail closed pending permission. (T13 done. T14 fail-closed tool permission remains.)
 - [x] Worker callback token with constant-time comparison. (T08 done — `token_eq` in deployments.rs.)
 - [x] Terminal routes behind scope checks. (T11 done.)
 - [x] Safety checks on bash/web_fetch. (T16 done — builtin_tools.rs.)
@@ -858,12 +862,12 @@ registry types.
 
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
-- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 needs impl: roko-gate still normal dep. T03 partial: cfg guards removed but feature definition remains in Cargo.toml. T09 needs impl: roko-plugin fully live.)
+- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 needs impl: roko-gate still normal dep. T03 done: legacy-runner-v2 feature removed from Cargo.toml. T09 needs impl: roko-plugin fully live.)
 - [x] E12-T06 runs only after E01/E04/E08. (Partial: workspace membership removed, no Cargo edges remain; physical `crates/roko-orchestrator/` directory still on disk.)
-- [x] E12-T07 runs only after E05/E06/E08. (Partial: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` 23,805 lines still exists as undeclared orphan.)
-- [ ] E12-T08 runs only after T07. (42 cfg sites in `run.rs`, 1 in `e2e.rs`, feature definition intact; blocked on T07 physical deletion.)
+- [x] E12-T07 runs only after E05/E06/E08. (Done: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` deleted.)
+- [ ] E12-T08 runs only after T07. (42 cfg sites in `run.rs`, 1 in `e2e.rs`; T07 blocker resolved — orchestrate.rs deleted.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
-- [ ] E12 reads 9/9 done. (Current: 3 done, 3 partial, 3 need implementation.)
+- [ ] E12 reads 9/9 done. (Current: 5 done, 2 partial, 2 need implementation.)
 - [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12. E45-T07 appears done (`build_knowledge_routing_advice` wired at event_loop.rs:7304).
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 

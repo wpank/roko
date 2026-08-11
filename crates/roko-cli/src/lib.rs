@@ -86,6 +86,7 @@ pub(crate) mod knowledge_helpers;
 pub mod layer_check;
 pub mod learning_helpers;
 pub mod model_selection;
+pub mod note_cluster;
 pub mod oneshot;
 // orchestrate.rs was the legacy 21K-line engine. Deleted in E12-T07.
 // The v2 event_loop.rs in runner/ is the sole execution engine.

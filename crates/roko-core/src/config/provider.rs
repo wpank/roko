@@ -11,6 +11,18 @@ use crate::defaults::DEFAULT_MAX_OUTPUT_TOKENS;
 use super::agent::{default_context_window, default_tool_format, default_true};
 use super::provenance::ConfigProvenance;
 
+/// `skip_serializing_if` helper — returns `true` when the bool is `false`.
+/// Suppresses default-false bool fields from serialized TOML/JSON output.
+pub(crate) fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// `skip_serializing_if` helper — returns `true` when the bool is `true`.
+/// Suppresses default-true bool fields from serialized TOML/JSON output.
+pub(crate) fn is_true(b: &bool) -> bool {
+    *b
+}
+
 // ---- provider/model identity --------------------------------------------
 
 /// Error returned by provider/model identity constructors.
@@ -410,31 +422,31 @@ pub struct ModelProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
     /// Whether the model supports tool calls.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub supports_tools: bool,
     /// Whether the model supports thinking/reasoning output.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_thinking: bool,
     /// Whether the model supports vision inputs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_vision: bool,
     /// Whether the model supports web search.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_web_search: bool,
     /// Whether the model supports MCP tools.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_mcp_tools: bool,
     /// Whether the model supports partial continuation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_partial: bool,
     /// Whether the model supports Google Search grounding.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_grounding: bool,
     /// Whether the model supports built-in code execution.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_code_execution: bool,
     /// Whether the model supports provider-side context caching.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_caching: bool,
     /// OpenRouter-specific routing overrides for this model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -481,16 +493,16 @@ pub struct ModelProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokenizer_ratio: Option<f64>,
     /// Whether the model supports web-grounded search (Perplexity Sonar).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_search: bool,
     /// Whether the model returns citations in responses (Perplexity Sonar).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_citations: bool,
     /// Whether the model supports the async job API (Perplexity deep research).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub supports_async: bool,
     /// Whether this is an embedding model rather than a chat model.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub is_embedding_model: bool,
     /// Search context size hint: "low", "medium", or "high" (Perplexity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -507,7 +519,7 @@ pub struct ModelProfile {
     pub tier: Option<crate::agent::ModelTier>,
     /// Whether this model uses `max_completion_tokens` instead of `max_tokens`.
     /// Required for newer OpenAI models (o1, o3, gpt-4o, gpt-5.x, etc.).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub use_max_completion_tokens: bool,
 }
 

@@ -221,6 +221,13 @@ impl ColdStore for ArchiveColdSubstrate {
 
         for engram in engrams {
             let hash = engram.id;
+
+            // Dedup: skip engrams already in the cold index so a crash
+            // between archive and hot-side prune does not re-append rows.
+            if self.index.read().contains_key(&hash) {
+                continue;
+            }
+
             let (file, offset) = self.append_to_archive(&engram).await?;
 
             {
@@ -237,7 +244,9 @@ impl ColdStore for ArchiveColdSubstrate {
             count += 1;
         }
 
-        self.save_index().await?;
+        if count > 0 {
+            self.save_index().await?;
+        }
         Ok(count)
     }
 
@@ -451,5 +460,32 @@ mod tests {
         // We can't call async name() from sync test, but we can check the trait method
         // is implemented by verifying the type matches.
         let _ = SubstrateMigrator::default();
+    }
+
+    #[tokio::test]
+    async fn archive_batch_dedup_skips_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cold = ArchiveColdSubstrate::open(tmp.path().join("cold"))
+            .await
+            .unwrap();
+
+        let engrams = vec![test_engram("dup1"), test_engram("dup2")];
+        let ids: Vec<_> = engrams.iter().map(|e| e.id).collect();
+
+        // First archive: both should be archived.
+        let count1 = cold.archive_batch(engrams.clone()).await.unwrap();
+        assert_eq!(count1, 2);
+
+        // Second archive of same batch: dedup should skip all.
+        let count2 = cold.archive_batch(engrams).await.unwrap();
+        assert_eq!(count2, 0);
+
+        // Index still has exactly 2 entries.
+        assert_eq!(cold.archived_count().await.unwrap(), 2);
+
+        // Both are still retrievable.
+        for id in &ids {
+            assert!(cold.contains(id).await.unwrap());
+        }
     }
 }

@@ -245,15 +245,47 @@ impl SessionConfigState {
                     .map(|(key, profile)| (key.as_str(), profile))
             });
 
-        let default_model = selected_model.map(|(key, _)| key).unwrap_or_default();
+        // Zero-config fallback: no [models] in config. Pick the first builtin
+        // model whose provider API key is available in the environment.
+        let (builtin_model_slug, builtin_provider_key) = if selected_model.is_none() {
+            let providers = config.effective_providers();
+            roko_core::config::model_registry::BUILTIN_MODELS
+                .iter()
+                .find_map(|builtin| {
+                    providers
+                        .values()
+                        .any(|p| p.kind == builtin.provider_kind)
+                        .then(|| {
+                            warnings.push(format!(
+                                "no [models] configured; using builtin '{}'",
+                                builtin.slug
+                            ));
+                            let provider_key = providers
+                                .iter()
+                                .find(|(_, p)| p.kind == builtin.provider_kind)
+                                .map(|(k, _)| k.clone())
+                                .unwrap_or_else(|| builtin.provider_kind.label().to_owned());
+                            (Some(builtin.slug.to_owned()), Some(provider_key))
+                        })
+                })
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+
+        let default_model = selected_model
+            .map(|(key, _)| key.to_owned())
+            .or(builtin_model_slug)
+            .unwrap_or_default();
         let default_provider = selected_model
             .map(|(_, profile)| profile.provider.clone())
+            .or(builtin_provider_key)
             .or_else(|| config.providers.keys().next().cloned())
             .unwrap_or_default();
         let state = Self {
             agent_mode: "code".to_owned(),
             provider: default_provider,
-            model: default_model.to_owned(),
+            model: default_model,
             effort: config.agent.default_effort.clone(),
             clippy_enabled: config.gates.clippy_enabled,
             tests_enabled: !config.gates.skip_tests,

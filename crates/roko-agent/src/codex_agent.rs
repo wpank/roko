@@ -363,6 +363,51 @@ impl Agent for CodexAgent {
                 .await
             {
                 Ok(text) => text,
+                Err(e) if e.status == Some(400) && e.message.contains("max_tokens") => {
+                    // Auto-recover: the model requires max_completion_tokens instead of
+                    // max_tokens.  Build a corrected request body and retry once.
+                    tracing::warn!(
+                        "auto-fix: switching to max_completion_tokens for {}",
+                        self.model
+                    );
+                    let mut fixed_extra = self.extra_body_params.clone();
+                    let token_value = fixed_extra
+                        .remove("max_tokens")
+                        .unwrap_or(Value::from(self.max_tokens));
+                    fixed_extra.insert("max_completion_tokens".to_string(), token_value);
+                    let fixed_req = ChatRequest {
+                        model: &self.model,
+                        messages: vec![RequestMessage {
+                            role: "user",
+                            content: &prompt_text,
+                        }],
+                        extra_body_params: fixed_extra,
+                    };
+                    let fixed_body = match serde_json::to_vec(&fixed_req) {
+                        Ok(v) => v,
+                        Err(se) => {
+                            return self.fail(
+                                input,
+                                &format!("serialize retry request failed: {se}"),
+                                started,
+                            );
+                        }
+                    };
+                    match self
+                        .poster
+                        .post_json(&url, &headers, &fixed_body, self.timeout_ms)
+                        .await
+                    {
+                        Ok(text) => text,
+                        Err(retry_err) => {
+                            let reason = match retry_err.status {
+                                Some(code) => format!("http {code}: {}", retry_err.message),
+                                None => format!("transport error: {}", retry_err.message),
+                            };
+                            return self.fail(input, &reason, started);
+                        }
+                    }
+                }
                 Err(e) => {
                     let reason = match e.status {
                         Some(code) => format!("http {code}: {}", e.message),

@@ -55,14 +55,25 @@ impl std::fmt::Display for ErrorClass {
     }
 }
 
-/// Retry policy with AWS-style full-jitter exponential backoff.
+/// Retry policy with exponential backoff and ±25% jitter.
+///
+/// The delay for attempt `n` (0-indexed) is computed as:
+///
+/// ```text
+/// base_ms = base_delay_ms * 2^n   (capped at max_delay_ms)
+/// delay   = base_ms * rand(0.75 ..= 1.25)
+/// ```
+///
+/// The ±25% window prevents thundering-herd reconvergence without spreading
+/// delays as widely as full-jitter, so callers stay near their expected
+/// backoff while still desynchronizing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// Maximum number of failed attempts that should still trigger retry handling.
     pub max_attempts: u32,
     /// Base backoff delay in milliseconds.
     pub base_delay_ms: u64,
-    /// Maximum backoff delay in milliseconds.
+    /// Maximum backoff delay in milliseconds (hard ceiling after jitter).
     pub max_delay_ms: u64,
     /// Error classes considered retryable by default.
     pub retryable_errors: Vec<ErrorClass>,
@@ -74,10 +85,9 @@ impl RetryPolicy {
     /// Uses the rate-limit-specific defaults from `roko_core::defaults`:
     /// - 2 s base delay (doubles each attempt: 2 s, 4 s, 8 s, ...)
     /// - 5 max attempts (`DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS`)
-    /// - 60 s ceiling
+    /// - 30 s ceiling
     ///
-    /// The delay always includes a guaranteed floor of `base_delay_ms / 2`
-    /// so that jitter never produces a near-zero wait.
+    /// Jitter is ±25% around the exponential delay, capped at `max_delay_ms`.
     #[must_use]
     pub fn for_rate_limit() -> Self {
         use roko_core::defaults::{
@@ -87,7 +97,7 @@ impl RetryPolicy {
         Self {
             max_attempts: DEFAULT_RATE_LIMIT_RETRY_ATTEMPTS, // 5
             base_delay_ms: DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS, // 2_000
-            max_delay_ms: DEFAULT_RATE_LIMIT_RETRY_MAX_BACKOFF_MS, // 60_000
+            max_delay_ms: DEFAULT_RATE_LIMIT_RETRY_MAX_BACKOFF_MS, // 30_000
             retryable_errors: vec![
                 ErrorClass::RateLimit,
                 ErrorClass::ServerError,
@@ -96,23 +106,38 @@ impl RetryPolicy {
         }
     }
 
-    /// Returns a full-jitter delay for the given attempt number.
+    /// Returns an exponential-backoff delay with ±25% jitter for the given attempt.
     #[must_use]
     pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
         let mut rng = rand::thread_rng();
         self.delay_for_attempt_with_rng(attempt, &mut rng)
     }
 
+    /// Compute the delay for `attempt` using the supplied RNG (testable variant).
+    ///
+    /// Algorithm:
+    /// 1. Exponential: `base_delay_ms * 2^attempt`, saturating, capped at `max_delay_ms`.
+    /// 2. ±25% jitter: multiply by a uniform random factor in `[0.75, 1.25]`.
+    /// 3. Re-cap the jittered result at `max_delay_ms`.
+    ///
+    /// Returns 0 when `max_delay_ms` is 0 (test/no-op policies), otherwise
+    /// guarantees a minimum of 1 ms.
     fn delay_for_attempt_with_rng<R: Rng + ?Sized>(&self, attempt: u32, rng: &mut R) -> u64 {
+        // Fast path: zero-delay policies are used by tests that skip sleeping.
+        if self.max_delay_ms == 0 {
+            return 0;
+        }
         let exp_delay = self.base_delay_ms.saturating_mul(1u64 << attempt.min(10));
         let capped = exp_delay.min(self.max_delay_ms);
-        // Guarantee a minimum floor of half the base delay so jitter never
-        // produces a near-zero wait (critical for rate-limit backoff).
-        let floor = self.base_delay_ms / 2;
-        if capped <= floor {
-            return capped;
-        }
-        rng.gen_range(floor..=capped)
+        // ±25% jitter: factor in [0.75, 1.25].
+        let factor: f64 = rng.gen_range(0.75_f64..=1.25_f64);
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation
+        )]
+        let jittered = ((capped as f64) * factor) as u64;
+        jittered.clamp(1, self.max_delay_ms)
     }
 
     /// Returns whether the given provider error should be retried.
@@ -133,7 +158,8 @@ impl RetryPolicy {
         }
     }
 
-    /// Returns a provider-specified retry delay when present, otherwise uses full jitter.
+    /// Returns the provider-specified retry delay when present, otherwise uses
+    /// exponential backoff with ±25% jitter.
     #[must_use]
     pub fn delay_with_retry_after(&self, attempt: u32, retry_after_ms: Option<u64>) -> u64 {
         retry_after_ms.unwrap_or_else(|| self.delay_for_attempt(attempt))
@@ -141,14 +167,13 @@ impl RetryPolicy {
 
     /// Compute the backoff delay for a rate-limit error at the given attempt.
     ///
-    /// Prefers `retry_after_ms` from the provider response when available,
-    /// otherwise falls back to exponential backoff with the rate-limit base
-    /// delay (2 s * 2^attempt, jittered, floored at base/2).
+    /// Prefers `retry_after_ms` from the provider response when available.
+    /// Otherwise falls back to exponential backoff with ±25% jitter
+    /// (`base_delay_ms * 2^attempt`, capped at `max_delay_ms`).
     #[must_use]
     pub fn rate_limit_delay(&self, attempt: u32, retry_after_ms: Option<u64>) -> u64 {
         if let Some(provider_hint) = retry_after_ms {
-            // Respect the provider hint but never go below our floor.
-            return provider_hint.max(self.base_delay_ms / 2);
+            return provider_hint;
         }
         self.delay_for_attempt(attempt)
     }
@@ -178,30 +203,52 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
+    /// ±25% jitter around `base * 2^attempt` — verify bounds and spread.
     #[test]
-    fn full_jitter_distribution_respects_floor() {
+    fn jitter_25pct_stays_within_bounds() {
         let policy = RetryPolicy {
             base_delay_ms: 1_000,
-            max_delay_ms: 60_000,
+            max_delay_ms: 30_000,
             ..RetryPolicy::default()
         };
-        let floor = policy.base_delay_ms / 2; // 500
-        let capped = policy.base_delay_ms;
+        // attempt 0: base = 1000, jitter window [750, 1250] capped at 30_000
+        let lo = 750u64;
+        let hi = 1_250u64;
         let mut rng = StdRng::seed_from_u64(7);
         let mut unique = std::collections::BTreeSet::new();
 
         for _ in 0..200 {
             let delay = policy.delay_for_attempt_with_rng(0, &mut rng);
-            assert!(delay >= floor, "delay {delay} below floor {floor}");
-            assert!(delay <= capped, "delay {delay} above cap {capped}");
+            assert!(delay >= lo, "delay {delay} below ±25% floor {lo}");
+            assert!(delay <= hi, "delay {delay} above ±25% ceiling {hi}");
             unique.insert(delay);
         }
 
         assert!(
             unique.len() >= 50,
-            "expected spread across the window, got {} unique delays",
+            "expected spread across the ±25% window, got {} unique delays",
             unique.len()
         );
+    }
+
+    /// The cap at `max_delay_ms` applies after jitter, so delays never exceed it.
+    #[test]
+    fn jitter_never_exceeds_max_delay_ms() {
+        let policy = RetryPolicy {
+            base_delay_ms: 1_000,
+            max_delay_ms: 30_000,
+            ..RetryPolicy::default()
+        };
+        let mut rng = StdRng::seed_from_u64(13);
+        // At attempt 10 the uncapped exponential would overflow; verify we stay at max.
+        for _ in 0..100 {
+            let delay = policy.delay_for_attempt_with_rng(10, &mut rng);
+            assert!(
+                delay <= policy.max_delay_ms,
+                "delay {delay} exceeded max_delay_ms {}",
+                policy.max_delay_ms
+            );
+        }
     }
 
     #[test]
@@ -234,12 +281,18 @@ mod tests {
         let policy = RetryPolicy::for_rate_limit();
         assert_eq!(policy.base_delay_ms, 2_000);
         assert_eq!(policy.max_attempts, 5);
-        // Verify that attempt 0 gives delay in [1000, 2000]
+        // attempt 0: base = 2000, ±25% window = [1500, 2500]
         let mut rng = StdRng::seed_from_u64(42);
         for _ in 0..50 {
             let delay = policy.delay_for_attempt_with_rng(0, &mut rng);
-            assert!(delay >= 1_000, "rate limit delay {delay} below floor 1000");
-            assert!(delay <= 2_000, "rate limit delay {delay} above cap 2000");
+            assert!(
+                delay >= 1_500,
+                "rate limit delay {delay} below ±25% floor 1500"
+            );
+            assert!(
+                delay <= 2_500,
+                "rate limit delay {delay} above ±25% ceiling 2500"
+            );
         }
     }
 
@@ -247,17 +300,29 @@ mod tests {
     fn for_rate_limit_exponential_growth() {
         let policy = RetryPolicy::for_rate_limit();
         let mut rng = StdRng::seed_from_u64(99);
-        // attempt 1: base * 2 = 4000, floor = 1000 -> [1000, 4000]
+        // attempt 1: base * 2 = 4000, ±25% -> [3000, 5000]
         for _ in 0..50 {
             let delay = policy.delay_for_attempt_with_rng(1, &mut rng);
-            assert!(delay >= 1_000, "attempt 1 delay {delay} below floor");
-            assert!(delay <= 4_000, "attempt 1 delay {delay} above cap");
+            assert!(
+                delay >= 3_000,
+                "attempt 1 delay {delay} below ±25% floor 3000"
+            );
+            assert!(
+                delay <= 5_000,
+                "attempt 1 delay {delay} above ±25% ceiling 5000"
+            );
         }
-        // attempt 2: base * 4 = 8000, floor = 1000 -> [1000, 8000]
+        // attempt 2: base * 4 = 8000, ±25% -> [6000, 10000]
         for _ in 0..50 {
             let delay = policy.delay_for_attempt_with_rng(2, &mut rng);
-            assert!(delay >= 1_000, "attempt 2 delay {delay} below floor");
-            assert!(delay <= 8_000, "attempt 2 delay {delay} above cap");
+            assert!(
+                delay >= 6_000,
+                "attempt 2 delay {delay} below ±25% floor 6000"
+            );
+            assert!(
+                delay <= 10_000,
+                "attempt 2 delay {delay} above ±25% ceiling 10000"
+            );
         }
     }
 
@@ -266,11 +331,65 @@ mod tests {
         let policy = RetryPolicy::for_rate_limit();
         // Provider says wait 5000ms
         assert_eq!(policy.rate_limit_delay(0, Some(5_000)), 5_000);
-        // Provider says wait 500ms but floor is 1000ms
-        assert_eq!(policy.rate_limit_delay(0, Some(500)), 1_000);
-        // No provider hint -> falls back to jittered exponential
+        // Provider says wait 200ms; we respect it as-is (no floor enforced)
+        assert_eq!(policy.rate_limit_delay(0, Some(200)), 200);
+        // No provider hint -> falls back to jittered exponential: [1500, 2500]
         let delay = policy.rate_limit_delay(0, None);
-        assert!(delay >= 1_000);
-        assert!(delay <= 2_000);
+        assert!(delay >= 1_500, "no-hint delay {delay} below 1500");
+        assert!(delay <= 2_500, "no-hint delay {delay} above 2500");
+    }
+
+    /// Verify the doubling sequence produces the right exponential base values.
+    #[test]
+    fn exponential_sequence_doubles() {
+        // With no jitter (factor=1.0 always), we'd get exact doubling.
+        // Use many samples and verify the average is near the expected base.
+        let policy = RetryPolicy {
+            base_delay_ms: 1_000,
+            max_delay_ms: 30_000,
+            ..RetryPolicy::default()
+        };
+        let mut rng = StdRng::seed_from_u64(55);
+        let samples = 500u64;
+
+        // attempt 0: expected base = 1000, ±25% -> [750, 1250]
+        let sum0: u64 = (0..samples)
+            .map(|_| policy.delay_for_attempt_with_rng(0, &mut rng))
+            .sum();
+        let avg0 = sum0 / samples;
+        assert!(
+            avg0 >= 750 && avg0 <= 1_250,
+            "attempt 0 avg {avg0} out of range"
+        );
+
+        // attempt 1: expected base = 2000, ±25% -> [1500, 2500]
+        let sum1: u64 = (0..samples)
+            .map(|_| policy.delay_for_attempt_with_rng(1, &mut rng))
+            .sum();
+        let avg1 = sum1 / samples;
+        assert!(
+            avg1 >= 1_500 && avg1 <= 2_500,
+            "attempt 1 avg {avg1} out of range"
+        );
+
+        // attempt 2: expected base = 4000, ±25% -> [3000, 5000]
+        let sum2: u64 = (0..samples)
+            .map(|_| policy.delay_for_attempt_with_rng(2, &mut rng))
+            .sum();
+        let avg2 = sum2 / samples;
+        assert!(
+            avg2 >= 3_000 && avg2 <= 5_000,
+            "attempt 2 avg {avg2} out of range"
+        );
+
+        // avg should roughly double each attempt
+        assert!(
+            avg1 > avg0,
+            "avg should grow: attempt 1 ({avg1}) > attempt 0 ({avg0})"
+        );
+        assert!(
+            avg2 > avg1,
+            "avg should grow: attempt 2 ({avg2}) > attempt 1 ({avg1})"
+        );
     }
 }

@@ -1182,6 +1182,23 @@ pub async fn run(
         warn!(error = %err, "failed to create neuro directory");
     }
 
+    // ── Pre-run log rotation ──────────────────────────────────────────────
+    //
+    // Check whether episodes.jsonl and signals.jsonl exceed the configured
+    // threshold (resources.log_rotation_max_mb, default 100 MB) and rotate
+    // any that do before any new records are appended. Best-effort: a rotation
+    // failure never aborts the run.
+    let resources_cfg = config.roko_config.as_deref().map(|c| &c.resources);
+    rotate_large_logs(&config.layout, resources_cfg).await;
+
+    // ── Pre-run GC ───────────────────────────────────────────────────────
+    //
+    // When resources.gc_on_plan_start is true (the default), run the
+    // filesystem GC engine before the DAG executor begins. This frees space
+    // from previous runs and ensures we start with a clean slate.
+    let gc_on_start = resources_cfg.map(|r| r.gc_on_plan_start).unwrap_or(true);
+    run_gc_if_needed(&config.layout, gc_on_start).await;
+
     // ── Filesystem observability sinks (traces + tool metrics) ────────────
     //
     // Reuse the sinks from RunConfig if the caller pre-built them (e.g.,
@@ -2891,8 +2908,14 @@ pub async fn run(
                     );
                 }
 
-                let retry_budget = config
-                    .max_retries
+                // Use per-task max_retries when available, capped at the global config budget.
+                let per_task_max_retries_gate = task_index
+                    .get(completion.plan_id.as_str())
+                    .and_then(|tasks| tasks.get(completion.task_id.as_str()))
+                    .map(|task| task.max_retries)
+                    .unwrap_or(config.max_retries);
+                let retry_budget = per_task_max_retries_gate
+                    .min(config.max_retries)
                     .min(gate_thresholds.suggested_max_retries(completion.rung));
 
                 // E05-T03 + E05-T04: Observe each verdict's actual rung into
@@ -3390,6 +3413,15 @@ pub async fn run(
                     let decision_reason = if decision_probe.should_retry() {
                         "gate failed and retry policy allows auto-fix".to_string()
                     } else if decision_probe.retryable {
+                        if per_task_max_retries_gate < config.max_retries {
+                            warn!(
+                                plan_id = %completion.plan_id,
+                                task_id = %completion.task_id,
+                                per_task_max_retries = per_task_max_retries_gate,
+                                attempt = completion_attempt.attempt,
+                                "task exhausted its per-task retry budget (gate)"
+                            );
+                        }
                         format!("gate failed and retries exhausted: {}", completion.output)
                     } else {
                         format!(
@@ -4068,11 +4100,16 @@ pub async fn run(
 
     // ── Post-run filesystem GC ──────────────────────────────────────
     //
-    // Check whether the `.roko/` directory exceeds the configured size
-    // threshold and, if so, run the GC engine to prune old runs, excess
-    // episodes, and stale cache entries.  Runs after all flushes are
-    // complete so we never race with in-flight writes.
-    run_gc_if_needed(&config.layout).await;
+    // When resources.gc_on_plan_end is true (the default), always run the GC
+    // engine after plan completion. Otherwise fall through to auto-GC which
+    // still runs if the size threshold is exceeded. Runs after all flushes
+    // are complete so we never race with in-flight writes.
+    let gc_on_end = config
+        .roko_config
+        .as_deref()
+        .map(|c| c.resources.gc_on_plan_end)
+        .unwrap_or(true);
+    run_gc_if_needed(&config.layout, gc_on_end).await;
 
     Ok(report)
 }
@@ -4432,7 +4469,13 @@ fn handle_agent_failure(
     let failure_kind = RunnerFailureKind::from_output(&failure_text);
     let crash_class = classify_agent_crash(&failure_text);
     let recovery = crash_class.recovery_hint();
-    let retry_budget = config.max_retries;
+    // Use per-task max_retries when available, capped at the global config budget.
+    let per_task_max_retries = task_index
+        .get(plan_id.as_str())
+        .and_then(|tasks| tasks.get(task_id.as_str()))
+        .map(|task| task.max_retries)
+        .unwrap_or(config.max_retries);
+    let retry_budget = per_task_max_retries.min(config.max_retries);
     let retry_phase_open = executor
         .plan_state(&plan_id)
         .map(|ps| ps.current_phase.kind() == PhaseKind::Implementing)
@@ -4445,6 +4488,15 @@ fn handle_agent_failure(
     let decision_reason = if decision_probe.should_retry() {
         "agent turn failed and retry policy allows another attempt".to_string()
     } else if decision_probe.retryable {
+        if per_task_max_retries < config.max_retries {
+            warn!(
+                plan_id = %plan_id,
+                task_id = %task_id,
+                per_task_max_retries,
+                attempt = attempt.attempt,
+                "task exhausted its per-task retry budget"
+            );
+        }
         format!("agent turn failed and retries exhausted: {message}\nRecovery: {recovery}")
     } else {
         format!(
@@ -9203,41 +9255,97 @@ async fn compact_episodes_if_needed(episodes_path: &std::path::Path) {
     }
 }
 
+/// Rotate JSONL log files that exceed the configured size threshold before a
+/// plan run begins.
+///
+/// The threshold is read from `resources.log_rotation_max_mb` in `roko.toml`
+/// (default 100 MB via [`roko_core::config::ResourcesConfig`]).
+///
+/// Checks `episodes.jsonl` and `signals.jsonl` (and the other canonical JSONL
+/// paths tracked by `roko_fs::log_rotation::rotatable_jsonl_paths`). Each file
+/// that exceeds the threshold is atomically renamed to a timestamped archive and
+/// an empty replacement is created at the original path. Errors are logged but
+/// never propagated — rotation is best-effort housekeeping.
+async fn rotate_large_logs(
+    layout: &RokoLayout,
+    resources: Option<&roko_core::config::ResourcesConfig>,
+) {
+    use roko_fs::log_rotation;
+
+    let max_mb = resources
+        .map(|r| r.log_rotation_max_mb)
+        .unwrap_or(roko_core::config::ResourcesConfig::default().log_rotation_max_mb);
+
+    match log_rotation::rotate_all_logs(layout, max_mb).await {
+        Ok(results) => {
+            for r in results {
+                info!(
+                    original = %r.original_path.display(),
+                    archive = %r.archive_path.display(),
+                    size_bytes = r.original_size,
+                    "rotated large log file"
+                );
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, "log rotation failed (best-effort)");
+        }
+    }
+}
+
 /// Run the filesystem GC engine if the `.roko/` directory exceeds the size
-/// threshold.
+/// threshold, or if `force` is true (e.g. when `resources.gc_on_plan_start`
+/// or `resources.gc_on_plan_end` is set).
 ///
 /// Uses `FsRetentionPolicy::default()` (500 MB threshold, 7-day run age,
 /// 200 max episodes, 2000 max cache entries). Errors are logged but never
 /// propagated — GC is best-effort housekeeping.
-async fn run_gc_if_needed(layout: &RokoLayout) {
+async fn run_gc_if_needed(layout: &RokoLayout, force: bool) {
     use roko_fs::{FsRetentionPolicy, GcEngine};
 
     let engine = GcEngine::new(layout.clone(), FsRetentionPolicy::default());
 
-    match engine.should_auto_gc().await {
-        Ok(false) => {} // under threshold, nothing to do
-        Err(err) => {
-            debug!(error = %err, "GC size check failed (best-effort)");
-        }
-        Ok(true) => {
-            info!("`.roko/` exceeds size threshold — running GC");
-            match engine.collect().await {
-                Ok(report) if report.removed_count > 0 => {
-                    info!(
-                        removed = report.removed_count,
-                        failed = report.failed_count,
-                        bytes_freed = report.total_bytes,
-                        candidates = report.candidate_count(),
-                        "filesystem GC completed"
-                    );
-                }
-                Ok(_) => {
-                    debug!("GC scan found no candidates to remove");
-                }
-                Err(err) => {
-                    warn!(error = %err, "filesystem GC failed (best-effort)");
-                }
+    // When `force` is true (policy flag set in [resources]), always run GC
+    // regardless of the size threshold. Otherwise only run when the threshold
+    // is exceeded (auto-GC behaviour).
+    let should_run = if force {
+        true
+    } else {
+        match engine.should_auto_gc().await {
+            Ok(result) => result,
+            Err(err) => {
+                debug!(error = %err, "GC size check failed (best-effort)");
+                false
             }
+        }
+    };
+
+    if !should_run {
+        return;
+    }
+
+    let label = if force {
+        "policy-triggered GC"
+    } else {
+        "auto-GC (size threshold exceeded)"
+    };
+    info!("{label}: running filesystem GC");
+
+    match engine.collect().await {
+        Ok(report) if report.removed_count > 0 => {
+            info!(
+                removed = report.removed_count,
+                failed = report.failed_count,
+                bytes_freed = report.total_bytes,
+                candidates = report.candidate_count(),
+                "filesystem GC completed"
+            );
+        }
+        Ok(_) => {
+            debug!("GC scan found no candidates to remove");
+        }
+        Err(err) => {
+            warn!(error = %err, "filesystem GC failed (best-effort)");
         }
     }
 }

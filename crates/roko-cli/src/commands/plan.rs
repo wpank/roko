@@ -805,12 +805,108 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             source,
             from_file,
             context,
+            from_notes,
+            tag,
         } => {
             use roko_cli::agent_config::load_gateway_env;
             use roko_cli::agent_exec::{AgentExecEpisode, AgentExecOpts, run_agent_logged};
 
             let workdir = std::env::current_dir().context("resolve cwd")?;
             let gw = load_gateway_env(&workdir);
+
+            // --from-notes: read .roko/notes/, cluster, generate one plan per cluster.
+            if from_notes {
+                let notes_dir = workdir.join(".roko").join("notes");
+                let notes = roko_cli::note_cluster::load_notes(&notes_dir, tag.as_deref());
+                if notes.is_empty() {
+                    eprintln!("No notes found in {}", notes_dir.display());
+                    return Ok(1);
+                }
+                let clusters = roko_cli::note_cluster::cluster_notes(notes);
+                eprintln!("Found {} note cluster(s):", clusters.len());
+                for (i, cluster) in clusters.iter().enumerate() {
+                    eprintln!(
+                        "  [{}] {} ({} note(s), theme: {})",
+                        i + 1,
+                        cluster.notes[0]
+                            .path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                        cluster.notes.len(),
+                        cluster.theme
+                    );
+                }
+
+                let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                    &workdir,
+                    cli.model.clone(),
+                    Some("strategist"),
+                    "plan generate",
+                )?;
+
+                for cluster in &clusters {
+                    let combined: String = cluster
+                        .notes
+                        .iter()
+                        .map(|n| n.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n---\n\n");
+                    let slug = cluster.theme.replace(' ', "-");
+                    eprintln!("Generating plan for cluster: {slug}");
+
+                    let system = roko_cli::plan_generate::build_generation_prompt(
+                        &workdir, &combined, "notes",
+                    );
+                    let task_id = format!("plan:generate:notes:{slug}");
+                    let task_prompt = format!(
+                        "Read the notes below and generate an implementation plan directory \
+                         under .roko/plans/{slug}/. \
+                         Search the codebase first to understand what exists. \
+                         Create plan.md and tasks.toml files with tier, model_hint, context \
+                         (read_files with line ranges), mcp_servers (per-task MCP server names), \
+                         and verify steps (executable shell commands). \
+                         Use the cheapest model tier for each task.\n\n{combined}"
+                    );
+
+                    let exit_code = run_agent_logged(
+                        AgentExecOpts {
+                            prompt: &task_prompt,
+                            workdir: &workdir,
+                            model: Some(model_key.as_str()),
+                            effort: Some("high"),
+                            system_prompt: Some(&system),
+                            resume_session: None,
+                            env_vars: &gw.vars,
+                            role: Some("strategist"),
+                            allowed_tools: None,
+                        },
+                        AgentExecEpisode {
+                            task_kind: "plan-generate",
+                            task_id: &task_id,
+                        },
+                    )
+                    .await;
+
+                    match exit_code {
+                        Ok(code) if code == EXIT_SUCCESS => {
+                            eprintln!("Generated: .roko/plans/{slug}/tasks.toml");
+                        }
+                        Ok(code) => {
+                            eprintln!(
+                                "warning: plan generate for cluster '{slug}' exited with code {code}"
+                            );
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "warning: plan generate for cluster '{slug}' failed: {err:#}"
+                            );
+                        }
+                    }
+                }
+
+                return Ok(0);
+            }
 
             // Get the source content: either from a file or inline text
             let source_text = if let Some(ref path) = from_file {
@@ -1082,6 +1178,20 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
 
             Ok(EXIT_SUCCESS)
+        }
+        PlanCmd::Shorthand(words) => {
+            // `roko plan "add cursor support"` → delegate to plan generate
+            Box::pin(cmd_plan(
+                cli,
+                PlanCmd::Generate {
+                    source: words,
+                    from_file: None,
+                    context: vec![],
+                    from_notes: false,
+                    tag: None,
+                },
+            ))
+            .await
         }
     }
 }

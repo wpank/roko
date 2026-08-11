@@ -323,8 +323,16 @@ fn transcript_from_runtime_events(
     run_id: &str,
     token: &str,
 ) -> Option<RunTranscript> {
-    let path = state.layout.root().join("runtime-events.jsonl");
-    let data = std::fs::read_to_string(path).ok()?;
+    // Resolve via the shared JsonlLogger so reader and writer use the same path.
+    let path = state.runtime_event_logger.path().to_path_buf();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // File absent: no events have been written for this run yet.
+            return None;
+        }
+        Err(_) => return None,
+    };
 
     let mut agent = None;
     let mut role = None;
@@ -1117,5 +1125,136 @@ mod tests {
         let result: Result<RunTranscript, _> =
             serde_json::from_str(&std::fs::read_to_string(&bad_path).unwrap());
         assert!(result.is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // runtime_events contract tests
+    // ---------------------------------------------------------------------------
+
+    fn make_state_in_dir(dir: &tempfile::TempDir) -> Arc<AppState> {
+        use crate::deploy::create_backend;
+        use crate::runtime::NoOpRuntime;
+
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        )
+    }
+
+    /// Writer (JsonlLogger) and route readers must resolve to the same path.
+    #[test]
+    fn runtime_events_logger_and_routes_agree_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_in_dir(&dir);
+
+        let logger_path = state.runtime_event_logger.path().to_path_buf();
+        let expected = state.layout.root().join("runtime-events.jsonl");
+        assert_eq!(
+            logger_path, expected,
+            "JsonlLogger path must match layout.root()/runtime-events.jsonl"
+        );
+    }
+
+    /// When runtime-events.jsonl is absent, `transcript_from_runtime_events`
+    /// must return None — not panic or emit fake data.
+    #[test]
+    fn runtime_events_missing_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_in_dir(&dir);
+
+        assert!(
+            !state.runtime_event_logger.path().exists(),
+            "log file must be absent before test"
+        );
+
+        let result = transcript_from_runtime_events(&state, "run-1", "token-1");
+        assert!(result.is_none(), "must return None when file is absent");
+    }
+
+    /// Events for a different run_id must not match the requested run.
+    #[test]
+    fn runtime_events_different_run_id_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_in_dir(&dir);
+
+        let log_path = state.runtime_event_logger.path().to_path_buf();
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+
+        let envelope = RuntimeEventEnvelope::new(
+            "other-run",
+            0,
+            "test",
+            RuntimeEvent::WorkflowStarted {
+                run_id: "other-run".into(),
+                template: "express".into(),
+                prompt: "do something".into(),
+            },
+        );
+        let line = serde_json::to_string(&envelope).unwrap();
+        std::fs::write(&log_path, format!("{line}\n")).unwrap();
+
+        let result = transcript_from_runtime_events(&state, "run-1", "token-1");
+        assert!(result.is_none(), "mismatched run_id must return None");
+    }
+
+    /// A complete workflow sequence produces a non-empty transcript.
+    #[test]
+    fn runtime_events_full_run_produces_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state_in_dir(&dir);
+
+        let log_path = state.runtime_event_logger.path().to_path_buf();
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+
+        let run_id = "run-abc";
+        let mut seq = 0u64;
+        let mut lines = Vec::new();
+
+        for event in [
+            RuntimeEvent::WorkflowStarted {
+                run_id: run_id.into(),
+                template: "express".into(),
+                prompt: "fix the tests".into(),
+            },
+            RuntimeEvent::AgentSpawned {
+                run_id: run_id.into(),
+                agent_id: "agent-1".into(),
+                role: "implementer".into(),
+                model: "claude-sonnet".into(),
+            },
+            RuntimeEvent::AgentCompleted {
+                run_id: run_id.into(),
+                agent_id: "agent-1".into(),
+                output: "done".into(),
+                cost_usd: 0.01,
+                tokens_used: 100,
+            },
+            RuntimeEvent::WorkflowCompleted {
+                run_id: run_id.into(),
+                outcome: WorkflowOutcome::Success { commit_hash: None },
+            },
+        ] {
+            let envelope = RuntimeEventEnvelope::new(run_id, seq, "test", event);
+            seq += 1;
+            lines.push(serde_json::to_string(&envelope).unwrap());
+        }
+
+        std::fs::write(&log_path, lines.join("\n") + "\n").unwrap();
+
+        let transcript = transcript_from_runtime_events(&state, run_id, "token-abc")
+            .expect("must produce transcript from runtime events");
+
+        assert_eq!(transcript.agent, "agent-1");
+        assert_eq!(transcript.role, "implementer");
+        assert_eq!(transcript.prompt, "fix the tests");
+        assert!(transcript.success);
+        assert!((transcript.cost_usd.unwrap() - 0.01).abs() < f64::EPSILON);
     }
 }

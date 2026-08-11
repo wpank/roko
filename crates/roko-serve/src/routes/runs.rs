@@ -16,8 +16,11 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 /// `GET /api/dashboard/runs` — summarize runs from the runtime event log.
+///
+/// Reads the same path as [`crate::state::AppState::runtime_event_logger`] so
+/// the writer and reader always agree on a single canonical location.
 async fn get_dashboard_runs(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
-    let path = state.layout.root().join("runtime-events.jsonl");
+    let path = state.runtime_event_logger.path().to_path_buf();
     let summaries = RuntimeProjection::from_file(&path).unwrap_or_default();
     let mut runs: Vec<RunSummary> = summaries.into_values().collect();
     runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));

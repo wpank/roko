@@ -1130,6 +1130,35 @@ impl EpisodeLogger {
         Ok(out)
     }
 
+    /// Find past episodes whose HDC fingerprints are most similar to `query`.
+    ///
+    /// Episodes without a stored `hdc_fingerprint` or whose fingerprint
+    /// fails to decode are silently skipped. Results are sorted by
+    /// descending Hamming similarity and limited to `top_k` entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoggerError::Io`] if the episode log cannot be read.
+    pub async fn query_similar_episodes(
+        path: impl AsRef<Path>,
+        query: &HdcVector,
+        top_k: usize,
+    ) -> Result<Vec<(Episode, f32)>, LoggerError> {
+        let episodes = Self::read_all_lossy(path).await?;
+        let mut scored: Vec<(Episode, f32)> = episodes
+            .into_iter()
+            .filter_map(|ep| {
+                let encoded = ep.hdc_fingerprint.as_deref()?;
+                let vector = crate::hdc_fingerprint::decode(encoded).ok()?;
+                let sim = query.similarity(&vector);
+                Some((ep, sim))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+        Ok(scored)
+    }
+
     /// Suggest a template by comparing a signal against recent episode fingerprints.
     ///
     /// Exact subscription resolution happens upstream. This helper is a
@@ -2165,6 +2194,57 @@ mod tests {
         assert_eq!(
             ranked.first().map(|episode| episode.id.as_str()),
             Some(high.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn query_similar_episodes_returns_ranked_results() {
+        let (_dir, path) = tmp_log();
+        let logger = EpisodeLogger::new(&path);
+
+        // Create three episodes with distinct fingerprints.
+        let fp_a = fingerprint_episode("build the auth module", "compiled ok");
+        let fp_b = fingerprint_episode("fix the login page CSS", "tests passed");
+        let fp_c = fingerprint_episode("build the auth module", "compiled ok plus extras");
+
+        let mut ep_a = sample("agent-a", "task-1", true);
+        ep_a.model = "sonnet".to_string();
+        ep_a.hdc_fingerprint = Some(encode_hdc_fingerprint(&fp_a));
+        logger.append(&ep_a).await.expect("append a");
+
+        let mut ep_b = sample("agent-b", "task-2", false);
+        ep_b.model = "haiku".to_string();
+        ep_b.failure_reason = Some("lint failure".to_string());
+        ep_b.hdc_fingerprint = Some(encode_hdc_fingerprint(&fp_b));
+        logger.append(&ep_b).await.expect("append b");
+
+        let mut ep_c = sample("agent-c", "task-3", true);
+        ep_c.model = "opus".to_string();
+        ep_c.hdc_fingerprint = Some(encode_hdc_fingerprint(&fp_c));
+        logger.append(&ep_c).await.expect("append c");
+
+        // Episode without fingerprint should be excluded.
+        let ep_no_fp = sample("agent-d", "task-4", true);
+        logger.append(&ep_no_fp).await.expect("append no-fp");
+
+        // Query with fp_a -- ep_a should be most similar (exact match),
+        // ep_c should be second (similar prompt), and top_k=2 limits output.
+        let results = EpisodeLogger::query_similar_episodes(&path, &fp_a, 2)
+            .await
+            .expect("query similar");
+
+        assert_eq!(results.len(), 2, "top_k should limit results to 2");
+        assert_eq!(
+            results[0].0.task_id, "task-1",
+            "exact fingerprint match should be first"
+        );
+        assert!(
+            (results[0].1 - 1.0).abs() < 1e-5,
+            "exact match should have similarity ~1.0"
+        );
+        assert!(
+            results[0].1 >= results[1].1,
+            "results should be sorted by descending similarity"
         );
     }
 }

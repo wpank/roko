@@ -57,6 +57,7 @@ use crate::task_helpers::task_target_crates;
 use crate::task_parser::TaskDef;
 use roko_agent::ViolationSeverity;
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
+use roko_learn::episode_logger::EpisodeLogger;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::post_gate_reflection::{PostGateReflectionStore, ReflectionGateOutcome};
 use roko_learn::section_outcome::{
@@ -7396,6 +7397,18 @@ async fn dispatch_action(
                         .map(|hook| roko_daimon::adjusted_thresholds(&hook.behavioral_state)),
                 }
             };
+            // E08-T07: Extract conductor routing bias so the model router can
+            // deprioritize models flagged by watchers and prefer cheaper tiers
+            // when conductor pressure is detected. When no conductor is
+            // configured, routing_bias is None and routing is unaffected.
+            let routing_bias = ctx.config.conductor.as_ref().map(|c| {
+                let cb = c.routing_bias();
+                roko_learn::cascade_router::RoutingBias {
+                    deprioritize: cb.deprioritize,
+                    prefer_cheaper: cb.prefer_cheaper,
+                    reason: cb.reason,
+                }
+            });
             let dispatch_ctx = DispatchContext {
                 plan_id: plan_id.clone(),
                 role: role.to_string(),
@@ -7410,6 +7423,7 @@ async fn dispatch_action(
                 attempt: attempt_num.saturating_sub(1),
                 gate_feedback,
                 routing_context: Some(routing_context),
+                routing_bias,
                 dependency_outputs: ctx.state.dependency_outputs(plan_id, &task_def.depends_on),
             };
             ctx.state.task_model_hint = task_def.model_hint.clone();
@@ -7532,6 +7546,38 @@ async fn dispatch_action(
             if let Some(section) = daimon_hook.as_ref().and_then(render_daimon_prompt_context) {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&section);
+            }
+            // ── P26: similar-episode context via HDC fingerprint ──────────
+            //
+            // Compute the task's HDC fingerprint from its title and query past
+            // episodes for similar work.  If matches are found, append them as
+            // supplementary context so the agent can learn from prior attempts.
+            {
+                let task_fp = roko_learn::hdc_fingerprint::fingerprint_episode(&task_def.title, "");
+                match EpisodeLogger::query_similar_episodes(&ctx.paths.episodes_jsonl, &task_fp, 3)
+                    .await
+                {
+                    Ok(similar) => {
+                        if let Some(section) = format_similar_episodes_section(&similar) {
+                            system_prompt.push_str("\n\n");
+                            system_prompt.push_str(&section);
+                            debug!(
+                                plan_id = %plan_id,
+                                task = %task_id,
+                                similar_count = similar.len(),
+                                "injected similar-episode context"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        debug!(
+                            plan_id = %plan_id,
+                            task = %task_id,
+                            error = %err,
+                            "similar-episode query failed (non-fatal)"
+                        );
+                    }
+                }
             }
             let mut final_prompt = dispatch_plan.prompt.user_prompt;
             info!(
@@ -9091,6 +9137,31 @@ async fn shutdown_subsystems(config: &RunConfig, tui: &TuiBridge) {
             tui.cascade_router_updated(&router.snapshot_json());
         }
     }
+}
+
+/// Format similar-episode results into a human-readable prompt section.
+///
+/// Returns `None` when `episodes` is empty. Otherwise produces a
+/// `## Similar Past Tasks` block with one bullet per episode.
+fn format_similar_episodes_section(
+    episodes: &[(roko_learn::episode_logger::Episode, f32)],
+) -> Option<String> {
+    if episodes.is_empty() {
+        return None;
+    }
+    let mut buf = String::from("## Similar Past Tasks\n\n");
+    for (ep, score) in episodes {
+        let status = if ep.success { "success" } else { "failed" };
+        buf.push_str(&format!(
+            "- Task {} ({}, {}, sim={:.2})",
+            ep.task_id, ep.model, status, score
+        ));
+        if let Some(reason) = &ep.failure_reason {
+            buf.push_str(&format!(" — {reason}"));
+        }
+        buf.push('\n');
+    }
+    Some(buf)
 }
 
 /// Compact the episode log if it exceeds the retention threshold.

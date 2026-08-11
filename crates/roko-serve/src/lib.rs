@@ -125,6 +125,7 @@ use roko_core::dashboard_snapshot::DashboardEvent;
 use roko_core::feed::{FeedAccess, FeedInfo, FeedKind};
 use roko_core::foundation::EventConsumer;
 use roko_core::{RuntimeEvent, WorkflowOutcome};
+use roko_plugin::manifest::discover_plugins;
 use roko_plugin::{CronEventSource, EventSource, FileWatchEventSource};
 
 use crate::events::{ExecutionEvent, ServerEvent};
@@ -435,6 +436,11 @@ impl ServerBuilder {
 
         // Bridge feed agents to the relay: registers feeds and forwards ticks.
         let _feed_relay_bridge = start_feed_relay_bridge(Arc::clone(&state));
+
+        // Register plugin webhook route scopes with the middleware so that
+        // plugin-declared webhook endpoints are not misclassified as
+        // "write:unclassified". Must happen before build_server_router.
+        register_plugin_webhook_scopes(&state.workdir);
 
         let router = build_server_router(
             Arc::clone(&state),
@@ -2882,6 +2888,60 @@ fn start_feed_relay_bridge(state: Arc<AppState>) -> Option<tokio::task::JoinHand
 
         drop(handle);
     }))
+}
+
+/// Discover plugin manifests in the standard search paths and register any
+/// webhook trigger scopes with the middleware whitelist.
+///
+/// Search paths (in order):
+/// 1. `<workdir>/.roko/extensions/`
+/// 2. `<workdir>/plugins/`
+/// 3. `<workdir>/.roko/plugins/`
+///
+/// This must be called before `build_server_router` so that the
+/// `register_extension_route_scopes` `OnceLock` is set before the first
+/// request arrives.
+fn register_plugin_webhook_scopes(workdir: &std::path::Path) {
+    let scan_dirs = [
+        workdir.join(".roko").join("extensions"),
+        workdir.join("plugins"),
+        workdir.join(".roko").join("plugins"),
+    ];
+
+    let mut scopes: Vec<(String, String)> = Vec::new();
+
+    for dir in &scan_dirs {
+        match discover_plugins(dir) {
+            Ok(plugins) => {
+                for plugin in plugins {
+                    let plugin_scopes = plugin.manifest.webhook_route_scopes();
+                    if !plugin_scopes.is_empty() {
+                        debug!(
+                            plugin = %plugin.manifest.plugin.name,
+                            count = plugin_scopes.len(),
+                            "registering plugin webhook route scopes"
+                        );
+                        scopes.extend(plugin_scopes);
+                    }
+                }
+            }
+            Err(err) => {
+                debug!(
+                    dir = %dir.display(),
+                    error = %err,
+                    "failed to scan plugin directory for webhook scopes (skipping)"
+                );
+            }
+        }
+    }
+
+    if !scopes.is_empty() {
+        info!(
+            count = scopes.len(),
+            "registering plugin webhook route scopes"
+        );
+        routes::middleware::register_extension_route_scopes(scopes);
+    }
 }
 
 fn start_builtin_event_sources(state: Arc<AppState>, roko_config: RokoConfig) {

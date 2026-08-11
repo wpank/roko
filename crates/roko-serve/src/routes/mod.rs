@@ -23,7 +23,7 @@ mod isfr;
 mod jobs;
 mod learning;
 mod metrics;
-mod middleware;
+pub(crate) mod middleware;
 mod neuro;
 mod plans;
 pub(crate) mod prds;

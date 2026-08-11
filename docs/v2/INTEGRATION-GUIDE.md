@@ -835,6 +835,16 @@ alert_ratio = 0.80          # alert when 80% of time budget is consumed
 
 </details>
 
+**Routing bias behavior (runner-v2).** When conductor watchers detect anomalies
+(ghost turns, compile-fail repeats, cost overruns, stuck patterns, etc.), the
+conductor derives a routing bias that is fed into model selection at dispatch
+time. Models involved in recent failures are deprioritized (filtered from the
+candidate set), and resource pressure triggers a `prefer_cheaper` bias that
+shifts scoring toward cheaper model tiers. This is a soft bias -- if the
+deprioritized model is the only available candidate, the router falls back to
+it gracefully rather than failing. The bias never overrides explicit
+`force_backend` overrides or task-level `model_hint` values.
+
 ### 5.5 [budget]
 
 **Why this matters**: Budget settings are hard guardrails on spending. When a budget is

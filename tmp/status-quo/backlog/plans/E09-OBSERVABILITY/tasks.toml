@@ -1,7 +1,7 @@
 [meta]
 plan = "E09-OBSERVABILITY"
 total = 11
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -455,7 +455,7 @@ acceptance = [
 [[task]]
 id = "E09-T09"
 title = "Design telemetry-as-Lens pipeline doc"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-sonnet-4-5"
 max_loc = 140

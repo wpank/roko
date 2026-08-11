@@ -1,8 +1,8 @@
 [meta]
 plan = "E22-execution-runtime"
 total = 10
-done = 0
-status = "ready"
+done = 6
+status = "in-progress"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,6 +36,7 @@ Each cell must declare its protocols list per spec:
 - PersistCell: ["Store"] (Signal persistence)
 - ReactCell: ["React", "Trigger"] (event emission + reactions)"""
 status = "ready"
+notes = "cognitive.rs file does not exist yet"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 200
@@ -116,6 +117,7 @@ description, labels; [[nodes]] with id, cell_type, config; [[edges]] with from,
 to, and optional [edges.condition]. The condition format uses RawEdgeCondition
 (loader.rs:54-65): type = "success"|"failure"|"always"|"output_equals"."""
 status = "ready"
+notes = "cognitive-loop.toml not yet authored; depends on T01 cognitive cells"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -184,6 +186,7 @@ The short-circuit check must NOT fire when:
 - A deadline is approaching (budget_remaining < threshold in CellContext)
 - The React cell requested a forced full tick in the previous iteration"""
 status = "ready"
+notes = "Depends on T01 cognitive cells which don't exist yet"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -243,7 +246,7 @@ that returns the default ErrorRecovery for each variant.
 
 Keep existing GraphError unchanged -- CellError is a sibling enum for Cell-level
 errors, convertible to GraphError::NodeFailed for graph-level reporting."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -310,7 +313,7 @@ For non-CellError errors (plain RokoError), default to the current behavior
 (mark as Failed, skip dependents). This preserves backward compatibility.
 
 Respect max_retries from a configurable GraphPolicy (add to GraphEngine struct)."""
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -387,6 +390,7 @@ Compose), and skip expensive nodes when budget is exhausted.
 Wire into HotGraphHandle: add a budget field and update it after each tick
 using BudgetTracker::record() with the tick's actual cost."""
 status = "ready"
+notes = "BudgetTracker not wired into hot tick loop yet"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -463,7 +467,7 @@ node output after execution.
 
 Workflow nodes always re-execute (they derive deterministically from inputs).
 Activity nodes are non-deterministic (LLM calls, network I/O) and need recording."""
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -535,7 +539,7 @@ Keep existing execute() for synchronous use. FlowHandle is the async equivalent.
 
 Follow HotGraphHandle (hot.rs:57-103) as the pattern: CancellationToken for
 cancel, parking_lot::Mutex for shared state, JoinHandle for background task."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -610,7 +614,7 @@ description = """Add lifecycle Pulse emission to GraphEngine:
 
 The Bus dependency is optional so test contexts that don't need Pulses
 continue to work without providing a Bus instance."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 65
@@ -673,7 +677,7 @@ Add exports for:
 - replay::{ActivityRecorder, ActivityReplayer} (add `pub mod replay` to lib.rs)
 
 Keep all existing exports unchanged."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15

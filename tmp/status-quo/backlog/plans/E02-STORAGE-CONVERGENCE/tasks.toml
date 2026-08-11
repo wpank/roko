@@ -1,7 +1,7 @@
 [meta]
 plan = "E02-STORAGE-CONVERGENCE"
 total = 12
-done = 0
+done = 11
 status = "ready"
 max_parallel = 1
 
@@ -24,7 +24,7 @@ max_parallel = 1
 [[task]]
 id = "E02-T01"
 title = "Runner v2 writes gate verdicts to the canonical log; stop writing signals.jsonl"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -85,7 +85,7 @@ fail_msg = "Runner event-loop tests must pass with the new verdict sink"
 [[task]]
 id = "E02-T02"
 title = "Guard signals->engrams init migration to only move rows that parse as Engram"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 55
@@ -141,7 +141,7 @@ fail_msg = "Init/migration tests must pass; add a GateVerdict-only fixture case"
 [[task]]
 id = "E02-T03"
 title = "Repoint executor.json readers at state-snapshot.json; drop executor_snapshot() helper"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -257,7 +257,7 @@ fail_msg = "Cold-substrate tests must pass; add a case asserting a second archiv
 [[task]]
 id = "E02-T04"
 title = "Materialize gate-thresholds.json from runner snapshots"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -322,7 +322,7 @@ acceptance = [
 [[task]]
 id = "E02-T05"
 title = "Collapse episodes to root and repoint serve projection off memory"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -383,7 +383,7 @@ acceptance = [
 [[task]]
 id = "E02-T06"
 title = "Consolidate daimon state to daimon/affect.json and alias orchestrator state"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 45
@@ -440,7 +440,7 @@ acceptance = [
 [[task]]
 id = "E02-T07"
 title = "Add retention for events, logs, run ledger, and backup files"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -507,7 +507,7 @@ acceptance = [
 [[task]]
 id = "E02-T08"
 title = "Acceptance roll-up: E09 ephemeral feed and chain heartbeats"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E09-T04"
 tier = "integrative"
@@ -568,7 +568,7 @@ fail_msg = "StateHub tests must prove ephemeral heartbeat, live broadcast, and d
 [[task]]
 id = "E02-T09"
 title = "Resolve runtime-events.jsonl route contract and writer coverage"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -633,7 +633,7 @@ acceptance = [
 [[task]]
 id = "E02-T10"
 title = "Retire dead state/events.json event snapshot path"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 55
@@ -694,7 +694,7 @@ acceptance = [
 [[task]]
 id = "E02-T11"
 title = "Introduce LayoutVersion::V2 migration and roko doctor state audit"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 150

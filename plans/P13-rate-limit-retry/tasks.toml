@@ -1,7 +1,7 @@
 [meta]
 plan = "P13-rate-limit-retry"
 total = 4
-done = 0
+done = 3
 status = "ready"
 max_parallel = 1
 
@@ -29,7 +29,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Classify HTTP errors in send_turn (non-streaming path)"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 25
@@ -114,7 +114,7 @@ fail_msg = "roko-agent must compile"
 [[task]]
 id = "T2"
 title = "Classify HTTP errors in stream_turn (streaming path)"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 25
@@ -172,7 +172,7 @@ fail_msg = "roko-agent must compile"
 [[task]]
 id = "T3"
 title = "Classify HTTP errors in send_turn_streaming path"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15

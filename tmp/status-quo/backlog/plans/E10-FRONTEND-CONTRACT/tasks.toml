@@ -1,8 +1,8 @@
 [meta]
 plan = "E10-FRONTEND-CONTRACT"
 total = 7
-done = 0
-status = "ready"
+done = 7
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ max_parallel = 2
 [[task]]
 id = "E10-T01"
 title = "Align Share.tsx fetch to /api/shared/{token}"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5
@@ -63,7 +63,7 @@ acceptance = ["Loading /share/<token> in the demo fetches /api/shared/<token> an
 [[task]]
 id = "E10-T02"
 title = "Add /ws/agents WS alias to ws_upgrade"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 6
@@ -112,7 +112,7 @@ acceptance = ["With `roko serve` running, the ISFR tab drawer's WebSocket to /ws
 [[task]]
 id = "E10-T03"
 title = "Add POST /api/bench/matrix route wiring MatrixRun engine"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-5"
 max_loc = 120
@@ -166,7 +166,7 @@ acceptance = ["POST /api/bench/matrix returns a matrix_id (200), a MatrixRun is 
 [[task]]
 id = "E10-T04"
 title = "Add GET /api/isfr/stream SSE route"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -225,7 +225,7 @@ acceptance = [
 [[task]]
 id = "E10-T05"
 title = "Adopt snake_case canonical wire with one transport adapter"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 110
@@ -292,7 +292,7 @@ acceptance = [
 [[task]]
 id = "E10-T06"
 title = "Remove deprecated EventStreamProvider and leave one dashboard SSE manager"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 180
@@ -355,7 +355,7 @@ acceptance = [
 [[task]]
 id = "E10-T07"
 title = "Make sse.rs honor ?n= and ?lastEventId= replay fallback"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 30

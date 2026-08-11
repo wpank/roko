@@ -1,7 +1,7 @@
 [meta]
 plan = "P25-mcp-acp-passthrough"
 total = 4
-done = 0
+done = 2
 status = "ready"
 max_parallel = 1
 
@@ -16,7 +16,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Add mcp_config field to roko-core AgentConfig"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -62,7 +62,7 @@ fail_msg = "roko-core must compile after adding mcp_config field"
 [[task]]
 id = "T2"
 title = "Wire MCP config into ACP workflow runner ServiceConfig"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 25

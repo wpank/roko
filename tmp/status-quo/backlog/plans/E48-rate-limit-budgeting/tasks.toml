@@ -1,7 +1,7 @@
 [meta]
 plan = "E48-rate-limit-budgeting"
 total = 12
-done = 0
+done = 2
 status = "ready"
 max_parallel = 2
 depends_on_plan = ["E01-execution-engine"]
@@ -67,7 +67,7 @@ is returned:
 Also handle ProviderError::ServerError and ProviderError::Timeout the
 same way (they are already in RetryPolicy::default().retryable_errors).
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [
@@ -146,7 +146,7 @@ token-weighted quotas well).
 Add ProviderLimits to the config schema in roko-core so users can set
 per-provider limits in roko.toml under [providers.<name>].
 """
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 files = [

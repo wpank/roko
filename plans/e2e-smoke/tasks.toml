@@ -1,8 +1,8 @@
 [meta]
 plan = "e2e-smoke"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "done"
 max_parallel = 1
 skip_enrichment = true
 estimated_total_minutes = 5
@@ -32,7 +32,7 @@ pub fn generate_share_token() -> String {
 ```
 
 Do NOT modify any other code. This is a single-line addition."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 2
@@ -91,7 +91,7 @@ mod tests {
 ```
 
 Do NOT modify any other code. Only append the test module at the end of the file."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20

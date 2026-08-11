@@ -1,8 +1,8 @@
 [meta]
 plan = "E21-graph-engine"
 total = 10
-done = 0
-status = "ready"
+done = 7
+status = "in-progress"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ pub struct EdgeValidationError {
 
 Collect ALL errors (don't fail-fast). Edges where either cell has `None` (Any) schema
 are always valid. Call this from `GraphEngine::new()` or `load_graph()` as a warning pass."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -118,7 +118,7 @@ OneShot mode, FailFast, max_concurrent=4, no timeout, no hot config.
 
 Update the TOML loader (loader.rs, RawGraphFile around line 9) to deserialize a
 `[graph.policy]` section. If absent, use the default."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -206,7 +206,7 @@ from node definitions. If absent, default to `Activity`.
 The spec says: "Workflow nodes can be re-derived from inputs; Activity nodes must be recorded
 because they involve non-deterministic external calls." The Graph Engine (E21-T05) will use
 this for snapshot decisions — only Activity outputs need saving."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 45
@@ -292,6 +292,7 @@ for wave in waves {
 When `max_concurrent_nodes = 1`, this degrades to sequential execution (backward compat).
 Existing tests should pass without modification since they use default policy."""
 status = "ready"
+notes = "No JoinSet/Semaphore wired yet — engine still executes sequentially"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 130
@@ -371,6 +372,7 @@ Only Activity nodes' outputs need saving (Workflow nodes can be re-derived). Use
 Serialize to JSON for persistence to `.roko/state/graph-snapshots/`. Follow the pattern
 from `crates/roko-orchestrator/src/runtime_snapshot.rs` for snapshot structure."""
 status = "ready"
+notes = "Snapshot and resume not yet implemented"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -447,7 +449,7 @@ Extend `HotPolicy` (hot.rs:29) with:
 
 Update `start_hot()` (hot.rs) to use `resolve_tick_interval_ms()` instead of raw
 `tick_interval_ms` when computing the tick interval."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -526,7 +528,7 @@ Add a `subgraph` cell type to the `CellRegistry` default registration (engine.rs
 
 Depth limit: GraphCell tracks current depth and refuses execution if depth exceeds
 max_depth (default 8). This prevents infinite recursion from circular graph references."""
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -604,7 +606,7 @@ The `condition.rs` module already has:
 
 Key integration point: the engine's edge traversal loop needs to check conditions before
 adding nodes to the next wave. Currently edges are just adjacency — make them conditional."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -673,6 +675,7 @@ The integration point:
 The MergeQueue types are in roko-orchestrator — add `roko-orchestrator` as an optional
 dependency of roko-graph (feature-gated if desired, or just optional dep)."""
 status = "ready"
+notes = "MergeQueue not yet integrated with GraphEngine"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 55
@@ -731,7 +734,7 @@ Add/verify exports for:
 Since lib.rs already uses selective re-exports for types.rs (line 61: `pub use types::{...}`),
 add the new type names to that list. For engine.rs exports (line 59), add GraphSnapshot.
 For hot.rs (line 71), add LoopLevel."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15

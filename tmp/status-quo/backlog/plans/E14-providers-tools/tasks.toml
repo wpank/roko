@@ -1,8 +1,8 @@
 [meta]
 plan = "E14-providers-tools"
 total = 12
-done = 0
-status = "ready"
+done = 12
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ max_parallel = 1
 [[task]]
 id = "E14-T01"
 title = "Stop advertising builtins that have no executable handler"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 90
@@ -63,7 +63,7 @@ acceptance = [
 [[task]]
 id = "E14-T02"
 title = "Implement executable handlers for the 4 ISFR tools"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 220
@@ -112,7 +112,7 @@ acceptance = [
 [[task]]
 id = "E14-T03"
 title = "Implement or feature-gate the 17 chain-domain tool handlers"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-20250514"
 max_loc = 320
@@ -162,7 +162,7 @@ acceptance = [
 [[task]]
 id = "E14-T04"
 title = "Add native streaming to the Gemini backend"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 240
@@ -220,7 +220,7 @@ acceptance = [
 [[task]]
 id = "E14-T05"
 title = "Add ProviderKind::GeminiCli and wire CLI provider dispatch"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 160
@@ -280,7 +280,7 @@ acceptance = [
 [[task]]
 id = "E14-T06"
 title = "Pass image blocks through non-Anthropic translators"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 260
@@ -350,7 +350,7 @@ acceptance = [
 [[task]]
 id = "E14-T07"
 title = "Regression test advertised builtins against executable handlers"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 90
@@ -410,7 +410,7 @@ acceptance = [
 [[task]]
 id = "E14-T08"
 title = "Acceptance roll-up: E48 configured and live per-provider RPM/TPM enforcement"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E48-T02 + E48-T03"
 tier = "integrative"
@@ -475,7 +475,7 @@ fail_msg = "focused tests must prove configured pooled RPM/TPM enforcement at th
 [[task]]
 id = "E14-T09"
 title = "Add Retry-After header parsing for all LLM backends"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 120
@@ -541,7 +541,7 @@ id = "E14-T10"
 title = "Acceptance roll-up: E48 canonical provider-health routing"
 ownership = "acceptance-roll-up"
 superseded_by = "E48-T05"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160
@@ -610,7 +610,7 @@ fail_msg = "focused tests must cover registry identity, all-stage filtering, fal
 [[task]]
 id = "E14-T11"
 title = "Register GitHub MCP tools in the builtin tool catalog"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -675,7 +675,7 @@ acceptance = [
 [[task]]
 id = "E14-T12"
 title = "Add GitHub rate limit state to provider health tracking"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 150

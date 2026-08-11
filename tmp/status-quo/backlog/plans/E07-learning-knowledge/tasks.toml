@@ -1,7 +1,7 @@
 [meta]
 plan = "E07-learning-knowledge"
 total = 10
-done = 0
+done = 2
 status = "ready"
 max_parallel = 1
 
@@ -364,7 +364,7 @@ fail_msg = "roko-cli must compile after lifecycle admission routing"
 id = "E07-T07"
 title = "Enable the roko-neuro hdc feature in shipped binaries"
 description = "Ensure roko-cli and roko-serve compile roko-neuro with the hdc feature so new durable knowledge entries receive HDC vectors in normal binaries."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 25
@@ -486,7 +486,7 @@ fail_msg = "roko-cli must compile with the new knowledge backfill command"
 id = "E07-T09"
 title = "Unify legacy and Runner-v2 knowledge routing after P19"
 description = "Replace runner-v2's manual post-routing model nudge with the same knowledge-aware cascade selection semantics used by the legacy path. ACP selection is owned by P19-cascade-router-acp."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 160

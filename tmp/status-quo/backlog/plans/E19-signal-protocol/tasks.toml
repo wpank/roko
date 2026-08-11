@@ -1,8 +1,8 @@
 [meta]
 plan = "E19-signal-protocol"
 total = 10
-done = 0
-status = "ready"
+done = 10
+status = "done"
 max_parallel = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ The spec maps these tiers to retention guarantees:
 Derive `Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize` on `SignalStatus`.
 Add `impl Default for SignalStatus` returning `Transient`. Add `SignalStatus::is_durable()` → bool
 (true for Consolidated and Persistent)."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -104,7 +104,7 @@ and increment it in `touch()` (line 150). Transitions mutate `self.status` in-pl
 
 Add unit tests for: valid promotions, skipped-tier rejection, backward transition rejection,
 score threshold enforcement."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -187,7 +187,7 @@ This creates a full Engram with:
 
 The existing `from_pulse_synthetic` (engram.rs:200) stays for lossy scoring use cases.
 Graduation is the clean path; synthetic is the fast-and-dirty path."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -253,7 +253,7 @@ at line 100). The projection creates a Pulse with:
 
 Drops: score, balance, decay, hdc_fingerprint, attestation, full lineage DAG.
 This is intentionally lossy — Pulses are ephemeral."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 25
@@ -321,7 +321,7 @@ tax. Increment it by the amount lost each tick.
 
 The existing `Demurrage` trait (line 15) stays for backward compatibility — the new function
 is the spec-compliant path."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 70
@@ -401,7 +401,7 @@ Custom kinds at runtime. Built-in variants are always valid without registration
 
 Use `HashMap<String, KindEntry>` internally where KindEntry holds parent and optional
 schema/validation info for future use."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -484,7 +484,7 @@ defaulting to `Public`. The existing `Taint` enum (line 24) tracks contamination
 (LlmHallucination, etc.); `TaintLevel` tracks *classification* — they are orthogonal.
 
 Add `TaintInfo.taint_level` (line 130) field as well so both provenance paths carry it."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -561,7 +561,7 @@ fields. Set encoder_version to a constant like "text-v1".
 
 For Body::Bytes, skip fingerprinting (binary data needs specialized encoding).
 For Body::Empty, produce a zero vector (marker signals have no content to fingerprint)."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -624,7 +624,7 @@ Initialize as None in PulseBuilder::new().
 Most Pulses originate from Bus emission (no Signal context), so lineage_hint stays None
 for the common case. It is set when: (1) Signal::to_pulse projects, or (2) a Cell explicitly
 links a Pulse to a Signal it references."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 20
@@ -688,7 +688,7 @@ pub use crate::engram::{Engram as Signal, EngramBuilder as SignalBuilder, HdcFin
 
 This ensures downstream crates can use either `roko_core::SignalStatus` or
 `roko_core::signal::SignalStatus`."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15

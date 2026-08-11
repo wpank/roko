@@ -1,7 +1,7 @@
 [meta]
 plan = "E18-DOCS-CONFIG-OPS"
 total = 15
-done = 0
+done = 1
 status = "ready"
 max_parallel = 3
 
@@ -313,7 +313,7 @@ acceptance = ["load_resolved_config uses the roko_core validated config as the a
 id = "E18-T07"
 title = "Redact secrets in roko config show and --effective output"
 description = "Apply the same secret-masking policy used by the serve config routes to the CLI config show paths, especially config show --effective. The CLI must never print literal provider API keys, serve auth keys, deploy tokens, webhook secrets, or chain wallet keys."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 90

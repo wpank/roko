@@ -1,7 +1,7 @@
 [meta]
 plan = "P22-acp-tool-permission"
 total = 5
-done = 1
+done = 1  # T1 done (9ee418a57). T2 not started: AcpBuiltinToolHandler::execute still ignores ctx.
 status = "ready"
 max_parallel = 1
 

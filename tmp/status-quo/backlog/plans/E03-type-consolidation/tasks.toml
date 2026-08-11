@@ -1,7 +1,7 @@
 [meta]
 plan = "E03-type-consolidation"
 total = 7
-done = 0
+done = 6
 status = "ready"
 max_parallel = 1
 
@@ -17,7 +17,7 @@ max_parallel = 1
 [[task]]
 id = "E03-T01"
 title = "Delete orphan roko-core::state_hub dead file"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5
@@ -70,7 +70,7 @@ fail_msg = "roko-core must compile cleanly after deletion"
 [[task]]
 id = "E03-T02"
 title = "Establish foundation::GateVerdict as canonical + add From adapters into dashboard/episode views"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -124,7 +124,7 @@ fail_msg = "roko-core and roko-learn must compile with the new adapters"
 [[task]]
 id = "E03-T03"
 title = "Rename divergent GateVerdict copies so exactly one bare struct GateVerdict remains"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -175,7 +175,7 @@ fail_msg = "workspace must compile after GateVerdict rename + call-site updates"
 [[task]]
 id = "E03-T04"
 title = "Rename thin DashboardSnapshot copies to disambiguated models"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 70
@@ -248,7 +248,7 @@ acceptance = [
 [[task]]
 id = "E03-T05"
 title = "Make TUI dashboard consume the core snapshot via connected mode"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 130
@@ -372,7 +372,7 @@ acceptance = [
 [[task]]
 id = "E03-T07"
 title = "Delete dead roko-chain Engram stub"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 30

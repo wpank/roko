@@ -1,7 +1,7 @@
 [meta]
 plan = "E45-orchestrator-mori-parity"
 total = 10
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -400,7 +400,7 @@ The function build_knowledge_routing_advice() may already exist — check
 knowledge_helpers.rs (imported at event_loop.rs:43).
 """
 role = "implementer"
-status = "ready"
+status = "done"
 tier = "focused"
 files = ["crates/roko-learn/src/cascade_router.rs", "crates/roko-cli/src/runner/event_loop.rs"]
 depends_on = []

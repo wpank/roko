@@ -1,7 +1,7 @@
 [meta]
 plan = "E12-DEAD-CODE-CLEANUP"
 total = 9
-done = 0
+done = 3
 status = "ready"
 max_parallel = 1
 
@@ -11,7 +11,7 @@ max_parallel = 1
 [[task]]
 id = "E12-T01"
 title = "Delete orphan roko-core files pulse_bus.rs and state_hub.rs"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5
@@ -159,7 +159,7 @@ fail_msg = "roko-cli tests must compile unconditionally after removing the featu
 [[task]]
 id = "E12-T04"
 title = "Prune #[allow(dead_code)] members with a net reduction"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 180
@@ -209,7 +209,7 @@ fail_msg = "The primary crates touched by the dead-code pruning must still compi
 [[task]]
 id = "E12-T05"
 title = "De-dup roko-index HDC onto roko-primitives"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 180

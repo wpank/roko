@@ -1,7 +1,7 @@
 [meta]
 plan = "E20-cell-unification"
 total = 10
-done = 0
+done = 8
 status = "ready"
 max_parallel = 2
 
@@ -34,7 +34,7 @@ Update existing `protocols()` implementations in roko-core:
 
 Also update roko-graph's Cell trait (roko-graph/src/cell.rs:74) to match, since graph cells
 also declare protocols. This may require making ProtocolId available via roko-core re-export."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 65
@@ -114,7 +114,7 @@ Add new methods:
   - Otherwise, result is Any (conservative)
 
 Add unit tests for all compatibility and validation cases."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 55
@@ -187,7 +187,7 @@ returning `Capabilities::default()` (all false). Add helper methods:
 - `Capabilities::union(&self, other: &Capabilities) -> Capabilities` — for combining requirements
 
 This is declaration only — enforcement is the Graph/Engine's job (E21)."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -265,7 +265,7 @@ loop is driven by the Graph Engine: predict before execute, correct after.
 
 This is the trait-level contract. Actual learning implementations live in roko-learn and
 consume PredictionRecords."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 55
@@ -344,7 +344,7 @@ fn cost_estimate(&self) -> Option<CostEstimate> {
 
 Keep the existing estimated_cost() and estimated_duration() methods unchanged for backward
 compatibility. CostEstimate is the richer alternative that new code should use."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -409,7 +409,7 @@ Add convenience methods:
 Also update roko-graph's CellContext (roko-graph cell.rs:19) to match. The two CellContext
 structs should stay in sync since roko-graph depends on roko-core for Engram but has its
 own Cell trait."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 50
@@ -569,7 +569,7 @@ Note: roko-graph already has its own `CellRegistry` (registry.rs:16) that uses f
 functions (`FnMut(config) -> Box<dyn Cell>`). This is a different pattern — factory-based
 for graph node instantiation vs. instance-based for runtime Cell management. Name it
 `CoreCellRegistry` to avoid conflict when both are in scope."""
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 55
@@ -701,7 +701,7 @@ re-exported. Verify that these new types are accessible:
 
 If `pub use cell::*` covers them (it should since they're `pub` in cell.rs), just verify
 with a compile test. If any are in sub-modules not covered by the glob, add explicit re-exports."""
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 10

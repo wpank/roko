@@ -1,7 +1,7 @@
 [meta]
 plan = "E08-conductor-supervision"
 total = 9
-done = 0
+done = 8
 status = "ready"
 max_parallel = 1
 
@@ -12,7 +12,7 @@ max_parallel = 1
 [[task]]
 id = "E08-T01"
 title = "Add RunnerEvent/AgentEvent -> Engram adapter for conductor watchers"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 220
@@ -72,7 +72,7 @@ fail_msg = "adapter unit tests (ghost-turn/gate-fail stream -> non-Continue deci
 [[task]]
 id = "E08-T02"
 title = "Add bounded conductor_ring fed by a ConductorRingSink FeedbackSink decorator"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 200
@@ -130,7 +130,7 @@ fail_msg = "ring bound + best-effort push tests must pass"
 [[task]]
 id = "E08-T03"
 title = "Construct Conductor::from_config and thread it + ring into the event loop"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-opus-4-6"
 max_loc = 260
@@ -190,7 +190,7 @@ fail_msg = "existing runner tests must still pass with the conductor threaded th
 id = "E08-T04"
 title = "Add conductor supervision select branch that evaluates and enforces decisions"
 description = "Add a cancel-safe periodic conductor supervision branch to the runner-v2 event loop. It snapshots the conductor ring, calls evaluate_full, and enforces Continue/Restart/Fail without waiting for the plan wall-clock timeout."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-6"
 max_loc = 260
@@ -257,7 +257,7 @@ fail_msg = "conductor supervision regression tests must pass"
 id = "E08-T05"
 title = "Replace hardcoded conductor_load with real runner pressure"
 description = "Replace the runner-v2 and runtime-feedback conductor_load: 0.0 placeholders with a bounded load derived from conductor routing bias, circuit-breaker pressure, active agents, and ready-queue depth."
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_loc = 100
@@ -317,7 +317,7 @@ fail_msg = "conductor_load tests must pass"
 id = "E08-T06"
 title = "Snapshot and restore conductor circuit-breaker state on resume"
 description = "Persist the conductor circuit-breaker snapshot inside runner-owned run state and restore it on --resume through Conductor::from_circuit_breaker_state, so tripped failure budgets survive process restarts."
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 180
@@ -457,7 +457,7 @@ fail_msg = "conductor routing-bias smoke tests must pass"
 [[task]]
 id = "E08-T08"
 title = "Acceptance roll-up: E47 runtime disk-pressure watcher"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "E47-T08"
 tier = "focused"
@@ -527,7 +527,7 @@ fail_msg = "canonical E47 DiskPressureWatcher tests must pass"
 [[task]]
 id = "E08-T09"
 title = "Add WorktreeCountWatcher to conductor watchers"
-status = "ready"
+status = "done"
 ownership = "distinct-consumer"
 uses_owner = "E47-T09"
 tier = "focused"

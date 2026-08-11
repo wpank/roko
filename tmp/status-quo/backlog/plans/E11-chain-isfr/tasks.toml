@@ -1,8 +1,8 @@
 [meta]
 plan = "E11-chain-isfr"
 total = 5
-done = 1
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ── E11-T01: Confirm the reviewed architecture-core-queue recovery ──
@@ -86,7 +86,7 @@ fail_msg = "E11 must pass focused strict validation with the corrected prerequis
 [[task]]
 id = "E11-T02"
 title = "Implement AlloyChainClient::get_logs via eth_getLogs (unblocks event indexers)"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 80
@@ -144,7 +144,7 @@ fail_msg = "a get_logs test must build and pass (real logs, not Unsupported)"
 [[task]]
 id = "E11-T03"
 title = "Extend Deploy.s.sol to deploy all 13 contracts (ERC-8004 trio + FeeDistributor + ISFR set)"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120
@@ -201,7 +201,7 @@ fail_msg = "contracts must build and forge tests must stay green after extending
 [[task]]
 id = "E11-T04"
 title = "Delete dead Engram/Provenance/CustodyEntry stubs (coordinate with E03-T07)"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 45
@@ -256,7 +256,7 @@ acceptance = [
 [[task]]
 id = "E11-T05"
 title = "Wire-or-shelve decision doc for zero-caller chain modules and daeji fence"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 140

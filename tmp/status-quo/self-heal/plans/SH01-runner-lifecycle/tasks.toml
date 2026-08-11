@@ -1,8 +1,8 @@
 [meta]
 plan = "SH01-runner-lifecycle"
 total = 28
-done = 27
-status = "ready"
+done = 28
+status = "done"
 max_parallel = 1
 skip_enrichment = true
 

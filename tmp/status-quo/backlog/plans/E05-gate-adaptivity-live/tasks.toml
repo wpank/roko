@@ -1,7 +1,7 @@
 [meta]
 plan = "E05-gate-adaptivity-live"
 total = 8
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -237,7 +237,7 @@ acceptance = ["A live gate completion records the actual canonical rung that pro
 id = "E05-T05"
 title = "Build real RungExecutionInputs for live gate dispatch"
 description = "Port the useful enrichment behavior from the legacy orchestrate path into runner/gate_dispatch so Symbol, GeneratedTest, FactCheck, LlmJudge, and Integration rungs receive real inputs or explicit skipped verdicts."
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-6"
 max_loc = 240

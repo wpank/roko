@@ -1,8 +1,8 @@
 [meta]
 plan = "E15-mcp-config"
 total = 7
-done = 0
-status = "ready"
+done = 7
+status = "done"
 max_parallel = 2
 
 # ── E15-T1: Normalize McpConfig → Claude {"mcpServers":{}} shape ──────────────
@@ -16,7 +16,7 @@ max_parallel = 2
 [[task]]
 id = "E15-T1"
 title = "Normalize McpConfig to Claude mcpServers shape in resolve_mcp_config_path"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 55
@@ -74,7 +74,7 @@ fail_msg = "Add/keep a unit test asserting the generated JSON has an mcpServers 
 [[task]]
 id = "E15-T2"
 title = "Pass per-server env via spawn_with_env in PlanRunner::setup_mcp"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 20
@@ -123,7 +123,7 @@ fail_msg = "roko-cli must compile after switching to spawn_with_env"
 [[task]]
 id = "E15-T3"
 title = "Group MCP tools by the '.' server prefix, not '__'"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 15
@@ -171,7 +171,7 @@ fail_msg = "Add a unit test asserting a tool named 'github.get_pr' groups under 
 [[task]]
 id = "E15-T4"
 title = "Thread session mcp_servers into Claude-CLI ACP dispatch"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 220
@@ -231,7 +231,7 @@ acceptance = [
 [[task]]
 id = "E15-T5"
 title = "Emit read-only and open-world MCP tool annotations from tool_spec"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 150
@@ -295,7 +295,7 @@ acceptance = [
 [[task]]
 id = "E15-T6"
 title = "Neutralize the dead C4 MCP writer and roko-mcp fallback"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5-20250514"
 max_loc = 80
@@ -364,7 +364,7 @@ acceptance = [
 id = "E15-T7"
 title = "Auto-discover roko-mcp-github binary and configure it"
 ownership = "canonical-owner"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 100

@@ -1,8 +1,8 @@
 [meta]
 plan = "P12-runner-parallelism"
 total = 5
-done = 0
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: enforce effective per-plan concurrency"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH02-T01 + E01-T05"
 tier = "focused"
@@ -79,7 +79,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: attribute concurrent active tasks per plan"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH02-T01 + E01-T04 + E01-T05"
 tier = "integrative"
@@ -120,7 +120,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T3"
 title = "Acceptance roll-up: own concurrent agent handles per task"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH02-T01 + E01-T04 + E01-T05"
 tier = "integrative"
@@ -161,7 +161,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T4"
 title = "Acceptance roll-up: preserve per-task output attribution"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T01 + SH04-T02"
 tier = "focused"
@@ -200,7 +200,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T5"
 title = "Acceptance roll-up: dispatch independent tasks within effective capacity"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH02-T01 + E01-T04 + E01-T05"
 tier = "integrative"

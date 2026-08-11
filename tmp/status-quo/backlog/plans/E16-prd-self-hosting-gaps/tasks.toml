@@ -1,8 +1,8 @@
 [meta]
 plan = "E16-prd-self-hosting-gaps"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "done"
 max_parallel = 1
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -18,7 +18,7 @@ max_parallel = 1
 [[task]]
 id = "E16-T1"
 title = "Rewrite perplexity_integration.rs for the single-query search API"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 90
@@ -63,7 +63,7 @@ fail_msg = "Perplexity integration tests must pass against the single-query API"
 [[task]]
 id = "E16-T2"
 title = "Add offline front-half self-hosting smoke test"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 120

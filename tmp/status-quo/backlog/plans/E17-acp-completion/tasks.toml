@@ -1,7 +1,7 @@
 [meta]
 plan = "E17-acp-completion"
 total = 8
-done = 0
+done = 1
 status = "ready"
 max_parallel = 1
 
@@ -22,7 +22,7 @@ max_parallel = 1
 [[task]]
 id = "E17-T01"
 title = "Add PermissionRequest reply channel and gate ACP builtin tool exec fail-closed"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_loc = 120

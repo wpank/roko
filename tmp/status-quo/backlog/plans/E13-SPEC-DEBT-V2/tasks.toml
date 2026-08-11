@@ -1,8 +1,8 @@
 [meta]
 plan = "E13-SPEC-DEBT-V2"
 total = 3
-done = 0
-status = "ready"
+done = 3
+status = "done"
 milestone = "M3+"
 max_parallel = 1
 
@@ -26,7 +26,7 @@ max_parallel = 1
 [[task]]
 id = "E13-T01"
 title = "Define trait Lens + LensScope in roko-core (no consumers)"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-1"
 max_loc = 90
@@ -75,7 +75,7 @@ acceptance = ["`rg 'trait Lens' crates/` is no longer 0 hits; roko-core compiles
 [[task]]
 id = "E13-T02"
 title = "Wrap MetricRegistry as the first CollectorLens feeding StateHub"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-opus-4-1"
 max_loc = 140
@@ -120,7 +120,7 @@ acceptance = ["A CollectorLens wraps MetricRegistry and projects its snapshot in
 [[task]]
 id = "E13-T03"
 title = "Resolve Cell/Block naming drift in a decision doc"
-status = "ready"
+status = "done"
 tier = "architectural"
 model_hint = "claude-opus-4-1"
 max_loc = 120

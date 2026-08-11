@@ -42,10 +42,11 @@ mapping and equivalent-or-stronger acceptance. It never means “we chose not to
 
 ### Batch audit 2026-08-10
 
-Updated 2026-08-11
+Updated 2026-08-11 (batch 3 integrated)
 
-27 parallel audit agents assessed all waves against current source on branch
-`status-quo/batch-2026-08-10` at HEAD `10702da38`. Key findings:
+Batch 1: 27 audit agents assessed all waves. Batch 2: 20 implementation agents.
+Batch 3: 27 agents (17 implementation + 10 audit). All changes integrated and
+pushed to `status-quo/batch-2026-08-10`. Key findings:
 
 | Finding | Detail |
 |---|---|
@@ -590,29 +591,29 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [x] P08-search-command-fix (4/4 done) — plans/P08-search-command-fix/tasks.toml; Wave 8/E16. All 4 tasks implemented: single-query API rewrite (commit `bd1ce1aa7`), integration tests rewritten, batch sends sequential single queries. TOML `done = 0` is stale.
 - [x] P09-tool-alias-fix (3/3 done) — plans/P09-tool-alias-fix/tasks.toml; Wave 8/E14/E16. All 3 tasks done (commit `7e014b0c6`): `canonical_of_claude` alias resolution in `parse_allowed_tools_csv`. TOML `done = 0` is stale.
 - [x] P10-slash-command-flags (5/5 done) — plans/P10-slash-command-flags/tasks.toml; Wave 9/E10. T1-T5 implemented: `/develop` dispatch handler, `/plan-resume` uses `--resume-plan`, `--model` on `/plan-run`, `/develop` registered in session.
-- [x] P11-runner-v2-default (4/5 done) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01. T1 done (runner-v2 default), T3/T4 satisfied by feature removal (E12-T03/T08). T2/T5 remaining.
+- [x] P11-runner-v2-default (5/5 done) — plans/P11-runner-v2-default/tasks.toml; Wave 7/E01. T1 done (runner-v2 default), T3/T4 satisfied by feature removal (E12-T03/T08), T5 done (TOML validation after plan generate).
 - [x] P12-runner-parallelism (5/5 done) — plans/P12-runner-parallelism/tasks.toml; Waves 2/7 SH02/E01. All 5 tasks done per P12 agent audit.
 - [ ] P13-rate-limit-retry (2/4) — plans/P13-rate-limit-retry/tasks.toml; Waves 5/8 SH05/E14. T1 done (429/529 retry exists), T4 done (`classify_http_error` helper extracted + tests). T2-T3 need implementation.
 - [x] P14-gate-rung-fix (3/3 done) — plans/P14-gate-rung-fix/tasks.toml; Wave 8/E05. T1,T2,T3 all done. T3 `complex_pipeline_has_seven_canonical_rungs` test added.
-- [ ] P15-error-recovery-wiring (3/5) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash wired into handle_agent_failure), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler). T2-T3 remaining.
-- [ ] P16-safety-contracts (1/5) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T3 done (`forbidden_tool_names()` added to AgentContract). T1,T2,T4,T5 need implementation.
-- [ ] P17-cli-output-format (0/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. All 6 unimplemented: no `CliOutput` struct, 40 raw `eprintln!` calls remain in `do_cmd.rs`.
+- [x] P15-error-recovery-wiring (5/5 done) — plans/P15-error-recovery-wiring/tasks.toml; Waves 2/7 SH02/E01. T1 done (classify_agent_crash), T2 done (crash classification in do_cmd plan-gen errors), T3 done (config parse warnings logged instead of silently swallowed), T4 done (task_crash_class ledger entry), T5 done (enriched agent exit handler).
+- [x] P16-safety-contracts (5/5 done) — plans/P16-safety-contracts/tasks.toml; Wave 7/E04. T1 done (contract load in event_loop), T2 done (disallowed_tools field on CliDispatchRequest + --disallowed-tools flags), T3 done (forbidden_tool_names()), T4 done (AgentSpawnConfig.disallowed_tools passthrough), T5 done (bridge advisory log for non-CLI dispatch).
+- [ ] P17-cli-output-format (1/6) — plans/P17-cli-output-format/tasks.toml; Waves 4/9 SH04/E10. T1 done (`CliOutput` struct added in cli_output.rs). T2-T6 remaining: migrate remaining `eprintln!` calls.
 - [ ] P18-tui-agent-data (0/5) — plans/P18-tui-agent-data/tasks.toml; Waves 4/9 SH04/E10. Acceptance roll-ups gated on SH04; SH04 is done but acceptance tests not yet verified.
 - [ ] P19-cascade-router-acp (0/6) — plans/P19-cascade-router-acp/tasks.toml; Wave 10/E17. All 6 unimplemented: no `cascade_select_model()`, model key mismatch bug at line 1607, DaimonState still hardcoded default.
 - [ ] P20-zero-config (1/5) — plans/P20-zero-config/tasks.toml; Wave 8/E15/E18. T4 done (`use_max_completion_tokens` builtin field fix). T1-T3,T5 need implementation.
 - [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
-- [ ] P22-acp-tool-permission (1/5 done; 4 remaining) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 is merged at `9ee418a57` with independent acceptance at `6b4ace91f` and post-merge `cargo check -p roko-acp`. T2 partial (2/4 done), T3-T5 need implementation.
+- [ ] P22-acp-tool-permission (3/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied_tools/allowed_tools enforcement in AcpBuiltinToolHandler), T3 done (session.rs denied/allowed_tools fields). T4-T5 remaining.
 - [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
 - [ ] P24-workspace-paths (0/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43.
 - [ ] P25-mcp-acp-passthrough (2/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2 done. T3,T4 need implementation.
 - [ ] P26-hdc-similarity-lookup (0/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24.
-- [ ] P27-provider-error-ux (0/4) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14.
+- [x] P27-provider-error-ux (4/4 done) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14. T1-T4 done: structured provider key checks in doctor, multi-provider setup instructions, state layout audit, MCP allowlist check.
 - [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
-- [ ] P29-develop-command-wire (0/3) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18.
-- [ ] P30-onboarding-doctor (1/4) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1 partial.
+- [x] P29-develop-command-wire (3/3 done) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18. T1-T3 done: develop command wired, refactored from do_cmd boilerplate.
+- [x] P30-onboarding-doctor (4/4 done) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1-T4 done: multi-provider key checks, setup command improvements, state layout audit check, MCP allowlist check. Superseded by P27 which covers all the same ground.
 - [ ] P31-note-and-context (0/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07.
 - [ ] P32-cli-polish (0/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18.
-- [ ] P33-model-ux (0/1) — plans/P33-model-ux/tasks.toml; Wave 8/E14.
+- [x] P33-model-ux (1/1 done) — plans/P33-model-ux/tasks.toml; Wave 8/E14. T1 done: `skip_serializing_if` on provider config + pending symbol in inline display.
 - [ ] P34-verification-sweep (0/4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
 - [ ] architecture-defi-critical-path (0/3) — plans/architecture-defi-critical-path/tasks.toml;
       after E11 restores or replaces its missing architecture-core prerequisite.
@@ -800,7 +801,7 @@ them serially.
 Then:
 
 - [x] E21-graph-engine — 10/10 done. (T04 done: `execute_parallel` with wave-based `JoinSet`+`Semaphore`. T05 done: `GraphSnapshot`/`snapshot()`/`resume_from()`. T09 done: `MergeEnqueuer` trait + `MergeRequest`.)
-- [x] E22-execution-runtime — 9/10 done. (T01 done: 7 cognitive Cell impls. T02 done: `cognitive-loop.toml`. T06 done: `BudgetEnforcer` wired into hot loop. Remaining: T03 short-circuit.)
+- [x] E22-execution-runtime — 10/10 done. (T01 done: 7 cognitive Cell impls. T02 done: `cognitive-loop.toml`. T03 done: T0 short-circuit in SenseCell — `should_short_circuit()` checks empty input + deadline proximity + ReactCell force_full_tick tag. T06 done: `BudgetEnforcer` wired into hot loop.)
 - [ ] Explicit Graph execution dispatches real work or truthfully refuses unsupported behavior.
 - [ ] Graph snapshots, replay, cancellation, gates, and budgets pass end to end.
 

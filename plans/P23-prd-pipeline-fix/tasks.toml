@@ -1,8 +1,8 @@
 [meta]
 plan = "P23-prd-pipeline-fix"
 total = 6
-done = 0
-status = "ready"
+done = 6
+status = "done"
 max_parallel = 1
 
 # ────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Give prd draft-new agent read-only codebase tools"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 5
@@ -62,7 +62,7 @@ fail_msg = "Must compile after changing allowed_tools"
 [[task]]
 id = "T2"
 title = "Update draft-new system prompt to instruct tool usage"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -114,7 +114,7 @@ fail_msg = "Must compile after prompt changes"
 [[task]]
 id = "T3"
 title = "Block draft write when validation detects errors"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 25
@@ -168,7 +168,7 @@ fail_msg = "Must compile after adding validation blocking"
 [[task]]
 id = "T4"
 title = "Link plans to PRDs by slug match in cmd_status"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-5"
 max_loc = 60
@@ -232,7 +232,7 @@ fail_msg = "Must compile after rewriting cmd_status"
 [[task]]
 id = "T5"
 title = "Infer PRD status from directory path when frontmatter is missing"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -291,7 +291,7 @@ fail_msg = "Must compile after changing read_prd_entry"
 [[task]]
 id = "T6"
 title = "Add source_prd field to TaskMeta and set it in plan generation"
-status = "ready"
+status = "done"
 tier = "integrative"
 model_hint = "claude-sonnet-4-5"
 max_loc = 30

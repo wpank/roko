@@ -2069,10 +2069,7 @@ mod tests {
     #[tokio::test]
     async fn auth_fixture_write_key_allowed_on_write_route() {
         let plaintext = "fixture-write-key-001";
-        let app = full_auth_app(
-            keyed_auth("write-fixture", plaintext, "write"),
-            "/api/jobs",
-        );
+        let app = full_auth_app(keyed_auth("write-fixture", plaintext, "write"), "/api/jobs");
         let resp = fixture_response(app, plaintext, Method::POST, "/api/jobs").await;
         assert_eq!(
             resp.status(),
@@ -2111,7 +2108,10 @@ mod tests {
         assert_eq!(known_static_scope("plan:write"), "plan:write");
         assert_eq!(known_static_scope("terminal:write"), "terminal:write");
         // Unrecognised values fall to the sentinel (fail-closed).
-        assert_eq!(known_static_scope("unknown:scope"), SCOPE_WRITE_UNCLASSIFIED);
+        assert_eq!(
+            known_static_scope("unknown:scope"),
+            SCOPE_WRITE_UNCLASSIFIED
+        );
         assert_eq!(known_static_scope(""), SCOPE_WRITE_UNCLASSIFIED);
     }
 
@@ -2123,11 +2123,17 @@ mod tests {
     fn extension_scope_for_returns_declared_scope_when_registered() {
         // Every scope a plugin can declare in its manifest must map to a
         // recognised static token, not to SCOPE_WRITE_UNCLASSIFIED.
-        for declared in ["read", "write", "admin", "agent:write", "plan:write", "terminal:write"] {
+        for declared in [
+            "read",
+            "write",
+            "admin",
+            "agent:write",
+            "plan:write",
+            "terminal:write",
+        ] {
             let resolved = known_static_scope(declared);
             assert_ne!(
-                resolved,
-                SCOPE_WRITE_UNCLASSIFIED,
+                resolved, SCOPE_WRITE_UNCLASSIFIED,
                 "scope '{declared}' declared by an extension should not resolve to the \
                  unclassified sentinel — it must be an explicit whitelist entry"
             );
@@ -2172,13 +2178,12 @@ mod tests {
     /// not panic (the second call is a no-op via `OnceLock::set`).
     #[test]
     fn register_extension_route_scopes_is_idempotent() {
-        register_extension_route_scopes([
-            ("/hooks/test-plugin".to_string(), "write".to_string()),
-        ]);
+        register_extension_route_scopes([("/hooks/test-plugin".to_string(), "write".to_string())]);
         // Second call — must be a silent no-op.
-        register_extension_route_scopes([
-            ("/hooks/other-plugin".to_string(), "agent:write".to_string()),
-        ]);
+        register_extension_route_scopes([(
+            "/hooks/other-plugin".to_string(),
+            "agent:write".to_string(),
+        )]);
         // No panic means the test passes.
     }
 }

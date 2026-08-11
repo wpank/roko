@@ -521,10 +521,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                         // Priority: .roko/mcp.json > ~/.claude/mcp-config.json > .mcp.json
                         // walk-up > auto-discovered (augmented with roko-mcp-github when
                         // the binary is available).
-                        let mcp = crate::resolve_mcp_config_with_autodiscovery(
-                            &wd,
-                            layout.root(),
-                        );
+                        let mcp = crate::resolve_mcp_config_with_autodiscovery(&wd, layout.root());
                         if let Some(ref path) = mcp {
                             tracing::info!(path = ?path, "MCP config resolved for plan run");
                         } else {

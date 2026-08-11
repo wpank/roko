@@ -110,8 +110,8 @@ impl OrchestratorSnapshot {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use crate::orchestrator::executor::ExecutorSnapshot;
     use super::*;
+    use crate::orchestrator::executor::ExecutorSnapshot;
 
     #[test]
     fn aggregate_snapshot_roundtrips() {

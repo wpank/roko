@@ -873,7 +873,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                  Use the cheapest model tier for each task.\n\n{source_text}{context_block}"
             );
 
-            run_agent_logged(
+            let exit_code = run_agent_logged(
                 AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: &workdir,
@@ -890,7 +890,39 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     task_id: &task_id,
                 },
             )
-            .await
+            .await?;
+
+            // Validate all tasks.toml files written by the agent under .roko/plans/.
+            // Check all files and collect all errors before reporting.
+            if exit_code == EXIT_SUCCESS {
+                let plans_output_dir = workdir.join(".roko").join("plans");
+                if plans_output_dir.is_dir() {
+                    let mut validation_failed = false;
+                    let entries = std::fs::read_dir(&plans_output_dir)
+                        .with_context(|| format!("read {}", plans_output_dir.display()))?;
+                    for entry in entries.flatten() {
+                        let tasks_path = entry.path().join("tasks.toml");
+                        if !tasks_path.is_file() {
+                            continue;
+                        }
+                        if let Err(err) = roko_cli::task_parser::TasksFile::parse(&tasks_path) {
+                            eprintln!(
+                                "warning: invalid tasks.toml at {}: {err:#}",
+                                tasks_path.display()
+                            );
+                            validation_failed = true;
+                        }
+                    }
+                    if validation_failed {
+                        eprintln!(
+                            "plan generate: one or more generated tasks.toml files failed \
+                             TOML validation (see warnings above)"
+                        );
+                    }
+                }
+            }
+
+            Ok(exit_code)
         }
         PlanCmd::Regenerate { plan_dir, dry_run } => {
             use roko_cli::agent_config::load_gateway_env;

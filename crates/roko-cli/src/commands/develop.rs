@@ -92,57 +92,50 @@ pub(crate) async fn cmd_develop(
         return Ok(code);
     }
 
-    // Interactive mode: first dry-run to show the plan, then ask for approval.
-    eprintln!("\u{25b8} roko develop: classifying and previewing plan...");
-    eprintln!();
+    // Interactive mode: check if plans already exist on disk, then ask for
+    // approval. If plans exist, run them directly (skip regeneration).
+    // If no plans exist yet, generate and execute in one step.
+    eprintln!("\u{25b8} roko develop: checking for existing plan...");
 
-    // Show the plan preview via do_cmd dry-run.
-    let _preview = commands::do_cmd::cmd_do(
-        cli,
-        Some(workdir.clone()),
-        prompt_args.clone(),
-        true, // --plan
-        None,
-        true, // dry-run (preview only)
-        false,
-        false,
-        false,
-        None,
-        false,
-        provider.clone(),
-        Vec::new(),
-    )
-    .await?;
-
-    // Check if existing plans are on disk to show task table.
     let plans_dir = roko_cli::plan::plans_dir(&workdir);
-    if plans_dir.is_dir() {
-        if let Ok(plans) = plan_loader::load_plans(&plans_dir) {
-            if !plans.is_empty() && !show_plan_approval(&plans) {
-                eprintln!("\u{25b8} Aborted.");
-                return Ok(EXIT_SUCCESS);
-            }
+    let existing_plans = if plans_dir.is_dir() {
+        plan_loader::load_plans(&plans_dir)
+            .ok()
+            .filter(|p| !p.is_empty())
+    } else {
+        None
+    };
+
+    if let Some(ref plans) = existing_plans {
+        if !show_plan_approval(plans) {
+            eprintln!("\u{25b8} Aborted.");
+            return Ok(EXIT_SUCCESS);
         }
     }
 
-    // User approved (or no plans to show) — execute.
     eprintln!("\u{25b8} Executing plan...");
-    let code = commands::do_cmd::cmd_do(
-        cli,
-        Some(workdir),
-        prompt_args,
-        true, // --plan
-        None,
-        false, // NOT dry-run
-        true,  // yes (already approved above)
-        false,
-        false,
-        None,
-        false,
-        provider,
-        Vec::new(),
-    )
-    .await?;
+    let code = if existing_plans.is_some() {
+        // Plans already on disk: execute directly without regenerating.
+        commands::do_cmd::run_plan_execution(cli, &workdir, &plans_dir, false, provider).await?
+    } else {
+        // No plans yet: generate then execute via the standard path.
+        commands::do_cmd::cmd_do(
+            cli,
+            Some(workdir),
+            prompt_args,
+            true, // --plan
+            None,
+            false, // NOT dry-run
+            true,  // yes (already approved above)
+            false,
+            false,
+            None,
+            false,
+            provider,
+            Vec::new(),
+        )
+        .await?
+    };
 
     if code == EXIT_SUCCESS && std::io::stderr().is_terminal() {
         hint_tui_dashboard();

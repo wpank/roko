@@ -13,9 +13,9 @@ use super::schema::{
     AgentConfig, BudgetConfig, CURRENT_SCHEMA_VERSION, ChainConfig, ColdStorageConfig,
     ConductorConfig, CoreRunnerConfig, DeployConfig, FeedAgentsConfig, GatesConfig, GeminiConfig,
     GithubWebhookConfig, ISFRSection, LearningConfig, PerplexityConfig, PipelineConfig, PrdConfig,
-    ProjectConfig, RelayConfig, RokoConfig, RoleOverride, RoutingConfig, SchedulerConfig,
-    ServeConfig, ServerConfig, ToolsConfig, TuiConfig, ValidationConfig, WatcherConfig,
-    WebhooksConfig,
+    ProjectConfig, RelayConfig, ResourcesConfig, RokoConfig, RoleOverride, RoutingConfig,
+    SchedulerConfig, ServeConfig, ServerConfig, ToolsConfig, TuiConfig, ValidationConfig,
+    WatcherConfig, WebhooksConfig,
 };
 
 /// Subset of Mori's `ConfigState` that we recognize.
@@ -117,6 +117,7 @@ fn convert(m: &MoriConfig) -> RokoConfig {
         chain: ChainConfig::default(),
         relay: RelayConfig::default(),
         tools: ToolsConfig::default(),
+        resources: ResourcesConfig::default(),
         isfr: ISFRSection::default(),
         feed_agents: FeedAgentsConfig::default(),
         runner: CoreRunnerConfig::default(),

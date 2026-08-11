@@ -386,6 +386,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Verify for PassGate {
         async fn verify(&self, _signal: &Engram, _ctx: &Context) -> Verdict {
             Verdict::pass("pass_gate")

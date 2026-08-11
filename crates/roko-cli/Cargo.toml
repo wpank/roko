@@ -10,11 +10,6 @@ description = "The `roko` binary: minimal CLI that drives the universal loop (pr
 [lints]
 workspace = true
 
-[features]
-## Retained so run.rs cfg gates compile without warnings. The module is deleted.
-## Removed in E12-T08.
-legacy-orchestrate = []
-
 [[bin]]
 name = "roko"
 path = "src/main.rs"

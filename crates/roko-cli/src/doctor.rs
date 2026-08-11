@@ -1084,8 +1084,8 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             "memory/episodes.jsonl",
             layout.memory_dir().join("episodes.jsonl"),
         ),
-        ("state/executor.json", layout.executor_snapshot()),
-        ("state/events.json", layout.event_log_snapshot()),
+        ("state/executor.json", layout.state_dir().join("executor.json")),
+        ("state/events.json", layout.state_dir().join("events.json")),
     ];
 
     let mut legacy_found: Vec<&str> = Vec::new();
@@ -1206,7 +1206,8 @@ fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
 /// **not** treated as a failure (matches anti-pattern from E04-T17).
 fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
     use roko_agent::mcp::{
-        McpTransportConfig, find_mcp_config, is_command_allowed, sensitive_env_keys,
+        McpTransportConfig, find_mcp_config, hardcoded_secret_values, is_command_allowed,
+        is_command_on_path, sensitive_env_keys, unset_env_var_refs,
     };
 
     // Resolve the MCP config: explicit path from roko.toml, or walk-up discovery.
@@ -1254,34 +1255,66 @@ fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<Doct
             &server.name
         };
 
-        // Skip command check for HTTP-transport servers (they have no local command).
-        let cmd_ok = server.transport == McpTransportConfig::Http
-            || server.command.is_empty()
-            || is_command_allowed(&server.command, &[]);
+        // Skip command checks for HTTP-transport servers (they have no local command).
+        let is_http = server.transport == McpTransportConfig::Http;
+        let cmd_empty = server.command.is_empty();
+
+        let cmd_allowed = is_http || cmd_empty || is_command_allowed(&server.command, &[]);
+        let cmd_on_path = is_http || cmd_empty || is_command_on_path(&server.command);
 
         let sensitive = sensitive_env_keys(&server.env);
+        let unset_refs = unset_env_var_refs(&server.env);
+        let hardcoded = hardcoded_secret_values(&server.env);
 
-        let status = if !cmd_ok {
+        let has_issue =
+            !cmd_allowed || !cmd_on_path || !unset_refs.is_empty() || !hardcoded.is_empty();
+        let has_warn = has_issue || !sensitive.is_empty();
+        if has_warn {
             any_warn = true;
-            DoctorStatus::Warn
-        } else if !sensitive.is_empty() {
-            any_warn = true;
+        }
+
+        let status = if has_warn {
             DoctorStatus::Warn
         } else {
             DoctorStatus::Ok
         };
 
         let mut detail_parts = Vec::new();
-        if !cmd_ok {
+        if !cmd_allowed {
             detail_parts.push(format!(
                 "command `{}` is not on the approved allowlist",
                 server.command,
             ));
+        } else if !cmd_on_path {
+            // Only report missing-from-PATH when the command is allowed but absent.
+            detail_parts.push(format!(
+                "command `{}` was not found on PATH",
+                server.command,
+            ));
         }
-        if !sensitive.is_empty() {
+        if !hardcoded.is_empty() {
+            detail_parts.push(format!(
+                "env keys with hardcoded secret values (use ${{VAR}} references instead): {}",
+                hardcoded.join(", "),
+            ));
+        }
+        if !unset_refs.is_empty() {
+            detail_parts.push(format!(
+                "env keys reference unset environment variables: {}",
+                unset_refs.join(", "),
+            ));
+        }
+        // Report remaining sensitive keys (those whose values are env-var refs)
+        // only when there are no more severe issues already described.
+        let remaining_sensitive: Vec<String> = sensitive
+            .iter()
+            .filter(|k| !hardcoded.contains(k) && !unset_refs.contains(k))
+            .cloned()
+            .collect();
+        if !remaining_sensitive.is_empty() {
             detail_parts.push(format!(
                 "env keys that may contain secrets: {}",
-                sensitive.join(", "),
+                remaining_sensitive.join(", "),
             ));
         }
 
@@ -1291,11 +1324,23 @@ fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<Doct
             Some(detail_parts.join("; "))
         };
 
-        let fix = if !cmd_ok {
+        let fix = if !cmd_allowed {
             Some(format!(
                 "verify `{}` is intended; add to allowlist or use a known MCP server command",
                 server.command,
             ))
+        } else if !cmd_on_path {
+            Some(format!(
+                "install `{}` so it is available on PATH, or use an absolute path",
+                server.command,
+            ))
+        } else if !hardcoded.is_empty() {
+            Some(
+                "replace hardcoded secret values with ${ENV_VAR} references and set the variables in the shell"
+                    .to_string(),
+            )
+        } else if !unset_refs.is_empty() {
+            Some("set the missing environment variables before running the MCP server".to_string())
         } else if !sensitive.is_empty() {
             Some(
                 "avoid passing secrets via MCP env; use auth_token or a secrets manager instead"
@@ -1659,8 +1704,6 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_reports_mcp_allowlist_status() {
-        use std::collections::HashMap;
-
         let temp = tempdir().unwrap();
         let mut config = Config::default();
         config.serve.auth.enabled = false;
@@ -1668,22 +1711,27 @@ mod tests {
         bootstrap_layout(temp.path()).await;
 
         // Write an .mcp.json with one safe server, one unknown command, and
-        // one server whose env includes a secret-like key.
+        // one server whose env includes a hardcoded secret value.
         let mcp_json = serde_json::json!({
             "servers": [
                 {
+                    // npx is on the approved allowlist. It may or may not be on
+                    // PATH depending on the environment, but it must not trigger
+                    // the allowlist warning.
                     "name": "safe-fs",
                     "command": "npx",
                     "args": ["-y", "@modelcontextprotocol/server-filesystem"],
                     "env": {}
                 },
                 {
+                    // Absolute path that does not exist and is not on the allowlist.
                     "name": "sketchy-bin",
                     "command": "/opt/evil/do-stuff",
                     "args": [],
                     "env": {}
                 },
                 {
+                    // node is allowlisted; env has a hardcoded secret value.
                     "name": "leaky-env",
                     "command": "node",
                     "args": ["server.js"],
@@ -1708,15 +1756,20 @@ mod tests {
         .await
         .unwrap();
 
-        // 1. The safe server should pass.
+        // 1. The safe server is on the allowlist; it may warn if npx is not on
+        //    PATH, but must NOT warn about the allowlist itself.
         let safe = report
             .checks
             .iter()
             .find(|c| c.id == "mcp_server_safe-fs")
             .expect("safe-fs check present");
-        assert_eq!(safe.status, DoctorStatus::Ok);
+        let safe_detail = safe.detail.as_deref().unwrap_or("");
+        assert!(
+            !safe_detail.contains("not on the approved allowlist"),
+            "safe-fs must not trigger an allowlist warning, got: {safe_detail}"
+        );
 
-        // 2. The unknown-command server should warn.
+        // 2. The unknown-command server should warn about the allowlist.
         let sketchy = report
             .checks
             .iter()
@@ -1728,11 +1781,9 @@ mod tests {
             detail.contains("not on the approved allowlist"),
             "expected allowlist warning, got: {detail}"
         );
-        // Must NOT contain the actual command value in the fix, but should
-        // reference the command name so the user can look it up.
         assert!(sketchy.fix.is_some());
 
-        // 3. The leaky-env server should warn about secret-like keys.
+        // 3. The leaky-env server should warn about the hardcoded secret value.
         let leaky = report
             .checks
             .iter()
@@ -1749,6 +1800,11 @@ mod tests {
             !detail.contains("hunter2"),
             "must not leak secret values in detail"
         );
+        // Should flag as hardcoded (literal value, not ${VAR} reference).
+        assert!(
+            detail.contains("hardcoded"),
+            "should indicate the value is hardcoded, got: {detail}"
+        );
 
         // 4. Summary check should warn because at least one server has issues.
         let summary = report
@@ -1761,6 +1817,187 @@ mod tests {
             summary.message.contains("3 server(s) configured"),
             "summary should mention server count, got: {}",
             summary.message
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_warns_when_mcp_command_not_on_path() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+
+        // Use an absolute path that does not exist. Absolute paths skip the
+        // allowlist check (they're caught by not-on-allowlist) but the
+        // not-found-on-PATH branch is exercised for allowlisted commands
+        // that are absent. Here we verify via the unit helper directly.
+        //
+        // For the integration path, we use a command that IS allowlisted but
+        // uses a known-nonexistent absolute path to trigger the "not found"
+        // branch. Absolute paths are not in the allowlist, so the allowlist
+        // warning takes priority — we verify the PATH warning via the unit
+        // tests in mcp/config.rs instead.
+        //
+        // This test verifies the doctor check wiring: a nonexistent absolute
+        // command produces a Warn with the allowlist message (absolute paths
+        // are never on the allowlist).
+        let mcp_json = serde_json::json!({
+            "servers": [{
+                "name": "bad-abs",
+                "command": "/nonexistent/__roko_test_sentinel__",
+                "args": [],
+                "env": {}
+            }]
+        });
+        std::fs::write(
+            temp.path().join(".mcp.json"),
+            serde_json::to_string_pretty(&mcp_json).unwrap(),
+        )
+        .unwrap();
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        let check = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_bad-abs")
+            .expect("bad-abs check present");
+        assert_eq!(
+            check.status,
+            DoctorStatus::Warn,
+            "nonexistent command must produce a warning"
+        );
+        // Absolute path is not on the allowlist, so the allowlist message fires.
+        let detail = check.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("not on the approved allowlist") || detail.contains("not found on PATH"),
+            "should report allowlist or PATH warning, got: {detail}"
+        );
+        assert!(check.fix.is_some(), "a fix hint should be provided");
+    }
+
+    #[tokio::test]
+    async fn doctor_warns_when_mcp_env_refs_unset_var() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+
+        let mcp_json = serde_json::json!({
+            "servers": [{
+                "name": "needs-token",
+                "command": "node",
+                "args": ["server.js"],
+                "env": {
+                    // Use a variable that is definitely not set.
+                    "GITHUB_TOKEN": "${__ROKO_TEST_UNSET_VAR_12345__}"
+                }
+            }]
+        });
+        std::fs::write(
+            temp.path().join(".mcp.json"),
+            serde_json::to_string_pretty(&mcp_json).unwrap(),
+        )
+        .unwrap();
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        let check = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_needs-token")
+            .expect("needs-token check present");
+        assert_eq!(check.status, DoctorStatus::Warn);
+        let detail = check.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("GITHUB_TOKEN"),
+            "should report GITHUB_TOKEN as having an unset reference, got: {detail}"
+        );
+        assert!(
+            detail.contains("unset"),
+            "detail should mention the variable is unset, got: {detail}"
+        );
+        // Must NOT leak the reference value itself.
+        assert!(
+            !detail.contains("__ROKO_TEST_UNSET_VAR_12345__"),
+            "must not leak the variable reference value in detail"
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_warns_when_mcp_env_has_hardcoded_secret() {
+        let temp = tempdir().unwrap();
+        let mut config = Config::default();
+        config.serve.auth.enabled = false;
+        write_project_config(temp.path(), config);
+        bootstrap_layout(temp.path()).await;
+
+        let mcp_json = serde_json::json!({
+            "servers": [{
+                "name": "hardcoded-secret",
+                "command": "node",
+                "args": ["server.js"],
+                "env": {
+                    // Literal secret value, not an env var reference.
+                    "API_KEY": "sk-live-abc123supersecretvalue"
+                }
+            }]
+        });
+        std::fs::write(
+            temp.path().join(".mcp.json"),
+            serde_json::to_string_pretty(&mcp_json).unwrap(),
+        )
+        .unwrap();
+
+        let report = run_doctor(&DoctorOptions {
+            workdir: temp.path().to_path_buf(),
+            config_override: None,
+            serve_url: None,
+        })
+        .await
+        .unwrap();
+
+        let check = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp_server_hardcoded-secret")
+            .expect("hardcoded-secret check present");
+        assert_eq!(check.status, DoctorStatus::Warn);
+        let detail = check.detail.as_deref().unwrap_or("");
+        // Must mention the key.
+        assert!(
+            detail.contains("API_KEY"),
+            "should report API_KEY as a hardcoded secret, got: {detail}"
+        );
+        // Must indicate it is hardcoded.
+        assert!(
+            detail.contains("hardcoded"),
+            "should characterize the value as hardcoded, got: {detail}"
+        );
+        // Must NOT leak the actual secret value.
+        assert!(
+            !detail.contains("sk-live-abc123supersecretvalue"),
+            "must not leak the hardcoded secret value in detail"
+        );
+        // Fix hint should suggest using ${VAR} references.
+        let fix = check.fix.as_deref().unwrap_or("");
+        assert!(
+            fix.contains("ENV_VAR") || fix.contains("references"),
+            "fix should suggest env var references, got: {fix}"
         );
     }
 

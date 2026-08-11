@@ -197,6 +197,81 @@ pub fn sensitive_env_keys(env: &std::collections::HashMap<String, String>) -> Ve
     hits
 }
 
+/// Check whether `command` resolves to an executable on the system `PATH`.
+///
+/// Returns `true` for empty commands (HTTP-only servers), absolute paths that
+/// exist as files, and bare names that are found in a `PATH` directory.
+/// Does **not** spawn the command — only inspects the filesystem.
+#[must_use]
+pub fn is_command_on_path(command: &str) -> bool {
+    if command.is_empty() {
+        return true; // HTTP-only servers have no command.
+    }
+    let p = std::path::Path::new(command);
+    // Absolute or relative path: just check existence.
+    if p.is_absolute() || command.contains('/') {
+        return p.is_file();
+    }
+    // Bare name: search PATH.
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(command);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return keys of env entries whose values are `${VAR}` or `$VAR` references
+/// where the referenced variable is **not set** in the current process
+/// environment.
+///
+/// Only key names are returned; values are not included in the output.
+#[must_use]
+pub fn unset_env_var_refs(env: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (key, value) in env {
+        // Match ${VAR} and $VAR patterns.
+        let var_name = if value.starts_with("${") && value.ends_with('}') {
+            Some(&value[2..value.len() - 1])
+        } else if value.starts_with('$') && value.len() > 1 {
+            Some(&value[1..])
+        } else {
+            None
+        };
+        if let Some(var) = var_name {
+            if !var.is_empty() && std::env::var_os(var).is_none() {
+                missing.push(key.clone());
+            }
+        }
+    }
+    missing.sort();
+    missing
+}
+
+/// Return the names of sensitive env keys whose values look like hardcoded
+/// secrets rather than environment variable references (`${VAR}` / `$VAR`).
+///
+/// A value is treated as hardcoded when it is non-empty AND does not start
+/// with `$`. Values are **not** returned to avoid leaking them into
+/// diagnostic output.
+#[must_use]
+pub fn hardcoded_secret_values(env: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut hits = Vec::new();
+    for (key, value) in env {
+        let upper = key.to_ascii_uppercase();
+        let is_sensitive = SENSITIVE_ENV_PATTERNS.iter().any(|pat| upper.contains(pat));
+        let is_hardcoded = !value.is_empty() && !value.starts_with('$');
+        if is_sensitive && is_hardcoded {
+            hits.push(key.clone());
+        }
+    }
+    hits.sort();
+    hits
+}
+
 /// Errors from MCP config loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -357,5 +432,147 @@ mod tests {
         assert!(result.is_some());
         let err = result.unwrap().unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    // -- is_command_on_path tests -------------------------------------------
+
+    #[test]
+    fn is_command_on_path_empty_command_returns_true() {
+        // HTTP-only servers pass through.
+        assert!(is_command_on_path(""));
+    }
+
+    #[test]
+    fn is_command_on_path_finds_well_known_binary() {
+        // `sh` is present on every POSIX system.
+        assert!(
+            is_command_on_path("sh"),
+            "expected `sh` to be found on PATH"
+        );
+    }
+
+    #[test]
+    fn is_command_on_path_rejects_nonexistent_command() {
+        assert!(
+            !is_command_on_path("__roko_does_not_exist_xyz_9999__"),
+            "should return false for a nonexistent command"
+        );
+    }
+
+    #[test]
+    fn is_command_on_path_accepts_existing_absolute_path() {
+        // /bin/sh or /usr/bin/sh should exist.
+        let candidate = if std::path::Path::new("/bin/sh").exists() {
+            "/bin/sh"
+        } else {
+            "/usr/bin/sh"
+        };
+        assert!(
+            is_command_on_path(candidate),
+            "absolute path to sh should be accepted"
+        );
+    }
+
+    #[test]
+    fn is_command_on_path_rejects_nonexistent_absolute_path() {
+        assert!(
+            !is_command_on_path("/nonexistent/path/to/binary"),
+            "should return false for a missing absolute path"
+        );
+    }
+
+    // -- unset_env_var_refs tests -------------------------------------------
+
+    #[test]
+    fn unset_env_var_refs_ignores_literal_values() {
+        let mut env = HashMap::new();
+        env.insert("FOO".to_string(), "literal_value".to_string());
+        assert!(unset_env_var_refs(&env).is_empty());
+    }
+
+    #[test]
+    fn unset_env_var_refs_detects_unset_dollar_brace_ref() {
+        let mut env = HashMap::new();
+        env.insert(
+            "GITHUB_TOKEN".to_string(),
+            "${__ROKO_UNSET_VAR_UNLIKELY__}".to_string(),
+        );
+        let missing = unset_env_var_refs(&env);
+        assert!(
+            missing.contains(&"GITHUB_TOKEN".to_string()),
+            "should detect unset ${{VAR}} reference"
+        );
+    }
+
+    #[test]
+    fn unset_env_var_refs_ignores_set_dollar_brace_ref() {
+        let mut env = HashMap::new();
+        // PATH is always set.
+        env.insert("SOME_KEY".to_string(), "${PATH}".to_string());
+        let missing = unset_env_var_refs(&env);
+        assert!(
+            !missing.contains(&"SOME_KEY".to_string()),
+            "should not flag ${{PATH}} because PATH is set"
+        );
+    }
+
+    #[test]
+    fn unset_env_var_refs_detects_unset_dollar_ref() {
+        let mut env = HashMap::new();
+        env.insert(
+            "MY_TOKEN".to_string(),
+            "$__ROKO_UNSET_VAR_UNLIKELY__".to_string(),
+        );
+        let missing = unset_env_var_refs(&env);
+        assert!(
+            missing.contains(&"MY_TOKEN".to_string()),
+            "should detect unset $VAR reference"
+        );
+    }
+
+    // -- hardcoded_secret_values tests -------------------------------------
+
+    #[test]
+    fn hardcoded_secret_values_detects_literal_secret() {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "ghp_abc123literal".to_string());
+        let hits = hardcoded_secret_values(&env);
+        assert!(
+            hits.contains(&"GITHUB_TOKEN".to_string()),
+            "should flag a sensitive key with a literal value"
+        );
+    }
+
+    #[test]
+    fn hardcoded_secret_values_ignores_env_var_reference() {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "${GITHUB_TOKEN}".to_string());
+        let hits = hardcoded_secret_values(&env);
+        assert!(
+            hits.is_empty(),
+            "should not flag a sensitive key whose value is an env-var reference"
+        );
+    }
+
+    #[test]
+    fn hardcoded_secret_values_ignores_non_sensitive_key() {
+        let mut env = HashMap::new();
+        env.insert("DATABASE_URL".to_string(), "postgres://localhost/db".to_string());
+        let hits = hardcoded_secret_values(&env);
+        assert!(
+            hits.is_empty(),
+            "DATABASE_URL does not match sensitive patterns so should not be flagged"
+        );
+    }
+
+    #[test]
+    fn hardcoded_secret_values_ignores_empty_value() {
+        let mut env = HashMap::new();
+        env.insert("API_KEY".to_string(), "".to_string());
+        let hits = hardcoded_secret_values(&env);
+        assert!(
+            hits.is_empty(),
+            "empty value should not be flagged as hardcoded"
+        );
     }
 }

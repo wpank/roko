@@ -21,7 +21,8 @@ pub use client::{
 };
 pub use config::{
     DEFAULT_ALLOWED_COMMANDS, McpConfig, McpServerConfig, McpTransportConfig,
-    SENSITIVE_ENV_PATTERNS, find_mcp_config, is_command_allowed, sensitive_env_keys,
+    SENSITIVE_ENV_PATTERNS, find_mcp_config, hardcoded_secret_values, is_command_allowed,
+    is_command_on_path, sensitive_env_keys, unset_env_var_refs,
 };
 pub use dedup::dedup_tools;
 pub use dynamic_registry::{DynamicToolRegistry, MergedToolRegistry};

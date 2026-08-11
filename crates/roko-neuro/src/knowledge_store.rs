@@ -3800,6 +3800,63 @@ mod tests {
         assert_eq!(vector.len(), HDC_VECTOR_BYTES);
     }
 
+    #[cfg(feature = "hdc")]
+    #[test]
+    fn backfill_hdc_vectors_populates_missing_and_is_idempotent() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = KnowledgeStore::new(tmp.path().join("neuro").join("knowledge.jsonl"));
+        let now = Utc::now();
+
+        // Write two entries directly without HDC vectors (bypassing ingest normalization)
+        // by using rewrite_all on raw entries.
+        let mut e1 = entry(
+            KnowledgeKind::Insight,
+            "k1",
+            "distributed tracing improves observability",
+            &["tracing", "observability"],
+            0.9,
+            &["ep-a"],
+            now,
+        );
+        let mut e2 = entry(
+            KnowledgeKind::Heuristic,
+            "k2",
+            "prefer idempotent operations in distributed systems",
+            &["distributed", "idempotent"],
+            0.8,
+            &["ep-b"],
+            now,
+        );
+        // Ensure hdc_vector is absent so backfill has work to do.
+        e1.hdc_vector = None;
+        e2.hdc_vector = None;
+        store.rewrite_all(&[e1, e2]).expect("write raw entries");
+
+        // First backfill: both entries lack vectors, so 2 must be updated.
+        let changed = store
+            .backfill_hdc_vectors()
+            .expect("backfill_hdc_vectors first pass");
+        assert_eq!(changed, 2, "both entries should receive HDC vectors");
+
+        // Verify vectors were persisted with the correct byte length.
+        let all = store.read_all().expect("read after backfill");
+        for e in &all {
+            let vec = e.hdc_vector.as_ref().expect("hdc_vector must be set");
+            assert_eq!(
+                vec.len(),
+                HDC_VECTOR_BYTES,
+                "entry {} must have {HDC_VECTOR_BYTES}-byte HDC vector",
+                e.id
+            );
+        }
+
+        // Second backfill: all entries already have valid vectors — 0 changes.
+        let changed_again = store
+            .backfill_hdc_vectors()
+            .expect("backfill_hdc_vectors second pass");
+        assert_eq!(changed_again, 0, "backfill must be idempotent");
+    }
+
     // ── Confirmation detection tests ─────────────────────────────────
 
     #[test]

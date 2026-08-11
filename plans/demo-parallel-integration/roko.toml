@@ -1,0 +1,13 @@
+config_version = 2
+
+[timeouts]
+agent_silence_secs = 600
+
+# The task-specific JSON checks are the meaningful gates for this example.
+[gates]
+
+[[gates.rungs]]
+name = "demo-base"
+command = "true"
+timeout_secs = 30
+required = true

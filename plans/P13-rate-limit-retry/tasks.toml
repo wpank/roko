@@ -1,8 +1,8 @@
 [meta]
 plan = "P13-rate-limit-retry"
 total = 4
-done = 3
-status = "ready"
+done = 4
+status = "done"
 max_parallel = 1
 
 # ─────────────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ fail_msg = "roko-agent must compile"
 [[task]]
 id = "T4"
 title = "Add unit test for classify_http_error helper"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 40

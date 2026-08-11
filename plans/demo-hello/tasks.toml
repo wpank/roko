@@ -1,0 +1,31 @@
+[meta]
+plan = "demo-hello"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 2
+
+[[task]]
+id = "DEMO-T01"
+title = "Create the Roko plan-runner smoke artifact"
+description = """Create `demo/roko-plan-smoke-output.md` with exactly these three lines:
+
+# Roko plan runner works
+
+Created by the `demo-hello` example plan.
+
+Do not modify any other file. This intentionally tiny change exists only to make a
+successful agent run and gate result immediately visible to a first-time user."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+files = ["demo/roko-plan-smoke-output.md"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/roko-plan-smoke-output.md && test \"$(sed -n '1p' demo/roko-plan-smoke-output.md)\" = '# Roko plan runner works' && rg -q '^Created by the `demo-hello` example plan\\.$' demo/roko-plan-smoke-output.md"
+fail_msg = "demo/roko-plan-smoke-output.md was not created with the expected content"

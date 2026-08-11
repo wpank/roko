@@ -1,0 +1,46 @@
+[meta]
+plan = "demo-resume-recovery"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 4
+
+[[task]]
+id = "RESUME-1"
+title = "Create the pre-resume artifact"
+description = """Create `demo/resume-recovery/stage-one.txt` containing exactly
+`stage one survived the restart` followed by a newline. Do not modify or create
+any other file. If it already has that exact content, leave it unchanged."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+files = ["demo/resume-recovery/stage-one.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "stage-one-content"
+command = "test \"$(cat demo/resume-recovery/stage-one.txt)\" = 'stage one survived the restart'"
+fail_msg = "Stage one must create its exact durable artifact."
+
+[[task]]
+id = "RESUME-2"
+title = "Create the post-resume artifact"
+description = """Create `demo/resume-recovery/stage-two.txt` containing exactly
+`stage two completed after resume` followed by a newline. Do not modify or
+create any other file. If it already has that exact content, leave it
+unchanged. The authored gate intentionally requires the caller to set
+ROKO_RESUME_DEMO_READY=1; do not try to bypass or persist that condition."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+files = ["demo/resume-recovery/stage-two.txt"]
+role = "implementer"
+depends_on = ["RESUME-1"]
+
+[[task.verify]]
+phase = "resume-condition"
+command = "test \"${ROKO_RESUME_DEMO_READY:-0}\" = 1 && test \"$(cat demo/resume-recovery/stage-two.txt)\" = 'stage two completed after resume' && test \"$(cat demo/resume-recovery/stage-one.txt)\" = 'stage one survived the restart'"
+fail_msg = "Resume with ROKO_RESUME_DEMO_READY=1; both stage artifacts must be present."

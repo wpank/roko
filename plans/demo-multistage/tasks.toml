@@ -1,0 +1,232 @@
+[meta]
+plan = "demo-multistage"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 8
+
+[[task]]
+id = "STAGE-1A"
+title = "Discover the repository onboarding journey"
+description = """Inspect README.md, Cargo.toml, and the documented crate map. Create
+`demo/multistage-plan/discovery.md` as a concise evidence-based discovery note.
+It must contain the headings `## Repository signals`, `## User journey`, and
+`## Risks`; cite all three inspected sources by path; distinguish observed facts
+from recommendations; and identify at least three concrete onboarding risks.
+This is documentation and analysis work, not a source-code change."""
+status = "ready"
+tier = "focused"
+max_loc = 130
+files = ["demo/multistage-plan/discovery.md"]
+role = "scribe"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "README.md", lines = "1-180", why = "Observe the documented product purpose and contributor entry points." },
+    { path = "Cargo.toml", lines = "1-120", why = "Observe the workspace shape and executable packages." },
+    { path = "docs/v1/00-architecture/15-crate-map.md", lines = "1-180", why = "Compare the documented crate responsibilities with the workspace manifest." },
+]
+symbols = [
+    "README quick-start and development commands",
+    "Cargo workspace members and default members",
+    "the architecture crate map as contributor navigation evidence",
+]
+anti_patterns = [
+    "Do not modify README.md, Cargo.toml, or the existing demo plan.",
+    "Do not invent commands or capabilities that are not supported by the inspected files.",
+    "Do not write source code; this task owns only discovery.md.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/multistage-plan/discovery.md && rg -q '^## Repository signals$' demo/multistage-plan/discovery.md && rg -q '^## User journey$' demo/multistage-plan/discovery.md && rg -q '^## Risks$' demo/multistage-plan/discovery.md"
+fail_msg = "Discovery note must exist with all required sections."
+
+[[task.verify]]
+phase = "evidence"
+command = "for source in README.md Cargo.toml docs/v1/00-architecture/15-crate-map.md; do rg -Fq \"$source\" demo/multistage-plan/discovery.md || exit 1; done"
+fail_msg = "Discovery note must cite every inspected source path."
+
+[[task]]
+id = "STAGE-1B"
+title = "Create a machine-readable evidence manifest"
+description = """Inspect the repository's README.md, Cargo.toml, and crate map.
+Create `demo/multistage-plan/evidence.json` as valid JSON with exactly these
+top-level keys: `schema_version`, `subject`, `sources`, `stages`, and
+`acceptance`. Set schema_version to 1 and subject to `roko-onboarding-demo`.
+`sources` must list the three inspected paths. `stages` must be a non-empty array
+of objects whose `id`, `kind`, and `purpose` string fields describe discovery,
+decision, validation, and review. `acceptance` must contain non-empty string
+entries for `human_readable`, `machine_readable`, and `executable`. Do not alter
+any source file. Treat differing repository counts as observations to reconcile;
+do not claim the README and Cargo.toml enumerate the same number of crates."""
+status = "ready"
+tier = "mechanical"
+max_loc = 60
+files = ["demo/multistage-plan/evidence.json"]
+role = "implementer"
+depends_on = ["STAGE-1A"]
+
+[task.context]
+read_files = [
+    { path = "README.md", lines = "1-180", why = "Ground the manifest in documented repository behavior." },
+    { path = "Cargo.toml", lines = "1-120", why = "Ground the manifest in the real workspace structure." },
+    { path = "docs/v1/00-architecture/15-crate-map.md", lines = "1-180", why = "Ground lifecycle stages in documented crate responsibilities." },
+]
+symbols = [
+    "schema_version = 1",
+    "subject = roko-onboarding-demo",
+    "four lifecycle stages: discovery, decision, validation, review",
+]
+anti_patterns = [
+    "Do not add comments or trailing commas because the output must be strict JSON.",
+    "Do not create a generator program; write only evidence.json.",
+    "Do not modify the repository sources being inspected.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c 'import json; p=\"demo/multistage-plan/evidence.json\"; d=json.load(open(p)); assert list(d)==[\"schema_version\",\"subject\",\"sources\",\"stages\",\"acceptance\"]; assert d[\"schema_version\"]==1; assert d[\"subject\"]==\"roko-onboarding-demo\"; assert set(d[\"sources\"])=={\"README.md\",\"Cargo.toml\",\"docs/v1/00-architecture/15-crate-map.md\"}'"
+fail_msg = "Evidence manifest must have the exact required top-level schema and sources."
+
+[[task.verify]]
+phase = "compile"
+command = "python3 -m json.tool demo/multistage-plan/evidence.json >/dev/null && python3 -c 'import json; d=json.load(open(\"demo/multistage-plan/evidence.json\")); kinds={x[\"kind\"] for x in d[\"stages\"]}; assert {\"discovery\",\"decision\",\"validation\",\"review\"} <= kinds; assert all(isinstance(x.get(\"id\"),str) and isinstance(x.get(\"purpose\"),str) and x[\"purpose\"].strip() for x in d[\"stages\"]); assert all(isinstance(d[\"acceptance\"].get(k),str) and d[\"acceptance\"][k].strip() for k in (\"human_readable\",\"machine_readable\",\"executable\")); assert \"same 18 crates\" not in json.dumps(d)'"
+fail_msg = "Evidence manifest must parse and describe all four stages and acceptance modes."
+
+[[task]]
+id = "STAGE-2"
+title = "Synthesize an evidence-backed decision memo"
+description = """Read the discovery note and evidence manifest produced by the
+two preceding tasks. Create `demo/multistage-plan/decision.md` with the headings
+`## Decision`, `## Evidence considered`, `## Alternatives`, `## Acceptance
+criteria`, and `## Follow-up`. Recommend a concrete first-time contributor
+journey that includes building Roko and running this multi-stage demo. Explain at least
+one rejected alternative and why. Reference discovery.md and evidence.json by
+path, and provide at least four Markdown checklist acceptance criteria. This is
+a synthesis/documentation task; do not modify either input."""
+status = "ready"
+tier = "integrative"
+max_loc = 240
+files = ["demo/multistage-plan/decision.md"]
+role = "scribe"
+depends_on = ["STAGE-1A", "STAGE-1B"]
+
+[task.context]
+read_files = [
+    { path = "README.md", lines = "1-180", why = "Keep the recommendation anchored to documented commands." },
+    { path = "demo/multistage-plan/discovery.md", why = "Synthesize the upstream narrative evidence." },
+    { path = "demo/multistage-plan/evidence.json", why = "Synthesize the upstream structured evidence." },
+]
+symbols = [
+    "demo/multistage-plan/discovery.md — upstream narrative evidence",
+    "demo/multistage-plan/evidence.json — upstream structured evidence",
+]
+anti_patterns = [
+    "Do not change discovery.md or evidence.json; they are immutable upstream evidence.",
+    "Do not claim an alternative was evaluated without naming and discussing it.",
+    "Do not write source code; this task owns only decision.md.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/multistage-plan/decision.md && for heading in '## Decision' '## Evidence considered' '## Alternatives' '## Acceptance criteria' '## Follow-up'; do rg -Fqx \"$heading\" demo/multistage-plan/decision.md || exit 1; done"
+fail_msg = "Decision memo must contain every required section."
+
+[[task.verify]]
+phase = "traceability"
+command = '''rg -Fq 'demo/multistage-plan/discovery.md' demo/multistage-plan/decision.md && rg -Fq 'demo/multistage-plan/evidence.json' demo/multistage-plan/decision.md && test "$(rg -c '^- \[[ xX]\]' demo/multistage-plan/decision.md)" -ge 4'''
+fail_msg = "Decision memo must trace both evidence artifacts and list at least four acceptance criteria."
+
+[[task]]
+id = "STAGE-3"
+title = "Build a reusable acceptance harness"
+description = """Create `demo/multistage-plan/validate.sh`, a portable POSIX shell
+script that validates the completed decision package. It must begin with a sh
+shebang and `set -eu`; verify discovery.md, evidence.json, and decision.md exist;
+use Python's standard library to validate the JSON schema_version, subject,
+sources, four required stage kinds, and three acceptance keys; check all required
+Markdown headings and cross-file references; and print exactly
+`multi-stage demo: PASS` on success. It must not modify any files, access the
+network, or require third-party tools beyond `python3` and `rg`."""
+status = "ready"
+tier = "focused"
+max_loc = 100
+files = ["demo/multistage-plan/validate.sh"]
+role = "implementer"
+depends_on = ["STAGE-2"]
+
+[task.context]
+read_files = [
+    { path = "demo/multistage-plan/discovery.md", why = "Validate the completed narrative artifact." },
+    { path = "demo/multistage-plan/evidence.json", why = "Validate the completed structured artifact." },
+    { path = "demo/multistage-plan/decision.md", why = "Validate the completed decision artifact." },
+]
+symbols = [
+    "multi-stage demo: PASS — exact success sentinel",
+    "python3 standard-library JSON validation",
+    "rg fixed-string Markdown checks",
+]
+anti_patterns = [
+    "Do not install dependencies or access the network.",
+    "Do not mutate the artifacts while validating them.",
+    "Do not weaken checks merely to make the script pass.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/multistage-plan/validate.sh && test \"$(sed -n '1p' demo/multistage-plan/validate.sh)\" = '#!/bin/sh' && rg -q '^set -eu$' demo/multistage-plan/validate.sh && sh -n demo/multistage-plan/validate.sh"
+fail_msg = "Acceptance harness must be a syntactically valid strict POSIX shell script."
+
+[[task.verify]]
+phase = "test"
+command = "test \"$(sh demo/multistage-plan/validate.sh)\" = 'multi-stage demo: PASS'"
+fail_msg = "Acceptance harness must validate the complete package and emit the exact PASS sentinel."
+
+[[task]]
+id = "STAGE-4"
+title = "Perform a read-only acceptance review"
+description = """Act as the independent final reviewer. Read all four generated
+artifacts and the plan contract. Confirm that observed facts are separated from
+recommendations, the JSON evidence is internally consistent, the decision is
+traceable to both evidence artifacts, the rejected alternative is meaningful,
+and validate.sh checks rather than rewrites the package. Do not modify any file.
+Report a concise pass/fail assessment with any residual risks in your final
+response; the executable verification steps are the authoritative acceptance
+decision."""
+status = "ready"
+tier = "integrative"
+max_loc = 0
+files = []
+role = "quick-reviewer"
+depends_on = ["STAGE-3"]
+
+[task.context]
+read_files = [
+    { path = "demo/multistage-plan/discovery.md", why = "Audit the narrative evidence." },
+    { path = "demo/multistage-plan/evidence.json", why = "Audit the structured evidence." },
+    { path = "demo/multistage-plan/decision.md", why = "Audit decision traceability." },
+    { path = "demo/multistage-plan/validate.sh", why = "Audit and execute the acceptance contract." },
+]
+symbols = [
+    "discovery -> evidence -> decision -> validation -> review",
+    "read-only final acceptance",
+]
+anti_patterns = [
+    "Do not edit artifacts to resolve review findings.",
+    "Do not accept the package solely because files exist; inspect semantic traceability.",
+    "Do not skip execution of the supplied acceptance harness.",
+]
+
+[[task.verify]]
+phase = "acceptance"
+command = "test \"$(sh demo/multistage-plan/validate.sh)\" = 'multi-stage demo: PASS'"
+fail_msg = "Independent acceptance requires the complete harness to pass."
+
+[[task.verify]]
+phase = "review"
+command = "python3 -c 'from pathlib import Path; p=Path(\"demo/multistage-plan\"); discovery=(p/\"discovery.md\").read_text(); decision=(p/\"decision.md\").read_text(); script=(p/\"validate.sh\").read_text(); assert discovery.count(\"## \") >= 3; assert decision.count(\"## \") >= 5; assert \"## Alternatives\" in decision; assert \"discovery.md\" in decision and \"evidence.json\" in decision; assert \"multi-stage demo: PASS\" in script'"
+fail_msg = "Final review must confirm coverage, alternatives, traceability, and the PASS contract."

@@ -1,0 +1,89 @@
+[meta]
+plan = "demo-parallel-integration"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 4
+
+[[task]]
+id = "PAR-LEFT"
+title = "Produce the left lane artifact"
+description = """Create `demo/parallel-integration/left.json` as strict JSON
+with exactly these keys and values: `lane` is `left`, `value` is the number 21,
+and `evidence` is `independent sibling output`. Do not modify or create any
+other file. If the file already satisfies this contract, leave it unchanged."""
+status = "ready"
+tier = "mechanical"
+max_loc = 8
+files = ["demo/parallel-integration/left.json"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "left-schema"
+command = '''python3 -c 'import json; d=json.load(open("demo/parallel-integration/left.json")); assert d=={"lane":"left","value":21,"evidence":"independent sibling output"}' '''
+fail_msg = "The left producer must create only its exact JSON payload."
+
+[[task]]
+id = "PAR-RIGHT"
+title = "Produce the right lane artifact"
+description = """Create `demo/parallel-integration/right.json` as strict JSON
+with exactly these keys and values: `lane` is `right`, `value` is the number 21,
+and `evidence` is `independent sibling output`. Do not modify or create any
+other file. If the file already satisfies this contract, leave it unchanged."""
+status = "ready"
+tier = "mechanical"
+max_loc = 8
+files = ["demo/parallel-integration/right.json"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "right-schema"
+command = '''python3 -c 'import json; d=json.load(open("demo/parallel-integration/right.json")); assert d=={"lane":"right","value":21,"evidence":"independent sibling output"}' '''
+fail_msg = "The right producer must create only its exact JSON payload."
+
+[[task]]
+id = "PAR-JOIN"
+title = "Aggregate and check both sibling outputs"
+description = """Read `demo/parallel-integration/left.json` and
+`demo/parallel-integration/right.json`. Create
+`demo/parallel-integration/combined.json` as strict JSON with exactly four
+top-level keys: `schema_version` set to 1; `inputs` set to the ordered array
+[`demo/parallel-integration/left.json`,
+`demo/parallel-integration/right.json`]; `total` set to the numeric sum of both
+input values; and `integration` set to `both sibling tips present`. Do not
+modify either input or create any other file."""
+status = "ready"
+tier = "focused"
+max_loc = 12
+files = ["demo/parallel-integration/combined.json"]
+role = "implementer"
+depends_on = ["PAR-LEFT", "PAR-RIGHT"]
+
+[task.context]
+read_files = [
+    { path = "demo/parallel-integration/left.json", why = "Consume the accepted left sibling output." },
+    { path = "demo/parallel-integration/right.json", why = "Consume the accepted right sibling output." },
+]
+symbols = [
+    "left.value + right.value = combined.total",
+    "both sibling tips present",
+]
+anti_patterns = [
+    "Do not recreate or edit either producer artifact.",
+    "Do not hard-code a total that disagrees with the input values.",
+    "Do not omit either input path from the combined artifact.",
+]
+
+[[task.verify]]
+phase = "join-schema"
+command = '''python3 -c 'import json; p="demo/parallel-integration/"; l=json.load(open(p+"left.json")); r=json.load(open(p+"right.json")); c=json.load(open(p+"combined.json")); assert list(c)==["schema_version","inputs","total","integration"]; assert c["schema_version"]==1; assert c["inputs"]==[p+"left.json",p+"right.json"]; assert c["total"]==l["value"]+r["value"]==42; assert c["integration"]=="both sibling tips present"' '''
+fail_msg = "The join artifact must prove both sibling outputs are present and total 42."
+
+[[task.verify]]
+phase = "input-integrity"
+command = '''python3 -c 'import json; p="demo/parallel-integration/"; assert json.load(open(p+"left.json"))["lane"]=="left"; assert json.load(open(p+"right.json"))["lane"]=="right"' '''
+fail_msg = "The dependent task must preserve and consume both distinct producer artifacts."

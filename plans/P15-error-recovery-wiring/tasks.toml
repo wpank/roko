@@ -1,8 +1,8 @@
 [meta]
 plan = "P15-error-recovery-wiring"
 total = 5
-done = 0
-status = "ready"
+done = 3
+status = "active"
 max_parallel = 1
 
 # ── T1: Wire classify_agent_crash into runner-v2 handle_agent_failure ──
@@ -21,7 +21,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Wire classify_agent_crash into runner-v2 agent failure handler"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 25
@@ -230,7 +230,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T4"
 title = "Add crash_class field to runner-v2 task failure ledger entries"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15
@@ -291,7 +291,7 @@ fail_msg = "roko-cli must compile cleanly"
 [[task]]
 id = "T5"
 title = "Enrich agent exit handler and output sink messages with crash diagnosis"
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 15

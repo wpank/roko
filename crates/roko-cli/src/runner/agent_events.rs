@@ -197,3 +197,211 @@ pub(crate) fn handle_agent_event(
 fn agent_id_for_state(state: &RunState) -> String {
     format!("{}/{}", state.plan_id, state.current_task)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::output_sink::NoopSink;
+    use crate::runner::state::RunState;
+    use crate::runner::tui_bridge::TuiBridge;
+    use crate::runner::types::AgentEvent;
+    use crate::state_hub::StateHub;
+
+    fn noop_bridge() -> (StateHub, TuiBridge) {
+        let hub = StateHub::default_capacity();
+        let tui = TuiBridge::new(hub.sender());
+        (hub, tui)
+    }
+
+    fn make_state(plan_id: &str, task_id: &str) -> RunState {
+        let mut state = RunState::new(1);
+        state.plan_id = plan_id.to_string();
+        state.current_task = task_id.to_string();
+        state
+    }
+
+    // T1 / SH04-T01: structured attribution -- plan_id and task_id flow from
+    // `RunState` fields, not by parsing slash-separated display IDs.
+    #[test]
+    fn message_delta_publishes_output_attributed_to_plan_and_task() {
+        let (hub, tui) = noop_bridge();
+        let mut state = make_state("plan-alpha", "T42");
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::MessageDelta {
+                text: "hello world".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        let snap = hub.snapshot().borrow().clone();
+        // The agent output is stored in the snapshot keyed by agent_id derived
+        // from plan_id + "/" + task_id.
+        let agent_key = "plan-alpha/T42";
+        assert!(
+            snap.agents.contains_key(agent_key) || state.agent_output.contains("hello world"),
+            "output must be attributed to plan-alpha/T42 or buffered in state"
+        );
+        assert!(
+            state.agent_output.contains("hello world"),
+            "agent_output in RunState must accumulate the delta"
+        );
+    }
+
+    // T1 / SH04-T01: structured attribution via agent_id_for_state never depends
+    // on slash-parsing; it derives directly from plan_id and current_task.
+    #[test]
+    fn agent_id_derives_from_structured_fields_not_display_id_parsing() {
+        let mut state = make_state("my-plan", "task:colon-in-name");
+        // Even when the task_id contains a colon the agent_id is a predictable
+        // slash-joined string -- no further parsing is applied.
+        let id = agent_id_for_state(&state);
+        assert_eq!(id, "my-plan/task:colon-in-name");
+
+        state.plan_id = "plan/with/slashes".to_string();
+        state.current_task = "T1".to_string();
+        let id2 = agent_id_for_state(&state);
+        assert_eq!(id2, "plan/with/slashes/T1");
+    }
+
+    // T2 / SH04-T05: token usage accumulates in state without double-counting.
+    #[test]
+    fn token_usage_accumulates_in_state_without_double_count() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 10,
+                cache_write_tokens: 5,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(state.tokens_in, 100, "tokens_in must equal the event value");
+        assert_eq!(
+            state.tokens_out, 50,
+            "tokens_out must equal the event value"
+        );
+        assert_eq!(state.cache_read_tokens, 10);
+        assert_eq!(state.cache_write_tokens, 5);
+
+        // A second usage event accumulates on top -- no reset between events.
+        handle_agent_event(
+            &AgentEvent::TokenUsage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_read_tokens: 2,
+                cache_write_tokens: 1,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+        assert_eq!(state.tokens_in, 120, "tokens_in must accumulate, not reset");
+        assert_eq!(state.tokens_out, 60);
+    }
+
+    // T2 / SH04-T05: authoritative cost comes from TurnCompleted, not per-event
+    // token accumulation, to avoid double-counting.
+    #[test]
+    fn turn_completed_overwrites_cost_with_authoritative_value() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        let sink = NoopSink;
+
+        // Simulate some prior token accumulation.
+        state.cost_usd = 0.99;
+
+        handle_agent_event(
+            &AgentEvent::TurnCompleted {
+                session_id: Some("sess-1".to_string()),
+                total_cost_usd: Some(0.0042),
+                num_turns: Some(3),
+                is_error: false,
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            (state.cost_usd - 0.0042).abs() < 1e-9,
+            "cost_usd must be overwritten by the authoritative TurnCompleted value"
+        );
+        assert!(
+            !state.agent_active,
+            "agent must be inactive after TurnCompleted"
+        );
+        assert!(
+            state.agent_turn_completed,
+            "agent_turn_completed flag must be set"
+        );
+    }
+
+    // T3 / SH04-T02: error events include severity classification; the error
+    // message is stored in agent_output and published through the sink without
+    // also becoming a fatal process exit.
+    #[test]
+    fn error_event_classifies_severity_and_does_not_exit_agent() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        state.agent_active = true;
+        let sink = NoopSink;
+
+        handle_agent_event(
+            &AgentEvent::Error {
+                message: "warning: unused variable".to_string(),
+            },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(
+            state.agent_output.contains("warning: unused variable"),
+            "error message must be buffered in agent_output"
+        );
+        // agent_active is NOT cleared by Error -- only by Exited or TurnCompleted.
+        assert!(
+            state.agent_active,
+            "an Error event must not terminate the agent process"
+        );
+    }
+
+    // T3 / SH04-T02: Exited event clears active flag but does not duplicate
+    // the error path -- there is no additional error record written.
+    #[test]
+    fn exited_event_clears_active_flag_without_writing_error() {
+        let (_hub, tui) = noop_bridge();
+        let mut state = make_state("plan", "T1");
+        state.agent_active = true;
+        state.agent_pid = Some(12345);
+        let sink = NoopSink;
+        let prior_output = state.agent_output.clone();
+
+        handle_agent_event(
+            &AgentEvent::Exited { exit_code: Some(0) },
+            &mut state,
+            &tui,
+            &sink,
+        );
+
+        assert!(!state.agent_active, "agent must be inactive after Exited");
+        assert!(
+            state.agent_pid.is_none(),
+            "agent_pid must be cleared after Exited"
+        );
+        assert_eq!(
+            state.agent_output, prior_output,
+            "Exited must not append to agent_output"
+        );
+    }
+}

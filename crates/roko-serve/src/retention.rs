@@ -30,6 +30,33 @@ pub struct ArtifactRetentionPolicy {
     pub strategy: CompactionStrategy,
 }
 
+impl ArtifactRetentionPolicy {
+    /// Create an artifact policy whose age and size limits are derived from the
+    /// shared [`roko_core::retention::RetentionPolicy`].
+    ///
+    /// The caller supplies the artifact-specific fields (`artifact`, `path`,
+    /// `strategy`) while the numerical thresholds are projected from the core
+    /// policy:
+    ///
+    /// * `max_age_hours` -- `core.max_age_days * 24`
+    /// * `max_size_bytes` -- `core.size_threshold_mb * 1_048_576`
+    #[must_use]
+    pub fn from_core_policy(
+        core: &roko_core::retention::RetentionPolicy,
+        artifact: impl Into<String>,
+        path: impl Into<String>,
+        strategy: CompactionStrategy,
+    ) -> Self {
+        Self {
+            artifact: artifact.into(),
+            path: path.into(),
+            max_age_hours: u64::from(core.max_age_days) * 24,
+            max_size_bytes: core.size_threshold_mb * 1_048_576,
+            strategy,
+        }
+    }
+}
+
 /// How an artifact is compacted when it exceeds retention limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -852,5 +879,46 @@ mod tests {
         // Normal files must still exist.
         assert!(state_dir.join("executor.json").exists());
         assert!(state_dir.join("state-snapshot.json").exists());
+    }
+
+    #[test]
+    fn from_core_policy_projects_thresholds() {
+        let core = roko_core::retention::RetentionPolicy {
+            max_entries: 200,
+            max_age_days: 7,
+            max_run_age_days: 14,
+            size_threshold_mb: 50,
+            max_cache_entries: 2000,
+        };
+        let artifact = ArtifactRetentionPolicy::from_core_policy(
+            &core,
+            "episodes.jsonl",
+            "episodes.jsonl",
+            CompactionStrategy::TailKeep { entries: 500 },
+        );
+        assert_eq!(artifact.artifact, "episodes.jsonl");
+        assert_eq!(artifact.path, "episodes.jsonl");
+        // 7 days * 24 hours = 168 hours
+        assert_eq!(artifact.max_age_hours, 168);
+        // 50 MB * 1_048_576 bytes/MB
+        assert_eq!(artifact.max_size_bytes, 50 * 1_048_576);
+        assert!(matches!(
+            artifact.strategy,
+            CompactionStrategy::TailKeep { entries: 500 }
+        ));
+    }
+
+    #[test]
+    fn from_core_policy_default_matches_core_defaults() {
+        let core = roko_core::retention::RetentionPolicy::default();
+        let artifact = ArtifactRetentionPolicy::from_core_policy(
+            &core,
+            "test.jsonl",
+            "test.jsonl",
+            CompactionStrategy::Rotate,
+        );
+        // Default core: max_age_days=90, size_threshold_mb=500
+        assert_eq!(artifact.max_age_hours, 90 * 24);
+        assert_eq!(artifact.max_size_bytes, 500 * 1_048_576);
     }
 }

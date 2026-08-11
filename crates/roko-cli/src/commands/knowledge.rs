@@ -266,18 +266,24 @@ pub(crate) async fn cmd_archive(
         return Ok(EXIT_SUCCESS);
     }
 
-    // Open cold substrate and archive.
+    // Collect IDs before moving candidates into archive_batch.
+    let candidate_ids: Vec<roko_core::ContentHash> = candidates.iter().map(|e| e.id).collect();
+
+    // Open cold substrate and archive (dedup-safe: skips already-archived).
     let cold_dir = roko_dir.join("cold");
     let cold = roko_fs::ArchiveColdSubstrate::open(&cold_dir).await?;
 
     use roko_core::ColdStore;
-    let archived = cold.archive_batch(candidates.clone()).await?;
+    let archived = cold.archive_batch(candidates).await?;
 
-    // Prune archived engrams from hot storage.
-    // Use prune with a weight threshold of f32::MAX to force-remove everything
-    // below cutoff — but prune uses weight, not time. Instead we just log
-    // that archival succeeded; hot-side cleanup happens via the normal prune path
-    // on the next dream cycle.
+    // Prune archived engrams from the hot store and compact the log so
+    // they are not re-archived on subsequent runs.
+    if !candidate_ids.is_empty() {
+        let removed = hot.remove_ids(&candidate_ids);
+        hot.compact().await?;
+        println!("pruned {removed} engram(s) from hot store");
+    }
+
     println!("archived {archived} engram(s) to {}", cold_dir.display());
 
     Ok(EXIT_SUCCESS)

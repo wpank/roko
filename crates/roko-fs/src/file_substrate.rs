@@ -78,6 +78,22 @@ impl FileSubstrate {
         &self.root
     }
 
+    /// Remove specific engrams from the in-memory index by their content hash.
+    ///
+    /// Returns the number of entries actually removed. This does **not**
+    /// rewrite the log file — call [`compact`](Self::compact) afterwards to
+    /// reclaim disk space.
+    pub fn remove_ids(&self, ids: &[ContentHash]) -> usize {
+        let mut index = self.index.write();
+        let mut removed = 0;
+        for id in ids {
+            if index.remove(id).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Compact the log file: rewrite it containing only currently-live signals.
     /// This is the durable form of [`Store::prune`] — it shrinks the log
     /// file on disk after pruning decayed signals from the in-memory index.
@@ -639,5 +655,32 @@ mod tests {
         let id = sub.put(s).await.unwrap();
         let stored = sub.get(&id).await.unwrap().expect("signal must exist");
         assert_eq!(stored.tags.get(HDC_TAG).unwrap(), "pre-existing");
+    }
+
+    #[tokio::test]
+    async fn remove_ids_removes_from_index() {
+        let tmp = TempDir::new().unwrap();
+        let sub = FileSubstrate::open(tmp.path()).await.unwrap();
+
+        let a = sig(Kind::Task, "aaa", 1);
+        let b = sig(Kind::Task, "bbb", 2);
+        let c = sig(Kind::Task, "ccc", 3);
+        let id_a = sub.put(a).await.unwrap();
+        let id_b = sub.put(b).await.unwrap();
+        let _id_c = sub.put(c).await.unwrap();
+        assert_eq!(sub.len().await.unwrap(), 3);
+
+        let removed = sub.remove_ids(&[id_a, id_b]);
+        assert_eq!(removed, 2);
+        assert_eq!(sub.len().await.unwrap(), 1);
+
+        // The removed entries are gone from the index.
+        assert!(sub.get(&id_a).await.unwrap().is_none());
+        assert!(sub.get(&id_b).await.unwrap().is_none());
+
+        // After compact, the log file only has the remaining entry.
+        sub.compact().await.unwrap();
+        let sub2 = FileSubstrate::open(tmp.path()).await.unwrap();
+        assert_eq!(sub2.len().await.unwrap(), 1);
     }
 }

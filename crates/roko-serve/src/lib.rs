@@ -2260,7 +2260,8 @@ fn start_cold_archival_timer(state: Arc<AppState>) -> JoinHandle<()> {
 }
 
 /// Execute a single cold-archival tick: query old engrams from the hot
-/// substrate and archive them to `.roko/cold/`.
+/// substrate, archive them to `.roko/cold/`, then prune them from the hot
+/// store so they are not re-archived on the next tick.
 ///
 /// Returns the number of engrams archived, or an error.
 async fn run_cold_archival_tick(
@@ -2280,9 +2281,22 @@ async fn run_cold_archival_tick(
         return Ok(0);
     }
 
+    // Collect IDs before moving candidates into archive_batch.
+    let candidate_ids: Vec<roko_core::ContentHash> = candidates.iter().map(|e| e.id).collect();
+
     let cold_dir = roko_dir.join("cold");
     let cold = roko_fs::ArchiveColdSubstrate::open(&cold_dir).await?;
+
+    // Phase 1: archive to cold storage (dedup-safe: skips already-archived).
     let archived = cold.archive_batch(candidates).await?;
+
+    // Phase 2: prune archived IDs from the hot store and compact the log.
+    // This runs only after archive_batch succeeds so a failure cannot lose data.
+    if !candidate_ids.is_empty() {
+        hot.remove_ids(&candidate_ids);
+        hot.compact().await?;
+    }
+
     Ok(archived)
 }
 

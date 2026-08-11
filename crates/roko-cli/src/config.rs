@@ -2958,6 +2958,70 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
     }
 }
 
+/// Apply core-authoritative config overrides to a CLI [`Config`].
+///
+/// The core unified loader (`roko_core::config::loader`) handles hierarchical
+/// `ROKO__*` env overrides, secret interpolation, and semantic validation.
+/// After the legacy `ConfigLayer` path produces a CLI `Config` (which still
+/// provides CLI-only fields like `auto_plan`, `repos`, `dreams`, `daimon`),
+/// this function overlays the provider/model/agent fields from the core
+/// `RokoConfig` so that the core loader is the single source of truth for
+/// those values.
+///
+/// Fields overridden from core:
+/// - `providers` -- full provider registry
+/// - `models` -- full model registry
+/// - `agent.model` -- from `core.agent.default_model`
+/// - `agent.effort` -- from `core.agent.default_effort`
+/// - `agent.bare_mode` -- from `core.agent.bare_mode`
+/// - `agent.command` -- from `core.agent.command` (if set)
+/// - `agent.args` -- from `core.agent.args` (if set)
+/// - `agent.timeout_ms` -- from `core.agent.timeout_ms` (if set)
+/// - `agent.env` -- from `core.agent.env` (if set)
+/// - `agent.fallback_model` -- from `core.agent.fallback_model` (if set)
+/// - `agent.tier_models` -- from `core.agent.tier_models` (if non-empty)
+fn apply_core_authoritative_overrides(
+    config: &mut Config,
+    core: &roko_core::config::schema::RokoConfig,
+) {
+    // Providers and models: core is always authoritative.
+    config.providers = core.providers.clone();
+    config.models = core.models.clone();
+
+    // Agent fields: core agent has richer semantics (default_model alias,
+    // env override support, per-role overrides). Map core fields onto the
+    // CLI AgentConfig, preferring core values when they differ from the
+    // core defaults (indicating the user explicitly set them).
+    let core_agent = &core.agent;
+
+    // default_model maps to CLI agent.model (Option<String>).
+    config.agent.model = Some(core_agent.default_model.clone());
+
+    // Effort and bare_mode are always consumed from core.
+    config.agent.effort = core_agent.default_effort.clone();
+    config.agent.bare_mode = core_agent.bare_mode;
+
+    // Legacy agent fields: only override if core has an explicit value.
+    if let Some(ref cmd) = core_agent.command {
+        config.agent.command = cmd.clone();
+    }
+    if let Some(ref args) = core_agent.args {
+        config.agent.args = args.clone();
+    }
+    if let Some(timeout) = core_agent.timeout_ms {
+        config.agent.timeout_ms = timeout;
+    }
+    if let Some(ref env) = core_agent.env {
+        config.agent.env = env.clone();
+    }
+    if core_agent.fallback_model.is_some() {
+        config.agent.fallback_model = core_agent.fallback_model.clone();
+    }
+    if !core_agent.tier_models.is_empty() {
+        config.agent.tier_models = core_agent.tier_models.clone();
+    }
+}
+
 /// Load config using the unified core loader and return a [`ResolvedConfig`].
 ///
 /// This is the primary config loading entry point for CLI code. It delegates to
@@ -2966,9 +3030,9 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
 /// then builds the CLI-specific compatibility fields (`ConfigSources`,
 /// `ConfigPaths`, `RepoRegistry`) that downstream code still requires.
 ///
-/// Precedence (highest first): hierarchical `ROKO__*` env vars → named
-/// `ROKO_*` env vars → `ROKO_CONFIG` env var → project `roko.toml` →
-/// global `~/.roko/config.toml` → defaults.
+/// Precedence (highest first): hierarchical `ROKO__*` env vars -> named
+/// `ROKO_*` env vars -> `ROKO_CONFIG` env var -> project `roko.toml` ->
+/// global `~/.roko/config.toml` -> defaults.
 ///
 /// ## Compatibility notes
 ///
@@ -2980,6 +3044,8 @@ pub fn warn_dropped_toml_keys(text: &str, source_label: &str) {
 /// - `dreams` / `daimon` / `runner.plan_timeout_secs` (CLI-specific config shapes)
 ///
 /// These fields do NOT override core provider/model/env behavior.
+/// After the legacy layer produces a `Config`, [`apply_core_authoritative_overrides`]
+/// overlays providers/models/agent fields from the core validated config.
 pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     let paths = resolve_paths(workdir);
     let (env_layer, env_paths) = collect_env_override_layer()?;
@@ -2989,9 +3055,9 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     // overrides (ROKO_MODEL etc.), hierarchical ROKO__* overrides,
     // interpolation, and file secret resolution.
     //
-    // The result is consumed: diagnostics are surfaced as warnings so users
-    // learn about outdated config versions, orphaned model→provider references,
-    // and other semantic issues instead of having them silently dropped.
+    // The result is consumed: diagnostics are surfaced as warnings, and
+    // providers/models/agent fields are overlaid onto the CLI Config via
+    // apply_core_authoritative_overrides below.
     let core_validated = roko_core::config::loader::load_config_validated_with_options(
         workdir,
         &roko_core::config::loader::LoadOptions::default(),
@@ -3006,8 +3072,11 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         );
     }
 
-    // Build CLI config from the legacy layer system for compatibility fields.
-    // The core-loaded config is authoritative for providers/models/agent/env.
+    // Build CLI config from the legacy layer system for compatibility fields
+    // (auto_plan, repos, [[gate]], dreams, daimon, runner.plan_timeout_secs).
+    // After resolution, apply_core_authoritative_overrides overlays
+    // providers/models/agent fields from core_validated so the core unified
+    // loader is the single source of truth for those values.
     if let Some(env_path) = &paths.env_override {
         // Warn on unknown keys in the env-override file before parsing it.
         if let Ok(text) = std::fs::read_to_string(env_path) {
@@ -3015,7 +3084,8 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
         }
         let layer = ConfigLayer::from_file(env_path)?.merge(env_layer);
         let sources = sources_from_layer(&layer, Source::Env, Source::Default);
-        let config = layer.resolve()?;
+        let mut config = layer.resolve()?;
+        apply_core_authoritative_overrides(&mut config, core_validated.config());
         let repo_registry = RepoRegistry::load(&config, workdir)?;
         return Ok(ResolvedConfig {
             config,
@@ -3051,7 +3121,8 @@ pub fn load_resolved_config(workdir: &Path) -> Result<ResolvedConfig> {
     let mut sources = compute_sources(&global_layer, &project_layer);
     apply_env_source_overrides(&mut sources, &env_paths);
     let merged = global_layer.merge(project_layer).merge(env_layer);
-    let config = merged.resolve()?;
+    let mut config = merged.resolve()?;
+    apply_core_authoritative_overrides(&mut config, core_validated.config());
     let repo_registry = RepoRegistry::load(&config, workdir)?;
 
     Ok(ResolvedConfig {
@@ -4251,5 +4322,71 @@ model = "opus-4"
         assert!(!resolved.paths.global.as_os_str().is_empty());
         // Project path should point to the roko.toml we wrote.
         assert!(resolved.paths.project.is_some());
+    }
+
+    /// Unknown top-level keys in roko.toml produce a warning via
+    /// `warn_dropped_toml_keys` instead of being silently swallowed.
+    #[test]
+    fn config_unknown_keys_warn() {
+        // TOML with both known and unknown top-level keys.
+        let toml_text =
+            "[agent]\ncommand = \"cat\"\n\n[bogus_section]\nkey = \"value\"\n\ntypo_key = 42\n";
+
+        // Verify known keys pass the filter.
+        let known_only =
+            "[agent]\ncommand = \"cat\"\n\n[providers.test]\nkind = \"openai_compat\"\n";
+        let value: toml::Value = toml::from_str(known_only).unwrap();
+        let table = value.as_table().unwrap();
+        let unknown_known: Vec<&String> = table
+            .keys()
+            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .collect();
+        assert!(
+            unknown_known.is_empty(),
+            "expected no unknown keys in known-only TOML, got: {unknown_known:?}"
+        );
+
+        // Verify unknown keys ARE detected.
+        let value: toml::Value = toml::from_str(toml_text).unwrap();
+        let table = value.as_table().unwrap();
+        let unknown: Vec<&String> = table
+            .keys()
+            .filter(|k| !KNOWN_CONFIG_KEYS.contains(&k.as_str()))
+            .collect();
+        assert_eq!(
+            unknown.len(),
+            2,
+            "expected 2 unknown keys (bogus_section, typo_key), got: {unknown:?}"
+        );
+        assert!(unknown.iter().any(|k| k.as_str() == "bogus_section"));
+        assert!(unknown.iter().any(|k| k.as_str() == "typo_key"));
+    }
+
+    /// Core-validated providers/models are consumed by load_resolved_config
+    /// (not silently discarded).
+    #[test]
+    fn load_resolved_config_consumes_core_providers_and_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = "[agent]\ncommand = \"cat\"\n\n[providers.test_provider]\nkind = \"openai_compat\"\nbase_url = \"https://test.example.com\"\napi_key_env = \"TEST_KEY\"\n\n[models.test_model]\nprovider = \"test_provider\"\nslug = \"test-v1\"\ncontext_window = 64000\n";
+        std::fs::write(dir.path().join("roko.toml"), toml).unwrap();
+
+        let resolved = load_resolved_config(dir.path()).unwrap();
+        assert!(
+            resolved.config.providers.contains_key("test_provider"),
+            "core-validated provider must be present in resolved config"
+        );
+        assert!(
+            resolved.config.models.contains_key("test_model"),
+            "core-validated model must be present in resolved config"
+        );
+        let provider = resolved.config.providers.get("test_provider").unwrap();
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://test.example.com")
+        );
+        let model = resolved.config.models.get("test_model").unwrap();
+        assert_eq!(model.provider, "test_provider");
+        assert_eq!(model.slug, "test-v1");
+        assert_eq!(model.context_window, 64000);
     }
 }

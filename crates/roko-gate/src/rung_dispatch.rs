@@ -513,7 +513,20 @@ struct OptionalGate {
     inner: Box<dyn Verify>,
 }
 
+impl roko_core::Cell for OptionalGate {
+    fn cell_id(&self) -> &str {
+        "optional-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "OptionalGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for OptionalGate {
     async fn verify(&self, engram: &Signal, ctx: &Context) -> Verdict {
         let verdict = self.inner.verify(engram, ctx).await;
@@ -541,7 +554,20 @@ struct CanonicalRungGate {
     name: String,
 }
 
+impl roko_core::Cell for CanonicalRungGate {
+    fn cell_id(&self) -> &str {
+        "canonical-rung-gate"
+    }
+    fn cell_name(&self) -> &str {
+        "CanonicalRungGate"
+    }
+    fn protocols(&self) -> Vec<roko_core::ProtocolId> {
+        vec![roko_core::ProtocolId::Verify]
+    }
+}
+
 #[async_trait]
+
 impl Verify for CanonicalRungGate {
     async fn verify(&self, engram: &Signal, ctx: &Context) -> Verdict {
         let verdicts =
@@ -651,5 +677,60 @@ mod tests {
         let agg = aggregate_rung_verdict("rung:test", &verdicts);
         assert!(!agg.skipped);
         assert!(!agg.passed);
+    }
+}
+
+// ─── P14-T3 acceptance test (appended outside mod tests) ────────────────
+
+#[cfg(test)]
+mod p14_tests {
+    use super::*;
+    use crate::rung_selector::CANONICAL_ORDER;
+    use roko_core::config::GatesConfig;
+
+    /// P14-T3 / E05-T05: The canonical complex pipeline contains exactly
+    /// seven rungs -- one per entry in `CANONICAL_ORDER` -- and the built
+    /// pipeline has the correct number of concrete gates.
+    #[test]
+    fn complex_pipeline_has_seven_canonical_rungs() {
+        // Default config: no custom rungs, clippy enabled, tests not skipped.
+        let config = GatesConfig::default();
+
+        // 1. Verify that selected_rung_labels reports all 7 canonical labels.
+        let labels = GatePipelineBuilder::selected_rung_labels(&config, PlanComplexity::Complex);
+        assert_eq!(
+            labels.len(),
+            7,
+            "Complex plan must select exactly 7 rungs, got: {labels:?}"
+        );
+        let expected_labels = [
+            "compile",
+            "lint",
+            "test",
+            "symbol",
+            "gen-test",
+            "prop-test",
+            "integration",
+        ];
+        assert_eq!(
+            labels, expected_labels,
+            "Rung labels must match CANONICAL_ORDER"
+        );
+
+        // 2. Build the actual pipeline and verify it has 7 gates.
+        let pipeline = GatePipelineBuilder::from_config(&config, PlanComplexity::Complex);
+        assert_eq!(
+            pipeline.len(),
+            7,
+            "Complex pipeline must contain exactly 7 gates, got {}",
+            pipeline.len()
+        );
+
+        // 3. Sanity: CANONICAL_ORDER itself has 7 entries.
+        assert_eq!(
+            CANONICAL_ORDER.len(),
+            7,
+            "CANONICAL_ORDER must have 7 rungs"
+        );
     }
 }

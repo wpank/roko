@@ -37,6 +37,25 @@ fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
     )
 }
 
+/// Classify an [`HttpPostError`] into the appropriate [`LlmError`] variant.
+///
+/// Status codes are mapped as follows:
+/// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`
+/// - 500..=599 -> `LlmError::Provider(ProviderError::ServerError(status))`
+/// - 401       -> `LlmError::Provider(ProviderError::AuthFailure)`
+/// - Everything else (including transport errors with no status) -> `LlmError::Network`
+fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
+    use crate::provider::ProviderError;
+    match e.status {
+        Some(429 | 529) => LlmError::Provider(ProviderError::RateLimit {
+            retry_after_ms: e.retry_after_secs.map(|sec| sec * 1000),
+        }),
+        Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
+        Some(401) => LlmError::Provider(ProviderError::AuthFailure),
+        _ => LlmError::Network(e.to_string()),
+    }
+}
+
 fn compute_headers(api_key: &str, extra_headers: &[(String, String)]) -> Vec<(String, String)> {
     let mut headers = Vec::with_capacity(2 + extra_headers.len());
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
@@ -491,19 +510,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 self.timeout_ms,
             )
             .await
-            .map_err(|e| {
-                // Propagate Retry-After header from 429/529 as structured error so
-                // the retry policy (E01-T12) can honour the provider's wait hint.
-                use crate::provider::ProviderError;
-                if let Some(s) = e.status {
-                    if s == 429 || s == 529 {
-                        return LlmError::Provider(ProviderError::RateLimit {
-                            retry_after_ms: e.retry_after_secs.map(|sec| sec * 1000),
-                        });
-                    }
-                }
-                LlmError::Network(self.decorate_error(&e))
-            })?;
+            .map_err(classify_http_error)?;
 
         let json: Value = serde_json::from_str(&raw)
             .map_err(|e| LlmError::Backend(format!("parse response: {e}")))?;
@@ -572,14 +579,7 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
-            let status_u16 = raw_err.status.unwrap_or(0);
-            if status_u16 == 429 || status_u16 == 529 {
-                use crate::provider::ProviderError;
-                return Err(LlmError::Provider(ProviderError::RateLimit {
-                    retry_after_ms: raw_err.retry_after_secs.map(|sec| sec * 1000),
-                }));
-            }
-            return Err(LlmError::Network(self.decorate_error(&raw_err)));
+            return Err(classify_http_error(raw_err));
         }
 
         // Build the stream: spawn a task that reads HTTP chunks, parses SSE
@@ -803,18 +803,9 @@ impl LlmBackend for OpenAiCompatLlmBackend {
                 text,
                 retry_after,
             );
-            let s = raw_err.status.unwrap_or(0);
-            if s == 429 || s == 529 {
-                use crate::provider::ProviderError;
-                let err = LlmError::Provider(ProviderError::RateLimit {
-                    retry_after_ms: raw_err.retry_after_secs.map(|sec| sec * 1000),
-                });
-                let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
-                return Err(err);
-            }
-            let message = self.decorate_error(&raw_err);
-            let _ = event_tx.send(StreamChunk::Error(message.clone())).await;
-            return Err(LlmError::Network(message));
+            let err = classify_http_error(raw_err);
+            let _ = event_tx.send(StreamChunk::Error(err.to_string())).await;
+            return Err(err);
         }
 
         let mut response = response;
@@ -965,6 +956,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use crate::http::HttpPostError;
+    use crate::provider::ProviderError;
 
     fn test_timeout(ms: u64) -> Duration {
         let scaled = if std::env::var("CI").map(|v| v == "true").unwrap_or(false) {
@@ -1814,7 +1806,6 @@ mod tests {
 
     #[tokio::test]
     async fn retry_after_header_429_maps_to_provider_rate_limit() {
-        use crate::provider::ProviderError;
         let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
             429,
             "rate limited",
@@ -1843,7 +1834,6 @@ mod tests {
 
     #[tokio::test]
     async fn retry_after_header_529_maps_to_provider_rate_limit() {
-        use crate::provider::ProviderError;
         let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http_with_retry_after(
             529,
             "overloaded",
@@ -1872,7 +1862,6 @@ mod tests {
 
     #[tokio::test]
     async fn retry_after_header_absent_produces_rate_limit_none() {
-        use crate::provider::ProviderError;
         let (poster, _reqs) = MockPoster::new(vec![Err(HttpPostError::http(
             429,
             "rate limited no header",
@@ -1895,6 +1884,89 @@ mod tests {
                 })
             ),
             "expected Provider(RateLimit {{ None }}), got {err:?}"
+        );
+    }
+
+    // ── classify_http_error unit tests ───────────────────────────────────
+
+    #[test]
+    fn classify_http_error_429_maps_to_rate_limit() {
+        let err = classify_http_error(HttpPostError::http(429, "rate limited"));
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
+            "expected Provider(RateLimit), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_429_with_retry_after() {
+        let err = classify_http_error(HttpPostError::http_with_retry_after(
+            429,
+            "rate limited",
+            Some(30),
+        ));
+        assert!(
+            matches!(
+                err,
+                LlmError::Provider(ProviderError::RateLimit {
+                    retry_after_ms: Some(30_000)
+                })
+            ),
+            "expected Provider(RateLimit {{ 30_000ms }}), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_529_maps_to_rate_limit() {
+        let err = classify_http_error(HttpPostError::http(529, "overloaded"));
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::RateLimit { .. })),
+            "expected Provider(RateLimit), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_500_maps_to_server_error() {
+        let err = classify_http_error(HttpPostError::http(500, "internal server error"));
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::ServerError(500))),
+            "expected Provider(ServerError(500)), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_503_maps_to_server_error() {
+        let err = classify_http_error(HttpPostError::http(503, "service unavailable"));
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::ServerError(503))),
+            "expected Provider(ServerError(503)), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_401_maps_to_auth_failure() {
+        let err = classify_http_error(HttpPostError::http(401, "unauthorized"));
+        assert!(
+            matches!(err, LlmError::Provider(ProviderError::AuthFailure)),
+            "expected Provider(AuthFailure), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_404_maps_to_network() {
+        let err = classify_http_error(HttpPostError::http(404, "not found"));
+        assert!(
+            matches!(err, LlmError::Network(_)),
+            "expected Network, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_http_error_transport_maps_to_network() {
+        let err = classify_http_error(HttpPostError::transport("dns failed"));
+        assert!(
+            matches!(err, LlmError::Network(_)),
+            "expected Network, got {err:?}"
         );
     }
 }

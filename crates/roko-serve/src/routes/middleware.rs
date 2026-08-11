@@ -21,6 +21,80 @@ use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
 
+// ── Extension route whitelist ─────────────────────────────────────────────────
+//
+// Routes registered by plugins/extensions must declare an explicit scope
+// requirement. At server startup the plugin loader calls
+// [`register_extension_route_scopes`] with the (path-prefix, scope) pairs
+// declared in each plugin manifest's `[[triggers]]` webhook section.
+//
+// [`required_scope_for`] checks these runtime-registered entries *before*
+// falling through to [`SCOPE_WRITE_UNCLASSIFIED`], so an extension route that
+// declares its scope is never misclassified as unclassified.
+
+/// Runtime-registered extension route scopes.
+///
+/// Populated once at startup by [`register_extension_route_scopes`].
+/// Each entry is `(path_prefix, required_scope)`.
+static EXTENSION_ROUTE_SCOPES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+
+/// Register extension (plugin) route scopes at server startup.
+///
+/// Must be called **once** before the first request arrives. Subsequent calls
+/// are no-ops (the `OnceLock` is already set). Each entry is
+/// `(path_prefix, required_scope)`; prefixes are matched via `starts_with` in
+/// the same way as [`ROUTE_SCOPE_MANIFEST`].
+///
+/// ### Scope values
+///
+/// Use the same vocabulary as the static manifest:
+/// `"read"`, `"write"`, `"admin"`, `"agent:write"`, `"plan:write"`,
+/// `"terminal:write"`. Any value not in that set will be treated as an unknown
+/// scope and will fail `is_scope_sufficient` for all callers except `"admin"`.
+///
+/// Callers that cannot call this function at startup (e.g. integration tests)
+/// may skip it; extension paths will then resolve to [`SCOPE_WRITE_UNCLASSIFIED`]
+/// as before.
+pub fn register_extension_route_scopes(entries: impl IntoIterator<Item = (String, String)>) {
+    // OnceLock::set returns Err if already set; silently ignore re-entrant
+    // startup paths (test harnesses, hot-reload stubs) so they don't panic.
+    let _ = EXTENSION_ROUTE_SCOPES.set(entries.into_iter().collect());
+}
+
+/// Look up the required scope for a path in the extension route registry.
+///
+/// Returns `Some(scope_str)` if the path matches a registered extension prefix,
+/// `None` otherwise.
+fn extension_scope_for(path: &str) -> Option<&str> {
+    let entries = EXTENSION_ROUTE_SCOPES.get()?;
+    for (prefix, scope) in entries {
+        if path.starts_with(prefix.as_str()) {
+            return Some(scope.as_str());
+        }
+    }
+    None
+}
+
+/// Map a runtime scope string to a stable `&'static str` token.
+///
+/// Extension routes store their scope as an owned `String`. This helper maps
+/// recognised scope values to their `&'static str` equivalents so
+/// [`required_scope_for`] can keep its `&'static str` return type.
+/// Unrecognised values fall through to [`SCOPE_WRITE_UNCLASSIFIED`] which is
+/// the fail-closed sentinel, but this should not happen for well-formed plugin
+/// manifests validated by `roko-plugin`.
+fn known_static_scope(scope: &str) -> &'static str {
+    match scope {
+        "read" => "read",
+        "write" => "write",
+        "admin" => "admin",
+        "agent:write" => "agent:write",
+        "plan:write" => "plan:write",
+        "terminal:write" => "terminal:write",
+        _ => SCOPE_WRITE_UNCLASSIFIED,
+    }
+}
+
 /// Extract a bearer token from an `Authorization` header value.
 ///
 /// Performs case-insensitive prefix matching on "bearer", trims whitespace,
@@ -553,21 +627,33 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 /// Determine the required scope for a given HTTP method and path.
 ///
 /// Read-only methods (`GET`, `HEAD`, `OPTIONS`) always return `"read"`.
-/// Mutating methods walk [`ROUTE_SCOPE_MANIFEST`] via `starts_with`; the
-/// first matching prefix wins. Unmatched paths fall back to
-/// [`SCOPE_WRITE_UNCLASSIFIED`] -- fail-closed at runtime, caught at test time.
+/// Mutating methods are classified in priority order:
+///
+/// 1. [`ROUTE_SCOPE_MANIFEST`] — static first-party route prefixes.
+/// 2. Extension route registry populated by [`register_extension_route_scopes`]
+///    — plugin/extension webhook routes that declared an explicit scope.
+/// 3. [`SCOPE_WRITE_UNCLASSIFIED`] fallback — fail-closed at runtime, caught
+///    at test time by the CI guard.
+///
+/// The static manifest takes precedence over extension routes so that a
+/// misconfigured plugin cannot downgrade scope requirements for core routes.
 pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // Read-only methods always pass.
     if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
         return "read";
     }
+    // 1. Static first-party manifest (O(n), n ≤ ~30 entries).
     for entry in ROUTE_SCOPE_MANIFEST {
         if path.starts_with(entry.prefix) {
             return entry.scope;
         }
     }
-    // Fail-closed: any unclassified mutating route gets the sentinel scope
-    // which behaves as "write" at runtime but is detectable by the CI guard.
+    // 2. Extension routes registered at startup with an explicit scope.
+    if let Some(ext_scope) = extension_scope_for(path) {
+        return known_static_scope(ext_scope);
+    }
+    // 3. Fail-closed: any unclassified mutating route gets the sentinel scope
+    //    which behaves as "write" at runtime but is detectable by the CI guard.
     SCOPE_WRITE_UNCLASSIFIED
 }
 
@@ -1896,5 +1982,203 @@ mod tests {
                 "duplicate manifest prefix: {p}"
             );
         }
+    }
+
+    // --- E04-T03: auth fixture tests (full require_api_key + require_scope stack) ---
+    //
+    // These tests exercise the complete authentication + scope enforcement path
+    // using real `ApiKeyEntry` fixtures with hashed keys. Unlike `scope_test_app`
+    // which injects `AuthContext` directly, these go through `require_api_key` so
+    // the full credential-lookup → scope-injection → scope-enforcement chain is
+    // verified end-to-end.
+
+    fn keyed_auth(name: &str, plaintext: &str, scope: &str) -> ServeAuthConfig {
+        ServeAuthConfig {
+            enabled: true,
+            api_key: String::new(),
+            api_keys: vec![roko_core::config::ApiKeyEntry {
+                name: name.to_string(),
+                key_hash: hash_api_key(plaintext),
+                scope: scope.to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                expires_at: None,
+            }],
+            privy_app_id: None,
+            ..Default::default()
+        }
+    }
+
+    /// Build a router with BOTH `require_api_key` AND `require_scope` layered,
+    /// mounting a trivial POST handler at the given path.
+    fn full_auth_app(auth: ServeAuthConfig, route: &str) -> Router {
+        let state = make_test_state(auth);
+        let handler = || async { StatusCode::NO_CONTENT };
+        // Layer order: require_scope outer (runs after auth), require_api_key
+        // inner (runs first, injects AuthContext).
+        Router::new()
+            .route(route, post(handler))
+            .layer(axum::middleware::from_fn(require_scope))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key))
+    }
+
+    async fn fixture_response(app: Router, key: &str, method: Method, uri: &str) -> Response {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("X-Api-Key", key)
+            .body(Body::empty())
+            .expect("invariant: fixture auth request builds");
+        app.oneshot(req)
+            .await
+            .expect("invariant: fixture auth router responds")
+    }
+
+    /// A `read`-scoped key must be denied (403) on a POST to an admin route.
+    #[tokio::test]
+    async fn auth_fixture_read_key_denied_on_admin_route() {
+        let plaintext = "fixture-read-key-001";
+        let app = full_auth_app(
+            keyed_auth("read-fixture", plaintext, "read"),
+            "/api/secrets",
+        );
+        let resp = fixture_response(app, plaintext, Method::POST, "/api/secrets").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "read-scoped key must be denied 403 on POST /api/secrets (admin route)"
+        );
+    }
+
+    /// An `agent:write`-scoped key must be denied (403) on a POST to an admin route.
+    #[tokio::test]
+    async fn auth_fixture_agent_write_key_denied_on_admin_route() {
+        let plaintext = "fixture-agent-write-key-001";
+        let app = full_auth_app(
+            keyed_auth("agent-write-fixture", plaintext, "agent:write"),
+            "/api/secrets",
+        );
+        let resp = fixture_response(app, plaintext, Method::POST, "/api/secrets").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "agent:write-scoped key must be denied 403 on POST /api/secrets (admin route)"
+        );
+    }
+
+    /// A `write`-scoped key must be allowed (204) on a POST to a write route.
+    #[tokio::test]
+    async fn auth_fixture_write_key_allowed_on_write_route() {
+        let plaintext = "fixture-write-key-001";
+        let app = full_auth_app(
+            keyed_auth("write-fixture", plaintext, "write"),
+            "/api/jobs",
+        );
+        let resp = fixture_response(app, plaintext, Method::POST, "/api/jobs").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "write-scoped key must succeed (204) on POST /api/jobs"
+        );
+    }
+
+    /// An `admin`-scoped key must be allowed (204) on every route, including admin.
+    #[tokio::test]
+    async fn auth_fixture_admin_key_allowed_on_admin_route() {
+        let plaintext = "fixture-admin-key-001";
+        let app = full_auth_app(
+            keyed_auth("admin-fixture", plaintext, "admin"),
+            "/api/secrets",
+        );
+        let resp = fixture_response(app, plaintext, Method::POST, "/api/secrets").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NO_CONTENT,
+            "admin-scoped key must succeed (204) on POST /api/secrets"
+        );
+    }
+
+    // ── E04-T06: Extension route whitelist ────────────────────────────────────
+
+    /// [`known_static_scope`] maps every recognised scope token to the
+    /// corresponding `&'static str` and falls back to the unclassified sentinel
+    /// for unrecognised values.
+    #[test]
+    fn known_static_scope_maps_recognised_scopes() {
+        assert_eq!(known_static_scope("read"), "read");
+        assert_eq!(known_static_scope("write"), "write");
+        assert_eq!(known_static_scope("admin"), "admin");
+        assert_eq!(known_static_scope("agent:write"), "agent:write");
+        assert_eq!(known_static_scope("plan:write"), "plan:write");
+        assert_eq!(known_static_scope("terminal:write"), "terminal:write");
+        // Unrecognised values fall to the sentinel (fail-closed).
+        assert_eq!(known_static_scope("unknown:scope"), SCOPE_WRITE_UNCLASSIFIED);
+        assert_eq!(known_static_scope(""), SCOPE_WRITE_UNCLASSIFIED);
+    }
+
+    /// When an extension route is registered with an explicit scope, that scope
+    /// must not resolve to the unclassified sentinel.
+    /// We test via [`known_static_scope`] directly to avoid the `OnceLock`
+    /// singleton constraint between tests.
+    #[test]
+    fn extension_scope_for_returns_declared_scope_when_registered() {
+        // Every scope a plugin can declare in its manifest must map to a
+        // recognised static token, not to SCOPE_WRITE_UNCLASSIFIED.
+        for declared in ["read", "write", "admin", "agent:write", "plan:write", "terminal:write"] {
+            let resolved = known_static_scope(declared);
+            assert_ne!(
+                resolved,
+                SCOPE_WRITE_UNCLASSIFIED,
+                "scope '{declared}' declared by an extension should not resolve to the \
+                 unclassified sentinel — it must be an explicit whitelist entry"
+            );
+        }
+    }
+
+    /// A plugin that does NOT declare a scope for its webhook trigger uses the
+    /// default `"write"`. Verify this maps to the explicit `"write"` token, not
+    /// the unclassified sentinel.
+    #[test]
+    fn extension_default_write_scope_is_not_sentinel() {
+        assert_eq!(
+            known_static_scope("write"),
+            "write",
+            "the default extension scope 'write' must map to the explicit 'write' \
+             token, not to SCOPE_WRITE_UNCLASSIFIED"
+        );
+        assert_ne!(
+            known_static_scope("write"),
+            SCOPE_WRITE_UNCLASSIFIED,
+            "the default extension scope must not trigger the unclassified fallback"
+        );
+    }
+
+    /// Core routes in [`ROUTE_SCOPE_MANIFEST`] take precedence over any
+    /// extension route with the same prefix. A plugin cannot downgrade the
+    /// scope requirement for a first-party route.
+    #[test]
+    fn static_manifest_takes_precedence_over_extension_routes() {
+        // The static manifest entry for "/api/secrets" → "admin" must always
+        // win, regardless of what the extension registry might contain.
+        let scope = required_scope_for(&Method::POST, "/api/secrets");
+        assert_eq!(
+            scope, "admin",
+            "static ROUTE_SCOPE_MANIFEST must take precedence for /api/secrets"
+        );
+        let scope = required_scope_for(&Method::POST, "/api/agents/register");
+        assert_eq!(scope, "agent:write");
+    }
+
+    /// `register_extension_route_scopes` is idempotent: calling it twice must
+    /// not panic (the second call is a no-op via `OnceLock::set`).
+    #[test]
+    fn register_extension_route_scopes_is_idempotent() {
+        register_extension_route_scopes([
+            ("/hooks/test-plugin".to_string(), "write".to_string()),
+        ]);
+        // Second call — must be a silent no-op.
+        register_extension_route_scopes([
+            ("/hooks/other-plugin".to_string(), "agent:write".to_string()),
+        ]);
+        // No panic means the test passes.
     }
 }

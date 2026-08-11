@@ -1259,8 +1259,8 @@ pub(crate) async fn cmd_plugin(cli: &Cli, cmd: PluginCmd) -> Result<i32> {
                             roko_plugin::manifest::TriggerDef::FileWatch { paths, .. } => {
                                 println!("    trigger: file_watch({})", paths.join(", "));
                             }
-                            roko_plugin::manifest::TriggerDef::Webhook { path, .. } => {
-                                println!("    trigger: webhook({path})");
+                            roko_plugin::manifest::TriggerDef::Webhook { path, scope, .. } => {
+                                println!("    trigger: webhook({path}) [scope: {scope}]");
                             }
                         }
                     }

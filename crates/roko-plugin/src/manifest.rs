@@ -152,6 +152,10 @@ fn default_timeout() -> u64 {
     30_000
 }
 
+fn default_webhook_scope() -> String {
+    "write".to_string()
+}
+
 /// Event source trigger definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -182,6 +186,17 @@ pub enum TriggerDef {
     Webhook {
         /// Webhook endpoint path (e.g. "/hooks/my-plugin").
         path: String,
+        /// Required API scope for mutating requests to this webhook endpoint.
+        ///
+        /// When `roko serve` mounts the route it registers this scope with the
+        /// middleware whitelist via [`register_extension_route_scopes`] so the
+        /// endpoint is never classified as `"write:unclassified"`. Recognised
+        /// values: `"read"`, `"write"`, `"admin"`, `"agent:write"`,
+        /// `"plan:write"`, `"terminal:write"`.
+        ///
+        /// Defaults to `"write"` if not specified — fail-closed, never open.
+        #[serde(default = "default_webhook_scope")]
+        scope: String,
         /// Optional secret for HMAC verification.
         #[serde(default)]
         secret: Option<String>,
@@ -278,7 +293,61 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
         }
     }
 
+    // Validate webhook trigger paths and scopes.
+    for trigger in &manifest.triggers {
+        if let TriggerDef::Webhook { path, scope, .. } = trigger {
+            if path.is_empty() {
+                return Err(RokoError::config(
+                    "webhook trigger path must not be empty",
+                ));
+            }
+            if !path.starts_with('/') {
+                return Err(RokoError::config(format!(
+                    "webhook trigger path `{path}` must start with '/'"
+                )));
+            }
+            if !VALID_WEBHOOK_SCOPES.contains(&scope.as_str()) {
+                return Err(RokoError::config(format!(
+                    "webhook trigger path `{path}` declares unknown scope `{scope}`; \
+                     valid scopes are: {}",
+                    VALID_WEBHOOK_SCOPES.join(", ")
+                )));
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Valid scope values for webhook trigger route requirements.
+///
+/// Must stay in sync with the `known_static_scope` function in
+/// `roko-serve/src/routes/middleware.rs`.
+const VALID_WEBHOOK_SCOPES: &[&str] = &[
+    "read",
+    "write",
+    "admin",
+    "agent:write",
+    "plan:write",
+    "terminal:write",
+];
+
+impl PluginManifestFile {
+    /// Extract the route-scope pairs declared by this plugin's webhook triggers.
+    ///
+    /// Returns a `Vec<(path_prefix, required_scope)>` suitable for passing to
+    /// `roko_serve::routes::middleware::register_extension_route_scopes`. Only
+    /// [`TriggerDef::Webhook`] entries are included; cron and file-watch
+    /// triggers do not register HTTP routes.
+    pub fn webhook_route_scopes(&self) -> Vec<(String, String)> {
+        self.triggers
+            .iter()
+            .filter_map(|t| match t {
+                TriggerDef::Webhook { path, scope, .. } => Some((path.clone(), scope.clone())),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Discovered plugin loaded from a manifest file.

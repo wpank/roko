@@ -1,8 +1,8 @@
 [meta]
 plan = "P32-cli-polish"
 total = 2
-done = 0
-status = "ready"
+done = 2
+status = "done"
 max_parallel = 2
 estimated_total_minutes = 20
 skip_enrichment = true
@@ -66,7 +66,7 @@ Add two helper functions (at crate root or in a serde_helpers module):
 
 If these helpers already exist elsewhere in roko-core, reuse them.
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 40
@@ -134,7 +134,7 @@ This is a one-character change. The white circle (U+25CB) matches the
 geometric symbol set used by all other constants (diamond, triangle,
 bar, branch, checkmark, cross, etc.).
 """
-status = "ready"
+status = "done"
 tier = "mechanical"
 model_hint = "claude-haiku-4-5"
 max_loc = 1

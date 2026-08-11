@@ -1,7 +1,7 @@
 [meta]
 plan = "P25-mcp-acp-passthrough"
 total = 4
-done = 2
+done = 3
 status = "ready"
 max_parallel = 1
 

@@ -1,8 +1,8 @@
 [meta]
 plan = "P22-acp-tool-permission"
 total = 5
-done = 1  # T1 done (9ee418a57). T2 not started: AcpBuiltinToolHandler::execute still ignores ctx.
-status = "ready"
+done = 5  # T1 done (9ee418a57). T2 not started: AcpBuiltinToolHandler::execute still ignores ctx.
+status = "done"
 max_parallel = 1
 
 # ── T1: Replace ToolContext::testing() with ToolContext::new() in ACP paths ───
@@ -92,7 +92,7 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T2"
 title = "Add denied_tools check to AcpBuiltinToolHandler"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 25
@@ -168,7 +168,7 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T3"
 title = "Add slash_command_allowed_tools function"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 40
@@ -248,7 +248,7 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T4"
 title = "Wire slash_command_allowed_tools into ToolContext at dispatch sites"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 30
@@ -315,7 +315,7 @@ fail_msg = "roko-acp must compile"
 [[task]]
 id = "T5"
 title = "Add test for tool permission enforcement in AcpBuiltinToolHandler"
-status = "ready"
+status = "done"
 tier = "focused"
 model_hint = "claude-sonnet-4-20250514"
 max_loc = 50

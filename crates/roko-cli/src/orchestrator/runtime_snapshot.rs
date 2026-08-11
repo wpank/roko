@@ -110,7 +110,7 @@ impl OrchestratorSnapshot {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::executor::ExecutorSnapshot;
+    use crate::orchestrator::executor::ExecutorSnapshot;
     use super::*;
 
     #[test]

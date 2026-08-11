@@ -1084,7 +1084,10 @@ fn check_state_layout_audit(workdir: &Path) -> Vec<DoctorCheck> {
             "memory/episodes.jsonl",
             layout.memory_dir().join("episodes.jsonl"),
         ),
-        ("state/executor.json", layout.state_dir().join("executor.json")),
+        (
+            "state/executor.json",
+            layout.state_dir().join("executor.json"),
+        ),
         ("state/events.json", layout.state_dir().join("events.json")),
     ];
 
@@ -1877,7 +1880,8 @@ mod tests {
         // Absolute path is not on the allowlist, so the allowlist message fires.
         let detail = check.detail.as_deref().unwrap_or("");
         assert!(
-            detail.contains("not on the approved allowlist") || detail.contains("not found on PATH"),
+            detail.contains("not on the approved allowlist")
+                || detail.contains("not found on PATH"),
             "should report allowlist or PATH warning, got: {detail}"
         );
         assert!(check.fix.is_some(), "a fix hint should be provided");

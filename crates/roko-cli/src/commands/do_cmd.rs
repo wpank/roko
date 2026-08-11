@@ -560,10 +560,7 @@ async fn run_plan_execution(
         force_resume: false,
         mcp_config: {
             // Resolve MCP config with auto-discovery of roko-mcp-github.
-            let mcp = crate::resolve_mcp_config_with_autodiscovery(
-                workdir,
-                layout.root(),
-            );
+            let mcp = crate::resolve_mcp_config_with_autodiscovery(workdir, layout.root());
             if let Some(ref path) = mcp {
                 tracing::info!(path = ?path, "MCP config resolved for do run");
             } else {

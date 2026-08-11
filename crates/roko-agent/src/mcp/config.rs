@@ -557,7 +557,10 @@ mod tests {
     #[test]
     fn hardcoded_secret_values_ignores_non_sensitive_key() {
         let mut env = HashMap::new();
-        env.insert("DATABASE_URL".to_string(), "postgres://localhost/db".to_string());
+        env.insert(
+            "DATABASE_URL".to_string(),
+            "postgres://localhost/db".to_string(),
+        );
         let hits = hardcoded_secret_values(&env);
         assert!(
             hits.is_empty(),

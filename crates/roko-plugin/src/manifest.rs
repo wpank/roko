@@ -297,9 +297,7 @@ fn validate_manifest(manifest: &PluginManifestFile) -> Result<()> {
     for trigger in &manifest.triggers {
         if let TriggerDef::Webhook { path, scope, .. } = trigger {
             if path.is_empty() {
-                return Err(RokoError::config(
-                    "webhook trigger path must not be empty",
-                ));
+                return Err(RokoError::config("webhook trigger path must not be empty"));
             }
             if !path.starts_with('/') {
                 return Err(RokoError::config(format!(

@@ -338,7 +338,10 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&c.body).expect("body is json");
         // Single-query format: top-level "query" field, not a "queries" array.
         assert_eq!(parsed["query"], "test");
-        assert!(parsed.get("queries").is_none(), "must not have queries array");
+        assert!(
+            parsed.get("queries").is_none(),
+            "must not have queries array"
+        );
     }
 
     #[tokio::test]

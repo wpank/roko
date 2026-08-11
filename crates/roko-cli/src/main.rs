@@ -5364,7 +5364,10 @@ mod tests {
         let s = &config.servers[0];
         assert_eq!(s.name, "github");
         assert_eq!(s.command, cmd);
-        assert!(s.args.is_empty(), "auto-discovered entry should have no args");
+        assert!(
+            s.args.is_empty(),
+            "auto-discovered entry should have no args"
+        );
     }
 
     /// When the user already configured a `github` server, auto-discovery
@@ -5402,8 +5405,7 @@ mod tests {
             "user-configured server must not be duplicated"
         );
         assert_eq!(
-            config.servers[0].command,
-            "/usr/local/bin/my-custom-github-mcp",
+            config.servers[0].command, "/usr/local/bin/my-custom-github-mcp",
             "user-configured command must be preserved"
         );
     }

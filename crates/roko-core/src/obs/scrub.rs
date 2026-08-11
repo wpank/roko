@@ -68,8 +68,8 @@ fn builtin_patterns() -> Vec<ScrubPattern> {
     let raw = [
         // GitHub personal access tokens.
         (r"ghp_[A-Za-z0-9]{36}", "[REDACTED:GITHUB_PAT]"),
-        // API keys.
-        (r"sk-[A-Za-z0-9-]+", "[REDACTED:API_KEY]"),
+        // API keys (require 20+ chars after prefix to avoid false positives like `sk-short`).
+        (r"sk-[A-Za-z0-9-]{20,}", "[REDACTED:API_KEY]"),
         // Slack bot tokens.
         (r"xoxb-[0-9]+-[A-Za-z0-9]+", "[REDACTED:SLACK_BOT_TOKEN]"),
         // Anthropic / OpenAI API keys: sk-ant-..., sk-proj-..., sk-... (20+ chars)
@@ -326,11 +326,20 @@ mod tests {
     }
 
     #[test]
-    fn short_sk_prefix_is_scrubbed() {
+    fn short_sk_prefix_not_scrubbed() {
+        // Short `sk-` identifiers are not real API keys — avoid false positives.
         let scrubber = LogScrubber::new();
         let input = "key sk-short should stay";
         let output = scrubber.scrub(input);
-        assert!(!output.contains("sk-short"));
+        assert_eq!(output, input, "sk-short must not be scrubbed");
+    }
+
+    #[test]
+    fn long_sk_prefix_is_scrubbed() {
+        let scrubber = LogScrubber::new();
+        let input = "key sk-ant-api03-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789ABCD should be redacted";
+        let output = scrubber.scrub(input);
+        assert!(!output.contains("sk-ant-api03-"));
         assert!(output.contains("[REDACTED:API_KEY]"));
     }
 

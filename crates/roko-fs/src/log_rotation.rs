@@ -41,10 +41,7 @@ pub struct RotationResult {
 /// # Errors
 ///
 /// Returns an error if metadata, rename, or file creation fails.
-pub async fn rotate_if_needed(
-    path: &Path,
-    max_mb: u64,
-) -> std::io::Result<Option<RotationResult>> {
+pub async fn rotate_if_needed(path: &Path, max_mb: u64) -> std::io::Result<Option<RotationResult>> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -149,7 +146,10 @@ pub async fn discover_archives(live_path: &Path) -> std::io::Result<Vec<PathBuf>
 
         // Match pattern: {stem}.{timestamp}.jsonl
         // The live file itself is {stem}.jsonl — skip it.
-        if name_str.starts_with(&prefix) && name_str.ends_with(suffix) && name_str != format!("{stem}.jsonl") {
+        if name_str.starts_with(&prefix)
+            && name_str.ends_with(suffix)
+            && name_str != format!("{stem}.jsonl")
+        {
             // Verify the middle part looks like a timestamp (basic check).
             let middle = &name_str[prefix.len()..name_str.len() - suffix.len()];
             if is_timestamp_like(middle) {
@@ -355,11 +355,17 @@ mod tests {
         let name = archive.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("episodes."), "should start with stem");
         assert!(name.ends_with(".jsonl"), "should end with .jsonl");
-        assert!(name.len() > "episodes..jsonl".len(), "should have timestamp");
+        assert!(
+            name.len() > "episodes..jsonl".len(),
+            "should have timestamp"
+        );
 
         // Extract the timestamp part.
         let middle = &name["episodes.".len()..name.len() - ".jsonl".len()];
-        assert!(is_timestamp_like(middle), "middle should be a timestamp: {middle}");
+        assert!(
+            is_timestamp_like(middle),
+            "middle should be a timestamp: {middle}"
+        );
     }
 
     #[test]

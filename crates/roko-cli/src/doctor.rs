@@ -195,6 +195,8 @@ pub async fn run_doctor(options: &DoctorOptions) -> Result<DoctorReport> {
     checks.extend(check_state_layout_audit(&workdir));
     checks.extend(check_harness_providers(&loaded_config));
     checks.extend(check_mcp_allowlist(&workdir, &loaded_config));
+    checks.push(check_orphaned_tmp_files(&workdir));
+    checks.push(check_plans_dir_conflict(&workdir));
 
     let summary = DoctorSummary::from_checks(&checks);
     Ok(DoctorReport {
@@ -1563,6 +1565,103 @@ fn check_mcp_allowlist(workdir: &Path, loaded_config: &LoadedConfig) -> Vec<Doct
     });
 
     checks
+}
+
+/// Warn about orphaned `.tmp` files in `.roko/learn/` from crashed atomic writes.
+fn check_orphaned_tmp_files(workdir: &Path) -> DoctorCheck {
+    let learn_dir = workdir.join(".roko").join("learn");
+    if !learn_dir.is_dir() {
+        return DoctorCheck {
+            id: "orphaned_tmp_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no .roko/learn/ directory (nothing to check)".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        };
+    }
+
+    let tmp_count = std::fs::read_dir(&learn_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|ext| ext == "tmp")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+
+    if tmp_count == 0 {
+        DoctorCheck {
+            id: "orphaned_tmp_files".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no orphaned .tmp files in .roko/learn/".to_string(),
+            detail: None,
+            path: Some(learn_dir.display().to_string()),
+            url: None,
+            fix: None,
+        }
+    } else {
+        DoctorCheck {
+            id: "orphaned_tmp_files".to_string(),
+            status: DoctorStatus::Warn,
+            message: format!(
+                "{tmp_count} orphaned .tmp file{} in .roko/learn/",
+                if tmp_count == 1 { "" } else { "s" }
+            ),
+            detail: Some(
+                "these are leftover from crashed atomic writes and can be safely removed"
+                    .to_string(),
+            ),
+            path: Some(learn_dir.display().to_string()),
+            url: None,
+            fix: Some("rm .roko/learn/*.tmp".to_string()),
+        }
+    }
+}
+
+/// Warn when both `./plans/` and `.roko/plans/` exist (potential conflict).
+fn check_plans_dir_conflict(workdir: &Path) -> DoctorCheck {
+    let top_level = workdir.join("plans");
+    let dot_roko = workdir.join(".roko").join("plans");
+
+    if top_level.is_dir() && dot_roko.is_dir() {
+        let top_count = std::fs::read_dir(&top_level)
+            .map(|entries| entries.filter_map(Result::ok).filter(|e| e.path().is_dir()).count())
+            .unwrap_or(0);
+        let dot_count = std::fs::read_dir(&dot_roko)
+            .map(|entries| entries.filter_map(Result::ok).filter(|e| e.path().is_dir()).count())
+            .unwrap_or(0);
+
+        DoctorCheck {
+            id: "plans_dir_conflict".to_string(),
+            status: DoctorStatus::Warn,
+            message: "both plans/ and .roko/plans/ exist".to_string(),
+            detail: Some(format!(
+                "plans/ has {top_count} plan dir{}, .roko/plans/ has {dot_count} plan dir{}; \
+                 the canonical location is plans/",
+                if top_count == 1 { "" } else { "s" },
+                if dot_count == 1 { "" } else { "s" },
+            )),
+            path: Some(top_level.display().to_string()),
+            url: None,
+            fix: Some("mv .roko/plans/* plans/ && rmdir .roko/plans".to_string()),
+        }
+    } else {
+        DoctorCheck {
+            id: "plans_dir_conflict".to_string(),
+            status: DoctorStatus::Ok,
+            message: "no plans directory conflict".to_string(),
+            detail: None,
+            path: None,
+            url: None,
+            fix: None,
+        }
+    }
 }
 
 #[cfg(test)]

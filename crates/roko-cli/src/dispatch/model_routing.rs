@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use roko_core::agent::ModelSpec;
 use roko_core::task::TaskComplexityBand;
-use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::cascade_router::{CascadeRouter, RoutingBias};
 use roko_learn::model_router::RoutingContext;
 
 use super::DispatchContext;
@@ -61,6 +61,10 @@ pub struct RoutingInputs {
     /// Full routing context for the CascadeRouter. When `Some`, the router
     /// calls `CascadeRouter::route()` instead of falling back to the default.
     pub routing_context: Option<RoutingContext>,
+    /// Conductor routing bias derived from the live signal stream. When `Some`,
+    /// deprioritized models are filtered out and prefer-cheaper scoring is
+    /// applied so the cascade router avoids models the conductor flagged.
+    pub routing_bias: Option<RoutingBias>,
 }
 
 impl RoutingInputs {
@@ -76,6 +80,7 @@ impl RoutingInputs {
             attempt: ctx.attempt,
             role: ctx.role.clone(),
             routing_context: ctx.routing_context.clone(),
+            routing_bias: ctx.routing_bias.clone(),
         }
     }
 }
@@ -168,6 +173,12 @@ impl ModelRouter {
     }
 
     /// Apply the precedence pipeline.
+    ///
+    /// When a conductor [`RoutingBias`] is supplied through `inputs.routing_bias`,
+    /// the bias is applied to the cascade router selection: deprioritized models
+    /// are filtered out and `prefer_cheaper` shifts scoring toward cheaper tiers.
+    /// The bias is only consulted for router-driven selections -- overrides and
+    /// task hints are never affected, preserving operator and author intent.
     pub fn route(&self, inputs: &RoutingInputs) -> Result<ModelChoice, DispatchError> {
         if let Some(slug) = inputs.force_backend.as_ref() {
             return Ok(ModelChoice {
@@ -183,7 +194,19 @@ impl ModelRouter {
         }
         if let Some(router) = self.cascade.as_ref() {
             if let Some(ctx) = &inputs.routing_context {
-                let cascade_model = router.route(ctx);
+                // When the conductor has emitted a non-neutral routing bias,
+                // use route_with_bias to filter deprioritized models and apply
+                // prefer-cheaper scoring. Falls back to the unbiased route if
+                // the bias would filter out all candidates.
+                let cascade_model = if let Some(bias) = &inputs.routing_bias {
+                    if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
+                        router.route(ctx)
+                    } else {
+                        router.route_with_bias(ctx, bias)
+                    }
+                } else {
+                    router.route(ctx)
+                };
                 return Ok(ModelChoice {
                     model: cascade_model.primary,
                     source: ModelChoiceSource::Router,
@@ -259,6 +282,7 @@ mod tests {
             attempt: 0,
             gate_feedback: None,
             routing_context: None,
+            routing_bias: None,
             dependency_outputs: Vec::new(),
         }
     }
@@ -368,5 +392,129 @@ mod tests {
         assert_eq!(tier_to_complexity("complex"), TaskComplexityBand::Complex);
         assert_eq!(tier_to_complexity("standard"), TaskComplexityBand::Standard);
         assert_eq!(tier_to_complexity("anything"), TaskComplexityBand::Standard);
+    }
+
+    // ── Conductor routing bias tests (E08-T07) ─────────────────────────
+
+    #[test]
+    fn conductor_routing_bias_deprioritizes_model() {
+        // Two-model router: sonnet and haiku. When sonnet is deprioritized,
+        // the router should pick haiku instead.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        inputs.routing_bias = Some(RoutingBias {
+            deprioritize: vec!["claude-sonnet-4-6".into()],
+            prefer_cheaper: false,
+            reason: "recent failure on claude-sonnet-4-6".into(),
+        });
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+        // With sonnet deprioritized, the router should avoid it.
+        assert_eq!(
+            choice.model.slug, "claude-haiku-4-5",
+            "deprioritized model should be avoided when alternatives exist"
+        );
+    }
+
+    #[test]
+    fn conductor_routing_bias_neutral_does_not_alter_route() {
+        // A neutral bias (no deprioritize, no prefer_cheaper) should behave
+        // identically to having no bias at all.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        // Neutral bias -- should not change routing outcome.
+        inputs.routing_bias = Some(RoutingBias {
+            deprioritize: vec![],
+            prefer_cheaper: false,
+            reason: String::new(),
+        });
+        let with_bias = router.route(&inputs).unwrap();
+
+        // Same inputs without any bias.
+        inputs.routing_bias = None;
+        let without_bias = router.route(&inputs).unwrap();
+
+        assert_eq!(
+            with_bias.model.slug, without_bias.model.slug,
+            "neutral routing bias must not alter model selection"
+        );
+    }
+
+    #[test]
+    fn conductor_routing_bias_fallback_when_all_deprioritized() {
+        // If all models are deprioritized, the router should gracefully
+        // fall back rather than panicking or returning nothing.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        let mut inputs = RoutingInputs::from_task(&task(), &ctx());
+        inputs.routing_context = Some(routing_context());
+        inputs.routing_bias = Some(RoutingBias {
+            deprioritize: vec!["claude-sonnet-4-6".into(), "claude-haiku-4-5".into()],
+            prefer_cheaper: false,
+            reason: "all models failing".into(),
+        });
+        // Should not panic -- route_with_bias falls back to unbiased route
+        // when filtering removes all candidates.
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.source, ModelChoiceSource::Router);
+        assert!(
+            !choice.model.slug.is_empty(),
+            "router must return a model even when all are deprioritized"
+        );
+    }
+
+    #[test]
+    fn conductor_routing_bias_does_not_override_force_backend() {
+        // Even with conductor bias, force_backend must always win.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        let mut c = ctx();
+        c.force_backend = Some("gpt-5".into());
+        let mut inputs = RoutingInputs::from_task(&task(), &c);
+        inputs.routing_bias = Some(RoutingBias {
+            deprioritize: vec!["gpt-5".into()],
+            prefer_cheaper: true,
+            reason: "should not matter for forced".into(),
+        });
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.model.slug, "gpt-5");
+        assert_eq!(choice.source, ModelChoiceSource::Override);
+    }
+
+    #[test]
+    fn conductor_routing_bias_does_not_override_task_hint() {
+        // Even with conductor bias, task hints must still win.
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "claude-haiku-4-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade));
+        let mut t = task();
+        t.model_hint = Some("claude-sonnet-4-6".into());
+        let mut inputs = RoutingInputs::from_task(&t, &ctx());
+        inputs.routing_bias = Some(RoutingBias {
+            deprioritize: vec!["claude-sonnet-4-6".into()],
+            prefer_cheaper: true,
+            reason: "should not matter for hint".into(),
+        });
+        let choice = router.route(&inputs).unwrap();
+        assert_eq!(choice.model.slug, "claude-sonnet-4-6");
+        assert_eq!(choice.source, ModelChoiceSource::TaskHint);
     }
 }

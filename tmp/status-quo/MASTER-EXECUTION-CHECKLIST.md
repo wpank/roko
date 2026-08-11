@@ -53,10 +53,10 @@ pushed to `status-quo/batch-2026-08-10`. Key findings:
 | Build health | `cargo build --workspace` passes. Nightly fmt applied, clippy clean. |
 | Stale TOML metadata | P08 (4/4), P09 (3/3), P23 (6/6), e2e-smoke (2/2), E16 (2/2), E07-T07, E07-T09, E09-T09, E05-T05, E18-T07 all show `done = 0` in their tasks.toml but are fully implemented in code. |
 | E04 security | 18/19 done (was reported as 12/19). T13 fixed; only T14 (fail-closed tool permission) remains. |
-| Cross-wave ledger | 120 external tasks: ~25 confirmed done, ~15 partial, ~80 greenfield. |
+| Cross-wave ledger | 120 external tasks: ~35 confirmed done, ~15 partial, ~70 greenfield. Batch 4: E08 9/9, E09 11/11, E18 10/10, E47 1/11, P24 3/4, P26 4/4, P31 1/3. |
 | Waves 10-13 | Essentially all greenfield (hundreds of tasks at 0). Best foundations: E30 (extension system), E34 (TaintLevel/QuarantineVault), E33 (Lens trait). |
 | Issues 60-67 | COVERAGE.md stops at 59; 8 issues entirely absent from coverage tracking. Issue 66 (secret scrubber false-positive) fixed. |
-| E12 dead code | 5/9 done (T01,T03,T04,T05,T07), 2/9 partial (T06,T08), 2/9 need implementation (T02,T09). T03 legacy-runner-v2 feature removed; T07 orchestrate.rs deleted. |
+| E12 dead code | 6/9 done (T01,T03,T04,T05,T07,T08), 1/9 partial (T06), 1/9 blocked (T02 — roko-gate genuine runtime dep), 1/9 needs impl (T09). |
 | GcEngine | Wired into runner (E47): `roko-fs` GcEngine now called from event loop. |
 | TOML metadata | 33 tasks.toml metadata files reconciled to reflect actual implementation state. |
 
@@ -604,14 +604,14 @@ hint; Wave 0 may correct it from actual file/dependency evidence.
 - [ ] P21-acp-streaming (0/5) — plans/P21-acp-streaming/tasks.toml; Wave 10/E17. All 5 unimplemented: `run_slash_command` still buffers output, `AcpProgressSink` exists but not wired.
 - [ ] P22-acp-tool-permission (3/5 done) — plans/P22-acp-tool-permission/tasks.toml; Wave 7/E04/E17. T1 merged, T2 done (denied_tools/allowed_tools enforcement in AcpBuiltinToolHandler), T3 done (session.rs denied/allowed_tools fields). T4-T5 remaining.
 - [x] P23-prd-pipeline-fix (6/6 done) — plans/P23-prd-pipeline-fix/tasks.toml; Wave 8/E16. All 6 tasks implemented: T1 read-only tools, T2 prompt update, T3 validation-blocks-write, T4 plan-to-PRD slug linking, T5 path-based status inference, T6 `source_prd` field. TOML `done = 0` is stale.
-- [ ] P24-workspace-paths (0/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43.
+- [ ] P24-workspace-paths (3/4) — plans/P24-workspace-paths/tasks.toml; Waves 8/10 E18/E43. T1 resolve_plans_dir swap, T3 orphaned .tmp check, T4 plans dir conflict check done. Remaining: T2 doc updates.
 - [ ] P25-mcp-acp-passthrough (2/4) — plans/P25-mcp-acp-passthrough/tasks.toml; Wave 10/E17. T1,T2 done. T3,T4 need implementation.
-- [ ] P26-hdc-similarity-lookup (0/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24.
+- [x] P26-hdc-similarity-lookup (4/4) — plans/P26-hdc-similarity-lookup/tasks.toml; Waves 9/10 E07/E24. query_similar_episodes + test + event_loop wiring + format section all done.
 - [x] P27-provider-error-ux (4/4 done) — plans/P27-provider-error-ux/tasks.toml; Wave 8/E14. T1-T4 done: structured provider key checks in doctor, multi-provider setup instructions, state layout audit, MCP allowlist check.
 - [ ] P28-image-support (0/5) — plans/P28-image-support/tasks.toml; Wave 10/E17.
 - [x] P29-develop-command-wire (3/3 done) — plans/P29-develop-command-wire/tasks.toml; Wave 10/E18. T1-T3 done: develop command wired, refactored from do_cmd boilerplate.
 - [x] P30-onboarding-doctor (4/4 done) — plans/P30-onboarding-doctor/tasks.toml; Wave 10/E18. T1-T4 done: multi-provider key checks, setup command improvements, state layout audit check, MCP allowlist check. Superseded by P27 which covers all the same ground.
-- [ ] P31-note-and-context (0/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07.
+- [ ] P31-note-and-context (1/3) — plans/P31-note-and-context/tasks.toml; Wave 9/E07. T2 note_cluster module done. Remaining: T1 shorthand routing, T3 --from-notes flag.
 - [ ] P32-cli-polish (0/2) — plans/P32-cli-polish/tasks.toml; Waves 9/10 E10/E18.
 - [x] P33-model-ux (1/1 done) — plans/P33-model-ux/tasks.toml; Wave 8/E14. T1 done: `skip_serializing_if` on provider config + pending symbol in inline display.
 - [ ] P34-verification-sweep (0/4) — plans/P34-verification-sweep/tasks.toml; final Wave 13 gate.
@@ -770,7 +770,7 @@ Track B, sequential:
 
 Track C:
 
-- [ ] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (9/10 done: T01,T02,T03,T04,T05,T06,T07,T09,T14. T06 done: `apply_core_authoritative_overrides()` overlays core-validated config fields. Remaining: T08 deploy parity.)
+- [x] E18-DOCS-CONFIG-OPS implementation tasks T01–T09 and T14. (10/10 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T14. T08 deploy parity: --push flag, docker push, --bind/--port config.)
 - [ ] Defer E18 documentation tasks T10–T13/T15 until final truth convergence.
 
 Wave gate:
@@ -788,8 +788,8 @@ Wave gate:
 Eligible parallel roots, subject to file reservations:
 
 - [x] E07-learning-knowledge — 10/10 done. T07 done: `roko-neuro` with `features = ["hdc"]` in both roko-cli and roko-serve Cargo.toml; test `ingest_populates_hdc_vector_when_feature_is_enabled` passes. T09 done: runner-v2 uses `select_for_frequency_among_with_knowledge` (event_loop.rs:7408-7444); manual nudge pattern removed.
-- [x] E08-conductor-supervision — 9 tasks. (8/9 done: T01,T02,T03,T04,T05,T06,T08,T09. ConductorRingSink wired into plan/do/serve FeedbackFacade. Remaining: T07 routing bias — design-only, non-blocking.)
-- [ ] E09-OBSERVABILITY — 11 tasks. (10/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T11. Remaining: T10 archive — GcEngine now wired (E47), but T10 still needs verification/acceptance.)
+- [x] E08-conductor-supervision — 9 tasks. (9/9 done: T01,T02,T03,T04,T05,T06,T07,T08,T09. T07 routing bias wired: conductor RoutingBias flows through DispatchContext → RoutingInputs → CascadeRouter::route_with_bias(). 5 tests.)
+- [x] E09-OBSERVABILITY — 11 tasks. (11/11 done: T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11. T10 log rotation: roko-fs log_rotation module with size-based JSONL rotation + timestamped archives.)
 - [x] E10-FRONTEND-CONTRACT — 7 tasks after E03. (7/7 done: T01 share fix, T02 ws/agents, T03 bench matrix, T04 ISFR SSE, T05 snake_case, T06 single SSE, T07 lastEventId.)
 - [x] E11-chain-isfr prerequisite/design recovery — 5 tasks. (5/5 done: T01,T02,T03,T04,T05.)
 - [x] E19-signal-protocol — 10 tasks. (10/10 done: SignalStatus, graduation, TaintLevel, lineage_hint, demurrage, re-exports all implemented in roko-core.)
@@ -842,7 +842,7 @@ Run only after the named parents are DONE:
 Operational epics with corrected real dependencies:
 
 - [ ] E46-github-workflow-integration — 12 tasks after E01/E04/E15. All greenfield.
-- [ ] E47-resource-disk-management — 11 tasks after E01/E02. GcEngine fully built in `roko-fs/src/gc.rs` but NEVER wired into any runner — classic "built but never connected" pattern. E45-T07 `build_knowledge_routing_advice` appears wired at event_loop.rs:7304.
+- [ ] E47-resource-disk-management — 11 tasks after E01/E02. (1/11 done: T03 GcEngine wired into event_loop pre/post-run hooks. Remaining: T01,T02,T04-T11 greenfield.)
 - [ ] E48-rate-limit-budgeting — 12 tasks after E14/E26. T01 retry-with-backoff done. Rest greenfield.
 - [ ] Operational overlap has one implementation owner and no duplicate mechanisms.
 
@@ -863,12 +863,12 @@ registry types.
 
 Plan: tmp/status-quo/backlog/plans/E12-DEAD-CODE-CLEANUP/tasks.toml
 
-- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 needs impl: roko-gate still normal dep. T03 done: legacy-runner-v2 feature removed from Cargo.toml. T09 needs impl: roko-plugin fully live.)
+- [ ] E12 T01–T05 and T09 pass consumer audits and named prerequisites. (T01 done: orphan files deleted. T04 done: dead_code count 53 < 71 baseline. T05 done: roko-index HDC uses roko-primitives. T02 blocked/wontfix: roko-gate is a genuine runtime dep used by effect_driver.rs (rung_for_gate_name, is_deterministic_gate). T03 done: legacy-runner-v2 feature removed from Cargo.toml. T09 needs impl: roko-plugin fully live.)
 - [x] E12-T06 runs only after E01/E04/E08. (Partial: workspace membership removed, no Cargo edges remain; physical `crates/roko-orchestrator/` directory still on disk.)
 - [x] E12-T07 runs only after E05/E06/E08. (Done: lib.rs exports and Cargo bin path cleaned; `orchestrate.rs` deleted.)
 - [x] E12-T08 runs only after T07. (Done: `legacy-orchestrate` feature removed from Cargo.toml; ~1900 lines of conditional code removed from run.rs; dead structs cleaned.)
 - [ ] Every deletion has full workspace proof before and after its own commit.
-- [ ] E12 reads 9/9 done. (Current: 6 done (T01,T03,T04,T05,T07,T08), 1 partial (T06), 2 need implementation (T02,T09).)
+- [ ] E12 reads 9/9 done. (Current: 6 done (T01,T03,T04,T05,T07,T08), 1 partial (T06), 1 blocked (T02 — roko-gate genuine runtime dep), 1 needs implementation (T09).)
 - [ ] E45-orchestrator-mori-parity — 10 tasks after E01/E12. E45-T07 appears done (`build_knowledge_routing_advice` wired at event_loop.rs:7304).
 - [ ] No legacy behavior remains solely in deleted/quarantined code.
 

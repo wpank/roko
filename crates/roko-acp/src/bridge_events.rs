@@ -1024,6 +1024,20 @@ where
                             usage: None,
                         });
                     }
+                    CognitiveEvent::PermissionRequest { payload, reply } => {
+                        // Auto-approve permission requests (fail-open).
+                        // A future iteration (E04-T14) can tighten this with
+                        // a real policy check or editor round-trip via
+                        // `request_permission()`.
+                        info!(
+                            session_id,
+                            action = ?payload.action,
+                            title = %payload.title,
+                            detail = %payload.detail,
+                            "auto-approving permission request (fail-open)"
+                        );
+                        let _ = reply.reply(PermissionDecision::Allow);
+                    }
                     CognitiveEvent::TokenChunk(ref text) => {
                         assistant_text.push_str(text);
                         let update = map_event_to_update(event);

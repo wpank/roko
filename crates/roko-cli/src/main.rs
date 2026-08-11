@@ -1406,6 +1406,12 @@ Examples:
         /// Additional context files/dirs/globs to include in the prompt.
         #[arg(long = "context", value_name = "PATH")]
         context: Vec<PathBuf>,
+        /// Read notes from .roko/notes/ and generate one plan per cluster.
+        #[arg(long)]
+        from_notes: bool,
+        /// Filter notes by tag when using --from-notes.
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Regenerate an existing plan from its source PRD / plan extract.
     Regenerate {
@@ -1415,6 +1421,9 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
+    /// Shorthand: `roko plan "add cursor support"` routes to plan generate.
+    #[command(external_subcommand)]
+    Shorthand(Vec<String>),
 }
 
 #[derive(Debug, Subcommand)]

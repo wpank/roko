@@ -1618,6 +1618,12 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             Some("describe the task..."),
         ),
         slash_command(
+            "develop",
+            "Full development pipeline: scope -> plan -> execute -> gate",
+            "implementation",
+            Some("describe what to build..."),
+        ),
+        slash_command(
             "agents",
             "List agents and their status",
             "implementation",
@@ -2379,6 +2385,7 @@ context_window = 8192
             "knowledge-gc",
             "knowledge-backup",
             "audit",
+            "develop",
         ] {
             assert!(
                 names.contains(&expected),

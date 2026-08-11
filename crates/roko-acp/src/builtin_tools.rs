@@ -16,6 +16,60 @@ use crate::bridge_events::CognitiveEvent;
 use crate::types::{ContentBlock, ToolCallKind, ToolCallStatus};
 use roko_core::tool::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, ToolSchema};
 
+/// Derive the [`ToolPermission`] for a tool by name.
+///
+/// Known safe (read-only) tools get minimal permissions; known mutation tools
+/// get exactly the flags they need. **Unknown tools are denied everything**
+/// (fail-closed) so that new tool names cannot bypass the safety boundary
+/// without being explicitly added here.
+#[must_use]
+pub fn derive_tool_permissions(tool_name: &str) -> ToolPermission {
+    match tool_name {
+        // Read-only tools — no side effects.
+        "read_file" | "glob" | "grep" | "ls" => ToolPermission::read_only(),
+        // Write tools — read + write, no exec/git/network.
+        "write_file" | "edit_file" => ToolPermission::writes(),
+        // Exec tools — read + exec, no write/git/network.
+        "bash" => ToolPermission::executes(),
+        // Network tools — read + network, no write/exec/git.
+        "web_fetch" | "web_search" => ToolPermission::networked(),
+        // Unknown tools: fail closed — deny everything.
+        _ => ToolPermission {
+            read: false,
+            write: false,
+            exec: false,
+            git: false,
+            network: false,
+        },
+    }
+}
+
+/// Compute the minimal session-level capability ceiling from a set of tools.
+///
+/// Returns a [`ToolPermission`] whose flags are the union (logical OR) of every
+/// tool's required permissions. This ensures the session context allows exactly
+/// what the registered tools need — nothing more.
+///
+/// For an empty tool set, returns all-false (fail-closed).
+#[must_use]
+pub fn compute_session_capabilities(tools: &[ToolDef]) -> ToolPermission {
+    let mut caps = ToolPermission {
+        read: false,
+        write: false,
+        exec: false,
+        git: false,
+        network: false,
+    };
+    for tool in tools {
+        caps.read |= tool.permission.read;
+        caps.write |= tool.permission.write;
+        caps.exec |= tool.permission.exec;
+        caps.git |= tool.permission.git;
+        caps.network |= tool.permission.network;
+    }
+    caps
+}
+
 /// Returns the 8 builtin tool definitions for ACP sessions.
 #[must_use]
 pub fn acp_builtin_tools() -> Vec<ToolDef> {
@@ -941,5 +995,82 @@ mod tests {
             result.is_ok(),
             "expected echo hello to pass safety check, got: {result:?}"
         );
+    }
+
+    // ── derive_tool_permissions ──────────────────────────────────────────
+
+    #[test]
+    fn known_readonly_tools_get_read_only_perms() {
+        for name in &["read_file", "glob", "grep", "ls"] {
+            let p = derive_tool_permissions(name);
+            assert!(p.read, "{name} should have read");
+            assert!(!p.write, "{name} should not have write");
+            assert!(!p.exec, "{name} should not have exec");
+            assert!(!p.git, "{name} should not have git");
+            assert!(!p.network, "{name} should not have network");
+        }
+    }
+
+    #[test]
+    fn known_write_tools_get_write_perms() {
+        for name in &["write_file", "edit_file"] {
+            let p = derive_tool_permissions(name);
+            assert!(p.read, "{name} should have read");
+            assert!(p.write, "{name} should have write");
+            assert!(!p.exec, "{name} should not have exec");
+        }
+    }
+
+    #[test]
+    fn bash_gets_exec_perms() {
+        let p = derive_tool_permissions("bash");
+        assert!(p.read);
+        assert!(p.exec);
+        assert!(!p.write);
+        assert!(!p.network);
+    }
+
+    #[test]
+    fn network_tools_get_network_perms() {
+        for name in &["web_fetch", "web_search"] {
+            let p = derive_tool_permissions(name);
+            assert!(p.read, "{name} should have read");
+            assert!(p.network, "{name} should have network");
+            assert!(!p.write, "{name} should not have write");
+            assert!(!p.exec, "{name} should not have exec");
+        }
+    }
+
+    #[test]
+    fn unknown_tools_are_denied_everything() {
+        let p = derive_tool_permissions("evil_tool");
+        assert!(!p.read);
+        assert!(!p.write);
+        assert!(!p.exec);
+        assert!(!p.git);
+        assert!(!p.network);
+    }
+
+    // ── compute_session_capabilities ─────────────────────────────────────
+
+    #[test]
+    fn empty_tools_yields_all_false() {
+        let caps = compute_session_capabilities(&[]);
+        assert!(!caps.read);
+        assert!(!caps.write);
+        assert!(!caps.exec);
+        assert!(!caps.git);
+        assert!(!caps.network);
+    }
+
+    #[test]
+    fn builtin_tools_ceiling_has_no_git() {
+        let tools = acp_builtin_tools();
+        let caps = compute_session_capabilities(&tools);
+        assert!(caps.read);
+        assert!(caps.write);
+        assert!(caps.exec);
+        assert!(!caps.git, "builtin tools should not grant git access");
+        assert!(caps.network);
     }
 }

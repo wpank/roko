@@ -620,6 +620,16 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `auto_fix_model` | String | `"claude-haiku-4-5"` | Model for auto-fix attempts |
 | `warm_implementers_per_plan` | usize | `1` | Pre-spawned warm agents |
 
+**Live in runner-v2.** Conductor watcher config (`[conductor.watchers.*]`) is
+fully live in the runner-v2 event loop. Watchers run every 5 seconds against
+the signal ring buffer and can trigger Restart or Fail decisions. When
+watchers detect repeated failures on a model or resource pressure (cost,
+context window, time), the conductor emits a **routing bias** that feeds
+into model selection: deprioritized models are filtered from the candidate
+set and `prefer_cheaper` shifts scoring toward cheaper tiers. This routing
+bias only applies when no `force_backend` override or task `model_hint` is
+set -- operator and author intent always take precedence.
+
 ### 8.13 `[learning]` -- learning and feedback
 
 | Field | Type | Default | Description |

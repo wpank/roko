@@ -1,8 +1,8 @@
 [meta]
 plan = "P18-tui-agent-data"
 total = 5
-done = 0
-status = "ready"
+done = 5
+status = "done"
 max_parallel = 1
 
 # ─── T1: Fix agent_id prefix match in TaskStarted apply ───────────────
@@ -10,7 +10,7 @@ max_parallel = 1
 [[task]]
 id = "T1"
 title = "Acceptance roll-up: use structured task attribution"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T01"
 tier = "mechanical"
@@ -48,7 +48,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T2"
 title = "Acceptance roll-up: publish attributed live usage"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T03 + SH04-T05"
 tier = "focused"
@@ -87,7 +87,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T3"
 title = "Acceptance roll-up: preserve typed live agent output"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T02 + SH04-T03"
 tier = "mechanical"
@@ -126,7 +126,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T4"
 title = "Acceptance roll-up: publish one diagnosis for failed gates"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T04"
 tier = "focused"
@@ -164,7 +164,7 @@ fail_msg = "Canonical owner acceptance tests must pass before this roll-up can b
 [[task]]
 id = "T5"
 title = "Acceptance roll-up: expose diagnoses through the canonical TUI bridge"
-status = "ready"
+status = "done"
 ownership = "acceptance-roll-up"
 superseded_by = "SH04-T04"
 tier = "mechanical"

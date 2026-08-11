@@ -753,9 +753,15 @@ fn print_resolved(r: &ResolvedConfig) {
         r.config.prompt.role,
         r.sources.prompt_role.tag()
     );
+    // Serialize providers to TOML and redact secret fields (api_key, tokens,
+    // extra_headers values, etc.) before printing so that `roko config show`
+    // never leaks literal API keys or bearer tokens to stdout.
+    let providers_display = toml::to_string_pretty(&r.config.providers)
+        .map(|s| roko_core::config::loader::redact_secrets_in_toml_str(&s))
+        .unwrap_or_else(|_| "***REDACTED***".to_string());
     println!(
-        "  providers         = {:?} {}",
-        r.config.providers,
+        "  providers         = {} {}",
+        providers_display.trim(),
         r.sources.providers.tag()
     );
     println!(

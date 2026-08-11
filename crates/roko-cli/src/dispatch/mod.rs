@@ -89,6 +89,11 @@ pub struct DispatchContext {
     /// Routing context for the CascadeRouter. Built at the dispatch site
     /// from task + runner state, threaded through to `RoutingInputs`.
     pub routing_context: Option<RoutingContext>,
+    /// Conductor routing bias from the live signal stream. When present,
+    /// the model router deprioritizes flagged models and biases toward
+    /// cheaper tiers, reflecting the conductor's reactive assessment of
+    /// the current run.
+    pub routing_bias: Option<roko_learn::cascade_router::RoutingBias>,
     /// Output files from each completed dependency task.
     /// Each entry is `(task_id, files)`. Injected into the system prompt
     /// so the agent knows what its predecessors already produced.
@@ -362,6 +367,7 @@ mod tests {
             attempt: 0,
             gate_feedback: None,
             routing_context: None,
+            routing_bias: None,
             dependency_outputs: Vec::new(),
         }
     }

@@ -128,6 +128,8 @@ pub mod obs {
     pub mod schema;
     #[path = "../obs/scrub.rs"]
     pub mod scrub;
+    #[path = "../obs/telemetry_observe.rs"]
+    pub mod telemetry_observe;
 
     pub use health::{
         AlwaysUpProbe, DegradedReason, HealthStatus, NamedProbe, Probe, ProbeRegistry,
@@ -135,7 +137,8 @@ pub mod obs {
     };
     pub use histograms::{Histogram, HistogramSnapshot, LLM_LATENCY_BUCKETS};
     pub use lens::{
-        CollectorLens, CostLens, LatencyLens, Lens, LensScope, LensSnapshot, TokenUsageLens,
+        CollectorLens, CostLens, LatencyLens, Lens, LensRegistry, LensScope, LensSnapshot,
+        TokenUsageLens, default_registry,
     };
     pub use metrics::{
         Counter, Gauge, LabelSet, MetricKind, MetricRegistry, MetricSnapshot, MetricValue,
@@ -143,6 +146,7 @@ pub mod obs {
     };
     pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
     pub use scrub::{LogScrubber, REDACTED};
+    pub use telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};
 }
 pub mod operating_frequency;
 pub mod phase;
@@ -166,6 +170,9 @@ pub mod task;
 pub mod temperament;
 pub mod tool;
 pub mod traits;
+/// Trigger protocol types — TriggerProtocol, TriggerBinding, TriggerEvent, TriggerHandle,
+/// TriggerState, TriggerSource, and related configuration types.
+pub mod trigger;
 pub mod usage;
 pub mod verdict;
 pub mod workspace;
@@ -304,6 +311,13 @@ pub use namespace::{
     Channel, ChannelDirection, CognitiveNamespace, NamespaceAcl, NamespaceRegistry, RateLimitConfig,
 };
 pub use temperament::Temperament;
+pub use trigger::{
+    Author, BusTrigger, ChainEventTrigger, ConcurrencyPolicy, CronTrigger, Expr, FileWatchEvent,
+    FileWatchTrigger, GraphRef, InputFieldMapping, RateLimit, RateLimitAction, SecretRef, SignalRef,
+    SignalPatternTrigger, SpaceId, TraceId as TriggerTraceId, TriggerAuth, TriggerBinding,
+    TriggerEvent, TriggerFilter, TriggerHandle, TriggerInputMapping, TriggerId, TriggerKind,
+    TriggerProtocol, TriggerSource, TriggerState, WebhookTrigger,
+};
 pub use tool::{
     ArmEntry, Artifact, AuditSink, BanditKey, CancelSource, CancelToken, EpsilonGreedyBandit,
     FailureTrace, FormatBandit, KeywordOverlapScorer, MemoryPointer, MetricsKey, MetricsSink,

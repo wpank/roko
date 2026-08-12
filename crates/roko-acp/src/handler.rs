@@ -24,6 +24,7 @@ use crate::{
         SessionSetModeParams,
     },
 };
+use roko_core::agent::resolve_model;
 
 /// Runs the ACP stdio server until stdin reaches EOF or a fatal transport error occurs.
 pub async fn run_acp_server(config: AcpConfig) -> Result<()> {
@@ -282,12 +283,17 @@ async fn handle_request(
                 Ok(params) => params,
                 Err(error) => return send_error_response(transport, id, error).await,
             };
+            // Determine image capability from default model's vision support
+            let model_key = &sessions.roko_config.agent.default_model;
+            let resolved = resolve_model(&sessions.roko_config, model_key);
+            let image_capable = resolved.profile.is_some_and(|p| p.supports_vision);
+
             let result = InitializeResult {
                 protocol_version: ACP_PROTOCOL_VERSION,
                 agent_capabilities: AgentCapabilities {
                     load_session: true,
                     prompt_capabilities: PromptCapabilities {
-                        image: false,
+                        image: image_capable,
                         audio: false,
                         embedded_context: true,
                     },

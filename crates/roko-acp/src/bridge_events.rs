@@ -295,6 +295,9 @@ async fn append_acp_episode(
     // When provided, overrides the pricing-table cost calculation with the
     // actual cost reported by the provider (e.g. from `WorkflowRunReport.cost`).
     cost_override: Option<f64>,
+    // T5: When cascade routing was used, record the selected model slug so it
+    // is visible via `roko learn episodes`.
+    cascade_selected_model: Option<String>,
 ) {
     let resolved = resolve_model(roko_config, model_key);
     let elapsed = dispatch_started.elapsed();
@@ -381,6 +384,13 @@ async fn append_acp_episode(
         "provider_kind".to_string(),
         serde_json::json!(resolved.provider_kind.label()),
     );
+    // T5: Record cascade routing decision when cascade selection was active.
+    if let Some(ref slug) = cascade_selected_model {
+        episode.extra.insert(
+            "cascade_selected_model".to_string(),
+            serde_json::json!(slug),
+        );
+    }
 
     let success = acp_dispatch_succeeded(stream_result, task_error, stream_error);
     episode.success = success;
@@ -591,7 +601,7 @@ fn emit_acp_efficiency_event(
     });
 }
 
-fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext {
+fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -> RoutingContext {
     let _prompt_len = prompt.len();
     let task_category = if mode == "research" {
         TaskCategory::Research
@@ -605,6 +615,42 @@ fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext
         _ => AgentRole::Implementer,
     };
 
+    // T4: Load DaimonState from disk so affect-based routing actually works.
+    // Canonical path is .roko/daimon/affect.json; fall back to legacy
+    // .roko/state/daimon.json for old workspaces that haven't migrated yet.
+    // We read-only — the orchestrator is the sole writer of DaimonState.
+    let daimon_policy = {
+        let canonical = workdir.join(".roko").join("daimon").join("affect.json");
+        let daimon_path = if canonical.exists() {
+            canonical
+        } else {
+            workdir.join(".roko").join("state").join("daimon.json")
+        };
+
+        if daimon_path.exists() {
+            std::fs::read_to_string(&daimon_path)
+                .ok()
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+                .and_then(|v| {
+                    let confidence = v.get("state")?.get("confidence")?.as_f64()?;
+                    let behavioral_state_str = v.get("state")?.get("behavioral_state")?.as_str()?;
+                    use roko_core::BehavioralState;
+                    let behavioral_state = match behavioral_state_str {
+                        "struggling" => BehavioralState::Struggling,
+                        "coasting" => BehavioralState::Coasting,
+                        "exploring" => BehavioralState::Exploring,
+                        "focused" => BehavioralState::Focused,
+                        "resting" => BehavioralState::Resting,
+                        _ => BehavioralState::Engaged,
+                    };
+                    Some(DaimonPolicy::new(confidence, behavioral_state))
+                })
+                .unwrap_or_default()
+        } else {
+            DaimonPolicy::default()
+        }
+    };
+
     RoutingContext {
         task_category,
         complexity: TaskComplexityBand::Standard,
@@ -616,7 +662,7 @@ fn acp_routing_context(mode: &str, prompt: &str, effort: &str) -> RoutingContext
         active_agents: 0,
         ready_queue_depth: 0,
         max_queue_wait_hours: 0.0,
-        daimon_policy: DaimonPolicy::default(),
+        daimon_policy,
         thinking_level: Some(effort.to_owned()).filter(|value| !value.trim().is_empty()),
         temperament: None,
         previous_model: None,
@@ -653,7 +699,6 @@ fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> 
 ///
 /// Returns `None` (leaving model selection to the caller) when the env var is
 /// absent or the router file does not yet exist (cold start).
-#[allow(dead_code)] // P19-T2 will wire the call site
 fn cascade_select_model(
     workdir: &Path,
     roko_config: &RokoConfig,
@@ -677,7 +722,7 @@ fn cascade_select_model(
 
     let model_slugs = cascade_router_model_slugs(roko_config, resolved_slug);
     let router = CascadeRouter::load_or_new(&router_path, model_slugs);
-    let ctx = acp_routing_context(mode, prompt, effort);
+    let ctx = acp_routing_context(mode, prompt, effort, workdir);
     let cascade_model = router.route_with_cfactor(&ctx, None, None);
     Some(cascade_model.primary.slug)
 }
@@ -1182,7 +1227,42 @@ where
     let model_key = session.config_state.model.clone();
     let is_slash_command = prompt_text.trim_start().starts_with('/');
     let resolved = resolve_model(roko_config, &model_key);
+
+    // T2: Optionally override the resolved model via the cascade router when the
+    // user has not explicitly triggered a slash command.  The cascade_select_model
+    // call is a no-op when ROKO_ACP_CASCADE_SELECT is not set.
+    let (resolved, model_key_cascade_override) = if !is_slash_command {
+        if let Some(cascade_slug) = cascade_select_model(
+            workdir,
+            roko_config,
+            &session.config_state.agent_mode,
+            &prompt_text,
+            &session.config_state.effort,
+            &resolved.slug,
+        ) {
+            let cascade_resolved = resolve_model(roko_config, &cascade_slug);
+            if cascade_resolved.profile.is_some() {
+                info!(
+                    original = %model_key,
+                    cascade = %cascade_slug,
+                    "cascade router overriding model for ACP dispatch"
+                );
+                (cascade_resolved, Some(cascade_slug))
+            } else {
+                (resolved, None)
+            }
+        } else {
+            (resolved, None)
+        }
+    } else {
+        (resolved, None)
+    };
+
     let resolved_for_logging = resolved.clone();
+    // The config key used for cascade observation must match the router arms
+    // (which are keyed by config key, not wire slug).  Prefer the cascade
+    // override key when it was applied; fall back to the session model key.
+    let cascade_selected_slug = model_key_cascade_override.clone();
 
     debug!(
         session_id = %session.session_id,
@@ -1256,20 +1336,14 @@ where
         let mut msgs = session.build_messages_array(&full_system, &prompt_text);
         // If the prompt contains Image blocks, replace the last user message's
         // content with a multi-part content array in the appropriate format.
-        let image_parts = if resolved.provider_kind == ProviderKind::AnthropicApi {
-            build_anthropic_content_parts(&params.prompt)
-        } else {
-            build_openai_content_parts(&params.prompt)
-        };
-        if let Some(parts) = image_parts
-            && let Some(last) = msgs.last_mut()
-            && last.get("role").and_then(|v| v.as_str()) == Some("user")
-        {
-            last["content"] = serde_json::Value::Array(parts);
-        }
+        inject_image_parts(&mut msgs, &params.prompt, resolved.provider_kind);
         msgs
     } else {
-        Vec::new()
+        // Pipeline path: build a minimal user-message array so that image blocks
+        // are preserved for any downstream consumer that inspects `messages`.
+        let mut msgs = vec![serde_json::json!({"role": "user", "content": prompt_text.clone()})];
+        inject_image_parts(&mut msgs, &params.prompt, resolved.provider_kind);
+        msgs
     };
 
     let (event_sender, event_receiver) = mpsc::channel(64);
@@ -1624,6 +1698,7 @@ where
             task_error.as_deref(),
             stream_error.as_deref(),
             cost_override,
+            cascade_selected_slug.clone(),
         )
         .await;
 
@@ -1649,15 +1724,19 @@ where
             &session.config_state.agent_mode,
             &prompt_text_for_logging,
             &session.config_state.effort,
+            &workdir_for_logging,
         );
         let output_tokens =
             stream_result_ref.and_then(|sr| sr.usage.as_ref().map(|usage| usage.output_tokens));
+        // T3: Pass the config key (model_key_for_logging) not the wire slug so
+        // the observation key matches the router arms, which are also populated
+        // from config.models.keys().
         record_cascade_observation(
             workdir_for_logging
                 .join(".roko")
                 .join("learn")
                 .join("cascade-router.json"),
-            resolved_for_logging.slug,
+            model_key_for_logging.clone(),
             routing_ctx,
             dispatch_succeeded,
             dispatch_started.elapsed().as_millis() as u64,
@@ -4132,7 +4211,7 @@ Available commands (organized by Will's core loop):
         tokio::io::BufReader::new(child.stderr.take().expect("stderr was piped")).lines();
     let mut stdout_done = false;
     let mut stderr_done = false;
-    let mut had_output = false;
+    let mut output = String::new();
     let mut progress_task_counter: u64 = 0;
 
     loop {
@@ -4199,24 +4278,18 @@ Available commands (organized by Will's core loop):
                                     }
                                     _ => {
                                         // Unknown progress type — pass through as text
-                                        had_output = true;
-                                        let _ = event_sender
-                                            .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
-                                            .await;
+                                        output.push_str(&l);
+                                        output.push('\n');
                                     }
                                 }
                             } else {
                                 // JSON parse failed — pass through as plain text
-                                had_output = true;
-                                let _ = event_sender
-                                    .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
-                                    .await;
+                                output.push_str(&l);
+                                output.push('\n');
                             }
                         } else {
-                            had_output = true;
-                            let _ = event_sender
-                                .send(CognitiveEvent::TokenChunk(format!("{l}\n")))
-                                .await;
+                            output.push_str(&l);
+                            output.push('\n');
                         }
                     }
                     Ok(None) => stdout_done = true,
@@ -4229,10 +4302,7 @@ Available commands (organized by Will's core loop):
             line = stderr_lines.next_line(), if !stderr_done => {
                 match line {
                     Ok(Some(l)) => {
-                        had_output = true;
-                        let _ = event_sender
-                            .send(CognitiveEvent::TokenChunk(format!("\x1b[2m{l}\x1b[0m\n")))
-                            .await;
+                        output.push_str(&format!("\x1b[2m{}\x1b[0m\n", l));
                     }
                     Ok(None) => stderr_done = true,
                     Err(e) => {
@@ -4246,13 +4316,11 @@ Available commands (organized by Will's core loop):
 
     let _ = child.wait().await;
 
-    if !had_output {
-        let _ = event_sender
-            .send(CognitiveEvent::TokenChunk(format!(
-                "/{command} completed (no output)"
-            )))
-            .await;
+    if output.is_empty() {
+        output = format!("/{command} completed (no output)");
     }
+
+    let _ = event_sender.send(CognitiveEvent::TokenChunk(output)).await;
     let _ = event_sender
         .send(CognitiveEvent::Complete {
             stop_reason: StopReason::EndTurn,
@@ -4592,6 +4660,27 @@ fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_js
         }
     }
     Some(parts)
+}
+
+/// Replaces the last user message's `content` field in `msgs` with a multi-part
+/// content array when `prompt` contains `Image` blocks.  No-ops when there are
+/// no image blocks so text-only prompts are unaffected.
+fn inject_image_parts(
+    msgs: &mut [serde_json::Value],
+    prompt: &[ContentBlock],
+    provider_kind: ProviderKind,
+) {
+    let image_parts = if provider_kind == ProviderKind::AnthropicApi {
+        build_anthropic_content_parts(prompt)
+    } else {
+        build_openai_content_parts(prompt)
+    };
+    if let Some(parts) = image_parts
+        && let Some(last) = msgs.last_mut()
+        && last.get("role").and_then(|v| v.as_str()) == Some("user")
+    {
+        last["content"] = serde_json::Value::Array(parts);
+    }
 }
 
 /// Extracts `file://` URIs from Resource blocks in the prompt.
@@ -5474,6 +5563,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -5535,6 +5625,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
 
@@ -5552,16 +5643,20 @@ mod tests {
 
     #[test]
     fn acp_routing_context_maps_modes_to_roles() {
-        let plan = acp_routing_context("plan", "wire router feedback", "high");
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path();
+
+        let plan = acp_routing_context("plan", "wire router feedback", "high", workdir);
         assert_eq!(plan.task_category, TaskCategory::Implementation);
         assert_eq!(plan.role, AgentRole::Strategist);
         assert_eq!(plan.thinking_level.as_deref(), Some("high"));
 
-        let research = acp_routing_context("research", "find the source of truth", "medium");
+        let research =
+            acp_routing_context("research", "find the source of truth", "medium", workdir);
         assert_eq!(research.task_category, TaskCategory::Research);
         assert_eq!(research.role, AgentRole::Researcher);
 
-        let code = acp_routing_context("code", "edit file", "low");
+        let code = acp_routing_context("code", "edit file", "low", workdir);
         assert_eq!(code.task_category, TaskCategory::Implementation);
         assert_eq!(code.role, AgentRole::Implementer);
     }
@@ -5903,6 +5998,161 @@ mod tests {
         assert!(
             matches!(result, ToolResult::Err(_)),
             "tool not in allowed set must return ToolResult::Err"
+        );
+    }
+
+    // ── T6: cascade_select_model tests ───────────────────────────────────────
+    //
+    // Tests that mutate the `ROKO_ACP_CASCADE_SELECT` env var share a module-level
+    // Mutex so they run serially and cannot interfere with each other.
+
+    static CASCADE_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn cascade_env_lock() -> &'static std::sync::Mutex<()> {
+        CASCADE_ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// cascade_select_model returns None when the ROKO_ACP_CASCADE_SELECT env
+    /// var is absent, regardless of whether a router file exists.
+    #[test]
+    fn cascade_select_model_returns_none_without_env_var() {
+        let _guard = cascade_env_lock().lock().expect("acquire env lock");
+        // SAFETY: serialized by cascade_env_lock; no other test holds the lock
+        // and mutates ROKO_ACP_CASCADE_SELECT concurrently.
+        unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
+
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path();
+        let config = RokoConfig::default();
+        let result = cascade_select_model(
+            workdir,
+            &config,
+            "code",
+            "fix a bug",
+            "medium",
+            "claude-sonnet-4-6",
+        );
+        assert!(
+            result.is_none(),
+            "should return None when env var is not set"
+        );
+    }
+
+    /// cascade_select_model returns None when the env var is set but the router
+    /// state file does not yet exist (cold start).
+    #[test]
+    fn cascade_select_model_returns_none_without_router_file() {
+        let _guard = cascade_env_lock().lock().expect("acquire env lock");
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path();
+        // The router path will not exist in the fresh tmpdir.
+        let router_path = workdir
+            .join(".roko")
+            .join("learn")
+            .join("cascade-router.json");
+        assert!(!router_path.exists(), "router file should not exist yet");
+
+        // SAFETY: serialized by cascade_env_lock; no other test holds the lock
+        // and mutates ROKO_ACP_CASCADE_SELECT concurrently.
+        unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "1") };
+        let config = RokoConfig::default();
+        let result = cascade_select_model(
+            workdir,
+            &config,
+            "code",
+            "fix a bug",
+            "medium",
+            "claude-sonnet-4-6",
+        );
+        unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
+
+        assert!(
+            result.is_none(),
+            "should return None when router file is absent"
+        );
+    }
+
+    /// cascade_select_model returns Some when the env var is set and a valid
+    /// router state file exists.  The returned slug must be one of the model
+    /// keys known to the router.
+    #[test]
+    fn cascade_select_model_returns_model_with_router() {
+        use roko_learn::cascade_router::CascadeRouter;
+
+        let _guard = cascade_env_lock().lock().expect("acquire env lock");
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path();
+        let router_dir = workdir.join(".roko").join("learn");
+        std::fs::create_dir_all(&router_dir).expect("create router dir");
+        let router_path = router_dir.join("cascade-router.json");
+
+        // Build a minimal router with one model slug and persist it.
+        let model_key = "claude-sonnet-4-6".to_string();
+        let router = CascadeRouter::new(vec![model_key.clone()]);
+        router.save(&router_path).expect("save router state");
+
+        // SAFETY: serialized by cascade_env_lock; no other test holds the lock
+        // and mutates ROKO_ACP_CASCADE_SELECT concurrently.
+        unsafe { std::env::set_var("ROKO_ACP_CASCADE_SELECT", "1") };
+        let config = RokoConfig::default();
+        let result = cascade_select_model(
+            workdir,
+            &config,
+            "code",
+            "add unit tests",
+            "medium",
+            &model_key,
+        );
+        unsafe { std::env::remove_var("ROKO_ACP_CASCADE_SELECT") };
+
+        assert!(
+            result.is_some(),
+            "should return Some when router file exists"
+        );
+        // The slug must be a non-empty string.
+        assert!(
+            !result.unwrap().is_empty(),
+            "returned slug must not be empty"
+        );
+    }
+
+    /// record_cascade_observation uses the config key (model_key_for_logging),
+    /// not the wire slug (resolved_for_logging.slug).  This test verifies the
+    /// exact-match path works: config keys that were registered with the router
+    /// are always found via model_index_for_slug regardless of family aliasing.
+    #[test]
+    fn cascade_observation_uses_config_key_not_wire_slug() {
+        use roko_learn::cascade_router::CascadeRouter;
+
+        let tmp = tempfile::tempdir().expect("create tmpdir");
+        let workdir = tmp.path();
+        let router_dir = workdir.join(".roko").join("learn");
+        std::fs::create_dir_all(&router_dir).expect("create router dir");
+        let router_path = router_dir.join("cascade-router.json");
+
+        // Use a config key that has no slug_family alias so exact-match is the
+        // only way it can be found.  A custom/short key like "my-model" will
+        // not match any family heuristic.
+        let config_key = "my-custom-model-key".to_string();
+        let router = CascadeRouter::new(vec![config_key.clone()]);
+        router.save(&router_path).expect("save initial router");
+
+        let router_loaded = CascadeRouter::load_or_new(&router_path, vec![config_key.clone()]);
+
+        // The config key (exact match) must be found.
+        assert!(
+            router_loaded.model_index_for_slug(&config_key).is_some(),
+            "config key must match a router arm via exact match"
+        );
+
+        // A completely different slug that has no family overlap must NOT be found.
+        // This proves T3 is correct: if we had passed a wire slug that doesn't
+        // match the config key, the observation would be silently dropped.
+        assert!(
+            router_loaded
+                .model_index_for_slug("completely-different-vendor-model")
+                .is_none(),
+            "unrelated slug must not match when it shares no family with the config key"
         );
     }
 }

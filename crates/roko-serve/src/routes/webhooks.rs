@@ -224,34 +224,47 @@ async fn persist_webhook_signal(state: &AppState, signal: Engram) -> Result<(), 
 fn github_signal_kind(event_type: &str, payload: &Value) -> Option<Kind> {
     match event_type {
         "push" => Some(Kind::Custom(signal_kinds::GITHUB_PUSH.into())),
-        "pull_request" => payload
-            .get("action")
-            .and_then(Value::as_str)
-            .and_then(|action| match action {
+        "pull_request" => {
+            let action = payload.get("action").and_then(Value::as_str)?;
+            let pr = payload.get("pull_request");
+            let is_merged = pr
+                .and_then(|p| p.get("merged"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let head_ref = pr
+                .and_then(|p| p.get("head"))
+                .and_then(|h| h.get("ref"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            match action {
                 "opened" => Some(Kind::Custom(signal_kinds::GITHUB_PR_OPENED.into())),
-                "closed"
-                    if payload
-                        .get("pull_request")
-                        .and_then(|pr| pr.get("merged"))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                        && payload
-                            .get("pull_request")
-                            .and_then(|pr| pr.get("head"))
-                            .and_then(|head| head.get("ref"))
-                            .and_then(Value::as_str)
-                            .is_some_and(|branch| branch.starts_with("plan/")) =>
-                {
+                "closed" if is_merged && head_ref.starts_with("plan/") => {
+                    // A plan/ branch merge: also emit PRD_PLAN_APPROVED for
+                    // backward compatibility.
                     Some(Kind::Custom(signal_kinds::PRD_PLAN_APPROVED.into()))
                 }
+                "closed" if is_merged => Some(Kind::Custom(signal_kinds::GITHUB_PR_MERGED.into())),
+                "closed" => Some(Kind::Custom(signal_kinds::GITHUB_PR_CLOSED.into())),
                 _ => None,
-            }),
+            }
+        }
         "pull_request_review" => Some(Kind::Custom(signal_kinds::GITHUB_PR_REVIEW.into())),
         "issues" => payload
             .get("action")
             .and_then(Value::as_str)
             .filter(|action| *action == "opened")
             .map(|_| Kind::Custom(signal_kinds::GITHUB_ISSUE_OPENED.into())),
+        "check_suite" => {
+            let action = payload.get("action").and_then(Value::as_str)?;
+            match action {
+                "completed" => Some(Kind::Custom(
+                    signal_kinds::GITHUB_CHECK_SUITE_COMPLETED.into(),
+                )),
+                _ => Some(Kind::Custom(signal_kinds::GITHUB_CHECK_SUITE.into())),
+            }
+        }
+        "workflow_run" => Some(Kind::Custom(signal_kinds::GITHUB_WORKFLOW_RUN.into())),
         _ => None,
     }
 }
@@ -415,6 +428,77 @@ mod tests {
         );
         assert!(
             matches!(plan_approved.as_ref().map(Kind::as_str), Some(kind) if kind == signal_kinds::PRD_PLAN_APPROVED)
+        );
+    }
+
+    #[test]
+    fn maps_check_suite_completed_to_github_check_completed() {
+        let check_completed =
+            github_signal_kind("check_suite", &serde_json::json!({ "action": "completed" }));
+        assert!(
+            matches!(
+                check_completed.as_ref().map(Kind::as_str),
+                Some(kind) if kind == signal_kinds::GITHUB_CHECK_SUITE_COMPLETED
+            ),
+            "check_suite completed should map to GITHUB_CHECK_SUITE_COMPLETED"
+        );
+    }
+
+    #[test]
+    fn maps_pr_closed_merged_to_github_pr_merged() {
+        // Non-plan branch merged PR.
+        let pr_merged = github_signal_kind(
+            "pull_request",
+            &serde_json::json!({
+                "action": "closed",
+                "pull_request": {
+                    "merged": true,
+                    "head": { "ref": "feature/my-feature" }
+                }
+            }),
+        );
+        assert!(
+            matches!(
+                pr_merged.as_ref().map(Kind::as_str),
+                Some(kind) if kind == signal_kinds::GITHUB_PR_MERGED
+            ),
+            "closed+merged non-plan branch should map to GITHUB_PR_MERGED"
+        );
+    }
+
+    #[test]
+    fn maps_pr_closed_not_merged_to_github_pr_closed() {
+        let pr_closed = github_signal_kind(
+            "pull_request",
+            &serde_json::json!({
+                "action": "closed",
+                "pull_request": {
+                    "merged": false,
+                    "head": { "ref": "feature/my-feature" }
+                }
+            }),
+        );
+        assert!(
+            matches!(
+                pr_closed.as_ref().map(Kind::as_str),
+                Some(kind) if kind == signal_kinds::GITHUB_PR_CLOSED
+            ),
+            "closed+not_merged PR should map to GITHUB_PR_CLOSED"
+        );
+    }
+
+    #[test]
+    fn maps_workflow_run_to_github_workflow_run() {
+        let workflow_run = github_signal_kind(
+            "workflow_run",
+            &serde_json::json!({ "action": "completed" }),
+        );
+        assert!(
+            matches!(
+                workflow_run.as_ref().map(Kind::as_str),
+                Some(kind) if kind == signal_kinds::GITHUB_WORKFLOW_RUN
+            ),
+            "workflow_run event should map to GITHUB_WORKFLOW_RUN"
         );
     }
 
